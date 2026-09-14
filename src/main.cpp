@@ -46,6 +46,7 @@ extern "C" bool esp_psram_check_ptr_addr(const void* p);
 #include "heap_ring.h"
 #include "fs_guard.h"     // bug-100 : drain de l'épisode de famine fichiers (ADR-0070)
 #include "heap_metrics.h"  // mesure 8 bits (mémoire réellement allouable) — trace de calibrage v2.19.0
+#include "heap_census.h"  // feature-128 : recensement du tas (R2) + lecture de contenu (R3, sous POOL_HEAP_PEEK)
 #include "oom_guard.h"
 #include "ping/ping_sock.h"  // esp_ping : sonde ICMP passerelle (watchdog connectivité v2.9.2)
 
@@ -573,6 +574,13 @@ void loop() {
     heapRingSample();
     lastHeapRingSampleMs = now;
   }
+
+  // Recensement du tas (feature-128, R2/R3) : consomme REQUESTED -> READY,
+  // SEUL site du projet qui appelle heap_caps_walk pour ce module. Appelée à
+  // CHAQUE tour de loop (contrairement au ring 2 s ci-dessus) : coût nul en
+  // l'absence de requête (quelques lectures atomiques), et la latence de
+  // réponse à une requête HTTP de diagnostic en dépend directement.
+  heapCensusServiceLoop();
 
   // Parachute OOM (bug-oom-accept-http-durcissement) : émission différée des
   // logs posés par le new_handler/callback heap_caps + réarmement de la réserve
@@ -1261,6 +1269,29 @@ void checkHeapHealth() {
              (unsigned)hf.walkMaxUs, (unsigned)hf.walkMedianUs,
              (unsigned)f804.lastFreeBlocks, (unsigned)f804.lastAllocatedBlocks);
     systemLogger.info(ligne3);
+
+    // C4 (gate pool-chemistry, feature-128) : WARN one-shot si le recensement
+    // du tas (R2/R3) s'est auto-désactivé DÉFINITIVEMENT (C1, un parcours a
+    // dépassé kHeapCensusMaxDurationUs). Ce site est HORS CHEMIN DE REQUÊTE
+    // HTTP — c'est la loop, la même trace périodique que ci-dessus — donc
+    // COMPATIBLE avec S13 : S13 interdit systemLogger sur les chemins
+    // d'erreur du protocole HTTP (route ET consommation REQUESTED->READY de
+    // heap_census.cpp), pas sur un événement d'auto-désactivation émis depuis
+    // la loop. Sans ce WARN, l'opérant n'apprend la désactivation qu'en
+    // essuyant un 410 côté route, sans savoir DE COMBIEN le seuil a été
+    // franchi — alors que C1 existe précisément parce que la base dérive
+    // (wmax +38 % en six jours, cf. constants.h).
+    static bool heapCensusDisabledWarned = false;
+    if (!heapCensusDisabledWarned && heapCensusIsDisabled()) {
+      heapCensusDisabledWarned = true;
+      char ligneCensus[128];
+      snprintf(ligneCensus, sizeof(ligneCensus),
+               "Recensement tas (feature-128) DESACTIVE definitivement : "
+               "dernier=%uus pire=%uus seuil=%uus",
+               (unsigned)heapCensusLastWalkUs(), (unsigned)heapCensusMaxWalkUs(),
+               (unsigned)kHeapCensusMaxDurationUs);
+      systemLogger.warning(ligneCensus);
+    }
 
     // Réarmement de la fenêtre : même tâche que l'échantillonnage (loop), même
     // course bénigne documentée que heapTakeMinMaxAlloc8Window — un échantillon

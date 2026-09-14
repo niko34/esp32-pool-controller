@@ -73,3 +73,37 @@ jobs:
       # Même script en local (`./tools/check_fopen_guard.sh`) et en CI.
       - name: Contrôle du point d'admission
         run: ./tools/check_fopen_guard.sh
+
+  # JOB 4 — POOL_HEAP_PEEK absent de tout fichier versionné (S2/ADR-0081,
+  # feature-128). R3 (lecture de contenu du tas) n'existe dans le binaire QUE
+  # si cette macro est passée par PLATFORMIO_BUILD_FLAGS au moment du build —
+  # jamais écrite dans un fichier du dépôt. Ce job ne prouve PAS l'artefact
+  # publié par /release (c'est S1, câblé dans .claude/commands/release.md,
+  # qui compile localement) : il protège de l'inadvertance dans l'arbre,
+  # sur TOUS les commits, comme les trois jobs qui précèdent.
+  no-peek-flag:
+    name: POOL_HEAP_PEEK absent des fichiers versionnés (S2/ADR-0081)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # Même script en local (`./tools/check_no_peek_flag.sh`) et en CI.
+      - name: Contrôle de non-définition de POOL_HEAP_PEEK
+        run: ./tools/check_no_peek_flag.sh
+
+  # JOB 5 — la garde est la PREMIÈRE instruction de chaque route (S6,
+  # feature-128). Sans ce job, personne d'autre que ce lot n'exécute
+  # check_heap_routes_guard.sh : la sentinelle qui rend inexprimable le défaut
+  # du 07/09 (handler de corps exécuté AVANT REQUIRE_AUTH) pourrirait en
+  # silence, comme les quatre jobs qui précèdent le font pour leur invariant.
+  heap-routes-guard:
+    name: Garde en première instruction sur les routes du tas (S6)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # Même script en local (`./tools/check_heap_routes_guard.sh`) et en CI.
+      - name: Contrôle de la place de la garde
+        run: ./tools/check_heap_routes_guard.sh

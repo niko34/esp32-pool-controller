@@ -301,6 +301,27 @@ et le nombre d'échantillons pris pour ce masque.
 > plateau durable de `maxBloc8` à **7 872 o** relevé après 28,9 h sur v2.50.0
 > (cf. [`docs/incidents/2026-09-10-recidive-fragmentation-v2500.md`](../incidents/2026-09-10-recidive-fragmentation-v2500.md)).
 
+> **feature-127 (R1)** : chaque emplacement retient en plus le **dernier**
+> nombre d'**octets** alloués (`lastAllocatedBytes`, publié `a` en HTTP), même
+> sous-produit du même `heap_caps_get_info()` que `fb`/`ab` (`total_allocated_bytes`,
+> calculé puis jeté jusque-là) — coût nul, aucun plancher tenu, même discipline
+> que `fb`/`ab`. `null` pour `def`/`spi` (chemin O(régions), même cause que pour
+> `fb`/`ab`). Sert à trancher une question que `fb`/`ab` seuls laissaient ouverte
+> (fenêtre du 12-13/09) : à **nombre** de blocs quasi constant, `libre` a perdu
+> ~10 400 o qui ne sont jamais revenus — `a` dit si ce sont les blocs alloués qui
+> **pèsent plus lourd** en moyenne (fuite en octets) ou un jeu de travail
+> légitimement plus gros. `libre + alloué` reste stable à l'échelle du tas, aux
+> métadonnées de l'allocateur près : c'est le calcul de contrôle de toute lecture
+> de `a`.
+>
+> ⚠️ **Convention de nommage des clés `hf.<masque>.*`, à respecter pour tout
+> champ futur** : **lettre seule = un compte d'OCTETS** (`f`, `a`) ; **lettre +
+> `b` = un compte de BLOCS** (`fb`, `ab`). `a` a été choisi pour fermer cette
+> symétrie implicite (jusque-là seulement entre `f`/libre et `fb`/blocs-libres,
+> `ab`/blocs-alloués restait sans pendant en octets). Écarté : `tab` (contient
+> « ab », la collision de lecture même qu'on évite) et `ba` (se lirait « blocs
+> alloués », donc l'inverse du sens voulu).
+
 Un minimum n'est **jamais** un instantané : un échantillonnage à cadence fixe
 rate par construction une pointe de quelques millisecondes (cas limite explicite
 de la spec). D'où deux dispositifs :
@@ -734,6 +755,170 @@ agrégée) ; les planchers `boot` ne se rattrapent pas.
 > `malloc(seuil + 1)` **au démarrage, PSRAM quasi vide** — pas où tombe le tampon stdio **en pleine
 > rafale**, sous pression PSRAM, quand la préférence `extmem` peut retomber
 > silencieusement en interne (c'est une **préférence**, pas une contrainte).
+
+## Recensement du tas et lecture de contenu (feature-127/128, [ADR-0081](../adr/0081-recensement-du-tas-et-non-livraison-de-la-lecture-de-contenu.md))
+
+> ⚠️ **C'est un INSTRUMENT, pas une conclusion.** Il fabrique la preuve
+> instrumentée que la note d'incident
+> [`2026-09-10-recidive-fragmentation-v2500.md`](../incidents/2026-09-10-recidive-fragmentation-v2500.md)
+> exige avant toute modification de constante ou de structure du `logger` —
+> il ne l'établit pas lui-même. Le premier suspect (`logger`, `String message`
+> de taille variable) reste un **suspect**.
+
+Les planchers glissants multi-masques (`feature-122`, ci-dessus) et le champ
+`a` (`feature-127`) ne rendent que des **agrégats** : combien de trous,
+combien de blocs, combien d'octets alloués au total. La fenêtre de mesure du
+12-13/09 a établi **que** le plus gros bloc contigu s'effondre en quatre
+marches discrètes sans jamais dire **qui** fait ces découpes. `heap_caps_walk()`
+recense le tas **bloc par bloc** (adresse, taille, occupé/libre) et permet la
+lecture ciblée du contenu d'un bloc désigné.
+
+Modules : [`src/heap_census_logic.h`](../../src/heap_census_logic.h) (**pur**
+— structures `HeapCensusFreeEntry`/`HeapCensusUsedEntry`, insertion top-N
+approchée, prédicats de fenêtre/péremption/plancher temporel, planification de
+lecture bornée) + coquille impure
+[`src/heap_census.h`](../../src/heap_census.h)/[`.cpp`](../../src/heap_census.cpp)
+(machine à états, callbacks `heap_caps_walk`, chronométrage) +
+[`src/web_routes_heap.h`](../../src/web_routes_heap.h)/[`.cpp`](../../src/web_routes_heap.cpp)
+(routes HTTP, `RouteProtection::CRITICAL` + garde 403 explicite — voir l'ADR
+pour pourquoi `CRITICAL` seul est décoratif dans ce projet). Tests natifs :
+`test/test_native_heap_census_logic/`. Contrat HTTP complet, exemples de
+requêtes et tableaux de champs :
+[`API.md`](../API.md#recensement-du-tas-et-lecture-de-contenu-feature-128-adr-0081).
+
+### R2 (recensement) contre R3 (lecture de contenu)
+
+| | R2 — recensement | R3 — lecture de contenu |
+|---|---|---|
+| Ce qui est exposé | adresses + tailles, top-N de blocs libres, blocs occupés dans une fenêtre | premiers octets d'un bloc désigné (hex + ASCII) |
+| Compilation | inconditionnelle, tout binaire | **sous `POOL_HEAP_PEEK`** — absente de tout binaire de release |
+| Route | `/debug/heap_census` (POST demande, GET lit) | `/debug/heap_peek` (POST demande, GET lit) — **404** sans `POOL_HEAP_PEEK` |
+| Régime de sécurité | `CRITICAL` + garde 403, motivé par le plafond OTA | idem, **plus** la non-livraison (deux mécanismes indépendants, voir l'ADR) |
+
+### Protocole en deux temps — jamais de parcours sur `async_tcp`
+
+`heap_caps_walk()` déclenche la chaîne `→ multi_heap_walk → multi_heap_internal_lock
+→ xPortEnterCriticalTimeout … tlsf_walk_pool (callback ICI) … multi_heap_internal_unlock
+→ vPortExitCritical` — **interruptions masquées pendant tout le parcours**,
+sous un **spinlock inter-cœurs** (établi par désassemblage indépendant de
+`libheap.a`, pas supposé — voir l'ADR). Exécuter ce parcours directement dans
+un handler `async_tcp` masquerait les interruptions de la tâche qui sert le
+WiFi et l'ensemble des requêtes HTTP, au cœur même du régime de famine étudié.
+
+Machine à états lock-free par CAS (`std::atomic<uint8_t>`), une instance pour
+R2 et une pour R3 :
+
+```
+IDLE -> REQUESTED   posé par async_tcp (POST)
+REQUESTED -> READY  posé par la LOOP, SEUL site qui appelle heap_caps_walk
+READY -> READING    posé par async_tcp au début de la sérialisation du GET
+READING -> IDLE     posé par async_tcp une fois la réponse envoyée
+READY -> IDLE       posé par la LOOP si l'instantané est périmé (kHeapCensusStaleMs,
+                     5 min) et que personne ne l'a lu — sans cette 3ᵉ transition
+                     pilotée par la loop, un POST sans GET qui suit (script
+                     interrompu, coupure WiFi) verrouillerait DÉFINITIVEMENT
+                     la route en 409
+```
+
+L'instantané est donc **déjà gelé** quand la route sérialise : les allocations
+de la réponse HTTP (`JsonDocument`, `AsyncResponseStream`) ne perturbent plus
+la mesure, et R3 revalide son adresse contre un parcours **frais** à chaque
+lecture plutôt que contre un instantané vieillissant.
+
+### Chronométrage et auto-désactivation définitive (C1)
+
+`esp_timer_get_time()` — jamais CCOUNT, sans objet ici (mesure locale à un
+seul appel, aucune migration de cœur à corriger). Sur le patron de
+`oom_guard.cpp:408-418` (`heapIntegrityAdmitNextRun` → `sProbeDisabled`) : le
+premier parcours qui dépasse `kHeapCensusMaxDurationUs` (**1 500 µs**)
+désactive **R2 et R3, définitivement** — jamais réarmé. Motif : la base de
+calibrage est **mouvante** (`wmax` de référence : 516 µs en v2.49.0, 711 µs
+six jours plus tard, **+38 %**) — l'instrument doit se couper lui-même plutôt
+que se fier à une estimation périmée, et un dépassement ponctuel ne prouve
+rien sur le suivant.
+
+**Coût apériodique, comptabilisé à part** de l'invariant « ≤ 1 parcours
+O(blocs)/s » des planchers glissants (`constants.h:545-585`, `feature-122`) :
+plafond ajouté de **0,2 parcours/s**, **partagé** entre R2 et R3 (même
+horodatage de dernier parcours, `kHeapCensusMinIntervalMs = 5000` ms) — soit
+`0,75/s` (périodique) `+ 0,2/s` (ce lot) `< 1/s`. Gigue estimée ≤ 0,03 % sur
+des doses de plusieurs secondes (verdict `pool-chemistry`), deux ordres de
+grandeur sous le biais de comptage volumétrique déjà mesuré sur la pompe ORP
+de l'appareil de référence (+5,1 %, hors périmètre de ce document).
+**Aucun mécanisme de dosage n'est sensible à la milliseconde** : `pool-chemistry`
+a explicitement refusé de bloquer un recensement pendant un dosage — cela
+aveuglerait l'instrument précisément pendant la fenêtre de famine, les
+épisodes tombant en pleine journée donc en pleine fenêtre de dosage.
+
+### Biais permanent : ~1,4 Ko de `.bss` soustraits au tas 8 bits
+
+Les tampons statiques du recensement — `kHeapCensusMaxFreeBlocks = 24` blocs
+libres (~192 o, 24 × 8 o) et `kHeapCensusMaxUsedBlocks = 96` blocs occupés
+(~1 152 o, 96 × 12 o), soit **~1 344 o**, auxquels s'ajoutent les tampons de
+lecture R3 (`kHeapPeekMaxBytes = 128` o) — restent en `.bss` **interne**
+(RAM classique), **jamais** en PSRAM : `EXT_RAM_BSS_ATTR` est **interdit ici
+en commentaire de code** (C2, `pool-chemistry`) — écrire en PSRAM depuis une
+section à interruptions masquées gonflerait la durée du parcours d'un
+facteur décisif, précisément le budget que C1 borne à 1,5 ms.
+
+Ce biais (~3 % des ~45 Ko libres observés sur l'appareil de référence) est
+**constant depuis le boot**, connu, et sans effet sur les gardes existantes
+(verdict `pool-chemistry`) : `.bss` réduit le **départ** du tas, il ne le
+**fragmente** pas. À vérifier néanmoins après intégration : le plus gros bloc
+observé ne doit pas perdre 1,4 Ko de plus que ce biais fixe — **sans rattraper
+le seuil du parachute dans ce lot** si c'est le cas (hors périmètre).
+
+### Découverte : `alloc_size` est gratuit (poisoning léger)
+
+`CONFIG_HEAP_POISONING_LIGHT` (actif dans le `sdkconfig` des bibliothèques
+épinglées, épinglé par `#error` dans `heap_census.cpp` si absent) fait que
+chaque bloc **occupé** commence par `poison_head_t {uint32_t canary =
+0xABBA1234; uint32_t alloc_size;}` — **8 octets**, le pointeur utilisateur se
+trouvant à `ptr + 8`. `multi_heap_walk` n'est pas enveloppé par la couche
+poisoning : `block.ptr` est le bloc TLSF brut, en-tête compris. R2 publie donc
+les **octets réellement demandés** (`alloc_size`), plus discriminants que la
+taille TLSF arrondie — sans coût de parcours supplémentaire, et le canari sert
+de **validation structurelle** d'adresse avant tout déréférencement de
+contenu (S4, `security-reviewer`) : canari non conforme ⇒ `alloc_size`
+publié `kHeapCensusAllocSizeUnknown` (`0xFFFFFFFF`,
+[ADR-0072](../adr/0072-absence-de-valeur-hors-du-domaine.md)), jamais une
+valeur inventée ; en R3, canari re-testé **avant et après** la copie,
+`"stable": false` publié en cas de divergence.
+
+### Inventaire des champs — `GET /debug/heap_census`
+
+| Champ | Portée | Ce qu'il dit |
+|---|---|---|
+| `seq` | par recensement | génération de recensement abouti (1 = premier depuis le boot) |
+| `heap_start` / `heap_end` / — | par recensement | enveloppe de **toutes** les régions vues, **pas nécessairement contiguë** (plusieurs tas peuvent porter le même masque) |
+| `free_block_count` / `used_block_count` | agrégat total | à comparer à `fb`/`ab` de `/get-system-info?hf=1` (masque `i8`) — **test de cohérence de l'instrument lui-même** |
+| `concordance` | dérivé | `"match"` / `"mismatch"` / `"undetermined"` — comparaison contre les planchers déjà échantillonnés (`floor_free_blocks`/`floor_used_blocks`), **aucun second `heap_caps_get_info()`** sur ce chemin (I2) |
+| `entries[].addr` / `.size` | par bloc | adresse et taille TLSF (en-tête compris) — **R2 : jamais d'octet de contenu** (S8) |
+| `entries[].alloc_size` | par bloc occupé | octets réellement demandés, ou sentinelle si canari non conforme |
+| `walk_us` / `max_walk_us` / `disabled` | instrument | voir C1/C4 ci-dessus, publiés y compris en erreur (un `410` muet ne dirait rien d'actionnable) |
+| `build.census` / `build.peek` | instrument | `1`/`0` — quel binaire répond, prouvable a posteriori depuis une seule réponse archivée (S12) |
+
+Détail exhaustif des champs, des codes d'erreur (`409`/`410`/`429`) et de la
+convention `used_to == 0 ⇒ fenêtre vide` (contre-intuitive) :
+[`API.md`](../API.md#recensement-du-tas-et-lecture-de-contenu-feature-128-adr-0081).
+
+### Zéro `systemLogger` dans tout le code neuf (S13)
+
+Aucun `#include "logger.h"` dans `heap_census.h`/`.cpp` ni
+`web_routes_heap.cpp` — **délibéré**. Tous les échecs (occupé, trop tôt,
+désactivé, budget épuisé, canari non conforme) se disent par un **code de
+retour** (énumération) côté firmware et un **code HTTP + champ JSON** côté
+route, jamais par un log. Motif : la fenêtre forensique du journal persistant
+tombe en **~27 requêtes** (`logger.h:50-51`, ADR-0073 — ne pas recalculer ce
+chiffre depuis un commentaire, le relire dans `logger.h`) ; une route de
+diagnostic ne doit jamais pouvoir la consommer (c'est exactement le défaut de
+`bug-112`, sur une route différente).
+
+⚠️ **Sans contradiction avec C4** (`pool-chemistry` demande un `WARN` +
+exposition de `censusMaxUs`/du drapeau de désactivation) : ce `WARN`, s'il est
+émis, est un **événement unique d'auto-désactivation posé côté loop**, hors de
+tout chemin de requête HTTP — S13 porte sur les chemins de **ce module**, pas
+sur un site d'émission externe qui n'en fait pas partie.
 
 ## Ring de télémétrie heap en RAM RTC noinit (v2.14.0, bug-heap-toctou A4)
 

@@ -4,12 +4,12 @@
     python3 tools/trace_fragmentation.py [répertoire]
 
 Lit les `sysinfo_*.json` produits par `capture-logs.sh` et rend la SÉRIE des
-quatre grandeurs qui décrivent l'état du tas interne 8 bits (masque 0x0804,
+cinq grandeurs qui décrivent l'état du tas interne 8 bits (masque 0x0804,
 celui sur lequel toutes les gardes du projet décident) :
 
-    libre · plus gros bloc · nombre de trous · blocs alloués
+    libre · plus gros bloc · nombre de trous · blocs alloués · octets alloués
 
-## Pourquoi ces quatre-là, et pas deux
+## Pourquoi ces cinq-là, et pas deux
 
 Le projet n'a longtemps lu que `libre` et `plus gros bloc`. Deux régimes très
 différents produisent pourtant le MÊME couple :
@@ -20,6 +20,17 @@ différents produisent pourtant le MÊME couple :
 `free_blocks` les sépare : `libre / trous` donne la taille MOYENNE d'un trou.
 Ces deux compteurs étaient calculés par `heap_caps_get_info()` depuis toujours,
 et jetés — v2.51.0 les publie (voir ADR-0077 et la note d'incident du 10/09).
+
+Le NOMBRE de blocs alloués (`ab`) ne dit pas s'ils PÈSENT plus lourd : deux
+régimes très différents produisent aussi le même compte —
+
+  · un jeu de travail légitimement plus gros (tampons plus grands, conservés) ;
+  · une fuite en octets, pas en nombre d'allocations.
+
+`total_allocated_bytes`, même sous-produit du même appel et jeté lui aussi
+jusque-là, tranche : feature-127 le publie (`a`, octets alloués), à comparer à
+`ab` (blocs alloués) — d'où le bloc « ÉCART » en fin de trace, qui met les deux
+côte à côte avec `libre`.
 
 ## Ce que le script ne fait pas
 
@@ -67,7 +78,14 @@ def _lire(chemin):
         "libre": valeur("f"),
         "bloc": valeur("b"),
         "trous": valeur("fb"),
-        "alloues": valeur("ab"),
+        # ⚠️ Renommé en interne (feature-127) : la clé JSON LUE reste `ab`,
+        # inchangée — seul le nom de la variable Python change, pour laisser
+        # la place à `octets_alloues` (clé JSON `a`) sans que deux colonnes du
+        # script ne portent le même nom « alloués ». `ab` est un compte de
+        # BLOCS, `a` un compte d'OCTETS : même distinction que côté firmware
+        # (lettre seule = octets, lettre + `b` = blocs).
+        "blocs_alloues": valeur("ab"),
+        "octets_alloues": valeur("a"),
         "min_libre": valeur("mf"),
         "min_bloc": valeur("mb"),
         "walk_max": (hf or {}).get("wmax"),
@@ -113,19 +131,20 @@ def main():
         return 1
 
     print()
-    print("  %-22s %-8s %5s │ %8s %8s %6s %6s │ %8s %8s"
-          % ("capture", "version", "h", "libre", "bloc", "trous", "alloués",
-             "min libre", "min bloc"))
-    print("  " + "─" * 104)
+    entete_fmt = "  %-22s %-8s %5s │ %8s %8s %6s %6s %8s │ %8s %8s"
+    entete = entete_fmt % ("capture", "version", "h", "libre", "bloc", "trous",
+                           "b.allo.", "o.allo.", "min libre", "min bloc")
+    print(entete)
+    print("  " + "─" * (len(entete) - 2))
 
     precedent = None
     for r in avec_hf:
         moyen = (r["libre"] / r["trous"]) if (r["libre"] and r["trous"]) else None
-        ligne = ("  %-22s %-8s %5s │ %8s %8s %6s %6s │ %8s %8s"
+        ligne = (entete_fmt
                  % (r["fichier"].replace("sysinfo_", "").replace(".json", ""),
                     r["version"] or "—", _heures(r["uptime"]),
-                    r["libre"], r["bloc"], r["trous"], r["alloues"],
-                    r["min_libre"], r["min_bloc"]))
+                    r["libre"], r["bloc"], r["trous"], r["blocs_alloues"],
+                    r["octets_alloues"], r["min_libre"], r["min_bloc"]))
         print(ligne)
         # Une reprise d'uptime signale un REDÉMARRAGE : la série repart de zéro
         # et comparer de part et d'autre n'a aucun sens.
@@ -147,8 +166,14 @@ def main():
     if premier is not dernier:
         print()
         print("ÉCART ENTRE LA PREMIÈRE ET LA DERNIÈRE CAPTURE")
-        for libelle, cle in (("libre", "libre"), ("plus gros bloc", "bloc"),
-                             ("trous libres", "trous"), ("blocs alloués", "alloues")):
+        # `libre` et `octets alloués` sont côte à côte À DESSEIN (feature-127) :
+        # c'est la comparaison qui tranche. Si le libre perdu se retrouve en
+        # alloué (à peu près, aux métadonnées de l'allocateur près), c'est un
+        # jeu de travail plus gros ; s'il ne s'y retrouve pas, l'écart est
+        # inexpliqué et mérite d'être creusé.
+        for libelle, cle in (("libre", "libre"), ("octets alloués", "octets_alloues"),
+                             ("plus gros bloc", "bloc"), ("trous libres", "trous"),
+                             ("blocs alloués", "blocs_alloues")):
             a, b = premier[cle], dernier[cle]
             if a and b:
                 print("  %-16s %8d → %8d   %+7d  (%+.0f %%)"

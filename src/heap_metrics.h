@@ -83,16 +83,32 @@
  * distingue un morcellement modéré (peu de gros trous) d'une pulvérisation par
  * un cycle allouer/libérer fréquent (beaucoup de petits).
  *
+ * `allocatedBytes` (feature-127, R1) : même sous-produit, DÉJÀ dans `info`
+ * (`total_allocated_bytes`) et jusqu'ici jeté lui aussi. C'est la seule
+ * grandeur qui distingue une fuite en octets (`allocatedBytes` qui monte sans
+ * redescendre) d'un jeu de travail plus gros (`allocatedBytes` qui oscille et
+ * revient) — le nombre de blocs seul ne tranchait pas (cf. la fenêtre du
+ * 12-13/09, où le nombre de blocs oscillait pendant que du libre ne revenait
+ * jamais).
+ *
  * Sans log, sans allocation, sans verrou pris par nous.
  */
 struct HeapProbe {
   uint32_t freeBytes;          // Libre total pour ces caps
   uint32_t largestBlockBytes;  // Plus gros bloc contigu, ou kOomProbeBlockUnknown
-  // Les deux champs suivants valent kOomProbeBlockCountUnknown (JAMAIS 0, ADR-0072)
+  // Les trois champs suivants valent kOomProbeBlockCountUnknown (JAMAIS 0, ADR-0072)
   // pour les masques à chemin O(régions) : `heap_caps_get_free_size()` ne les
   // calcule pas, et 0 s'y lirait comme « aucun trou », un mensonge favorable.
+  // La sentinelle suit la CAUSE de l'absence (chemin O(régions) sans info)
+  // commune aux trois, pas le type de chacun (blocs pour deux, octets pour le
+  // troisième) : `allocatedBytes` est un compte d'octets, mais y placer
+  // kOomProbeBlockUnknown (une valeur d'octets ATTEIGNABLE en PSRAM, cf.
+  // heap_metrics.h en tête de fichier) transformerait une mesure juste en
+  // valeur crédible mais fausse — d'où la même sentinelle que freeBlocks/
+  // allocatedBlocks, malgré l'unité différente.
   uint32_t freeBlocks;         // Nombre de blocs libres, ou kOomProbeBlockCountUnknown
   uint32_t allocatedBlocks;    // Nombre de blocs alloués, ou kOomProbeBlockCountUnknown
+  uint32_t allocatedBytes;     // Octets alloués (total_allocated_bytes), ou kOomProbeBlockCountUnknown
 };
 HeapProbe heapProbeForCaps(uint32_t caps);
 
@@ -238,6 +254,11 @@ constexpr uint8_t kHeapFloorSlotSpiram = 4;            // SPIRAM (A6)
  * `lastFree`/`lastLargest` — aucun plancher (min depuis-boot/fenêtre) n'est
  * tenu pour ces deux compteurs, ce lot n'en demande pas. Valent
  * `kOomProbeBlockCountUnknown` pour les masques à chemin O(régions).
+ *
+ * `lastAllocatedBytes` (feature-127, R1) : même discipline — DERNIER
+ * échantillon seulement, `kOomProbeBlockCountUnknown` pour les masques à
+ * chemin O(régions) (même cause que pour lastFreeBlocks/lastAllocatedBlocks,
+ * cf. HeapProbe::allocatedBytes ci-dessus).
  */
 struct HeapFloorEntry {
   uint32_t mask;
@@ -252,6 +273,7 @@ struct HeapFloorEntry {
   uint32_t samples;         // échantillons pris pour CE masque (tour de rôle)
   uint32_t lastFreeBlocks;      // Dernier nombre de blocs libres, ou kOomProbeBlockCountUnknown
   uint32_t lastAllocatedBlocks; // Dernier nombre de blocs alloués, ou kOomProbeBlockCountUnknown
+  uint32_t lastAllocatedBytes;  // Derniers octets alloués, ou kOomProbeBlockCountUnknown
 };
 
 /**

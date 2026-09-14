@@ -176,7 +176,7 @@ ouverte le 12/09 à ~13:19 UTC a produit 28 relevés exploitables entre 6,7 h et
 
 Relevés par `tools/trace_fragmentation.py` sur `/root/pool-captures`.
 
-### ✅ CERTAIN — ce n'est pas une fuite, c'est une pulvérisation
+### ✅ CERTAIN — la fragmentation, oui. 🔶 L'absence de fuite, NON
 
 | | 6,7 h | 29,2 h | écart |
 |---|---:|---:|---|
@@ -185,9 +185,37 @@ Relevés par `tools/trace_fragmentation.py` sur `/root/pool-captures`.
 | plus gros bloc | 23 540 | 7 924 | **−66 %** |
 | libre | 55 468 | 45 484 | −18 % |
 
-Les **blocs alloués sont plats**. Rien ne s'accumule sans être libéré : l'hypothèse
-d'une fuite est écartée par la mesure, pas par le raisonnement. Ce qui se dégrade
-est la *forme* du tas, pas son remplissage.
+⚠️ **CORRECTION du 13/09 au soir.** La premiere redaction de cette section
+concluait « les blocs alloues sont plats, donc pas de fuite ». **Ce raisonnement
+est trop court et la conclusion depassait la mesure.** Ce qui suit le remplace.
+
+**Ce qui est plat, c'est le NOMBRE de blocs**, pas les octets alloues. Le compte
+oscille entre 883 et 988 et revient a 908, avec **10 baisses sur 28 intervalles** :
+cela ecarte une fuite en *nombre d'allocations*, et rien de plus.
+
+**Mais le libre a perdu ~10 400 octets qui ne sont jamais revenus** (55 468 ->
+45 072 ; le maximum de la serie ne retrouve jamais sa valeur initiale). A nombre
+de blocs quasi identique, cela signifie que les blocs alloues pesent en moyenne
+**plus lourd** qu'au depart. Deux explications restent indiscernables :
+
+- un **jeu de travail plus gros** (tampons legitimement plus grands, conserves) ;
+- une **fuite en octets** plutot qu'en nombre d'allocations.
+
+**Pourquoi on ne peut pas trancher** : `total_allocated_bytes` **n'est pas publie**.
+Les champs exposes par masque sont `f`, `b`, `mf`, `mb`, `wf`, `wb`, `cf`, `cb`,
+`n`, `fb`, `ab`. `heap_caps_get_info()` calcule pourtant les octets alloues — et
+comme `fb`/`ab` avant le lot B, **cette valeur est calculee puis jetee**. C'est
+exactement le meme defaut de telemetrie, un champ plus loin.
+
+⚠️ **A FAIRE avant de reparler de fuite** : publier `total_allocated_bytes` par
+masque. Sans lui, toute affirmation sur l'absence de fuite est une opinion.
+
+**Un point rassure neanmoins** : la **PSRAM est plate** a **-320 octets sur
+22,5 h**. Si fuite il y a, elle n'est pas la.
+
+Ce qui est en revanche **etabli**, c'est que la *forme* du tas se degrade
+independamment de son remplissage — voir la section CLIQUET ci-dessous, qui est
+la preuve la plus forte du document.
 
 C'est exactement la grandeur que les deux hypothèses concurrentes du 10/09 ne
 permettaient pas de départager, et que `free_blocks` rendait enfin observable.
@@ -317,3 +345,124 @@ s'était installé sur v2.50.0. Série rendue par `tools/trace_fragmentation.py`
 
 ⚠️ Les heures de capture sont en **UTC** (conteneur), les horodatages du journal
 en **heure locale** (Europe/Paris, UTC+2 en été). Ne pas les comparer sans convertir.
+
+## Mise à jour — l'instrument existe (feature-127/128, [ADR-0081](../adr/0081-recensement-du-tas-et-non-livraison-de-la-lecture-de-contenu.md))
+
+**Ce document reste ouvert au point « CE QUE CETTE MESURE NE TRANCHE TOUJOURS
+PAS » ci-dessus.** Ce qui change : un recensement bloc par bloc
+(`GET/POST /debug/heap_census`) et une lecture de contenu ciblée
+(`GET/POST /debug/heap_peek`, build de diagnostic uniquement) sont désormais
+disponibles pour la **prochaine** fenêtre d'observation. Ni l'un ni l'autre
+n'a encore tourné en conditions réelles au moment où cette section est écrite
+— rien ci-dessous n'est une conclusion, c'est le **protocole** à suivre quand
+la prochaine fenêtre sera ouverte.
+
+### Champ `a` (feature-127) — à lire en même temps que `fb`/`ab`
+
+`GET /get-system-info?hf=1` publie désormais `a` (octets réellement alloués,
+`total_allocated_bytes`) à côté de `f`/`fb`/`ab`. C'est la mesure qui manquait
+pour trancher la question ouverte plus haut dans ce document (« un jeu de
+travail plus gros ou une fuite en octets ? ») : si `a` croît sur la fenêtre
+pendant que le **nombre** de blocs oscille sans tendance, la fuite en octets
+est établie ; si `a` suit `libre` en sens inverse à somme quasi constante,
+c'est un jeu de travail plus gros. `libre + a` reste stable à l'échelle du
+tas, aux métadonnées de l'allocateur près — c'est le calcul de contrôle.
+
+### Protocole de la prochaine fenêtre d'observation
+
+**Ce qui doit être capturé, en plus de ce que la fenêtre du 12-13/09 captait
+déjà** (`GET /get-system-info?hf=1` et `GET /download-logs`) :
+
+1. **Amorçage, une fois en tout début de fenêtre** : `POST /debug/heap_census`
+   **sans** `used_from`/`used_to` (fenêtre vide par construction, voir
+   `API.md`), puis `GET /debug/heap_census?kind=free` pour lire `heap_start`/
+   `heap_end` — l'enveloppe réelle du tas sur **cet** appareil, à ne pas
+   deviner.
+2. **À chaque cycle de capture ensuite** : `POST /debug/heap_census?used_from=<heap_start>&used_to=<heap_end>`
+   puis, après le délai de traitement par la loop (< 1 s, mais laisser au
+   moins `kHeapCensusMinIntervalMs` = 5 s entre le POST et le GET par
+   prudence), `GET /debug/heap_census?kind=used&offset=0&count=…` en
+   paginant jusqu'à `returned + offset == total` (`used_truncated`/`truncated`
+   à surveiller — un `true` signifie qu'il faut resserrer `used_from`/
+   `used_to` autour de la zone d'intérêt plutôt que tout demander d'un coup),
+   **et** `GET /debug/heap_census?kind=free` pour le top-N de blocs libres.
+3. **Cadence : encadrer la bande où les découpes ont eu lieu, pas la fenêtre
+   entière.** La mesure du 12-13/09 a situé les quatre marches entre **20,7 h
+   et 28,2 h** d'uptime. Reprendre le même principe de densification que la
+   fenêtre précédente (grossier hors bande, fin dans la bande) :
+   - **toutes les 2 h** de 0 à 18 h d'uptime (amorçage + régime stable) ;
+   - **toutes les 15-20 min** de 18 h à 30 h d'uptime — plus fin que les
+     30 min de la fenêtre précédente, parce que c'est un **recensement de
+     blocs individuels** qui est comparé cette fois, pas seulement un
+     agrégat : plus la fenêtre entre deux captures est courte, moins il y a
+     de candidats à départager dans l'étape d'appariement ci-dessous ;
+   - retour à 2 h au-delà de 30 h, jusqu'à la fin de fenêtre (40 h visée).
+
+### Comment apparier deux recensements pour désigner un bloc suspect
+
+1. Prendre le **top-N de blocs libres** (`kind=free`) d'une capture **avant**
+   une marche connue (ex. la capture à 20,7 h, dernière avant la 1ʳᵉ marche
+   du 13/09 — voir la table `### La série complète` plus haut).
+2. Prendre la **liste des blocs occupés** (`kind=used`, `used_from`/`used_to`
+   couvrant l'adresse du grand bloc libre identifié à l'étape 1) d'une
+   capture **après** la marche.
+3. **Un bloc occupé de l'étape 2 dont l'adresse tombe dans l'intervalle
+   `[addr, addr + size)` d'un bloc libre de l'étape 1 est un candidat** :
+   une allocation est apparue là où il n'y avait, à la capture précédente,
+   qu'un grand trou. C'est la signature recherchée — celle qu'aucun agrégat
+   (`fb`/`ab`/`a`) ne peut donner.
+4. **Corroborer, ne pas conclure sur un seul candidat.** Répéter sur les
+   quatre marches connues (7 168 / 1 536 / 4 608 / 2 304 o) ; un candidat
+   dont la `size` ne colle à aucune marche n'est probablement pas le bon
+   repère temporel, mais peut rester un candidat sur une autre marche.
+
+### Du bloc suspect à la lecture de contenu
+
+**Uniquement si un candidat crédible a été désigné par l'appariement
+ci-dessus** — R3 ne sert pas à explorer au hasard, elle sert à confirmer une
+hypothèse déjà formée par R2 :
+
+1. Reflasher (OTA ou USB) le **build de diagnostic** :
+   `PLATFORMIO_BUILD_FLAGS=-DPOOL_HEAP_PEEK=1 pio run -e esp32dev_core3`
+   (voir [ADR-0081](../adr/0081-recensement-du-tas-et-non-livraison-de-la-lecture-de-contenu.md)
+   pour le mécanisme de non-livraison que ce build contourne délibérément,
+   sous contrôle).
+2. `POST /debug/heap_peek?addr=<addr du candidat>&len=<jusqu'à 128>`, puis
+   `GET /debug/heap_peek`.
+3. Lire `ascii` : une chaîne de journal (horodatage `AAAA-MM-JJ HH:MM:SS`,
+   niveau `[INFO]`/`[WARN]`/…) désigne le `logger` sans ambiguïté. Un motif
+   binaire ou une structure C++ reconnaissable (ex. un en-tête de
+   `AsyncResponseStream`, un buffer WiFi) désigne autre chose — **dans les
+   deux cas, c'est une identification, pas encore une correction.**
+
+### Conditions d'exploitation, non négociables (S11/S12, `security-reviewer`)
+
+Reprises intégralement de la spec [`feature-128`](../../specs/features/done/feature-128-recensement-du-tas-et-identification-des-intrus.md#conditions-dexploitation-s11s12-security-reviewer--ce-sont-des-consignes-humaines-rien-ne-les-verifie-a-la-place-de-lopérant) —
+**rien dans le firmware ni dans la CI ne les vérifie à la place de l'opérant** :
+
+- **S11 — aucune sortie de `/debug/heap_peek` (hex/ASCII) n'est versionnée.**
+  Toute mise à jour de ce document qui exploite une lecture de contenu doit
+  citer **adresse, taille, identification** — **jamais le contenu lu**. Les
+  captures brutes vivent hors du dépôt.
+- **S12 — reflash d'un binaire de release après la fenêtre, preuve
+  consignée ici.** `GET /debug/heap_census` → `"build":{"peek":0}` (ou `404`
+  sur `GET /debug/heap_peek`), à coller dans ce document à la clôture de la
+  fenêtre — pas seulement exécuté, **écrit**.
+
+### Ce que le script de capture externe doit devenir
+
+`/root/pool-captures/capture-logs.sh` (hors dépôt, cron 04:00 et 05:30 UTC)
+n'est **pas modifié par ce lot**. Pour servir le protocole ci-dessus, il
+devra, en plus de ce qu'il fait déjà (`GET /get-system-info?hf=1`,
+`GET /download-logs`) :
+
+- ajouter les deux requêtes `heap_census` (`POST` puis `GET`, `kind=free` et
+  `kind=used`) à chaque cycle de capture, avec la cadence densifiée décrite
+  ci-dessus (statique — le script n'a pas besoin de connaître l'uptime pour
+  décider de sa propre fréquence, c'est la planification cron qui densifie) ;
+- **ne jamais appeler `/debug/heap_peek`** — cette route n'existe que sur un
+  build de diagnostic reflashé à la main pour une désignation précise, jamais
+  en capture automatisée (S11 : aucune sortie de contenu ne doit être écrite
+  sur disque sans revue humaine avant tout archivage) ;
+- conserver la séparation déjà en place : lecture seule sur l'appareil,
+  aucune écriture, aucun redémarrement.

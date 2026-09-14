@@ -1,7 +1,7 @@
 ---
 description: Publie une release firmware + documentation (tag, PDF, binaire, GitHub)
 argument-hint: [vX.Y.Z] [résumé des changements]
-allowed-tools: Bash(git status:*), Bash(git fetch:*), Bash(git rev-parse:*), Bash(git rev-list:*), Bash(git tag:*), Bash(git push:*), Bash(git log:*), Bash(pio run:*), Bash(gh auth status:*), Bash(gh release create:*), Bash(gh release view:*), Bash(./scripts/build-docs.sh:*), Bash(ls:*), Bash(grep:*), Read
+allowed-tools: Bash(git status:*), Bash(git fetch:*), Bash(git rev-parse:*), Bash(git rev-list:*), Bash(git tag:*), Bash(git push:*), Bash(git log:*), Bash(pio run:*), Bash(gh auth status:*), Bash(gh release create:*), Bash(gh release view:*), Bash(./scripts/build-docs.sh:*), Bash(./tools/check_release_artefacts.sh:*), Bash(ls:*), Bash(grep:*), Read
 ---
 
 Publie une release **firmware + documentation** pour ce projet.
@@ -44,6 +44,34 @@ lance aucun `pio pkg install` / `uninstall` ici — la commande réécrit
 
 Si la compilation échoue, arrête et montre l'erreur. Relève au passage la ligne
 `Flash:` pour l'inclure dans les notes.
+
+### 2bis. Non-livraison de R3 (feature-128, S1/ADR-0081) — sur l'ARTEFACT
+
+`/debug/heap_peek` (lecture de contenu du tas) ne doit **jamais** exister dans
+un binaire de release. Le mécanisme repose sur l'absence de `POOL_HEAP_PEEK`
+dans tout fichier versionné (`./tools/check_no_peek_flag.sh`, job CI dédié) —
+mais **ça ne prouve pas l'artefact** : `pio run` à l'étape précédente compile
+**localement**, dans l'environnement de *cet appel*, pas dans celui de la CI.
+Une variable `PLATFORMIO_BUILD_FLAGS` résiduelle du shell qui exécute cette
+commande publierait R3 sans qu'aucun fichier du dépôt n'ait changé.
+
+    ./tools/check_release_artefacts.sh
+
+⚠️ **Une instruction « arrête » en prose ici ne serait pas une garantie** —
+rien ne forcerait l'exécutant à s'arrêter. C'est pourquoi ce contrôle est un
+**script à code de sortie**, pas un paragraphe : si la commande sort en erreur
+(code non nul), **arrête** — n'exécute **aucune** étape suivante, et montre la
+sortie du script telle quelle (elle indique déjà la cause et la marche à
+suivre : `PLATFORMIO_BUILD_FLAGS` résiduel, archive périmée, etc.).
+
+Le script vérifie, dans l'ordre : (1) `/debug/heap_peek` absente du `.bin` ET
+de l'`.elf` fraîchement compilés (`grep -a -c` sur `.rodata` — pas `nm`, qui
+peut rendre un faux négatif sous `-Os` si la route s'inline) ; (2) que l'ELF
+archivé qui sera **réellement attaché à l'étape 6** est une copie binaire
+identique (`cmp`) de celui vérifié en (1) — sélectionné par **nom**
+(horodatage en tête, `sort -r`), jamais par date de modification
+(`archive_build.py` documente pourquoi `shutil.copy2` rend `ls -t` non fiable
+ici : la mtime copiée est celle de la SOURCE).
 
 ### 3. Documentation
 
@@ -95,9 +123,14 @@ d'une version voisine ne fera pas l'affaire.
 
     ls builds/<version sans le v>/esp32dev_core3/*.elf   # archivé par le hook post-build
 
-Prends le plus récent et renomme-le `firmware-<version>.elf`. Il pèse ~29 Mo,
-c'est normal (symboles de débogage) et c'est le prix d'un diagnostic possible.
-Le projet a déjà perdu un coredump de production faute de cet ELF.
+Prends le plus récent **trié par nom** (l'horodatage `AAAAMMJJ_HHMMSS` est en
+tête du nom de fichier), **jamais par date de modification** (`ls -t`) — c'est
+exactement le fichier que `tools/check_release_artefacts.sh` a déjà identifié
+et vérifié à l'étape 2bis (sa dernière ligne l'affiche) : réutilise-le tel
+quel plutôt que d'en resélectionner un autre. Renomme-le `firmware-<version>.elf`.
+Il pèse ~29 Mo, c'est normal (symboles de débogage) et c'est le prix d'un
+diagnostic possible. Le projet a déjà perdu un coredump de production faute de
+cet ELF.
 
 Rassemble les PDF de `docs/user/` (ils portent le numéro de version dans leur
 nom, ex. `guide-d-utilisation-v2.42.pdf`).

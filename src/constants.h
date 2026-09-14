@@ -590,6 +590,75 @@ static_assert(1000UL * kHeapFloorWalksPerSample <=
 // qui suit la rafale.
 constexpr uint32_t kMqttDiscoveryCtxWindowMs = 60000;
 
+// ----------------------------------------------------------------------------
+// Recensement du tas + lecture de contenu (feature-128, R2/R3) — INSTRUMENTATION
+// STRICTEMENT À LA DEMANDE, JAMAIS PÉRIODIQUE
+// ----------------------------------------------------------------------------
+// `heap_caps_walk()` bloc par bloc (adresse + taille + occupé/libre), pour
+// isoler ce qui découpe le grand bloc contigu (incident 2026-09-10). R2
+// (recensement, adresses + tailles) est compilé inconditionnellement ; R3
+// (lecture de contenu) est sous compilation conditionnelle POOL_HEAP_PEEK
+// (heap_census.h) — non livré dans un binaire de release (ADR-0081).
+//
+// COÛT APÉRIODIQUE — comptabilité du gate pool-chemistry (condition C3) :
+// aucun de ces parcours ne s'ajoute à kHeapFloorWalksPerSample (périodique,
+// 0,75 parcours/s en moyenne après la condition 5 du gate ci-dessus). Le
+// plafond posé par pool-chemistry pour CE lot est 0,2 parcours/s AJOUTÉS, soit
+// EXACTEMENT 1 / (kHeapCensusMinIntervalMs / 1000). Décision du firmware-
+// developer : R2 et R3 parcourent le même tas, au même coût O(blocs) — ils
+// PARTAGENT donc le même horodatage de dernier parcours (heap_census.cpp),
+// de sorte que le plafond ajouté reste 0,2 parcours/s au total, jamais 0,4
+// (0,2 + 0,2) si les deux étaient sollicités en alternance. L'invariant
+// « ≤ 1 parcours O(blocs)/s » reste donc lisible ET vrai en incluant ce lot :
+// 0,75/s (périodique) + 0,2/s (plafond de ce lot, pas une moyenne) < 1/s.
+constexpr uint8_t kHeapCensusMaxFreeBlocks = 24;    // Top-N approché des blocs libres — ~192 o .bss (24 x 8 o)
+constexpr uint8_t kHeapCensusMaxUsedBlocks = 96;    // Blocs occupés dans la fenêtre demandée — ~1152 o .bss (96 x 12 o)
+constexpr uint8_t kHeapCensusPageEntries = 24;      // Pagination du GET (route, hors périmètre de ce module)
+// uint32_t (et non `unsigned long`, idiome kMqttDiscoveryCtxWindowMs ci-dessus) :
+// consommées TELLES QUELLES par les prédicats purs uint32_t de
+// heap_census_logic.h, sans cast au site d'appel.
+constexpr uint32_t kHeapCensusMinIntervalMs = 5000;  // 5s - plancher PARTAGÉ recensement+lecture (S9, C3)
+constexpr uint32_t kHeapCensusStaleMs = 300000;      // 5 min - au-delà : instantané périmé (GET -> 410)
+static_assert(kHeapCensusMinIntervalMs >= 5000u,
+              "Plafond pool-chemistry (condition C3) : au plus 0,2 parcours O(blocs) "
+              "AJOUTE par seconde, PARTAGE entre le recensement (R2) et la lecture "
+              "(R3) puisqu'ils cotent le meme O(blocs). Descendre sous 5000 ms "
+              "depasserait le plafond approuve par le gate.");
+
+// C1 (gate pool-chemistry, BLOQUANT) : chronométrage esp_timer_get_time()
+// (JAMAIS le compteur de cycles CCOUNT — sans objet ici, la durée mesurée est
+// locale à UN appel de heapCensusServiceLoop(), aucune migration de coeur entre
+// deux lectures à corriger). Auto-désactivation DÉFINITIVE au-delà de ce
+// plafond, sur le patron de oom_guard.cpp:408-418
+// (heapIntegrityAdmitNextRun -> sProbeDisabled.store(true)).
+// MOTIF : la base est MOUVANTE — `wmax` (parcours de référence 0x0804,
+// heap_caps_logic.h) valait 516 µs au pire en v2.49.0 (commentaire ci-dessus)
+// et 711 µs six jours plus tard (+38 %). L'instrument doit se couper
+// lui-même plutôt que se fier à une estimation périmée.
+constexpr uint32_t kHeapCensusMaxDurationUs = 1500;  // 1,5 ms - au-delà : DÉSACTIVÉ définitivement (R2 ET R3)
+
+// ADR-0072 : sentinelle « non renseigné », jamais une valeur inventée. Publiée
+// quand le canari du poisoning léger n'est pas conforme (bloc corrompu, ou
+// CONFIG_HEAP_POISONING_LIGHT absent d'un futur build — voir le #error de
+// heap_census.cpp).
+constexpr uint32_t kHeapCensusAllocSizeUnknown = 0xFFFFFFFFu;
+
+// Poisoning léger (CONFIG_HEAP_POISONING_LIGHT, épinglé par #error dans
+// heap_census.cpp, idiome de heap_metrics.cpp:20-23) : chaque bloc OCCUPÉ
+// commence par poison_head_t {uint32_t canary; size_t alloc_size;} = 8 o, le
+// pointeur utilisateur se trouvant à ptr + kHeapPoisonHeadBytes.
+// `kHeapPoisonCanaryValue` : valeur ABI de multi_heap_poisoning.c (constatée
+// dans .rodata de l'objet compilé, désassemblage indépendant) — sert à
+// valider structurellement un bloc avant tout déréférencement de contenu (S4).
+constexpr uint32_t kHeapPoisonHeadBytes = 8;
+constexpr uint32_t kHeapPoisonCanaryValue = 0xABBA1234u;
+
+// R3 (lecture de contenu) — sous POOL_HEAP_PEEK, non livré en production
+// (ADR-0081). Ces constantes existent inconditionnellement (coût nul, ce sont
+// des entiers) : seul le CODE qui les consomme est conditionnel.
+constexpr uint32_t kHeapPeekMaxBytes = 128;          // Longueur max par requête
+constexpr uint32_t kHeapPeekMaxBytesPerBoot = 8192;  // Budget CUMULÉ depuis le boot ; épuisé -> refus jusqu'au reboot
+
 // ============================================================================
 // PARACHUTE OOM GLOBAL (bug-oom-accept-http-durcissement, crash du 11/08/2026)
 // ============================================================================

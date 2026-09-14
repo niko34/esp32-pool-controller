@@ -1296,6 +1296,43 @@ static void putHeapBlockCountOrNull(JsonObject o, const char* key, uint32_t coun
   o[key] = count;
 }
 
+// Champ d'OCTETS ALLOUÉS (feature-127, R1) : QUATRIÈME helper, distinct des
+// trois précédents — aucun ne convient, et c'est le même raisonnement que
+// pour `putHeapBlockCountOrNull` ci-dessus, appliqué une case plus loin :
+//   - PAS `putHeapFreeOrNull` (sentinelle `kHeapFloorEmpty`) : cette sentinelle
+//     signifie « aucun échantillon pour ce PLANCHER » — or `a` (comme `fb`/`ab`)
+//     ne tient aucun plancher, seulement un dernier relevé ;
+//   - PAS `putHeapBlockOrNull` (sentinelle `kOomProbeBlockUnknown`,
+//     4 194 240) : DANGEREUX ici précisément parce que `a` est, comme cette
+//     sentinelle, une grandeur en OCTETS. 4 194 240 o est une valeur de LIBRE
+//     PSRAM parfaitement atteignable (cf. le commentaire en tête de fichier) :
+//     l'utiliser transformerait une mesure juste en `null` — la collision
+//     ADR-0072 que ce fichier documente déjà pour `b`/`mb`/`wb`.
+// Le test ci-dessous compare donc `count` à `kOomProbeBlockCountUnknown`, la
+// sentinelle des COMPTES DE BLOCS, alors que cette fonction publie des OCTETS.
+// Ce n'est PAS une commodité de copier-coller : `a`, `fb` et `ab` sont
+// simultanément absents pour l'UNIQUE ET MÊME cause, la branche O(régions)
+// (`heapMaskSelectsHeap` sur `def`/`spi`) qui ne remplit AUCUN des trois — ni
+// leur nombre, ni leur poids en octets, `heap_caps_get_free_size()` ne les
+// calcule pas. La sentinelle suit donc la CAUSE de l'absence (chemin
+// O(régions) sans info), pas le TYPE de la grandeur publiée (octets ici,
+// blocs pour `fb`/`ab`) : réutiliser la sentinelle des comptes pour un champ
+// d'octets est correct aujourd'hui pour cette raison précise, et resterait
+// correct pour tout champ futur né du même chemin O(régions) — mais deviendrait
+// faux le jour où `a` pourrait être `kOomProbeBlockCountUnknown` pour une
+// cause DIFFÉRENTE de celle des comptes, d'où ce commentaire plutôt qu'un
+// simple renvoi à `putHeapBlockCountOrNull`.
+// Pas de `kOomProbeBytesUnknown` : une 3e constante numériquement identique
+// à 0xFFFFFFFF ne discriminerait rien de plus, elle multiplierait seulement
+// le risque qu'un grep futur atteigne la mauvaise sentinelle par son nom.
+static void putHeapAllocatedBytesOrNull(JsonObject o, const char* key, uint32_t bytes) {
+  if (bytes == kOomProbeBlockCountUnknown) {
+    o[key] = nullptr;
+    return;
+  }
+  o[key] = bytes;
+}
+
 // Un emplacement de plancher : dernier échantillon, planchers depuis-boot et de
 // fenêtre, contextes au creux, et nombre d'échantillons pris pour CE masque
 // (il diffère d'un masque à l'autre : le tour de rôle n'en mesure qu'un par tick).
@@ -1322,6 +1359,13 @@ static void putHeapFloorEntry(JsonObject parent, const char* key, const HeapFloo
   // plancher tenu pour ces deux compteurs.
   putHeapBlockCountOrNull(o, "fb", e.lastFreeBlocks);
   putHeapBlockCountOrNull(o, "ab", e.lastAllocatedBlocks);
+  // feature-127 (R1) : octets alloués, sous-produit du même
+  // heap_caps_get_info() que fb/ab (aucun parcours de tas supplémentaire).
+  // Clé `a` : lettre seule = octets (comme `f`), lettre + `b` = blocs (comme
+  // `fb`/`ab`) — `a` ferme cette symétrie implicite. `tab` était écarté
+  // (contient « ab », la collision de lecture même qu'on évite) ainsi que
+  // `ba` (se lirait « blocs alloués »).
+  putHeapAllocatedBytesOrNull(o, "a", e.lastAllocatedBytes);
 }
 
 // Verdict TRI-ÉTAT d'un témoin de bascule PSRAM (A7, cf. kHeapWitness*) :
@@ -1345,8 +1389,9 @@ static void handleGetSystemInfo(AsyncWebServerRequest* request) {
   REQUIRE_AUTH(request, RouteProtection::WRITE);
 
   // 36 champs plats (version, chip, mémoire, WiFi, uptime), plus l'objet `hf`
-  // (lot B2 fragmentation : 66 champs, 5 × 11 + 11 — feature-122 A4 en comptait
-  // 56, 5 × 9 + 11, avant l'ajout de `fb`/`ab`) UNIQUEMENT si `?hf=1`.
+  // (feature-127 R1 : 71 champs, 5 × 12 + 11 — lot B2 fragmentation en comptait
+  // 66, 5 × 11 + 11, avant l'ajout de `a` ; feature-122 A4 en comptait 56,
+  // 5 × 9 + 11, avant `fb`/`ab`) UNIQUEMENT si `?hf=1`.
   // DEUX charges utiles, RE-MESURÉES pour ce lot (méthode : `measureJson()` sur
   // un `JsonDocument` hôte reproduisant fidèlement le comportement RÉEL des
   // helpers `putHeap*OrNull` — en particulier `b`/`mb`/`wb`/`fb`/`ab` = `null`
@@ -1359,25 +1404,23 @@ static void handleGetSystemInfo(AsyncWebServerRequest* request) {
   //   sans `?hf=1` : **964 o** — INCHANGÉ À L'OCTET PRÈS par ce lot (aucune ligne
   //                  touchée hors du bloc `hf` ; non re-mesuré depuis zéro,
   //                  invariant garanti par construction, pas par nouvelle mesure)
-  //   avec `?hf=1` : **≈1 876 o** (dont **906 o** pour l'objet `hf` seul, mesuré
+  //   avec `?hf=1` : **≈1 939 o** (dont **969 o** pour l'objet `hf` seul, mesuré
   //                  directement ; +5 o pour la clé `"hf":` et +1 o pour la
   //                  virgule d'insertion dans le document parent — arithmétique
   //                  exacte du sérialiseur compact, pas une extrapolation) —
-  //                  RE-MESURÉ pour le lot B2 (fragmentation, `fb`/`ab`) :
-  //                  ces deux clés ajoutent **+136 o** pire cas à `hf` seul
-  //                  (mesuré par différence directe : objet `hf` avec vs sans
-  //                  `fb`/`ab`, toutes autres valeurs inchangées — 3 masques
-  //                  sur 5 rendent un nombre à 10 chiffres pour les deux
-  //                  champs, 2 masques (`def`/`spi`) rendent `null` pour les
-  //                  deux, conformément à `kOomProbeBlockCountUnknown`).
-  //                  Chiffre antérieur (v2.49.1, 1 741 o dont 777 pour `hf`) NON
-  //                  RECOPIÉ : une reproduction fidèle du comportement `null`
-  //                  réel des masques `def`/`spi` donne ~770 o pour `hf` seul à
-  //                  cette date-là (proche du 774 « mesure directe » déjà cité
-  //                  ici comme correctif du 777 dérivé — écart résiduel de
-  //                  quelques octets non résolu, sans incidence sur le delta
-  //                  fb/ab ci-dessus qui est, lui, une DIFFÉRENCE directe entre
-  //                  deux mesures identiques par ailleurs).
+  //                  RE-MESURÉ pour feature-127 (R1, ajout de `a`) : ce champ
+  //                  ajoute **+63 o** pire cas à `hf` seul (mesuré par différence
+  //                  directe : objet `hf` avec vs sans `a`, toutes autres valeurs
+  //                  inchangées, sur un harnais natif hors dépôt reproduisant
+  //                  `putHeapFloorEntry`/`putHeap*OrNull` champ par champ — 3
+  //                  masques sur 5 rendent un nombre à 10 chiffres pour `a`, 2
+  //                  masques (`def`/`spi`) rendent `null`, conformément à
+  //                  `kOomProbeBlockCountUnknown`). Chiffre antérieur du lot B2
+  //                  (906 o pour `hf` seul, `fb`/`ab` compris) NON RECOPIÉ : il a
+  //                  servi de POINT DE DÉPART au même harnais re-exécuté pour ce
+  //                  lot, qui restitue exactement 906 o avant `a` — cohérence
+  //                  vérifiée, pas simple confiance dans le chiffre précédent —
+  //                  puis 969 o après, soit le delta +63 o ci-dessus.
   // L'estimation d'architecture annonçait +170 o : elle chiffrait 12 nombres
   // (`dma`/`gen`/`def`/`spi` réduits au libre et à un plancher), alors que le
   // livrable A4a en exige 53 — les DEUX planchers (depuis-boot ET fenêtre) et

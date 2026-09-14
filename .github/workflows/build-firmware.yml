@@ -85,6 +85,24 @@ jobs:
       - name: Compiler le firmware (pio run -e esp32dev_core3)
         run: pio run -e esp32dev_core3
 
+      # Gate — feature-128 (S2, défense en profondeur) : la CI ne compile JAMAIS
+      # avec PLATFORMIO_BUILD_FLAGS (aucune variable de ce nom n'est exportée
+      # dans ce job), donc ce `.bin` DOIT être la forme de production. Ce
+      # contrôle porte sur l'ARTEFACT — indépendamment de tout motif textuel
+      # cherché par check_no_peek_flag.sh (job « hygiène du dépôt », qui lui ne
+      # voit que l'arbre) — mais il ne couvre QUE cette CI : l'artefact publié
+      # par `/release` est compilé LOCALEMENT, dans l'environnement de
+      # l'appelant, et reste vérifié séparément par
+      # tools/check_release_artefacts.sh (S1, .claude/commands/release.md).
+      - name: R3 (/debug/heap_peek) absente du binaire compilé (S2, défense en profondeur)
+        run: |
+          count=$(grep -a -c '/debug/heap_peek' .pio/build/esp32dev_core3/firmware.bin || true)
+          echo "grep -a -c '/debug/heap_peek' firmware.bin -> ${count:-0}"
+          if [ "${count:-0}" -ge 1 ]; then
+            echo "ERREUR : /debug/heap_peek présent dans le binaire compilé par cette CI." >&2
+            exit 1
+          fi
+
       # Sections du binaire, pour l'historique des runs : c'est la mesure qui sert de
       # preuve d'équivalence lors d'un retrait de code mort (méthode ADR-0069).
       # Jamais bloquant : le chemin de la toolchain peut changer d'une version à l'autre.

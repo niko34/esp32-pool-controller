@@ -1427,6 +1427,39 @@ le pool que cette route sert à diagnostiquer) :
 | `cf` / `cb` | `uint8` | bits de **contexte au creux** de `mf` / `mb` (voir table ci-dessous) |
 | `n` | `uint32` | échantillons pris pour **ce** masque (diffère d'un masque à l'autre : tour de rôle — `dma` et `i8d` sont visités **un échantillon sur quatre** depuis la v2.49.1, soit **une résolution de 8 s**) |
 | `fb` / `ab` | `uint32` \| `null` | (v2.51.0, lot B2) **nombre de blocs libres / alloués** au **dernier échantillon** — pas un plancher, **aucun minimum** n'est tenu pour ces deux compteurs. `f / fb` donne la taille **moyenne** d'un trou : la grandeur qui manquait pour distinguer, à `f` constant, un morcellement modéré (peu de gros trous) d'une pulvérisation (beaucoup de petits) |
+| `a` | `uint32` \| `null` | (feature-127, R1) **octets réellement alloués** (`total_allocated_bytes`) au **dernier échantillon** — même discipline que `fb`/`ab` : instantané, aucun plancher tenu, sous-produit du **même** `heap_caps_get_info()` (aucun parcours de tas supplémentaire). `null` pour `def`/`spi`, même cause O(régions) que `fb`/`ab` |
+
+> ⚠️ **Convention de nommage des clés `hf.<masque>.*`** : **lettre seule = un
+> compte d'OCTETS** (`f`, `a`) ; **lettre + `b` = un compte de BLOCS** (`fb`,
+> `ab`). `a` a été choisi pour fermer cette symétrie implicite (jusque-là
+> seulement entre `f`/libre et `fb`/blocs-libres). Tout champ futur de `hf` doit
+> respecter cette règle. Détail : [`docs/subsystems/system-health.md`](subsystems/system-health.md#ce-qui-est-retenu-par-emplacement).
+
+**Pourquoi `a` existe** : la fenêtre de mesure du 12-13/09/2026 a montré qu'à
+**nombre** de blocs quasi constant (883 → 907 sur 28 relevés, oscillant), le
+**libre** a perdu ~10 400 o qui ne sont jamais revenus — signe que les blocs
+alloués pèsent en moyenne **plus lourd** qu'au départ, sans pouvoir dire si
+c'est un jeu de travail légitimement plus gros ou une fuite en octets.
+`total_allocated_bytes` était déjà calculé par `heap_caps_get_info()` et jeté,
+exactement le défaut que le lot B2 avait corrigé un champ plus loin (`fb`/`ab`).
+`libre + alloué` reste stable à l'échelle du tas, aux métadonnées de
+l'allocateur près : c'est le calcul de contrôle de toute lecture de `a`. Voir
+[`docs/incidents/2026-09-10-recidive-fragmentation-v2500.md`](incidents/2026-09-10-recidive-fragmentation-v2500.md).
+
+**Budget JSON, MESURÉ** (2026-09-14, `measureJson()` par différence directe,
+objet `hf` avec vs sans `a`, toutes les autres valeurs inchangées) : le champ
+`a` ajoute **+63 o** pire cas à `hf` seul (3 masques sur 5 rendent un nombre à
+10 chiffres, 2 masques `def`/`spi` rendent `null`). Sans `?hf=1` : **964 o**,
+**inchangé à l'octet près** par cet ajout (aucune ligne touchée hors du bloc
+`hf`). ⚠️ Le chiffre antérieur du lot B2 (906 o pour `hf` seul, `fb`/`ab`
+compris) n'a pas été recopié : le même harnais a été ré-exécuté pour ce lot et
+restitue 906 o avant `a`, 969 o après — le delta mesuré est donc **+63 o**, pas
+une estimation (ADR-0073).
+
+**Compatibilité** : la clé **`a`** est **absente d'un firmware ≤ 2.51.0** —
+même traitement que `fb`/`ab` : un client doit lire son absence comme
+« information indisponible », à ne pas confondre avec un `null` de masque
+`def`/`spi` (mesurée, et le masque ne peut pas la rendre).
 
 Champs de tête :
 
@@ -1486,6 +1519,7 @@ aucune décision du firmware ne les relit :
 | **Aucune mesure** | n'importe lequel | ce plancher n'a pas encore d'échantillon (`n = 0`, ou masque jamais visité par le tour de rôle) |
 | **Masque incapable de rendre un bloc** | `b`, `mb`, `wb` de `def` et `spi` **uniquement** | ces masques prennent la branche O(régions) : leur « plus gros bloc » n'est **pas mesuré**. Il ne vaut **jamais** `0`, et jamais 4 194 240 — la sentinelle interne n'est pas publiée |
 | **Masque incapable de rendre un nombre de blocs** (v2.51.0) | `fb`, `ab` de `def` et `spi` **uniquement** | même branche O(régions) que ci-dessus, mais **sentinelle distincte** : `heap_caps_get_free_size()` ne calcule aucun compte de blocs. La sentinelle interne (`kOomProbeBlockCountUnknown` = `0xFFFFFFFF`) n'est **jamais** publiée telle quelle et ne vaut **jamais** `0` non plus — un `0` se lirait comme « aucun trou », un mensonge favorable |
+| **Masque incapable de rendre des octets alloués** (feature-127) | `a` de `def` et `spi` **uniquement** | même branche O(régions), même sentinelle que `fb`/`ab` (elle marque la cause — le chemin O(régions) — pas le type de grandeur publiée) |
 | **Aucun verdict de témoin** | `w96`, `w95`, `wdis` | pas de PSRAM, `malloc()` refusé, ou témoin jamais exécuté. Un `false` y serait un verdict inventé |
 
 > ⚠️ **`ctx` est une FENÊTRE, `ctxb` est un CUMUL DEPUIS LE DÉMARRAGE — et la
@@ -1534,6 +1568,8 @@ aucune décision du firmware ne les relit :
   ≤ 2.50.0** : même traitement, « information indisponible » — ne pas les
   confondre avec un `null` de masque `def`/`spi`, qui, lui, signifie « mesurée,
   et le masque ne peut pas la rendre ».
+  La clé **`a`** (feature-127) est **absente d'un firmware ≤ 2.51.0** : même
+  traitement que `fb`/`ab`.
 - **Protocole de relevé** (quoi déclencher, dans quel ordre, comment lire chaque
   champ, et les deux réserves de lecture) :
   [subsystems/system-health.md](subsystems/system-health.md#protocole-de-relevé-sur-cible).
@@ -2921,6 +2957,294 @@ curl -X POST http://poolcontroller.local/debug/sensor_trace_clear
 ```json
 { "success": true }
 ```
+
+---
+
+## Recensement du tas et lecture de contenu (feature-128, [ADR-0081](adr/0081-recensement-du-tas-et-non-livraison-de-la-lecture-de-contenu.md))
+
+Instrumentation de diagnostic née de l'incident
+[`2026-09-10-recidive-fragmentation-v2500.md`](incidents/2026-09-10-recidive-fragmentation-v2500.md) :
+la fenêtre du 12-13/09 a établi **que** le plus gros bloc contigu du tas
+s'effondre en quatre marches discrètes, sans établir **qui** fait ces
+découpes. `heap_caps_walk()` recense le tas interne 8 bits **bloc par bloc**
+(adresse, taille, occupé/libre) et permet de lire le **contenu** d'un bloc
+désigné — une `String` de journal se lit alors directement en clair, ce
+qu'aucun agrégat (`/get-system-info?hf=1`) ne peut donner.
+
+⚠️ **Ces quatre routes sont les premières `/debug/*` de ce dépôt à exiger
+`RouteProtection::CRITICAL` ET à refuser explicitement 403 en mode
+`auth_enabled = false`.** Toutes les autres routes `/debug/*` documentées
+ci-dessus sont **sans authentification** « par cohérence avec les routes
+voisines » — une convention héritée qui n'a jamais été remise en cause parce
+qu'aucune ne lit la mémoire du processus. `src/web_routes_heap.cpp` porte
+donc une convention **délibérément inverse**, écrite en tête de fichier :
+chaque handler commence par
+
+```cpp
+if (!authManager.isEnabled() || authManager.isFirstBootDetected()) {
+  sendJsonError(req, 403, "forbidden");
+  return;
+}
+REQUIRE_AUTH(req, RouteProtection::CRITICAL);
+```
+
+**Pourquoi ce refus explicite est nécessaire, et pas seulement `CRITICAL`
+seul** : dans ce projet, `RouteProtection::CRITICAL` est **décoratif**
+(`src/auth.cpp:204`, `checkAuth`, ne teste `level` que contre `NONE` — donc
+`CRITICAL` se comporte exactement comme `WRITE`), et `src/auth.cpp:199` fait
+passer **toutes** les routes en clair dès que l'authentification est
+désactivée (`auth_enabled = false`, réglable depuis `POST /save-config`) ou
+au premier démarrage, avant que l'assistant de configuration n'ait tourné.
+Sans le refus 403 **explicite et antérieur** ci-dessus, une route qui lit la
+mémoire du processus serait ouverte à quiconque dès que l'authentification
+est coupée — ce qui est déjà vrai de toute route `CRITICAL` de ce dépôt
+aujourd'hui, mais que ce lot refuse d'hériter. C'est cette garde, pas
+l'annotation `CRITICAL`, qui rend la protection réelle.
+
+### Protocole en deux temps — le parcours du tas n'a jamais lieu sur `async_tcp`
+
+`heap_caps_walk()` s'exécute interruptions masquées pendant tout le
+parcours (spinlock inter-cœurs, établi par désassemblage — voir l'ADR).
+L'exécuter directement dans un handler HTTP masquerait les interruptions de
+la tâche qui sert le WiFi et l'ensemble des requêtes. Les quatre routes
+fonctionnent donc en **deux temps**, à l'idiome de `POST /debug/sensor_filter_reset`
+(section « Endpoints ajoutés en feature-024 » plus haut dans ce document) :
+
+1. **`POST`** pose une demande, consommée par la **loop** (jamais par
+   `async_tcp`) au tour suivant (< 100 ms) — réponse **`202`** = accepté,
+   pas exécuté.
+2. **`GET`** lit l'instantané **gelé** produit par ce parcours.
+
+Un `GET` avant que la loop n'ait traité la demande rend `409 {"error":"not_ready"}`.
+
+### `POST /debug/heap_census?used_from=&used_to=` — CRITICAL
+
+Demande un recensement : les **N plus gros blocs libres** (top-N approché) et
+les blocs **occupés** dont l'adresse tombe dans la fenêtre `[used_from,
+used_to)`.
+
+```bash
+curl -u admin:monmotdepasse -X POST \
+  "http://poolcontroller.local/debug/heap_census?used_from=0x3FFB0000&used_to=0x3FFB4000"
+```
+
+**Paramètres** (query string, base 0 — `0x…` ou décimal) :
+
+| Paramètre | Défaut | Description |
+|---|---|---|
+| `used_from` | `0` | Borne basse (incluse) de la fenêtre de blocs **occupés** à détailler |
+| `used_to` | `0` | Borne haute (exclue) |
+
+⚠️ **`used_to == 0` demande une fenêtre VIDE, pas « toute la mémoire ».** C'est
+contre-intuitif et délibéré (`heapCensusInWindow()`, `src/heap_census_logic.h` :
+`hi == 0` rend toujours `false`) : **omettre les deux paramètres** — le cas le
+plus fréquent d'un premier appel exploratoire — recense quand même le tas
+(les **agrégats** `free_block_count`/`used_block_count` du `GET` sont
+toujours remplis), mais **aucun** bloc occupé n'est publié en détail tant
+qu'une fenêtre explicite n'est pas fournie. Pour explorer, fixer `used_to` à
+une adresse plausible (ex. `heap_end` d'un premier recensement) puis affiner.
+
+**Réponse 202**
+
+```json
+{ "queued": true, "request_id": 3, "build": { "census": 1, "peek": 0 } }
+```
+
+`request_id` est un compteur **bookkeeping** de ce fichier de routes,
+distinct du `seq` firmware publié par le `GET` (généré par la loop à chaque
+recensement **abouti**) : il permet de corréler une réponse `202` avec les
+`GET` suivants, y compris quand la demande est encore en attente.
+
+**Erreurs**
+
+| Code | `error` | Cause |
+|---|---|---|
+| `403` | `forbidden` | authentification désactivée ou premier démarrage détecté (garde ci-dessus, avant même `REQUIRE_AUTH`) |
+| `409` | `busy` | un cycle recensement/lecture est déjà en cours |
+| `429` | `too_soon` | plancher `kHeapCensusMinIntervalMs` (5 s, **partagé** avec `/debug/heap_peek`) non écoulé — en-tête `Retry-After` posé |
+| `410` | `disabled` | l'instrument s'est **auto-désactivé définitivement** (un parcours a dépassé `kHeapCensusMaxDurationUs`, 1,5 ms — jamais réarmé) |
+
+### `GET /debug/heap_census?kind=free|used&offset=&count=` — CRITICAL
+
+Lit l'instantané figé du dernier recensement abouti, paginé.
+
+```bash
+curl -u admin:monmotdepasse \
+  "http://poolcontroller.local/debug/heap_census?kind=used&offset=0&count=24"
+```
+
+**Paramètres** : `kind` (`free` par défaut, ou `used`), `offset`/`count`
+(pagination, `count` défaut = page pleine, `kHeapCensusPageEntries` = 24).
+
+**Réponse 200**
+
+```json
+{
+  "seq": 3,
+  "took_at_ms": 512340,
+  "heap_start": 1073889280,
+  "heap_end": 1073938432,
+  "used_from": 1073889280,
+  "used_to": 1073893376,
+  "free_block_count": 118,
+  "used_block_count": 892,
+  "used_in_window_count": 7,
+  "used_truncated": false,
+  "floor_free_blocks": 118,
+  "floor_used_blocks": 892,
+  "concordance": "match",
+  "kind": "used",
+  "offset": 0,
+  "returned": 7,
+  "total": 7,
+  "truncated": false,
+  "entries": [
+    { "addr": 1073889312, "size": 48, "alloc_size": 36 }
+  ],
+  "walk_us": 812,
+  "max_walk_us": 1104,
+  "disabled": false,
+  "build": { "census": 1, "peek": 0 }
+}
+```
+
+| Champ | Type | Signification |
+|---|---|---|
+| `seq` | `uint32` | numéro de génération de ce recensement (1 = premier depuis le boot) |
+| `took_at_ms` | `uint32` | `millis()` loop au moment du parcours |
+| `heap_start` / `heap_end` | `uint32` | enveloppe (min/max) de **toutes** les régions parcourues — **pas nécessairement contiguë** si plusieurs tas portent le même masque de capacités |
+| `used_from` / `used_to` | `uint32` | fenêtre **demandée** (écho, pour diagnostic) |
+| `free_block_count` / `used_block_count` | `uint32` | agrégats **totaux** du parcours — à comparer à `fb`/`ab` de `/get-system-info?hf=1` (masque `i8`, `0x0804`) : c'est le **test de cohérence de l'instrument lui-même** |
+| `used_in_window_count` | `uint32` | nombre de blocs occupés dont l'adresse tombe dans `[used_from, used_to)` |
+| `used_truncated` | booléen | `true` si `used_in_window_count` dépasse `kHeapCensusMaxUsedBlocks` (96) — troncature du **parcours**, jamais silencieuse |
+| `floor_free_blocks` / `floor_used_blocks` | `uint32` | écho de `fb`/`ab` **déjà échantillonnés** par le tour de rôle des planchers glissants (aucun second `heap_caps_get_info()` sur ce chemin) |
+| `concordance` | `"match"` \| `"mismatch"` \| `"undetermined"` | verdict de cohérence entre les compteurs de **ce** recensement et `floor_*` — `undetermined` si `floor_*` valent `null` (masque jamais échantillonné) |
+| `kind` | `"free"` \| `"used"` | quelle liste `entries` porte |
+| `offset` / `returned` / `total` | `uint32` | pagination — `total` = taille de la liste **retenue** (top-N approché pour `free`, fenêtre demandée pour `used`), pas le compte brut du parcours |
+| `truncated` | booléen | troncature de **pagination** (`offset + returned < total`) — distincte de `used_truncated` (troncature du **parcours**, côté loop) |
+| `entries[].addr` / `.size` | `uint32` | adresse et taille TLSF (en-tête compris) du bloc |
+| `entries[].alloc_size` | `uint32` \| sentinelle | **`used` uniquement** — octets réellement demandés (`poison_head_t.alloc_size`), ou `kHeapCensusAllocSizeUnknown` (`0xFFFFFFFF`, [ADR-0072](adr/0072-absence-de-valeur-hors-du-domaine.md)) si le canari de poisoning n'est pas conforme |
+| `walk_us` / `max_walk_us` / `disabled` | `uint32` / `uint32` / booléen | voir « Champs d'observabilité C4 » ci-dessous |
+| `build.census` / `build.peek` | `0` \| `1` | voir « Marqueur de build » ci-dessous |
+
+**Aucun champ de `entries[]` ne porte d'octet de contenu** — adresses et
+tailles seulement (R2). Lire le contenu d'un bloc exige `/debug/heap_peek`
+(R3, ci-dessous).
+
+**Erreurs** (toutes portent `walk_us`/`max_walk_us`/`disabled`, y compris en
+échec — c'est précisément au moment d'un `410` que l'opérant a besoin de
+savoir si l'instrument s'est auto-désactivé) :
+
+| Code | `error` | Cause |
+|---|---|---|
+| `403` | `forbidden` | authentification désactivée ou premier démarrage détecté |
+| `409` | `not_ready` | toujours `IDLE`/`REQUESTED` : aucune demande aboutie à lire |
+| `409` | `busy` | une lecture concurrente est déjà en cours (course improbable, un seul appelant `async_tcp`) |
+| `410` | `stale` | l'instantané a dépassé `kHeapCensusStaleMs` (5 min) sans avoir été lu — reposer une demande |
+| `503` | — | garde mémoire (`heapLargestFreeBlock8Bit()` insuffisant pour sérialiser la réponse) — réessayer |
+
+### `POST /debug/heap_peek?addr=&len=` — CRITICAL, **non livrée en production** ([ADR-0081](adr/0081-recensement-du-tas-et-non-livraison-de-la-lecture-de-contenu.md))
+
+Demande la lecture des premiers octets d'un bloc **occupé**, désigné par son
+adresse (obtenue par un `GET /debug/heap_census?kind=used` préalable).
+
+⚠️ **Cette route n'existe dans le binaire que si le firmware a été compilé
+avec `PLATFORMIO_BUILD_FLAGS=-DPOOL_HEAP_PEEK=1` — jamais dans un build de
+release.** Sur un firmware de production, elle répond **404** (route jamais
+enregistrée). Voir l'ADR pour le mécanisme complet de non-livraison,
+vérifié à la fois sur l'arbre (CI) et sur l'artefact publié (`/release`).
+
+```bash
+curl -u admin:monmotdepasse -X POST \
+  "http://poolcontroller.local/debug/heap_peek?addr=0x3FFB0210&len=64"
+```
+
+**Paramètres** (obligatoires) : `addr`, `len` (≤ `kHeapPeekMaxBytes` = 128
+octets par requête ; clampé à la taille réellement allouée du bloc désigné).
+
+**Réponse 202**
+
+```json
+{ "queued": true, "build": { "census": 1, "peek": 1 } }
+```
+
+**Erreurs**
+
+| Code | `error` | Cause |
+|---|---|---|
+| `403` | `forbidden` | authentification désactivée ou premier démarrage détecté |
+| `400` | `missing_param` | `addr` ou `len` absent |
+| `400` | `invalid_len` | `len == 0` |
+| `409` | `busy` | une lecture est déjà en cours |
+| `429` | `too_soon` | plancher `kHeapCensusMinIntervalMs` non écoulé — **partagé** avec `/debug/heap_census` (même coût O(blocs), même horodatage de dernier parcours) |
+| `410` | `disabled` | instrument auto-désactivé définitivement |
+| `403` | `budget_exhausted` | budget cumulé `kHeapPeekMaxBytesPerBoot` (8 192 o depuis le boot) épuisé — refus jusqu'au redémarrage. ⚠️ Ce budget borne un **vidage en masse**, pas la divulgation d'un secret isolé (un mot de passe WiFi, des identifiants MQTT ou un jeton tiennent en moins de 200 o) : voir l'ADR |
+
+### `GET /debug/heap_peek` — CRITICAL, **non livrée en production**
+
+Lit le résultat de la dernière demande aboutie : hexadécimal **et** ASCII
+imprimable des octets copiés.
+
+```bash
+curl -u admin:monmotdepasse "http://poolcontroller.local/debug/heap_peek"
+```
+
+**Réponse 200**
+
+```json
+{
+  "seq": 12,
+  "took_at_ms": 519880,
+  "addr": 1073889808,
+  "alloc_size": 42,
+  "len": 42,
+  "found": true,
+  "canary_valid": true,
+  "stable": true,
+  "budget_clamped": false,
+  "budget_remaining": 8024,
+  "hex": "323032362d30392d31342031323a30303a3030205b494e464f5d20486561703a...",
+  "ascii": "2026-09-14 12:00:00 [INFO] Heap:...",
+  "build": { "census": 1, "peek": 1 }
+}
+```
+
+| Champ | Type | Signification |
+|---|---|---|
+| `addr` / `alloc_size` / `len` | `uint32` | adresse demandée, octets réellement alloués du bloc, octets **effectivement copiés** (`len ≤` `alloc_size` et `≤ 128`) |
+| `found` | booléen | `false` si aucun bloc **occupé** ne commence exactement à `addr` sur le parcours **frais** de cette lecture (jamais un instantané vieillissant) |
+| `canary_valid` | booléen | canari de poisoning conforme **avant** la copie — `false` ⇒ `hex`/`ascii` vides, aucune lecture hors du domaine du bloc |
+| `stable` | booléen | canari re-testé **après** la copie — `false` signale un bloc modifié pendant la lecture (structurel uniquement, ne relit jamais le contenu) |
+| `budget_clamped` | booléen | la longueur copiée a été réduite par le budget cumulé `kHeapPeekMaxBytesPerBoot` — jamais silencieux |
+| `budget_remaining` | `uint32` | octets restants avant épuisement du budget de ce boot |
+| `hex` / `ascii` | `string` | contenu des `len` octets copiés (à partir de `addr + 8`, l'en-tête `poison_head_t` sauté) |
+
+⚠️ **`hex`/`ascii` ne sont ni journalisés ni destinés à être versionnés.** Voir
+la note d'incident : adresse, taille et identification se consignent,
+**jamais le contenu**.
+
+**Erreurs** : `403 forbidden` (auth désactivée/premier démarrage) ·
+`409 not_ready` · `409 busy` · `410 stale` · `503` (garde mémoire).
+
+### Champs d'observabilité C4 — `walk_us` / `max_walk_us` / `disabled`
+
+**Partagés entre R2 et R3** (même chronomètre, même coût O(blocs)), publiés
+sur `GET /debug/heap_census`, succès **et** erreur :
+
+| Champ | Signification |
+|---|---|
+| `walk_us` | durée du **dernier** parcours de tas, en µs |
+| `max_walk_us` | pire parcours observé depuis le boot |
+| `disabled` | `true` si l'instrument s'est auto-désactivé **définitivement** (C1, `pool-chemistry`) : un parcours a dépassé `kHeapCensusMaxDurationUs` (1,5 ms). La base de calibrage étant **mouvante** (`wmax` de référence : 516 µs en v2.49.0, 711 µs six jours plus tard, +38 %), l'instrument se coupe lui-même plutôt que de se fier à une estimation périmée — jamais réarmé |
+
+### Marqueur de build — `build.census` / `build.peek`
+
+Posé sur **toute** réponse JSON de ces quatre routes, succès ou erreur (coût
+négligeable, ~30 o) : `census` vaut toujours `1` (R2 compilé
+inconditionnellement), `peek` vaut `1` si et seulement si le binaire qui
+répond a été compilé avec `POOL_HEAP_PEEK`. Permet de prouver, **a
+posteriori** et à partir d'une seule réponse archivée (y compris une erreur),
+quel binaire tournait pendant une fenêtre d'observation.
 
 ---
 

@@ -8,6 +8,7 @@
 #include "web_routes_coredump.h"
 #include "web_routes_sensor_id.h"
 #include "web_routes_debug.h"
+#include "web_routes_heap.h"
 #include "auth.h"
 #include "config.h"
 #include "constants.h"
@@ -82,6 +83,7 @@ void WebServerManager::setupRoutes() {
   setupCoredumpRoutes(server);
   setupSensorIdRoutes(server);  // feature-020 : identification 2 sondes DS18B20
   setupDebugRoutes(server);     // ph_slope_refresh + sensor_filter_reset/state (levier sécurité feature-025)
+  setupHeapRoutes(server);      // feature-128 : recensement du tas (R2) + lecture de contenu (R3, S7/I9 : AVANT la garde 503 ci-dessous)
 
   // WebSocket (push temps réel : capteurs toutes les 5s, config après save, logs en direct)
   wsManager.begin(server);

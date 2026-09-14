@@ -55,17 +55,25 @@ HeapProbe heapProbeForCaps(uint32_t caps) {
     // ici, qui se lirait comme « aucun trou » plutôt que « non mesuré ».
     p.freeBlocks = kOomProbeBlockCountUnknown;
     p.allocatedBlocks = kOomProbeBlockCountUnknown;
+    // Même cause que les deux comptes ci-dessus (branche O(régions), pas de
+    // heap_caps_get_info() ici) : kOomProbeBlockCountUnknown, PAS
+    // kOomProbeBlockUnknown — celle-ci est une valeur d'octets atteignable en
+    // PSRAM, elle transformerait une mesure juste en valeur crédible mais
+    // fausse (feature-127, R1).
+    p.allocatedBytes = kOomProbeBlockCountUnknown;
     return p;
   }
-  // UN seul parcours : heap_caps_get_info() livre les QUATRE grandeurs
-  // (free_blocks et allocated_blocks étaient déjà calculés par cet appel, et
-  // jusqu'ici jetés — aucun parcours de plus n'est ajouté par ce lot).
+  // UN seul parcours : heap_caps_get_info() livre les CINQ grandeurs
+  // (free_blocks, allocated_blocks et total_allocated_bytes étaient déjà
+  // calculés par cet appel, et jusqu'ici jetés — aucun parcours de plus n'est
+  // ajouté par ce lot, ni par feature-127 R1).
   multi_heap_info_t info;
   heap_caps_get_info(&info, caps);
   p.freeBytes = (uint32_t)info.total_free_bytes;
   p.largestBlockBytes = (uint32_t)info.largest_free_block;
   p.freeBlocks = (uint32_t)info.free_blocks;
   p.allocatedBlocks = (uint32_t)info.allocated_blocks;
+  p.allocatedBytes = (uint32_t)info.total_allocated_bytes;
   return p;
 }
 
@@ -240,6 +248,9 @@ struct HeapFloorAtomics {
   // fragmentation, coût nul (sous-produit du heap_caps_get_info() déjà appelé).
   std::atomic<uint32_t> lastFreeBlocks{kOomProbeBlockCountUnknown};
   std::atomic<uint32_t> lastAllocatedBlocks{kOomProbeBlockCountUnknown};
+  // DERNIER échantillon seulement, même discipline (feature-127, R1) : coût
+  // nul, sous-produit du même heap_caps_get_info().
+  std::atomic<uint32_t> lastAllocatedBytes{kOomProbeBlockCountUnknown};
 };
 HeapFloorAtomics sFloors[kHeapFloorMaskCount];
 std::atomic<uint32_t> sFloorSampleCount{0};
@@ -293,6 +304,7 @@ void heapFloorNoteSlot(uint8_t slot, const HeapProbe& probe, uint8_t ctx) {
   // d'un compte réel (même discipline que kOomProbeBlockUnknown pour le bloc).
   f.lastFreeBlocks.store(probe.freeBlocks, std::memory_order_relaxed);
   f.lastAllocatedBlocks.store(probe.allocatedBlocks, std::memory_order_relaxed);
+  f.lastAllocatedBytes.store(probe.allocatedBytes, std::memory_order_relaxed);
   heapFloorApply(f.minFreeBoot, &f.ctxAtMinFree, probe.freeBytes, ctx);
   heapFloorApply(f.minFreeWindow, nullptr, probe.freeBytes, ctx);
   // « Plus gros bloc NON RENSEIGNÉ » (masques O(régions)) : on ne l'inscrit
@@ -447,6 +459,7 @@ HeapFloors heapFloorsRead() {
     out.masks[i].samples = f.samples.load(std::memory_order_relaxed);
     out.masks[i].lastFreeBlocks = f.lastFreeBlocks.load(std::memory_order_relaxed);
     out.masks[i].lastAllocatedBlocks = f.lastAllocatedBlocks.load(std::memory_order_relaxed);
+    out.masks[i].lastAllocatedBytes = f.lastAllocatedBytes.load(std::memory_order_relaxed);
   }
   out.sampleCount = sFloorSampleCount.load(std::memory_order_relaxed);
   // Médiane approchée : copie locale de l'histogramme (7 mots de pile) puis

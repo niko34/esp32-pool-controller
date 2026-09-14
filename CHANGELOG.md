@@ -2,7 +2,7 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
-## [Unreleased] - 2026-09-13
+## [2.52.0] - 2026-09-14
 
 > **Ce qui change pour vous** : en mode Automatique, les horaires de
 > filtration affichés ne bougent plus en cours de journée — ils sont
@@ -50,6 +50,29 @@
   `filtration_temp_implausible` (référence de température hors bornes
   physiques, panne de sonde présumée). Aucune entité d'auto-discovery
   Home Assistant nouvelle.
+- **Télémétrie mémoire — octets alloués (feature-127)** : `GET
+  /get-system-info?hf=1` publie un champ `a` par masque (octets réellement
+  alloués, `total_allocated_bytes`, calculé par `heap_caps_get_info()` et
+  jusqu'ici jeté) — la grandeur qui manquait pour trancher, à nombre de blocs
+  quasi constant, si le tas perd du libre par un jeu de travail plus gros ou
+  par une fuite en octets (question ouverte par la fenêtre du 12-13/09).
+  Charge utile `hf` : **+63 o** pire cas (mesuré par différence directe, pas
+  estimé). Réponse sans `?hf=1` inchangée à l'octet près (964 o).
+- **Télémétrie mémoire — recensement du tas et lecture de contenu
+  (feature-128, [ADR-0081](docs/adr/0081-recensement-du-tas-et-non-livraison-de-la-lecture-de-contenu.md))** :
+  quatre routes de diagnostic neuves, protocole POST (demande)/GET
+  (instantané figé) exécuté **uniquement depuis la loop**, jamais sur
+  `async_tcp` — `GET/POST /debug/heap_census` (recensement bloc par bloc,
+  adresses et tailles seulement, compilé inconditionnellement) et
+  `GET/POST /debug/heap_peek` (lecture des premiers octets d'un bloc désigné,
+  **absente de tout binaire de release** — n'existe que si le firmware est
+  compilé avec `PLATFORMIO_BUILD_FLAGS=-DPOOL_HEAP_PEEK=1`, jamais défini dans
+  un fichier versionné). Les quatre routes sont les premières `/debug/*` de ce
+  dépôt à exiger l'authentification **et** à refuser 403 en mode
+  `auth_enabled = false`. Coût apériodique plafonné à 0,2 parcours de tas/s
+  ajoutés, chronométré et **auto-désactivé définitivement** au-delà de
+  1,5 ms ; ~1,4 Ko de `.bss` interne en permanence (biais connu, sans effet
+  sur les gardes existantes). Zéro `systemLogger` dans tout le code neuf.
 
 ### Documentation
 
@@ -67,6 +90,29 @@
 - `docs/user/src/guide-utilisation.html` : les horaires affichés en mode
   Automatique viennent du cycle de la veille, ils ne bougent plus en cours
   de journée.
+- `docs/adr/0081-recensement-du-tas-et-non-livraison-de-la-lecture-de-contenu.md`
+  créé : le mécanisme de non-livraison de `/debug/heap_peek` (macro jamais
+  écrite dans un fichier versionné, vérifiée sur l'arbre **et** sur
+  l'artefact de release), le régime de `/debug/heap_census` (plafonné par
+  l'OTA, l'argument « pas d'ASLR » écarté comme faux), le choix de
+  `heap_caps_walk` contre le traçage natif de l'IDF (désactivé dans le
+  `sdkconfig` des bibliothèques épinglées), et le protocole d'exécution
+  strictement depuis la loop. Fusionne dans un seul ADR ce que le design
+  envisageait comme deux (`ADR-0080`/`ADR-0081`) : aucune des treize
+  références de code n'a jamais cité `ADR-0080`.
+- `docs/adr/README.md` : index complété (`0078`, `0079` manquaient, `0081`
+  ajouté).
+- `docs/API.md` : quatre routes `/debug/heap_census`/`/debug/heap_peek`
+  documentées (protocole en deux temps, convention `used_to == 0` = fenêtre
+  vide, codes `409`/`410`/`429`, marqueur de build `build.{census,peek}`) ;
+  contrat de `GET /get-system-info?hf=1` mis à jour pour le champ `a`.
+- `docs/subsystems/system-health.md` : section dédiée au recensement du tas
+  (régime de verrouillage, chronométrage et auto-désactivation, biais de
+  `.bss`, inventaire des champs de `/debug/heap_census`).
+- `docs/incidents/2026-09-10-recidive-fragmentation-v2500.md` : protocole de
+  la prochaine fenêtre d'observation avec l'instrument neuf, et les
+  conditions d'exploitation S11/S12 (aucune sortie de `/debug/heap_peek`
+  versionnée ; preuve de reflash d'un binaire de release après la fenêtre).
 
 ---
 
