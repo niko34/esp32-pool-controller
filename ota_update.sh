@@ -80,6 +80,16 @@ update_file() {
 
     if [ "$http_code" = "200" ] && [ "$body_trimmed" = "OK" ]; then
         echo -e "${GREEN}✅ $name mis à jour${NC}"
+        # Marque l'archive correspondante comme DÉPLOYÉE : tools/archive_build.py
+        # ne purgera plus cet ELF, seul décodeur possible d'un futur coredump
+        # (esp-coredump vérifie le SHA256 de l'image applicative). Sans ce
+        # marqueur, cinq builds de la même version évincent l'archive du firmware
+        # en production — c'est arrivé le 2026-09-13 sur la 2.51.0, et l'ELF du
+        # 12/09 a été définitivement perdu. Jamais bloquant : un déploiement
+        # réussi ne doit pas échouer sur un archivage.
+        if [ "$type" = "firmware" ] && [ -f tools/mark_deployed.py ]; then
+            python3 tools/mark_deployed.py "$file" || true
+        fi
         return 0
     elif [ "$http_code" = "401" ]; then
         echo -e "${RED}❌ Authentification refusée (mot de passe incorrect ?)${NC}"
