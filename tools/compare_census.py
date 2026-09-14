@@ -65,15 +65,25 @@ def _charger(chemin):
         return None, "n'est pas du JSON — première ligne : %r" % apercu
     if not isinstance(d, dict):
         return None, "JSON valide mais ce n'est pas un objet"
-    if "used" not in d:
-        return None, "pas de tableau `used` — est-ce bien un GET ?kind=used ?"
+    # ⚠️ Le tableau s'appelle `entries`, PAS `used` — écrit d'après le design,
+    # corrigé d'après l'implémentation livrée. La forme réelle, relevée sur
+    # l'appareil le 14/09 : {"kind":"used","entries":[{"addr","size","alloc_size"}],
+    # "returned","total","truncated","used_in_window_count","used_truncated"}.
+    if d.get("kind") == "free":
+        return None, ("c'est un recensement des blocs LIBRES (`kind=free`) — "
+                      "la comparaison porte sur les blocs OCCUPÉS (`kind=used`)")
+    if "entries" not in d:
+        motif = d.get("error")
+        if motif:
+            return None, "l'appareil a refusé : %r (pas un recensement)" % motif
+        return None, "pas de tableau `entries` — est-ce bien un GET ?kind=used ?"
     return d, None
 
 
 def _index(donnees):
     """{adresse: (taille TLSF, alloc_size)} — alloc_size None si le canari a été refusé."""
     table = {}
-    for bloc in donnees.get("used") or []:
+    for bloc in donnees.get("entries") or []:
         if not isinstance(bloc, dict):
             continue
         adresse = bloc.get("addr")
@@ -121,7 +131,7 @@ def main():
     print("Recensement AVANT : %d blocs occupés dans la fenêtre · APRÈS : %d"
           % (len(ia), len(ib)))
     for etiquette, d in (("avant", avant), ("après", apres)):
-        if d.get("used_truncated"):
+        if d.get("used_truncated") or d.get("truncated"):
             print("⚠️  %s : liste TRONQUÉE (`used_truncated`) — des blocs manquent, "
                   "resserre la fenêtre `used_from`/`used_to`." % etiquette)
     print()
