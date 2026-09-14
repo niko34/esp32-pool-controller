@@ -123,7 +123,40 @@ def main():
                   "que la sonde. Toute conclusion tirée de ce relevé est fragile."
                   % (etiquette, conc))
 
-    ia, ib = _index(avant), _index(apres)
+    # ⚠️ LA FENÊTRE SE DÉPLACE, ET C'EST LE PIÈGE PRINCIPAL DE CETTE COMPARAISON.
+    # `capture-logs.sh` centre le recensement sur le PLUS GROS TROU LIBRE — or
+    # celui-ci se déplace au fil des découpes, par définition. Deux captures
+    # successives peuvent donc couvrir des plages d'adresses DIFFÉRENTES.
+    # Comparer les ensembles bruts ferait alors « disparaître » des blocs qui
+    # n'ont jamais bougé : ils sont seulement sortis du cadre.
+    # Constaté sur les captures réelles du 14/09 : 0x3FFF12A8-0x40001FFC à 13:02,
+    # puis 0x3FFF3E28-0x3FFFD478 à 14:00.
+    #
+    # On restreint donc la comparaison à l'INTERSECTION des deux fenêtres, la
+    # seule zone où « présent » et « absent » ont le même sens des deux côtés.
+    fa = (avant.get("used_from"), avant.get("used_to"))
+    fb_ = (apres.get("used_from"), apres.get("used_to"))
+    borne_lo = borne_hi = None
+    if None not in fa and None not in fb_:
+        if fa != fb_:
+            print("⚠️  Les deux recensements ne couvrent PAS la même plage :")
+            print("      avant : 0x%08X - 0x%08X" % fa)
+            print("      après : 0x%08X - 0x%08X" % fb_)
+            borne_lo, borne_hi = max(fa[0], fb_[0]), min(fa[1], fb_[1])
+            if borne_lo >= borne_hi:
+                print("    Intersection VIDE — ces deux captures ne sont pas")
+                print("    comparables. Prends deux relevés dont la fenêtre coïncide.")
+                return 1
+            print("    Comparaison restreinte à l'intersection : 0x%08X - 0x%08X (%d o)."
+                  % (borne_lo, borne_hi, borne_hi - borne_lo))
+            print("    Hors de cette zone, « apparu » et « disparu » ne voudraient rien dire.")
+            print()
+
+    def _dans(adresse):
+        return borne_lo is None or borne_lo <= adresse < borne_hi
+
+    ia = {a: v for a, v in _index(avant).items() if _dans(a)}
+    ib = {a: v for a, v in _index(apres).items() if _dans(a)}
     apparus = sorted(set(ib) - set(ia))
     disparus = sorted(set(ia) - set(ib))
     communs = sorted(set(ia) & set(ib))
