@@ -508,12 +508,19 @@ position** où elle tombe.
     famine  →  avertissement journalisé  →  String de ~144 o dans le grand trou
             →  trou coupé en deux  →  famine aggravée  →  …
 
-L'avertissement est throttlé à une émission toutes les 5 minutes
-(`kHistorySaveWarnThrottleMs`) **tant que la famine dure**. Chaque émission
-alloue une `String` de taille quasi constante. L'hypothèse — cohérente avec le
-cliquet observé, non démontrée — est que la suivante se réinsère dans
-l'emplacement que la précédente vient de libérer, si bien que le trou n'a jamais
-l'occasion de se recoalescer.
+L'avertissement est throttlé à **une émission par HEURE**
+(`kHistorySaveWarnThrottleMs = 3600000UL`, `src/constants.h:281`) tant que la
+famine dure. ⚠️ Ne pas confondre avec les « 5 min » que porte le texte du
+message : c'est l'intervalle de RETENTATIVE de la sauvegarde, pas celui de la
+journalisation — première rédaction de cette section, corrigée le 15/09.
+
+La cadence horaire **colle aux observations** : les deux découpes sont espacées
+de **1,4 h**. Chaque émission alloue une `String` de taille quasi constante.
+L'hypothèse — cohérente avec le cliquet, non démontrée — est que la suivante se
+réinsère dans l'emplacement que la précédente vient de libérer, si bien que le
+trou n'a jamais l'occasion de se recoalescer. Le tampon circulaire du journal
+retient 200 entrées (`kMaxLogEntries`, `src/constants.h:174`), donc une `String`
+y survit longtemps avant éviction.
 
 **Ce qui manque pour en faire une certitude** : observer l'occupation de
 l'emplacement en continu, et non par sondages espacés de 20 minutes.
