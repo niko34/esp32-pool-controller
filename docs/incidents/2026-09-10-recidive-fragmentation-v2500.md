@@ -466,3 +466,101 @@ devra, en plus de ce qu'il fait déjà (`GET /get-system-info?hf=1`,
   sur disque sans revue humaine avant tout archivage) ;
 - conserver la séparation déjà en place : lecture seule sur l'appareil,
   aucune écriture, aucun redémarrement.
+
+
+---
+
+## Mise à jour — LE MÉCANISME EST NOMMÉ (fenêtre v2.52.0, 15/09/2026)
+
+**L'instrument a livré.** Deux événements de découpe du plus gros bloc contigu ont
+été observés **à l'adresse près, avec identification du bloc responsable**.
+
+⚠️ **Condition S11 respectée** : ce document cite l'adresse, la taille et
+l'**identification** (quel site d'émission a produit l'allocation). Aucun vidage
+hexadécimal ou ASCII de `/debug/heap_peek` n'est versionné ici, et aucun ne doit
+l'être — la lecture peut traverser des blocs portant des identifiants.
+
+### ✅ CERTAIN — ce sont des `String` du journal qui découpent le grand trou
+
+| uptime | trou avant | trou après | bloc responsable | taille demandée |
+|---|---:|---:|---|---:|
+| 18,0 h | 0x3FFF7308–0x3FFFB478 (16 752 o) | 0x3FFF7308–0x3FFF9648 (9 024 o) | `0x3FFF964C` | **144 o** |
+| 19,4 h | 0x3FFF7308–0x3FFF9648 (9 024 o) | 0x3FFF79EC–0x3FFF9648 (7 260 o) | `0x3FFF7894` | **144 o** |
+
+Les deux blocs portent **le même message** : l'avertissement de famine mémoire
+émis par `src/history.cpp:542` (« sauvegarde de l'historique sautée »). Même
+taille demandée, adresses différentes, deux marches distinctes séparées de 1,4 h.
+
+Ce sont des entrées de `std::vector<LogEntry>` (`src/logger.h:22,35`), dont le
+champ `String message` est alloué sur le tas et de **taille variable** — la
+famille d'allocations que la seule mesure de taille ne pouvait pas identifier,
+et pour laquelle la lecture de contenu (R3) a été conçue.
+
+### ✅ CERTAIN — l'amplification, chiffrée
+
+À 18,0 h, **160 octets alloués ont détruit 7 680 octets de contiguïté** : un trou
+de 16 752 o coupé en 9 024 + 7 568, le « plus gros bloc » tombant au premier des
+deux. Le coût pour le système n'est pas la taille de l'allocation, c'est **la
+position** où elle tombe.
+
+### 🔶 FORTEMENT PROBABLE — la boucle de rétroaction
+
+    famine  →  avertissement journalisé  →  String de ~144 o dans le grand trou
+            →  trou coupé en deux  →  famine aggravée  →  …
+
+L'avertissement est throttlé à une émission toutes les 5 minutes
+(`kHistorySaveWarnThrottleMs`) **tant que la famine dure**. Chaque émission
+alloue une `String` de taille quasi constante. L'hypothèse — cohérente avec le
+cliquet observé, non démontrée — est que la suivante se réinsère dans
+l'emplacement que la précédente vient de libérer, si bien que le trou n'a jamais
+l'occasion de se recoalescer.
+
+**Ce qui manque pour en faire une certitude** : observer l'occupation de
+l'emplacement en continu, et non par sondages espacés de 20 minutes.
+
+### ❓ CE QUE CECI N'EXPLIQUE PAS
+
+1. **L'effondrement initial de −29 696 octets à 1,0 h d'uptime** (53 236 → 21 492
+   en deux marches). Une autre échelle, un autre mécanisme probable.
+2. **Les trois autres blocs apparus** pendant la marche de 19,4 h
+   (`0x3FFF7938`, `0x3FFF9A9C`, `0x3FFF9B1C`) : libérés avant qu'on les lise,
+   leur nature restera inconnue.
+3. **Pourquoi le palier s'installe** vers 7-8 Ko et y reste — atteint ici à 19,4 h
+   contre 28,2 h sur v2.51.0, soit **8 heures plus tôt**.
+
+### ⚠️ CE QUE CELA CHANGE POUR L'INTERDICTION
+
+L'interdiction posée plus haut — « ne jamais toucher aux constantes ou structures
+du `logger` sans preuve instrumentée » — avait pour condition l'absence de preuve.
+**Cette preuve existe désormais**, deux fois, avec adresse, taille et
+identification.
+
+Elle **n'autorise pas pour autant un correctif au fil d'une session**. Ce qu'elle
+autorise, c'est d'**ouvrir un chantier** sur le `logger` avec une spec, parce
+qu'on sait enfin sur quoi travailler. Plusieurs corrections sont pensables — et
+elles n'ont pas du tout les mêmes effets :
+
+- allouer les `String` de journal en PSRAM (mais le plancher de politique à 512 o
+  existe pour une raison : `constants.h` documente que les caches LittleFS et le
+  pool FILE de la libc côtoient les écritures flash) ;
+- réserver les entrées de journal dans un pool statique au démarrage, quand le
+  tas est vierge ;
+- borner la taille des `String` de journal pour qu'elles tombent dans une classe
+  de taille qui ne fractionne pas les grands blocs ;
+- ne pas journaliser la famine pendant la famine — le remède le plus simple au
+  cycle décrit ci-dessus, et le plus discutable, puisqu'il supprime le signal.
+
+Aucune de ces options ne doit être choisie sans `pool-chemistry` (le `logger`
+sert les gardes de dosage) ni sans mesure de l'effet réel.
+
+### Méthode
+
+Instruments livrés par `feature-127` et `feature-128` (v2.52.0, ADR-0081).
+Recensement par `heap_caps_walk` toutes les 20 min sur la bande 18-30 h d'uptime,
+ciblé sur le voisinage du plus gros trou libre ; comparaison par
+`tools/compare_census.py`, restreinte à l'intersection des fenêtres ; lecture de
+contenu par `/debug/heap_peek` sur un **build de diagnostic**, absent du binaire
+de release.
+
+⚠️ Après la fenêtre : reflash d'un binaire de release et preuve
+`"build":{"peek":0}` (condition S12).
