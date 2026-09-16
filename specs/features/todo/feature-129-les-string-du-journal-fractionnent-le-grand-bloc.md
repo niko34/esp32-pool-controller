@@ -36,6 +36,26 @@ journalise ces refus.
 - [x] code-reviewer
 - [x] doc-writer
 
+## ⚠️ PÉRIMÈTRE — cette spec couvre 100 % du problème (mis à jour le 16/09)
+
+Rédigée le 15/09 au matin, elle supposait ne traiter qu'un tiers de la perte de
+contiguïté. **A1 a établi qu'il n'y a qu'un seul mécanisme**, et que cette spec le
+couvre entièrement.
+
+`feature-130`, ouverte le 15/09 au soir sur l'hypothèse que l'effondrement initial
+venait de la sérialisation ArduinoJson de l'historique, est **fusionnée ici et
+supprimée** : les blocs qui bordent le trou après l'effondrement sont les deux
+`String` de la **ligne de journal** que la sauvegarde émet, pas les morceaux du
+`JsonDocument`.
+
+| | | |
+|---|---:|---|
+| Effondrement initial | **65 %** | ligne de journal de la sauvegarde d'historique |
+| Grignotage progressif | 35 % | ligne de journal de l'avertissement de famine |
+
+Les deux sont des `String` de `std::vector<LogEntry>`. Voir la note d'incident,
+section « A1 : IL N'Y A QU'UN SEUL MÉCANISME ».
+
 ## Description
 
 Les entrées du journal (`std::vector<LogEntry>` avec `String message`,
@@ -82,47 +102,80 @@ Les entrées de journal cessent de fractionner le plus gros bloc contigu du tas
 interne 8 bits. **Le journal continue de fonctionner** : c'est lui qui a permis
 ce diagnostic, et il porte les gardes de dosage.
 
-## Les quatre options, et leurs contre-indications connues
+## Les options, et ce qui est connu de chacune
 
 Aucune n'est retenue par cette spec. `architect` conçoit, **`pool-chemistry`
-tranche** ce qui touche aux gardes.
+tranche** ce qui touche aux gardes de dosage.
 
-### A — Déporter les `String` de journal en PSRAM
+### ⭐ A+B — Pool statique réservé au démarrage, EN PSRAM  *(la plus complète)*
+
+Réserver les 200 entrées une fois pour toutes au démarrage, dans la PSRAM.
+
+✅ **Aucune `String` de journal ne se pose jamais dans le tas interne** — le
+problème disparaît à la racine, pas seulement pour le `logger` mais pour tout ce
+qui aurait été fragmenté par lui.
+✅ **Aucune allocation dynamique du tout** : rien qui puisse fragmenter, ni
+maintenant ni au prochain ajout de message.
+✅ **Zéro octet de RAM interne consommé** — contrairement à B seul, qui figerait
+20 à 30 Ko sur la ressource exacte dont on diagnostique la pénurie.
+
+⚠️ **LE DANGER, et il vise le `logger` précisément.** `logger.cpp:10` le dit :
+« `flushToDisk()` s'exécute SUR LA TÂCHE QUI LOGUE », et il écrit `/system.log`
+**en flash**. Or pendant une écriture flash le cache est coupé, et les accès PSRAM
+passent par ce cache. Lire les `String` depuis la PSRAM *pendant* cette fenêtre
+fauterait. C'est la même famille de danger que celle qui a fixé le plancher de
+512 o (`constants.h:864`) : les caches LittleFS et le pool FILE côtoient les
+écritures flash, et « l'exposition passerait de QUANTIFIÉE à BINAIRE ».
+**Parade à concevoir, pas à supposer** : recopier dans un tampon DRAM avant
+d'appeler l'écriture.
+
+⚠️ **Deux réserves secondaires** : la PSRAM est 2 à 4 fois plus lente et le
+`logger` est sur des chemins chauds ; et ce projet a une cicatrice — « le
+parachute anti-OOM était en PSRAM depuis feature-066, donc décoratif ».
+
+⚠️ **Contrainte de conception** : un pool de taille fixe impose de borner la
+longueur des messages, ce que `pool-chemistry` a déjà refusé une fois (voir C).
+Donc entrées de taille fixe généreuse, ou pool à allocation interne propre.
+
+ℹ️ **L'objection C2 de `pool-chemistry` ne s'applique PAS ici.** Elle interdisait
+`EXT_RAM_BSS_ATTR` pour les tampons du **recensement**, dont le callback s'exécute
+interruptions masquées. Le `logger` ne tourne jamais dans cette fenêtre-là.
+
+### A seul — Déporter les `String` en PSRAM sans pool
 Le seuil `kPsramExtmemThresholdBytes` vaut déjà **1 024 o** ; une `String` de
-144 o reste donc en interne.
-⛔ **Contre-indication mesurée** : le `static_assert` de `constants.h:864` interdit
-de descendre sous **512 o**, parce que les caches LittleFS (512 o) et le pool FILE
-de la libc (428 o) basculeraient alors en PSRAM — or ce sont **eux** qui côtoient
-les écritures flash, pendant lesquelles le cache flash/PSRAM est coupé.
-« L'exposition passerait de QUANTIFIÉE à BINAIRE. »
-Une bascule **ciblée** sur le seul `logger` (allocateur dédié) échapperait à cette
-objection : à instruire.
+144 o reste donc en interne. Une bascule **ciblée** sur le seul `logger`
+(allocateur dédié) échapperait au plancher de 512 o.
+⚠️ Même danger de flush que A+B, sans la garantie « aucune allocation dynamique ».
 
-### B — Pool statique réservé au démarrage
-Réserver les 200 entrées en `.bss`, quand le tas est vierge, et ne plus jamais
-allouer.
-⛔ Coût en RAM permanente, à chiffrer : 200 entrées × taille moyenne.
-✅ Seule option qui **garantit** la contiguïté plutôt que de la rendre probable.
+### B seul — Pool statique en RAM interne
+✅ Garantit la contiguïté.
+⚠️ Fige 20 à 30 Ko de `.bss` **interne**, prélevés sur la ressource rare. Dominé
+par A+B sur tous les plans sauf le danger de flush.
 
 ### C — Borner la taille des `String` de journal
-Les faire tomber dans une classe de taille qui ne fractionne pas les grands blocs.
-⛔ Tronquer un message de garde chimique est inacceptable : `pool-chemistry` a
-déjà refusé une troncature en 2.25.0 (les messages d'escalade sortaient coupés,
-donc en JSON invalide, et Home Assistant rejetait l'alerte entière).
+⛔ `pool-chemistry` a déjà refusé une troncature en 2.25.0 : les messages
+d'escalade sortaient coupés, donc en JSON invalide, et Home Assistant rejetait
+l'alerte entière. Utilisable seulement comme **contrainte d'un pool**, jamais
+comme correctif isolé.
 
 ### D — Ne pas journaliser la famine pendant la famine
-Le remède le plus simple au cycle décrit.
-⛔ **Il supprime le signal qui a permis ce diagnostic.** Et `constants.h:336-341`
-énonce l'inverse comme doctrine : « un refus hors PANIC prouve que le lot C est
-dû — C'EST LE SIGNAL VOULU, pas un défaut à corriger. »
+⛔ Supprime le signal qui a permis ce diagnostic, et `constants.h:336-341` énonce
+l'inverse comme doctrine : « un refus hors PANIC prouve que le lot C est dû —
+C'EST LE SIGNAL VOULU, pas un défaut à corriger ».
+⛔ **Et ça ne suffirait pas** : A1 montre que l'effondrement de 65 % vient de la
+ligne de journal de la **sauvegarde d'historique**, pas de l'avertissement de
+famine. Supprimer le second laisserait le premier intact.
 
 ## Cas limites
 
-- **L'effondrement initial de −29 696 octets à 1,0 h d'uptime** n'est **pas**
-  expliqué par ce mécanisme : autre échelle, probablement autre cause. Corriger le
-  `logger` sans le comprendre laisserait une part majeure du problème en place.
-  ⚠️ Aucune des trois fenêtres n'a de point avant 6,7 h sur les deux premières,
-  ni de recensement bloc par bloc sur la première heure de la troisième.
+- **L'effondrement initial est EXPLIQUÉ depuis le 16/09** (A1) : il survient à la
+  première sauvegarde d'historique, et les blocs qui bordent le trou sont les deux
+  `String` de la ligne de journal qu'elle émet — 168 octets qui détruisent 23 552
+  octets de contiguïté. Il n'est plus « d'une autre échelle » : c'est le même
+  mécanisme, appliqué à un trou plus grand.
+  ⚠️ **Il tombe à un instant VARIABLE** — 108 s à 528 s selon les démarrages —
+  parce que la sauvegarde est périodique (5 min) et que le démarrage tombe à une
+  position quelconque du cycle.
 - Le palier s'installe vers **7-8 Ko** et y reste : atteint à 19,4 h ici contre
   28,2 h sur v2.51.0. Pourquoi cette valeur, et pourquoi elle tient, reste ouvert.
 - Trois blocs apparus pendant la marche de 19,4 h ont été libérés avant lecture :
@@ -165,12 +218,35 @@ autres ont été écartées**, avec leurs contre-indications mesurées.
 
 ## Critères d'acceptation
 
+- [ ] **Sur 4 redémarrages, le plus gros bloc ne chute plus de moitié** à la
+      première sauvegarde d'historique — c'est le test le plus rapide et le plus
+      discriminant, il donne un verdict en 10 minutes au lieu de 30 heures
 - [ ] Sur une fenêtre ≥ 30 h, le plus gros bloc contigu ne descend plus sous le
       seuil `kStaticFileMinAllocBytes` (8 192 o) du fait des `String` de journal
 - [ ] Aucune sauvegarde d'historique sautée pour cause de famine sur cette fenêtre
 - [ ] Le journal reste complet : aucun message de garde chimique tronqué ou perdu
 - [ ] La récursion `systemLogger → broadcastLog → _heapAllowsPush` n'est pas rouverte
 - [ ] Le coût RAM est mesuré et documenté
+
+## Méthode de mesure — reproduire A1
+
+Le mécanisme est **reproductible à volonté** : il suffit de redémarrer. Quatre
+démarrages successifs ont donné le même résultat (29 684 / 27 636 / 28 660 /
+31 732), ce qui en fait un banc d'essai fiable pour valider un correctif.
+
+Protocole établi le 16/09, après deux tentatives ratées :
+
+1. **Sonder `/get-system-info?hf=1` toutes les 8 s** — lecture d'atomiques, aucun
+   parcours de tas. C'est ce qui détecte la chute.
+2. **Recenser toutes les 60 s au plus**, jamais plus vite : à 17 s de cadence
+   l'instrument devient la cause (effondrement à 38 s au lieu de 300 s).
+3. **Dès la chute détectée**, recenser immédiatement avec une fenêtre **étroite
+   ET POSITIONNÉE** sur le trou — les 24 blocs rendus sont les plus bas en
+   adresse, viser l'enveloppe entière ne montre jamais la zone d'intérêt.
+4. **Lire le contenu** des blocs qui bordent le nouveau trou : ils se lisent en
+   clair.
+
+⚠️ Exige un **build de diagnostic** (`POOL_HEAP_PEEK`), voir ADR-0081.
 
 ## Plan de test manuel
 
@@ -180,6 +256,35 @@ autres ont été écartées**, avec leurs contre-indications mesurées.
    éventuelle : **aucun bloc responsable ne doit être une `String` de journal**.
 3. Provoquer une famine et vérifier que l'avertissement est toujours émis.
 4. Vérifier qu'un message de garde chimique long arrive **entier** en MQTT.
+
+## Pistes issues de l'exploitation réelle de l'instrument (15/09)
+
+Quatre limites rencontrées **en se servant** de `feature-128`, à traiter avec
+cette spec ou par une spec d'outillage dédiée :
+
+1. **Recensement incrémental.** Le parcours est passé de 524 µs sur tas frais à
+   **2 545 µs** en fin de fenêtre, et la garde `kHeapCensusMaxDurationUs` (1 500)
+   l'a **auto-désactivé définitivement** à 13:01 — c'est-à-dire que l'instrument
+   devient inutilisable **précisément quand le phénomène s'aggrave**. La sortie
+   est de parcourir par tranches d'adresses, plusieurs passages courts, pour que
+   le coût par passage reste borné quelle que soit la fragmentation.
+2. **Réarmement explicite**, sur requête authentifiée, plutôt qu'un redémarrage —
+   qui détruit l'état qu'on veut observer. Publier aussi le nombre de
+   désactivations.
+3. **Dimensionnement des tampons par constante.** Les 1 456 o de `.bss` sont
+   prélevés sur la ressource dont on diagnostique la pénurie. 24 trous et 96
+   blocs occupés est un choix, pas une fatalité : la fenêtre ciblée n'en utilise
+   qu'une dizaine. ⚠️ `pool-chemistry` (C2) interdit de les déporter en PSRAM —
+   écrire en PSRAM sous interruptions masquées gonflerait la durée du parcours.
+4. **`region_count` n'est pas sérialisé.** Le champ existe dans la structure
+   depuis le correctif B3 mais la route ne le publie pas : l'opérant ne sait pas
+   s'il regarde une union de régions trouée. Correctif d'une ligne.
+
+⚠️ **Et une limite du firmware livré, découverte à l'usage** : la route expose
+`offset`/`count`, l'instantané retient 96 blocs, mais **le premier GET consomme
+l'instantané** — `offset=24` rend `not_ready`. Les blocs 24 à 95 sont
+**inatteignables**. Contourné en resserrant la fenêtre ; à corriger en rendant la
+lecture idempotente, ou en ne libérant l'instantané qu'à la dernière page.
 
 ## Notes pour agent
 

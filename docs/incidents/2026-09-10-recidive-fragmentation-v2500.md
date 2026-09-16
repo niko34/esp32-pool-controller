@@ -571,3 +571,182 @@ de release.
 
 ⚠️ Après la fenêtre : reflash d'un binaire de release et preuve
 `"build":{"peek":0}` (condition S12).
+
+
+---
+
+## Mise à jour — LE SECOND MÉCANISME, ET C'EST LE PLUS GROS (15/09/2026, soir)
+
+La fenêtre courte ouverte pour instrumenter la première heure a livré **un second
+mécanisme, distinct du premier et plus lourd que lui**.
+
+### ✅ CERTAIN — l'effondrement initial coïncide avec la PREMIÈRE SAUVEGARDE D'HISTORIQUE
+
+Quatre redémarrages successifs, capture à 5 s :
+
+| boot | plus gros bloc avant | après | instant |
+|---|---:|---:|---|
+| 19:24 | 55 284 | **29 684** | entre 52 s et 108 s |
+| 20:36 | 53 236 | **27 636** | entre 212 s et 339 s |
+| 22:42 | 55 284 | **28 660** | entre 184 s et 528 s |
+| 22:52 | 57 332 | **28 660** | **à 317 s** |
+
+Le quatrième est instrumenté à la seconde près, et le journal donne la
+coïncidence :
+
+    22:55:11  Contrôle d'intégrité du tas : 1er passage      → AUCUN effet
+                                                               (bloc encore 57 332 à 234 s)
+    22:57:11  Partition history : 28672/262144 octets utilisés  → EFFONDREMENT à 317 s
+
+Le seul autre événement de la fenêtre, le contrôle d'intégrité du tas, n'a rien
+produit. **Le bloc est divisé par deux, systématiquement, sur les quatre boots.**
+
+### 🔶 FORTEMENT PROBABLE — le mécanisme
+
+`saveToFile()` (`src/history.cpp`) construit un `JsonDocument` contenant **tous**
+les points d'historique — 179 à 233 selon les sessions. ArduinoJson 7 alloue par
+morceaux, et la politique d'allocation ne déporte en PSRAM que ce qui **dépasse
+1 024 octets** (`kPsramExtmemThresholdBytes`). Tous les morceaux plus petits
+restent donc en **RAM interne**, et se posent au milieu du grand bloc contigu.
+
+**Non démontré** : que ce soient les morceaux d'ArduinoJson plutôt qu'une autre
+allocation du même chemin (tampon stdio, structure LittleFS). Le recensement
+bloc par bloc encadrant la sauvegarde le dirait — il n'a pas été fait, la fenêtre
+courte ayant servi à établir la coïncidence.
+
+### ⚠️ CE QUE CELA CORRIGE DANS LA LECTURE PRÉCÉDENTE
+
+**Ce n'est pas un phénomène mais DEUX**, et le `logger` — identifié plus haut avec
+adresse et contenu — est **le plus petit des deux** :
+
+| | part de la perte totale | cause | établi |
+|---|---:|---|---|
+| Effondrement initial | **65 %** (−29 696 o) | 1re sauvegarde d'historique | coïncidence sur 4 boots, 1 instrumenté à la seconde |
+| Grignotage progressif | 35 % | `String` du journal, ~1/h | adresse + taille + contenu, 2 fois |
+
+Corriger le `logger` seul laisserait les deux tiers du problème en place.
+
+### ❌ UNE PISTE ÉCARTÉE PAR LA MESURE
+
+L'hypothèse « c'est l'ouverture de l'interface web qui casse le bloc » a été
+**testée et réfutée** : huit requêtes séquentielles puis huit requêtes parallèles
+sur un tas frais n'ont produit **aucune** variation du plus gros bloc
+(55 284 → 55 284). Elle était pourtant plausible — les deux plantages OOM
+historiques du projet sont survenus en servant un fichier statique.
+
+### ❓ CE QUI RESTE OUVERT
+
+1. **Quelle allocation exactement**, dans le chemin de sauvegarde. Un recensement
+   encadrant la sauvegarde (POST à t−10 s et t+10 s) le nommerait.
+2. **Pourquoi l'instant varie** de 108 s à 528 s selon les boots, alors que la
+   sauvegarde est périodique à 5 min. Probablement la position dans le cycle au
+   moment du démarrage.
+3. **Pourquoi toujours ~28 000 o** — soit très exactement la moitié. Une
+   allocation au milieu du bloc produit ce résultat, mais rien n'explique
+   pourquoi elle tombe au milieu plutôt qu'à un bord.
+
+
+---
+
+## Mise à jour — A1 : IL N'Y A QU'UN SEUL MÉCANISME (16/09/2026)
+
+La mise à jour précédente posait **deux** mécanismes distincts : l'effondrement
+initial (65 %) attribué à la sérialisation de l'historique, et le grignotage
+progressif (35 %) attribué au `logger`. **A1 les réunit en un seul.**
+
+### ✅ CERTAIN — les blocs qui bordent le trou sont des `String` de journal
+
+Recensement ciblé immédiatement après l'effondrement (boot du 16/09, chute à
+313 s, 55 284 → 31 732), puis lecture de contenu :
+
+```
+[0x3FFF2758 … 0x3FFFA3CC]   31 732 o libres   ← le « plus gros bloc » après la chute
+ 0x3FFFA3D0    76 o (64 demandés)   « Partition history : 32768/262144 octets utilisés »
+ 0x3FFFA420    92 o (80 demandés)   « 2026-09-16T07:50:30 INFO Partition history : … »
+[0x3FFFA47C … 0x40000000]   23 428 o libres   ← recensé : ZÉRO bloc occupé
+```
+
+La zone `0x3FFFB400 – 0x40000000` (19 456 o) est **entièrement libre**, vérifié
+par recensement : 0 bloc occupé. Le trou d'origine allait donc de `0x3FFF2758`
+au sommet du tas, soit **55 476 octets**, et les deux `String` l'ont scindé.
+
+**168 octets ont détruit 23 552 octets de contiguïté.**
+
+### ⚠️ CE QUE CELA CORRIGE
+
+Ce ne sont **pas** les morceaux du `JsonDocument` de `saveToFile()`. Ce sont les
+**deux `String` de la ligne de journal que la sauvegarde émet** — le message brut
+et l'entrée formatée avec horodatage et niveau, telles que les produit
+`std::vector<LogEntry>` (`src/logger.h:22,35`).
+
+| | avant A1 | après A1 |
+|---|---|---|
+| Effondrement initial (65 %) | morceaux ArduinoJson | **ligne de journal de la sauvegarde** |
+| Grignotage progressif (35 %) | `String` du journal | `String` du journal |
+
+**Un seul mécanisme, une seule spec** : `feature-129`. `feature-130`, ouverte la
+veille sur l'hypothèse de la sérialisation, est **fusionnée dedans et supprimée**.
+
+### ✅ CERTAIN — la mémoire EST libérée : ce n'est pas une fuite
+
+Question légitime : si le `logger` libère correctement, pourquoi le grand bloc ne
+revient-il pas ? Trois mesures répondent.
+
+- **`libre` remonte** : 36 240 → 46 640 octets entre 25,7 h et 27,7 h (**+29 %**)
+  pendant que le plus gros bloc ne bouge pas d'un octet.
+- **La taille moyenne par bloc BAISSE** : 216,3 → 204,5 o sur 30 h, pente
+  −0,40 o/h. Rien ne grossit.
+- **Les octets alloués montent de 23 Ko, mais le NOMBRE de blocs monte de 161** —
+  et `kMaxLogEntries = 200`. C'est le tampon circulaire du journal qui se
+  remplit depuis un démarrage, pas une accumulation.
+
+**Le mécanisme du cliquet** : une `String` posée au milieu d'un trou le scinde en
+deux. Elle vit ensuite dans le tampon circulaire le temps que 200 lignes la
+chassent. Pendant ce temps, les deux demi-trous sont disponibles et **d'autres
+allocations s'y installent**. Quand elle est enfin libérée, ses voisins sont
+occupés : plus rien à recoaslescer. Le trou revient, isolé et petit.
+
+D'où : `trous libres 50 → 130` (+160 %) pour un total de mémoire libre presque
+inchangé. La mémoire est là — en 130 morceaux au lieu de 50.
+
+### ❌ HYPOTHÈSE RÉFUTÉE — ce n'est pas le service de l'interface web
+
+Testée directement sur un tas frais : **huit requêtes séquentielles** puis **huit
+requêtes en parallèle** (page, JS, CSS, `/data`, `/get-config`, favicon) →
+**aucune variation** du plus gros bloc (55 284 → 55 284).
+
+Elle était pourtant la plus plausible : les deux plantages OOM historiques du
+projet sont survenus **en servant un fichier statique**, et la garde 503 existe
+pour eux. Ne pas la rouvrir sans mesure nouvelle.
+
+### ⚠️ LIMITES DE L'INSTRUMENT, constatées EN S'EN SERVANT
+
+Quatre limites de `feature-128`, toutes rencontrées pendant cette campagne. À
+traiter par `feature-129` ou une spec d'outillage.
+
+1. **EFFET D'OBSERVATION — démontré, pas supposé.** À 17 s de cadence (deux POST
+   et deux GET par cycle), l'instrument est devenu la cause : le grand bloc s'est
+   effondré à **38 s** au lieu de ~300 s, et le nombre de trous oscillait de 43 à
+   67 d'un relevé à l'autre. C'est la condition X4 de `security-reviewer` —
+   « la réponse alloue sur le tas même qu'elle mesure » — vérifiée sur le terrain.
+   **Cadence utilisable : 60 s au minimum pour le recensement.**
+2. **PAGINATION INUTILISABLE.** La route expose `offset`/`count` et l'instantané
+   retient 96 blocs, mais **le premier GET consomme l'instantané** : `offset=24`
+   rend `not_ready`. Les blocs 24 à 95 sont inatteignables. Parade : resserrer la
+   fenêtre pour que moins de 24 blocs y tombent.
+3. **LA FENÊTRE DOIT ÊTRE POSITIONNÉE, PAS SEULEMENT ÉTROITE.** Les 24 blocs
+   rendus sont les **plus bas en adresse**. Viser l'enveloppe entière montre
+   systématiquement les mêmes basses adresses et jamais la zone d'intérêt. Deux
+   tentatives d'A1 ont échoué pour cette raison avant la troisième.
+4. **AUTO-DÉSACTIVATION À 2 545 µs.** Le parcours coûte 524 µs sur tas frais et
+   2 545 µs en fin de fenêtre : la garde `kHeapCensusMaxDurationUs` (1 500) l'a
+   coupé définitivement à 13:01 le 15/09. **L'instrument devient inutilisable
+   précisément quand le phénomène s'aggrave.** Sortie : recensement incrémental
+   par tranches d'adresses.
+
+### Correction d'une affirmation antérieure
+
+`concordance` n'est **pas** un indicateur bruité, contrairement à ce qui avait été
+supposé. Sur un tas calme il vaut `match` (52/52 trous, 802/802 blocs, mesuré au
+démarrage) ; il passe à `mismatch` quand le tas s'agite entre les deux mesures.
+C'est une information, pas du bruit.
