@@ -750,3 +750,37 @@ traiter par `feature-129` ou une spec d'outillage.
 supposé. Sur un tas calme il vaut `match` (52/52 trous, 802/802 blocs, mesuré au
 démarrage) ; il passe à `mismatch` quand le tas s'agite entre les deux mesures.
 C'est une information, pas du bruit.
+
+
+---
+
+## Clôture de la campagne — retour en binaire de release (16/09/2026)
+
+**Condition S12 tenue et prouvée**, par les deux voies indépendantes :
+
+```
+GET  /debug/heap_peek     → HTTP 404                        (la route n'existe pas)
+POST /debug/heap_census   → "build":{"census":1,"peek":0}   (marqueur d'exécution)
+```
+
+Le **recensement (R2) reste disponible en production** — adresses, tailles,
+`alloc_size`, concordance, durée de parcours. Seule la **lecture de contenu (R3)**
+a disparu, comme le prévoit ADR-0081. Une prochaine campagne d'identification
+exigera donc un build de diagnostic et un reflash.
+
+**Instruments désormais permanents**, sans build spécial :
+- champ `a` (octets alloués) dans `/get-system-info?hf=1` — `feature-127` ;
+- `/debug/heap_census` sous authentification et refus en mode ouvert —
+  `feature-128` volet A.
+
+Coût permanent mesuré : **+1 456 o de RAM**, +10 620 o de flash. Le CPU est
+négligeable — le service de boucle sort sur une lecture atomique quand rien n'est
+demandé, et aucun parcours de tas n'a lieu sans requête explicite.
+
+**Ce que la campagne a produit**, en trois fenêtres et sept redémarrages :
+la nature du phénomène (fragmentation, pas fuite), son mécanisme (`String` de
+journal posées dans le plus gros trou), son amplification (168 o détruisant
+23 552 o), sa reproductibilité (4 boots, 4 fois le même résultat), et le protocole
+pour la revalider en 10 minutes.
+
+**Ce qu'elle laisse ouvert** : le choix du correctif, instruit par `feature-129`.
