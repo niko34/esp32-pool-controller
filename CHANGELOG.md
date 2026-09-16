@@ -2,6 +2,67 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [2.52.1] - 2026-09-16
+
+> **Ce qui change pour vous** : le journal cesse de fragmenter la mémoire de
+> l'appareil — c'est lui qui provoquait, indirectement, les refus temporaires
+> de service de pages et les sauvegardes d'historique reportées observés ces
+> derniers jours. Autre gain, discret mais réel : les avertissements et
+> erreurs émis au tout début du démarrage atteignent désormais le journal
+> persistant `/system.log`, ce qui n'était jamais le cas auparavant — dont le
+> message signalant que la régulation pH reste fermée au redémarrage suite à
+> une bascule de sécurité non acquittée, qui était jusqu'ici la seule trace
+> possible de cet état et qui était perdue.
+
+### Firmware
+
+- **Journal (feature-129)** : le stockage des entrées du journal passe d'un
+  `std::vector<LogEntry>` de `String` (allocations dynamiques de taille
+  variable) à une **arène circulaire en RAM interne statique**
+  (`sLogArena`/`sLogSlots`/`sFlushLine`, `.bss`, +21 240 o mesurés). Mesuré
+  en production : ces `String` s'inséraient **au milieu du plus gros bloc
+  libre** du tas 8 bits et le fractionnaient — 168 octets d'une seule ligne
+  de journal ont détruit 23 552 octets de contiguïté à la première
+  sauvegarde d'historique, jusqu'à faire refuser le service de fichiers
+  statiques (503) et reporter des sauvegardes d'historique. `log()`
+  n'exécute désormais **plus aucune allocation dynamique**. Coût net attendu
+  sur le tas : **négatif** (≈ −10 Ko), le journal cessant d'occuper la
+  ressource qu'il fragmentait sans grossir. Voir
+  [ADR-0082](docs/adr/0082-arene-circulaire-du-journal-en-ram-interne-statique.md).
+- **Journal** : les avertissements et erreurs émis **avant** l'activation de
+  la persistance (chargement de la configuration, disjoncteur de boot-loop
+  history) sont désormais **rattrapés** et écrits dans `/system.log` au
+  premier flush qui suit — ils étaient auparavant perdus pour la
+  persistance de façon définitive.
+- **Journal** : plafond de longueur d'un message relevé de 256 à **768
+  octets** (`kLogMessageMaxBytes`) — le comptage initial ignorait les
+  messages de garde chimique construits avant l'appel au journal, dont le
+  pire cas réel atteint ≈ 630 octets (refus de mode de régulation pH via
+  MQTT). Tout dépassement est tronqué avec un marqueur explicite
+  (`"... (tronque)"`), jamais silencieux.
+- **API** : six nouveaux champs dans `GET /get-system-info`
+  (`log_entries_current`, `log_arena_bytes_used`, `log_arena_truncations`,
+  `log_arena_evictions`, `log_persist_overrun`,
+  `log_arena_overlap_guard_trips`) et un nouveau champ `trunc` par entrée
+  dans `GET /get-logs`.
+
+### Documentation
+
+- `docs/adr/0082-arene-circulaire-du-journal-en-ram-interne-statique.md` :
+  nouvel ADR — décision, alternatives écartées (dont la PSRAM), inversion de
+  propriété C6, rattrapage de démarrage C7, mutant non couvrable, post-mortem
+  du défaut de recouvrement trouvé et corrigé avant livraison.
+- `docs/subsystems/logger.md` : arène circulaire, types `LogRecord`/
+  `LogArenaView`, `copyEntryByIndex`, six compteurs, disparition de
+  `_persistBuffer`.
+- `docs/API.md` : champ `trunc` de `/get-logs`, six champs `log_*` de
+  `/get-system-info`.
+- `docs/subsystems/ws-manager.md` : signature `broadcastLog(const
+  LogRecord&)`, sémantique du drapeau de troncature non propagé au flux
+  temps réel.
+
+---
+
 ## [2.52.0] - 2026-09-14
 
 > **Ce qui change pour vous** : en mode Automatique, les horaires de

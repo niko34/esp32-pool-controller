@@ -15,14 +15,35 @@ void begin(AsyncWebServer* server);
 void update();                         // cleanup + push capteurs 5s + warn throttlé pushes sautés
 void broadcastSensorData();            // push immédiat, toutes données
 void broadcastConfig();                // push immédiat, config actuelle
-void broadcastLog(const LogEntry&);    // push un log — CODE MORT, voir ci-dessous
+void broadcastLog(const LogRecord&);   // push un log — CODE MORT, voir ci-dessous (type renommé LogEntry → LogRecord en feature-129)
 bool hasClients() const;
 size_t clientCount() const;            // nb clients connectés (diagnostic, v2.8.1)
 uint32_t skippedPushCount() const;     // cumul des pushes sautés : garde heap OU bad_alloc rattrapé (v2.11.1 / v2.14.0)
 uint32_t oversizedFrameCount() const;  // cumul des trames > kWsFrameBufBytes — pushes sautés, JAMAIS tronqués (v2.14.0)
 ```
 
-> ⚠️ **Code mort — `broadcastLog()` / `Logger::setLogCallback()`** (constat investigation churn-heap, 2026-07-28) : le hook `systemLogger.setLogCallback()` ([`src/logger.h:58`](../../src/logger.h)) n'a **aucun appelant** depuis son introduction en 2.7.0 (commit `aedd007` — ajouté sans jamais être branché). `broadcastLog()` n'est donc **jamais exécuté** : aucun message `type: "log"` n'est émis, le handler UI correspondant (`data/app.js`) ne reçoit rien, et la page Journal utilise le polling HTTP `/get-logs`. La purge (ou le branchement volontaire avec garde anti-récursion) est **reportée** à un futur cycle — en attendant, `broadcastLog()` porte quand même la garde heap v2.11.1 par cohérence.
+> ⚠️ **Code mort — `broadcastLog()` / `Logger::setLogCallback()`** (constat investigation churn-heap, 2026-07-28, **toujours vrai après feature-129**) : le hook `systemLogger.setLogCallback()` ([`src/logger.h`](../../src/logger.h)) n'a **aucun appelant** depuis son introduction en 2.7.0 (commit `aedd007` — ajouté sans jamais être branché). `broadcastLog()` n'est donc **jamais exécuté** : aucun message `type: "log"` n'est émis, le handler UI correspondant (`data/app.js`) ne reçoit rien, et la page Journal utilise le polling HTTP `/get-logs`. La purge (ou le branchement volontaire avec garde anti-récursion) est **reportée** à un futur cycle — en attendant, `broadcastLog()` porte quand même la garde heap v2.11.1 par cohérence, et son **type de paramètre a été maintenu à jour** (`LogEntry` → `LogRecord`, feature-129) malgré l'absence d'appelant : voir ci-dessous.
+
+### `broadcastLog()` et le type `LogRecord` (feature-129)
+
+Le journal a remplacé son ancien type `LogEntry` par deux types distincts,
+`LogRecord` et `LogArenaView` (voir [`docs/subsystems/logger.md`](logger.md#arène-circulaire-du-journal-feature-129)).
+`broadcastLog(const LogRecord&)` est le **seul** consommateur de `LogRecord`
+côté `ws_manager` — signature mise à jour en même temps que `logger.h`, même
+si aucun appelant ne l'invoque encore.
+
+⚠️ **Si ce hook est un jour branché, retenir un point de sémantique** :
+`LogRecord::message` pointe vers le tampon de l'**appelant** de `log()` (la
+chaîne **intégrale**, avant toute troncature de stockage), jamais vers
+`sLogArena`. La copie éventuellement stockée dans l'arène, elle, peut avoir
+été tronquée à `kLogMessageMaxBytes` (768 o) et porter `kLogFlagTruncated`.
+**`broadcastLog()` ne doit jamais propager ce drapeau** : le flux WS refléterait
+alors un message complet comme « tronqué », ce qui est trompeur — précisément
+sur un refus d'injection de sécurité, où faire croire qu'il manque une
+information qui est en fait entièrement présente serait le pire des deux
+sens d'erreur. C'est `/get-logs` (`trunc` par entrée, lu depuis l'arène) qui
+porte cette information, pas le canal temps réel. Voir
+[`docs/API.md`](../API.md#get-get-logs--write).
 
 ## Garde heap des broadcasts (v2.11.1, bug-badalloc-ws-broadcast)
 

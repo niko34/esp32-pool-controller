@@ -11,6 +11,7 @@
 #include "ph_guard_logic.h"    // v2.25.0 : gardes pH + diagnostic sonde (logique pure)
 #include "ph_offset.h"         // v2.25.0 : applyPhOffset() — pH corrigé des gardes
 #include "ph_actuator_limit_logic.h"  // feature-086 : phActuatorUndersized() (pure)
+#include "utf8_clamp.h"         // feature-129 (phase A) : ex-clampReasonUtf8, module pur partagé
 #include <esp_task_wdt.h>
 #include <string.h>  // strlcpy / strnlen / memcpy — tampon de cause de refus (R2)
 #include <time.h>
@@ -528,35 +529,17 @@ void PumpControllerClass::requestManualCycleRecord(int pumpIndex) {
 // =============================================================================
 // R2 (revue v2.25.0) — tampon FIXE de la cause de refus
 // =============================================================================
-// Tronque `dst` (déjà écrit, NUL-terminé) au dernier caractère UTF-8 COMPLET.
-// Les messages sont en français : couper à l'octet laisserait une séquence
-// multi-octets incomplète, donc un JSON non décodable par le client — le
-// symptôme exact déjà rencontré sur les charges MQTT (cf. publishAlert).
-// Ne fait rien si la chaîne se termine sur un caractère complet.
-static void clampReasonUtf8(char* dst) {
-  size_t len = strlen(dst);
-  if (len == 0) return;
-  // Reculer jusqu'au premier octet du DERNIER caractère (les octets de
-  // continuation valent 10xxxxxx).
-  size_t start = len - 1;
-  while (start > 0 && (static_cast<unsigned char>(dst[start]) & 0xC0) == 0x80) start--;
-  const unsigned char lead = static_cast<unsigned char>(dst[start]);
-  size_t expected;
-  if ((lead & 0x80) == 0x00)      expected = 1;   // ASCII
-  else if ((lead & 0xE0) == 0xC0) expected = 2;
-  else if ((lead & 0xF0) == 0xE0) expected = 3;
-  else if ((lead & 0xF8) == 0xF0) expected = 4;
-  else { dst[start] = '\0'; return; }  // octet de tête invalide (lecture déchirée)
-  if (start + expected > len) dst[start] = '\0';  // séquence tronquée : on la retire
-}
+// Troncature UTF-8 : utf8ClampInPlace() (utf8_clamp.h), module PUR partagé
+// depuis feature-129 (phase A) — ex-clampReasonUtf8() de ce fichier, déplacée
+// à comportement strictement identique.
 
 // Écriture BORNÉE du tampon de cause (seul point d'écriture). strlcpy garantit la
-// terminaison ; clampReasonUtf8 rattrape une éventuelle coupe multi-octets.
+// terminaison ; utf8ClampInPlace rattrape une éventuelle coupe multi-octets.
 void PumpControllerClass::storeRefusalCause(int pumpIndex, const char* cause) {
   if (pumpIndex < 0 || pumpIndex > 1) return;
   if (cause == nullptr) { _lastRefusalCause[pumpIndex][0] = '\0'; return; }
   strlcpy(_lastRefusalCause[pumpIndex], cause, kDoseBlockedReasonMaxLen);
-  clampReasonUtf8(_lastRefusalCause[pumpIndex]);
+  utf8ClampInPlace(_lastRefusalCause[pumpIndex]);
 }
 
 // Copie bornée vers le tampon de l'APPELANT (contexte async_tcp autorisé).
@@ -572,7 +555,7 @@ static void copyReasonBounded(const char* src, char* out, size_t outSize) {
   size_t n = (srcLen < outSize - 1) ? srcLen : outSize - 1;
   memcpy(out, src, n);
   out[n] = '\0';
-  clampReasonUtf8(out);
+  utf8ClampInPlace(out);
 }
 
 void PumpControllerClass::copyPhDoseBlockedReason(char* out, size_t outSize) const {
@@ -631,7 +614,7 @@ void PumpControllerClass::logRefusalOnce(int pumpIndex, const String& cause,
   // inchangée. Tampon de pile (loopTask), aucune allocation.
   char next[kDoseBlockedReasonMaxLen];
   strlcpy(next, cause.c_str(), sizeof(next));
-  clampReasonUtf8(next);
+  utf8ClampInPlace(next);
   if (strcmp(_lastRefusalCause[pumpIndex], next) != 0) {
     systemLogger.info(String("[Dosage ") + (pumpIndex == 0 ? "pH" : "ORP") +
                       "] Refus : " + cause);

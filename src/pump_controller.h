@@ -200,8 +200,8 @@ private:
   // membre de l'objet ne peut PAS être libéré — le pire cas dégénère en lecture
   // DÉCHIRÉE, soit un message d'affichage partiellement à jour, sans
   // conséquence. Dimensionnement et politique de troncature UTF-8 :
-  // cf. kDoseBlockedReasonMaxLen (constants.h) et clampReasonUtf8()
-  // (pump_controller.cpp). Écrit en loopTask UNIQUEMENT.
+  // cf. kDoseBlockedReasonMaxLen (constants.h) et utf8ClampInPlace()
+  // (utf8_clamp.cpp, feature-129). Écrit en loopTask UNIQUEMENT.
   char _lastRefusalCause[2][kDoseBlockedReasonMaxLen] = {{0}, {0}};
 
   // v2.25.1 — CODE de la cause, tenu STRICTEMENT en phase avec le tampon texte

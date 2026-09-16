@@ -14,7 +14,7 @@ public:
 
   void broadcastSensorData();
   void broadcastConfig();
-  void broadcastLog(const LogEntry& entry);
+  void broadcastLog(const LogRecord& entry);
 
   // À utiliser depuis un handler HTTP (tâche AsyncTCP) : marque le broadcast
   // pour exécution dans la main loop. Évite l'allocation d'un StaticJson<2048>

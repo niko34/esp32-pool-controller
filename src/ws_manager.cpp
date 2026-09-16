@@ -272,7 +272,7 @@ void WsManager::broadcastConfig() {
   }
 }
 
-void WsManager::broadcastLog(const LogEntry& entry) {
+void WsManager::broadcastLog(const LogRecord& entry) {
   if (!_ws || _ws->count() == 0) return;
   if (!_heapAllowsPush()) return;  // Garde AVANT la construction du JSON (bug-badalloc-ws-broadcast)
   StaticJson<192> doc;
@@ -280,6 +280,11 @@ void WsManager::broadcastLog(const LogEntry& entry) {
   JsonObject d = doc["data"].to<JsonObject>();
   d["timestamp"] = entry.timestamp;
   d["level"] = systemLogger.getLevelString(entry.level);
+  // entry.message pointe dans le tampon de l'APPELANT de log() (feature-129,
+  // condition C3) : stable pendant tout cet appel SYNCHRONE (measureJson +
+  // serializeJson ont lieu avant que broadcastLog() ne rende la main, donc
+  // avant que l'appelant de log() ne puisse reprendre la main et réécrire son
+  // propre tampon).
   d["message"] = entry.message;
   // Même buffer statique que les autres broadcasts (invariant loopTask — voir
   // sWsFrameBuf : un futur câblage multi-tâche devra utiliser un buffer dédié).

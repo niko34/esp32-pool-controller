@@ -4,13 +4,15 @@
 - **Singleton** : `extern Logger systemLogger;`
 
 
-> ⚠️ **Accès fichiers — 8 des 14 sites `fopen` du firmware sont ici**
-> (l. **253**, **321**, **404-405**, **427**, **441**, **451**, **463**). **Sept
-> sur huit** sont classés **contention TCP** : `flushToDisk()` s'exécute **sur la
-> tâche qui a émis le log** — `loopTask`, `mqttTask` ou `async_tcp` — parce que `ERROR` et
-> `CRITICAL` déclenchent un flush **synchrone** ([`logger.cpp:71-73`](../../src/logger.cpp:71)).
-> Il n'existe pas de « tâche du logger ». L'échec du `malloc` du verrou newlib
-> appelle **`abort()`**. Voir [ADR-0070](../adr/0070-fopen-interne-helper-unique-et-classes-de-contention.md)
+> ⚠️ **Accès fichiers — 8 des sites `fopen` du firmware sont ici**
+> ([`logger.cpp:442`](../../src/logger.cpp:442), **523**, **615-616**, **683**,
+> **697**, **707**, **719** — numéros de ligne à jour au **v2.52.1**, feature-129
+> ayant déplacé ces sites). **Sept sur huit** sont classés **contention TCP** :
+> `flushToDisk()` s'exécute **sur la tâche qui a émis le log** — `loopTask`,
+> `mqttTask` ou `async_tcp` — parce que `ERROR` et `CRITICAL` déclenchent un flush
+> **synchrone** ([`logger.cpp:234`](../../src/logger.cpp:234)). Il n'existe pas
+> de « tâche du logger ». L'échec du `malloc` du verrou newlib appelle
+> **`abort()`**. Voir [ADR-0070](../adr/0070-fopen-interne-helper-unique-et-classes-de-contention.md)
 > (dont la décision **(f)** lève la contradiction de l'interdit `critical()` posé
 > par [ADR-0067](../adr/0067-garde-503-avant-fopen-handler-prioritaire.md)) et le
 > recensement [acces-fichiers.md](acces-fichiers.md). ✅ **Gardes posées depuis la
@@ -18,7 +20,8 @@
 > ici était périmée.
 >
 > Le **huitième** site est la sonde de [`reconcileLogTmp()`](#reprise-dune-rotation-interrompue-au-démarrage-bug-099-v2481)
-> (l. **253**), seul site **classe B** du journal ([ADR-0076](../adr/0076-reconciliation-du-tmp-de-rotation-au-boot.md)).
+> ([`logger.cpp:442`](../../src/logger.cpp:442)), seul site **classe B** du journal
+> ([ADR-0076](../adr/0076-reconciliation-du-tmp-de-rotation-au-boot.md)).
 
 ## Rôle
 
@@ -26,27 +29,57 @@ Log central du firmware avec buffer circulaire en RAM + persistance sur la parti
 
 ## API publique
 
+> ⚠️ **feature-129 (v2.52.1)** : le stockage est passé d'un `std::vector<LogEntry>`
+> de `String` à une **arène circulaire d'octets en `.bss`** — voir
+> [« Arène circulaire »](#arène-circulaire-du-journal-feature-129) ci-dessous et
+> [ADR-0082](../adr/0082-arene-circulaire-du-journal-en-ram-interne-statique.md).
+> `LogEntry` **n'existe plus** : remplacé par deux types **distincts, non
+> interchangeables** — `LogRecord` (vue jamais dans l'arène, callback WS et
+> `copyEntryByIndex`) et `LogArenaView` (vue dans l'arène, valide sous mutex
+> seulement, `forEachRecentLog`). `getLogEntryByIndex()` est renommé
+> `copyEntryByIndex()`. `_persistBuffer` a disparu : la ligne persistée est
+> **dérivée** de l'arène au moment du flush, jamais stockée en double.
+
 ```cpp
 void begin();
-void log(LogLevel level, const String& message);
+
+// log() n'exécute AUCUNE allocation dynamique (memcpy sous mutex vers l'arène).
+void log(LogLevel level, const char* message, size_t len);
+void log(LogLevel level, const String& message);  // délègue à la surcharge ci-dessus
+
+// Chaque niveau a DEUX surcharges : const char* ET const String&. La surcharge
+// const char* évite de construire une String temporaire à partir d'un tampon
+// pile existant (ex. char msg[480] dans pump_controller.cpp) — sur les sites de
+// garde chimique, cette String évitée aurait pesé jusqu'à 480 o par appel.
+void debug(const char* message);
 void debug(const String& message);
+void info(const char* message);
 void info(const String& message);
+void warning(const char* message);
 void warning(const String& message);
+void error(const char* message);
 void error(const String& message);
+void critical(const char* message);
 void critical(const String& message);
 
-void setLogCallback(std::function<void(const LogEntry&)>);  // push WS temps réel
+// Push WS temps réel. `LogRecord::message` pointe dans le tampon de
+// l'APPELANT de log() — JAMAIS dans l'arène (condition C3, feature-129).
+void setLogCallback(std::function<void(const LogRecord&)>);
 
 // Itération en place des logs récents, SANS copie (v2.8.2) ; le visiteur
-// retourne false pour arrêter l'itération (v2.10.4 — pagination /get-logs)
+// retourne false pour arrêter l'itération (v2.10.4 — pagination /get-logs).
+// Le visiteur reçoit un LogArenaView : `message` pointe DANS l'arène,
+// valide SOUS CE MUTEX SEULEMENT (feature-129).
 void forEachRecentLog(size_t count, unsigned long sinceTimestamp,
-                      const std::function<bool(const LogEntry&)>& visitor) const;
+                      const std::function<bool(const LogArenaView&)>& visitor) const;
 
-// Copie UNE entrée sous mutex, best-effort (v2.10.4 — export chunked /download-logs)
-bool getLogEntryByIndex(size_t chronoIdx, LogEntry& out) const;
+// Copie UNE entrée sous mutex, DANS le tampon fourni par l'appelant — jamais
+// de pointeur d'arène rendu (v2.10.4 — export chunked /download-logs ;
+// renommé copyEntryByIndex en feature-129, même contrat best-effort).
+bool copyEntryByIndex(size_t chronoIdx, LogRecord& out, char* buf, size_t bufLen) const;
 
-void clear();      // vide uniquement le buffer RAM circulaire
-void clearAll();   // vide RAM + _persistBuffer + supprime /system.log et /system.log.tmp
+void clear();      // vide uniquement l'arène (RAM)
+void clearAll();   // vide l'arène + supprime /system.log et /system.log.tmp
 size_t getLogCount();
 
 // Persistance — réconcilie le `.tmp` de rotation EN TÊTE d'appel (v2.48.1,
@@ -92,22 +125,143 @@ Le filtre UI `#log_level_debug` de la page Logs reste indépendant : il filtre l
 | Switch « Logs DEBUG activés » (firmware) | Décide si `Logger::debug()` **produit** les entrées |
 | Filtre `#log_level_debug` (UI) | Décide si l'UI **affiche** les entrées DEBUG produites |
 
-## Buffer circulaire RAM
+## Arène circulaire du journal (feature-129)
 
-`kMaxLogEntries = 200` ([`constants.h:46`](../../src/constants.h:46)). Stocké dans un `std::vector<LogEntry>` préalloué. Index circulaire `currentIndex`, flag `bufferFull` pour savoir si le buffer a fait au moins un tour.
+**Remplace, depuis la v2.52.1**, le `std::vector<LogEntry>` de `String` qui
+s'allouait sur le tas interne 8 bits **au milieu du plus gros bloc libre** et le
+fractionnait — mesuré en production : 168 octets (les deux `String` d'une seule
+ligne de journal) ont détruit 23 552 octets de contiguïté à la première
+sauvegarde d'historique. Décision complète, alternatives écartées (PSRAM en
+tête) : [ADR-0082](../adr/0082-arene-circulaire-du-journal-en-ram-interne-statique.md).
 
-## Lecture des logs récents — `forEachRecentLog` (v2.8.2, visiteur `bool` en v2.10.4)
+Trois objets `.bss` de taille **fixe**, en RAM **interne** (jamais PSRAM — le
+danger de cache coupé pendant `flushToDisk()` l'interdit, voir l'ADR) :
+
+| Objet | Constante | Taille | Rôle |
+|---|---|---:|---|
+| `sLogArena` | `kLogArenaBytes` | 16 384 o | texte des messages, file circulaire d'octets |
+| `sLogSlots` | `kMaxLogEntries` × 20 o | 4 000 o | descripteurs POD (`LogSlot` : `timestamp`, `wallSec`, `seq`, `off`, `len`, `level`, `flags`) |
+| `sFlushLine` | `kLogPersistLineMax` | 832 o | ligne de flush — propriété **exclusive** du flusher, jamais partagée avec `log()` |
+
+Coût mesuré : **+21 240 octets de `.bss`** (21 216 prédits). `log()` n'exécute
+plus **aucune allocation dynamique** : un `memcpy` sous le mutex existant, vers
+un emplacement de taille fixe décidé par le module pur
+[`src/log_arena_logic.h`](../../src/log_arena_logic.h) (`ADR-0017` — zéro
+dépendance Arduino, zéro mutex, zéro I/O).
+
+### Constantes ([`constants.h`](../../src/constants.h), section « JOURNAL »)
+
+| Constante | Valeur | Motif |
+|---|---:|---|
+| `kLogArenaBytes` | 16 384 | 82 o/entrée pour 200 entrées (mesuré : 52 o) — corrige une pénurie de **contiguïté**, pas d'octets |
+| `kLogMessageMaxBytes` | **768** | ⚠️ pas 256, voir ci-dessous. Ne réserve **aucun** octet de `.bss` : borne le pire cas de *profondeur*, pas la mémoire |
+| `kLogTruncTail` | `"... (tronque)"` | marqueur ASCII **strict** (jamais « … », 3 o, qui exigerait de compter en octets et non en caractères) |
+| `kLogPersistLineMax` | 832 | horodatage (19) + espace + niveau (≤5) + espace + `kLogMessageMaxBytes` + marqueur + `\n`/NUL |
+| `kLoggerFlushRedoMaxPasses` | 3 | borne la boucle de reprise de `flushToDisk()` sous rafale ERROR/CRITICAL concurrente — recommandation P2 `pool-chemistry` |
+
+Quatre `static_assert` en gardent la cohérence à la compilation : `kLogArenaBytes`
+≥ 200 × 64 o, `kLogMessageMaxBytes` ≤ 1/8 de l'arène (un seul message ne peut pas
+monopoliser l'arène), `kLogPersistLineMax` suffisant pour le pire cas formaté, et
+**`kLogMessageMaxBytes >= 640`** — celui-ci verrouille explicitement le plafond
+contre un retour en arrière silencieux.
+
+#### Pourquoi 768 et non 256 — le plafond a failli tronquer les gardes chimiques
+
+Le comptage initial (718 sites, littéraux agrégés *par appel*, max 257 o) est
+**méthodologiquement faux pour les messages de sécurité** : les plus longs sont
+construits **avant** l'appel — dans un `char[]` ou par concaténation — et
+l'appel à `systemLogger` ne porte plus qu'un préfixe court (`"[Dosage pH] "`).
+Pire cas réel mesuré par `pool-chemistry` : **≈ 630 o**
+([`mqtt_manager.cpp:1614`](../../src/mqtt_manager.cpp:1614), refus de mode pH +
+`phAutoManualReason`). Huit des dix sites concernés portent des messages de
+sécurité chimique.
+
+Précédent déjà commis puis corrigé, cité en commentaire à
+[`pump_controller.cpp:3609`](../../src/pump_controller.cpp:3609) : un ancien
+`msg[248]` coupait à « …bande mor » — c'était l'**ENTRÉE du défaut** que ce
+filet devait rendre traçable qui disparaissait. Plafonner à 256 aurait réinfligé
+ce défaut à tous les sites de garde à la fois — condition bloquante **C1**
+(`pool-chemistry`).
+
+**Validé par mutation** (`test/test_native_log_guard_messages/`, phase B,
+16/09/2026) : reconstruire les dix messages de garde pire cas et affirmer
+`len <= kLogMessageMaxBytes`. Ramener la constante à 256 fait échouer **six des
+dix** cas — pas huit comme estimé au départ : `fs_guard.cpp`, `oom_guard.cpp` et
+`main.cpp` sont bornés **structurellement** par de petits tampons de pile fixes
+ou des littéraux courts, et un site capteur reste sous 256 à son pire cas
+honnête. Une mutation qui ne tue que six mutants sur dix décrits n'est pas une
+faiblesse du test — c'est une propriété mesurée du firmware.
+
+### Les six compteurs d'observabilité
+
+Atomiques `relaxed`, lisibles depuis n'importe quelle tâche **sans** prendre le
+mutex du logger, jamais journalisés dans leur propre chemin d'échec (ferme la
+récursion `systemLogger → broadcastLog → _heapAllowsPush → systemLogger`,
+documentée en tête de [`heap_metrics.h`](../../src/heap_metrics.h)). Publiés par
+`GET /get-system-info` — voir [`docs/API.md`](../API.md#get-get-system-info)
+pour le contrat complet.
+
+| Compteur | Getter C++ | Sens |
+|---|---|---|
+| `log_entries_current` | `logEntriesCurrent()` | entrées vivantes dans l'arène (≤ 200) |
+| `log_arena_bytes_used` | `logArenaBytesUsed()` | octets occupés dans `sLogArena` (≤ 16 384) |
+| `log_arena_truncations` | `logArenaTruncations()` | messages tronqués (dépassement de `kLogMessageMaxBytes`) depuis le boot |
+| `log_arena_evictions` | `logArenaEvictions()` | créneaux évincés de l'arène depuis le boot, tous motifs confondus |
+| `log_persist_overrun` | `logPersistOverruns()` | créneaux évincés **avant** d'avoir été persistés alors qu'ils auraient dû l'être (C6, distinct de `log_arena_evictions`) |
+| `log_arena_overlap_guard_trips` | `logArenaOverlapGuardTrips()` | déclenchements du détecteur d'invariant `logArenaWriteOverlapsLive()` — **doit rester à 0** |
+
+`log_persist_overrun` est la trace de l'**inversion de propriété** posée par la
+condition C6 : `_persistBuffer` était une file *indépendante* de l'arène ;
+dériver la ligne persistée de l'arène rend les deux **solidaires** — sous
+rafale, une ligne `WARNING` peut désormais être évincée de l'arène avant
+d'avoir atteint `/system.log`. `ERROR`/`CRITICAL` restent couverts par le flush
+synchrone, inchangé.
+
+### Politique « pas d'enjambement » (C4)
+
+Si la place contiguë en fin d'arène est insuffisante pour un message, elle est
+**abandonnée** (`tailDrop`) et l'écriture repart à l'offset 0 — un message n'est
+**jamais** scindé en deux par la frontière de fin d'arène, ce qui permet à tout
+lecteur de rendre un `const char*` contigu. Le gaspillage est borné par
+`kLogMessageMaxBytes`.
+
+### Le détecteur d'invariant qui survit en production
+
+`logArenaWriteOverlapsLive()` (`log_arena_logic.h`/`.cpp`) est un filet
+**indépendant** de `logArenaPlan()`/`logRingEvictCount()`, exécuté juste avant
+tout `memcpy` dans l'arène. Il a été ajouté après qu'un défaut de géométrie —
+la place libre calculée depuis `writeOff` au lieu de `head`, invisible aux cinq
+autres compteurs pendant qu'il corrompait des messages vivants — a été trouvé et
+corrigé avant livraison (reproduit à la 508ᵉ et à la 853ᵉ écriture en
+simulation). Sur déclenchement, le repli est d'évincer **tout** l'anneau plutôt
+que d'écrire par-dessus un message vivant : perdre le journal vaut mieux que le
+falsifier ([ADR-0072](../adr/0072-absence-de-valeur-hors-du-domaine.md)). Détail
+complet, y compris les trois enseignements du post-mortem :
+[ADR-0082](../adr/0082-arene-circulaire-du-journal-en-ram-interne-statique.md).
+
+### Contrainte de pile
+
+Aucun tampon de `kLogMessageMaxBytes` sur la pile, ni dans `log()` ni dans le
+flush — `log()` s'exécute depuis `async_tcp`, qui a une pile courte. Le `memcpy`
+va directement de `message.c_str()` vers l'arène ; le flush écrit en deux temps
+(en-tête horodaté dans `sFlushLine`, ~32 o, puis les octets lus **directement**
+depuis `sLogArena` vers `sFlushLine`), sans jamais reconstituer une ligne de
+800 o ailleurs.
+
+## Lecture des logs récents — `forEachRecentLog` (v2.8.2, visiteur `bool` en v2.10.4, `LogArenaView` en feature-129)
 
 ```cpp
 void forEachRecentLog(size_t count, unsigned long sinceTimestamp,
-                      const std::function<bool(const LogEntry&)>& visitor) const;
+                      const std::function<bool(const LogArenaView&)>& visitor) const;
 ```
 
-Itère les `count` entrées les plus récentes (dont le `timestamp > sinceTimestamp`, `0` = pas de filtre) **en place, sous mutex, sans copie**. Le `visitor` est appelé pour chaque entrée dans l'ordre chronologique, avec une **référence const** sur l'entrée stockée dans le buffer circulaire — aucune allocation interne, aucun `std::vector<LogEntry>` intermédiaire.
+Itère les `count` entrées les plus récentes (dont le `timestamp > sinceTimestamp`, `0` = pas de filtre) **en place, sous mutex, sans copie**. Le `visitor` est appelé pour chaque entrée dans l'ordre chronologique, avec un `LogArenaView` **pointant dans `sLogArena`** — aucune allocation interne, aucune copie de texte.
 
 **Retour du visiteur (v2.10.4, bug-crash-getlogs-badalloc)** : `false` = **arrêt anticipé** de l'itération. C'est le mécanisme de pagination de `/get-logs` : la page complète est construite en **une seule prise de mutex** (jamais de double passage), l'arrêt survient quand la page est pleine (règles d'admission : [`src/logs_page.h`](../../src/logs_page.h)).
 
 **Contrat mutex** : le `_mutex` est tenu pendant toute l'itération. Le `visitor` s'exécute donc **sous mutex** ; il ne doit faire que des écritures mémoire rapides — **allocations BORNÉES tolérées** (ex. le `JsonDocument` d'une page ≤ ~4 Ko de `/get-logs`), pas d'I/O bloquante, pas de yield, et ne **jamais** rappeler `systemLogger` (risque de deadlock / récursion).
+
+⚠️ **Tout stockage du `message` d'un `LogArenaView` reçu par le visiteur DOIT en faire une COPIE IMMÉDIATE** — ex. `JsonString(v.message, v.len)`, jamais `o["x"] = v.message`. ArduinoJson 7 stocke un `const char*` **par référence** : `o["x"] = v.message` sérialiserait le pointeur **après** la libération du mutex, potentiellement sur un octet déjà réécrit. `web_routes_data.cpp` (`handleGetLogs`) applique cette règle ; c'est le **mutant non couvrable en test natif** documenté dans [ADR-0082](../adr/0082-arene-circulaire-du-journal-en-ram-interne-statique.md) — porté par la revue de code, jamais par la suite automatisée (ADR-0073).
 
 ### Contexte : correctif du crash `/logs` (`std::bad_alloc`)
 
@@ -117,18 +271,18 @@ Cette méthode **remplace** l'ancienne `std::vector<LogEntry> getRecentLogs(size
 
 La constante `kMinHeapForLogsResponse` (24 Ko, v2.8.2) est **supprimée** : un seuil FIXE indépendant de la taille réelle de la réponse ne protégeait pas (2 coredumps `bad_alloc` → `abort`, 2026-07-23 `/debug/sensor_trace` et 2026-07-24 `/get-logs` — le commentaire v2.8.2 « le stream grandit par realloc, jamais d'abort » était faux : le `cbuf` d'`AsyncResponseStream` est un `new char[]` throwant). Remplacée par :
 
-- **`/get-logs`** : page bornée (30 entrées, hard cap 60), `measureJson()` de la page réelle + marge `kHttpHeapMarginBytes` (4 Ko) comparés à `ESP.getMaxAllocHeap()` → **503** `{"error":"heap fragmenté, réessayez"}` ou stream **pré-dimensionné exact**.
-- **`/download-logs`** : flux **chunked zéro-RAM** (aucune garde nécessaire — rien de proportionnel à l'export n'est alloué), voir `getLogEntryByIndex` ci-dessous.
+- **`/get-logs`** : page bornée (30 entrées, hard cap 60), `measureJson()` de la page réelle + marge `kHttpHeapMarginBytes` (4 Ko) comparés à `ESP.getMaxAllocHeap()` → **503** `{"error":"heap fragmenté, réessayez"}` ou stream **pré-dimensionné exact**. Chaque entrée porte le champ `trunc` (booléen) — voir [`docs/API.md`](../API.md#get-get-logs--write).
+- **`/download-logs`** : flux **chunked zéro-RAM** (aucune garde nécessaire — rien de proportionnel à l'export n'est alloué), voir `copyEntryByIndex` ci-dessous.
 
 Contrats détaillés : [`docs/API.md`](../API.md#get-get-logs--write).
 
-## Copie unitaire — `getLogEntryByIndex` (v2.10.4)
+## Copie unitaire — `copyEntryByIndex` (v2.10.4, renommée `getLogEntryByIndex` → `copyEntryByIndex` en feature-129)
 
 ```cpp
-bool getLogEntryByIndex(size_t chronoIdx, LogEntry& out) const;
+bool copyEntryByIndex(size_t chronoIdx, LogRecord& out, char* buf, size_t bufLen) const;
 ```
 
-Copie **UNE** entrée sous mutex (`chronoIdx` chronologique, `0` = la plus ancienne). Retourne `false` si l'index dépasse le nombre d'entrées **OU** sur timeout mutex (`kLoggerMutexTimeoutMs`) — les deux cas sont indistinguables pour l'appelant : contrat **best-effort** assumé. Consommée par le callback chunked de `/download-logs` (une entrée par itération, une seule `String` copiée à la fois) ; le ring peut tourner entre deux chunks (doublon/saut tolérés — export de diagnostic). Le report de ligne entre deux chunks est géré par le module pur [`src/logs_export_chunk.h`](../../src/logs_export_chunk.h) (`LogLineCarry<kLogExportLineMaxBytes>` / `emitCarry`, garantie de progression — jamais `0` avant la vraie fin ; lignes > 256 o tronquées « … »).
+Copie **UNE** entrée sous mutex (`chronoIdx` chronologique, `0` = la plus ancienne) **dans le tampon `buf` fourni par l'appelant** — jamais de pointeur d'arène rendu à l'appelant, contrairement à `forEachRecentLog`. Si `slot.len > bufLen - 1`, le message est clampé UTF-8 (`utf8ClampLen()`, [`src/utf8_clamp.h`](../../src/utf8_clamp.h)) et `out.flags` porte `kLogFlagTruncated`. Retourne `false` si l'index dépasse le nombre d'entrées, si `buf`/`bufLen` est invalide, **OU** sur timeout mutex (`kLoggerMutexTimeoutMs`) — les trois cas sont indistinguables pour l'appelant : contrat **best-effort** assumé. Consommée par le callback chunked de `/download-logs` (une entrée par itération, une seule copie à la fois — plus de `String` intermédiaire) ; le ring peut tourner entre deux chunks (doublon/saut tolérés — export de diagnostic). Le report de ligne entre deux chunks est géré par le module pur [`src/logs_export_chunk.h`](../../src/logs_export_chunk.h) (`LogLineCarry<kLogExportLineMaxBytes>` / `emitCarry`, garantie de progression — jamais `0` avant la vraie fin ; lignes > 256 o tronquées « … »).
 
 ## Persistance sur LittleFS (partition history)
 
@@ -205,7 +359,7 @@ commentaire* de faire passer le test).
 #### Niveaux de log, et le silence nominal
 
 - **`WARNING` uniquement, jamais `error()`/`critical()`** : ces deux-là
-  déclenchent le flush **synchrone** ([`logger.cpp:71-73`](../../src/logger.cpp:71)),
+  déclenchent le flush **synchrone** ([`logger.cpp:234`](../../src/logger.cpp:234)),
   qui rouvrirait `/system.log` **pendant** la réconciliation. C'est la règle
   générale de cette page — *tout code écrit pour éviter `fopen` en famine est
   contraint à `WARN`/`INFO`* — appliquée à un chemin qui, lui, manipule les
@@ -215,9 +369,9 @@ commentaire* de faire passer le test).
 - **Le cas nominal ne coûte rien** : aucune ligne, aucun octet de journal, aucune
   ouverture au-delà de la sonde. C'est ce qui rend acceptable un bloc exécuté à
   **chaque** boot dans un fichier dont la rétention se compte en heures.
-- **L'abstention est MUETTE volontairement.** Sur refus d'admission,
-  `_persistBuffer` (100 entrées, éviction FIFO) est précisément la ressource sous
-  pression, et `history.cpp` émet déjà son `WARN` de famine juste après.
+- **L'abstention est MUETTE volontairement.** Sur refus d'admission, l'arène
+  elle-même (`sLogArena`/`sLogSlots`, feature-129) est précisément la ressource
+  sous pression, et `history.cpp` émet déjà son `WARN` de famine juste après.
   L'observabilité durable de ce refus est le compteur du `fs_guard`
   ([acces-fichiers.md](acces-fichiers.md#observabilité-des-refus)), pas une ligne
   de journal.
@@ -263,8 +417,8 @@ une spec de suite) : [ADR-0076](../adr/0076-reconciliation-du-tmp-de-rotation-au
 **Trouvaille du lot B-3 de bug-080** ([ADR-0067](../adr/0067-garde-503-avant-fopen-handler-prioritaire.md)). Le flush immédiat décrit ci-dessus n'est pas seulement « immédiat » : il est **synchrone, dans la tâche appelante**.
 
 ```
-systemLogger.error(...)          logger.cpp:71-73  →  si ERROR ou CRITICAL
-  → flushToDisk()                logger.cpp:276-277
+systemLogger.error(...)          logger.cpp:234  →  si ERROR ou CRITICAL
+  → flushToDisk()                logger.cpp:557
     → _persistFs->open("/system.log", "a")
       → fopen()  →  __sfp  →  __retarget_lock_init_recursive
         → lock_init_generic (newlib locks.c:77)   ← malloc de 92 o (rectifié en v2.43.0 ; « ~88 o » était faux)
@@ -293,7 +447,7 @@ la tâche qui a émis le log**, il n'existe pas de « tâche du logger ». Une l
 réponse est en vol, donc avec des pbuf lwip alloués.
 
 **Le huitième — la sonde de `reconcileLogTmp()`
-([`logger.cpp:253`](../../src/logger.cpp:253)) — est de CLASSE B (seuil 5 120)**,
+([`logger.cpp:442`](../../src/logger.cpp:442)) — est de CLASSE B (seuil 5 120)**,
 et c'est le seul du journal. Motif et invariant :
 [ADR-0076](../adr/0076-reconciliation-du-tmp-de-rotation-au-boot.md) — en
 classe A on s'abstiendrait dans toute la bande 5 120–8 192 où le filesystem est
@@ -302,7 +456,7 @@ sain, et **au boot une abstention ne se rejoue jamais**.
 #### Une seule mesure par flush, six ouvertures ensuite
 
 `flushToDisk()` prend **une** admission
-([`logger.cpp:379`](../../src/logger.cpp:379)) puis ouvre jusqu'à six fois avec
+([`logger.cpp:602`](../../src/logger.cpp:602)) puis ouvre jusqu'à six fois avec
 `kFsGuardAlreadyAdmitted` : append, repli `"w"`, relecture de taille, source de
 rotation, `.tmp` en écriture, `.tmp` en relecture. **6 mesures deviennent 1** —
 recompté au lot `bug-099` : ce chiffre-là est **inchangé**, le huitième site est
@@ -315,27 +469,33 @@ dans le régime pour lequel la garde existe. Et la rotation est une séquence
 pouvoir le relire.
 
 Les **deux** sites hors du flush prennent **chacun leur propre** mesure :
-[`logger.cpp:321`](../../src/logger.cpp:321) (marqueur `--- DÉMARRAGE ---` de
-`setPersistenceFs()`, classe A) et [`logger.cpp:248-253`](../../src/logger.cpp:248)
+[`logger.cpp:523`](../../src/logger.cpp:523) (marqueur `--- DÉMARRAGE ---` de
+`setPersistenceFs()`, classe A) et [`logger.cpp:437-442`](../../src/logger.cpp:437)
 (admission + sonde de `reconcileLogTmp()`, classe B — **une** admission pour la
 sonde **et** l'appel `rename`/`remove` qui suit). Total : **3 admissions, 8
 ouvertures**.
 
-#### Ce que devient le journal sous famine
+#### Ce que devient le journal sous famine (mis à jour, feature-129)
 
-Sur refus d'admission, `flushToDisk()` **réinsère le buffer non flushé en tête**
-de `_persistBuffer` (sous mutex, `kLoggerMutexTimeoutMs` — jamais de réinsertion
-sans mutex) et repousse `_lastFlushMs`. Conséquences, dans l'ordre :
+Sur refus d'admission, `flushToDisk()` **ne bouge pas `_flushCursor`** et
+repousse `_lastFlushMs`. Avant feature-129, le buffer non flushé était
+**réinséré** dans `_persistBuffer` (structure séparée, plafonnée à 100
+entrées) ; cette réinsertion n'existe plus, parce que la ressource qu'elle
+protégeait n'existe plus non plus — **l'arène EST désormais la file d'attente**
+(condition C6). Conséquences, dans l'ordre :
 
-1. **Aucune ligne n'est perdue tant que le buffer tient.** Le flush est
-   **reporté**, retenté au prochain `kFlushIntervalMs` (10 min). Sans le
+1. **Aucune ligne n'est perdue tant que l'arène tient.** Le flush est
+   **reporté**, le curseur reprendra exactement là au prochain appel. Sans le
    `_lastFlushMs = millis()`, `update()` rappellerait `flushToDisk()` **à la
    fréquence de la loop** pendant toute la famine.
-2. **Au-delà, la perte est bornée et par le HAUT.** `_persistBuffer` plafonne à
-   **100 entrées en éviction FIFO** : sous famine prolongée, ce sont les lignes
-   **les plus anciennes** qui sortent — y compris le WARN de boot du tripwire de
-   l'historique.
-3. **Le refus n'est jamais silencieux**, mais son canal durable n'est **pas** le
+2. **Au-delà, la perte est bornée par la profondeur de l'arène (200 entrées),
+   pas par une file dédiée de 100.** Sous famine prolongée, ce sont les
+   créneaux **les plus anciens** qui sont évincés — y compris potentiellement
+   un `WARNING` pas encore flushé. C'est exactement ce que compte
+   `log_persist_overrun` (C6, voir [« Arène circulaire »](#arène-circulaire-du-journal-feature-129)) : distinct des évictions RAM ordinaires (`log_arena_evictions`), il ne compte **que** les créneaux perdus pour `/system.log` alors qu'ils auraient dû y arriver.
+3. **`ERROR`/`CRITICAL` restent couverts par le flush synchrone**, inchangé —
+   la dégradation ci-dessus ne les concerne pas.
+4. **Le refus n'est jamais silencieux**, mais son canal durable n'est **pas** le
    journal : c'est le compteur **`ldef`** du payload **retenu**
    `<base>/diagnostic`.
 
@@ -428,9 +588,37 @@ Le régime pathologique est **le seul cas où ce WARN doit être vu en rafale** 
 
 Voir [pump-controller.md](pump-controller.md#suspension--assistant-de-mesure-du-débit--feature-075-v2240).
 
-Le tampon `_persistBuffer` (std::vector<String>) accumule entre deux flushes. Sa capacité est **bornée à 100 entrées** (`kMaxPersistBufferEntries`) et pré-allouée dans le constructeur (`reserve(kMaxPersistBufferEntries)`) pour éviter les `std::bad_alloc` en cas de heap fragmenté en production. Les entrées au-delà de 100 sont silencieusement ignorées (les logs restent dans le buffer RAM circulaire).
+> ⚠️ **Paragraphe obsolète, corrigé en feature-129.** `_persistBuffer`
+> (`std::vector<String>`, plafonné à 100 entrées) **n'existe plus** : la ligne
+> persistée est désormais **dérivée directement de l'arène** au moment du
+> flush (`sFlushLine`, voir [« Arène circulaire »](#arène-circulaire-du-journal-feature-129)).
 
-**Logs pré-persistance** : tant que `setPersistenceFs()` n'a pas été appelé (`_persistEnabled == false`), les entrées ne sont **pas** accumulées pour `/system.log` — elles partent en buffer RAM + console uniquement. C'est notamment le cas des logs du **disjoncteur de boot-loop history** (v2.10.0), qui s'exécute dans `HistoryManager::begin()` **avant** l'activation de la persistance (c'est précisément elle qu'il protège) : le CRIT « partition effacée automatiquement » est visible dans la page Logs (RAM) et sur la série, mais jamais dans `/system.log`. Voir [system-health.md](system-health.md#disjoncteur-de-boot-loop-de-linit-history-v2100).
+**Logs pré-persistance — rattrapés depuis feature-129 (condition C7).** Avant ce
+lot, tant que `setPersistenceFs()` n'avait pas été appelé, les entrées émises
+n'étaient **jamais** accumulées pour `/system.log` — perdues pour la
+persistance dès que le ring RAM tournait. **Ce n'est plus le cas** :
+`_persistEnableSeq` est figé au nombre d'entrées déjà poussées au moment de
+l'activation, et `_flushCursor` réarmé à 0 — le flush qui suit **rattrape tout
+le démarrage**, filtré à `WARNING`/`ERROR`/`CRITICAL` (`logShouldPersist()`,
+[`src/log_arena_logic.h`](../../src/log_arena_logic.h)). Sans ce filtre, un
+boot verse plus de `kMaxLogFileBytes` (8 192 o) d'`INFO` et déclenche une
+rotation immédiate qui emporterait les lignes de sécurité qu'on vient
+d'écrire.
+
+**Bénéficiaire identifié** : le `CRITICAL` de [`config.cpp`](../../src/config.cpp)
+— « Régulation pH en MANUEL suite à une bascule automatique non acquittée » —
+émis pendant le chargement de la configuration, **avant** que
+`setPersistenceFs()` n'ait pu être appelé. C'était la **seule trace persistante
+possible** de cet état de sécurité au redémarrage ; elle atteint désormais
+`/system.log`. C'est le changement visible utilisateur le plus significatif de
+`feature-129` — voir [ADR-0082](../adr/0082-arene-circulaire-du-journal-en-ram-interne-statique.md).
+
+C'est notamment aussi le cas des logs du **disjoncteur de boot-loop history**
+(v2.10.0), qui s'exécute dans `HistoryManager::begin()` **avant** l'activation
+de la persistance (c'est précisément elle qu'il protège) : le CRIT « partition
+effacée automatiquement » est visible dans la page Logs (RAM) et sur la série,
+et — depuis feature-129 — dans `/system.log` après le premier flush qui suit
+`setPersistenceFs()`. Voir [system-health.md](system-health.md#disjoncteur-de-boot-loop-de-linit-history-v2100).
 
 ### La découverte HA n'est plus le premier poste du journal (feature-109, 06/09/2026)
 
@@ -465,7 +653,7 @@ Basculer un émetteur verbeux de `INFO` vers `DEBUG` épargne le **fichier** —
 
 | Chemin | Épargné par `DEBUG` ? | Pourquoi |
 |---|---|---|
-| `/system.log` (partition `history`) | ✅ **Oui** | `if (_persistEnabled && level != LogLevel::DEBUG)` ([`logger.cpp:58`](../../src/logger.cpp:58)) — une entrée `DEBUG` n'entre **jamais** dans `_persistBuffer`. **C'est le gain qui compte** pour la fenêtre forensique. |
+| `/system.log` (partition `history`) | ✅ **Oui** | `logShouldPersist()` ([`log_arena_logic.cpp`](../../src/log_arena_logic.cpp)) exclut `DEBUG` — une entrée `DEBUG` n'est **jamais** copiée dans `sFlushLine` au flush (feature-129 : plus de `_persistBuffer` intermédiaire, filtrage direct depuis l'arène). **C'est le gain qui compte** pour la fenêtre forensique. |
 | Buffer circulaire RAM (`kMaxLogEntries = 200`) | ❌ **Non** | L'entrée est poussée comme n'importe quelle autre. 54 lignes `DEBUG` évincent toujours 54 entrées. |
 | Push WebSocket (page Logs) | ❌ **Non** | Le callback est appelé pour tous les niveaux. |
 | Sortie Serial | ❌ **Non** | Émise même quand le mutex n'a pas pu être pris. |
@@ -476,7 +664,9 @@ Le seul rempart sur ces trois derniers chemins est le toggle `authCfg.debugLogsE
 
 ## Push WebSocket
 
-`setLogCallback(cb)` permet à `ws_manager` de s'abonner. À chaque `log()`, le callback est invoqué **immédiatement** avec l'entrée, ce qui déclenche un push WS `{type: "log", timestamp, level, message}`.
+`setLogCallback(cb)` permet à `ws_manager` de s'abonner. À chaque `log()`, le callback est invoqué **immédiatement, hors mutex**, avec un `LogRecord` dont `message` pointe dans le tampon de l'**appelant** de `log()` — jamais dans l'arène (condition C3, feature-129) — ce qui déclenche un push WS `{type: "log", timestamp, level, message}` ([`WsManager::broadcastLog()`](../../src/ws_manager.cpp), détail : [ws-manager.md](ws-manager.md#broadcastlog-et-le-type-logrecord-feature-129)).
+
+⚠️ **Le flux WebSocket porte le message INTÉGRAL, jamais tronqué, même quand la copie stockée dans l'arène l'a été.** `broadcastLog()` lit le tampon de l'appelant (le texte complet passé à `log()`), pas la copie de `sLogArena` — celle-là seule peut être coupée à `kLogMessageMaxBytes`. C'est délibéré : le drapeau de troncature (`trunc`) ne concerne que `/get-logs`, qui lit l'arène. Afficher « tronqué » sur un refus d'injection complet ferait chercher une information qui est déjà là.
 
 ## Émission console
 
@@ -493,13 +683,15 @@ Chaque `log()` se termine par l'émission de la ligne sur la série (UART0), for
 
 ## Concurrence
 
-Mutex FreeRTOS (`_mutex`) protège :
-- `logs` vector (lecture/écriture concurrente entre tâches et handlers web)
-- `_persistBuffer` (flush concurrent)
+Mutex FreeRTOS (`_mutex`) protège **tout l'état de l'arène** (feature-129) :
+- `sLogArena` / `sLogSlots` (lecture/écriture concurrente entre tâches et handlers web)
+- Les index `_arenaHead`/`_arenaTail`/`_arenaUsed`/`_slotOldestIdx`/`_slotWriteIdx`/`_slotLiveCount`/`_nextSeq`/`_flushCursor`
+
+`sFlushLine`, lui, n'est **pas** protégé par ce mutex : c'est la propriété **exclusive** du flusher (`flushToDisk()`), garantie par le drapeau `_flushInFlight` (anti-chevauchement) plutôt que par le mutex du journal.
 
 ### Timeouts mutex bornés (feature-027, v2.11.1)
 
-Les **8 prises de mutex** du logger (7 depuis feature-027, +1 avec `getLogEntryByIndex` en v2.10.4) sont bornées par `kLoggerMutexTimeoutMs = 100 ms` ([`constants.h`](../../src/constants.h)) — valeur courte car toutes les sections critiques du logger sont en **RAM pure** (buffer circulaire, `_persistBuffer`), jamais d'I/O sous mutex.
+Les prises de mutex du logger sont bornées par `kLoggerMutexTimeoutMs = 100 ms` ([`constants.h`](../../src/constants.h)) — valeur courte car toutes les sections critiques du logger sont en **RAM pure** (l'arène circulaire), jamais d'I/O sous mutex.
 
 **Politique silencieuse anti-récursion** : les chemins d'échec du logger n'appellent **JAMAIS** `systemLogger` (un log qui échoue à logger son propre échec = récursion). Seul un `Serial.printf` de secours existe sur le chemin de réinsertion de `flushToDisk()`.
 
@@ -509,12 +701,11 @@ Politique d'échec par site :
 |---|---|
 | `log()` | Entrée perdue (RAM + persistance) + `_droppedLogs++`. Le push WS n'a pas lieu (callback non capturé) |
 | `forEachRecentLog()` | Aucune itération (le `visitor` n'est pas appelé — le client réessaiera) |
-| `getLogEntryByIndex()` | Retourne `false` — l'export chunked `/download-logs` termine sa section RAM sans erreur (best-effort) |
+| `copyEntryByIndex()` | Retourne `false` — l'export chunked `/download-logs` termine sa section RAM sans erreur (best-effort) |
 | `clear()` | No-op — rien n'est perdu, l'utilisateur peut re-cliquer. **Ne compte pas dans `_droppedLogs`** (corrigé post-revue : le compteur ne trace que des *entrées* perdues) |
 | `clearAll()` | Return **avant** toute modification — le fichier `/system.log` n'est pas supprimé si la RAM n'a pas pu être vidée (pas d'état incohérent) |
 | `getLogCount()` | Retourne `0` |
-| `flushToDisk()` — swap du buffer | Return **sans toucher `_lastFlushMs`** → retente naturellement au prochain `update()` |
-| `flushToDisk()` — réinsertion après échec d'écriture fichier | Lignes perdues proprement (`_droppedLogs += n`) + message `Serial` — jamais de réinsertion sans mutex |
+| `flushToDisk()` — lecture du prochain créneau à flusher (`_flushOnePass`) | Sort de la boucle de drain : le curseur pointe déjà sur la suite, rien n'est perdu, on retentera au prochain passage |
 
 **`_droppedLogs`** (`uint32_t`, membre privé) : compteur diagnostic des entrées perdues sur timeout. Il est **volontairement write-only** — aucun endpoint, aucun topic MQTT, aucun getter ne l'expose (mineure consignée en revue, assumée) : l'exposer créerait une API pour un événement qui ne doit jamais se produire en nominal ; il reste lisible au debugger / dans un coredump si un diagnostic de contention devient nécessaire.
 
@@ -612,18 +803,21 @@ systemLogger.critical("Heap below 10KB, forcing restart");
 ## Cas limites
 
 - **Mutex non initialisé** : `log()` avant `begin()` est silencieusement ignoré.
-- **Partition history pleine** : `flushToDisk()` échoue, les logs restent en RAM jusqu'à rotation.
-- **`_persistBuffer` saturé** : au-delà de `kMaxPersistBufferEntries = 100` entrées, les nouvelles entrées ne sont pas accumulées pour le prochain flush (elles restent dans le buffer RAM circulaire). Situation possible uniquement si le flush est bloqué pendant un temps anormalement long.
-- **Callback non défini** : simplement pas de push WS, logs conservés en RAM quand même.
-- **Heap critique** : le log reste fonctionnel tant que le vector préalloué peut absorber les `String`.
+- **Partition history pleine** : `flushToDisk()` échoue, les logs restent dans l'arène jusqu'à rotation.
+- **Arène saturée sans flush** (feature-129) : au-delà de `kMaxLogEntries = 200` entrées ou `kLogArenaBytes = 16 384` octets, les créneaux les plus anciens sont évincés — comptés par `log_arena_evictions`, et par `log_persist_overrun` (C6) si un créneau évincé n'avait pas encore été persisté. `_persistBuffer` n'existe plus : cette éviction est désormais l'unique file d'attente vers `/system.log`.
+- **Callback non défini** : simplement pas de push WS, logs conservés dans l'arène quand même.
+- **Heap critique** : le journal reste fonctionnel **sans dégradation** — `log()` n'alloue plus rien sur le tas depuis feature-129, il ne dépend donc plus de l'état de fragmentation qu'il sert justement à diagnostiquer.
 
 ## Fichiers liés
 
 - [`src/logger.h`](../../src/logger.h), [`src/logger.cpp`](../../src/logger.cpp)
-- [`src/constants.h:46`](../../src/constants.h:46) — `kMaxLogEntries`
-- [`src/ws_manager.cpp`](../../src/ws_manager.cpp) — abonnement callback
+- [`src/log_arena_logic.h`](../../src/log_arena_logic.h) / [`.cpp`](../../src/log_arena_logic.cpp) — module **pur** de l'arène circulaire (feature-129, ADR-0017) : `logArenaPlan`, `logTruncatePlan`, `logRingEvictCount`, `logFormatHeader`, `logShouldPersist`, `logNextFlushSlot`, `logArenaWriteOverlapsLive`
+- [`src/utf8_clamp.h`](../../src/utf8_clamp.h) / [`.cpp`](../../src/utf8_clamp.cpp) — clamp UTF-8 partagé (`copyEntryByIndex`, `logTruncatePlan`)
+- [`src/constants.h`](../../src/constants.h) (section « JOURNAL — arène circulaire ») — `kMaxLogEntries`, `kLogArenaBytes`, `kLogMessageMaxBytes`, `kLogTruncTail`, `kLogPersistLineMax`
+- [`src/ws_manager.cpp`](../../src/ws_manager.cpp) — abonnement callback (`broadcastLog(const LogRecord&)`)
 - [`src/logger_logic.h`](../../src/logger_logic.h) / [`.cpp`](../../src/logger_logic.cpp) — module **pur** de réconciliation du `.tmp` de rotation (v2.48.1)
 - [`src/fs_guard.h`](../../src/fs_guard.h) — point d'admission unique des `fopen` internes (v2.43.0)
-- [acces-fichiers.md](acces-fichiers.md) — recensement des 14 sites d'ouverture, dont les 8 du journal
+- [acces-fichiers.md](acces-fichiers.md) — recensement des sites d'ouverture, dont ceux du journal
 - [ADR-0070](../adr/0070-fopen-interne-helper-unique-et-classes-de-contention.md) — garde mémoire avant tout `fopen` interne
 - [ADR-0076](../adr/0076-reconciliation-du-tmp-de-rotation-au-boot.md) — réconciliation du `.tmp` de rotation au démarrage, contrainte d'ordre
+- [ADR-0082](../adr/0082-arene-circulaire-du-journal-en-ram-interne-statique.md) — arène circulaire, alternatives écartées (dont la PSRAM), C6/C7, mutant non couvrable

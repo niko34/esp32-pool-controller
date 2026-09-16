@@ -715,6 +715,12 @@ struct LogsDownloadState {
   time_t nowEpoch = 0;
   unsigned long nowMs = 0;
   LogLineCarry<kLogExportLineMaxBytes> carry;  // Reliquat de ligne entre deux chunks
+  // feature-129 (phase C) : tampon de copie pour Logger::copyEntryByIndex()
+  // (le message ne pointe plus jamais dans sLogArena — condition C3). Champ de
+  // LogsDownloadState (shared_ptr alloué UNE fois par requête) : jamais sur la
+  // pile d'async_tcp, jamais par chunk. Dimension : kLogExportLineMaxBytes
+  // (256, la constante qui borne déjà la ligne d'export).
+  char buf[kLogExportLineMaxBytes];
 };
 
 // Charge une chaîne C (marqueurs de section) dans le carry.
@@ -845,18 +851,20 @@ static void handleDownloadLogs(AsyncWebServerRequest* request) {
             st->phase = LogsDownloadState::kRamEntries;
             break;
           case LogsDownloadState::kRamEntries: {
-            // Une entrée RAM par itération, copiée sous mutex (une seule String).
-            // false = fin du buffer OU timeout mutex (export best-effort) ; le
-            // ring peut tourner entre deux chunks (doublon/saut tolérés).
-            LogEntry entry;
-            if (systemLogger.getLogEntryByIndex(st->ramIdx, entry)) {
+            // Une entrée RAM par itération, copiée sous mutex DANS st->buf
+            // (feature-129 : le message ne pointe plus jamais dans sLogArena,
+            // condition C3). false = fin du buffer OU timeout mutex (export
+            // best-effort) ; le ring peut tourner entre deux chunks
+            // (doublon/saut tolérés).
+            LogRecord entry;
+            if (systemLogger.copyEntryByIndex(st->ramIdx, entry, st->buf, sizeof(st->buf))) {
               st->ramIdx++;
               char timeBuf[24];
               logsFormatTime(*st, entry.timestamp, timeBuf, sizeof(timeBuf));
               int n = snprintf(st->carry.line, sizeof(st->carry.line),
                                "[%s] %s : %s\n", timeBuf,
                                systemLogger.getLevelString(entry.level).c_str(),
-                               entry.message.c_str());
+                               entry.message);
               if (n < 0) {
                 st->carry.len = 0;
               } else if ((size_t)n >= sizeof(st->carry.line)) {
@@ -910,15 +918,22 @@ static void handleGetLogs(AsyncWebServerRequest* request) {
   size_t included = 0;
   unsigned long lastTs = 0;
   systemLogger.forEachRecentLog(kMaxLogEntries, sinceTimestamp,
-    [&arr, &truncated, &included, &lastTs](const LogEntry& entry) -> bool {
+    [&arr, &truncated, &included, &lastTs](const LogArenaView& entry) -> bool {
       LogsPageDecision d = logsPageAdmit(included, entry.timestamp, lastTs,
                                          kLogsMaxEntriesPerPage, kLogsPageHardCap);
       if (d.include) {
         JsonObject o = arr.add<JsonObject>();
         o["timestamp"] = entry.timestamp;
         o["level"] = systemLogger.getLevelString(entry.level);
-        // serializeJson échappe le message (l'échappement manuel a été supprimé)
-        o["message"] = entry.message;
+        // COPIE OBLIGATOIRE (feature-129, danger silencieux) : entry.message
+        // pointe DANS sLogArena, valide SOUS CE MUTEX SEULEMENT (on est dans
+        // le visiteur de forEachRecentLog). ArduinoJson stocke un `const
+        // char*` PAR RÉFÉRENCE — `o["message"] = entry.message` lirait un
+        // pointeur périmé au moment de serializeJson(), APRÈS la libération
+        // du mutex. JsonString(ptr, len) avec isStatic=false (défaut) force
+        // la copie IMMÉDIATE, pendant que le pointeur est encore valide.
+        o["message"] = JsonString(entry.message, entry.len);
+        o["trunc"] = (entry.flags & kLogFlagTruncated) != 0;
         included++;
         lastTs = entry.timestamp;
       }

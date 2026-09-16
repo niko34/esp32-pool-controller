@@ -122,6 +122,15 @@ constexpr unsigned long kConfigMutexTimeoutMs = 1000;     // 1s - Timeout acquis
 constexpr unsigned long kHistoryMutexTimeoutMs = 2000;    // 2s - Pire détenteur : consolidation + saveToFile LittleFS (~1-1,5 s)
 constexpr unsigned long kLoggerMutexTimeoutMs = 100;      // 100ms - Sections critiques RAM pures (buffer circulaire logs)
 constexpr size_t kLoggerConsoleLineMax = 512;             // Buffer pile d'émission console (1 ligne = 1 Serial.write atomique)
+// feature-129 (recommandation P2 pool-chemistry) : borne la boucle de reprise
+// de Logger::flushToDisk() (do { ... } while (_flushRedo)). Sous rafale
+// d'ERROR/CRITICAL venue d'une AUTRE tâche, _flushRedo peut rester vrai en
+// continu et enchaîner les passages complets (ouverture, écriture, fermeture,
+// stat) sur la tâche qui détient le drapeau — potentiellement async_tcp ou
+// mqttTask. 3 passages : le 1er draine le gros du retard, les 2 suivants
+// absorbent la rafale concurrente ; au-delà, on rend la main et un futur
+// appel (flush périodique ou prochain ERROR) reprendra exactement là.
+constexpr size_t kLoggerFlushRedoMaxPasses = 3;
 constexpr unsigned long kMutexTimeoutWarnThrottleMs = 60000; // 60s - Max 1 warn/min/site sur timeout mutex (statique locale par site)
 
 // Sécurité - Factory reset bouton
@@ -172,6 +181,51 @@ constexpr unsigned long kCalibrationAuthWarnThrottleMs = 60000;  // 60s - 1 warn
 // Limites de buffers
 constexpr size_t kMaxConfigSizeBytes = 16384;             // 16KB - Taille max configuration JSON
 constexpr size_t kMaxLogEntries = 200;                    // Nombre max d'entrées logs
+
+// ============================================================================
+// JOURNAL — arène circulaire en RAM interne statique (feature-129, option B′)
+// ============================================================================
+// Les `String` de `std::vector<LogEntry>` s'allouaient AU MILIEU du plus gros
+// bloc libre du tas 8 bits et le fractionnaient (feature-129, A1) : 160 o
+// alloués ont détruit 7 680 o de contiguïté en production, jusqu'à faire
+// chuter le plus gros bloc sous kStaticFileMinAllocBytes et faire refuser
+// toute ouverture de fichier statique. `sLogArena`/`sLogSlots` (logger.cpp,
+// phase C) remplacent le vecteur de `String` par deux objets `.bss` de taille
+// fixe : plus aucune allocation dynamique de journal, donc plus aucun
+// fractionnement — au prix d'une réservation figée sur la ressource rare.
+constexpr size_t kLogArenaBytes      = 16384;      // 82 o/entrée pour 200 entrées (mesuré : 52 o) —
+                                                    // on corrige une pénurie de CONTIGUÏTÉ, pas
+                                                    // d'octets : gratter 4 Ko de plus au prix de la
+                                                    // marge serait se tromper de problème (feature-129).
+// ⚠️ 768 et NON 256 : le recomptage agrégeant les littéraux d'UN SEUL appel est
+// méthodologiquement faux pour les messages de garde chimique, construits AVANT
+// l'appel (char[] ou concaténation) — l'appel ne porte plus qu'un préfixe court.
+// Pire cas mesuré par pool-chemistry : ≈630 o (mqtt_manager.cpp:1614, refus de
+// mode pH + phAutoManualReason). ~20% de marge. Ce plafond NE RÉSERVE AUCUN
+// OCTET de `.bss` — il borne le pire cas de PROFONDEUR de l'arène, pas la
+// mémoire. Précédent déjà commis puis corrigé : pump_controller.cpp:3609-3614,
+// un `msg[248]` coupait "…bande mor(te)" — l'ENTRÉE du défaut qu'il devait
+// rendre traçable était perdue. Plafonner à 256 réinfligerait ce défaut à tous
+// les sites de garde à la fois (feature-129, condition bloquante C1).
+constexpr size_t kLogMessageMaxBytes = 768;
+// Marqueur de troncature ASCII STRICT (feature-129, condition bloquante C2) —
+// jamais de « … » (3 o) : il faudrait le compter en octets et non en
+// caractères, un piège de plus. Réservé AVANT le clamp UTF-8, jamais après
+// (modèle mqtt_manager.cpp:761-762, kAlertTail).
+constexpr char kLogTruncTail[]    = "... (tronque)";
+// Budget d'une ligne persistée : horodatage (19) + espace (1) + niveau (≤5) +
+// espace (1) + message (kLogMessageMaxBytes) + marqueur de troncature + \n/NUL
+// (2). Ne réserve pas non plus d'octets de `.bss` par elle-même (utilisée pour
+// dimensionner un tampon pile ponctuel côté écriture, phase C).
+constexpr size_t kLogPersistLineMax  = 832;
+
+static_assert(kLogArenaBytes >= kMaxLogEntries * 64,
+              "Arène trop petite pour 200 entrées à 64 o/entrée en moyenne");
+static_assert(kLogMessageMaxBytes <= kLogArenaBytes / 8,
+              "Un seul message ne doit pas pouvoir occuper plus d'1/8 de l'arène");
+static_assert(kLogPersistLineMax >= 19 + 1 + 5 + 1 + kLogMessageMaxBytes + sizeof(kLogTruncTail) + 2,
+              "kLogPersistLineMax trop petit pour horodatage + niveau + message + marqueur");
+static_assert(kLogMessageMaxBytes >= 640, "Pire cas mesure des messages de garde : 630 o");
 
 // Historique de données
 // 8h de données brutes (intervalle 5 min). 96 et non 72 (= 6h pile) depuis
@@ -1483,8 +1537,8 @@ constexpr uint32_t kPhGuardScheduledAlertIntervalMs = 3600000UL;  // 1 h
 // 72 o au pire. 96 octets laissent donc ≥ 24 o d'entête libre, pour un coût de
 // 2 × 96 = 192 octets statiques (contre 2 objets String + leurs allocations tas).
 // La troncature éventuelle est faite SANS couper un caractère UTF-8 multi-octets
-// (cf. clampReasonUtf8 dans pump_controller.cpp) : un octet de continuation
-// orphelin produirait un JSON non décodable côté client.
+// (cf. utf8ClampInPlace dans utf8_clamp.cpp, feature-129) : un octet de
+// continuation orphelin produirait un JSON non décodable côté client.
 constexpr size_t kDoseBlockedReasonMaxLen = 96;
 
 // Code de cause de refus exposé À CÔTÉ du texte (v2.25.1) : `phDoseBlockedCode` /

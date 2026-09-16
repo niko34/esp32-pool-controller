@@ -763,14 +763,25 @@ curl -u admin:monmotdepasse "http://poolcontroller.local/get-logs?since=14400000
 {
   "uptime_ms": 18000000,
   "logs": [
-    { "timestamp": 14400000, "level": "INFO", "message": "Capteurs initialisés" },
-    { "timestamp": 14405000, "level": "WARNING", "message": "pH hors limites: 7.8" }
+    { "timestamp": 14400000, "level": "INFO", "message": "Capteurs initialisés", "trunc": false },
+    { "timestamp": 14405000, "level": "WARNING", "message": "pH hors limites: 7.8", "trunc": false }
   ],
   "truncated": false
 }
 ```
 
 > `timestamp` est exprimé en millisecondes depuis le démarrage de l'ESP32 (`millis()`).
+>
+> **`trunc`** (booléen, ajouté en v2.52.1, feature-129) : `true` si le **message**
+> de cette entrée a été tronqué à l'écriture, faute de tenir dans
+> `kLogMessageMaxBytes` (768 o) — la fin du texte porte alors le marqueur
+> `"... (tronque)"`. Distinct de `truncated` (niveau document, pagination) :
+> `trunc` décrit **une entrée**, `truncated` décrit **la page**. Un message de
+> garde chimique tronqué à 768 o reste rarissime (pire cas mesuré : ≈ 630 o) —
+> voir [`docs/subsystems/logger.md`](subsystems/logger.md#arène-circulaire-du-journal-feature-129).
+> ⚠️ Le flux **WebSocket** temps réel (page Logs) ne porte **jamais** ce drapeau :
+> il diffuse le message intégral reçu par `log()`, avant toute troncature de
+> stockage — voir [`docs/subsystems/ws-manager.md`](subsystems/ws-manager.md).
 
 **Pagination** (v2.10.4) :
 
@@ -805,7 +816,7 @@ curl -u admin:monmotdepasse http://poolcontroller.local/download-logs -o pool_lo
 
 > Heure non synchronisée → timestamps relatifs `[+HH:MM:SS]` depuis le boot. Les logs enrichis incluent les événements de dosage (démarrage, arrêt, paramètres) ainsi que les alertes de limites horaires/journalières.
 
-**Réponse en flux chunked, zéro accumulation RAM** (v2.10.4, [ADR-0032](adr/0032-reponses-http-bornees.md)) : l'export est produit par une machine à états (`beginChunkedResponse`, patron `/coredump/download`) qui remplit directement le buffer TCP borné — d'abord le fichier persistant `/system.log` (lu par blocs), puis les entrées du buffer RAM (copiées une à une sous mutex via `Logger::getLogEntryByIndex`). Aucune garde heap n'est nécessaire (rien de proportionnel à la taille de l'export n'est alloué) : **plus de réponse 503** sur cette route.
+**Réponse en flux chunked, zéro accumulation RAM** (v2.10.4, [ADR-0032](adr/0032-reponses-http-bornees.md)) : l'export est produit par une machine à états (`beginChunkedResponse`, patron `/coredump/download`) qui remplit directement le buffer TCP borné — d'abord le fichier persistant `/system.log` (lu par blocs), puis les entrées de l'arène circulaire (copiées une à une sous mutex via `Logger::copyEntryByIndex`, renommée depuis `getLogEntryByIndex` en feature-129/v2.52.1). Aucune garde heap n'est nécessaire (rien de proportionnel à la taille de l'export n'est alloué) : **plus de réponse 503** sur cette route.
 
 Limites assumées de l'export (best-effort, route de diagnostic) :
 
@@ -1310,6 +1321,32 @@ Quatre champs **purement additifs** ([ADR-0066](adr/0066-sonde-du-tas-au-moment-
 - **Ajout purement additif** : budget JSON `/get-system-info` mesuré à **~930 octets** pires cas (~805 avant ce quatuor). Absents d'un firmware ≤ 2.39.0 → traiter leur absence comme « information indisponible ».
 
 > **Ce n'est pas une métrique de supervision.** Contrairement à `max_alloc_8bit`, ces quatre champs ne décrivent pas la santé du tas mais le **fonctionnement de l'instrument**. Ne pas construire d'alarme sur `oom_probe_count`, qui croît normalement en régime dégradé.
+
+#### `log_*` — observabilité de l'arène circulaire du journal (v2.52.1, feature-129, additifs)
+
+Six champs **purement additifs**, lecture de six atomiques `relaxed` — ni allocation, ni log (ferme la récursion `systemLogger → broadcastLog → _heapAllowsPush → systemLogger`), ni parcours de tas. Ils décrivent l'état de l'arène circulaire qui a remplacé le `std::vector<LogEntry>` de `String` du journal ([ADR-0082](adr/0082-arene-circulaire-du-journal-en-ram-interne-statique.md), [`docs/subsystems/logger.md`](subsystems/logger.md#arène-circulaire-du-journal-feature-129)).
+
+```json
+{
+  "log_entries_current": 187,
+  "log_arena_bytes_used": 11392,
+  "log_arena_truncations": 0,
+  "log_arena_evictions": 4021,
+  "log_persist_overrun": 0,
+  "log_arena_overlap_guard_trips": 0
+}
+```
+
+| Champ | Type | Signification | Une valeur non nulle signifie |
+|---|---|---|---|
+| `log_entries_current` | `uint32` | Nombre d'entrées **actuellement vivantes** dans l'arène (≤ `kMaxLogEntries` = 200) | Rien d'anormal en soi — reflète simplement l'activité récente du journal |
+| `log_arena_bytes_used` | `uint32` | Octets **actuellement occupés** dans `sLogArena` (≤ `kLogArenaBytes` = 16 384) | Idem — grandeur d'occupation, pas d'alarme |
+| `log_arena_truncations` | `uint32` | Messages **tronqués** (dépassement de `kLogMessageMaxBytes` = 768 o) depuis le boot | Un message a dépassé le plafond — vérifier la source si le compteur croît vite ; le texte tronqué porte le marqueur `"... (tronque)"` et le champ `trunc` de `/get-logs` |
+| `log_arena_evictions` | `uint32` | Créneaux évincés de l'arène depuis le boot, **tous motifs confondus** (rotation normale du ring à 200 entrées, ou pression mémoire) | Croît normalement en régime nominal (ring plein) — pas une alarme à elle seule |
+| `log_persist_overrun` | `uint32` | Créneaux évincés **avant** d'avoir été persistés alors qu'ils **auraient dû l'être** — distinct de `log_arena_evictions` (condition C6, `pool-chemistry`) | Une ligne `WARNING` a été perdue pour `/system.log` sous rafale d'écriture avant que le flush périodique n'ait pu la sauver. `ERROR`/`CRITICAL` ne sont **jamais** concernés (flush synchrone) |
+| `log_arena_overlap_guard_trips` | `uint32` | Déclenchements du détecteur d'invariant `logArenaWriteOverlapsLive()`, filet indépendant exécuté juste avant tout `memcpy` dans l'arène | **DOIT rester à 0 en exploitation.** Toute valeur non nulle signale que `logArenaPlan()`/`logRingEvictCount()` ont laissé passer un recouvrement de créneau vivant que ce filet a rattrapé en évinçant **tout** l'anneau — c'est une régression de la comptabilité de l'arène, à investiguer immédiatement, pas un phénomène tolérable en continu |
+
+**Compatibilité** : absents d'un firmware ≤ 2.51.x → traiter l'absence comme « information indisponible ».
 
 #### Paramètre `hf` — planchers mémoire multi-masques (v2.49.0, additif conditionnel)
 

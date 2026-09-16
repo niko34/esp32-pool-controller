@@ -1627,6 +1627,26 @@ static void handleGetSystemInfo(AsyncWebServerRequest* request) {
     doc["sketch_size"] = ESP.getSketchSize();
   }
 
+  // feature-129 (phase C) : observabilité de l'arène circulaire du journal
+  // (C5/C6 pool-chemistry) — cinq lectures d'atomiques, ni allocation ni
+  // parcours de tas. Ajout PUREMENT ADDITIF.
+  //
+  // Pas de re-mesure measureJson() à faire ici, contrairement à ce qu'un
+  // garde-fou posé à la livraison laissait croire : cette route passe par
+  // sendJsonResponse(), qui sérialise dans une String CROISSANTE
+  // (web_helpers.cpp:34) — ni tampon fixe, ni risque de troncature. La
+  // discipline de mesure vaut pour les routes qui sérialisent dans un buffer
+  // dimensionné, pas pour celle-ci.
+  doc["log_entries_current"] = logEntriesCurrent();
+  doc["log_arena_bytes_used"] = logArenaBytesUsed();
+  doc["log_arena_truncations"] = logArenaTruncations();
+  doc["log_arena_evictions"] = logArenaEvictions();
+  doc["log_persist_overrun"] = logPersistOverruns();
+  // P2 pool-chemistry (feature-129) : détecteur d'invariant qui survit en
+  // production — DOIT rester à 0. Même discipline que les cinq compteurs
+  // ci-dessus.
+  doc["log_arena_overlap_guard_trips"] = logArenaOverlapGuardTrips();
+
   // Système de fichiers
   doc["fs_total_bytes"] = LittleFS.totalBytes();
   doc["fs_used_bytes"] = LittleFS.usedBytes();
