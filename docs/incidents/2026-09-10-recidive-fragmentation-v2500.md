@@ -784,3 +784,112 @@ journal posées dans le plus gros trou), son amplification (168 o détruisant
 pour la revalider en 10 minutes.
 
 **Ce qu'elle laisse ouvert** : le choix du correctif, instruit par `feature-129`.
+
+---
+
+## Après le correctif (feature-129, v2.52.1) — un SECOND mécanisme, localisé mais non identifié
+
+Relevé du **17/09/2026**, appareil en v2.52.1 depuis 31 h. Le correctif du journal
+est livré et mesuré (fenêtre de 30,1 h, résultats dans
+[`specs/features/done/feature-129-…`](../../specs/features/done/feature-129-les-string-du-journal-fractionnent-le-grand-bloc.md)
+et [ADR-0082](../adr/0082-arene-circulaire-du-journal-en-ram-interne-statique.md)).
+
+### Ce que le correctif a réglé
+
+Le plus grand bloc contigu **ne s'effondre plus** : déclin confiné aux 7,4 premières
+heures, puis **34 804 o plats de 7,4 h à 30,1 h** (~100 relevés identiques), contre
+un effondrement en quatre marches entre 20,7 h et 28,2 h en v2.51.0. Marge au
+plancher `kStaticFileMinAllocBytes` (8 192) : **4,2×**.
+
+**La pulvérisation du tas a cessé** : **24 trous** au total après 31 h, là où
+v2.51.0 passait de 50 à 130 sur la même durée. Il ne reste que quelques grosses
+coupures au lieu d'une poussière de blocs.
+
+⚠️ La prédiction de gain de mémoire libre (~+9 Ko) était **FAUSSE** et le critère de
+falsification l'a établi : `free_heap_8bit` est stable (53 568 → 52 664 à uptime
+comparable). Le journal occupait ~20 Ko et non ~30 — le chiffre de 30 Ko incluait
+des pics transitoires de `_persistBuffer`. Le pool **reloge** bien au lieu
+d'ajouter (c'était l'argument central, il tient), mais sans bonus. Ne jamais
+reconduire le +9 Ko.
+
+### Le second mécanisme : même motif, autre auteur
+
+Recensement du tas (`/debug/heap_census`, [ADR-0081](../adr/0081-recensement-du-tas-et-non-livraison-de-la-lecture-de-contenu.md)),
+17/09, uptime ~31 h :
+
+```
+0x3FFF417C ┐
+           │  TROU LIBRE                     13 100 o
+0x3FFF74A8 ┘
+0x3FFF74AC ▓  BLOC OCCUPÉ — 44 o de bloc, 32 o DEMANDÉS
+0x3FFF74D8 ┐
+           │  TROU LIBRE                     35 616 o
+           ┘
+```
+
+**32 octets demandés détruisent 13 100 octets de contiguïté.** Sans ce bloc, ou
+s'il était ailleurs, le plus grand bloc contigu vaudrait **48 812 o** au lieu de
+34 804 — ce qui rend compte de l'essentiel des 22 528 o perdus pendant les
+7,4 premières heures.
+
+C'est **exactement le motif nommé plus haut dans cette note** (« 168 octets ont
+détruit 23 552 octets de contiguïté »), mais **ce n'est plus le journal** :
+`log()` n'exécute plus aucune allocation dynamique depuis v2.52.1. Le premier
+mécanisme masquait le second ; la mesure de départ ne pouvait pas les distinguer.
+
+Les quatre autres blocs occupés de la fenêtre `0x3FFF4000-0x3FFF7600` sont
+également petits (40, 132, 28, 24 o demandés) et groupés en `0x3FFF4030-0x3FFF4178`.
+Le profil est donc : **de petites allocations de longue durée qui se posent au
+milieu d'un grand espace libre**.
+
+### Hypothèse testée et RÉFUTÉE
+
+Les marches observées valent 4 096 / 6 144 / 6 144 / **+6 144** / 12 288 o.
+`kRotateKeepBytes` vaut 6 144 et `oom_reserve_bytes` vaut 12 288 — la coïncidence
+invitait à soupçonner la rotation du journal et le parachute anti-OOM.
+
+- **Rotation du journal : NON.** Elle copie par blocs de 512 o
+  (`src/logger.cpp:709-716`), elle n'alloue aucun tampon de 6 144 o.
+- **Parachute anti-OOM : non plus, sur cette fenêtre.** `oom_probe_count = 0` et
+  `oom_reserve_internal = true` : la réserve n'a pas été consommée, donc pas
+  réarmée. (Elle reste un suspect **si** un OOM survient : le réarmement
+  réalloue 12 288 o qui se poseront quelque part.)
+
+La marche de **+6 144** (une remontée, à 6,8 h d'uptime) est le fait le plus
+discriminant restant : quelque chose d'environ 6 Ko est alloué **puis libéré**.
+v2.51.0 n'avait montré **aucune** remontée sur 28 relevés.
+
+### Ce qui manque, et pourquoi on s'arrête là
+
+On connaît **l'adresse, la taille et la géométrie** du coupable. On ignore **ce
+qu'il est**. L'identifier exige la route de lecture de contenu
+(`/debug/heap_peek`), **délibérément absente des binaires de production**
+(ADR-0081, condition S12) : il faut donc un build de diagnostic, son déploiement,
+et une nouvelle fenêtre pour que le bloc se repose au même endroit.
+
+**Décision du 17/09 : différé.** Priorité basse — un plateau à 34 804 o avec 4,2×
+de marge au seuil de refus est une curiosité, pas un problème d'exploitation. Les
+symptômes qui ont motivé cette note (fichiers statiques refusés, sauvegardes
+d'historique reportées) ont disparu.
+
+### Pour reprendre, le jour venu
+
+1. Build de diagnostic — la commande exacte n'est écrite **que** dans
+   [ADR-0081](../adr/0081-recensement-du-tas-et-non-livraison-de-la-lecture-de-contenu.md)
+   (`tools/check_no_peek_flag.sh` interdit de la recopier ailleurs).
+2. Déployer, puis recenser **toutes les 20 min sur une nuit** : les marches
+   tombent dans les 7,4 premières heures d'uptime, il faut donc **redémarrer**
+   l'appareil pour rejouer la fenêtre. ⚠️ Cadence **jamais** sous 60 s — à 17 s
+   l'instrument devient lui-même la cause (effet d'observateur, condition X4).
+3. Cibler la lecture sur le bloc qui borde le plus gros trou, et surtout sur
+   **ce qui est alloué puis libéré** autour de 6,8 h (la remontée de +6 144).
+4. ⚠️ Ne **jamais** verser le contenu lu dans le dépôt (condition S11) : l'adresse,
+   la taille et l'identification, jamais les octets.
+
+### Réserve sur ce relevé
+
+Le recensement rend `concordance: mismatch` — ses compteurs internes ne concordent
+pas exactement avec la sonde. La géométrie ci-dessus reste exploitable (les
+adresses et tailles sont cohérentes entre elles et avec `max_alloc_8bit`), mais ce
+n'est pas un relevé parfait, et une conclusion fine ne devrait pas s'y appuyer
+seule.

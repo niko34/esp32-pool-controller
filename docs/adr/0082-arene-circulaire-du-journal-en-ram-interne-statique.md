@@ -3,7 +3,7 @@
 - **Statut** : Accepté
 - **Date** : 2026-09-16
 - **Décideurs** : utilisateur (arbitrage de l'option B′ et des constantes), `architect` (dossier d'options), `pool-chemistry` (P1 **GO sous conditions** C1-C7 sur le design, P2 sur le diff), `embedded-developer`, `test-engineer` (1 874 cas natifs, validation par mutation), `code-reviewer`, `doc-writer`
-- **Spec(s) liée(s)** : [`feature-129`](../../specs/features/doing/feature-129-les-string-du-journal-fractionnent-le-grand-bloc.md) (implémentation, ce lot), `feature-127`/`feature-128` (instruments de preuve), `feature-125` (réserves du lot C, `bug-080`), incident [`2026-09-10-recidive-fragmentation-v2500.md`](../incidents/2026-09-10-recidive-fragmentation-v2500.md)
+- **Spec(s) liée(s)** : [`feature-129`](../../specs/features/done/feature-129-les-string-du-journal-fractionnent-le-grand-bloc.md) (implémentation, ce lot), `feature-127`/`feature-128` (instruments de preuve), `feature-125` (réserves du lot C, `bug-080`), incident [`2026-09-10-recidive-fragmentation-v2500.md`](../incidents/2026-09-10-recidive-fragmentation-v2500.md)
 
 ## Contexte
 
@@ -127,6 +127,6 @@ Trois enseignements retenus :
 
 - Code : [`src/logger.h`](../../src/logger.h), [`src/logger.cpp`](../../src/logger.cpp), [`src/log_arena_logic.h`](../../src/log_arena_logic.h), [`src/log_arena_logic.cpp`](../../src/log_arena_logic.cpp), [`src/constants.h`](../../src/constants.h) (section « JOURNAL — arène circulaire »)
 - Tests : `test/test_native_log_arena/`, `test/test_native_log_arena_integration/`, `test/test_native_log_guard_messages/`, `test/test_native_logger_logic/`
-- Spec : [`specs/features/doing/feature-129-les-string-du-journal-fractionnent-le-grand-bloc.md`](../../specs/features/doing/feature-129-les-string-du-journal-fractionnent-le-grand-bloc.md)
+- Spec : [`specs/features/done/feature-129-les-string-du-journal-fractionnent-le-grand-bloc.md`](../../specs/features/done/feature-129-les-string-du-journal-fractionnent-le-grand-bloc.md)
 - Doc : [`docs/subsystems/logger.md`](../subsystems/logger.md), [`docs/API.md`](../API.md)
 - ADR liés : [ADR-0017](0017-logique-metier-pure-humble-object-testabilite.md) (extraction en module pur), [ADR-0072](0072-absence-de-valeur-hors-du-domaine.md) (repli sûr = évincer plutôt que falsifier), [ADR-0073](0073-chiffre-consigne-porte-sa-methode.md) (mutants non couvrables), [ADR-0033](0033-budget-espace-partition-history.md) (budget partition `history`), [ADR-0036](0036-psram-requise-mise-a-jour-en-ligne.md), [ADR-0061](0061-bascule-psram-au-dela-de-4095-octets-reserve-parachute-en-interne.md), [ADR-0078](0078-bascule-psram-cesse-d-etre-chirurgicale.md) (contexte PSRAM du projet), [ADR-0081](0081-recensement-du-tas-et-non-livraison-de-la-lecture-de-contenu.md) (instrument ayant produit la preuve)

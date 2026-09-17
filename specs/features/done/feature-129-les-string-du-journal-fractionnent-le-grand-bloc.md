@@ -499,3 +499,103 @@ fenêtre n'a encore fait.
 ⚠️ **Le journal est l'instrument de diagnostic de ce projet.** Toute option qui le
 dégrade pour gagner de la contiguïté doit être pesée contre la perte de capacité à
 diagnostiquer la prochaine panne.
+
+---
+
+## 🏁 CLÔTURE — résultats de la fenêtre de mesure (17/09/2026)
+
+Déployé le 16/09 en **v2.52.1**. Fenêtre de **30,1 h** (uptime 54 → 108 388 s),
+136 relevés dans `/root/pool-captures/f129/fenetre.tsv`.
+
+### Objectif atteint : le bloc contigu se stabilise au lieu de s'effondrer
+
+| | v2.51.0 (référence) | v2.52.1 |
+|---|---|---|
+| Comportement sur 30 h | effondrement en 4 marches entre 20,7 h et 28,2 h | déclin **confiné aux 7,4 premières heures** |
+| Remontées | **0 sur 28 relevés** | **1** (+6 144 o à 6,8 h) |
+| État final | descente continue | **34 804 o, PLAT de 7,4 h à 30,1 h** (~100 relevés identiques) |
+| Marge au plancher `kStaticFileMinAllocBytes` (8 192) | en route vers le refus | **4,2×** |
+
+**Critère 3 (jamais sous 8 192 o sur 30 h) : SATISFAIT.** Le problème
+d'exploitation — fichiers statiques refusés, sauvegardes d'historique reportées
+— est traité.
+
+### L'arène se comporte comme prévu
+
+191 évictions sur 30 h (cycle normal d'un anneau plein, ~16 310 / 16 384 o
+occupés pour ~188 entrées), **0 troncature**, **0 `log_persist_overrun`**, et
+surtout **0 `log_arena_overlap_guard_trips`** : la comptabilité a tenu 30 h en
+production, sans que le filet ait jamais à se déclencher.
+
+`oom_reserve_internal = true` : le parachute anti-OOM reste en RAM interne
+(feature-066 non régressée).
+
+### ⚠️ PRÉDICTION INVALIDÉE — le gain de mémoire libre n'existe pas
+
+Le critère de falsification A3 écrit dans cette spec a été appliqué :
+
+| `free_heap_8bit` à ~5 h d'uptime | v2.52.0 | v2.52.1 |
+|---|---|---|
+| | 53 568 | **52 664** |
+
+**Le gain annoncé de ~+9 Ko ne s'est pas produit.** La mémoire libre est stable,
+très légèrement en dessous.
+
+Cause de l'erreur : le chiffre de ~30 Ko attribué au journal incluait des pics
+**transitoires** de `_persistBuffer`, pas un régime permanent. La mesure réelle
+donne ~20 Ko (16 310 o de texte + 4 000 o de descripteurs) pour 21,2 Ko figés en
+`.bss` — bilan net **zéro**.
+
+**Ce qui tient** : l'argument principal, « le pool RELOGE au lieu d'ajouter ».
+Si l'hypothèse avait été fausse dans l'autre sens, `free8` aurait chuté de
+21 Ko ; il n'a pas bougé, et `heap_size` a baissé de 21 272 o — exactement le
+`.bss` mesuré au build (21 248 o). Le relogement est prouvé ; le bonus annoncé
+en plus, non. **Ne pas reconduire ce chiffre de +9 Ko** (ADR-0073 : un chiffre
+porte sa méthode, et celui-ci était une estimation présentée comme un attendu).
+
+### Ce qui reste — un SECOND mécanisme, hors périmètre de cette spec
+
+Le bloc a perdu 22 528 o pendant les 7,4 premières heures, en marches de
+4 096 / 6 144 / 6 144 / **+6 144** / 12 288, puis plus rien.
+
+**Ce n'est plus le journal** : `log()` n'alloue plus rien. La mesure de départ ne
+pouvait pas distinguer ce mécanisme du premier, qui le masquait.
+
+Hypothèse testée et **RÉFUTÉE** : la rotation du journal n'alloue pas de tampon
+de 6 144 o — elle copie par blocs de 512 (`logger.cpp:709-716`).
+
+Piste pour une spec de suivi : les marches tombent dans les 7 premières heures,
+donc un recensement du tas (ADR-0081) toutes les 20 min sur une nuit suffit à
+les attribuer. ⚠️ Cadence **jamais** sous 60 s — à 17 s l'instrument redevient la
+cause (effet d'observateur, condition X4).
+
+**Priorité réelle : basse.** Un plateau à 34 Ko avec 4,2× de marge est une
+curiosité, pas un problème d'exploitation.
+
+### Deux lacunes du dispositif de mesure, à ne pas prendre pour des résultats
+
+- **Critères 4 et 5 NON MESURÉS** (nombre de trous ≤ +40, `allocatedBlocks`
+  < +40). Ils exigent le recensement du tas ; le suivi n'a interrogé que
+  `/get-system-info`. Erreur de montage de la fenêtre, pas un résultat manquant
+  de l'appareil.
+- **Critère 1 non formellement évalué** : l'instant de la première sauvegarde
+  d'historique n'a jamais pu être confirmé dans le journal. La chute unique de
+  4 096 o à t=84 s est compatible avec le critère (≤ 4 096), mais rien ne prouve
+  qu'elle corresponde à cet événement.
+
+### Enseignement de méthode, au-delà de ce lot
+
+Un défaut de **recouvrement silencieux** a été livré en phase C puis intercepté
+avant production (détail et post-mortem dans ADR-0082 et dans l'en-tête de
+`test/test_native_log_arena_integration/`). Trois leçons :
+
+1. Les cinq compteurs de l'arène restaient **cohérents** pendant la corruption —
+   l'instrumentation d'un lot ne surveille pas le lot lui-même.
+2. Un test unitaire de la phase B attendait une valeur **dérivée de la formule
+   fautive** : il confirmait le défaut au lieu de le révéler, et restait vert.
+   **Ne jamais dériver une attente de ce que le code calcule.**
+3. Seule une comparaison à un **modèle de référence indépendant** pouvait
+   trancher : le défaut n'apparaît qu'après un état accumulé.
+
+**Statut : CLOS.** Objectif atteint, une prédiction secondaire invalidée et
+consignée, un second mécanisme identifié comme existant mais non attribué.
