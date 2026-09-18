@@ -227,7 +227,7 @@ n'est plus émis que sur une corruption fondée sur une mesure **contemporaine**
   `src/constants.h` (`kOomProbe*`), `src/web_routes_config.cpp` (champs `oom_probe_*`),
   `src/web_routes_debug.cpp` (garde 503)
 - Tests : `test/test_native_oom_guard/`
-- Spec : `specs/features/doing/bug-080-redemarrage-panic-et-fragmentation-heap.md` (lot B-2,
+- Spec : `specs/features/done/bug-080-redemarrage-panic-et-fragmentation-heap.md` (lot B-2,
   et section « VERDICT DE LA PRÉDICTION FALSIFIABLE DE B-1 »)
 - Doc : [`docs/subsystems/oom-guard.md`](../subsystems/oom-guard.md),
   [`docs/API.md`](../API.md#get-get-system-info--write)

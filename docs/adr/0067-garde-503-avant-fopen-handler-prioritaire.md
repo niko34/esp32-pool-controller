@@ -331,7 +331,7 @@ Assistant de marteler l'appareil pendant la famine même qu'on essaie de laisser
   `kHttpLowHeapEpisodeQuietMs`, bloc « ÉCHELLE COMPLÈTE », 2 `static_assert`)
 - Tests : `test/test_native_http_lowheap_guard/` — **33 suites / 1 286 cas**, **7 mutants
   tués sur 7**
-- Spec : `specs/features/doing/bug-080-redemarrage-panic-et-fragmentation-heap.md` (lot B-3)
+- Spec : `specs/features/done/bug-080-redemarrage-panic-et-fragmentation-heap.md` (lot B-3)
 - Doc : [`docs/subsystems/web-server.md`](../subsystems/web-server.md),
   [`docs/subsystems/logger.md`](../subsystems/logger.md),
   [`docs/API.md`](../API.md#codes-derreur)

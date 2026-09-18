@@ -3,7 +3,7 @@
 - **Statut** : Accepté
 - **Date** : 2026-09-05
 - **Décideurs** : `debugger` (diagnostic lot B du 04/09), `architect`, `pool-chemistry` (**gate GO sous 5 conditions**), `code-reviewer` (Request changes puis correctifs), utilisateur
-- **Spec(s) liée(s)** : `specs/features/doing/bug-080-redemarrage-panic-et-fragmentation-heap.md` (lot **B-1**, v2.35.0)
+- **Spec(s) liée(s)** : `specs/features/done/bug-080-redemarrage-panic-et-fragmentation-heap.md` (lot **B-1**, v2.35.0)
 
 ## Contexte
 
@@ -121,6 +121,6 @@ Aucun log n'est émis à ce point (`systemLogger.begin()` n'a pas encore eu lieu
 ## Références
 
 - Code : [`src/main.cpp`](../../src/main.cpp) (site d'appel unique dans `setup()`, message PSRAM du boot, ligne d'armement, champ `psram=` de la trace « Heap 8bits: »), [`src/constants.h`](../../src/constants.h) (`kPsramExtmemThresholdBytes`, `kVfsStdioBufferBytes`, `kOomNoReserveCriticalDelayMs`, les deux `static_assert`), [`src/oom_guard.cpp`](../../src/oom_guard.cpp) (`#pragma GCC poison`, `oomAllocReserveInternal`, WARN de déclassement, CRITICAL « sans réserve »), [`src/oom_guard.h`](../../src/oom_guard.h) (`oomGuardReserveIsInternalRam`, `oomGuardConsumeNoReserveAlert`), [`src/mqtt_manager.cpp`](../../src/mqtt_manager.cpp) (drain de l'alerte `oom_reserve_absent`), [`src/web_routes_config.cpp`](../../src/web_routes_config.cpp) (`oom_reserve_bytes` / `oom_reserve_internal`)
-- Spec : `specs/features/doing/bug-080-redemarrage-panic-et-fragmentation-heap.md` (diagnostic lot B du 04/09, découpage B-1/B-2/B-3, prédiction falsifiable)
+- Spec : `specs/features/done/bug-080-redemarrage-panic-et-fragmentation-heap.md` (diagnostic lot B du 04/09, découpage B-1/B-2/B-3, prédiction falsifiable)
 - Doc : [subsystems/oom-guard.md](../subsystems/oom-guard.md#politique-dallocation-par-défaut--bascule-psram-v2350), [subsystems/system-health.md](../subsystems/system-health.md#trace-de-calibrage-des-seuils-mémoire-v2190), [API.md](../API.md#get-get-system-info--write), [MQTT.md](../MQTT.md#alertes)
 - ADR liés : [ADR-0058](0058-gardes-heap-metrique-8-bits.md) (**assiette de calibrage amendée**, seuils inchangés), [ADR-0035](0035-parachute-oom-new-handler.md) (parachute), [ADR-0038](0038-metrique-memoire-allouable-8-bits.md) (métrique 8 bits), [ADR-0036](0036-psram-requise-mise-a-jour-en-ligne.md) (PSRAM libre requise pour TLS sortant — la PSRAM devenant un pool de travail, son seuil de 1 Mo est à réévaluer hors lot), [ADR-0029](0029-auto-guerison-heap.md) (auto-guérison)

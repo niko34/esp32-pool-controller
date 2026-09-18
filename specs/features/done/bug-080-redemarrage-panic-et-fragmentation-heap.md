@@ -2030,3 +2030,122 @@ Elle aurait protégé les tampons WiFi en **retirant** de la mémoire au pool
 général, donc en rendant le 503 **plus** probable. S7 obtient l'inverse : il rend
 de la place aux deux. Elle ne redevient pertinente que si des échecs
 d'allocation WiFi réapparaissent malgré S7 et S2.
+
+---
+
+# 🏁 CLÔTURE — 18/09/2026
+
+**Statut : CLOS.** Le lot C, dernier volet ouvert, a été mené sous
+[`feature-129`](../done/feature-129-les-string-du-journal-fractionnent-le-grand-bloc.md)
+et livré en v2.52.1. Cette section remplace toutes les mentions d'état
+antérieures de cette spec, dont l'en-tête « Version en cours : 2.35.0 », périmé
+depuis le 05/09.
+
+## La cause racine, trouvée et nommée
+
+**Les `String` du journal.** Chaque entrée de l'anneau de 200 portait un `String`
+alloué sur le tas. À chaque nouvelle ligne, le plus ancien était libéré et un
+nouveau alloué — des centaines de petits blocs qui se posaient au hasard des
+zones libres, dont **au milieu du plus grand trou, qu'ils coupaient en deux**.
+
+La mesure qui résume tout : **168 octets ont détruit 23 552 octets de
+contiguïté**.
+
+### Pourquoi cette spec a mis trois semaines à y arriver
+
+**Ce n'était pas une fuite**, et c'est ce qui a égaré le diagnostic pendant tout
+le lot B. Le journal libérait correctement sa mémoire ; la quantité libre restait
+bonne et remontait même par moments. Ce qui s'effondrait, c'est le plus grand
+morceau **d'un seul tenant**.
+
+Un tas avec 50 Ko libres en cinquante trous de 1 Ko ne peut plus servir un
+fichier de 8 Ko. C'est exactement ce qui produisait les deux symptômes de cette
+spec : fichiers statiques refusés (503) et sauvegardes d'historique reportées.
+
+> ⚠️ **L'enseignement à retenir de cette spec entière** : regarder la mémoire
+> libre ne montrait rien d'anormal. La métrique qui décide est
+> **`max_alloc_8bit`**, jamais `free_heap`. Le projet s'était déjà trompé dessus
+> le 15/08/2026 (cause racine : la métrique heap mesurait `MALLOC_CAP_INTERNAL`,
+> IRAM 32 bits comprise). Le même angle mort a coûté trois semaines ici.
+
+## Le correctif
+
+Le journal n'alloue plus rien. À la place des 200 `String` mobiles : une **arène
+circulaire d'octets de 16 Ko en `.bss`**, réservée au démarrage, plus 200
+descripteurs POD. Écrire une ligne est devenu une copie d'octets sous le mutex
+existant — **aucune allocation, donc plus rien à fragmenter**.
+
+Décision et motifs dans
+[ADR-0082](../../../docs/adr/0082-arene-circulaire-du-journal-en-ram-interne-statique.md),
+y compris le rejet de la PSRAM (`flushToDisk()` s'exécute sur la tâche qui logue,
+donc lire depuis la PSRAM pendant une écriture flash à cache coupé transformerait
+une exposition quantifiée en exposition binaire).
+
+## Ce que la mesure a donné — fenêtre de 30,1 h, puis contrôle à 41,6 h
+
+| | avant (v2.51.0) | après (v2.52.1) |
+|---|---|---|
+| Plus grand bloc contigu | effondrement en 4 marches entre 20,7 h et 28,2 h | **34 804 o, plat depuis 7,4 h d'uptime** |
+| Remontées | **0 sur 28 relevés** | 1 (+6 144 o) |
+| Nombre de trous | 50 → **130** en 30 h | **24**, identiques à 10,6 h d'intervalle |
+| Marge au seuil de refus (8 192) | en route vers le refus | **4,2×** |
+
+Contrôle du 18/09 à 41,6 h d'uptime : géométrie du tas **identique à l'octet et à
+l'adresse près** à celle du 17/09. Les symptômes de cette spec ont disparu.
+
+## ⚠️ Une prédiction de ce cycle a été INVALIDÉE, et il faut le savoir
+
+Un gain d'environ **+9 Ko de mémoire libre** avait été annoncé. **Il n'existe
+pas** : `free_heap_8bit` est stable (53 568 → 52 664 à uptime comparable). Le
+chiffre de ~30 Ko attribué au journal incluait des pics **transitoires** de
+`_persistBuffer`, pas un régime permanent — la consommation réelle était ~20 Ko
+pour 21,2 Ko figés.
+
+L'argument central tient (le pool **reloge** au lieu d'ajouter : `free8` n'a pas
+chuté de 21 Ko, et `heap_size` a baissé de 21 272 o, exactement le `.bss` mesuré
+au build). Le bonus annoncé en plus, non. **Ne jamais reconduire ce +9 Ko.**
+
+## Ce qui reste, et qui ne justifie pas de garder cette spec ouverte
+
+Un **second mécanisme** subsiste, de même nature mais d'un autre auteur : un bloc
+de **32 octets demandés** qui coûte 13 100 octets de contiguïté. Le premier le
+masquait entièrement — la mesure d'origine de cette spec ne pouvait pas les
+distinguer.
+
+Il est **statique** : il agit pendant les ~7,4 premières heures puis s'arrête
+définitivement, sans aucune dérive ensuite. Il n'a jamais causé de symptôme.
+
+Suivi en [`feature-133`](../todo/feature-133-identifier-le-second-mecanisme-de-fragmentation.md),
+qui dit explicitement qu'il est légitime de ne jamais l'ouvrir. Géométrie
+complète, hypothèses déjà réfutées et marche à suivre dans
+[la note d'incident](../../../docs/incidents/2026-09-10-recidive-fragmentation-v2500.md).
+
+## Specs issues de ce chantier
+
+| | Objet | État |
+|---|---|---|
+| [feature-129](../done/feature-129-les-string-du-journal-fractionnent-le-grand-bloc.md) | Le lot C : l'arène du journal | **livré, v2.52.1** |
+| [feature-130](../todo/feature-130-une-sentinelle-empeche-de-defaire-le-travail-memoire.md) | Rendre la discipline mémoire vérifiable par la CI | todo, **haute** |
+| [feature-131](../todo/feature-131-la-sauvegarde-de-l-historique-cesse-de-batir-le-json-en-ram.md) | Le plus gros pic transitoire restant | todo, **haute** |
+| [feature-132](../todo/feature-132-rouvrir-le-seuil-de-la-garde-fichiers-avec-des-mesures.md) | Le seuil de la garde fichiers | todo, bloquée par 131 |
+| [feature-133](../todo/feature-133-identifier-le-second-mecanisme-de-fragmentation.md) | Le second mécanisme | todo, basse |
+
+## ⚠️ Deux specs que cette clôture débloque ou périme — à traiter
+
+- **`bug-bascule-gardes-8bits-recalibrage`** : sa condition d'entrée est
+  désormais **remplie** — « le fragmenteur est identifié » l'est, et la question
+  ouverte « qui demande les allocations de 4 096 o ? » trouve un écho dans la
+  marche de 4 096 o relevée à 84 s d'uptime. Surtout, son NO GO de `pool-chemistry`
+  reposait sur « recalibrer sur la fragmentation actuelle entérinerait un état
+  pathologique » : **l'état ne l'est plus**. Son arithmétique partait d'un minimum
+  de 3 060 o ; il vaut aujourd'hui 34 804 o, stable. Tout est à refaire, sur un
+  état sain cette fois.
+- **`feature-125`** : sa prémisse (« ⚠️ LE PROBLÈME N'EST PAS RÉSOLU — récidive
+  du 10/09 ») est **tombée**. Son chantier S2 atténuait un problème désormais
+  corrigé à la source : à réévaluer avant d'être lancé, pas à ouvrir sur sa
+  justification actuelle.
+
+## Compteur « 7 jours sans redémarrage »
+
+**Repart du déploiement de la v2.52.1** (16/09/2026, ~13 h UTC). Au 18/09 :
+41,6 h d'uptime continu, aucun PANIC, `oom_probe_count = 0`.

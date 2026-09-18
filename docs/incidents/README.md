@@ -50,7 +50,7 @@ compte. C'est l'objet de `bug-100`.
 
 ## Analyses
 
-- `specs/features/doing/bug-080-redemarrage-panic-et-fragmentation-heap.md`
+- `specs/features/done/bug-080-redemarrage-panic-et-fragmentation-heap.md`
 - `specs/features/todo/bug-100-abort-sur-fopen-de-l-historique.md`
 - `docs/subsystems/oom-guard.md` — le post-mortem RTC, complémentaire du coredump
 - [ADR-0066](../adr/0066-sonde-du-tas-au-moment-du-refus.md) — la sonde au moment du refus

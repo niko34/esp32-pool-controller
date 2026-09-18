@@ -3,7 +3,7 @@
 - **Statut** : Accepté
 - **Date** : 2026-09-02
 - **Décideurs** : `debugger` (diagnostic coredump), `architect`, `pool-chemistry` (**gate GO du 02/09 + contre-visa GO** — révoque son propre NO GO d'[ADR-0040](0040-pas-de-calibrage-sur-fragmentation-pathologique.md)), `code-reviewer`, utilisateur
-- **Spec(s) liée(s)** : `specs/features/doing/bug-080-redemarrage-panic-et-fragmentation-heap.md` (lot A, v2.33.0)
+- **Spec(s) liée(s)** : `specs/features/done/bug-080-redemarrage-panic-et-fragmentation-heap.md` (lot A, v2.33.0)
 
 > 📋 **Amendement du 2026-09-05 (bug-080 lot B-1, v2.35.0 — [ADR-0061](0061-bascule-psram-au-dela-de-4095-octets-reserve-parachute-en-interne.md))** : la bascule des allocations de plus de 4095 o vers la PSRAM **change l'assiette** sur laquelle les seuils ci-dessous ont été calibrés — le régime de RAM interne mesuré en 2.26→2.32 (nominal fragmenté 21 492 o, creux à 1 268 o) n'inclut plus la rafale de tampons stdio du service des fichiers statiques. **Aucun seuil n'est retouché par le lot B-1** (principe « un seul levier, un seul effet à mesurer ») : l'échelle `2 048 < 4 096 < 6 144 < 12 288 < 18 432` reste **strictement en vigueur**, et sera **réévaluée après 48 h d'observation** du nouveau régime. Cet ADR reste **Accepté** ; seule la valeur documentaire « nominal terrain 21 492 o » est à considérer comme datée. La contrepartie du lot B-1 — la réserve du parachute allouée en `MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT` explicite — **rend l'allocation conforme à la garde qui la gouverne** (le seuil de réarmement 18 432 mesure la RAM interne).
 
@@ -106,7 +106,7 @@ Tous les logs santé affichent **`maxBloc8=`** — la même métrique que celle 
 ## Références
 
 - Code : [`src/constants.h`](../../src/constants.h) (bloc « ÉCHELLE COMPLÈTE », constants.h:316), [`src/main.cpp`](../../src/main.cpp) (`checkHeapHealth` — point de mesure unique), [`src/ws_manager.cpp`](../../src/ws_manager.cpp) (`_heapAllowsPush`), [`src/web_routes_data.cpp`](../../src/web_routes_data.cpp) (garde 503 `/get-logs`), [`src/self_heal_logic.h`](../../src/self_heal_logic.h)
-- Spec : `specs/features/doing/bug-080-redemarrage-panic-et-fragmentation-heap.md`
+- Spec : `specs/features/done/bug-080-redemarrage-panic-et-fragmentation-heap.md`
 - Doc : [subsystems/oom-guard.md](../subsystems/oom-guard.md), [subsystems/system-health.md](../subsystems/system-health.md), [subsystems/ws-manager.md](../subsystems/ws-manager.md), [API.md](../API.md#get-get-logs--write)
 - Tests : 1029/1029 natifs verts, 15/15 mutants tués (dont l'arithmétique du réarmement)
 - ADR liés : [ADR-0038](0038-metrique-memoire-allouable-8-bits.md) (cause racine), [ADR-0040](0040-pas-de-calibrage-sur-fragmentation-pathologique.md) (**superseded** — NO GO révoqué, doctrine « signal exogène » reprise ici), [ADR-0029](0029-auto-guerison-heap.md) (auto-guérison), [ADR-0035](0035-parachute-oom-new-handler.md) (parachute)

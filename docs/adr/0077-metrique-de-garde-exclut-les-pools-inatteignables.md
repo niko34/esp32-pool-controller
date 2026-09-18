@@ -154,7 +154,7 @@ Corollaires normatifs :
   le mutant `!= 0` pris de face), `test/test_native_heap_floors/`
 - Spec : `specs/features/doing/feature-122-instrumentation-reserve-dma-et-metrique-du-pool-general.md`,
   `specs/features/todo/feature-123-experience-de-reserve-dma-au-demarrage.md`,
-  `specs/features/doing/bug-080-redemarrage-panic-et-fragmentation-heap.md` (lot C)
+  `specs/features/done/bug-080-redemarrage-panic-et-fragmentation-heap.md` (lot C)
 - Doc : [`docs/subsystems/system-health.md`](../subsystems/system-health.md#planchers-glissants-multi-masques-v2490-feature-122-lot-c-1a),
   [`docs/API.md`](../API.md#paramètre-hf--planchers-mémoire-multi-masques-v2490-additif-conditionnel),
   [ADR-0058](0058-gardes-heap-metrique-8-bits.md),

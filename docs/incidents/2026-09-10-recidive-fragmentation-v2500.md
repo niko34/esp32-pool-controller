@@ -886,6 +886,45 @@ d'historique reportées) ont disparu.
 4. ⚠️ Ne **jamais** verser le contenu lu dans le dépôt (condition S11) : l'adresse,
    la taille et l'identification, jamais les octets.
 
+### Confirmation du 18/09 — le second mécanisme est STATIQUE, et la réserve ci-dessous tombe
+
+Second relevé à **41,6 h** d'uptime, soit **10,6 h après** celui du 17/09, même
+firmware, sans redémarrage :
+
+| | 17/09 (31 h) | 18/09 (41,6 h) |
+|---|---|---|
+| `max_alloc_8bit` | 34 804 | **34 804** |
+| Nombre de trous | 24 | **24** |
+| Plus gros trou | 35 616 o à `0x3FFF74DC` | **35 616 o à `0x3FFF74DC`** |
+| Deuxième trou | 13 100 o à `0x3FFF417C` | **13 100 o à `0x3FFF417C`** |
+| Mémoire libre totale | 54 380 | **57 028** (+2 648) |
+| `concordance` | `mismatch` | **`match`** |
+
+**La géométrie du tas est identique à l'octet et à l'adresse près.** Le plus grand
+bloc contigu est plat depuis 7,4 h d'uptime, soit **34 heures** au moment de ce
+relevé, et la mémoire libre a légèrement **monté**.
+
+**Conséquence sur la nature du mécanisme restant** — c'est l'information neuve de
+ce relevé : **il n'est pas progressif.** Il agit pendant les ~7,4 premières heures
+puis s'arrête net. Ce ne sont donc pas des allocations qui grignotent continûment
+la contiguïté, mais **quelques allocations de très longue durée qui se posent une
+fois et ne bougent plus**. Aucune dérive à craindre : l'appareil peut tourner des
+semaines dans cet état sans que rien empire.
+
+Cela renforce la décision de différer : il ne s'agit pas d'une dégradation lente
+qu'il faudrait arrêter, mais d'un **état stable sous-optimal**, avec 4,2× de marge
+au seuil de refus.
+
+⚠️ **Corollaire pour qui reprendra le diagnostic** : un recensement pris tardivement
+ne montrera **jamais** le mécanisme à l'œuvre, puisqu'il a fini son travail. Il
+faut impérativement **redémarrer l'appareil** et observer les 7,4 premières heures
+— c'est déjà écrit dans « Pour reprendre, le jour venu », et ce relevé le confirme
+par la mesure.
+
+⚠️ **Et l'arène tient** : à 41,6 h, 290 évictions (cycle normal d'un anneau plein à
+16 290 / 16 384 o pour 195 entrées), **0 troncature, 0 `log_persist_overrun`, 0
+`log_arena_overlap_guard_trips`**, `oom_probe_count = 0`.
+
 ### Réserve sur ce relevé
 
 Le recensement rend `concordance: mismatch` — ses compteurs internes ne concordent
@@ -893,3 +932,8 @@ pas exactement avec la sonde. La géométrie ci-dessus reste exploitable (les
 adresses et tailles sont cohérentes entre elles et avec `max_alloc_8bit`), mais ce
 n'est pas un relevé parfait, et une conclusion fine ne devrait pas s'y appuyer
 seule.
+
+**Réserve LEVÉE le 18/09** : le second relevé, à 41,6 h, rend `concordance: match`
+et retrouve exactement la même géométrie (mêmes trous, mêmes adresses, mêmes
+tailles). Le constat du bloc de 32 o qui sépare les deux grands trous est donc
+confirmé par un relevé propre.

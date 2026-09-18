@@ -707,7 +707,7 @@ Les **4** champs de pause mélange (`phMixingDelayActive` 28 o, `orpMixingDelayA
 soit une marge portée de 137 à **186 o** — ⚠️ **base périmée depuis `bug-082`** (v2.47.1, même journée) : la marge de départ est désormais de **67 o**, et le levier la porterait à **116 o**. **Refusé le 07/09/2026**, pour deux motifs à lire **avant toute nouvelle tentative** :
 
 1. les deux clés deviendraient `/data`-seules, donc **deux exceptions de plus** dans la sentinelle de parité — sur l'axe précis qui vient de produire un défaut réel. Payer en exceptions ce que l'on gagne en octets, **le jour même où l'on installe la garde**, est un mauvais échange ;
-2. l'autre voie — relever `kWsFrameBufBytes` — coûterait **+512 o de `.bss`**, donc autant de RAM en moins pour le tas, pendant que [bug-080](../../specs/features/doing/bug-080-redemarrage-panic-et-fragmentation-heap.md) documente une famine mémoire **active**.
+2. l'autre voie — relever `kWsFrameBufBytes` — coûterait **+512 o de `.bss`**, donc autant de RAM en moins pour le tas, pendant que [bug-080](../../specs/features/done/bug-080-redemarrage-panic-et-fragmentation-heap.md) documente une famine mémoire **active**.
 
 Le levier reste **valable** pour une future feature qui manquera de place : les **49 o** et les deux clés concernées sont consignés ici pour que le chiffre soit déjà disponible.
 

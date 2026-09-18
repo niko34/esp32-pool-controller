@@ -170,7 +170,7 @@ compilent systématiquement leur branche core 3 ; les branches `#else` sont du c
 
 ### E — Specs
 - [x] E1 — cette spec, créée puis déplacée en `doing/` par `spec-reader`
-- [x] E2 — `specs/features/doing/bug-080-*.md` l. 698-700 : la note « à vérifier si le repli core 2 devait un jour resservir » reçoit sa réponse → **ajouter** une note datée renvoyant à l'ADR-0069, sans réécrire l'existant
+- [x] E2 — `specs/features/done/bug-080-*.md` l. 698-700 : la note « à vérifier si le repli core 2 devait un jour resservir » reçoit sa réponse → **ajouter** une note datée renvoyant à l'ADR-0069, sans réécrire l'existant
 - [x] E3 — clôture : déplacer cette spec vers `done/` avec « Notes d'implémentation »
 - [ ] E4 — **non-item** : `specs/plan-2026-09-regulation-et-robustesse.md:399` et toutes les specs de `done/` sont des comptes rendus historiques → ne pas y toucher
 

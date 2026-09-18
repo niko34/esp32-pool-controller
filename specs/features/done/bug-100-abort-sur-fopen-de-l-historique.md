@@ -392,7 +392,7 @@ L'entrée `CHANGELOG.md` est **déjà rédigée sous `[2.43.0]`** ; `src/version
 
 - **Le critère « 7 jours sans redémarrage inopiné » de `bug-080`** reste
   **ouvert** — aucun déploiement, donc aucune mesure possible. Consigné dans
-  `specs/features/doing/bug-080-*.md` (section ajoutée le 2026-09-06).
+  `specs/features/done/bug-080-*.md` (section ajoutée le 2026-09-06).
 - **Le lot C de `bug-080`** (cause de la fragmentation) n'est **pas** ouvert :
   ce cycle traite la **conséquence**, pas la cause.
 - **`bug-108`** (garde TLS/OTA sur métrique IRAM-inclusive) reste dans `todo/`.
