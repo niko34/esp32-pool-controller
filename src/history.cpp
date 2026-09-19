@@ -766,7 +766,15 @@ void HistoryManager::saveToFile() {
     // pas de `String` — les arguments d'un `+=` de `String` seraient
     // construits même si le niveau DEBUG est filtré, ce qui contredirait
     // l'objet même de ce lot sur un chemin qui se répète toutes les 5 min.
-    char ligne[64];
+    // ⚠️ TAILLE MESUREE, PAS ESTIMEE (defaut corrige le 2026-09-19, constate en
+    // production) : le prefixe seul pese 59 octets en UTF-8 (l'« é » de
+    // « écriture » en coute 2). Avec un tampon de 64, snprintf ne laissait que
+    // 4 chiffres et rendait « = 5528 » pour une valeur reelle de 55284 — la
+    // disparition du suffixe « o » etant le seul indice de la troncature. Un
+    // diagnostic qui perd des chiffres EN SILENCE est pire que pas de
+    // diagnostic : il fournit un nombre faux d'apparence plausible. 96 octets
+    // laissent 36 caracteres au nombre, soit dix fois la largeur d'un uint32.
+    char ligne[96];
     snprintf(ligne, sizeof(ligne),
              "Sauvegarde historique : maxBloc8 min pendant l'écriture = %u o",
              (unsigned)sink.minMaxAlloc8DuringWrite);

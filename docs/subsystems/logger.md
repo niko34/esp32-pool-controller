@@ -622,6 +622,31 @@ Cadences des émetteurs périodiques qui écrivent dans `/system.log` :
 
 > **Règle générale** : avant d'ajouter une trace **périodique** persistée, chiffrer son débit en Ko/h et vérifier la rétention résultante. Une trace de 100 octets toutes les 30 s consomme **à elle seule** 12 Ko/h, soit plus que la taille totale du fichier — elle rend le journal inutilisable pour tout post-mortem.
 
+### Dimensionner un tampon en octets UTF-8, jamais en caractères visés
+
+Retour d'expérience du 2026-09-19 (feature-131, sonde `maxBloc8 min` de
+[`history.cpp`](../../src/history.cpp), voir [history.md](history.md#sonde-f1--mesure-sur-le-terrain-et-défaut-de-dimensionnement-trouvé-en-production-2026-09-19)) :
+un tampon `char[64]` a été dimensionné en comptant les caractères du préfixe
+littéral, pas ses octets. Le préfixe pesait **59 octets** en UTF-8 (chaque
+accent — l'« é » de « écriture » — coûte **2 octets**, pas 1) : `snprintf` ne
+laissait plus que 4 chiffres au nombre attendu, et le suffixe (« o ») partait
+avec eux, sans laisser d'indice visible de la troncature dans la ligne
+produite.
+
+**Un diagnostic qui perd des chiffres en silence est pire que pas de
+diagnostic** : il fournit un nombre faux d'apparence plausible, qui peut faire
+conclure l'inverse de la vérité (ici, `5528` a été lu — à tort — comme une
+chute catastrophique de contiguïté). Deux règles à appliquer à tout nouveau
+tampon de log formaté (`snprintf` sur `char[]`) :
+
+1. Compter le **littéral en octets réels**, pas en caractères visuellement
+   comptés — tout accent, guillemet typographique ou symbole non-ASCII du
+   message coûte plus d'un octet.
+2. Laisser une marge large pour la partie variable (au moins **dix fois** la
+   largeur décimale du type, ex. `uint32` → 10 chiffres → marge de 100) plutôt
+   que d'ajuster au plus juste : le gain mémoire d'un tampon serré n'a aucune
+   commune mesure avec le risque de lire un nombre faux comme s'il était bon.
+
 **Émetteur conditionnel ajouté en v2.20.5** — `WARN [Dosage pH|ORP] démarrage décidé mais AUCUN débit commandé …`, throttle **5 min** par grandeur (`kDosingNoFlowWarnIntervalMs`), ligne ≈ 180 octets :
 
 | Régime | Débit ajouté | Effet sur la rétention |

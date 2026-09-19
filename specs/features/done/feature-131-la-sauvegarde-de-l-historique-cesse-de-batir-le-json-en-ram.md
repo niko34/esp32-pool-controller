@@ -204,8 +204,16 @@ longue durée :
    `hdef` du topic MQTT retenu `<base>/diagnostic`, sur un appareil en usage
    normal pendant au moins 24 h après déploiement.
 
-② **Test de fumée obligatoire avant tout déploiement long — confirmer que
-   `rename()` écrase bien une destination existante sur cible.** `lfs_rename`
+② **[x] Test de fumée réalisé — cf. Mesures de terrain ci-dessus.** Sur
+   l'appareil, en OTA le 2026-09-19, la ligne `Historique sauvegardé (N
+   points)` — qui n'est écrite qu'**après** un `rename()` retourné `true` —
+   est apparue à 4 cycles consécutifs (17:37:55 chargement 238 points,
+   17:42:49 → 239, 17:47:49 → 240), avec un point de plus à chaque cycle :
+   preuve que `rename()` a bien écrasé `/history.json` existant, zéro échec de
+   renommage, zéro écriture partielle. Point clos.
+
+   Obligatoire avant tout déploiement long — confirmer que
+   `rename()` écrase bien une destination existante sur cible. `lfs_rename`
    le fait par conception (confirmé par `nm` sur `libjoltwallet__littlefs.a`),
    mais **ce dépôt n'a jamais exercé ce chemin exact** :
    [`logger.cpp:725-726`](../../src/logger.cpp) fait un `remove(dest)`
@@ -252,6 +260,56 @@ longue durée :
   `docs/subsystems/acces-fichiers.md`, `docs/adr/0083-…md` (nouveau), notes
   d'amendement sur `docs/adr/0033-…md` et `docs/adr/0070-…md`,
   `docs/README.md` (index ADR), `CHANGELOG.md` (2.53.0).
+
+## Mesures de terrain (2026-09-19, v2.53.0)
+
+Déploiement OTA sur l'appareil (192.168.1.48) le 2026-09-19 à 17:37.
+
+### Avant (firmware 2.52.1, journal du 2026-09-19 15:51:38)
+
+L'appareil a journalisé exactement la panne que ce lot corrige :
+
+```
+WARN Famine memoire apres serialisation : sauvegarde de l'historique sautee
+     (maxBloc8=6900 o < 8192 o) — nouvelle tentative dans 5 min
+```
+
+C'est la **seconde admission `fsGuardAdmit`** (celle placée après `measureJson`,
+donc après le pic du `JsonDocument`) : le plus gros bloc contigu était tombé à
+**6 900 o**, sous le seuil de 8 192, et **une sauvegarde a été perdue**. Preuve
+mesurée et datée que le pic était réel. Ce message ne peut plus jamais
+réapparaître : la seconde admission qu'il accompagnait a été supprimée par ce
+lot (cf. [Une admission unique](../../docs/subsystems/history.md#une-admission-unique-dans-savetofile-feature-131)).
+
+### Après (firmware 2.53.0)
+
+Ambiant relevé à 17:38:49 : `maxBloc8 = 55284`. Sonde F1 (minimum de
+`heapLargestFreeBlock8Bit()` échantillonné **pendant** la passe 2, tous les 64
+appels), sur 4 sauvegardes consécutives à 17:42:49, 17:47:49, 17:52:50,
+17:57:50 : **55 284 o à chaque fois**.
+
+**Conclusion : `max_alloc_8bit` ne chute pas pendant une sauvegarde** — critère
+d'acceptation n°1, rempli et désormais **mesuré sur cible**, plus seulement
+garanti par construction. À comparer aux 6 900 o d'avant le lot.
+
+### Défaut de sonde trouvé en production, et corrigé
+
+La sonde F1 affichait `= 5528` au lieu de `= 55284 o`. Cause : `char
+ligne[64]` alors que le **préfixe seul pèse 59 octets en UTF-8** (l'« é » de
+« écriture » en coûte 2). `snprintf` ne laissait que **4 chiffres**, et le
+suffixe « o » — absent de la sortie — était le seul indice de la troncature.
+
+Corrigé dans [`src/history.cpp:777`](../../src/history.cpp:777) : tampon porté
+à **96 octets**, avec un commentaire qui explique le calcul et pourquoi la
+taille est mesurée et non estimée. `pio run` SUCCESS, `pio test -e native` 1
+917 cas verts.
+
+Un diagnostic qui perd des chiffres en silence fournit un nombre faux
+d'apparence plausible — sans le suffixe manquant, « 5528 » aurait été lu comme
+une chute catastrophique de contiguïté et aurait fait conclure l'inverse de la
+vérité. Même famille de piège qu'[ADR-0073](../../docs/adr/0073-chiffre-consigne-porte-sa-methode.md)
+(un chiffre recopié sans sa méthode). Documenté dans
+[`docs/subsystems/history.md`](../../docs/subsystems/history.md#sonde-f1--defaut-de-dimensionnement-trouve-en-production-2026-09-19).
 
 ## Hors périmètre
 - Tout changement du format de `/history.json`.

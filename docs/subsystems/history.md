@@ -215,6 +215,42 @@ Si un snapshot est pris **avant** que l'heure soit synchronisée (timestamp upti
   - **Puits fichier** (`historyFileSink`/`HistoryFileWriteSink`) : passe 2, accumule les octets dans un tampon de **pile** (`kHistoryWriteChunkBytes` = 512 o) et ne déclenche un `f.write()` qu'au remplissage — un `f.write()` toutes les ~4 points plutôt qu'un par point.
 - **Formatage d'un point** : `formatPersistedHistoryPoint()` ([`src/history_persist_format.h`](../../src/history_persist_format.h), module **pur**, [ADR-0017](../adr/0017-logique-metier-pure-humble-object-testabilite.md)) — même format exact qu'avant (clés courtes, omission des clés non finies, `pf`/`of` seulement sur `RAW`, masque de dosage entier). Un point qui ne tient pas dans `kHistoryPersistPointMaxBytes` (128 o, majorant mesuré) est **sauté**, identiquement dans les deux passes.
 - **Pic d'allocation retombé à un point + un tampon** : `kHistoryPersistPointMaxBytes` (128 o) + `kHistoryWriteChunkBytes` (512 o), tous deux sur **pile** — **aucun tas** n'est engagé pendant la sauvegarde. Le site exact du coredump du 05/09 (la seconde admission après `measureJson`, cf. plus bas) n'a donc plus de raison d'exister.
+### Sonde F1 : mesure sur le terrain, et défaut de dimensionnement trouvé en production (2026-09-19)
+
+Une sonde DEBUG mesure, à chaque sauvegarde, le minimum de `maxBloc8`
+observé **pendant** la passe 2 (`sink.minMaxAlloc8DuringWrite`, échantillonné
+tous les 64 points écrits) — c'est le seul moyen de vérifier a posteriori que
+le pic supprimé par ce lot reste bien au plancher, sans ajouter de sonde
+permanente au chemin critique. Ligne émise en `DEBUG`
+([`src/history.cpp:777`](../../src/history.cpp:777)) :
+
+```
+Sauvegarde historique : maxBloc8 min pendant l'écriture = 55284 o
+```
+
+**Déploiement OTA du 2026-09-19, 17:37** — avant/après mesuré sur cible :
+
+| | Avant (v2.52.1, 15:51:38) | Après (v2.53.0, 4 sauvegardes 17:42-17:57) |
+|---|---|---|
+| `maxBloc8` pendant la passe 2 | **6 900 o** — sous le seuil 8 192, sauvegarde **sautée** (`Famine memoire apres serialisation : …`) | **55 284 o à chaque cycle** — stable, jamais de chute |
+
+Confirmation sur cible du critère d'acceptation « `max_alloc_8bit` ne chute
+pas pendant une sauvegarde » — jusque-là garanti par construction seulement.
+Détail complet : [Mesures de terrain de la spec](../../specs/features/done/feature-131-la-sauvegarde-de-l-historique-cesse-de-batir-le-json-en-ram.md#mesures-de-terrain-2026-09-19-v2530).
+
+⚠️ **Défaut trouvé et corrigé le jour même** : la sonde affichait `= 5528` au
+lieu de `= 55284 o`. Le tampon de formatage faisait `char[64]` alors que le
+**préfixe seul pèse 59 octets en UTF-8** (l'« é » de « écriture » en coûte 2,
+pas 1) — `snprintf` ne laissait donc que 4 chiffres au nombre, et le suffixe
+« o » disparaissait avec eux, seul indice visible de la troncature. Corrigé en
+portant le tampon à **96 octets** (dix fois la largeur d'un `uint32`). Un
+diagnostic qui perd des chiffres en silence est pire que pas de diagnostic :
+il fournit un nombre faux d'apparence plausible — sans le suffixe manquant,
+« 5528 » se serait lu comme une chute catastrophique de contiguïté, soit
+l'inverse de la vérité. Même famille de piège qu'[ADR-0073](../adr/0073-chiffre-consigne-porte-sa-methode.md).
+Voir aussi la règle de dimensionnement des tampons de log dans
+[logger.md](logger.md#dimensionner-un-tampon-en-octets-utf-8-jamais-en-caractères-visés).
+
 - **Contrat d'identité octet à octet** : `historyFormatFixed()` est un **portage fidèle de `dtostrf()`** (pas un `snprintf("%.*f")`) — `String(float/double, n)` du framework ne fait pas un arrondi « au plus proche, pair », elle ajoute `0,5·10⁻ⁿ` puis **tronque** chiffre à chiffre. Un `%.*f` aurait divergé sur **174 des 2 881** valeurs d'un balayage exhaustif du pas réel du DS18B20 (0,0625 °C), soit **6,0 %** (ex. `-54,75` → `"-54.7"` avec `dtostrf`, `"-54.8"` avec `%.1f`). Le format persisté devant rester **identique** à celui déjà écrit sur les appareils en production, le port reproduit `dtostrf()` bit à bit plutôt que de le remplacer. Comparaison **octet à octet, 684 octets, 0 divergence** contre une fixture générée par le code réel de la 2.52.2 (`test/fixtures/history_reference.json`, `tools/gen_history_reference_json.cpp`). Décision et alternatives : [ADR-0083](../adr/0083-ecriture-atomique-historique-et-contrat-de-format-persiste.md).
 
 ### Atomicité `.tmp` + `rename` (décision utilisateur, 2026-09-19)

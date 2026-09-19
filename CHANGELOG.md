@@ -33,6 +33,14 @@
   l'écriture atomique (l'ancien fichier coexiste désormais avec le `.tmp`
   jusqu'au renommage final, son espace n'est donc jamais récupérable pendant
   l'écriture).
+- **Historique** : correction de la sonde de diagnostic DEBUG « `maxBloc8 min
+  pendant l'écriture` » (feature-131), trouvée en production le 2026-09-19
+  après le déploiement OTA — `char ligne[64]` était trop court pour son
+  propre préfixe (59 octets en UTF-8, l'« é » d'« écriture » en coûtant 2) :
+  `snprintf` tronquait le nombre à 4 chiffres et faisait disparaître le
+  suffixe « o », rendant `= 5528` au lieu de `= 55284 o` sans aucun signe de
+  troncature. Tampon porté à 96 octets ([`src/history.cpp:777`](src/history.cpp)).
+  Sonde uniquement, `DEBUG`, aucun effet sur la sauvegarde elle-même.
 
 ### Documentation
 
@@ -50,6 +58,12 @@
   identique, 0 divergence). Notes d'amendement ajoutées à ADR-0033 et
   ADR-0070 §d (la seconde admission mémoire qu'il imposait devient
   historique pour ce chemin).
+- `specs/features/done/feature-131-…` : section « Mesures de terrain
+  (2026-09-19, v2.53.0) » — `maxBloc8` avant/après déploiement OTA (6 900 o
+  puis 55 284 o stables sur 4 sauvegardes), test de fumée `rename()` passé
+  (suivi post-déploiement ② clos), défaut de sonde trouvé et corrigé.
+- `docs/subsystems/history.md` : section sur la sonde F1 (format de la ligne
+  DEBUG et son défaut de dimensionnement).
 
 ---
 
