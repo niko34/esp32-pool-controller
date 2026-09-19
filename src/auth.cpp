@@ -177,6 +177,7 @@ bool AuthManager::checkRateLimit(AsyncWebServerRequest* req) {
 
 void AuthManager::cleanupRateLimitMap() {
   unsigned long now = millis();
+  // MEM-EXEMPT(ADR-0082) : purge périodique du rate-limiting, hors chemin de journalisation, vidé des entrées expirées toutes les 100 requêtes. ⚠️ AUCUN plafond dur sur la taille de la map : « borné au nombre d'IP distinctes » est une tautologie, pas une garantie. Acceptable sur un LAN domestique, à reprendre en même temps que auth.h [feature-131]
   std::vector<String> toRemove;
 
   for (auto& pair : rateLimitMap) {

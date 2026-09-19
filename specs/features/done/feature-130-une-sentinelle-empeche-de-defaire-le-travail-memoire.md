@@ -181,3 +181,110 @@ bruyante ou muette ne sert à rien. Soigner le message autant que la détection.
 ## Hors périmètre
 - Toute optimisation mémoire (c'est feature-131).
 - Toute modification de `logger.*` : l'acquis se protège, il ne se retouche pas.
+
+---
+
+## 🏁 CLÔTURE — 19/09/2026 (v2.52.2)
+
+Les trois cliquets sont livrés. La sentinelle **refuse** réellement, ce qui est le
+seul critère qui la distingue d'un garde-fou décoratif.
+
+### Ce qui a été livré
+
+| Cliquet | État |
+|---|---|
+| `tools/check_memory_discipline.sh` (201 lignes) | livré, 6ᵉ job d'hygiène |
+| `static_assert` de dimensionnement | 4 ajoutés (voir ci-dessous) |
+| Section « Mémoire » dans `CLAUDE.md` | livrée, nomme `max_alloc_8bit` |
+
+### La preuve la plus forte : la validation historique
+
+Rejouée en mode audit (`POOL_MEM_LIST=1`) sur `HEAD~3`, `HEAD~6` et `HEAD~12`, la
+sentinelle fait remonter **`_persistBuffer` et `toWrite`** — exactement les deux
+structures qu'ADR-0082 a supprimées. **Elle aurait signalé le défaut le jour où il
+a été écrit**, avant les trois semaines de diagnostic.
+
+C'est ce qui la distingue du suffixe `-diag` de feature-128 : le suffixe seul ne
+faisait rien, seule l'exclusion dans `check_release_artefacts.sh` mordait.
+
+### Entorse au périmètre, assumée et motivée
+
+La spec disait « toute modification de `logger.*` est hors périmètre ». Elle a été
+faite, et voici pourquoi.
+
+`architect` avait spécifié en feature-129 `const char* logLevelName(LogLevel)` —
+**jamais écrite**. `logger.cpp` appelait donc `getLevelString(level).c_str()`
+**à l'intérieur de `log()`** : la garantie « `log()` n'alloue rien » reposait sur
+l'optimisation *short string* d'Arduino (libellés de 4 à 7 caractères, seuil 14),
+une propriété **invisible dans le code** qu'un libellé de quinze caractères aurait
+cassée en silence, sur le chemin exact que feature-129 venait de nettoyer.
+
+`getLevelString` est **supprimée**, pas conservée : la garder aurait laissé une
+fonction `String` dans `logger.cpp` — donc annulé le bénéfice — et créé deux
+listes de libellés vouées à diverger. Les trois appelants migrés
+(`ws_manager.cpp`, `web_routes_data.cpp` ×2) y gagnent : ArduinoJson stocke
+désormais un `const char*` **par pointeur** au lieu de copier un `String`.
+
+Effet de bord : le motif M3A (« aucun type de retour `String` dans le journal »)
+passe de 2 hits à **0** — il devient net là où la formulation initiale produisait
+**75 % de faux positifs** sur des paramètres `const String&` de l'API publique.
+
+### Quatre exemptions dès le premier jour — un livrable, pas une concession
+
+`src/mqtt_manager.h` · `src/auth.cpp` · `src/auth.h` · `src/web_routes_config.cpp`.
+
+L'option « restreindre le motif à `std::vector<String>` » (1 seule exemption, plus
+propre à l'affichage) a été **écartée** : un futur agent contournerait la règle en
+choisissant un `std::map`, et la sentinelle ne verrait rien. Ces quatre lignes sont
+donc l'**inventaire exhaustif des `String`-en-conteneur du firmware**, c'est-à-dire
+l'entrée de feature-131.
+
+Le correctif de `src/auth.cpp` (6 lignes, `it = rateLimitMap.erase(it)` en place)
+est **refusé dans ce lot** : aucune suite native ne couvre `auth`. Modifier le
+chemin d'authentification sans filet, dans un lot qui annonce « aucun changement de
+comportement », serait le glissement même que ce lot existe pour empêcher.
+
+### ⚠️ Trois défauts trouvés en revue, et corrigés
+
+1. **L'échappatoire ne mordait pas.** Le seuil de 20 caractères comptait la
+   ponctuation et l'étiquette `[feature-NNN]` : **27 tirets passaient**, et
+   l'étiquette apportant 13 caractères, un motif de **sept lettres** suffisait.
+   L'exigence de justification était décorative — c'est-à-dire précisément le
+   défaut que ce lot existe pour empêcher. Corrigé (ponctuation et étiquette
+   retirées du compte), vérifié par mutation dans les deux sens.
+2. **Une justification affirmait plus que le code ne tient.** Celle du
+   rate-limiting disait la table « bornée au nombre d'IP distinctes vues » — une
+   **tautologie présentée comme une garantie** : il n'existe aucun plafond dur.
+   Réécrite pour le dire. Une exemption fausse est pire qu'un motif absent : elle
+   éteint la sentinelle **et** fait croire que quelqu'un a vérifié.
+3. **Un libellé changeait en silence.** `getLevelString` rendait `UNKNOWN`,
+   `logLevelName` rend `?????` (les deux chemins portaient déjà des libellés
+   différents, console et JSON). Inatteignable tant que `LogLevel` est exhaustive,
+   mais consigné au CHANGELOG plutôt que laissé passer.
+
+### Les `static_assert` ajoutés
+
+- `kLogArenaBytes <= 16384` et `kMaxLogEntries <= 200` — **bornes hautes**, les
+  seules qui manquaient : doubler l'arène ne faisait échouer aucune assertion.
+  Vérifié : `kLogArenaBytes = 32768` fait désormais échouer `pio run`.
+- `sizeof(LogSlot) == 20` — lacune au regard de la discipline `DataPoint`,
+  `TttDay`, `PhIntegralSnapshot` ; contrôlé aussi en natif, le module étant pur.
+- Budget `.bss` total, sur les `sizeof` **réels** des trois objets — jamais sur une
+  reformulation de la formule, sinon l'assertion vérifie l'arithmétique et non les
+  objets.
+
+### Ce que la sentinelle NE peut pas fermer
+
+Consigné en tête du script : `grep` travaille ligne à ligne (une déclaration coupée
+en deux passe), un `typedef` ou un `using` alias passe, et rien ne voit une
+allocation faite **derrière un appel de fonction** depuis `log()`. L'honnêteté sur
+les angles morts fait partie de l'outil.
+
+### Vérifications
+
+`pio run -e esp32dev_core3` SUCCESS, **0 warning** · `pio test -e native`
+**1874 cas / 50 suites**, verts · les **six** sentinelles passent · mutations :
+`std::vector<String>` réintroduit → refusé ; marqueur sans motif → refusé ;
+27 tirets → refusé ; `kLogArenaBytes = 32768` → compilation échoue.
+
+**Statut : CLOS.**

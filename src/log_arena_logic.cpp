@@ -106,7 +106,19 @@ void civilFromEpoch(uint32_t epochSec, int& year, int& month, int& day,
   day = static_cast<int>(d);
 }
 
-const char* levelShortName(LogLevel level) {
+// Emplacement centralisé du format : évite de dupliquer les deux variantes
+// (repli non daté / date calculée) dans logFormatHeader.
+int formatHeaderLine(char* out, size_t n, const char* dateText, LogLevel level) {
+  return snprintf(out, n, "%s %s ", dateText, logLevelName(level));
+}
+
+}  // namespace
+
+// feature-130 : anciennement `levelShortName`, interne à ce fichier — promu
+// en fonction publique pour que logger.cpp (et les appelants JSON migrés,
+// ws_manager.cpp/web_routes_data.cpp) cessent de passer par
+// `Logger::getLevelString()` (String allouée, ADR-0082).
+const char* logLevelName(LogLevel level) {
   switch (level) {
     case LogLevel::DEBUG:    return "DEBUG";
     case LogLevel::INFO:     return "INFO";
@@ -116,14 +128,6 @@ const char* levelShortName(LogLevel level) {
     default:                 return "?????";
   }
 }
-
-// Emplacement centralisé du format : évite de dupliquer les deux variantes
-// (repli non daté / date calculée) dans logFormatHeader.
-int formatHeaderLine(char* out, size_t n, const char* dateText, LogLevel level) {
-  return snprintf(out, n, "%s %s ", dateText, levelShortName(level));
-}
-
-}  // namespace
 
 int logFormatHeader(char* out, size_t n, uint32_t wallSec, LogLevel level) {
   if (wallSec == 0) {

@@ -63,7 +63,31 @@ struct LogSlot {
   uint8_t  flags;       // kLogFlagTruncated, etc.
 };
 
+// feature-130 (ADR-0082) : verrouille la taille du POD au lien plutôt qu'à la
+// relecture — tout champ ajouté ou élargi qui ferait dériver ce sizeof doit
+// se justifier ICI, contre `sLogSlots[kMaxLogEntries]` (logger.cpp, 20 o ×
+// 200 = 4 000 o de `.bss` déjà réservés au link).
+static_assert(sizeof(LogSlot) == 20,
+              "LogSlot a dérivé de 20 o : sLogSlots[kMaxLogEntries] (logger.cpp) "
+              "et le static_assert de dimensionnement global (logger.cpp, 21 216 o) "
+              "supposent ce POD figé — voir ADR-0082 avant de faire grossir ce champ.");
+
 constexpr uint8_t kLogFlagTruncated = 1u << 0;
+
+/**
+ * @brief Nom court et STABLE d'un niveau de journal, pour tout affichage
+ *        (console, `/system.log`, JSON `/get-logs`, WebSocket `broadcastLog`).
+ *
+ * Chaîne LITTÉRALE (durée de vie programme, jamais allouée) — c'est le point
+ * de feature-130 : ArduinoJson stocke un `const char*` PAR POINTEUR, jamais
+ * par copie ; renvoyer un `String` (comme l'ancien `Logger::getLevelString`)
+ * forçait un `.c_str()` sur un temporaire détruit dès l'appel suivant, un
+ * motif que la sentinelle mémoire de feature-130 refuse désormais (M3).
+ *
+ * @param level niveau à nommer.
+ * @return      pointeur STATIQUE, jamais nullptr.
+ */
+const char* logLevelName(LogLevel level);
 
 /**
  * @brief Plan d'écriture d'un message de `len` octets dans l'arène circulaire.

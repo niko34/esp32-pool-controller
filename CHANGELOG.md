@@ -2,6 +2,54 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [2.52.2] - 2026-09-19
+
+> **Ce qui change pour vous** : rien de directement visible. Un changement
+> indirect — les journaux affichés dans l'UI et poussés en temps réel
+> passent légèrement moins souvent par une copie de texte intermédiaire —
+> n'est pas une amélioration mesurable pour l'utilisateur, seulement un
+> gain de propreté sur un chemin déjà assaini par la version précédente. Le
+> reste de cette version est de l'outillage interne : une sentinelle
+> empêche désormais qu'une future modification défasse, sans que personne
+> ne le voie, la correction mémoire du journal livrée en v2.52.1.
+
+### Firmware
+
+- **Journal** : `Logger::getLevelString(LogLevel)` (`String`, allouée à
+  chaque appel) est supprimée, remplacée par `logLevelName(LogLevel)`
+  (`const char*` littéral, sans allocation). Les trois appelants
+  (`ws_manager`, `web_routes_data` ×2) passent désormais un pointeur à
+  ArduinoJson au lieu de lui faire copier une chaîne temporaire.
+  ⚠️ **Un libellé change**, dans un cas qui ne devrait jamais survenir : un
+  niveau de journal inconnu s'affichait `UNKNOWN` côté JSON et `?????` côté
+  console série — les deux chemins portaient des libellés différents. Ils
+  sont désormais unifiés sur `?????`. Le cas est inatteignable tant que
+  l'énumération `LogLevel` est exhaustive ; relevé en revue plutôt que laissé
+  passer en silence, ce lot annonçant « aucun changement de comportement ».
+- **Journal** : dimensionnement de l'arène circulaire (feature-129)
+  désormais verrouillé dans les deux sens — deux `static_assert` de plafond
+  s'ajoutent aux quatre de plancher existants, plus un verrou sur
+  `sizeof(LogSlot)` et sur le budget `.bss` total mesuré de l'arène : un
+  agrandissement doit désormais se justifier à l'endroit du verrou, pas se
+  faire en changeant un seul nombre.
+
+### Documentation
+
+- Nouvelle sentinelle CI `tools/check_memory_discipline.sh` (ADR-0082,
+  feature-130) : refuse toute réintroduction, dans le journal, du motif
+  d'allocation corrigé par feature-129 — sixième job de
+  `hygiene-specs.yml`, mode audit `POOL_MEM_LIST=1`, échappatoire
+  `MEM-EXEMPT(ADR-0082)`.
+- `CLAUDE.md` : section « Mémoire » des conventions de code remplacée par
+  trois règles apprises d'incidents réels, dont la métrique de référence
+  `max_alloc_8bit`.
+- `docs/BUILD.md` : documentation de la sentinelle ; correction du nombre
+  de jobs annoncé pour `hygiene-specs.yml` (obsolète depuis feature-128).
+- `docs/subsystems/logger.md` : `logLevelName()` et le pourquoi de son
+  introduction, nouveaux `static_assert` de dimensionnement.
+
+---
+
 ## [2.52.1] - 2026-09-16
 
 > **Ce qui change pour vous** : le journal cesse de fragmenter la mémoire de

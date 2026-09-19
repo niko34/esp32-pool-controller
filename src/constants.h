@@ -227,6 +227,23 @@ static_assert(kLogPersistLineMax >= 19 + 1 + 5 + 1 + kLogMessageMaxBytes + sizeo
               "kLogPersistLineMax trop petit pour horodatage + niveau + message + marqueur");
 static_assert(kLogMessageMaxBytes >= 640, "Pire cas mesure des messages de garde : 630 o");
 
+// feature-130 (ADR-0082) : bornes HAUTES, symétriques des bornes basses
+// ci-dessus. Sans elles, doubler l'arène (ou le nombre d'entrées) ne demande
+// de toucher AUCUNE assertion — donc aucune justification écrite — puisque
+// les asserts existants ne contraignent qu'un plancher. `sLogArena`/
+// `sLogSlots` sont des objets `.bss` de taille FIXE (logger.cpp) : les
+// grossir grignote la même ressource rare que feature-129 a économisée (la
+// contiguïté du tas 8 bits), au bénéfice d'un budget qui n'a jamais failli
+// depuis (200 entrées, 16 384 o). Un agent qui a besoin de plus DOIT remonter
+// cette limite ici, explicitement — jamais en changeant seulement kLogArenaBytes
+// ou kMaxLogEntries plus haut.
+static_assert(kLogArenaBytes <= 16384,
+              "Doubler l'arène grignote la contiguïté 8 bits que feature-129 a "
+              "reconquise (ADR-0082) — justifier ici avant d'élargir.");
+static_assert(kMaxLogEntries <= 200,
+              "Doubler ce plafond double sLogSlots (20 o/entrée, .bss, logger.cpp) "
+              "— justifier ici avant d'élargir (ADR-0082).");
+
 // Historique de données
 // 8h de données brutes (intervalle 5 min). 96 et non 72 (= 6h pile) depuis
 // bug-history-doublons-troncature (revue 2.18.1) : la consolidation par créneau

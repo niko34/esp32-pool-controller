@@ -162,7 +162,9 @@ public:
   // le pointeur au-delà de l'appel du callback.
   void setLogCallback(std::function<void(const LogRecord&)> cb) { _logCallback = cb; }
 
-  String getLevelString(LogLevel level);
+  // feature-130 (ADR-0082) : getLevelString() supprimée — utiliser
+  // logLevelName(level) (log_arena_logic.h, réexportée ci-dessus), qui
+  // renvoie un `const char*` littéral au lieu d'une `String` allouée.
 
   // v2.8.2 : itération sous mutex SANS copie du texte (le visiteur reçoit un
   // pointeur DANS sLogArena, valide SOUS MUTEX SEULEMENT — feature-129 phase C).

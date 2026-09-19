@@ -279,7 +279,10 @@ void WsManager::broadcastLog(const LogRecord& entry) {
   doc["type"] = "log";
   JsonObject d = doc["data"].to<JsonObject>();
   d["timestamp"] = entry.timestamp;
-  d["level"] = systemLogger.getLevelString(entry.level);
+  // feature-130 (ADR-0082) : logLevelName() renvoie un littéral STATIQUE —
+  // ArduinoJson le stocke PAR POINTEUR, sans copie (contrairement à l'ancien
+  // getLevelString() qui allouait une String temporaire).
+  d["level"] = logLevelName(entry.level);
   // entry.message pointe dans le tampon de l'APPELANT de log() (feature-129,
   // condition C3) : stable pendant tout cet appel SYNCHRONE (measureJson +
   // serializeJson ont lieu avant que broadcastLog() ne rende la main, donc

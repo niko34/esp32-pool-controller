@@ -159,11 +159,45 @@ dépendance Arduino, zéro mutex, zéro I/O).
 | `kLogPersistLineMax` | 832 | horodatage (19) + espace + niveau (≤5) + espace + `kLogMessageMaxBytes` + marqueur + `\n`/NUL |
 | `kLoggerFlushRedoMaxPasses` | 3 | borne la boucle de reprise de `flushToDisk()` sous rafale ERROR/CRITICAL concurrente — recommandation P2 `pool-chemistry` |
 
-Quatre `static_assert` en gardent la cohérence à la compilation : `kLogArenaBytes`
-≥ 200 × 64 o, `kLogMessageMaxBytes` ≤ 1/8 de l'arène (un seul message ne peut pas
-monopoliser l'arène), `kLogPersistLineMax` suffisant pour le pire cas formaté, et
-**`kLogMessageMaxBytes >= 640`** — celui-ci verrouille explicitement le plafond
-contre un retour en arrière silencieux.
+Quatre `static_assert` de **plancher** en gardent la cohérence à la
+compilation : `kLogArenaBytes` ≥ 200 × 64 o, `kLogMessageMaxBytes` ≤ 1/8 de
+l'arène (un seul message ne peut pas monopoliser l'arène), `kLogPersistLineMax`
+suffisant pour le pire cas formaté, et **`kLogMessageMaxBytes >= 640`** —
+celui-ci verrouille explicitement le plafond contre un retour en arrière
+silencieux.
+
+feature-130 (ADR-0082) ajoute leur **symétrique** : deux `static_assert` de
+**plafond**, `kLogArenaBytes <= 16384` et `kMaxLogEntries <= 200`. Sans eux,
+doubler l'arène (ou le nombre d'entrées) ne demandait de toucher **aucune**
+assertion — donc aucune justification écrite — puisque les quatre asserts
+d'origine ne contraignent qu'un plancher. `sLogArena`/`sLogSlots` sont des
+objets `.bss` de taille **fixe** : les grossir grignote la même ressource
+rare que feature-129 a reconquise, la contiguïté du tas 8 bits. Un agent qui
+a besoin de plus **doit** remonter ces deux bornes ici, explicitement —
+jamais en changeant seulement `kLogArenaBytes`/`kMaxLogEntries` sans y
+toucher.
+
+Deux `static_assert` supplémentaires verrouillent l'**empreinte réelle**,
+ailleurs que dans `constants.h` :
+
+- [`log_arena_logic.h`](../../src/log_arena_logic.h) :
+  `sizeof(LogSlot) == 20` — tout champ ajouté ou élargi à `LogSlot` qui
+  ferait dériver ce POD de 20 octets doit se justifier à cet endroit précis
+  (`sLogSlots[kMaxLogEntries]` et le budget `.bss` ci-dessous en dépendent).
+- [`logger.cpp`](../../src/logger.cpp) :
+  `sizeof(sLogArena) + sizeof(sLogSlots) + sizeof(sFlushLine) <= 21216` —
+  verrouille l'empreinte `.bss` **mesurée** des trois objets, pas une
+  reformulation arithmétique de `kLogArenaBytes + kMaxLogEntries ×
+  sizeof(LogSlot) + kLogPersistLineMax` (qui ne vérifierait que le calcul,
+  pas ce que le lien a réellement réservé — un padding de structure
+  inattendu passerait inaperçu).
+
+Ces six `static_assert` sont vérifiés à la compilation ; la sentinelle
+[`tools/check_memory_discipline.sh`](../BUILD.md#toolscheck_memory_disciplinesh--la-discipline-mémoire-du-journal-reste-vraie-adr-0082-feature-130)
+(feature-130, job `memory-discipline` de `hygiene-specs.yml`) referme la
+brèche que ces asserts ne couvrent pas : rien n'empêchait, avant elle,
+qu'un `std::vector<String>` soit réintroduit dans `logger.h` — il aurait
+compilé, passé `pio test -e native`, et ne rencontré aucun contrôle.
 
 #### Pourquoi 768 et non 256 — le plafond a failli tronquer les gardes chimiques
 
@@ -247,6 +281,42 @@ va directement de `message.c_str()` vers l'arène ; le flush écrit en deux temp
 (en-tête horodaté dans `sFlushLine`, ~32 o, puis les octets lus **directement**
 depuis `sLogArena` vers `sFlushLine`), sans jamais reconstituer une ligne de
 800 o ailleurs.
+
+### Le nom d'un niveau — `logLevelName()`, sans allocation (feature-130, ADR-0082)
+
+`String Logger::getLevelString(LogLevel)` **n'existe plus**. Remplacée par
+
+```cpp
+// log_arena_logic.h, réexportée par logger.h
+const char* logLevelName(LogLevel level);   // pointeur STATIQUE, jamais nullptr
+```
+
+Le pourquoi est l'enseignement du lot : `log()` construisait auparavant son
+en-tête avec `getLevelString(level).c_str()` — un appel qui allouait une
+`String` **temporaire**, puis en extrayait le pointeur interne. La garantie
+« `log()` n'alloue rien », établie par feature-129, ne reposait donc **pas**
+sur le type de retour, mais sur l'optimisation *short string* d'Arduino
+(`String` de moins de 14 caractères stockée **en place**, sans `malloc`) : les
+cinq libellés (`DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`) font 4 à 7
+caractères, tous sous ce seuil. C'est une propriété **invisible dans le
+code** — rien n'écrivait « ceci ne doit jamais dépasser 13 caractères » — et
+qu'un futur libellé plus long (`WARNING_HIGH`, par exemple) aurait cassée en
+silence, sur le chemin exact que feature-129 venait de nettoyer.
+
+`logLevelName()` porte désormais la garantie **dans son type de retour** :
+un `const char*` littéral (durée de vie programme) ne peut pas allouer, quelle
+que soit sa longueur. `tools/check_memory_discipline.sh` (M3A) refuse en plus
+toute déclaration `String` dans le chemin de journalisation lui-même — la
+garantie ne dépend donc plus ni d'une optimisation de bibliothèque, ni de la
+discipline d'un futur appelant.
+
+Trois appelants migrés, tous vers un stockage **par pointeur** (ArduinoJson
+ne copie pas un `const char*`) au lieu d'une copie de `String` :
+[`logger.cpp:258`](../../src/logger.cpp:258) (en-tête de ligne persistée),
+[`ws_manager.cpp:282`](../../src/ws_manager.cpp:282) (`broadcastLog`, champ
+`level` du push WebSocket) et
+[`web_routes_data.cpp:866,929`](../../src/web_routes_data.cpp:866) (`/get-logs`,
+export `/download-logs`).
 
 ## Lecture des logs récents — `forEachRecentLog` (v2.8.2, visiteur `bool` en v2.10.4, `LogArenaView` en feature-129)
 
@@ -811,7 +881,8 @@ systemLogger.critical("Heap below 10KB, forcing restart");
 ## Fichiers liés
 
 - [`src/logger.h`](../../src/logger.h), [`src/logger.cpp`](../../src/logger.cpp)
-- [`src/log_arena_logic.h`](../../src/log_arena_logic.h) / [`.cpp`](../../src/log_arena_logic.cpp) — module **pur** de l'arène circulaire (feature-129, ADR-0017) : `logArenaPlan`, `logTruncatePlan`, `logRingEvictCount`, `logFormatHeader`, `logShouldPersist`, `logNextFlushSlot`, `logArenaWriteOverlapsLive`
+- [`src/log_arena_logic.h`](../../src/log_arena_logic.h) / [`.cpp`](../../src/log_arena_logic.cpp) — module **pur** de l'arène circulaire (feature-129, ADR-0017) : `logArenaPlan`, `logTruncatePlan`, `logRingEvictCount`, `logFormatHeader`, `logShouldPersist`, `logNextFlushSlot`, `logArenaWriteOverlapsLive`, `logLevelName` (feature-130, remplace `Logger::getLevelString`)
+- [`tools/check_memory_discipline.sh`](../../tools/check_memory_discipline.sh) — sentinelle CI qui refuse toute réintroduction du motif corrigé par feature-129 (feature-130, job `memory-discipline` de `hygiene-specs.yml`) ; voir [`docs/BUILD.md`](../BUILD.md#toolscheck_memory_disciplinesh--la-discipline-mémoire-du-journal-reste-vraie-adr-0082-feature-130)
 - [`src/utf8_clamp.h`](../../src/utf8_clamp.h) / [`.cpp`](../../src/utf8_clamp.cpp) — clamp UTF-8 partagé (`copyEntryByIndex`, `logTruncatePlan`)
 - [`src/constants.h`](../../src/constants.h) (section « JOURNAL — arène circulaire ») — `kMaxLogEntries`, `kLogArenaBytes`, `kLogMessageMaxBytes`, `kLogTruncTail`, `kLogPersistLineMax`
 - [`src/ws_manager.cpp`](../../src/ws_manager.cpp) — abonnement callback (`broadcastLog(const LogRecord&)`)

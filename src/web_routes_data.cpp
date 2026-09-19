@@ -863,7 +863,7 @@ static void handleDownloadLogs(AsyncWebServerRequest* request) {
               logsFormatTime(*st, entry.timestamp, timeBuf, sizeof(timeBuf));
               int n = snprintf(st->carry.line, sizeof(st->carry.line),
                                "[%s] %s : %s\n", timeBuf,
-                               systemLogger.getLevelString(entry.level).c_str(),
+                               logLevelName(entry.level),
                                entry.message);
               if (n < 0) {
                 st->carry.len = 0;
@@ -924,7 +924,9 @@ static void handleGetLogs(AsyncWebServerRequest* request) {
       if (d.include) {
         JsonObject o = arr.add<JsonObject>();
         o["timestamp"] = entry.timestamp;
-        o["level"] = systemLogger.getLevelString(entry.level);
+        // feature-130 (ADR-0082) : littéral statique stocké par pointeur, pas
+        // de String temporaire (voir logLevelName()).
+        o["level"] = logLevelName(entry.level);
         // COPIE OBLIGATOIRE (feature-129, danger silencieux) : entry.message
         // pointe DANS sLogArena, valide SOUS CE MUTEX SEULEMENT (on est dans
         // le visiteur de forEachRecentLog). ArduinoJson stocke un `const

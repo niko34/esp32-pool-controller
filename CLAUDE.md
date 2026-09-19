@@ -137,7 +137,10 @@ node minify.js                 # Minifier JS/CSS avant build FS (optionnel)
 - **Concurrence** : tout accès partagé via mutex (`initConfigMutexes()`, `kI2cMutexTimeoutMs`, etc.)
 - **JSON** : ArduinoJson 7 (nouveau style, `JsonDocument`)
 - **Chaînes** : `String` pour les logs/web ; `const char*` pour les clés JSON et tokens fixes
-- **Mémoire** : surveiller le heap, éviter allocations dynamiques récurrentes dans la loop
+- **Mémoire** — trois règles apprises d'incidents réels (ADR-0082, feature-129/feature-130), pas une simple consigne de vigilance :
+  1. **Le chemin de journalisation n'alloue pas.** Ni `String`, ni `new`, ni conteneur qui croît, dans `logger.{h,cpp}` / `log_arena_logic.{h,cpp}` — c'est l'acquis de feature-129, vérifié par `./tools/check_memory_discipline.sh` (CI : `hygiene-specs.yml`, job `memory-discipline`).
+  2. **Toute allocation de plus de quelques kilooctets sur un chemin périodique doit être justifiée, ou diffusée.** C'est l'objet de feature-131.
+  3. **La métrique qui compte est `max_alloc_8bit` (le plus gros bloc contigu du tas 8 bits), pas la mémoire libre.** Le projet s'est déjà trompé dessus : la mémoire libre peut monter pendant que la contiguïté s'effondre — c'est très exactement ce qui s'est produit pendant la fenêtre v2.51.0, et la cause racine du 15/08/2026 était une métrique heap qui mesurait la mauvaise chose (`MALLOC_CAP_INTERNAL`, IRAM 32 bits comprise). Une spec qui « surveille le heap » sans préciser *lequel* ne surveille rien.
 - **Watchdog** : appeler `esp_task_wdt_reset()` dans toute boucle longue
 
 ## Règles de sécurité absolues

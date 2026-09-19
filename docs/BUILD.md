@@ -221,7 +221,7 @@ Les tests natifs ne couvrent que la **logique pure**. L'**intégration matériel
 |---|---|---|---|
 | [`tests-natifs.yml`](../.github/workflows/tests-natifs.yml) | `pio test -e native`, puis couverture `gcovr` avec seuil **lignes ≥ 90 %** sur **tout `src/`** (filtre identique à `tools/coverage.sh`, cf. [Couverture de tests](#couverture-de-tests)) ; rapport HTML publié en artefact | push `main` + PR, **sans** filtre de chemins | env `native` seul (quelques Mo) |
 | [`build-firmware.yml`](../.github/workflows/build-firmware.yml) *(feature-103, 2026-09-06)* | **`pio run -e esp32dev_core3`** — la compilation du firmware. Étape informative supplémentaire : sections du binaire (`xtensa-esp32-elf-size`), `continue-on-error` | push `main` + PR, **avec** filtre de chemins (voir plus bas) | toolchain pioarduino ≈ **2 Go**, mise en cache |
-| [`hygiene-specs.yml`](../.github/workflows/hygiene-specs.yml) — **« Hygiène du dépôt »** *(feature-103, 2026-09-06 ; renommé et élargi par `bug-100` cycle 2)* | **Trois jobs indépendants** : `unicite` → [`tools/check_specs.sh`](../tools/check_specs.sh) (un nom de spec ne vit que dans **un seul** des dossiers `todo/` · `doing/` · `done/`) ; `liens-doc` → [`tools/check_doc_links.sh`](../tools/check_doc_links.sh) (tout lien relatif de la doc résout — voir l'encadré ci-dessous) ; `fopen-guard` → [`tools/check_fopen_guard.sh`](../tools/check_fopen_guard.sh) (aucun fichier de `src/` autre que `fs_guard.cpp` n'appelle `open(` / `exists(` / `openNextFile(`, [ADR-0070](adr/0070-fopen-interne-helper-unique-et-classes-de-contention.md)) | push `main` + PR, **sans** filtre de chemins | ~1 s chacun, ni Python, ni PlatformIO, ni cache |
+| [`hygiene-specs.yml`](../.github/workflows/hygiene-specs.yml) — **« Hygiène du dépôt »** *(feature-103, 2026-09-06 ; renommé et élargi par `bug-100` cycle 2, puis par feature-128 et feature-130)* | **Six jobs indépendants** — le nombre ne se recopie pas d'une revue à l'autre ([ADR-0073](adr/0073-chiffre-consigne-porte-sa-methode.md)), il se mesure : `grep -cE '^  [a-z0-9-]+:$' .github/workflows/hygiene-specs.yml` (ce comptage inclut aussi la clé `push:` de la section `on:` — vérifier à l'œil). État au 19/09/2026 : `unicite` → [`tools/check_specs.sh`](../tools/check_specs.sh) (un nom de spec ne vit que dans **un seul** des dossiers `todo/` · `doing/` · `done/`) ; `liens-doc` → [`tools/check_doc_links.sh`](../tools/check_doc_links.sh) (tout lien relatif de la doc résout — voir l'encadré ci-dessous) ; `fopen-guard` → [`tools/check_fopen_guard.sh`](../tools/check_fopen_guard.sh) (aucun fichier de `src/` autre que `fs_guard.cpp` n'appelle `open(` / `exists(` / `openNextFile(`, [ADR-0070](adr/0070-fopen-interne-helper-unique-et-classes-de-contention.md)) ; `no-peek-flag` → [`tools/check_no_peek_flag.sh`](../tools/check_no_peek_flag.sh) (`POOL_HEAP_PEEK` absent de tout fichier versionné hors `docs/`/`specs/`/`*.md`, [ADR-0081](adr/0081-recensement-du-tas-et-non-livraison-de-la-lecture-de-contenu.md)) ; `heap-routes-guard` → [`tools/check_heap_routes_guard.sh`](../tools/check_heap_routes_guard.sh) (la garde d'authentification est la **première** instruction de chaque route du tas, ADR-0081) ; `memory-discipline` → [`tools/check_memory_discipline.sh`](../tools/check_memory_discipline.sh) (la discipline mémoire du journal établie par feature-129 n'est pas contournée, [ADR-0082](adr/0082-arene-circulaire-du-journal-en-ram-interne-statique.md) — détail ci-dessous) | push `main` + PR, **sans** filtre de chemins | ~1 s chacun, ni Python, ni PlatformIO, ni cache |
 
 > ⚠️ **Pourquoi un contrôle de liens** *(ajouté le 2026-09-06)*
 >
@@ -292,6 +292,76 @@ C'est pourquoi le recensement de
 > Premier cas réel, signalé par le script dès sa mise en service : `feature-067` désignait à la fois `todo/feature-067-etude-portage-esp32-s3.md` et `done/feature-067-offset-mesure-ph.md`. **Résolu par `feature-105`** (2026-09-06) : c'est l'**étude** qui a été renumérotée en `feature-104`, avec une bannière expliquant le motif — rien ne la référençait, alors que `feature-067-offset-mesure-ph` est citée par `CHANGELOG.md`, `data/app.js`, `src/main.cpp`, `src/constants.h` et `src/web_routes_debug.cpp`. Le script sort désormais **0 sans avertissement**.
 
 Cas limites tranchés : dossier `todo/`/`doing/`/`done/` vide ou absent → **sortie 0** avec mention du dossier ignoré (un cycle sans spec en cours est légitime) ; `specs/features/` **entièrement absent** ou `mktemp` en échec → **sortie 1**, jamais 0 — un contrôle qui ne peut pas conclure ne doit pas être vert.
+
+### `./tools/check_memory_discipline.sh` — la discipline mémoire du journal reste vraie (ADR-0082, feature-130)
+
+```bash
+./tools/check_memory_discipline.sh    # sortie 0 si conforme, 1 sinon
+```
+
+feature-129 a remplacé le `std::vector<LogEntry>` de `String` du journal —
+168 octets alloués sur une seule ligne ont détruit 23 552 octets de
+contiguïté du tas 8 bits à l'effondrement initial — par une arène circulaire
+`.bss` de taille fixe. Rien ne garantissait que cet acquis reste vrai : un
+`std::vector<String>` réintroduit demain dans `logger.h` compile, passe
+`pio test -e native`, et ne rencontre aucun contrôle. Ce script ferme cette
+brèche.
+
+Motifs refusés :
+
+1. **M1** — `String` **membre d'un tableau** (`String foo[N]`), sur tout
+   `src/` : le motif exact de `_lastFilterPub` (feature-025).
+2. **M2** — conteneur STL paramétré par `String` (`vector<String>`,
+   `map<String, ...>`, etc.), sur tout `src/` : le motif exact de
+   `_persistBuffer`/`toWrite`, retirés par ADR-0082.
+3. **M3A** — toute déclaration `String` dans le chemin de journalisation
+   lui-même (`logger.h`, `logger.cpp`, `log_arena_logic.h`,
+   `log_arena_logic.cpp`) : plus strict que M1/M2, parce qu'aucun `String`
+   n'y est légitime, même hors tableau ou conteneur.
+4. **M3B** — toute allocation dynamique explicite (`new`, `malloc`/`calloc`/
+   `realloc`/`strdup`, `std::vector`, `std::string`, `JsonDocument`) dans ces
+   quatre mêmes fichiers.
+
+Les lignes de commentaire sont exclues du filtrage. `grep -H` est
+**obligatoire** (même piège que `check_fopen_guard.sh`) : sans lui, le
+préfixe `fichier:` disparaît dès qu'un lot ne touche qu'un seul fichier, et
+l'échappatoire ci-dessous devient inopérante en silence.
+
+**Mode audit** — `POOL_MEM_LIST=1 ./tools/check_memory_discipline.sh` liste
+les occurrences brutes, sans filtrer les exemptions. Indispensable pour
+valider le script sur l'historique (`git show HEAD~n:...`), où les
+commentaires d'exemption n'existent évidemment pas — c'est ainsi qu'il a été
+vérifié qu'il aurait attrapé `_persistBuffer` et `toWrite` sur `HEAD~3`
+(avant le commit qui a livré l'arène circulaire).
+
+**Échappatoire** — un site hors chemin de journalisation peut être
+légitime (borné, purgé périodiquement). Sur la ligne du hit ou celle juste
+au-dessus :
+
+```cpp
+// MEM-EXEMPT(ADR-0082) : <motif d'au moins 20 caractères non blancs> [feature-131]
+```
+
+Le motif est **obligatoire** — un marqueur nu ne désarme rien : la partie
+après le `:` doit compter au moins 20 caractères non blancs. Pas
+d'exemption par nom de fichier entier (contrairement à
+`check_fopen_guard.sh`, qui exempte `fs_guard.cpp` intégralement) : exempter
+un fichier comme `mqtt_manager.h` par son nom aveuglerait des milliers de
+lignes sans rapport avec le motif ponctuel qui le justifie.
+
+⛔ **Ce que ce script ne ferme pas**, documenté en tête du script plutôt que
+passé sous silence :
+
+1. `grep` travaille **ligne à ligne** — une déclaration éclatée sur
+   plusieurs lignes (formatage automatique d'un type long) échappe aux
+   quatre motifs.
+2. Il ne prouve **aucune** absence d'allocation dynamique en général — un
+   `heap_caps_malloc(...)` légitime hors chemin de journalisation n'est pas
+   son objet. Il ferme quatre motifs précis (feature-129/feature-130), pas
+   la discipline mémoire entière (c'est l'objet de feature-131).
+3. L'échappatoire `MEM-EXEMPT` protège de l'**inadvertance**, pas d'un
+   contournement délibéré : quiconque peut committer peut poser un motif de
+   complaisance — reste examiné par `code-reviewer`.
 
 ### ⚠️ Clé de cache cloisonnée `pio-fw-` — à ne pas « simplifier »
 

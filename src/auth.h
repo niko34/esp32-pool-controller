@@ -29,6 +29,7 @@ private:
   bool isFirstBoot = false;  // Premier démarrage (mot de passe par défaut)
 
   // Rate limiting (IP -> stats)
+  // MEM-EXEMPT(ADR-0082) : clé du rate-limiting par IP, hors chemin de journalisation, purgé des entrées expirées toutes les 100 requêtes. ⚠️ Pas de plafond dur : la map croît avec le nombre d'IP distinctes vues. Correctif connu (erase en place, 6 lignes) DIFFÉRÉ faute de suite native couvrant auth [feature-131]
   std::map<String, RateLimitEntry> rateLimitMap;
   static const uint16_t MAX_REQUESTS_PER_MINUTE = kMaxRequestsPerMinute;
   static const unsigned long RATE_LIMIT_WINDOW_MS = kRateLimitWindowMs;

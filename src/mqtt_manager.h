@@ -247,6 +247,7 @@ private:
   // safePublishDedup borne l'indice et se contente de NE PLUS dédupliquer, ce
   // qui republierait un topic retain à chaque cycle — dégradation silencieuse.
   static constexpr int kDedupCacheSlots = 29;
+  // MEM-EXEMPT(ADR-0082) : tableau à 29 slots FIXES, connus à la compilation, jamais sur le chemin de journalisation [feature-131]
   String _lastFilterPub[kDedupCacheSlots];
   // Publie `payload` sur `topic` uniquement si différent du dernier publié (slot `cacheIdx`).
   void safePublishDedup(int cacheIdx, const char* topic, const String& payload);

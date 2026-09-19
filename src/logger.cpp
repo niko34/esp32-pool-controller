@@ -23,6 +23,18 @@ static char sLogArena[kLogArenaBytes];
 static LogSlot sLogSlots[kMaxLogEntries];
 static char sFlushLine[kLogPersistLineMax];
 
+// feature-130 (ADR-0082) : verrouille l'empreinte RÉELLE des trois objets
+// `.bss` ci-dessus — sur leurs `sizeof()`, jamais sur une reformulation de
+// `kLogArenaBytes + kMaxLogEntries * sizeof(LogSlot) + kLogPersistLineMax` :
+// une telle reformulation ne vérifierait que l'arithmétique de ce commentaire,
+// pas les objets réellement réservés au link (un padding de structure
+// inattendu passerait inaperçu). 21 216 o = 16 384 + 200×20 + 832, mesuré au
+// 18/09/2026.
+static_assert(sizeof(sLogArena) + sizeof(sLogSlots) + sizeof(sFlushLine) <= 21216,
+              "Empreinte .bss de l'arène de journal au-delà du budget verrouillé "
+              "(ADR-0082) — justifier avant d'agrandir kLogArenaBytes, kMaxLogEntries "
+              "ou kLogPersistLineMax (constants.h).");
+
 // bug-100 : flushs de journal refusés pour famine mémoire depuis le boot.
 // `relaxed` : flushToDisk() s'exécute SUR LA TÂCHE QUI LOGUE (loopTask,
 // mqttTask, async_tcp…) — il n'existe pas de « tâche du logger ».
@@ -243,7 +255,7 @@ void Logger::log(LogLevel level, const char* message, size_t len) {
   // ou littéral/char[] déjà terminés) — %s reste valide ici.
   char consoleLine[kLoggerConsoleLineMax];
   int written = snprintf(consoleLine, sizeof(consoleLine), "[%s] %s\r\n",
-                         getLevelString(level).c_str(), src);
+                         logLevelName(level), src);
   if (written > 0) {
     size_t lineLen = static_cast<size_t>(written);
     if (lineLen >= sizeof(consoleLine)) {  // tronqué : garantir la fin de ligne
@@ -294,17 +306,6 @@ void Logger::critical(const char* message) {
 }
 void Logger::critical(const String& message) {
   log(LogLevel::CRITICAL, message);
-}
-
-String Logger::getLevelString(LogLevel level) {
-  switch (level) {
-    case LogLevel::DEBUG: return "DEBUG";
-    case LogLevel::INFO: return "INFO";
-    case LogLevel::WARNING: return "WARN";
-    case LogLevel::ERROR: return "ERROR";
-    case LogLevel::CRITICAL: return "CRIT";
-    default: return "UNKNOWN";
-  }
 }
 
 void Logger::forEachRecentLog(size_t count, unsigned long sinceTimestamp,

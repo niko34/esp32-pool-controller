@@ -107,3 +107,22 @@ jobs:
       # Même script en local (`./tools/check_heap_routes_guard.sh`) et en CI.
       - name: Contrôle de la place de la garde
         run: ./tools/check_heap_routes_guard.sh
+
+  # JOB 6 — discipline mémoire du journal (ADR-0082, feature-130). feature-129
+  # a remplacé le `std::vector<LogEntry>` de `String` — qui fractionnait le
+  # plus gros bloc libre du tas 8 bits (168 o alloués ont détruit 23 552 o de
+  # contiguïté à l'effondrement initial) — par une arène circulaire `.bss` de
+  # taille fixe. Sans ce job, un `std::vector<String>` réintroduit demain dans
+  # `logger.h` compile, passe `pio test -e native`, et ne rencontre AUCUN
+  # contrôle : c'est exactement le défaut que feature-129 a corrigé, qui
+  # redeviendrait invisible à la CI.
+  memory-discipline:
+    name: Discipline mémoire du journal (ADR-0082)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # Même script en local (`./tools/check_memory_discipline.sh`) et en CI.
+      - name: Contrôle de la discipline mémoire
+        run: ./tools/check_memory_discipline.sh

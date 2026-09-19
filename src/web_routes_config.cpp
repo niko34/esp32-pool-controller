@@ -42,6 +42,7 @@ static std::map<AsyncWebServerRequest*, bool>* g_configErrors = nullptr;
 // fichier est donc de POSER UN DRAPEAU et de laisser la complétion répondre ;
 // cette map préserve en plus le libellé précis (sans elle, on retomberait sur le
 // générique « Invalid JSON configuration », inexploitable pour l'utilisateur).
+// MEM-EXEMPT(ADR-0082) : borné aux requêtes de sauvegarde config en vol, purgé à la complétion, hors chemin de journalisation [feature-131]
 static std::map<AsyncWebServerRequest*, String> g_configErrorMessages;
 
 // Code HTTP du refus associé à une requête (v2.25.0). Absent = 400 (le seul code
