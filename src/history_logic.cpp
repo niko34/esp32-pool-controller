@@ -24,26 +24,25 @@ bool isMajority(int trueCount, int total) {
 }
 
 namespace {
-// Consomme `need` octets d'abord sur le budget `a` puis sur `b`. Uniquement
-// des soustractions gardées (jamais d'addition) → aucun débordement possible,
-// même avec des paramètres à SIZE_MAX. Renvoie false si a+b (conceptuel) < need.
-bool consumeBudget(size_t& a, size_t& b, size_t need) {
-  size_t fromA = (need < a) ? need : a;
-  a -= fromA;
-  need -= fromA;
-  if (need > b) return false;
-  b -= need;
+// Consomme `need` octets sur le budget `a`. Uniquement des soustractions
+// gardées (jamais d'addition) → aucun débordement possible, même avec des
+// paramètres à SIZE_MAX. Renvoie false si a < need.
+bool consumeBudget(size_t& a, size_t need) {
+  if (need > a) return false;
+  a -= need;
   return true;
 }
 }  // namespace
 
-// Admission d'un save : équivalent de freeBytes + oldFileBytes >= jsonBytes + marginBytes
-// sans jamais additionner (anti-overflow). Frontière LARGE (égalité exacte → admis).
-bool historySaveAdmit(size_t freeBytes, size_t oldFileBytes, size_t jsonBytes, size_t marginBytes) {
+// Admission d'un save (feature-131, écriture atomique .tmp+rename) :
+// équivalent de freeBytes >= jsonBytes + marginBytes sans jamais additionner
+// (anti-overflow). Frontière LARGE (égalité exacte → admis). Plus de crédit de
+// l'ancien fichier : il coexiste avec le .tmp pendant toute l'écriture, son
+// espace n'est récupéré qu'au rename final.
+bool historySaveAdmit(size_t freeBytes, size_t jsonBytes, size_t marginBytes) {
   size_t freePool = freeBytes;
-  size_t oldPool = oldFileBytes;
-  return consumeBudget(freePool, oldPool, jsonBytes) &&
-         consumeBudget(freePool, oldPool, marginBytes);
+  return consumeBudget(freePool, jsonBytes) &&
+         consumeBudget(freePool, marginBytes);
 }
 
 // Bucket complet et ancien : sa dernière seconde dépasse maxAge. Même

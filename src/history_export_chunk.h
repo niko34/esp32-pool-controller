@@ -20,6 +20,15 @@
 // CONTRAINTE : pas d'Arduino.h, pas de FreeRTOS — <stddef.h>/<stdint.h>/
 // <stdio.h>/<math.h> uniquement, fonctions inline (header-only, rien à ajouter
 // au build_src_filter natif).
+//
+// ⚠️ BANDEAU DE RENVOI CROISÉ (feature-131) — NE JAMAIS CONFONDRE LES DEUX
+// FORMATS : CE FICHIER formate ce qui part sur le FIL (réponse HTTP chunked
+// de /get-history — clés longues, TOUJOURS présentes, "null" si non fini).
+// `history_persist_format.h` formate ce qui part sur la FLASH (/history.json
+// — clés courtes, OMISES si non finies, arrondi `dtostrf` bit-à-bit et non
+// `%.*f`/pré-arrondi). Les deux modules traitent le MÊME DataPoint mais ne
+// sont PAS interchangeables — un copier-coller de l'un vers l'autre est un
+// bug par construction.
 // =============================================================================
 
 #include <stddef.h>

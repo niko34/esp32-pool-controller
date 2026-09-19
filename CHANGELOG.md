@@ -2,6 +2,57 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [2.53.0] - 2026-09-19
+
+> **Ce qui change pour vous** : une coupure d'alimentation pendant une
+> sauvegarde de l'historique ne détruit plus l'historique. Si une coupure
+> survient pendant que l'appareil écrit `/history.json`, l'ancien fichier
+> reste utilisable au redémarrage suivant — au pire, un avertissement dans
+> le journal signale qu'une écriture a été interrompue. Avant cette version,
+> la même situation pouvait faire perdre l'historique entier (jusqu'à 75
+> jours d'agrégats). Aucun écran, aucun réglage ne change.
+
+### Firmware
+
+- **Historique** : `saveToFile()`/`loadFromFile()` cessent de construire tout
+  le JSON de `/history.json` en RAM — écriture et lecture se font désormais
+  **en flux**, point par point (« un émetteur, deux puits »,
+  [`src/history.cpp`](src/history.cpp)). C'était le plus gros transitoire
+  mémoire périodique du firmware, et le site exact du coredump du 05/09/2026.
+- **Historique** : l'écriture de `/history.json` devient **atomique**
+  (`.tmp` + `rename`, décision utilisateur du 2026-09-19) — l'ancien fichier
+  n'est plus supprimé avant réécriture. Une coupure d'alimentation en cours
+  d'écriture ne laisse plus jamais un fichier tronqué en place, et ne détruit
+  plus l'historique entier. Un `.tmp` orphelin retrouvé au démarrage est
+  effacé (jamais promu, à la différence du `.tmp` de rotation du journal) et
+  journalisé en `WARNING` — preuve qu'une coupure est survenue en cours de
+  sauvegarde. Le message `Famine memoire apres serialisation : …` disparaît
+  (la seconde admission mémoire qu'il accompagnait n'a plus lieu d'être).
+- **Historique** : `historySaveAdmit()` ne crédite plus l'espace de l'ancien
+  fichier lors de l'admission d'une sauvegarde — conséquence directe de
+  l'écriture atomique (l'ancien fichier coexiste désormais avec le `.tmp`
+  jusqu'au renommage final, son espace n'est donc jamais récupérable pendant
+  l'écriture).
+
+### Documentation
+
+- `docs/subsystems/history.md` : écriture/lecture en flux, atomicité
+  `.tmp`+`rename`, réconciliation au démarrage (sans promotion, à la
+  différence du journal), comportement sur fichier tronqué et sa limite
+  d'en-tête, recomptage des sites `fopen` (13, était 14).
+- `docs/subsystems/acces-fichiers.md` : recensement mis à jour (site de
+  lecture de l'ancien fichier disparu), les deux « pièges de placement »
+  historiques de `saveToFile()` sont marqués retirés.
+- Nouvel [ADR-0083](docs/adr/0083-ecriture-atomique-historique-et-contrat-de-format-persiste.md) :
+  écriture atomique de l'historique, dissolution du motif d'ADR-0033 sur la
+  partition 256 Ko, contrat de format persisté verrouillé par un portage
+  bit-à-bit de `dtostrf` (comparaison octet à octet contre l'ancien format :
+  identique, 0 divergence). Notes d'amendement ajoutées à ADR-0033 et
+  ADR-0070 §d (la seconde admission mémoire qu'il imposait devient
+  historique pour ce chemin).
+
+---
+
 ## [2.52.2] - 2026-09-19
 
 > **Ce qui change pour vous** : rien de directement visible. Un changement

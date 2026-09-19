@@ -2,7 +2,9 @@
 #include "history_logic.h"
 #include "history_import_logic.h"  // bug-101 : regles pures de l'import par lots (ADR-0017)
 #include "history_guard_logic.h"
+#include "history_persist_format.h"  // feature-131 : format pur du JSON persiste (ADR-0017)
 #include "fs_guard.h"          // bug-100 : point d'admission unique des fopen internes (ADR-0070)
+#include "heap_metrics.h"      // feature-131 (F1) : sonde maxBloc8 PENDANT l'ecriture
 #include "constants.h"
 #include "logger.h"
 #include "sensors.h"
@@ -46,6 +48,9 @@ String fopenRefusalDetail() {
 fs::LittleFSFS historyFs;
 fs::FS* historyStore = &LittleFS;
 const char* historyFilePath = "/history.json";
+// feature-131 : fichier temporaire de l'écriture atomique (patron du journal,
+// ADR-0076) — écrit intégralement PUIS renommé par-dessus historyFilePath.
+const char* historyTmpFilePath = "/history.json.tmp";
 unsigned long lastKnownEpoch = 0;
 bool warnedUnsynced = false;
 bool warnedEstimated = false;
@@ -187,6 +192,82 @@ void recordHistorySaveFailureNvs(unsigned long lastOkEpoch) {
     prefs.putUInt(kHistoryLastOkEpochNvsKey, (uint32_t)lastOkEpoch);
     prefs.end();
   }
+}
+
+// ---------------------------------------------------------------------------
+// feature-131 (v2.53.0) — les DEUX puits de HistoryManager::emitPersistedJson()
+// ---------------------------------------------------------------------------
+// « Un seul émetteur, deux puits » : emitPersistedJson() ne connaît QUE le
+// contrat HistoryByteSink (history.h). Le choix du puits — mesurer sans effet
+// de bord, ou écrire réellement — se fait entièrement côté appelant
+// (saveToFile()), ce qui rend une divergence entre passe 1 (mesure) et passe 2
+// (écriture) impossible par construction : c'est EXACTEMENT le même code de
+// formatage qui alimente les deux.
+
+// Puits COMPTEUR (passe 1) : n'écrit rien, ne fait aucun accès FS — juste
+// additionner la taille des tronçons reçus dans le size_t pointé par `ctx`.
+size_t historyCounterSink(void* ctx, const char* p, size_t n) {
+  (void)p;
+  *static_cast<size_t*>(ctx) += n;
+  return n;
+}
+
+// Puits FICHIER (passe 2) : accumule les octets dans un tampon de PILE
+// (kHistoryWriteChunkBytes) et ne touche au fichier qu'au remplissage du
+// tampon — un f.write() toutes les ~4 points plutôt qu'un par point. `ok`
+// passe à false au premier write() LittleFS court et le puits cesse alors
+// d'accepter des octets (fileSinkWrite renvoie moins que demandé) : c'est ce
+// qui fait chuter la somme renvoyée par emitPersistedJson() sous jsonSize,
+// déclenchant la détection d'écriture partielle de saveToFile() (B6).
+//
+// F1 : échantillonne heapLargestFreeBlock8Bit() tous les ~64 appels (proxy de
+// « tous les 64 points » — le préfixe/suffixe décalent le compte d'au plus 2,
+// sans conséquence sur une cadence de 64) et garde le MINIMUM observé PENDANT
+// l'écriture — c'est la mesure « pendant, pas autour » exigée par la spec.
+struct HistoryFileWriteSink {
+  File* f;
+  char buf[kHistoryWriteChunkBytes];
+  size_t used = 0;
+  bool ok = true;
+  uint32_t callCount = 0;
+  uint32_t minMaxAlloc8DuringWrite = UINT32_MAX;
+
+  // Vide le tampon vers le fichier. `ok` reste sticky : un appel après échec
+  // est un no-op qui renvoie false sans re-tenter d'écrire.
+  bool flush() {
+    if (!ok) return false;
+    if (used == 0) return true;
+    const size_t expected = used;
+    const size_t w = f->write(reinterpret_cast<const uint8_t*>(buf), expected);
+    used = 0;
+    if (w != expected) ok = false;
+    return ok;
+  }
+};
+
+size_t historyFileSink(void* ctx, const char* p, size_t n) {
+  HistoryFileWriteSink* sink = static_cast<HistoryFileWriteSink*>(ctx);
+  if (!sink->ok) return 0;  // échec déjà survenu : on cesse d'accepter des octets
+
+  if ((++sink->callCount % 64) == 0) {
+    const uint32_t maxAlloc8 = heapLargestFreeBlock8Bit();
+    if (maxAlloc8 < sink->minMaxAlloc8DuringWrite) sink->minMaxAlloc8DuringWrite = maxAlloc8;
+  }
+
+  size_t total = 0;
+  while (n > 0) {
+    const size_t space = sizeof(sink->buf) - sink->used;
+    const size_t chunk = (n < space) ? n : space;
+    memcpy(sink->buf + sink->used, p, chunk);
+    sink->used += chunk;
+    p += chunk;
+    n -= chunk;
+    total += chunk;
+    if (sink->used == sizeof(sink->buf) && !sink->flush()) {
+      break;  // écriture partielle détectée pendant l'accumulation : on s'arrête ici
+    }
+  }
+  return total;
 }
 
 unsigned long getCurrentEpoch(bool* synced, bool* estimated) {
@@ -384,6 +465,11 @@ void HistoryManager::begin() {
     return;
   }
 
+  // feature-131 (C2) : réconciliation du .tmp d'écriture atomique — APRÈS
+  // setPersistenceFs() (le journal doit déjà pouvoir persister le WARNING
+  // ci-dessous) et AVANT tout chargement.
+  reconcileHistoryTmp();
+
   loadClockPrefs();
   loadFromFile();
 
@@ -514,23 +600,92 @@ void HistoryManager::recordDataPoint() {
   }
 }
 
+void HistoryManager::reconcileHistoryTmp() {
+  if (!historyEnabled) return;
+  // Effacement INCONDITIONNEL de l'orphelin — `remove()` SEUL, ni `open()` ni
+  // `exists()` (0 site fopen, cf. history.h pour la justification complète de
+  // la différence avec Logger::reconcileLogTmp()/ADR-0076). `remove()` d'un
+  // fichier absent échoue silencieusement côté LittleFS : appelable sans
+  // condition, à chaque démarrage, qu'un `.tmp` existe ou non.
+  const bool hadOrphan = historyStore->remove(historyTmpFilePath);
+  if (hadOrphan) {
+    // WARNING SANS THROTTLE (≤ 1/démarrage par construction) : c'est la
+    // preuve DATÉE d'une coupure d'alimentation pendant une sauvegarde
+    // précédente. JAMAIS error()/critical() : cet appel a lieu avant tout
+    // chargement, un flush synchrone rouvrirait le journal ici même.
+    systemLogger.warning("Fichier temporaire d'historique orphelin efface au demarrage — "
+                         "coupure pendant une sauvegarde precedente, l'historique courant "
+                         "(/history.json) est conserve tel quel");
+  }
+}
+
+size_t HistoryManager::emitPersistedJson(HistoryByteSink sink, void* ctx) {
+  // `_mutex` DÉJÀ TENU par l'appelant (saveToFile(), lui-même appelé sous
+  // mutex depuis consolidateData()/importData()/appendData()) — aucun verrou
+  // n'est pris ici.
+  size_t total = 0;
+  total += sink(ctx, kHistoryPersistedPrefix, sizeof(kHistoryPersistedPrefix) - 1);
+
+  bool first = true;
+  size_t pointIndex = 0;
+  for (const auto& point : memoryBuffer) {
+    char buf[kHistoryPersistPointMaxBytes];
+    const size_t n = formatPersistedHistoryPoint(
+        buf, sizeof(buf), first, point.timestamp, point.ph, point.orp,
+        point.temperature, point.phFiltered, point.orpFiltered,
+        point.filtrationActive, point.doseMask,
+        static_cast<uint8_t>(point.granularity));
+    // n == 0 : le point ne tient pas dans kHistoryPersistPointMaxBytes — SAUTÉ,
+    // identiquement dans la passe de mesure et la passe d'écriture (même code,
+    // même buffer, même seuil) : jamais de JSON partiel, toujours cohérent.
+    if (n > 0) {
+      total += sink(ctx, buf, n);
+      first = false;
+    }
+
+    if ((++pointIndex % 64) == 0) esp_task_wdt_reset();  // patron history.cpp:164
+  }
+
+  total += sink(ctx, kHistoryPersistedSuffix, sizeof(kHistoryPersistedSuffix) - 1);
+  return total;
+}
+
 void HistoryManager::saveToFile() {
   if (!historyEnabled) return;
 
-  // bug-100 / ADR-0070 (§d) — ADMISSION MÉMOIRE EN TÊTE, classe A (8 192).
-  // La garde va là où la fonction peut encore NE RIEN FAIRE, jamais au point
-  // d'ouverture, pour deux raisons distinctes et toutes deux dirimantes :
-  //  1. saveToFile() n'est PAS atomique — le remove() precede l'open("w") : une
-  //     garde sur l'ouverture echangerait l'abort() contre la DESTRUCTION du
-  //     fichier d'historique ;
-  //  2. historySaveAdmit() consomme `oldSize`, une taille obtenue PAR le fopen
-  //     de lecture plus bas : garder ce fopen-là le laisserait s'executer nu.
-  // Classe A et non B : ce chemin est atteignable depuis POST /history/import
-  // (→ importData() → saveToFile()) sur la tâche async_tcp, donc avec des pbuf
-  // lwip en vol.
-  // Le libellé, le compteur et le champ de diagnostic sont DISTINCTS de ceux de
-  // historySaveAdmit() : « partition pleine » et « famine mémoire » sont deux
-  // pannes différentes, elles doivent rester discernables dans le journal.
+  // bug-100 / ADR-0070 (§d) — ADMISSION MÉMOIRE UNIQUE EN TÊTE, classe A
+  // (8 192). feature-131 : cette fonction FUSIONNE les deux admissions
+  // historiques (avant/après measureJson) en UNE SEULE.
+  //
+  // ⚠️ CE QUE DEVIENT « LE SITE EXACT DU COREDUMP DU 05/09 » : l'écart entre
+  // les deux anciennes admissions existait pour survivre au pic du
+  // `JsonDocument` + ses `String` de sérialisation (« des dizaines de
+  // kilooctets », commentaire d'origine) construit ENTRE elles. Revue
+  // code-reviewer (feature-131) : ce pic était fait de jusqu'à 1 695 mallocs
+  // transitoires (339 points × 5 champs flottants) de 44 o CHACUN — et non
+  // 314 o : `point.ph/orp/temperature/phFiltered/orpFiltered` sont des
+  // `float` (history.h), donc `String(point.ph, 2)` résolvait vers la
+  // surcharge à correspondance EXACTE `String(float, n)`
+  // (`malloc(decimalPlaces + 42)`, WString.cpp), jamais `String(double, n)`
+  // (`malloc(decimalPlaces + 312)`). Un chiffre faux ici finirait recopié
+  // dans un ADR (ADR-0073) — d'où la précision.
+  //
+  // Ce pic n'existe plus : la mesure (passe 1, puits compteur) et l'écriture
+  // (passe 2, puits fichier) n'allouent qu'un point à la fois
+  // (kHistoryPersistPointMaxBytes = 128 o, sur PILE) plus un tampon
+  // d'accumulation de kHistoryWriteChunkBytes (512 o, sur PILE lui aussi).
+  // AUCUNE ALLOCATION DE TAS PROPORTIONNELLE AU VOLUME DE POINTS — nuance
+  // volontaire : le `rename()` final fait DEUX `malloc()` internes
+  // (`VFSImpl::rename()`, vfs_api.cpp) et les `systemLogger.debug/warning`
+  // de cette fonction allouent chacun une `String` — mais ce sont des coûts
+  // CONSTANTS, indépendants du nombre de points, à des lieues du pic
+  // supprimé. Le site du coredump n'a donc plus de raison d'exister : une
+  // seule mesure, prise avant tout effet de bord, suffit.
+  //
+  // La garde va là où la fonction peut encore NE RIEN FAIRE : classe A, et non
+  // B, car ce chemin est atteignable depuis POST /history/import
+  // (→ importData()/appendData() → saveToFile()) sur la tâche async_tcp, donc
+  // avec des pbuf lwip en vol.
   if (!fsGuardAdmit(kStaticFileMinAllocBytes)) {
     sHistoryFopenDeferrals.fetch_add(1, std::memory_order_relaxed);
     // WARNING throttlé (jamais ERROR : un ERROR flusherait le disque en
@@ -546,88 +701,18 @@ void HistoryManager::saveToFile() {
     return;
   }
 
-  // bug-nospc-partition-history (A2+A3) : construire et MESURER le JSON avant
-  // de toucher au FS — l'ancien code ouvrait "w" d'entrée, ce qui tronquait
-  // l'ancien fichier avant toute vérification d'espace.
-  JsonDocument doc;
-  JsonArray data = doc["data"].to<JsonArray>();
+  // Passe 1 — MESURE, aucun effet de bord FS : le puits compteur additionne la
+  // taille des tronçons émis par le MÊME code de formatage que la passe 2.
+  size_t jsonSize = 0;
+  emitPersistedJson(historyCounterSink, &jsonSize);
 
-  // Sauvegarder tous les points (déjà optimisés par consolidation)
-  for (const auto& point : memoryBuffer) {
-    JsonObject obj = data.add<JsonObject>();
-    obj["t"] = point.timestamp;
-    if (isfinite(point.ph))          obj["p"] = serialized(String(point.ph, 2));
-    if (isfinite(point.orp))         obj["o"] = serialized(String(point.orp, 1));
-    if (isfinite(point.temperature)) obj["T"] = serialized(String(point.temperature, 1));
-    // feature-095 : la filtrée n'est persistée QUE sur les points RAW (5 min,
-    // ~8 h de profondeur). Cette garde est LE rempart du budget de la partition
-    // history (64 Ko) : toutes granularités confondues coûteraient ~7,1 Ko et
-    // porteraient l'occupation à 16 blocs sur 16 — historySaveAdmit() refuserait
-    // alors la sauvegarde et l'historique cesserait SILENCIEUSEMENT d'être
-    // persisté. En RAW seul : +2 016 o, profondeur horaire (7 j) intacte. La
-    // filtrée étant un signal passe-bas, sa moyenne horaire coïnciderait de
-    // toute façon avec celle du brut : série redondante, coût réel.
-    if (point.granularity == RAW) {
-      if (isfinite(point.phFiltered))  obj["pf"] = serialized(String(point.phFiltered, 2));
-      if (isfinite(point.orpFiltered)) obj["of"] = serialized(String(point.orpFiltered, 1));
-    }
-    obj["f"] = point.filtrationActive;
-    // bug-098 : le MASQUE, pas un OU logique. Ecrit en entier (`"d":3`), relu
-    // par le discriminant de format de loadFromFile — et plus court sur la
-    // partition que l'ancien `"d":false`.
-    obj["d"] = point.doseMask;
-    obj["g"] = static_cast<uint8_t>(point.granularity);
-  }
-  const size_t jsonSize = measureJson(doc);
-
-  // bug-100 / revue — SECONDE ADMISSION, et c'est la décisive.
-  // La première (tête de fonction) est exigée par ADR-0070 §d : la garde va là
-  // où la fonction peut encore ne rien faire. Mais entre elle et l'ouverture
-  // ci-dessous — LE SITE EXACT DU COREDUMP DU 05/09 — on vient de construire le
-  // JsonDocument et ses String de sérialisation, soit des dizaines de kilooctets.
-  // La marge ×1,99 validée par la première mesure est donc DÉPENSÉE APRÈS
-  // elle : autoriser sur cette seule mesure reviendrait à ouvrir sur une valeur
-  // qui n'est plus vraie — exactement le mode de défaillance que l'asymétrie
-  // mesure/décision existe pour interdire.
-  // Placement : après measureJson, donc après le pic d'allocation, et toujours
-  // AVANT le remove() plus bas — l'opération peut encore ne rien faire.
-  // L'ADR exige une garde AVANT la lecture d'oldSize ; il n'en interdit pas une
-  // seconde, et le coût est une mesure de plus toutes les 5 min.
-  if (!fsGuardAdmit(kStaticFileMinAllocBytes)) {
-    sHistoryFopenDeferrals.fetch_add(1, std::memory_order_relaxed);
-    static unsigned long sWarnHeapPostJsonMs = 0;
-    unsigned long nowPostJsonMs = millis();
-    if (sWarnHeapPostJsonMs == 0 ||
-        nowPostJsonMs - sWarnHeapPostJsonMs >= kHistorySaveWarnThrottleMs) {
-      systemLogger.warning("Famine memoire apres serialisation : sauvegarde de "
-                           "l'historique sautee (" + fopenRefusalDetail() +
-                           ") — nouvelle tentative dans 5 min");
-      sWarnHeapPostJsonMs = nowPostJsonMs;
-    }
-    return;
-  }
-
-  // Espace libre + taille de l'ancien fichier (0 si absent). historyStore
-  // pointe toujours sur un fs::LittleFSFS (partition dédiée après begin(),
-  // sinon le LittleFS principal) — totalBytes()/usedBytes() y sont exposés.
+  // Garde d'espace (A2, feature-131 : plus de crédit de l'ancien fichier — cf.
+  // historySaveAdmit()/kHistorySaveSpaceMarginBytes, constants.h). Refuser
+  // AVANT de toucher au FS — mieux vaut un historique périmé de 5 min qu'un
+  // fichier tronqué. Retentative naturelle au prochain cycle SAVE_INTERVAL.
   fs::LittleFSFS* lfs = (historyStore == &historyFs) ? &historyFs : &LittleFS;
   const size_t freeBytes = lfs->totalBytes() - lfs->usedBytes();
-  size_t oldSize = 0;
-  {
-    // Admission déjà prononcée JUSTE AU-DESSUS, après le pic d'allocation du
-    // JSON (kFsGuardAlreadyAdmitted) : une seule mesure pour les deux
-    // ouvertures de la sauvegarde, et elle est postérieure à la dépense.
-    File old = openIfHeapAllows(historyStore, historyFilePath, "r", kFsGuardAlreadyAdmitted);
-    if (old) {
-      oldSize = old.size();
-      old.close();
-    }
-  }
-
-  // Garde d'espace (A2) : refuser AVANT de toucher à l'ancien fichier — mieux
-  // vaut un historique périmé de 5 min qu'un fichier tronqué. Retentative
-  // naturelle au prochain cycle SAVE_INTERVAL.
-  if (!historySaveAdmit(freeBytes, oldSize, jsonSize, kHistorySaveSpaceMarginBytes)) {
+  if (!historySaveAdmit(freeBytes, jsonSize, kHistorySaveSpaceMarginBytes)) {
     // A6 : WARNING (jamais ERROR) — un ERROR déclencherait un flush disque
     // immédiat sur le FS déjà plein toutes les 5 min (flush-storm).
     static unsigned long sWarnFullMs = 0;
@@ -642,39 +727,85 @@ void HistoryManager::saveToFile() {
     return;
   }
 
-  // Admis : remove AVANT réécriture — l'ancien et le nouveau fichier ne
-  // coexistent plus, le pic copy-on-write est divisé par 2. Trade-off ADR-0033 :
-  // un crash dans la fenêtre remove→write perd l'historique (borné par le
-  // disjoncteur feature-059 et la cadence 5 min).
-  historyStore->remove(historyFilePath);
-
-  File f = openIfHeapAllows(historyStore, historyFilePath, "w", kFsGuardAlreadyAdmitted);
+  // Écriture ATOMIQUE (feature-131, décision utilisateur 2026-09-19) : .tmp
+  // PUIS rename, patron du journal (ADR-0076). L'ancien /history.json N'EST
+  // PAS supprimé avant l'écriture — il coexiste avec le .tmp jusqu'au rename
+  // final, qui est la SEULE opération qui le remplace. Une coupure pendant
+  // l'écriture laisse donc soit l'ancien intact (rename jamais atteint), soit
+  // un .tmp orphelin sans effet sur /history.json — jamais un fichier
+  // tronqué en place. reconcileHistoryTmp() efface l'orphelin au démarrage
+  // suivant (cf. history.h).
+  File f = openIfHeapAllows(historyStore, historyTmpFilePath, "w", kFsGuardAlreadyAdmitted);
   if (!f) {
     static unsigned long sWarnOpenMs = 0;
     unsigned long nowMs = millis();
     if (sWarnOpenMs == 0 || nowMs - sWarnOpenMs >= kHistorySaveWarnThrottleMs) {
-      systemLogger.warning("Impossible d'ouvrir /history.json en écriture — save sauté");
+      systemLogger.warning("Impossible d'ouvrir /history.json.tmp en écriture — save sauté");
       sWarnOpenMs = nowMs;
     }
     recordHistorySaveFailureNvs(_lastOkEpoch);
     return;
   }
 
-  const size_t written = serializeJson(doc, f);
+  // Passe 2 — ÉCRITURE réelle, MÊME code de formatage que la passe 1 (même
+  // boucle, même drapeau `first`, même prédicat RAW) : divergence impossible
+  // par construction.
+  HistoryFileWriteSink sink{&f};
+  const size_t written = emitPersistedJson(historyFileSink, &sink);
+  const bool flushOk = sink.flush();  // vide le reliquat du tampon d'accumulation
   f.close();
 
-  // Détection d'écriture partielle (A3) : le retour de serializeJson doit être
-  // EXACTEMENT la taille mesurée (fs::File n'expose pas d'état d'erreur fiable
-  // après un write LittleFS court — la comparaison suffit). Échec → jamais de
-  // fichier partiel silencieux sur le FS.
-  if (written != jsonSize) {
-    historyStore->remove(historyFilePath);
+  // F1 : minimum de maxBloc8 observé PENDANT la passe 2 — la mesure « pendant,
+  // pas autour » exigée par la spec. DEBUG : gratuit en production, coûte une
+  // ligne uniquement quand le niveau de log l'affiche. Conservé (et non
+  // retiré) : c'est le seul moyen de vérifier a posteriori, sur le terrain,
+  // que le pic transitoire visé par ce lot est bien resté au plancher, sans
+  // ajouter de sonde permanente au chemin critique.
+  if (sink.minMaxAlloc8DuringWrite != UINT32_MAX) {
+    // Revue code-reviewer (feature-131) : `char[]` + surcharge `const char*`,
+    // pas de `String` — les arguments d'un `+=` de `String` seraient
+    // construits même si le niveau DEBUG est filtré, ce qui contredirait
+    // l'objet même de ce lot sur un chemin qui se répète toutes les 5 min.
+    char ligne[64];
+    snprintf(ligne, sizeof(ligne),
+             "Sauvegarde historique : maxBloc8 min pendant l'écriture = %u o",
+             (unsigned)sink.minMaxAlloc8DuringWrite);
+    systemLogger.debug(ligne);
+  }
+
+  // Détection d'écriture partielle (B6) : la somme des retours du puits
+  // fichier doit être EXACTEMENT jsonSize (mesuré passe 1), ET le tampon
+  // d'accumulation doit s'être vidé sans erreur. Échec → le .tmp est
+  // supprimé, et — c'est le gain net de l'atomicité — l'ANCIEN /history.json
+  // RESTE EN PLACE, intact : aucune fenêtre où le fichier utilisé par le
+  // reste du firmware est tronqué.
+  if (!flushOk || written != jsonSize) {
+    historyStore->remove(historyTmpFilePath);
     static unsigned long sWarnPartialMs = 0;
     unsigned long nowMs = millis();
     if (sWarnPartialMs == 0 || nowMs - sWarnPartialMs >= kHistorySaveWarnThrottleMs) {
       systemLogger.warning("Écriture partielle de l'historique (" + String(written) + "/" +
-                           String(jsonSize) + " octets) — fichier supprimé, nouvelle tentative dans 5 min");
+                           String(jsonSize) + " octets) — fichier temporaire supprimé, "
+                           "l'historique precedent est conserve, nouvelle tentative dans 5 min");
       sWarnPartialMs = nowMs;
+    }
+    recordHistorySaveFailureNvs(_lastOkEpoch);
+    return;
+  }
+
+  // Bascule atomique : SEULE opération qui remplace /history.json. Échec du
+  // rename → PAS de repli remove(dest)+rename : l'atomicité vient du rename
+  // lui-même, un repli manuel rouvrirait exactement la fenêtre qu'on ferme
+  // (ancien supprimé, nouveau pas encore en place). Le .tmp reste alors sur
+  // le FS ; le prochain cycle SAVE_INTERVAL le réécrira (open("w") tronque),
+  // et reconcileHistoryTmp() l'effacerait de toute façon à un redémarrage.
+  if (!historyStore->rename(historyTmpFilePath, historyFilePath)) {
+    static unsigned long sWarnRenameMs = 0;
+    unsigned long nowMs = millis();
+    if (sWarnRenameMs == 0 || nowMs - sWarnRenameMs >= kHistorySaveWarnThrottleMs) {
+      systemLogger.warning("Échec du renommage de l'historique (.tmp → .json) — "
+                           "l'historique precedent est conserve, nouvelle tentative dans 5 min");
+      sWarnRenameMs = nowMs;
     }
     recordHistorySaveFailureNvs(_lastOkEpoch);
     return;
@@ -693,13 +824,20 @@ void HistoryManager::saveToFile() {
     sInfoUsageMs = nowMs;
   }
 
-  systemLogger.debug("Historique sauvegardé (" + String(data.size()) + " points)");
+  systemLogger.debug("Historique sauvegardé (" + String(memoryBuffer.size()) + " points)");
 }
 
 void HistoryManager::loadFromFile() {
   if (!historyEnabled) return;
 
   // bug-100 / ADR-0070 — CLASSE B (5 120), tripwire de boot.
+  // feature-131 (E2) : seuil INCHANGÉ malgré la réécriture en flux. Ce seuil
+  // encode l'ABSENCE DE CONTENTION TCP au boot (ordre de setup(), cf.
+  // history.h/acces-fichiers.md), pas la taille du pic à traverser — et le pic
+  // résiduel de loadFromFile() (le vecteur `memoryBuffer`, kHistoryLoadReservePoints
+  // × sizeof(DataPoint) = 9 492 o EN UNE FOIS, cf. constants.h) reste supérieur
+  // au pic qu'un point de flux, lui, a fait disparaître. Rien ici ne justifie
+  // de toucher au 7ᵉ barreau de l'échelle ADR-0058.
   if (!fsGuardAdmit(kInternalFopenMinAllocBytes)) {
     sHistoryFopenDeferrals.fetch_add(1, std::memory_order_relaxed);
     systemLogger.warning("Memoire insuffisante pour charger l'historique — "
@@ -726,21 +864,79 @@ void HistoryManager::loadFromFile() {
     return;
   }
 
-  JsonDocument doc;
-  DeserializationError error = deserializeJson(doc, f);
-  f.close();
-
-  if (error) {
-    systemLogger.error("Erreur parsing historique: " + String(error.c_str()));
-    return;
-  }
-
-  JsonArray data = doc["data"];
+  // feature-131 (v2.53.0) : chargement EN FLUX — idiome ArduinoJson 7 « flux de
+  // documents » (deserializeJson successifs sur le MÊME File, chacun consomme
+  // exactement UNE valeur JSON et laisse le curseur juste après). Le
+  // `deserializeJson(doc, f)` GLOBAL sur tout le fichier a disparu : on ne
+  // matérialise plus jamais qu'UN point à la fois.
   memoryBuffer.clear();
   legacyHistoryPending = false;
   legacyMaxTimestamp = 0;
+  // D2 : réservation UNIQUE — sans elle, l'escalade de capacité du vecteur
+  // (cf. kHistoryLoadReservePoints, constants.h) redemande jusqu'à 14 336 o
+  // contigus au lieu de 9 492 o en une fois.
+  memoryBuffer.reserve(kHistoryLoadReservePoints);
 
-  for (JsonObject point : data) {
+  // Préfixe fixe `{"data":[` consommé OCTET PAR OCTET — c'est le même contrat
+  // que kHistoryPersistedPrefix (history_persist_format.h), écrit par
+  // emitPersistedJson(). Un écart ici signifie un fichier étranger ou
+  // corrompu dès l'en-tête : rien à récupérer (le tableau lui-même n'a pas
+  // commencé), on s'arrête SANS toucher au fichier.
+  //
+  // ⚠️ LIMITE ASSUMÉE (revue code-reviewer, feature-131) : cette comparaison
+  // est un match EXACT, octet à octet — aucune tolérance aux espaces ni à un
+  // réordonnancement des clés (`{"data": [`, ou un hypothétique
+  // `{"other":1,"data":[`, seraient rejetés EN BLOC, 0 point chargé, simple
+  // WARNING). Le « meilleur effort » de D4 ne couvre PAS l'en-tête, seulement
+  // le contenu du tableau. Ce n'est pas une régression : le firmware est
+  // l'UNIQUE écrivain de /history.json (vérifié par grep — aucun autre
+  // producteur), et emitPersistedJson() écrit toujours ce préfixe à
+  // l'identique, sans espace ni réordonnancement possible.
+  bool prefixOk = true;
+  for (size_t i = 0; i < sizeof(kHistoryPersistedPrefix) - 1; ++i) {
+    if (f.read() != static_cast<int>(static_cast<unsigned char>(kHistoryPersistedPrefix[i]))) {
+      prefixOk = false;
+      break;
+    }
+  }
+  if (!prefixOk) {
+    f.close();
+    // WARNING et non ERROR (D4) : un ERROR flusherait le journal en synchrone
+    // → fopen() → l'abort() que ce lot évite précisément.
+    systemLogger.warning("Historique illisible (en-tête invalide) — aucun point chargé");
+    return;
+  }
+
+  // D4 : MEILLEUR EFFORT, BRUYANT — on garde les points déjà complets, on
+  // s'arrête à la première erreur (JSON malformé, fichier tronqué), et on
+  // WARN (jamais ERROR) au lieu d'abandonner tout ce qui a déjà été lu.
+  // Un point n'entre dans memoryBuffer QUE si deserializeJson() l'a validé
+  // COMPLET (aucune erreur de syntaxe) — jamais un objet partiel.
+  bool truncated = false;
+  size_t parsedCount = 0;
+  for (;;) {
+    const int next = f.peek();
+    if (next == ']') { f.read(); break; }  // fin normale du tableau
+    if (next < 0) { truncated = true; break; }  // EOF avant le ']' attendu
+
+    // Revue code-reviewer (feature-131) : PLAFOND DUR — sans lui, un fichier
+    // corrompu ou porteur de doublons RAW ferait croître memoryBuffer sans
+    // limite au boot (régression du passage en flux : l'ancien code était
+    // borné implicitement par l'échec d'allocation du JsonDocument global).
+    // « Meilleur effort bruyant » identique aux autres troncatures : les
+    // points déjà lus sont gardés, WARNING (jamais ERROR).
+    if (parsedCount >= kHistoryLoadMaxPoints) {
+      truncated = true;
+      break;
+    }
+
+    JsonDocument doc;
+    if (deserializeJson(doc, f)) {
+      truncated = true;  // objet syntaxiquement incomplet/invalide
+      break;
+    }
+    JsonObject point = doc.as<JsonObject>();
+
     DataPoint dp;
     dp.timestamp = point["t"];
     dp.ph = point["p"] | NAN;
@@ -778,6 +974,26 @@ void HistoryManager::loadFromFile() {
     }
     dp.granularity = static_cast<Granularity>(point["g"] | 0);
     memoryBuffer.push_back(dp);
+
+    if ((++parsedCount % 64) == 0) esp_task_wdt_reset();
+
+    const int sep = f.peek();
+    if (sep == ',') { f.read(); continue; }
+    if (sep == ']') { f.read(); break; }
+    truncated = true;  // séparateur inattendu (virgule ou crochet manquant)
+    break;
+  }
+
+  // Accolade fermante du document (`}` de `{"data":[...]}`). Un écart ici ne
+  // remet PAS en cause les points déjà chargés (idiome D4) — seule la trace
+  // change.
+  if (!truncated && f.read() != '}') truncated = true;
+
+  f.close();
+
+  if (truncated) {
+    systemLogger.warning("Historique tronqué ou corrompu — " + String((unsigned)parsedCount) +
+                         " point(s) récupéré(s), le reste est perdu");
   }
 
   if (!memoryBuffer.empty()) {
@@ -1425,6 +1641,11 @@ bool HistoryManager::clearHistory() {
   memoryBuffer.clear();
   xSemaphoreGive(_mutex);
   historyStore->remove(historyFilePath);
+  // feature-131 (C3) : le .tmp de l'écriture atomique aussi — sinon un
+  // effacement suivi d'un redémarrage avant la prochaine sauvegarde laisserait
+  // reconcileHistoryTmp() effacer un .tmp qui n'a plus lieu d'être (harmless,
+  // mais autant ne pas laisser de déchet).
+  historyStore->remove(historyTmpFilePath);
   systemLogger.warning("Historique effacé");
   return true;
 }

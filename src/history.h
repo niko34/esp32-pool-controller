@@ -64,6 +64,12 @@ static_assert(sizeof(DataPoint) == 28,
               "sizeof(DataPoint) a change : recompter l'allocation contigue de "
               "/get-history (339 points) et le budget de la partition history");
 
+// feature-131 (v2.53.0) : contrat de l'émetteur unique de JSON persisté
+// (HistoryManager::emitPersistedJson). `p`/`n` : tronçon d'octets à consommer ;
+// retour : nombre d'octets EFFECTIVEMENT acceptés (< n signale un échec côté
+// puits, propagé jusqu'à la détection d'écriture partielle de saveToFile()).
+typedef size_t (*HistoryByteSink)(void* ctx, const char* p, size_t n);
+
 class HistoryManager {
 private:
   // Limites de stockage
@@ -93,6 +99,28 @@ private:
 
   void saveToFile();
   void loadFromFile();
+  // feature-131 (v2.53.0) : réconciliation du `.tmp` d'écriture atomique de
+  // /history.json au démarrage. Appelée depuis begin(), APRÈS
+  // setPersistenceFs() et AVANT loadClockPrefs()/loadFromFile().
+  //
+  // ⚠️ DIFFÉRENCE ASSUMÉE avec Logger::reconcileLogTmp() (ADR-0076) : le
+  // `.tmp` du JOURNAL peut être PROMU (rename → fichier courant) parce que la
+  // rotation du journal écrit un `.tmp` dont la complétude est prouvée par un
+  // marqueur de fin AVANT le remove() du fichier courant, et parce qu'il porte
+  // alors l'UNIQUE copie des dernières lignes. Rien de tel ici : la taille
+  // attendue de /history.json.tmp ne vit qu'en RAM (jsonSize de la passe 1 de
+  // saveToFile(), jamais persistée), donc au redémarrage il est impossible de
+  // vérifier que le `.tmp` est complet — et /history.json (l'ancien) reste de
+  // toute façon la seule copie garantie intacte tant que le rename final n'a
+  // pas eu lieu. Le `.tmp` orphelin est donc TOUJOURS un déchet : effacement
+  // INCONDITIONNEL, jamais de promotion.
+  //
+  // `remove()` SEUL — ni `open()`, ni `exists()` : 0 site fopen, donc 0 risque
+  // d'abort() newlib ici (contrairement à Logger::reconcileLogTmp(), qui doit
+  // sonder la présence du journal courant pour décider). L'appel est sans
+  // condition ET sans effet si le `.tmp` n'existe pas (remove() d'un fichier
+  // absent échoue silencieusement côté LittleFS).
+  void reconcileHistoryTmp();
   void consolidateData();
   // bug-history-doublons-troncature (A2) : fusionne les agrégats ADJACENTS de
   // même (timestamp, granularité ≠ RAW) dans memoryBuffer — champs moyennés
@@ -115,6 +143,31 @@ private:
   void trimToCaps();
   void migrateLegacyHistory(unsigned long nowEpoch);
   void _applyPreNtpCorrection(unsigned long ntpEpoch, unsigned long uptimeSec);
+
+  // feature-131 (v2.53.0) : ÉMETTEUR UNIQUE du JSON persisté de
+  // /history.json. Un seul parcours de memoryBuffer, poussé octet par octet
+  // dans un « puits » — puits COMPTEUR (mesure jsonSize, aucun effet de bord
+  // FS) en passe 1 de saveToFile(), puits FICHIER (écriture réelle) en passe
+  // 2. Divergence entre les deux passes IMPOSSIBLE PAR CONSTRUCTION : même
+  // boucle, même drapeau `first`, même prédicat RAW (formatPersistedHistoryPoint,
+  // history_persist_format.h), buffer figé sous `_mutex` DÉJÀ TENU par
+  // l'appelant (saveToFile()) — aucun verrou n'est pris ici.
+  //
+  // Un point qui ne tient pas dans kHistoryPersistPointMaxBytes (retour 0 de
+  // formatPersistedHistoryPoint) est SAUTÉ — identiquement dans les deux
+  // passes, donc le résultat reste cohérent (cf. history_persist_format.h).
+  //
+  // esp_task_wdt_reset() tous les 64 points (patron history.cpp:164).
+  //
+  // @param sink Fonction appelée pour chaque tronçon d'octets produit ;
+  //             renvoie le nombre d'octets qu'elle a effectivement acceptés
+  //             (< n : le puits fichier a rencontré un échec d'écriture, la
+  //             somme retournée par cette fonction sera alors < jsonSize).
+  // @param ctx  Contexte opaque transmis tel quel à `sink` (compteur size_t*
+  //             ou FileWriteSink*, cf. history.cpp).
+  // @return Somme des octets acceptés par `sink` sur tout le document
+  //         (préfixe + points + suffixe).
+  size_t emitPersistedJson(HistoryByteSink sink, void* ctx);
 
 public:
   void begin();

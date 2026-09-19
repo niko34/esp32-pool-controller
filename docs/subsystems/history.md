@@ -5,12 +5,17 @@
 - **Partition** : `history` LittleFS **256 KB** à l'offset `0x7B0000` (séparée de `spiffs`) — layout v5, voir [`partitions.csv`](../../partitions.csv), [ADR-0068](../adr/0068-partitions-layout-v5-flash-8-mo.md) et [ADR-0009](../adr/0009-partition-coredump.md). ⚠️ **Était 64 KB à `0x3E0000` jusqu'au 2026-09-05** — tous les budgets chiffrés « x/16 blocs » ci-dessous datent de cette époque et sont désormais **très conservateurs** (la partition compte 64 blocs).
 
 
-> ⚠️ **Accès fichiers — 5 des 14 sites `fopen` du firmware sont ici**
-> (compte recompté le 2026-09-08 : ce bandeau annonçait **6 sites** et des
-> numéros de ligne d'avant la v2.43.0). `history.cpp` ouvre `/history.json` aux
-> lignes **620**, **651** et **716**, et `/.fscheck` aux lignes **343** et
-> **347**. Le 6ᵉ — l'`exists()` invisible à tout `grep` — a été **supprimé** au
-> cycle 2, pas gardé (cf. [plus bas](#loadfromfile--lexists-a-été-supprimé-pas-gardé)).
+> ⚠️ **Accès fichiers — 4 des 13 sites `fopen` du firmware sont ici**
+> (compte recompté le 2026-09-19, feature-131, v2.53.0 : ce bandeau annonçait
+> **5 sites** aux lignes 620/651/716 et 343/347, état v2.52.2). L'écriture
+> atomique `.tmp`+`rename` a fait **disparaître** l'ouverture en lecture qui
+> mesurait la taille de l'ancien fichier (`oldSize`, consommée par
+> `historySaveAdmit()`) — elle n'a plus lieu d'être puisque l'ancien fichier
+> n'est plus crédité. `history.cpp` ouvre désormais `/history.json.tmp` en
+> écriture à la ligne **738**, `/history.json` en lecture (chargement) à la
+> ligne **854**, et `/.fscheck` aux lignes **424** et **428**. L'`exists()`
+> invisible à tout `grep` reste **supprimé** depuis le cycle 2, pas gardé (cf.
+> [plus bas](#loadfromfile--lexists-a-été-supprimé-pas-gardé)).
 > Chaque ouverture alloue un verrou newlib dont l'échec appelle **`abort()`** :
 > c'est le crash du 05/09
 > ([`docs/incidents/2026-09-05-panic-fopen-historique.txt`](../incidents/2026-09-05-panic-fopen-historique.txt)).
@@ -59,7 +64,7 @@ Depuis **feature-041** (*characterization refactor*), la math **scalaire** d'agr
 | `isOlderThan(now, ts, maxAgeSeconds)` | Prédicat d'ancienneté `(now - ts) > maxAgeSeconds` | Frontière **stricte** (`>`) : `age == maxAge` → `false`. Arithmétique `uint32`, wrap (`ts > now`) conservé tel quel |
 | `finalizeMean(sum, count)` | Moyenne `sum/count` | `count == 0` → **`NaN`** (le point est ignoré par la coquille) |
 | `isMajority(trueCount, total)` | Majorité stricte `trueCount > total/2` | Division **entière** : `2/4` → `false`, `3/4` → `true`, `3/5` → `true` |
-| `historySaveAdmit(freeBytes, oldFileBytes, jsonBytes, marginBytes)` | Admission d'une écriture de `/history.json` : vrai si `libre + taille de l'ancien fichier ≥ JSON + marge` ([ADR-0033](../adr/0033-budget-espace-partition-history.md), v2.11.0) | Frontière **large** (égalité exacte → admis). Anti-overflow : soustractions gardées, aucune addition — correct jusqu'à `SIZE_MAX` sur chaque paramètre. **Logique NOUVELLE** (pas de contrainte characterization) |
+| `historySaveAdmit(freeBytes, jsonBytes, marginBytes)` | Admission d'une écriture de `/history.json` : vrai si `libre ≥ JSON + marge` ([ADR-0033](../adr/0033-budget-espace-partition-history.md), v2.11.0 ; **signature révisée feature-131/v2.53.0**, voir [ADR-0083](../adr/0083-ecriture-atomique-historique-et-contrat-de-format-persiste.md)) | Frontière **large** (égalité exacte → admis). Anti-overflow : soustractions gardées, aucune addition — correct jusqu'à `SIZE_MAX` sur chaque paramètre. ⚠️ **Ne crédite plus l'espace de l'ancien fichier** : depuis l'écriture atomique `.tmp`+`rename`, l'ancien `/history.json` **coexiste** avec le `.tmp` pendant toute l'écriture, son espace n'est donc jamais récupérable avant le `rename` final — le paramètre `oldFileBytes` a été **retiré** de la signature |
 | `historyBucketConsolidable(now, bucketStart, bucketLen, maxAgeSeconds)` | Créneau consolidable si **complet et ancien** : sa **dernière seconde** (`bucketStart + bucketLen − 1`) dépasse `maxAge` (v2.18.1, bug-history-doublons-troncature A1) | Même convention stricte qu'`isOlderThan` (`== maxAge` → `false`). `bucketLen == 0` → prédicat sur `bucketStart` seul (défensif). **Durcie v2.18.4** : dernière seconde dans le futur (`> now`) → **jamais consolidable** (voir [Garde anti-futur](#garde-anti-futur--purge-des-points-futurs-v2184-bug-points-futurs-et-ux-courbes)). **Logique NOUVELLE** |
 | `historyMergeMeanFinite(a, b)` | Fusion **équipondérée** de deux valeurs d'un même champ lors de la déduplication : fini+fini → moyenne, un seul fini → lui, aucun → `NaN` (v2.18.1, A2) | Équipondéré car les effectifs d'origine ne sont pas stockés (approximation assumée pour les doublons hérités ≤ 2.18.0). **Logique NOUVELLE** |
 | `historyIsExpired(now, ts, maxAgeSeconds)` | Ancienneté **future-safe** : `ts <= now && isOlderThan(...)` — un point horodaté dans le futur n'est **jamais** « expiré » (v2.18.4, bug-points-futurs-et-ux-courbes) | Utilisée par la purge 90 j de `consolidateData()`. L'invariant de wrap d'`isOlderThan` (documenté, verrouillé par tests) reste inchangé — la garde est posée **au-dessus**. **Logique NOUVELLE** |
@@ -201,14 +206,39 @@ L'ancienne écriture coûtait `,"d":false` (**10 o**) ou `,"d":true` (**9 o**) ;
 
 Si un snapshot est pris **avant** que l'heure soit synchronisée (timestamp uptime < `kMinValidEpoch`), il est marqué via `_preNtpPending = true`. Dès la synchro NTP réussie, `_applyPreNtpCorrection(ntpEpoch, uptimeSec)` re-date les points en calculant `epoch = ntpEpoch − (uptimeSec − pointUptime)`.
 
-## Sauvegarde `saveToFile()` — garde d'espace (v2.11.0, [ADR-0033](../adr/0033-budget-espace-partition-history.md))
+## Écriture et lecture en flux, atomicité `.tmp`+`rename` (feature-131, v2.53.0)
 
-Cause racine des 2 « corruptions » de juillet 2026 : **saturation structurelle** de la partition (pire cas 19-22 blocs demandés vs 16) déclenchant un div/0 `lfs_alloc` sur FS plein — bug littlefs amont ([#1063](https://github.com/littlefs-project/littlefs/issues/1063), [esp_littlefs #183](https://github.com/joltwallet/esp_littlefs/issues/183)), version figée par `espressif32@6.9.0`. Depuis la v2.11.0, `saveToFile()` suit la séquence **mesure → garde → remove → écriture → vérification** (l'ancien code ouvrait `"w"` d'entrée, tronquant l'ancien fichier avant toute vérification) :
+`saveToFile()`/`loadFromFile()` construisaient jusqu'ici **tout** le document JSON en RAM (`JsonDocument` complet, sérialisé/désérialisé d'un bloc) — le plus gros transitoire **périodique** du firmware, et le site exact du coredump du 05/09/2026. Depuis la v2.53.0, les deux passent par un **flux point par point** :
 
-1. **Mesure** : le JSON est construit en RAM et mesuré (`measureJson`) **avant** de toucher au FS.
-2. **Garde d'admission** : `historySaveAdmit(libre, tailleAncienFichier, tailleJson, kHistorySaveSpaceMarginBytes = 8192)` (module pur `history_logic`). **Refus** → save sauté, **l'ancien fichier reste intact** (mieux vaut un historique périmé de 5 min qu'un fichier tronqué), retentative naturelle au cycle suivant.
-3. **`remove()` de l'ancien fichier AVANT réécriture** : divise le pic copy-on-write par 2 (ancien + nouveau ne coexistent plus). Trade-off acté : un crash dans la fenêtre remove→write perd l'historique persisté — borné par la cadence 5 min et couvert par le disjoncteur ([ADR-0031](../adr/0031-disjoncteur-bootloop-history.md)).
-4. **Vérification d'écriture partielle** : le retour de `serializeJson` doit être **exactement** la taille mesurée ; sinon le fichier partiel est **supprimé** (jamais de JSON tronqué silencieux).
+- **Émetteur unique** : `HistoryManager::emitPersistedJson(sink, ctx)` parcourt `memoryBuffer` une seule fois et pousse chaque tronçon (préfixe, un point à la fois, suffixe) dans un **puits** (`HistoryByteSink`, [`history.h`](../../src/history.h)) — le choix du puits se fait entièrement côté appelant, donc une divergence entre mesure et écriture est **impossible par construction** (même code, même buffer, même seuil de saut).
+  - **Puits compteur** (`historyCounterSink`) : passe 1, aucun effet de bord FS — additionne la taille des tronçons pour obtenir `jsonSize`.
+  - **Puits fichier** (`historyFileSink`/`HistoryFileWriteSink`) : passe 2, accumule les octets dans un tampon de **pile** (`kHistoryWriteChunkBytes` = 512 o) et ne déclenche un `f.write()` qu'au remplissage — un `f.write()` toutes les ~4 points plutôt qu'un par point.
+- **Formatage d'un point** : `formatPersistedHistoryPoint()` ([`src/history_persist_format.h`](../../src/history_persist_format.h), module **pur**, [ADR-0017](../adr/0017-logique-metier-pure-humble-object-testabilite.md)) — même format exact qu'avant (clés courtes, omission des clés non finies, `pf`/`of` seulement sur `RAW`, masque de dosage entier). Un point qui ne tient pas dans `kHistoryPersistPointMaxBytes` (128 o, majorant mesuré) est **sauté**, identiquement dans les deux passes.
+- **Pic d'allocation retombé à un point + un tampon** : `kHistoryPersistPointMaxBytes` (128 o) + `kHistoryWriteChunkBytes` (512 o), tous deux sur **pile** — **aucun tas** n'est engagé pendant la sauvegarde. Le site exact du coredump du 05/09 (la seconde admission après `measureJson`, cf. plus bas) n'a donc plus de raison d'exister.
+- **Contrat d'identité octet à octet** : `historyFormatFixed()` est un **portage fidèle de `dtostrf()`** (pas un `snprintf("%.*f")`) — `String(float/double, n)` du framework ne fait pas un arrondi « au plus proche, pair », elle ajoute `0,5·10⁻ⁿ` puis **tronque** chiffre à chiffre. Un `%.*f` aurait divergé sur **174 des 2 881** valeurs d'un balayage exhaustif du pas réel du DS18B20 (0,0625 °C), soit **6,0 %** (ex. `-54,75` → `"-54.7"` avec `dtostrf`, `"-54.8"` avec `%.1f`). Le format persisté devant rester **identique** à celui déjà écrit sur les appareils en production, le port reproduit `dtostrf()` bit à bit plutôt que de le remplacer. Comparaison **octet à octet, 684 octets, 0 divergence** contre une fixture générée par le code réel de la 2.52.2 (`test/fixtures/history_reference.json`, `tools/gen_history_reference_json.cpp`). Décision et alternatives : [ADR-0083](../adr/0083-ecriture-atomique-historique-et-contrat-de-format-persiste.md).
+
+### Atomicité `.tmp` + `rename` (décision utilisateur, 2026-09-19)
+
+L'écriture est devenue **atomique** : `saveToFile()` écrit intégralement `/history.json.tmp`, puis **seul un `rename()`** le fait remplacer `/history.json`. **L'ancien fichier n'est plus supprimé avant l'écriture** (contrairement à v2.11.0-2.52.x) — il **coexiste** avec le `.tmp` jusqu'au `rename` final :
+
+- une coupure d'alimentation en cours d'écriture laisse **soit l'ancien fichier intact** (`rename` jamais atteint), **soit** un `.tmp` orphelin sans effet sur `/history.json` — **jamais** un fichier tronqué en place ;
+- `reconcileHistoryTmp()` efface l'orphelin **inconditionnellement** au démarrage suivant (`begin()`, avant tout chargement) — voir la section dédiée plus bas ;
+- échec du `rename()` lui-même → **pas de repli `remove(dest)+rename`** : un tel repli rouvrirait exactement la fenêtre que l'atomicité ferme (ancien supprimé, nouveau pas encore en place). Le `.tmp` reste alors sur le FS, réécrit (tronqué) au prochain cycle `SAVE_INTERVAL`, ou effacé par `reconcileHistoryTmp()` à un redémarrage.
+
+**Le motif d'[ADR-0033](../adr/0033-budget-espace-partition-history.md) qui justifiait le `remove()` préalable — « diviser le pic copy-on-write par 2 » — est dissous.** Il a été écrit pour la partition de **64 Ko** ; depuis [ADR-0068](../adr/0068-partitions-layout-v5-flash-8-mo.md) elle fait **256 Ko**, et la coexistence ancien+nouveau porte le pic d'occupation à ~**62 Ko (24 %)** de la partition, contre ~**38 Ko (15 %)** avant. Ce n'est plus un arbitrage serré. Voir [ADR-0083](../adr/0083-ecriture-atomique-historique-et-contrat-de-format-persiste.md) pour le détail du retournement.
+
+⚠️ **Différence assumée avec le `.tmp` du journal ([ADR-0076](../adr/0076-reconciliation-du-tmp-de-rotation-au-boot.md)) : celui de l'historique n'est JAMAIS promu.** Le `.tmp` du journal peut être promu (rename → fichier courant) au redémarrage parce que sa complétude est prouvée par un marqueur de fin écrit **avant** le `remove()` de l'ancien. Rien de tel ici : la taille attendue (`jsonSize`, passe 1) ne vit **qu'en RAM**, jamais persistée — au redémarrage, il est donc **impossible** de vérifier qu'un `.tmp` d'historique est complet, et l'ancien `/history.json` reste de toute façon la seule copie garantie intacte tant que le `rename` final n'a pas eu lieu. Le `.tmp` orphelin est donc **toujours** un déchet : `reconcileHistoryTmp()` l'efface sans condition (`remove()` seul — ni `open()` ni `exists()`, donc **0 site fopen**, 0 risque d'`abort()` sur ce chemin), et journalise un **WARNING sans throttle** (au plus 1 par démarrage) si un orphelin existait — c'est la preuve **datée** d'une coupure survenue en cours de sauvegarde précédente.
+
+### Admission unique (feature-131) — plus de crédit de l'ancien fichier
+
+Les deux admissions `fsGuardAdmit` de `saveToFile()` (v2.43.0) **fusionnent en une seule**, en tête de fonction : voir [Une admission unique](#une-admission-unique-dans-savetofile-feature-131) ci-dessous. `historySaveAdmit(freeBytes, jsonBytes, marginBytes)` a perdu le paramètre `oldFileBytes` — puisque l'ancien fichier coexiste désormais avec le `.tmp` pendant toute l'écriture, son espace n'est **jamais** récupérable avant le `rename`, et `freeBytes` (`totalBytes()-usedBytes()`) le compte déjà comme occupé.
+
+1. **Garde mémoire unique**, en tête (classe A, 8 192, cf. plus bas).
+2. **Mesure** (passe 1, puits compteur) : `jsonSize` sans toucher au FS.
+3. **Garde d'espace** : `historySaveAdmit(freeBytes, jsonSize, kHistorySaveSpaceMarginBytes = 8192)` (module pur `history_logic`). **Refus** → save sauté, **rien n'est touché sur le FS** (mieux vaut un historique périmé de 5 min qu'un fichier tronqué), retentative naturelle au cycle suivant.
+4. **Écriture** (passe 2, puits fichier) dans `/history.json.tmp`, tampon de 512 o.
+5. **Vérification d'écriture partielle** : la somme retournée par le puits fichier doit être **exactement** `jsonSize`, et le tampon d'accumulation doit s'être vidé sans erreur ; sinon le `.tmp` est **supprimé** et **l'ancien `/history.json` reste en place**, intact — c'est le gain net de l'atomicité (avant ce lot, l'ancien fichier avait déjà été supprimé à ce stade).
+6. **Bascule** : `rename(historyTmpFilePath, historyFilePath)` — la **seule** opération qui remplace `/history.json`.
 
 **Chemins d'échec (refus, échec d'`open`, écriture partielle)** — tous identiques :
 
@@ -242,29 +272,34 @@ Depuis la v2.43.0, aucune ouverture de fichier de `history.cpp` n'est tentée sa
 admission préalable. Recensement complet et règles :
 [`acces-fichiers.md`](acces-fichiers.md).
 
-### Deux admissions dans `saveToFile()`, et aucune n'est redondante
+### Une admission unique dans `saveToFile()` (feature-131)
 
-| # | Emplacement | Seuil | Ce qu'elle protège |
-|---|---|---|---|
-| 1 | **tête** de `saveToFile()` ([`history.cpp:532`](../../src/history.cpp:532)) | `kStaticFileMinAllocBytes` = **8 192** (classe A) | évite de **payer** la sérialisation en famine ; couvre la **non-atomicité** (le `remove()` précède l'`open("w")` : une garde sur l'ouverture échangerait l'`abort()` contre la **destruction** du fichier) ; précède la lecture d'`oldSize`, que `historySaveAdmit()` consomme |
-| 2 | **après `measureJson()`** ([`history.cpp:591`](../../src/history.cpp:591)) | idem | garantit que la mesure qui **autorise le `fopen`** est **postérieure au pic d'allocation** |
+| Emplacement | Seuil | Ce qu'elle protège |
+|---|---|---|
+| **tête** de `saveToFile()` ([`history.cpp:689`](../../src/history.cpp:689)) | `kStaticFileMinAllocBytes` = **8 192** (classe A) | évite de **payer** la mesure/écriture en famine ; couvre la fenêtre de coexistence `.tmp`/ancien (l'écriture n'est pas instantanée) |
 
-> ⚠️ **La leçon à retenir de ce correctif.** La première version ne posait que la
-> garde nº 1 — et elle était **insuffisante**. Entre l'admission en tête de
-> fonction et le `fopen`, `saveToFile()` construit le `JsonDocument` et ses
-> `String` : **elle dépense la marge qu'elle vient de valider.** L'ouverture
-> s'exécutait donc sur une mesure **devenue fausse**, c'est-à-dire sur une
-> **autorisation périmée** — exactement ce que l'asymétrie mesure/décision existe
-> pour interdire. Règle générale :
-> [acces-fichiers.md § Piège de placement nº 2](acces-fichiers.md#-piège-de-placement-nº-2--avant-louverture-ne-suffit-pas--il-faut-avant-le-pic-dallocation).
+> ⚠️ **Ce que devient « le site exact du coredump du 05/09 ».** Jusqu'à la
+> v2.52.x, une **seconde** admission était nécessaire après `measureJson()` :
+> entre la première garde et le `fopen`, `saveToFile()` construisait le
+> `JsonDocument` complet et ses `String` de sérialisation — **des dizaines de
+> kilooctets** — et dépensait ainsi la marge qu'elle venait de valider.
+> L'ouverture s'exécutait alors sur une mesure **devenue fausse**. Depuis
+> feature-131, ce pic **n'existe plus** : la mesure (passe 1, puits compteur) et
+> l'écriture (passe 2, puits fichier) n'allouent qu'un point à la fois (128 o)
+> plus un tampon de 512 o, tous deux sur **pile** — aucun tas engagé. Une seule
+> mesure, prise avant tout effet de bord, suffit désormais. L'amendement du
+> 2026-09-06 à [ADR-0070 §d](../adr/0070-fopen-interne-helper-unique-et-classes-de-contention.md)
+> (qui imposait la seconde admission) devient **historique** — voir la note
+> ajoutée à cet ADR et [ADR-0083](../adr/0083-ecriture-atomique-historique-et-contrat-de-format-persiste.md).
 
 **Classe A et non B** : ce chemin est atteignable depuis `POST /history/import`
-(→ `importData()` → `saveToFile()`) sur la tâche `async_tcp`, donc avec des pbuf
-lwip en vol.
+(→ `importData()`/`appendData()` → `saveToFile()`) sur la tâche `async_tcp`,
+donc avec des pbuf lwip en vol.
 
-**Une fois admis**, les deux ouvertures (`open("r")` pour `oldSize`,
-`open("w")` pour l'écriture) passent par le helper avec
-`kFsGuardAlreadyAdmitted` : **une** mesure du tas pour la sauvegarde entière.
+**Une fois admis**, l'unique ouverture du `.tmp` en écriture passe par le
+helper avec `kFsGuardAlreadyAdmitted` : **une** mesure du tas pour la
+sauvegarde entière. Il n'y a plus d'ouverture en lecture de l'ancien fichier
+(l'ancien `oldSize` a disparu avec le crédit qu'il finançait).
 
 ### Report, retentative, et jamais de silence
 
@@ -278,7 +313,9 @@ Observabilité, dans l'ordre de fiabilité décroissante :
 | Canal | Contenu | Durabilité |
 |---|---|---|
 | Compteur **`hdef`** | refus cumulés (sauvegardes + tripwires) dans le topic **retenu** `<base>/diagnostic` | **survit au reboot** |
-| **WARN throttlé 1/h** | `Famine memoire : sauvegarde de l'historique sautee (maxBloc8=X o < 8192 o) — nouvelle tentative dans 5 min` — variante `Famine memoire apres serialisation : …` pour la garde nº 2 | bornée (`_persistBuffer` = 100 entrées FIFO) |
+| **WARN throttlé 1/h** | `Famine memoire : sauvegarde de l'historique sautee (maxBloc8=X o < 8192 o) — nouvelle tentative dans 5 min` | bornée (`_persistBuffer` = 100 entrées FIFO) |
+
+> ⚠️ **La variante « Famine memoire apres serialisation : … » a disparu en v2.53.0** (feature-131) avec la seconde admission qu'elle accompagnait — voir [Une admission unique](#une-admission-unique-dans-savetofile-feature-131). Ne pas la chercher dans les logs d'un firmware ≥ 2.53.0.
 
 **Jamais `ERROR`, jamais `CRITICAL`** : un `ERROR` déclencherait le flush disque
 synchrone du logger, donc un `fopen`, donc l'`abort()` qu'on prévient.
@@ -302,8 +339,8 @@ d'un report, sur le **7ᵉ barreau** `kInternalFopenMinAllocBytes` = **5 120**
 
 | Site | Sous le seuil |
 |---|---|
-| [`history.cpp:317`](../../src/history.cpp:317) — avant le test d'intégrité `/.fscheck` | `historyEnabled = false` pour ce boot, `writeHistoryCrashCount(0)` (sortie **propre**, le drapeau du disjoncteur est levé) |
-| [`history.cpp:703`](../../src/history.cpp:703) — avant le chargement de `/history.json` | `historyEnabled = false` pour ce boot |
+| [`history.cpp:398`](../../src/history.cpp:398) — avant le test d'intégrité `/.fscheck` | `historyEnabled = false` pour ce boot, `writeHistoryCrashCount(0)` (sortie **propre**, le drapeau du disjoncteur est levé) |
+| [`history.cpp:841`](../../src/history.cpp:841) — avant le chargement de `/history.json` | `historyEnabled = false` pour ce boot |
 
 **Conséquence utilisateur** : entre 4 096 (auto-guérison) et 5 120, **l'appareil
 démarre sans historique persistant mais en dosant**. C'est un gain de
@@ -331,12 +368,14 @@ détail dans [logger.md](logger.md#reprise-dune-rotation-interrompue-au-démarra
 
 | Appel | Contexte | Ce qui s'y passe |
 |---|---|---|
-| [`history.cpp:332`](../../src/history.cpp:332) | chemin **tripwire** — atteint **alors que l'admission mémoire a déjà été refusée** (l. 317) | La réconciliation redemande une admission au **même** seuil (5 120) et se la voit refuser à son tour : **l'ABSTENTION est ici le comportement normal**, pas une anomalie. Aucun `remove`, aucun `rename`, aucune ligne de journal. |
-| [`history.cpp:377`](../../src/history.cpp:377) | chemin **nominal**, après le test d'intégrité (et l'éventuel reformatage) | Réconciliation effective : `Promote`, `Discard` ou silence. |
+| [`history.cpp:413`](../../src/history.cpp:413) | chemin **tripwire** — atteint **alors que l'admission mémoire a déjà été refusée** (l. 398) | La réconciliation redemande une admission au **même** seuil (5 120) et se la voit refuser à son tour : **l'ABSTENTION est ici le comportement normal**, pas une anomalie. Aucun `remove`, aucun `rename`, aucune ligne de journal. |
+| [`history.cpp:458`](../../src/history.cpp:458) | chemin **nominal**, après le test d'intégrité (et l'éventuel reformatage) | Réconciliation effective : `Promote`, `Discard` ou silence. |
+
+> ⚠️ **Ne pas confondre avec `reconcileHistoryTmp()` (feature-131).** La table ci-dessus concerne le `.tmp` de **rotation du journal** ([ADR-0076](../adr/0076-reconciliation-du-tmp-de-rotation-au-boot.md)), déclenché par `setPersistenceFs()`. `reconcileHistoryTmp()` — appelée juste après, [`history.cpp:471`](../../src/history.cpp:471) — traite le `.tmp` de **l'écriture atomique de l'historique**, avec une politique différente (**jamais de promotion**, effacement inconditionnel) : voir [Atomicité `.tmp` + `rename`](#atomicité-tmp--rename-décision-utilisateur-2026-09-19) plus haut.
 
 **Ordre garanti** : dans les deux cas, la réconciliation a lieu **avant** la
 première admission d'**écriture** d'historique — `historySaveAdmit()`
-([`history.cpp:630`](../../src/history.cpp:630)) — donc la marge d'espace est
+([`history.cpp:715`](../../src/history.cpp:715)) — donc la marge d'espace est
 calculée **après** l'éventuelle libération des deux blocs du `.tmp`, jamais
 avant. Sous le layout v5 (256 Ko) cet ordre ne change **aucune** décision
 d'admission : c'est une propriété qu'on préserve, pas un gain qu'on mesure.
@@ -357,6 +396,17 @@ libellé est rendu **explicitement non discriminant**, en `INFO` :
 ```
 Aucun historique exploitable (fichier absent ou illisible)
 ```
+
+### Lecture en flux, meilleur effort bruyant sur fichier tronqué (feature-131, v2.53.0)
+
+`loadFromFile()` ne matérialise plus jamais le document entier : le `deserializeJson(doc, f)` global sur tout le fichier a disparu, remplacé par l'idiome ArduinoJson 7 « flux de documents » — un `deserializeJson()` par point, sur le **même** `File`, chacun consommant exactement une valeur JSON et laissant le curseur juste après.
+
+- **Réservation unique du vecteur** : `memoryBuffer.reserve(kHistoryLoadReservePoints)` (339 points), avant la boucle — sans elle, l'escalade de capacité de `std::vector` redemanderait jusqu'à 14 336 o contigus au lieu de 9 492 o en une fois.
+- **Préfixe vérifié octet par octet** : les 9 octets de `kHistoryPersistedPrefix` (`{"data":[`) sont comparés un par un au début du fichier. Un écart ici — clés réordonnées, espaces insérés, fichier étranger — fait échouer le chargement **en bloc**, avant même de commencer le tableau : `systemLogger.warning("Historique illisible (en-tête invalide) — aucun point chargé")`. **Le firmware est le seul écrivain du fichier**, donc ce n'est pas une régression réelle en usage normal — mais c'est une limite à connaître : le meilleur effort ci-dessous ne couvre **pas** l'en-tête.
+- **Meilleur effort, bruyant, sur le corps du tableau** : une fois le préfixe validé, chaque point est décodé individuellement ; les points déjà complets sont **conservés**, la boucle s'arrête à la **première** erreur (JSON malformé, EOF prématurée, séparateur inattendu, accolade finale absente) — jamais un objet partiel n'entre dans `memoryBuffer`. Sur troncature : `systemLogger.warning("Historique tronqué ou corrompu — N point(s) récupéré(s), le reste est perdu")` — **jamais `error()`** : un `ERROR` déclencherait un flush synchrone du journal → `fopen` → l'`abort()` que ce lot évite précisément.
+- **Watchdog** : `esp_task_wdt_reset()` tous les 64 points décodés, même patron que l'écriture.
+
+Voir aussi [ADR-0083](../adr/0083-ecriture-atomique-historique-et-contrat-de-format-persiste.md).
 
 ### La mesure a lieu **sous `_mutex` tenu**, et c'est accepté
 
@@ -497,7 +547,7 @@ Deux précisions qui ne sont pas des détails :
 
 1. **RAW comprise.** ⚠️ **Ne pas espérer que `dedupAggregatedPoints()` couvre ce
    chemin** : il commence par `if (p.granularity != RAW)`
-   ([`src/history.cpp:1248`](../../src/history.cpp)) et ignore donc les points RAW —
+   ([`src/history.cpp:1602`](../../src/history.cpp)) et ignore donc les points RAW —
    dont un export porte jusqu'à `kMaxRawDataPoints` = **96**. Sans la règle appliquée
    *dans* `appendData()`, un lot RAW réenvoyé (reprise après coupure) **doublait en
    silence**.
@@ -739,7 +789,7 @@ Si **toute** étape échoue (`open` retourne null, `print` retourne ≠ 2 octets
 
 > ⚠️ **Depuis la v2.43.0, cette validation elle-même est gardée** : les deux
 > ouvertures de `/.fscheck` sont précédées d'une admission classe B
-> ([`history.cpp:316`](../../src/history.cpp:316), seuil 5 120). Sous le seuil,
+> ([`history.cpp:398`](../../src/history.cpp:398), seuil 5 120). Sous le seuil,
 > le test n'est **pas** exécuté et `historyEnabled` passe à `false` pour ce boot
 > — on ne conclut **pas** à une corruption faute de mémoire, et on ne reformate
 > donc **pas** une partition saine. Cf. [Tripwire de boot](#tripwire-de-boot--classe-b-seuil-5-120).
@@ -760,6 +810,8 @@ Si **toute** étape échoue (`open` retourne null, `print` retourne ≠ 2 octets
 - [`partitions.csv`](../../partitions.csv)
 - [`src/history_logic.h`](../../src/history_logic.h), [`src/history_logic.cpp`](../../src/history_logic.cpp) — math d'agrégation pure
 - [`src/history_export_chunk.h`](../../src/history_export_chunk.h) — logique pure de l'export chunked `/get-history` (v2.14.0) ; carry partagé avec [`src/logs_export_chunk.h`](../../src/logs_export_chunk.h)
+- [`src/history_persist_format.h`](../../src/history_persist_format.h) — module **pur** du format PERSISTÉ (feature-131, v2.53.0) : `formatPersistedHistoryPoint()`, `historyFormatFixed()` (portage de `dtostrf()`) ; **NE PAS confondre** avec `history_export_chunk.h` — bandeau croisé en tête des deux fichiers
+- [ADR-0083](../adr/0083-ecriture-atomique-historique-et-contrat-de-format-persiste.md) — écriture atomique `.tmp`+`rename`, dissolution du motif d'ADR-0033, contrat de format persisté bit-à-bit
 - [ADR-0064](../adr/0064-la-courbe-suit-le-nombre-affiche.md) — la mesure lissée est la référence des courbes 5 min ; lissée non historisée sur les agrégats (feature-095)
 - [`src/fs_guard.h`](../../src/fs_guard.h), [`src/fopen_guard_logic.h`](../../src/fopen_guard_logic.h) — point d'admission unique des `fopen` internes (v2.43.0)
 - [acces-fichiers.md](acces-fichiers.md) — recensement des 14 sites, classes de contention, pièges de placement

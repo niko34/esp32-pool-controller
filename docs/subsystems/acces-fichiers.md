@@ -14,16 +14,19 @@
 > commit**.
 
 - **Statut du correctif** : **gardes posées** au **cycle 2 de `bug-100`**
-  (2026-09-06, **v2.43.0**). Les **14 sites** recensés passent tous par le point
-  d'admission unique [`src/fs_guard.cpp`](../../src/fs_guard.cpp), et le contrôle
+  (2026-09-06, **v2.43.0**). Les **13 sites** recensés (depuis feature-131,
+  v2.53.0 — était 14, voir [la note dédiée](#le-site-1-a-disparu-feature-131-v2530))
+  passent tous par le point d'admission unique
+  [`src/fs_guard.cpp`](../../src/fs_guard.cpp), et le contrôle
   [`tools/check_fopen_guard.sh`](../../tools/check_fopen_guard.sh) échoue en CI si
   un autre fichier de `src/` ouvre un fichier lui-même.
   ⚠️ **Correctif NON validé sur matériel** : la défense est argumentée et testée
   en logique pure, aucun déploiement n'a eu lieu.
 - **Décision de conception à lire avant d'ajouter une garde ailleurs** :
-  [Piège de placement nº 2](#-piège-de-placement-nº-2--avant-louverture-ne-suffit-pas--il-faut-avant-le-pic-dallocation)
+  [Piège de placement nº 2](#-piège-de-placement-nº-2--retiré-feature-131--le-pic-quil-protégeait-a-disparu)
   — une garde va avant le **pic d'allocation** du chemin, pas seulement avant
-  l'appel qu'elle protège.
+  l'appel qu'elle protège (règle générale toujours valide ; son application
+  historique à `saveToFile()` de l'historique est retirée depuis feature-131).
 - **Décision de référence** : [ADR-0070](../adr/0070-fopen-interne-helper-unique-et-classes-de-contention.md)
 - **Décision voisine (côté HTTP)** : [ADR-0067](../adr/0067-garde-503-avant-fopen-handler-prioritaire.md)
 
@@ -58,22 +61,25 @@ il s'agit du 14ᵉ du **recensement de cycle 1**, à ne pas confondre avec le si
 
 ---
 
-## Les 14 sites — état **gardé** (cycle 2 v2.43.0, +1 site en v2.48.1)
+## Les 13 sites — état **gardé** (cycle 2 v2.43.0, +1 site en v2.48.1, −1 site en feature-131/v2.53.0)
 
-> 📋 **Compte réconcilié le 2026-09-08** (lot `bug-099`). Ce document annonçait
-> « 13 sites » en quatre endroits et « 14 sites » en trois autres, alors que le
-> décompte par classe donnait **10 (A) + 3 (B) = 13**. Le compte est désormais
-> **recompté depuis les deux tableaux ci-dessous**, et il vaut **14** :
-> **10 (A) + 4 (B)**. Toute mention de « 13 » ou « 14 » ailleurs dans le dépôt
-> qui n'est pas explicitement datée renvoie à un état antérieur.
+> 📋 **Compte réconcilié le 2026-09-19** (feature-131). Ce document annonçait
+> « 14 sites » depuis `bug-099` (10 A + 4 B). L'écriture atomique de l'historique
+> (`.tmp`+`rename`) a fait **disparaître** l'ouverture en lecture qui mesurait la
+> taille de l'ancien `/history.json` (`oldSize`) — ce fopen n'a plus lieu d'être,
+> puisque l'ancien fichier n'est plus crédité par `historySaveAdmit()`. Le compte
+> est désormais **9 (A) + 4 (B) = 13**. Toute mention de « 14 » ailleurs dans le
+> dépôt qui n'est pas explicitement datée renvoie à un état antérieur à
+> feature-131.
 
-Petite histoire du compte, parce qu'il a bougé trois fois :
+Petite histoire du compte, parce qu'il a bougé quatre fois :
 
 | Étape | Total | Détail |
 |---|---|---|
 | Recensement du cycle 1 de `bug-100` | **14** | dont l'`exists()` de `history.cpp`, le site qu'aucun `grep` ne trouvait |
 | Cycle 2 (v2.43.0) | **13** | le 14ᵉ a été **supprimé**, pas gardé (cf. plus bas) |
 | `bug-099` (v2.48.1) | **14** | la sonde de `Logger::reconcileLogTmp()` s'ajoute en **classe B** |
+| `feature-131` (v2.53.0) | **13** | le site #1 (lecture de `oldSize`) a **disparu** — écriture atomique `.tmp`+`rename`, plus de crédit de l'ancien fichier (cf. [la note dédiée](#le-site-1-a-disparu-feature-131-v2530)) |
 
 **Classe A** = contention TCP réelle possible → seuil `8192`
 (`kStaticFileMinAllocBytes`, 6ᵉ barreau [ADR-0058](../adr/0058-gardes-heap-metrique-8-bits.md)).
@@ -94,15 +100,24 @@ Deux façons d'être gardé, et la distinction compte :
 | `fsGuardAdmit(<seuil>)` … `openIfHeapAllows(…, kFsGuardAlreadyAdmitted)` | **une** mesure au point d'admission, `N` ouvertures ensuite **sans re-mesurer** |
 
 La seconde forme n'est pas une optimisation : c'est la seule qui soit correcte
-quand l'opération **n'est pas atomique** (cf. les deux pièges de placement plus
-bas) ou quand elle enchaîne plusieurs ouvertures indissociables.
+quand une opération enchaîne plusieurs ouvertures indissociables (rotation du
+journal), ou quand l'opération elle-même n'est pas instantanée et doit être
+décidée **avant** de commencer à agir (cf. le [piège de placement nº 2](#-piège-de-placement-nº-2--retiré-feature-131--le-pic-quil-protégeait-a-disparu)
+ci-dessous). ⚠️ **`saveToFile()` de l'historique EST atomique depuis
+feature-131** (`.tmp`+`rename`, v2.53.0) — voir la note qui remplace l'ancien
+« piège de placement nº 1 », plus bas.
 
-### Classe A — 10 ouvertures, seuil 8 192
+### Classe A — 9 ouvertures, seuil 8 192
+
+> ⚠️ **Le site #1 a disparu** (feature-131, v2.53.0) : voir
+> [la note dédiée](#le-site-1-a-disparu-feature-131-v2530) plus bas — le
+> numéro **n'est pas réattribué**, par cohérence avec le traitement du 14ᵉ site
+> disparu au cycle 2.
 
 | # | Site | Tâche(s) appelante(s) **réelles** | Garde | Verdict |
 |---|---|---|---|---|
-| 1 | [`history.cpp:620`](../../src/history.cpp:620) — `open(path,"r")`, taille de l'ancien fichier | `loopTask` (`consolidateData()`) **et** `async_tcp` (`POST /history/import`) | admise en 534 **et** 596 | **REPORTÉE** (retentative en 5 min) |
-| 2 | [`history.cpp:651`](../../src/history.cpp:651) — `open(path,"w")`, écriture | idem #1 | idem | **REPORTÉE** (5 min) |
+| ~~1~~ | ~~`open(path,"r")`, taille de l'ancien fichier — ligne 620 en v2.52.2, **numéro non significatif aujourd'hui** (code supprimé, les décalages ultérieurs du fichier ne s'appliquent à rien)~~ | — | — | **SUPPRIMÉ** (feature-131 : plus de crédit de l'ancien fichier, donc plus besoin de mesurer sa taille) |
+| 2 | [`history.cpp:738`](../../src/history.cpp:738) — `open("/history.json.tmp","w")`, écriture atomique | `loopTask` (`consolidateData()`) **et** `async_tcp` (`POST /history/import`/`appendData()`) | admise en 689 | **REPORTÉE** (retentative en 5 min) |
 | 3 | [`logger.cpp:321`](../../src/logger.cpp:321) — `open("/system.log","a")`, marqueur `--- DÉMARRAGE ---` | tâche appelant `setPersistenceFs()` — `loopTask` aujourd'hui, **rien ne le garantit** | mesure propre (8 192) | **REPORTÉE** (marqueur perdu, jamais le journal) |
 | 4 | [`logger.cpp:404`](../../src/logger.cpp:404) — `open("/system.log","a")` | **la tâche qui logue** — `flushToDisk()` est synchrone sur `ERROR`/`CRITICAL` | admise en 379 | **REPORTÉE** (buffer réinséré) |
 | 5 | [`logger.cpp:405`](../../src/logger.cpp:405) — repli `open(…,"w")` | idem #4 | admise en 379 | **REPORTÉE** |
@@ -134,9 +149,9 @@ observation.
 
 | # | Site | Rôle | Garde | Verdict |
 |---|---|---|---|---|
-| 11 | [`history.cpp:343`](../../src/history.cpp:343) — `open("/.fscheck","w")` | test d'intégrité write/read post-montage | admise en 317 | **TRIPWIRE** → `historyEnabled = false` pour ce boot |
-| 12 | [`history.cpp:347`](../../src/history.cpp:347) — `open("/.fscheck","r")` | relecture du test | admise en 317 | idem |
-| 13 | [`history.cpp:716`](../../src/history.cpp:716) — `open(path,"r")`, chargement | désérialisation de l'historique | admise en 703 | **TRIPWIRE** → `historyEnabled = false` pour ce boot |
+| 11 | [`history.cpp:424`](../../src/history.cpp:424) — `open("/.fscheck","w")` | test d'intégrité write/read post-montage | admise en 398 | **TRIPWIRE** → `historyEnabled = false` pour ce boot |
+| 12 | [`history.cpp:428`](../../src/history.cpp:428) — `open("/.fscheck","r")` | relecture du test | admise en 398 | idem |
+| 13 | [`history.cpp:854`](../../src/history.cpp:854) — `open(path,"r")`, chargement | désérialisation de l'historique (lecture en flux, feature-131) | admise en 841 | **TRIPWIRE** → `historyEnabled = false` pour ce boot |
 | 14 | [`logger.cpp:253`](../../src/logger.cpp:253) — `exists("/system.log")` (**sonde**, `existsIfHeapAllows`) de `Logger::reconcileLogTmp()` | savoir si le journal courant a survécu à la fenêtre `remove`/`rename` de la rotation (`bug-099`, v2.48.1) | admise en 248 — **une** admission pour la sonde **et** le `rename`/`remove` qui suit | **ABSTENTION** : ni promotion, ni effacement, **muette** ([ADR-0076](../adr/0076-reconciliation-du-tmp-de-rotation-au-boot.md)) |
 
 > **Pourquoi le site #14 est en classe B et pas A** — alors que les sites #3 à #9
@@ -156,7 +171,7 @@ observation.
 
 #### Le tripwire est observable **durablement**, et son WARN ne l'est que **bornément**
 
-Le tripwire de [`history.cpp:316`](../../src/history.cpp:316) **incrémente son
+Le tripwire de [`history.cpp:398`](../../src/history.cpp:398) **incrémente son
 propre refus** (`hdef`) : c'est la dégradation la plus sévère du lot, elle doit
 être visible dans le canal **retenu** `<base>/diagnostic`, qui survit à un
 reboot. Le WARN qui l'accompagne, lui, n'est durable que de façon **bornée** :
@@ -220,50 +235,75 @@ Aucun historique exploitable (fichier absent ou illisible)
 Niveau `INFO`, jamais `ERROR` : l'absence au premier boot est le cas nominal, et
 un `ERROR` déclencherait le flush synchrone donc un `fopen`.
 
-### ⚠️ Piège de placement nº 1 : `saveToFile()` n'est pas atomique
+### Le site #1 a disparu (feature-131, v2.53.0)
 
-Le `remove(path)` **précède** l'ouverture en écriture (#2). Une garde posée **sur
-l'ouverture** convertirait l'`abort()` en **destruction du fichier
-d'historique**. Et elle doit précéder la lecture d'`oldSize` (#1), que
-`historySaveAdmit()` consomme.
+`history.cpp` ouvrait `/history.json` en lecture **juste avant** de le
+supprimer et de le réécrire, pour connaître `oldSize` — l'octet que
+`historySaveAdmit()` créditait à l'ancien fichier ([ADR-0033](../adr/0033-budget-espace-partition-history.md)).
+Depuis l'écriture atomique `.tmp`+`rename` (feature-131), l'ancien fichier
+n'est **plus jamais crédité** (il coexiste avec le `.tmp` jusqu'au `rename`
+final, donc son espace n'est jamais récupérable pendant l'écriture) —
+`historySaveAdmit()` a perdu son paramètre `oldFileBytes`, et cette lecture
+n'a plus de raison d'exister. Elle a été **supprimée**, comme le 14ᵉ site l'a
+été au cycle 2 : le numéro **n'est pas réattribué**, il reste barré dans le
+tableau ci-dessus pour que le compte reste traçable dans le temps. Détail de
+la décision : [ADR-0083](../adr/0083-ecriture-atomique-historique-et-contrat-de-format-persiste.md),
+[history.md](history.md#atomicité-tmp--rename-décision-utilisateur-2026-09-19).
 
-**La garde va en tête de `saveToFile()`** — là où la fonction peut encore ne rien
-faire.
+### ⚠️ Piège de placement nº 1 : RETIRÉ (feature-131) — `saveToFile()` est désormais atomique
 
-### ⚠️ Piège de placement nº 2 : avant l'ouverture ne suffit pas — il faut avant le **pic d'allocation**
+> **Historique — ne décrit plus le comportement actuel depuis la v2.53.0.**
+> Conservé pour la traçabilité : c'est le piège que la garde en tête de
+> `saveToFile()` a été posée pour éviter, et le raisonnement reste correct
+> pour tout code **futur** qui enchaînerait un `remove()` puis une réécriture.
 
-> **La leçon la plus transférable du cycle 2.** Elle a coûté un bloquant de revue,
-> et elle se généralise à **toute** garde mémoire de ce dépôt.
+Jusqu'à la v2.52.x, `remove(path)` **précédait** l'ouverture en écriture :
+une garde posée **sur l'ouverture** aurait converti l'`abort()` en
+**destruction du fichier d'historique**, et elle devait précéder la lecture
+d'`oldSize`, que `historySaveAdmit()` consommait alors. D'où la garde en
+**tête** de `saveToFile()` — là où la fonction pouvait encore ne rien faire.
 
-La première version du correctif posait l'admission en tête de `saveToFile()`,
-conformément au piège nº 1 — et c'était **insuffisant**. Entre cette admission et
-le `fopen` réellement gardé, la fonction construit le `JsonDocument` de
-l'historique et ses `String` : **elle dépense la marge qu'elle vient de valider.**
-L'ouverture s'exécutait donc sur une mesure **devenue fausse** — ce qui est
-exactement le mode de défaillance que l'asymétrie mesure/décision
+Depuis feature-131 (v2.53.0), `saveToFile()` écrit `/history.json.tmp` puis
+**seul un `rename()`** le fait remplacer l'ancien : il n'y a plus de fenêtre
+`remove()`→écriture à protéger de cette façon. La garde reste en tête de
+fonction (elle protège désormais la fenêtre de **coexistence** `.tmp`/ancien,
+pas instantanée non plus), mais pour une raison différente — voir
+[history.md](history.md#atomicité-tmp--rename-décision-utilisateur-2026-09-19).
+
+### ⚠️ Piège de placement nº 2 : RETIRÉ (feature-131) — le pic qu'il protégeait a disparu
+
+> **Historique — la seconde admission qu'il documentait n'existe plus depuis
+> la v2.53.0.** La **règle générale** ci-dessous reste vraie et transférable à
+> toute garde mémoire future de ce dépôt ; c'est son **application à
+> `saveToFile()`** qui est retirée.
+
+Jusqu'à la v2.52.x, la première version du correctif posait l'admission en
+tête de `saveToFile()`, conformément au piège nº 1 — et c'était
+**insuffisant** : entre cette admission et le `fopen`, la fonction construisait
+le `JsonDocument` complet de l'historique et ses `String` de sérialisation,
+**dépensant la marge qu'elle venait de valider**. L'ouverture s'exécutait donc
+sur une mesure **devenue fausse** — exactement le mode de défaillance que
+l'asymétrie mesure/décision
 ([ADR-0070](../adr/0070-fopen-interne-helper-unique-et-classes-de-contention.md) §e)
-existe pour interdire : *autoriser* sur une mesure périmée coûte un `abort()`.
+existe pour interdire. D'où une **seconde admission**, posée après
+`measureJson()`, dont l'amendement du 2026-09-06 à ADR-0070 §d gardait la
+trace.
 
-D'où une **seconde admission**, posée **après** `measureJson()` — donc après le
-pic — et toujours **avant** le `remove()`, là où l'opération peut encore ne rien
-faire. Les deux gardes sont nécessaires et non redondantes :
+**Depuis feature-131, ce pic n'existe plus** : l'écriture en flux
+(`emitPersistedJson()`, un puits compteur puis un puits fichier) n'alloue
+qu'un point à la fois (128 o) plus un tampon de 512 o, tous deux sur **pile** —
+aucun tas engagé entre les deux passes. La seconde admission a donc été
+**retirée**, `saveToFile()` n'en pose plus qu'une. Détail : [history.md § Une
+admission unique](history.md#une-admission-unique-dans-savetofile-feature-131),
+[ADR-0083](../adr/0083-ecriture-atomique-historique-et-contrat-de-format-persiste.md).
 
-| Admission | Emplacement | Ce qu'elle protège |
-|---|---|---|
-| 1ʳᵉ | tête de `saveToFile()` ([`history.cpp:532`](../../src/history.cpp:532)) | évite de **payer** la sérialisation en famine ; couvre la non-atomicité |
-| 2ᵈᵉ | après `measureJson()` ([`history.cpp:591`](../../src/history.cpp:591)) | garantit que la mesure qui **autorise le `fopen`** est postérieure à la dépense |
-
-**Règle à retenir pour toute garde future** :
+**Règle à retenir pour toute garde future** (celle-ci ne change pas) :
 
 > Une garde mémoire doit être placée **avant le pic d'allocation du chemin
 > gardé**, pas seulement avant l'appel qu'elle protège. Si du code alloue entre
 > la mesure et l'appel, la mesure ne décrit plus l'état dans lequel l'appel
 > s'exécutera — et une autorisation périmée ne se paie pas en performance, elle
 > se paie en `abort()`.
-
-Le coût de la seconde garde est **une mesure de plus toutes les 5 minutes**.
-L'ADR-0070 exige une garde avant la lecture d'`oldSize` ; il n'en interdit pas
-une seconde.
 
 ### La mesure sous mutex tenu est **acceptée**, et c'est un constat mesuré
 
@@ -440,11 +480,12 @@ fichiers statiques** : les 7 routes HTML explicites (`/`, `/index.html`,
 ### Ce qu'il ne garde pas — et pourquoi
 
 **Aucun des sites ci-dessus** — le lot B-3 n'en garde pas un. Trois raisons
-distinctes, aucune accidentelle *(compte au 2026-09-08 : **14 sites**, dont
-**13 non-HTTP** ; le recensement de cycle 1 en comptait 14, le cycle 2 en a gardé
-13 et supprimé le 14ᵉ, et `bug-099` en a ajouté un)* :
+distinctes, aucune accidentelle *(compte au 2026-09-19, feature-131 : **13
+sites**, dont **12 non-HTTP** ; le recensement de cycle 1 en comptait 14, le
+cycle 2 en a gardé 13 et supprimé le 14ᵉ, `bug-099` en a ajouté un — retour à
+14 — et feature-131 en a retiré un — retour à 13)* :
 
-1. **Les 13 sites non-HTTP ne passent par aucun matcher.** Le firmware les ouvre
+1. **Les 12 sites non-HTTP ne passent par aucun matcher.** Le firmware les ouvre
    pour son propre compte, hors de toute requête. Une garde posée sur le routage
    HTTP ne peut structurellement pas les voir.
 2. **`/download-logs` (#10) est EXEMPT par l'ordre d'enregistrement.**
@@ -454,18 +495,20 @@ distinctes, aucune accidentelle *(compte au 2026-09-08 : **14 sites**, dont
    choix délibéré d'ADR-0067 (garder l'appareil **observable** pendant la famine),
    pas un oubli. **L'ordre d'enregistrement EST la politique d'exemption.**
 3. **`POST /history/import` est hors matcher** : la garde est `HTTP_GET`-only.
-   Les sites #1 et #2 sont donc atteignables depuis `async_tcp` **sans aucune
-   garde**.
+   Le site **#2** (`.tmp` de l'écriture atomique de l'historique, l'ancien #1
+   ayant disparu — cf. [plus haut](#le-site-1-a-disparu-feature-131-v2530)) est
+   donc atteignable depuis `async_tcp` **sans aucune garde HTTP**.
 
 > **Chiffre à retenir** : le lot B-3 ferme **un** chemin — le service de fichiers
 > statiques — et **zéro** des sites internes. La formule « au moins trois
 > chemins » de la spec `bug-080` est remplacée par ce compte exact.
 >
-> ✅ **Depuis la v2.43.0** (cycle 2 de `bug-100`), les sites internes — **14** à
-> ce jour — sont gardés par `fs_guard`, et `/download-logs` — exempt du 503 par l'ordre
-> d'enregistrement — est gardé **à l'intérieur** de son handler. L'exemption
-> d'ADR-0067 subsiste (l'appareil reste observable en famine) ; ce qui disparaît,
-> c'est l'`abort()` qu'elle laissait passer.
+> ✅ **Depuis la v2.43.0** (cycle 2 de `bug-100`), les sites internes — **13** à
+> ce jour (feature-131, était 14) — sont gardés par `fs_guard`, et
+> `/download-logs` — exempt du 503 par l'ordre d'enregistrement — est gardé
+> **à l'intérieur** de son handler. L'exemption d'ADR-0067 subsiste (l'appareil
+> reste observable en famine) ; ce qui disparaît, c'est l'`abort()` qu'elle
+> laissait passer.
 
 ---
 
@@ -476,10 +519,10 @@ Ces API touchent au stockage mais **ne passent pas par `fopen`**, donc **pas par
 
 | Famille | Exemples | Pourquoi hors classe |
 |---|---|---|
-| **`Preferences` / NVS** | [`config.cpp`](../../src/config.cpp) (~20 sites), [`history.cpp:35,43,81,93,148,161,251`](../../src/history.cpp:35) | NVS est un magasin clé-valeur de l'IDF ; `nvs_open` retourne un **handle**, pas un `FILE`. Aucun verrou newlib. |
-| **`esp_partition_*`** | [`web_routes_coredump.cpp:10,74,92`](../../src/web_routes_coredump.cpp:10), [`history.cpp:126,214,248,310`](../../src/history.cpp:126) | Accès **bloc** direct à la flash, sous le niveau du VFS. Ni FS monté, ni `FILE`. |
+| **`Preferences` / NVS** | [`config.cpp`](../../src/config.cpp) (~20 sites), [`history.cpp:63,71,109,121,176,189,355`](../../src/history.cpp:63) | NVS est un magasin clé-valeur de l'IDF ; `nvs_open` retourne un **handle**, pas un `FILE`. Aucun verrou newlib. |
+| **`esp_partition_*`** | [`web_routes_coredump.cpp:10,74,92`](../../src/web_routes_coredump.cpp:10), [`history.cpp:154,318,352,444`](../../src/history.cpp:154) | Accès **bloc** direct à la flash, sous le niveau du VFS. Ni FS monté, ni `FILE`. |
 | **`Update`** (OTA) | [`web_routes_ota.cpp`](../../src/web_routes_ota.cpp) | Écrit dans la partition applicative via `esp_ota_*`. Aucun `FILE`. ⚠️ **Mais sa garde heap a son propre défaut** — voir `bug-108`. |
-| **`remove()` / `rename()`** | [`history.cpp:300,529,551,1130`](../../src/history.cpp:529), [`logger.cpp`](../../src/logger.cpp) (rotation) | Opèrent sur les métadonnées LittleFS **sans construire de `FILE`**. ⚠️ Ils restent des **points de non-atomicité** (cf. le piège de placement ci-dessus), simplement pas des points d'`abort()`. |
+| **`remove()` / `rename()`** | [`history.cpp:610,783,802,1643,1648`](../../src/history.cpp:802), [`logger.cpp`](../../src/logger.cpp) (rotation) | Opèrent sur les métadonnées LittleFS **sans construire de `FILE`**. ⚠️ **Depuis feature-131 (v2.53.0), le couple `.tmp`+`rename()` de `/history.json` (ligne 802) EST le mécanisme d'atomicité, pas un point de non-atomicité** — voir [le site #1 a disparu](#le-site-1-a-disparu-feature-131-v2530) et [history.md](history.md#atomicité-tmp--rename-décision-utilisateur-2026-09-19). Le `remove()` de rotation du journal (`logger.cpp`), lui, reste un point de non-atomicité documenté par [ADR-0076](../adr/0076-reconciliation-du-tmp-de-rotation-au-boot.md). |
 
 ---
 
@@ -524,5 +567,6 @@ les trois cas. À réévaluer si un quatrième site de coquille apparaît.
 - [ADR-0067](../adr/0067-garde-503-avant-fopen-handler-prioritaire.md) — garde 503 côté HTTP (le pendant de ce document)
 - [ADR-0058](../adr/0058-gardes-heap-metrique-8-bits.md) — échelle des seuils en métrique 8 bits (**7ᵉ barreau** `5 120` ajouté par ADR-0070)
 - [ADR-0076](../adr/0076-reconciliation-du-tmp-de-rotation-au-boot.md) — le site **#14** : réconciliation du `.tmp` de rotation au boot, classe B, contrainte d'ordre
+- [ADR-0083](../adr/0083-ecriture-atomique-historique-et-contrat-de-format-persiste.md) — le site **#1 a disparu** : écriture atomique `.tmp`+`rename` de l'historique, plus de crédit de l'ancien fichier
 - [ADR-0017](../adr/0017-logique-metier-pure-humble-object-testabilite.md) — pourquoi le prédicat vit dans `fopen_guard_logic` et la coquille dans `fs_guard`
 - [history.md](history.md) · [logger.md](logger.md) · [web-server.md](web-server.md) · [oom-guard.md](oom-guard.md)

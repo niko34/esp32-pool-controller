@@ -32,13 +32,17 @@ float finalizeMean(float sum, int count);
 // Division ENTIÈRE : 2/4 → false (2 > 2 faux), 3/4 → true, 3/5 → true.
 bool isMajority(int trueCount, int total);
 
-// bug-nospc-partition-history : admission d'une écriture de /history.json.
-// Vrai si l'écriture peut être admise : freeBytes + oldFileBytes >= jsonBytes + marginBytes
-// (oldFileBytes = octets bruts de l'ancien fichier, supprimé avant réécriture ;
-// sous-estime les blocs réellement récupérés (arrondi bloc) → conservateur).
+// bug-nospc-partition-history, révisé feature-131 (écriture atomique
+// .tmp+rename) : admission d'une écriture de /history.json.
+// Vrai si l'écriture peut être admise : freeBytes >= jsonBytes + marginBytes.
+// ⚠️ NE CRÉDITE PLUS l'espace de l'ancien fichier (paramètre `oldFileBytes`
+// SUPPRIMÉ, feature-131) : l'ancien /history.json n'est plus supprimé avant
+// l'écriture, il COEXISTE avec le .tmp jusqu'au rename final — son espace
+// n'est donc jamais récupérable PENDANT l'écriture. `freeBytes` reflète déjà
+// l'espace réellement disponible dans cette situation de coexistence.
 // Anti-overflow : aucune addition — consommation par soustractions gardées,
 // correct jusqu'à SIZE_MAX sur chaque paramètre.
-bool historySaveAdmit(size_t freeBytes, size_t oldFileBytes, size_t jsonBytes, size_t marginBytes);
+bool historySaveAdmit(size_t freeBytes, size_t jsonBytes, size_t marginBytes);
 
 // bug-history-doublons-troncature (A1) : un bucket n'est consolidable que
 // lorsqu'il est COMPLET et ancien — sa DERNIÈRE seconde (bucketStart+len-1)

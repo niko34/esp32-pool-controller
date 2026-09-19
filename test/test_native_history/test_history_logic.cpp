@@ -115,50 +115,80 @@ void test_isMajority_1_of_2_false(void) {
 // un invariant vivant et maintiennent une couverture de 100 % trompeuse.
 
 // -----------------------------------------------------------------------------
-// AC5 — historySaveAdmit (bug-nospc-partition-history)
-// Sémantique : free + old >= json + marge → admis (frontière LARGE).
+// AC5 — historySaveAdmit (bug-nospc-partition-history, RÉVISÉ feature-131)
 // -----------------------------------------------------------------------------
+// Sémantique DEPUIS feature-131 (écriture atomique .tmp+rename) :
+//   free >= json + marge → admis (frontière LARGE), PLUS de crédit de l'ancien
+// fichier (le paramètre `oldFileBytes` a disparu de la signature). Avec
+// .tmp+rename, l'ancien /history.json et le .tmp du nouveau COEXISTENT
+// pendant toute l'écriture : son espace n'est récupéré qu'au rename final, et
+// `freeBytes` (totalBytes()-usedBytes()) le compte déjà comme « occupé », donc
+// non disponible — il n'y a plus rien à créditer explicitement.
+// Ces cas remplacent AC5 (ancienne signature 4 arguments, ADR historique
+// bug-nospc-partition-history) — voir aussi la section « feature-131 — plus de
+// crédit de l'ancien fichier » plus bas pour la preuve du changement de
+// sémantique sur un scénario chiffré.
 void test_saveAdmit_exact_boundary_admitted(void) {
-  // 10000 + 20000 == 22000 + 8000 → admis (égalité exacte)
-  TEST_ASSERT_TRUE(historySaveAdmit(10000, 20000, 22000, 8000));
+  // 22000 == 22000 + 0 → admis (égalité exacte)
+  TEST_ASSERT_TRUE(historySaveAdmit(22000, 22000, 0));
 }
 void test_saveAdmit_one_byte_short_refused(void) {
-  // 10000 + 20000 < 22001 + 8000 → refusé à 1 octet près
-  TEST_ASSERT_FALSE(historySaveAdmit(10000, 20000, 22001, 8000));
+  TEST_ASSERT_FALSE(historySaveAdmit(29999, 22000, 8000));
 }
 void test_saveAdmit_one_byte_spare_admitted(void) {
-  // 10001 + 20000 > 22000 + 8000 → admis
-  TEST_ASSERT_TRUE(historySaveAdmit(10001, 20000, 22000, 8000));
-}
-void test_saveAdmit_no_old_file_admitted(void) {
-  // Ancien fichier absent (old=0) : le libre seul doit couvrir json + marge
-  TEST_ASSERT_TRUE(historySaveAdmit(30000, 0, 22000, 8000));
-}
-void test_saveAdmit_no_old_file_refused(void) {
-  TEST_ASSERT_FALSE(historySaveAdmit(29999, 0, 22000, 8000));
+  TEST_ASSERT_TRUE(historySaveAdmit(30001, 22000, 8000));
 }
 void test_saveAdmit_zero_margin(void) {
   // Marge 0 : json seul décide (frontière large)
-  TEST_ASSERT_TRUE(historySaveAdmit(22000, 0, 22000, 0));
-  TEST_ASSERT_FALSE(historySaveAdmit(21999, 0, 22000, 0));
+  TEST_ASSERT_TRUE(historySaveAdmit(22000, 22000, 0));
+  TEST_ASSERT_FALSE(historySaveAdmit(21999, 22000, 0));
 }
 void test_saveAdmit_all_zero_admitted(void) {
-  // Rien à écrire, rien de requis → admis (0 + 0 >= 0 + 0)
-  TEST_ASSERT_TRUE(historySaveAdmit(0, 0, 0, 0));
+  // Rien à écrire, rien de requis → admis (0 >= 0 + 0)
+  TEST_ASSERT_TRUE(historySaveAdmit(0, 0, 0));
 }
 void test_saveAdmit_overflow_required_side(void) {
   // json + marge déborderait size_t en addition naïve : SIZE_MAX + SIZE_MAX.
   // Disponible nul → refus (une addition débordante donnerait requis ≈ 0 → admis à tort).
-  TEST_ASSERT_FALSE(historySaveAdmit(0, 0, SIZE_MAX, SIZE_MAX));
-}
-void test_saveAdmit_overflow_available_side(void) {
-  // free + old déborderait size_t : SIZE_MAX + SIZE_MAX couvre SIZE_MAX + SIZE_MAX → admis.
-  TEST_ASSERT_TRUE(historySaveAdmit(SIZE_MAX, SIZE_MAX, SIZE_MAX, SIZE_MAX));
+  TEST_ASSERT_FALSE(historySaveAdmit(0, SIZE_MAX, SIZE_MAX));
 }
 void test_saveAdmit_size_max_exact(void) {
   // Disponible SIZE_MAX exactement requis SIZE_MAX → admis ; +1 de marge → refusé.
-  TEST_ASSERT_TRUE(historySaveAdmit(SIZE_MAX, 0, SIZE_MAX, 0));
-  TEST_ASSERT_FALSE(historySaveAdmit(SIZE_MAX, 0, SIZE_MAX, 1));
+  TEST_ASSERT_TRUE(historySaveAdmit(SIZE_MAX, SIZE_MAX, 0));
+  TEST_ASSERT_FALSE(historySaveAdmit(SIZE_MAX, SIZE_MAX, 1));
+}
+
+// ---------------------------------------------------------------------------
+// feature-131 — PLUS DE CRÉDIT DE L'ANCIEN FICHIER (mutant F3 n°6)
+// ---------------------------------------------------------------------------
+// Preuve chiffrée du changement de sémantique, pas seulement de signature.
+// Scénario : un fichier ~25 Ko occupe déjà la partition (7 blocs LittleFS),
+// et un nouveau JSON, à peine plus gros, doit être écrit à côté (.tmp) avant
+// le rename. `freeBytes` ci-dessous est délibérément calculé COMME SI
+// l'ancien fichier restait en place pendant toute l'écriture (c'est
+// exactement le cas depuis feature-131) : il n'inclut PAS son espace.
+void test_saveAdmit_ancien_ne_credite_plus_l_espace(void) {
+  const size_t oldFileBytes = 28672;   // 7 blocs LittleFS (4096 o), ancien /history.json
+  const size_t jsonBytes = 25603;      // nouveau JSON, légèrement plus gros
+  const size_t marginBytes = 8192;     // kHistorySaveSpaceMarginBytes
+  const size_t freeBytes = 30000;      // libre réel, ANCIEN FICHIER DÉJÀ DÉDUIT
+
+  // Sous l'ANCIENNE sémantique (crédit de l'ancien, formule reconstituée ici
+  // SANS appeler la fonction supprimée — la signature n'existe plus) :
+  //   free + old = 30000 + 28672 = 58672 >= 25603 + 8192 = 33795 → ADMIS.
+  const size_t oldSemanticsAvailable = freeBytes + oldFileBytes;
+  const size_t required = jsonBytes + marginBytes;
+  TEST_ASSERT_TRUE_MESSAGE(oldSemanticsAvailable >= required,
+      "le scenario doit etre choisi pour etre admis sous l'ancienne semantique");
+
+  // Sous la NOUVELLE sémantique (celle réellement implémentée) : le même
+  // `freeBytes` ne suffit plus, parce que l'ancien fichier COEXISTE avec le
+  // .tmp — son espace n'est jamais rendu disponible pendant l'écriture.
+  // Si un mutant réintroduisait un crédit (même sans le paramètre, par ex. en
+  // gonflant freeBytes en interne), ce test basculerait à tort en succès.
+  TEST_ASSERT_FALSE_MESSAGE(historySaveAdmit(freeBytes, jsonBytes, marginBytes),
+      "regression : l'espace de l'ancien fichier est de nouveau credite alors "
+      "qu'il coexiste avec le .tmp jusqu'au rename final (feature-131)");
 }
 
 
@@ -361,68 +391,67 @@ void test_budget_taille_du_fichier_339_points(void) {
   TEST_ASSERT_EQUAL_size_t(8, historyBlocksFor(tout));
 }
 
-void test_budget_raw_seul_admis_en_regime_etabli(void) {
-  // Régime établi, pas de rotation de journal en cours :
-  //   métadonnées LittleFS 2 blocs + /system.log 8 Ko (3 blocs) + fichier 7 blocs
-  //   = 12 blocs sur 16 → 4 blocs (16 384 o) libres.
-  const size_t json = historyFileBytes(1);
-  const size_t used = (2 + historyBlocksFor(8192) + historyBlocksFor(json)) * 4096;
-  const size_t freeBytes = 65536 - used;
-  const size_t oldSize = json - 90;  // le buffer vient de gagner un point RAW
+// ---------------------------------------------------------------------------
+// feature-131 — SCÉNARIOS REPENSÉS (pas adaptés mécaniquement)
+// ---------------------------------------------------------------------------
+// Les trois tests ci-dessous encodaient la sémantique de CRÉDIT de l'ancien
+// fichier (remove() avant réécriture, partition 64 Ko, ADR-0033). Cette
+// sémantique n'existe plus : depuis feature-131 (.tmp + rename), l'ancien
+// /history.json et le .tmp coexistent PENDANT TOUTE L'ÉCRITURE — son espace
+// n'est jamais crédité, et la partition `history` fait 256 Ko depuis
+// ADR-0068 (pas 64 Ko). Les scénarios sont donc reconstruits sur ces deux
+// bases nouvelles, pas simplement rejoués avec un paramètre en moins.
+//
+// kHistoryPartitionV5Bytes : 256 Ko (0x40000), layout v5 (ADR-0068) — la
+// partition `history` héberge /history.json ET /system.log (+ leurs .tmp).
+// Constante LOCALE au test (pas de constante globale équivalente dans
+// constants.h à ce jour) : si elle diverge un jour de la vraie partition,
+// c'est `partitions.csv`/`build_fs.sh` qui font foi, pas ce fichier.
+static const size_t kHistoryPartitionV5Bytes = 262144;
+
+void test_budget_regime_etabli_256ko_admis_sans_credit(void) {
+  // Régime établi : l'ancien /history.json (mode RAW seul, 7 blocs) reste EN
+  // PLACE pendant que le .tmp du nouveau s'écrit à côté — occupation réelle :
+  // méta (2 blocs) + /system.log 8 Ko (2 blocs) + ancien fichier (7 blocs).
+  const size_t json = historyFileBytes(1);  // nouveau JSON, même taille de régime
+  const size_t oldFileBlocks = historyBlocksFor(json);
+  const size_t usedHorsNouveau =
+      (2 + historyBlocksFor(8192) + oldFileBlocks) * 4096;
+  const size_t freeBytes = kHistoryPartitionV5Bytes - usedHorsNouveau;
+
+  // AUCUN crédit de l'ancien fichier : seul `freeBytes` (qui l'exclut déjà,
+  // puisqu'il reste occupé) est comparé à json + marge.
   TEST_ASSERT_TRUE_MESSAGE(
-      historySaveAdmit(freeBytes, oldSize, json, kHistorySaveSpaceMarginBytes),
-      "sauvegarde refusee en regime etabli : l'historique cesserait d'etre persiste");
-  // Résiduel : ce qui resterait après coup. Doit valoir au moins un bloc.
-  const size_t dispo = freeBytes + oldSize;
+      historySaveAdmit(freeBytes, json, kHistorySaveSpaceMarginBytes),
+      "sauvegarde refusee en regime etabli (256 Ko, sans credit) : "
+      "l'historique cesserait d'etre persiste");
   const size_t requis = json + kHistorySaveSpaceMarginBytes;
-  TEST_ASSERT_TRUE(dispo >= requis + 4096);
-  TEST_ASSERT_EQUAL_size_t(8102, dispo - requis);  // 2 blocs moins un point
+  TEST_ASSERT_TRUE(freeBytes >= requis);
+  // ADR-0068 dissout le motif de resserrement de l'ancienne partition 64 Ko :
+  // le résiduel se compte ici en dizaines de blocs, pas en fraction de bloc.
+  TEST_ASSERT_TRUE_MESSAGE(freeBytes - requis > 10 * 4096,
+      "marge resultante anormalement faible pour une partition de 256 Ko");
 }
 
-void test_budget_toutes_granularites_aurait_saute_le_dernier_bloc(void) {
-  // L'alternative écartée dans le MÊME régime : 13 blocs sur 16 occupés, le
-  // résiduel tombe à un demi-bloc. C'est la mesure du risque évité.
-  const size_t json = historyFileBytes(2);
-  const size_t used = (2 + historyBlocksFor(8192) + historyBlocksFor(json)) * 4096;
-  const size_t freeBytes = 65536 - used;
-  const size_t dispo = freeBytes + (json - 90);
-  const size_t requis = json + kHistorySaveSpaceMarginBytes;
-  TEST_ASSERT_EQUAL_size_t(13, 2 + historyBlocksFor(8192) + historyBlocksFor(json));
-  TEST_ASSERT_TRUE(dispo >= requis);           // encore admis…
-  TEST_ASSERT_TRUE(dispo - requis < 4096);     // …mais plus un bloc de reste
-  TEST_ASSERT_EQUAL_size_t(4006, dispo - requis);
-}
-
-void test_budget_pire_cas_tmp_de_rotation_orphelin(void) {
-  // PIRE CAS : un /system.log.tmp de 6 Ko survit à un reset survenu pendant la
-  // rotation (logger.cpp ne le nettoie qu'à l'effacement explicite des logs) —
-  // 2 blocs de plus, définitivement.
-  //   2 (méta) + 3 (/system.log 8 Ko) + 2 (.tmp 6 Ko) = 7 blocs hors historique.
-  const size_t horsHisto = (2 + historyBlocksFor(8192) + historyBlocksFor(6144)) * 4096;
-
-  const size_t avant = historyFileBytes(0);
-  const size_t freeAvant = 65536 - (horsHisto + historyBlocksFor(avant) * 4096);
-  TEST_ASSERT_TRUE_MESSAGE(
-      historySaveAdmit(freeAvant, avant - 68, avant, kHistorySaveSpaceMarginBytes),
-      "≤ 2.37 : le pire cas passait");
-
-  // 2.38 (RAW seul) : le 7e bloc du fichier consomme le dernier bloc de jeu ;
-  // un fichier qui GRANDIT d'un point (90 o) n'est plus admis dans cette
-  // fenêtre. Refus TRANSITOIRE (retenté 5 min plus tard, WARNING throttlé),
-  // qui devient permanent tant que le .tmp orphelin n'est pas effacé.
-  const size_t raw = historyFileBytes(1);
-  const size_t freeRaw = 65536 - (horsHisto + historyBlocksFor(raw) * 4096);
-  TEST_ASSERT_EQUAL_size_t(8192, freeRaw);  // 2 blocs
-  TEST_ASSERT_FALSE(historySaveAdmit(freeRaw, raw - 90, raw, kHistorySaveSpaceMarginBytes));
-  // Fichier stable (pas de croissance) : encore admis, à l'octet près.
-  TEST_ASSERT_TRUE(historySaveAdmit(freeRaw, raw, raw, kHistorySaveSpaceMarginBytes));
-  TEST_ASSERT_FALSE(historySaveAdmit(freeRaw, raw, raw + 1, kHistorySaveSpaceMarginBytes));
-
-  // L'alternative écartée, elle, échouait de 4 Ko dans le même pire cas.
+void test_budget_pire_cas_256ko_avec_debris_reste_admis(void) {
+  // PIRE CAS chargé de tout le débris possible : ancien fichier au format le
+  // plus coûteux (toutes granularités, mode=2, écarté par la décision
+  // feature-095 mais modélisé ici en pire cas), /system.log plein (8 Ko), ET
+  // un .tmp de rotation du journal orphelin (6 Ko, cf. logger.cpp/ADR-0076)
+  // qui survit tant que les logs ne sont pas effacés explicitement.
   const size_t tout = historyFileBytes(2);
-  const size_t freeTout = 65536 - (horsHisto + historyBlocksFor(tout) * 4096);
-  TEST_ASSERT_FALSE(historySaveAdmit(freeTout, tout - 90, tout, kHistorySaveSpaceMarginBytes));
-  TEST_ASSERT_FALSE(historySaveAdmit(freeTout, tout, tout, kHistorySaveSpaceMarginBytes));
+  const size_t oldFileBlocks = historyBlocksFor(tout);
+  const size_t usedHorsNouveau =
+      (2 + historyBlocksFor(8192) + historyBlocksFor(6144) + oldFileBlocks) * 4096;
+  const size_t freeBytes = kHistoryPartitionV5Bytes - usedHorsNouveau;
+
+  // Sous 64 Ko (ADR-0033), ce même pire cas ÉCHOUAIT (cf. l'ancien
+  // test_budget_pire_cas_tmp_de_rotation_orphelin, retiré). Sous 256 Ko et
+  // sans crédit, il passe LARGEMENT : c'est précisément le motif documenté
+  // dans constants.h pour dissoudre ADR-0033 sur ce point.
+  TEST_ASSERT_TRUE_MESSAGE(
+      historySaveAdmit(freeBytes, tout, kHistorySaveSpaceMarginBytes),
+      "le pire cas de debris ne devrait plus refuser sous la partition 256 Ko (ADR-0068)");
 }
 
 void test_budget_formule_de_reference_de_la_partition(void) {
@@ -517,40 +546,18 @@ static int containsIn(const char* hay, size_t len, const char* needle) {
   return countIn(hay, len, needle) > 0;
 }
 
-void test_source_serialisation_de_la_filtree_gardee_par_granularity_raw(void) {
-  // LE rempart du budget de partition (cf. tests ci-dessus) : sans la garde
-  // `granularity == RAW`, le fichier passe de 7 à 8 blocs et la sauvegarde est
-  // refusée dans le pire cas — l'historique cesse d'être persisté en silence.
-  long len = 0;
-  char* src = readProjectFile("src/history.cpp", &len);
-  TEST_ASSERT_NOT_NULL_MESSAGE(src, "src/history.cpp introuvable");
-
-  size_t bodyLen = 0;
-  const char* body = slice(src, "void HistoryManager::saveToFile()",
-                           "void HistoryManager::loadFromFile()", &bodyLen);
-  TEST_ASSERT_NOT_NULL(body);
-
-  const char* guard = "if (point.granularity == RAW) {";
-  const char* pf = "obj[\"pf\"]";
-  const char* of = "obj[\"of\"]";
-  TEST_ASSERT_TRUE_MESSAGE(containsIn(body, bodyLen, guard),
-      "garde granularity == RAW absente de saveToFile : budget de partition non tenu");
-  TEST_ASSERT_TRUE(containsIn(body, bodyLen, pf));
-  TEST_ASSERT_TRUE(containsIn(body, bodyLen, of));
-
-  // Les deux écritures doivent suivre la garde, et de près (même bloc).
-  const size_t iGuard = (size_t)(strstr(body, guard) - body);
-  const size_t iPf = (size_t)(strstr(body, pf) - body);
-  const size_t iOf = (size_t)(strstr(body, of) - body);
-  TEST_ASSERT_TRUE_MESSAGE(iPf > iGuard && iPf - iGuard < 200,
-      "obj[\"pf\"] hors du bloc garde par granularity == RAW");
-  TEST_ASSERT_TRUE_MESSAGE(iOf > iGuard && iOf - iGuard < 300,
-      "obj[\"of\"] hors du bloc garde par granularity == RAW");
-  // Et elles restent conditionnées à isfinite (jamais de NaN sérialisé).
-  TEST_ASSERT_TRUE(containsIn(body, bodyLen, "isfinite(point.phFiltered)"));
-  TEST_ASSERT_TRUE(containsIn(body, bodyLen, "isfinite(point.orpFiltered)"));
-  free(src);
-}
+// test_source_serialisation_de_la_filtree_gardee_par_granularity_raw a été
+// RETIRÉ ici (feature-131) : il grattait le texte de
+// `HistoryManager::saveToFile()` pour vérifier que `obj["pf"]`/`obj["of"]`
+// restaient sous la garde `granularity == RAW`. Depuis feature-131, ce code
+// n'existe plus dans history.cpp — il vit dans le module PUR
+// `formatPersistedHistoryPoint()` (src/history_persist_format.h), directement
+// TESTABLE EN COMPORTEMENT (pas seulement en texte source) : voir
+// test/test_native_history_persist_format/, section (b) « golden par point »,
+// qui vérifie l'ABSENCE effective de "pf"/"of" sur un point HOURLY/DAILY en
+// comparant la sortie réelle de la fonction, pas son code. Un test de
+// comportement direct est strictement plus fort qu'un test de source : garder
+// les deux aurait dupliqué la preuve sans rien vérifier de plus.
 
 void test_source_datapoint_initialise_la_filtree_a_nan(void) {
   // DataPoint est construit SANS initialisation à plusieurs endroits
@@ -700,13 +707,11 @@ int main(int argc, char** argv) {
   RUN_TEST(test_saveAdmit_exact_boundary_admitted);
   RUN_TEST(test_saveAdmit_one_byte_short_refused);
   RUN_TEST(test_saveAdmit_one_byte_spare_admitted);
-  RUN_TEST(test_saveAdmit_no_old_file_admitted);
-  RUN_TEST(test_saveAdmit_no_old_file_refused);
   RUN_TEST(test_saveAdmit_zero_margin);
   RUN_TEST(test_saveAdmit_all_zero_admitted);
   RUN_TEST(test_saveAdmit_overflow_required_side);
-  RUN_TEST(test_saveAdmit_overflow_available_side);
   RUN_TEST(test_saveAdmit_size_max_exact);
+  RUN_TEST(test_saveAdmit_ancien_ne_credite_plus_l_espace);
 
   // bug-history-doublons-troncature
   RUN_TEST(test_bucketConsolidable_partial_hour_refused);
@@ -727,13 +732,11 @@ int main(int argc, char** argv) {
 
   // feature-095 — budget de la partition history
   RUN_TEST(test_budget_taille_du_fichier_339_points);
-  RUN_TEST(test_budget_raw_seul_admis_en_regime_etabli);
-  RUN_TEST(test_budget_toutes_granularites_aurait_saute_le_dernier_bloc);
-  RUN_TEST(test_budget_pire_cas_tmp_de_rotation_orphelin);
+  RUN_TEST(test_budget_regime_etabli_256ko_admis_sans_credit);
+  RUN_TEST(test_budget_pire_cas_256ko_avec_debris_reste_admis);
   RUN_TEST(test_budget_formule_de_reference_de_la_partition);
 
   // feature-095 — invariants structurels (sources)
-  RUN_TEST(test_source_serialisation_de_la_filtree_gardee_par_granularity_raw);
   RUN_TEST(test_source_datapoint_initialise_la_filtree_a_nan);
   RUN_TEST(test_source_relecture_toleante_a_l_absence_des_cles);
   RUN_TEST(test_source_consolidation_n_agrege_jamais_la_filtree);

@@ -345,11 +345,72 @@ constexpr const char* kHistoryCrashCountNvsKey = "crash_cnt"; // Clé NVS du com
 // cas d'occupation de la partition 64 Ko (réécriture copy-on-write de
 // /history.json + /system.log + .tmp de rotation + métadonnées) dépassait la
 // capacité → NOSPC structurel puis div/0 littlefs (bug amont, issue #1063).
-// L'ancien fichier est supprimé AVANT réécriture (divise le pic COW par 2) et
-// l'admission compare libre + taille de l'ancien fichier à taille JSON + marge
-// (historySaveAdmit, module pur).
+// feature-131 (v2.53.0) : la sauvegarde est devenue ATOMIQUE (.tmp + rename,
+// patron du journal ADR-0076) — l'ancien /history.json N'EST PLUS supprimé
+// avant réécriture, il COEXISTE avec le .tmp pendant toute l'écriture (motif
+// initial de ce commentaire, « diviser le pic COW par 2 », dissous par
+// ADR-0068 : la partition history est passée de 64 Ko à 256 Ko, le pic de
+// coexistence retombe à ~24 % de la partition contre ~15 % avant, l'ADR-0033
+// est caduc sur ce point précis — la garde elle-même reste inchangée).
+// L'admission (historySaveAdmit, module pur) compare désormais SIMPLEMENT le
+// libre courant à la taille JSON + marge : aucune reprise anticipée de
+// l'espace de l'ancien fichier, puisqu'il n'est jamais supprimé avant que le
+// nouveau soit intégralement écrit et renommé.
 constexpr size_t kHistorySaveSpaceMarginBytes = 8192;           // 2 blocs de 4096 o : compaction métadonnées near-full + arrondi bloc
 constexpr unsigned long kHistorySaveWarnThrottleMs = 3600000UL; // 1 h - throttle des warn « partition pleine » et de l'INFO occupation FS
+
+// feature-131 : écriture en flux de /history.json (plus de JsonDocument en
+// RAM). Le pic d'allocation du save tombe à la taille d'UN point formaté plus
+// le tampon d'écriture par blocs — voir HistoryManager::emitPersistedJson()
+// et history_persist_format.h.
+//
+// kHistoryPersistPointMaxBytes (128) : majorant mesuré du plus long point
+// persisté possible. Pire cas compté caractère par caractère sur le format de
+// formatPersistedHistoryPoint() : virgule de séparation (1) + `{"t":` +
+// 10 chiffres (unsigned long max, 15) + `,"p":` + valeur (jusqu'à 8, ex.
+// "-999.99") (13) + `,"o":`+valeur (13) + `,"T":`+valeur (13) + `,"pf":`+valeur
+// (14) + `,"of":`+valeur (14) + `,"f":false` (10) + `,"d":255` (8) + `,"g":2}`
+// (7) ≈ 108 o. Arrondi à 128 pour absorber une marge sans reprendre le calcul
+// à chaque champ ajouté au format (le dépassement, lui, ne perd jamais de
+// données : cf. historyFormatFixed()/formatPersistedHistoryPoint(), retour 0
+// symétrique entre la passe de mesure et la passe d'écriture).
+constexpr size_t kHistoryPersistPointMaxBytes = 128;
+
+// kHistoryWriteChunkBytes (512) : tampon d'accumulation du puits fichier avant
+// chaque f.write() — réduit le nombre d'écritures LittleFS individuelles (un
+// f.write() par point serait ~339 appels par sauvegarde dans le pire cas).
+// Choisi comme multiple confortable de kHistoryPersistPointMaxBytes (4 points
+// par vidage) sans peser sur la pile : 512 (tampon) + 128 (point formaté) =
+// 640 o de plus sur loopTask ET sur async_tcp (POST /history/import →
+// importData() → saveToFile()), négligeable face aux 16 Ko de
+// CONFIG_ASYNC_TCP_STACK_SIZE et au budget de loopTask.
+constexpr size_t kHistoryWriteChunkBytes = 512;
+
+// kHistoryLoadReservePoints : réservation unique du vecteur memoryBuffer au
+// chargement (loadFromFile), dérivée des plafonds de granularité existants —
+// jamais recopiée en dur. Sans elle, l'escalade de capacité de std::vector
+// (1→2→4→...→512) redemande jusqu'à 14 336 o CONTIGUS au passage 256→512
+// (transitoire 21 504 o le temps de la copie), pour un besoin réel de
+// kHistoryLoadReservePoints × sizeof(DataPoint) = 9 492 o EN UNE SEULE FOIS
+// (cf. static_assert sizeof(DataPoint)==28, history.h).
+constexpr size_t kHistoryLoadReservePoints =
+    kMaxRawDataPoints + kMaxHourlyDataPoints + kMaxDailyDataPoints;  // 96+168+75 = 339
+
+// kHistoryLoadMaxPoints (revue code-reviewer, feature-131) : PLAFOND DUR du
+// nombre de points admis par loadFromFile() en une seule lecture. Le
+// chargement en flux a perdu la borne IMPLICITE de l'ancien code — l'échec
+// d'allocation du `JsonDocument` global finissait par arrêter un fichier
+// pathologique. Sans plafond explicite, un /history.json corrompu ou porteur
+// de doublons RAW (jamais fusionnés par dedupAggregatedPoints(), qui ignore
+// RAW — cf. history.cpp) ferait croître `memoryBuffer` sans limite AU BOOT,
+// avec le doublement géométrique de capacité que kHistoryLoadReservePoints
+// existe précisément pour éviter.
+// Facteur ×2 : marge généreuse au-dessus du nominal (339) pour absorber des
+// doublons hérités de formats ≤ 2.18.0 (jusqu'à ~12/heure sur les agrégats,
+// cf. bug-history-doublons-troncature) SANS autoriser une croissance non
+// bornée — le fichier est de toute façon tronqué (WARNING) au-delà, jamais
+// silencieusement laissé grossir.
+constexpr size_t kHistoryLoadMaxPoints = 2 * kHistoryLoadReservePoints;  // 678
 
 // Clés NVS du diagnostic NOSPC + dump de preuve (namespace hist_meta existant) :
 constexpr const char* kHistoryNospcCountNvsKey  = "nospc_cnt"; // Compteur cumulé de saves refusés/échoués (uint32)

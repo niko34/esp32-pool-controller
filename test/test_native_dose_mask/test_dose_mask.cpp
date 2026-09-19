@@ -223,13 +223,22 @@ static DoseCodec persistCodec(void) {
   char* hist = readProjectFile("src/history.cpp", &len);
   TEST_ASSERT_NOT_NULL_MESSAGE(hist, "src/history.cpp introuvable");
 
+  // feature-131 (v2.53.0) : l'écriture du champ "d" a QUITTÉ saveToFile() —
+  // elle vit désormais dans le module PUR formatPersistedHistoryPoint()
+  // (src/history_persist_format.h), partagé par la passe de mesure et la
+  // passe d'écriture (emitPersistedJson). C'est là, et plus dans
+  // HistoryManager::saveToFile(), que la politique masque-vs-booléen se lit.
+  long fmtLen = 0;
+  char* fmt = readProjectFile("src/history_persist_format.h", &fmtLen);
+  TEST_ASSERT_NOT_NULL_MESSAGE(fmt, "src/history_persist_format.h introuvable");
   size_t saveLen = 0;
-  const char* save = slice(hist, "void HistoryManager::saveToFile()",
-                           "void HistoryManager::loadFromFile()", &saveLen);
+  const char* save = slice(fmt, "inline size_t formatPersistedHistoryPoint",
+                           "#endif", &saveLen);
   TEST_ASSERT_NOT_NULL(save);
-  c.writeIsMask = containsIn(save, saveLen, "obj[\"d\"] = point.doseMask;") &&
-                  !containsIn(save, saveLen, "point.phDosing") &&
-                  !containsIn(save, saveLen, "point.orpDosing");
+  c.writeIsMask = containsIn(save, saveLen, "\",\\\"d\\\":%u\", (unsigned)doseMask") &&
+                  !containsIn(save, saveLen, "phDosing") &&
+                  !containsIn(save, saveLen, "orpDosing");
+  free(fmt);
 
   size_t loadLen = 0;
   const char* load = slice(hist, "void HistoryManager::loadFromFile()",

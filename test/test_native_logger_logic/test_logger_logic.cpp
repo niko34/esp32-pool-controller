@@ -693,20 +693,64 @@ static size_t historyPartitionBytesFromSource(void) {
   return out;
 }
 
-// Plus gros /history.json admissible, `.tmp` present ou non.
-// Occupation hors historique : 2 blocs de metadonnees LittleFS + /system.log
-// (kMaxLogFileBytes = 8 Ko, 3 blocs) [+ le .tmp de rotation].
-// `growthBytes` = ce que le fichier vient de GAGNER (un point RAW ~ 90 o) ;
-// 0 modelise un fichier stable.
-static size_t maxAdmissibleJson(size_t partitionBytes, size_t tmpBytes, size_t growthBytes) {
+// feature-131 (v2.53.0) : `historySaveAdmit()` a PERDU son parametre
+// `oldFileBytes` — l'ecriture est devenue atomique (.tmp + rename), l'ancien
+// /history.json n'est plus supprime avant reecriture, donc son espace n'est
+// JAMAIS credite (cf. test_native_history/test_history_logic.cpp, section
+// « plus de credit de l'ancien fichier »). Les tests HISTORIQUES de ce fichier
+// (regime 64 Ko, motif d'origine de bug-099, remove-avant-ecriture ADR-0033)
+// modelisaient explicitement CE credit : ils ne peuvent plus appeler la
+// fonction reelle pour rejouer un regime qu'elle n'implemente plus. On
+// RECONSTITUE localement l'ANCIENNE formule (jamais reintroduite en
+// production) pour ces scenarios strictement historiques ; les scenarios sous
+// le layout ACTUEL (v5, 256 Ko) utilisent la VRAIE fonction, avec la VRAIE
+// semantique de coexistence (ancien ET nouveau occupent chacun un bloc-arrondi
+// de `json` PENDANT toute l'ecriture, cf. constants.h/spec feature-131).
+static bool historySaveAdmitLegacyCredit(size_t freeBytes, size_t oldFileBytes,
+                                         size_t jsonBytes, size_t marginBytes) {
+  size_t freePool = freeBytes, oldPool = oldFileBytes, need = jsonBytes;
+  size_t fromFree = (need < freePool) ? need : freePool;
+  freePool -= fromFree;
+  need -= fromFree;
+  if (need > oldPool) return false;
+  oldPool -= need;
+  need = marginBytes;
+  fromFree = (need < freePool) ? need : freePool;
+  freePool -= fromFree;
+  need -= fromFree;
+  return need <= oldPool;
+}
+
+// Plus gros /history.json admissible, `.tmp` de rotation du journal present ou
+// non — regime HISTORIQUE (64 Ko, remove-avant-ecriture, credit de l'ancien).
+// `growthBytes` = ce que le fichier vient de GAGNER (un point RAW ~ 90 o).
+static size_t maxAdmissibleJsonLegacyCredit(size_t partitionBytes, size_t tmpBytes,
+                                            size_t growthBytes) {
   const size_t horsHisto = (2 + blocksFor(8192) + (tmpBytes ? blocksFor(tmpBytes) : 0)) * 4096;
   size_t best = 0;
   for (size_t json = growthBytes; json <= partitionBytes; json += 1) {
     const size_t occupe = horsHisto + blocksFor(json) * 4096;
     if (occupe > partitionBytes) break;
     const size_t freeBytes = partitionBytes - occupe;
-    if (historySaveAdmit(freeBytes, json - growthBytes, json,
-                         kHistorySaveSpaceMarginBytes)) {
+    if (historySaveAdmitLegacyCredit(freeBytes, json - growthBytes, json,
+                                     kHistorySaveSpaceMarginBytes)) {
+      best = json;
+    }
+  }
+  return best;
+}
+
+// Plus gros /history.json admissible — regime ACTUEL (feature-131, .tmp +
+// rename) : l'ancien ET le nouveau fichier occupent CHACUN un bloc-arrondi de
+// `json` pendant toute l'ecriture (coexistence, AUCUN credit).
+static size_t maxAdmissibleJsonCoexistence(size_t partitionBytes, size_t tmpBytes) {
+  const size_t horsHisto = (2 + blocksFor(8192) + (tmpBytes ? blocksFor(tmpBytes) : 0)) * 4096;
+  size_t best = 0;
+  for (size_t json = 1; json <= partitionBytes; json += 1) {
+    const size_t occupe = horsHisto + 2 * blocksFor(json) * 4096;
+    if (occupe > partitionBytes) break;
+    const size_t freeBytes = partitionBytes - occupe;
+    if (historySaveAdmit(freeBytes, json, kHistorySaveSpaceMarginBytes)) {
       best = json;
     }
   }
@@ -732,11 +776,13 @@ void test_budget_le_tmp_orphelin_coute_exactement_deux_blocs(void) {
 }
 
 void test_budget_64Ko_le_tmp_orphelin_etait_la_difference(void) {
-  // Les chiffres HISTORIQUES qui ont motive la spec (partition de 64 Ko).
+  // Les chiffres HISTORIQUES qui ont motive la spec (partition de 64 Ko,
+  // regime remove-avant-ecriture ADR-0033 — reconstitue localement, feature-131
+  // a retire cette semantique de historySaveAdmit()).
   const size_t p64 = 65536;
   const size_t tmp = rotateKeepBytesFromSource();
-  const size_t sansTmp = maxAdmissibleJson(p64, 0, 90);
-  const size_t avecTmp = maxAdmissibleJson(p64, tmp, 90);
+  const size_t sansTmp = maxAdmissibleJsonLegacyCredit(p64, 0, 90);
+  const size_t avecTmp = maxAdmissibleJsonLegacyCredit(p64, tmp, 90);
   char msg[256];
   snprintf(msg, sizeof(msg),
            "64 Ko : /history.json admissible au plus a %zu o sans .tmp, %zu o "
@@ -761,10 +807,10 @@ void test_budget_64Ko_la_bande_perdue_contenait_le_fichier_reel(void) {
   for (size_t json = 20000; json <= 31000; json += 89) {
     const size_t occA = horsHistoAvec + blocksFor(json) * 4096;
     const bool admisA = (occA <= p64) &&
-        historySaveAdmit(p64 - occA, json - 90, json, kHistorySaveSpaceMarginBytes);
+        historySaveAdmitLegacyCredit(p64 - occA, json - 90, json, kHistorySaveSpaceMarginBytes);
     const size_t occS = horsHistoSans + blocksFor(json) * 4096;
     const bool admisS = (occS <= p64) &&
-        historySaveAdmit(p64 - occS, json - 90, json, kHistorySaveSpaceMarginBytes);
+        historySaveAdmitLegacyCredit(p64 - occS, json - 90, json, kHistorySaveSpaceMarginBytes);
     if (!admisA) ++refusesAvecTmp;
     if (!admisS) ++refusesSansTmp;
   }
@@ -788,20 +834,26 @@ void test_budget_v5_la_consequence_est_dissoute_pas_la_cause(void) {
   const size_t p = historyPartitionBytesFromSource();
   TEST_ASSERT_TRUE_MESSAGE(p >= 262144, "Partition history < 256 Ko : verdict a refaire.");
   const size_t tmp = rotateKeepBytesFromSource();
+  // feature-131 : regime REEL depuis ce lot — coexistence ancien+nouveau
+  // (.tmp+rename), AUCUN credit. L'ancien /history.json ET le .tmp du nouveau
+  // occupent CHACUN un bloc-arrondi de `json` pendant toute l'ecriture — c'est
+  // STRICTEMENT PLUS exigeant que le regime credite d'avant ce lot, et le
+  // verdict « consequence dissoute » doit tenir MEME sous cette exigence accrue.
   const size_t horsHisto = (2 + blocksFor(8192) + blocksFor(tmp)) * 4096;
   for (size_t json = 20000; json <= 31000; json += 89) {
-    const size_t occ = horsHisto + blocksFor(json) * 4096;
+    const size_t occ = horsHisto + 2 * blocksFor(json) * 4096;
     char msg[192];
     snprintf(msg, sizeof(msg),
-             "Sous v5 (%zu o), /history.json de %zu o refuse malgre un .tmp "
-             "orphelin : la consequence budgetaire ne serait PAS dissoute.", p, json);
+             "Sous v5 (%zu o) avec coexistence ancien+nouveau (feature-131), "
+             "/history.json de %zu o refuse malgre un .tmp orphelin : la "
+             "consequence budgetaire ne serait PAS dissoute.", p, json);
     TEST_ASSERT_TRUE_MESSAGE(occ <= p, msg);
     TEST_ASSERT_TRUE_MESSAGE(
-        historySaveAdmit(p - occ, json - 90, json, kHistorySaveSpaceMarginBytes), msg);
+        historySaveAdmit(p - occ, json, kHistorySaveSpaceMarginBytes), msg);
   }
   // Marge restante : de quoi encaisser bien plus que les 8 192 o du .tmp.
-  const size_t sansTmp = maxAdmissibleJson(p, 0, 90);
-  const size_t avecTmp = maxAdmissibleJson(p, tmp, 90);
+  const size_t sansTmp = maxAdmissibleJsonCoexistence(p, 0);
+  const size_t avecTmp = maxAdmissibleJsonCoexistence(p, tmp);
   char msg[256];
   snprintf(msg, sizeof(msg),
            "v5 (256 Ko) : /history.json admissible jusqu'a %zu o sans .tmp et "

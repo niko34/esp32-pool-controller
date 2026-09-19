@@ -32,10 +32,18 @@
  *
  * À passer quand la décision a déjà été prise, sur une mesure fraîche, à un
  * point où l'opération pouvait encore NE RIEN FAIRE — typiquement la tête de
- * `HistoryManager::saveToFile()` (l'opération n'est pas atomique : le `remove()`
- * précède l'`open("w")`, une garde sur l'ouverture échangerait l'abort() contre
- * la DESTRUCTION du fichier d'historique) et l'entrée de `Logger::flushToDisk()`
- * (une mesure pour 7 ouvertures, jamais sept). Aucune mesure n'est alors prise.
+ * `HistoryManager::saveToFile()` et l'entrée de `Logger::flushToDisk()` (une
+ * mesure pour 7 ouvertures, jamais sept). Aucune mesure n'est alors prise.
+ *
+ * ⚠️ `saveToFile()` (feature-131, v2.53.0) : la garde va en tête, AVANT toute
+ * ouverture, parce que l'écriture est ATOMIQUE mais PAS instantanée. Le
+ * `.tmp` est écrit intégralement PENDANT que l'ancien `/history.json`
+ * COEXISTE encore sur la partition (rename final seulement à la toute fin,
+ * cf. history.cpp) : une garde placée à l'ouverture du `.tmp` reviendrait au
+ * même endroit, ce n'est qu'une mesure de moins. Ce n'est PLUS parce qu'un
+ * `remove()` précéderait l'`open("w")` — ce couple a disparu avec
+ * feature-131 ; c'est désormais la fenêtre de coexistence .tmp/ancien qui
+ * motive une décision prise une fois, avant tout effet de bord.
  */
 constexpr uint32_t kFsGuardAlreadyAdmitted = 0;
 
