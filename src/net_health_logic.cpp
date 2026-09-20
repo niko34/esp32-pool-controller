@@ -44,3 +44,33 @@ NetHealthDecision evaluateNetHealth(const NetHealthInputs& in) {
   // 6. Réseau sain (ou soft recover déjà tenté, en attente du seuil hard).
   return NetHealthDecision::Continue;
 }
+
+// =============================================================================
+// Réarmement du watchdog de connectivité — implémentation PURE (bug-134)
+// =============================================================================
+NetRearmOutcome evaluateNetRearm(const NetRearmInputs& in) {
+  const bool isExternalProof =
+      (in.sign == NetLifeSign::IcmpEcho || in.sign == NetLifeSign::AppTraffic);
+
+  if (isExternalProof) {
+    // Preuve EXTERNE : confiance totale revalidée, réarme sans limite et remet
+    // le crédit d'auto-réarmement à 0 (C2).
+    return NetRearmOutcome{true, 0};
+  }
+
+  // Preuve AUTO-PRODUITE (IpAcquired, ProbeStarted) : passe TOUJOURS par le
+  // crédit (C1), qu'elle qu'en soit la nature — c'est ce qui ferme la boucle B
+  // (ProbeStarted réarmait jusqu'ici sans condition).
+  if (in.selfRearmCount < in.maxSelfRearms) {
+    return NetRearmOutcome{true, (uint8_t)(in.selfRearmCount + 1)};
+  }
+
+  // Crédit épuisé : pas de réarmement, l'horloge poursuit sa course vers le
+  // reboot — c'est le comportement voulu quand la passerelle est réellement
+  // injoignable malgré des tentatives de récupération répétées.
+  return NetRearmOutcome{false, in.selfRearmCount};
+}
+
+bool netProbeSeemsDead(uint32_t msSinceLastEcho, uint32_t silenceMs) {
+  return msSinceLastEcho >= silenceMs;
+}

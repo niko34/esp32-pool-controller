@@ -29,6 +29,12 @@
 // Fonctions externes déclarées dans main.cpp
 extern void resetWiFiSettings();
 extern void applyTimeConfig();
+// bug-134 : diagnostic du watchdog de connectivité, exposé par /get-system-info.
+extern uint32_t netIcmpEchoCountGet();
+extern uint32_t netMsSinceLastEchoGet();
+extern uint32_t netMsSinceNetOkGet();
+extern uint8_t  netSelfRearmCountGet();
+extern bool     netProbeAliveGet();
 
 // Contexte pour les buffers de configuration (partagé avec web_server)
 static std::map<AsyncWebServerRequest*, std::vector<uint8_t>>* g_configBuffers = nullptr;
@@ -1658,6 +1664,18 @@ static void handleGetSystemInfo(AsyncWebServerRequest* request) {
   doc["wifi_rssi"] = WiFi.RSSI();
   doc["wifi_ip"] = WiFi.localIP().toString();
   doc["wifi_mac"] = WiFi.macAddress();
+
+  // bug-134 : diagnostic du watchdog de connectivité — la sonde ICMP ne
+  // journalisait rien tant qu'aucune alerte ne se déclenchait (angle mort qui a
+  // rendu le diagnostic de l'incident du 19/09 déductif plutôt que factuel).
+  // Cinq lectures d'atomiques/volatile : ni allocation, ni parcours de tas.
+  // Ajout PUREMENT ADDITIF. Pas de champ WebSocket ni MQTT associé (spec).
+  JsonObject net = doc["net"].to<JsonObject>();
+  net["icmpEchoes"] = netIcmpEchoCountGet();
+  net["msSinceEcho"] = netMsSinceLastEchoGet();
+  net["msSinceNetOk"] = netMsSinceNetOkGet();
+  net["selfRearms"] = netSelfRearmCountGet();
+  net["probeAlive"] = netProbeAliveGet();
 
   // Uptime
   unsigned long uptime = millis() / kMillisToSeconds;

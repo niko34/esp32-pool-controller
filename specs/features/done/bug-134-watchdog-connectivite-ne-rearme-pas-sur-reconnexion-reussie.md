@@ -4,10 +4,10 @@
 - **ID** : bug-134
 - **Slug** : watchdog-connectivite-ne-rearme-pas-sur-reconnexion-reussie
 - **Type** : bug
-- **Statut** : todo
+- **Statut** : doing — implémentation + docs livrées, revue `code-reviewer`/`test-engineer` en cours
 - **Priorité** : haute
-- **Version cible** : 2.53.1
-- **Dernière mise à jour** : 2026-09-19
+- **Version cible** : 2.53.1 (`src/version.h` encore à 2.53.0 — bump non fait dans ce tour, cf. Notes d'implémentation)
+- **Dernière mise à jour** : 2026-09-20 (doc-writer : ADR-0084, system-health.md, API.md, CHANGELOG.md, ancres `main.cpp` recomptées)
 - **Spec(s) liée(s)** : feature-133 (anomalie `minFen` relevée au même incident) · ADR-0053 (config d'usine ≠ config vivante, même famille de piège : juger sur un signal qu'on n'observe pas)
 
 ## Domaines touchés
@@ -25,7 +25,7 @@
 ## Agents requis
 - [x] spec-reader
 - [x] architect
-- [ ] pool-chemistry — *à trancher par l'architecte* : aucun code de dosage n'est touché, mais le correctif modifie la probabilité d'entrée en mode maintenance, qui coupe le dosage. Voir §Sécurité chimique.
+- [x] **pool-chemistry — REQUIS** (tranché le 2026-09-20, plus « à décider ») : aucun code de `pump_controller` n'est touché, mais le correctif modifie **directement la fréquence d'entrée en mode maintenance** (`kAutoHealMaxReboots = 3`, `constants.h:285`, budget partagé avec le watchdog heap), lequel **coupe le dosage**. Changer la probabilité d'un chemin qui arrête l'injection relève du gate.
 - [ ] ux-ui-designer
 - [x] embedded-developer
 - [ ] web-ui-developer
@@ -113,6 +113,13 @@ sources :
 | WebSocket | `ws_manager.cpp:186` et `:189` | dépend d'un client connecté |
 | Requête HTTP `/data` | `web_routes_data.cpp:49` | dépend d'un client |
 | NTP | `main.cpp:829` | ponctuel |
+| **Démarrage réussi de la sonde** | **`main.cpp:1007`** | **absent de la rédaction initiale — relevé le 2026-09-20** |
+
+⚠️ **Cette sixième source change la lecture du correctif A2.** `ensureNetworkProbe()`
+réarme déjà `lastNetworkOkMs` à chaque (re)démarrage réussi de la sonde. Donc si
+A2 force une recréation **inconditionnelle** après toute récupération soft, ce
+point devient de facto une voie de réarmement supplémentaire — un bonus gratuit
+du correctif, mais qui doit être **voulu et documenté**, pas subi. À traiter en C1.
 
 ### Les deux défauts
 
@@ -125,7 +132,7 @@ réponse reçue du routeur.
 
 **Défaut n°2 — la sonde ICMP n'est jamais recréée.** `ensureNetworkProbe()`
 (`src/main.cpp:971-1015`) est idempotente **par égalité de l'adresse de
-passerelle** (`main.cpp:983`). Après le rebond WiFi, la passerelle est la même,
+passerelle** (`main.cpp:975`). Après le rebond WiFi, la passerelle est la même,
 donc la fonction considère qu'il n'y a rien à faire et ne recrée pas la session
 de sonde. Si celle-ci était morte avant le rebond — ce que le journal suggère,
 puisque l'horloge s'est figée une minute avant la coupure MQTT — elle le reste
@@ -208,15 +215,29 @@ qui a rendu ce diagnostic déductif plutôt que factuel.
 - `CHANGELOG.md` — comportement observable modifié
 
 ## Livrables — check-list
-- [ ] A1 — `notifyNetworkActivity()` appelée sur `ARDUINO_EVENT_WIFI_STA_GOT_IP`
-- [ ] A2 — Recréation inconditionnelle de la sonde ICMP après toute récupération soft, sans fuite de session
-- [ ] A3 — Observabilité de la santé de la sonde (changement d'état tracé, ou compteur exposé) sans inonder le journal
-- [ ] A4 — Arbitrage écrit : un broker MQTT en panne, seul, ne doit pas mener au reboot si la passerelle répond
-- [ ] D1 — Tests natifs de `evaluateNetHealth()` couvrant la séquence réelle du 19/09 (silence primaire → soft recover réussi → silence prolongé)
-- [ ] D2 — Validation par **mutation** : retirer le réarmement sur `GOT_IP` doit tuer un test ; rendre la recréation de sonde à nouveau conditionnelle doit en tuer un autre
-- [ ] C1 — `docs/subsystems/` mis à jour (quorum, sources de réarmement, observabilité)
-- [ ] C2 — `CHANGELOG.md`
-- [ ] C3 — ADR si l'arbitrage A4 verrouille un choix
+- [x] A1 — `notifyNetworkActivity()` appelée sur `ARDUINO_EVENT_WIFI_STA_GOT_IP`
+      (via `notifyNetworkLifeSign(NetLifeSign::IpAcquired)`, `main.cpp:706` — préférée à
+      `notifyNetworkActivity()` brute pour passer par le crédit plafonné, cf. A2/A4)
+- [x] A2 — Recréation forcée de la sonde ICMP après toute récupération soft **et** sur silence
+      confirmé de la sonde elle-même (`kNetworkProbeSilenceMs = 90 s`), sans fuite de session
+      (`ensureNetworkProbe(force)` : stop + delete avant new dans les deux branches)
+- [x] A3 — Observabilité de la santé de la sonde : trace sur transition (WARN mort / INFO
+      rétablie, pattern edge) + 5 champs additifs `/get-system-info` (bloc `net`)
+- [x] A4 — Arbitrage écrit : un broker MQTT en panne seul ne mène pas au reboot tant que
+      l'écho ICMP passerelle (preuve externe, indépendante de MQTT) continue de réarmer —
+      arbitrage documenté dans [ADR-0084](../../docs/adr/0084-ce-qui-prouve-qu-un-reseau-est-vivant.md)
+- [x] D1 — Le défaut n'était pas dans `evaluateNetHealth()` mais dans la coquille impure :
+      extraction de `evaluateNetRearm()` (+ `netProbeSeemsDead()`) comme prédit par la note
+      ci-dessous, désormais couverte nativement. **Mesuré le 2026-09-20** :
+      `test/test_native_net_health/test_net_health.cpp` = **42 cas** (25 préexistants +
+      17 neufs pour `evaluateNetRearm()`/`netProbeSeemsDead()`)
+- [x] D2 — Validation par **mutation** : boucle A (réarmer `GOT_IP` sans passer par le
+      crédit) et boucle B (recréation de sonde inconditionnelle) tuent chacune un test dédié
+- [x] C1 — `docs/subsystems/system-health.md` mis à jour (six sources de réarmement + leur
+      classe, mécanisme de crédit, recréation sur silence de sonde, champs `net`)
+- [x] C2 — `CHANGELOG.md` (bloc « Ce qui change pour vous » + Firmware/Documentation, sous
+      l'entrée `[Unreleased]` visant 2.53.1)
+- [x] C3 — ADR-0084 créé (amende ADR-0030, qui reste Accepté)
 
 ## ADR attendu ?
 - **Probable** : oui
@@ -237,17 +258,23 @@ qui a rendu ce diagnostic déductif plutôt que factuel.
   quand le reboot est **légitime**.
 
 ### Documentation à produire / mettre à jour
-- `docs/subsystems/<réseau/santé>.md` — quorum, sources de réarmement, angle mort
+- **`docs/subsystems/system-health.md`** (cible réelle, relevée le 2026-09-20 — il
+  n'existe pas de fichier « réseau » dédié) : quorum, les **six** sources de
+  réarmement, angle mort d'observabilité. ⚠️ Ce fichier porte déjà des **ancres de
+  ligne périmées** (`main.cpp:673`, `:666`) — à corriger dans le même lot.
+- `docs/adr/0030-watchdog-connectivite.md` — si l'arbitrage A4 modifie la décision existante.
 - `CHANGELOG.md` — sous 2.53.1
 - `docs/adr/NNNN-*.md` — si A4 tranche un arbitrage
 
 ## Critères d'acceptation
-- [ ] Quand le WiFi se reconnecte et obtient une IP, le compteur de stall est réarmé — vérifiable dans le journal
-- [ ] Quand le broker MQTT est éteint **et que la passerelle répond**, le contrôleur **ne redémarre pas**, même après 10 min
-- [ ] Quand la passerelle est réellement injoignable, le reboot fail-safe a **toujours** lieu (non-régression du watchdog)
-- [ ] La mort de la sonde ICMP devient visible dans le journal ou un compteur
-- [ ] Les pompes sont toujours arrêtées avant tout reboot fail-safe
-- [ ] `pio run -e esp32dev_core3` sans nouveau warning ; `pio test -e native` vert, zéro régression
+- [x] Quand le WiFi se reconnecte et obtient une IP, le compteur de stall est réarmé — vérifiable dans le journal (log « WiFi IP obtenue » + réarmement plafonné consommant le crédit)
+- [x] Quand le broker MQTT est éteint **et que la passerelle répond**, le contrôleur **ne redémarre pas**, même après 10 min (l'écho ICMP, preuve externe, continue de réarmer sans limite)
+- [x] Quand la passerelle est réellement injoignable, le reboot fail-safe a **toujours** lieu (non-régression du watchdog) — garanti par l'épuisement du crédit (`kNetworkSelfRearmMax = 2`) en l'absence de toute preuve externe, couvert nativement
+- [x] La mort de la sonde ICMP devient visible dans le journal ou un compteur (WARN/INFO transition + `net.msSinceEcho`/`net.probeAlive`)
+- [x] Les pompes sont toujours arrêtées avant tout reboot fail-safe (séquence `performFailSafeRestart()` inchangée, `PumpController.stopAll()` en étape 1)
+- [x] `pio run -e esp32dev_core3` sans nouveau warning ; `pio test -e native` vert, zéro régression — **vérifié en exécution seule le 2026-09-20** : SUCCESS 0 warning, **53 suites / 1 941 cas** (`test_native_net_health` 25 → 42 cas), 4 scripts d'hygiène verts
+      — **en cours de revue par `code-reviewer`/`test-engineer` au moment de cette mise à jour
+      documentaire** ; à confirmer avant clôture et déplacement vers `done/`
 
 ## Plan de test manuel
 1. **Broker seul en panne** : arrêter le conteneur MQTT 15 min, passerelle intacte.
@@ -285,3 +312,49 @@ opaque.
 - Les seuils `kNetworkStallSoftMs` / `kNetworkStallRebootMs` eux-mêmes : les
   toucher masquerait le défaut de réarmement au lieu de le corriger.
 - Le mode maintenance et `kAutoHealMaxReboots` : leur révision est un sujet à part.
+
+## Notes d'implémentation (doc-writer, 2026-09-20)
+
+Documentation livrée sans toucher à `src/` ni `test/` (revue `code-reviewer`
+en cours au moment de ce tour) :
+
+- `docs/subsystems/system-health.md` — nouvelle section « Réarmement plafonné
+  à crédit — six sources et leur classe » + « Observabilité de la sonde —
+  silence et recréation forcée », table des constantes complétée
+  (`kNetworkSelfRearmMax`, `kNetworkProbeSilenceMs`), 12 ancres `main.cpp:NNN`
+  périmées **recomptées une par une** sur HEAD (aucune recopiée depuis la
+  spec).
+- `docs/adr/0084-ce-qui-prouve-qu-un-reseau-est-vivant.md` (nouveau) — amende
+  [ADR-0030](../../docs/adr/0030-watchdog-connectivite.md), qui reste
+  **Accepté et non modifié** (immuabilité respectée : le renvoi croisé
+  0030→0084 est porté par `docs/subsystems/system-health.md` et
+  `docs/adr/README.md`, pas par une édition du fichier 0030 lui-même — l'ADR
+  n'autorise que la mention `Superseded by`, ce qui ne s'applique pas ici).
+- `docs/API.md` — bloc `net` de `/get-system-info`, sans chiffre de budget
+  JSON inventé (aucune mesure `measureJson()` disponible ce tour, ADR-0073).
+- `CHANGELOG.md` — ajouté sous l'entrée `[Unreleased]` existante (feature-097
+  y est déjà, même cible 2.53.1) plutôt que sous un nouvel en-tête `[2.53.1]`,
+  puisque `src/version.h` porte encore `2.53.0`.
+
+**Deux limites honnêtes à ne pas perdre** :
+
+1. Le critère « passerelle injoignable ⇒ reboot toujours » est **plus faible
+   qu'il n'y paraît** : un client HTTP qui continue de solliciter `/data`
+   (ou tout trafic applicatif) réarme **sans limite** (preuve externe
+   `AppTraffic`), donc le reboot peut en théorie être différé indéfiniment
+   tant qu'un client reste actif alors même que la passerelle ne répond
+   plus. **Ce n'est pas une régression de ce lot** — `AppTraffic` réarme
+   sans limite depuis [ADR-0030](../../docs/adr/0030-watchdog-connectivite.md)
+   — mais la garantie ne doit pas être crue plus forte qu'elle ne l'est.
+   Consigné dans ADR-0084 et `system-health.md` (§ Cas limites).
+2. **Spec de suivi à ouvrir** : `DosingState` (`src/pump_controller.h:20-32`)
+   reste entièrement en RAM (`usedMs`, `windowStart`, `lastStartTime`,
+   `cyclesToday`). Ce lot réduit la **fréquence** des reboots inutiles, il ne
+   supprime pas l'exposition résiduelle du dosage à un reboot légitime
+   rapproché (heap + réseau, budget partagé) : persister `usedMs` et la
+   fenêtre horaire reste hors périmètre ici.
+
+**Reste à faire avant clôture** (hors périmètre doc-writer) : confirmation
+`pio run -e esp32dev_core3` / `pio test -e native` par `test-engineer`, GO de
+`code-reviewer`, bump `src/version.h` vers `2.53.1`, puis déplacement de cette
+spec vers `specs/features/done/`.

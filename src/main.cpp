@@ -22,6 +22,7 @@ extern "C" bool esp_psram_check_ptr_addr(const void* p);
 #endif
 #include <Preferences.h>
 #include <nvs_flash.h>
+#include <atomic>  // bug-134 : netSelfRearmCount / netIcmpEchoCount, incrémentés depuis plusieurs tâches
 
 #include "config.h"
 #include "constants.h"
@@ -105,9 +106,46 @@ static uint32_t lastHeapMaxAllocSample = UINT32_MAX;
 volatile unsigned long lastNetworkOkMs = 0;
 // Session ICMP persistante (esp_ping) et passerelle sondée. UNE seule session infinie
 // (count=0, cadence interne kNetworkProbeIntervalMs) → aucune fuite si la pile lwIP se
-// fige. Recréée uniquement si la passerelle change (roaming subnet). nullptr = absente.
+// fige. Recréée uniquement si la passerelle change (roaming subnet), ou de force sur
+// demande du watchdog (bug-134, ensureNetworkProbe(force)). nullptr = absente.
+// ÉCRIT exclusivement par loopTask (jamais d'autre tâche) : c'est ce qui rend
+// la chaîne stop+delete+new sûre sans mutex. LU aussi depuis async_tcp en
+// diagnostic (netProbeAliveGet(), `/get-system-info`) — lecture 32 bits alignée
+// d'un simple booléen de présence, sans risque, mais l'invariant d'écriture
+// exclusive ne s'étend pas à la lecture.
 static esp_ping_handle_t netPingHandle = nullptr;
 static IPAddress netProbeGateway;
+
+// ===== Watchdog de connectivité — réarmement plafonné (bug-134) =====
+// Crédit de réarmements AUTO-PRODUITS (IP DHCP obtenue, sonde ICMP relancée)
+// consommé par evaluateNetRearm() (src/net_health_logic.h) via la porte unique
+// notifyNetworkLifeSign(). std::atomic et NON volatile : lu/modifié/écrit
+// (load → calcul pur → store, PAS de read-modify-write atomique — cf. revue)
+// depuis plusieurs tâches (thread esp_ping, tâche événements WiFi, async_tcp,
+// mqttTask, loopTask). Une course entre deux écrivains AUTO-PRODUITS (au plus
+// deux existent : tâche événements WiFi pour IpAcquired, loopTask pour
+// ProbeStarted) peut faire perdre UN incrément — les deux liraient alors la
+// même valeur et s'arrêteraient au même plafond. Effet BORNÉ et dans le sens
+// SÛR : au plus un réarmement auto-produit EN TROP, donc un report du reboot
+// d'environ une fenêtre de silence — jamais un de moins, jamais de boucle
+// rouverte. memory_order_relaxed : ce compteur ne publie aucune autre donnée,
+// seul son propre ordre d'écriture compte.
+static std::atomic<uint8_t> netSelfRearmCount{0};
+// Dernier écho ICMP reçu (millis), indépendant de lastNetworkOkMs (que d'autres
+// signaux réarment aussi) : sert à détecter la mort de la sonde elle-même (A3).
+// volatile : écrit par le thread esp_ping, lu par loopTask.
+volatile unsigned long lastIcmpEchoMs = 0;
+// Nombre total d'échos ICMP reçus depuis le boot — observabilité (A3) et champ
+// de diagnostic `/get-system-info`. std::atomic : incrémenté hors loopTask.
+static std::atomic<uint32_t> netIcmpEchoCount{0};
+// Demande de recréation FORCÉE de la sonde ICMP (bug-134), posée par le
+// watchdog (soft recover, ou silence de sonde confirmé) et consommée au tick
+// SUIVANT de checkSystemHealth(). Accès EXCLUSIF loopTask (posé et lu depuis le
+// même contexte, jamais depuis le handler WiFi) : pas d'atomique nécessaire.
+// ⚠️ Ne jamais appeler ensureNetworkProbe(true) directement depuis le handler
+// WiFi : au moment du SoftRecover, WiFi vient d'être déconnecté et la fonction
+// sortirait au premier `if (!WiFi.isConnected())`.
+static bool netProbeRestartRequested = false;
 
 // Déclaration des fonctions
 bool setupWiFi();
@@ -117,12 +155,13 @@ void checkSystemHealth();
 void checkHeapHealth();
 void onNtpTimeSync();
 void notifyNetworkActivity();
+void notifyNetworkLifeSign(NetLifeSign sign);
 void reannounceMdns(const char* reason);
 void initAutoHealRtcState();
 void performFailSafeRestart(const char* reason, const char* alertType, const String& alertMsg);
 void performAutoHealRestart(uint32_t maxAllocHeap);
 void enterMaintenanceMode();
-void ensureNetworkProbe();
+void ensureNetworkProbe(bool force = false);
 void handleHeapCorruptionDetected();
 
 void setup() {
@@ -670,6 +709,14 @@ bool setupWiFi() {
         if (newIp != mdnsLastAnnouncedIp) {
           mdnsReannounceRequested = true;
         }
+        // bug-134 (défaut n°1) : une IP obtenue par DHCP est une preuve de vie
+        // L2+L3 irréfutable — mais AUTO-PRODUITE par la récupération elle-même,
+        // donc plafonnée (evaluateNetRearm, NetLifeSign::IpAcquired) pour ne pas
+        // ouvrir la boucle A (GOT_IP → réarme → soft recover → GOT_IP → ...).
+        // Ce handler tourne sur la tâche événements système : UNE écriture 32
+        // bits et un compteur, rien d'autre — pas de log, pas d'allocation, pas
+        // de mutex.
+        notifyNetworkLifeSign(NetLifeSign::IpAcquired);
         break;
       }
       case ARDUINO_EVENT_WIFI_STA_LOST_IP:
@@ -815,12 +862,40 @@ void resetWiFiSettings() {
   systemLogger.info("Factory reset complet - Redémarrage nécessaire");
 }
 
+// Porte UNIQUE de réarmement du watchdog de connectivité (bug-134). Applique
+// evaluateNetRearm() (src/net_health_logic.h) pour distinguer les preuves de
+// vie EXTERNES (IcmpEcho, AppTraffic — réarment sans limite ET remettent le
+// crédit d'auto-réarmement à 0, condition C2) des preuves AUTO-PRODUITES par la
+// récupération elle-même (IpAcquired, ProbeStarted — plafonnées à
+// kNetworkSelfRearmMax, condition C1). Un signe de vie que la récupération
+// fabrique elle-même ne peut pas financer indéfiniment son propre report — sans
+// ce plafond, deux boucles infinies ont été démontrées (spec bug-134). Appelable
+// depuis n'importe quelle tâche : écriture 32 bits atomique sur lastNetworkOkMs,
+// netSelfRearmCount est un std::atomic<uint8_t> (relaxed).
+// ⚠️ Cette porte n'est PAS absolument unique : checkSystemHealth() écrit aussi
+// directement `lastNetworkOkMs = millis()` quand le WiFi est absent (gel
+// préexistant de l'horloge, hors du champ de bug-134). C'est SANS RISQUE — cette
+// branche ne remet jamais `netSelfRearmCount` à 0, et evaluateNetHealth()
+// renvoie Continue tant que `!wifiAssociated` — mais le lecteur suivant doit le
+// savoir plutôt que le déduire.
+void notifyNetworkLifeSign(NetLifeSign sign) {
+  NetRearmInputs in;
+  in.sign = sign;
+  in.selfRearmCount = netSelfRearmCount.load(std::memory_order_relaxed);
+  in.maxSelfRearms = kNetworkSelfRearmMax;
+  const NetRearmOutcome out = evaluateNetRearm(in);
+  netSelfRearmCount.store(out.newSelfRearmCount, std::memory_order_relaxed);
+  if (out.rearmClock) {
+    lastNetworkOkMs = millis();
+  }
+}
+
 // Point d'entrée public (v2.9.2) : signale une activité réseau réussie depuis
-// n'importe quel module (MQTT ACK, requête HTTP/WS servie, resync NTP). Rafraîchit
-// l'horloge de stall du watchdog de connectivité pour ne rebooter que sur silence
-// réseau TOTAL. Écriture 32 bits atomique (voir lastNetworkOkMs) : sûr multi-tâches.
+// n'importe quel module (MQTT ACK, requête HTTP/WS servie, resync NTP). Preuve
+// EXTERNE (AppTraffic) : réarme sans limite et remet le crédit d'auto-réarmement
+// à 0 via notifyNetworkLifeSign() (bug-134). Signature INCHANGÉE.
 void notifyNetworkActivity() {
-  lastNetworkOkMs = millis();
+  notifyNetworkLifeSign(NetLifeSign::AppTraffic);
 }
 
 // Callback appelé quand NTP se synchronise
@@ -959,20 +1034,26 @@ void performAutoHealRestart(uint32_t maxAllocHeap) {
 
 // Callback ICMP (v2.9.2) : invoqué par le thread interne esp_ping à chaque écho reçu
 // de la passerelle → signe de vie réseau PRIMAIRE, indépendant de MQTT. Exécuté hors
-// loopTask : ne fait QUE poser l'horodatage (accès 32 bits atomique).
+// loopTask : ne fait QUE poser l'horodatage, incrémenter le compteur d'échos (A3) et
+// réarmer via la porte unique (preuve EXTERNE, bug-134) — rien d'autre.
 static void onNetPingSuccess(esp_ping_handle_t /*hdl*/, void* /*args*/) {
-  lastNetworkOkMs = millis();
+  lastIcmpEchoMs = millis();
+  netIcmpEchoCount.fetch_add(1, std::memory_order_relaxed);
+  notifyNetworkLifeSign(NetLifeSign::IcmpEcho);
 }
 
 // (Re)démarre la sonde ICMP persistante vers la passerelle (v2.9.2). Idempotent :
-// ne fait rien si la session existe déjà pour la passerelle courante. Recrée proprement
-// (stop + delete) si la passerelle a changé (roaming subnet) pour éviter toute fuite.
+// ne fait rien si la session existe déjà pour la passerelle courante — SAUF si
+// `force` est vrai (bug-134 A2 : après un soft recover, ou un silence de sonde
+// confirmé, la coquille lève cette garde pour réparer le signal primaire, même
+// si la passerelle n'a pas changé). Recrée proprement (stop + delete) dans les
+// deux cas, pour éviter toute fuite de session esp_ping.
 // À appeler UNIQUEMENT depuis checkSystemHealth() (contexte loopTask), WiFi associé.
-void ensureNetworkProbe() {
+void ensureNetworkProbe(bool force) {
   if (!WiFi.isConnected()) return;
   IPAddress gw = WiFi.gatewayIP();
   if (gw == IPAddress((uint32_t)0)) return;  // passerelle pas encore connue (DHCP)
-  if (netPingHandle != nullptr && gw == netProbeGateway) return;  // déjà en place
+  if (!force && netPingHandle != nullptr && gw == netProbeGateway) return;  // déjà en place
 
   // Passerelle changée ou session absente : on repart d'une session propre.
   if (netPingHandle != nullptr) {
@@ -1002,9 +1083,16 @@ void ensureNetworkProbe() {
   if (esp_ping_new_session(&cfg, &cbs, &netPingHandle) == ESP_OK &&
       esp_ping_start(netPingHandle) == ESP_OK) {
     netProbeGateway = gw;
-    // Réarme l'horloge de stall au démarrage de la sonde pour ne pas compter le temps
-    // écoulé avant son existence.
-    lastNetworkOkMs = millis();
+    // Réarme le témoin de silence de la sonde (A3) pour ne pas la déclarer morte
+    // avant même d'avoir reçu son premier écho après ce (re)démarrage.
+    lastIcmpEchoMs = millis();
+    // bug-134 (C1, condition BLOQUANTE du gate pool-chemistry) : ProbeStarted est
+    // une preuve AUTO-PRODUITE par la récupération elle-même — elle passe donc
+    // TOUJOURS par le crédit plafonné, JAMAIS de réarmement inconditionnel. Sans
+    // cette règle, une passerelle morte mais WiFi associé referme la boucle B :
+    // silence 90s → recréation → réarmement → silence 90s → ... et le compteur
+    // ne dépasse jamais 90s.
+    notifyNetworkLifeSign(NetLifeSign::ProbeStarted);
     probeStartWarnArmed = true;
     systemLogger.info("Sonde ICMP passerelle démarrée vers " + gw.toString());
   } else {
@@ -1017,6 +1105,26 @@ void ensureNetworkProbe() {
       probeStartWarnArmed = false;
     }
   }
+}
+
+// Accesseurs de diagnostic du watchdog de connectivité (bug-134), exposés par
+// `/get-system-info` (src/web_routes_config.cpp). Lectures d'atomiques/volatile
+// UNIQUEMENT : ni allocation, ni log, ni parcours de tas — sûr dans un handler
+// AsyncWebServer.
+uint32_t netIcmpEchoCountGet() {
+  return netIcmpEchoCount.load(std::memory_order_relaxed);
+}
+uint32_t netMsSinceLastEchoGet() {
+  return (uint32_t)(millis() - lastIcmpEchoMs);
+}
+uint32_t netMsSinceNetOkGet() {
+  return (uint32_t)(millis() - lastNetworkOkMs);
+}
+uint8_t netSelfRearmCountGet() {
+  return netSelfRearmCount.load(std::memory_order_relaxed);
+}
+bool netProbeAliveGet() {
+  return netPingHandle != nullptr;
 }
 
 // Bascule en mode maintenance (v2.9.1). Condition pool-chemistry (C2) : après trop
@@ -1367,19 +1475,81 @@ void checkSystemHealth() {
   }
   lastBelowMinFreeHeap = belowMinFreeHeap;
 
-  // ===== Watchdog de connectivité (v2.9.2) =====
+  // ===== Watchdog de connectivité (v2.9.2, réarmement plafonné bug-134) =====
   // La pile lwIP peut se figer (thread tcpip NON surveillé par le WDT) : web/mDNS/ICMP
   // morts alors que loopTask tourne et que le heap est SAIN → ni le WDT ni l'auto-guérison
   // heap ne l'attrapent (gel du 2026-07-15, maxBloc ~37 Ko). Signe de vie PRIMAIRE : une
   // sonde ICMP active vers la passerelle (indépendante de MQTT). Décision au module pur.
   static bool softRecoverAttempted = false;
   if (WiFi.isConnected()) {
-    ensureNetworkProbe();  // (re)démarre la sonde ICMP persistante (idempotent)
+    // bug-134 (A2) : `netProbeRestartRequested` est un DROIT CONSOMMÉ, posé au
+    // tick PRÉCÉDENT (SoftRecover, ou silence de sonde confirmé plus bas) —
+    // jamais posé ici pour un usage immédiat, et jamais forcé depuis le handler
+    // WiFi (WiFi y était encore déconnecté au moment du SoftRecover).
+    ensureNetworkProbe(netProbeRestartRequested);
+    netProbeRestartRequested = false;
   } else {
     // WiFi absent : gel de l'horloge de stall (la perte WiFi est traitée plus bas par la
     // logique de reconnexion/AP secours, pas par ce watchdog) + réarmement du palier soft.
     lastNetworkOkMs = millis();
     softRecoverAttempted = false;
+  }
+
+  // Observabilité de la sonde ICMP (A3) : trace SUR TRANSITION uniquement (comme
+  // lastBelowMinFreeHeap ci-dessus) — jamais une ligne par ping (journal de 8 Ko,
+  // rotation à 6 Ko). netProbeDeclaredDead mémorise l'état précédent. C'est aussi
+  // ici que le silence de sonde (défaut n°2 : passerelle morte, WiFi associé)
+  // demande sa propre recréation forcée, indépendamment d'un éventuel SoftRecover.
+  //
+  // ⚠️ REVUE (bloquant 1) : ensureNetworkProbe() réarme ELLE-MÊME lastIcmpEchoMs
+  // dès qu'elle (re)crée une session (:1073), SANS qu'aucun écho réel ne soit
+  // arrivé. Un simple `!netProbeSeemsDead(...)` retomberait donc à `false` juste
+  // après la recréation forcée ci-dessous, et la latch se lèverait en journalisant
+  // « rétablie » à tort — avec N inchangé — avant de se re-déclarer morte 90 s
+  // plus tard (boucle ~210 s, ~1200 lignes/jour). On mémorise donc le compteur
+  // d'échos AU MOMENT de la déclaration de mort, et on n'annonce « rétablie » que
+  // si ce compteur a RÉELLEMENT progressé depuis — sinon on reste en état
+  // « morte », en silence (une seule paire de lignes par épisode).
+  static bool netProbeDeclaredDead = false;
+  static uint32_t netProbeDeadEchoCount = 0;
+  if (WiFi.isConnected() && netPingHandle != nullptr) {
+    uint32_t msSinceLastEcho = (uint32_t)(millis() - lastIcmpEchoMs);
+    uint32_t currentEchoCount = netIcmpEchoCount.load(std::memory_order_relaxed);
+    bool probeDead = netProbeSeemsDead(msSinceLastEcho, kNetworkProbeSilenceMs);
+    if (probeDead && !netProbeDeclaredDead) {
+      systemLogger.warning("Sonde ICMP muette (" + String(msSinceLastEcho / 1000UL) +
+          "s, " + String(msSinceLastEcho / kNetworkProbeIntervalMs) +
+          " échos manqués) — recréation");
+      netProbeRestartRequested = true;  // consommé au tick suivant (WiFi encore là)
+      netProbeDeclaredDead = true;
+      netProbeDeadEchoCount = currentEchoCount;
+    } else if (netProbeDeclaredDead && currentEchoCount > netProbeDeadEchoCount) {
+      // Preuve RÉELLE : au moins un écho reçu depuis la déclaration de mort
+      // (pas seulement « le silence calculé est redevenu court » — ce que la
+      // recréation elle-même produirait à tort, cf. note ci-dessus).
+      systemLogger.info("Sonde ICMP rétablie (" + String(currentEchoCount) + " échos)");
+      netProbeDeclaredDead = false;
+    }
+  }
+
+  // Observabilité du crédit d'auto-réarmement (bug-134, bloquant 2 de la revue) :
+  // l'épuisement du crédit est l'ÉVÉNEMENT QUI DÉCIDE LE REBOOT — le journal ne
+  // doit pas en rester muet, sous peine de reproduire l'opacité du 19/09.
+  // Tracé ICI (loopTask), PAS depuis notifyNetworkLifeSign() : elle tourne sur
+  // la tâche événements WiFi et le thread esp_ping, et ne doit jamais
+  // journaliser. Deux lignes MAXIMUM par épisode (edge, comme ci-dessus).
+  static uint8_t netSelfRearmCountLastSeen = 0;
+  uint8_t selfRearmCount = netSelfRearmCount.load(std::memory_order_relaxed);
+  if (selfRearmCount != netSelfRearmCountLastSeen) {
+    if (selfRearmCount > 0 && netSelfRearmCountLastSeen == 0) {
+      systemLogger.warning("Watchdog connectivité : crédit auto-réarmement entamé (" +
+          String(selfRearmCount) + "/" + String(kNetworkSelfRearmMax) + ")");
+    }
+    if (selfRearmCount >= kNetworkSelfRearmMax && netSelfRearmCountLastSeen < kNetworkSelfRearmMax) {
+      systemLogger.warning(
+          "Watchdog connectivité : crédit auto-réarmement épuisé — reboot imminent si le silence persiste");
+    }
+    netSelfRearmCountLastSeen = selfRearmCount;
   }
 
   // Garde OTA (v2.9.2) : idem bloc heap — aucun reboot/soft-recover pendant un flash.
@@ -1414,6 +1584,11 @@ void checkSystemHealth() {
       WiFi.disconnect(false);
       WiFi.reconnect();
       softRecoverAttempted = true;
+      // bug-134 (défaut n°2) : répare le signal PRIMAIRE au retour du WiFi — la
+      // sonde peut avoir été morte AVANT ce rebond (passerelle injoignable) et
+      // rester idempotente-par-égalité-de-passerelle sans ce drapeau. Posé ici,
+      // consommé au tick SUIVANT (WiFi encore déconnecté à cet instant précis).
+      netProbeRestartRequested = true;
       mqttManager.publishAlert("network_soft_recover",
           "Pile réseau muette — reconnexion WiFi tentée");
     }

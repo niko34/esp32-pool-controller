@@ -55,6 +55,53 @@
 - `docs/subsystems/sensors.md` : nouveau § sur le signal pH brut à deux
   niveaux et la perturbation de mode commun pH/ORP observée sur ce bassin.
 
+> **Ce qui change pour vous — watchdog réseau (bug-134, cible 2.53.1)** : le
+> contrôleur ne redémarre plus après une simple reconnexion WiFi qui a
+> réellement réussi. Le 19/09, l'appareil avait redémarré alors qu'il venait
+> d'obtenir une adresse IP par DHCP trois minutes plus tôt — le réseau
+> fonctionnait, mais rien ne le signalait au watchdog. Une panne isolée du
+> serveur Home Assistant (MQTT éteint le temps d'une mise à jour), passerelle
+> toujours joignable, continue de ne déclencher aucun redémarrage. Aucun
+> écran ni réglage ne change ; les intégrateurs disposent d'un nouveau bloc
+> de diagnostic réseau dans `/get-system-info`.
+
+### Firmware
+
+- **Watchdog de connectivité (bug-134)** : le réarmement de l'horloge de
+  stall distingue désormais une preuve de vie **externe** (écho ICMP
+  passerelle, trafic applicatif servi — HTTP/WS/MQTT/NTP) d'une preuve
+  **auto-produite** par la récupération elle-même (IP DHCP obtenue, sonde
+  ICMP relancée). Seule la première remet le compteur à zéro sans limite ;
+  la seconde est plafonnée à 2 réarmements consécutifs
+  (`kNetworkSelfRearmMax`), au-delà desquels l'horloge de stall poursuit sa
+  course vers le redémarrage. Ce plafond ferme deux boucles infinies
+  démontrées lors de l'analyse — le correctif naïf (réarmer sur toute
+  preuve de vie) aurait rendu le watchdog définitivement inopérant.
+- **Watchdog de connectivité** : `ARDUINO_EVENT_WIFI_STA_GOT_IP` réarme
+  désormais l'horloge de stall (preuve auto-produite, plafonnée) — jusqu'ici
+  une IP DHCP fraîchement obtenue après une reconnexion n'avait aucun effet.
+- **Watchdog de connectivité** : la sonde ICMP vers la passerelle est
+  recréée dès qu'elle reste muette 90 s (trois échos manqués), quel que soit
+  l'état du WiFi — avant, une sonde morte alors que la passerelle n'avait
+  pas changé ne se réparait jamais.
+- **Diagnostic** : `/get-system-info` gagne un bloc `net` (échos ICMP reçus,
+  délai depuis le dernier écho, délai depuis le dernier réarmement, crédit
+  de réarmement consommé, sonde active) — purement additif, absent avant
+  2.53.1.
+
+### Documentation
+
+- `docs/subsystems/system-health.md` : section « Watchdog de connectivité »
+  enrichie des six sources de réarmement et de leur classe
+  (externe/auto-produite), du mécanisme de recréation de sonde sur silence,
+  et des champs `/get-system-info` associés. Ancres de ligne `main.cpp`
+  périmées corrigées dans le même lot.
+- `docs/adr/0084-ce-qui-prouve-qu-un-reseau-est-vivant.md` (nouveau) :
+  classification des preuves de vie réseau (externe/auto-produite) et crédit
+  de réarmement plafonné — amende [ADR-0030](docs/adr/0030-watchdog-connectivite.md),
+  qui reste Accepté.
+- `docs/API.md` : documentation du bloc `net` de `/get-system-info`.
+
 ---
 
 ## [2.53.0] - 2026-09-19

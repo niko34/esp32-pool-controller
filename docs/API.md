@@ -1348,6 +1348,47 @@ Six champs **purement additifs**, lecture de six atomiques `relaxed` — ni allo
 
 **Compatibilité** : absents d'un firmware ≤ 2.51.x → traiter l'absence comme « information indisponible ».
 
+#### `net` — observabilité du watchdog de connectivité (v2.53.1, bug-134, additif)
+
+Cinq champs **purement additifs**, regroupés dans un objet `net` — lectures
+d'atomiques/`volatile` uniquement, ni allocation, ni parcours de tas. Ils
+décrivent le watchdog de connectivité ([ADR-0030](adr/0030-watchdog-connectivite.md),
+amendé par [ADR-0084](adr/0084-ce-qui-prouve-qu-un-reseau-est-vivant.md)) :
+avant cette version, la sonde ICMP ne journalisait rien tant qu'aucune alerte
+ne se déclenchait, ce qui a rendu le diagnostic de l'incident du 19/09
+déductif plutôt que factuel.
+
+```json
+{
+  "net": {
+    "icmpEchoes": 4231,
+    "msSinceEcho": 8214,
+    "msSinceNetOk": 8214,
+    "selfRearms": 0,
+    "probeAlive": true
+  }
+}
+```
+
+| Champ | Type | Signification |
+|---|---|---|
+| `icmpEchoes` | `uint32` | Nombre total d'échos ICMP reçus de la passerelle depuis le boot |
+| `msSinceEcho` | `uint32` | ms écoulées depuis le dernier écho ICMP reçu — indépendant de `msSinceNetOk` (que d'autres signaux réarment aussi) |
+| `msSinceNetOk` | `uint32` | ms écoulées depuis le dernier réarmement de l'horloge de stall, toutes sources confondues (externes et auto-produites, dans la limite de leur crédit) |
+| `selfRearms` | `uint8` | Crédit de réarmements **auto-produits** actuellement consommé (`kNetworkSelfRearmMax = 2`) — une preuve externe (écho ICMP, trafic applicatif) le remet à 0 |
+| `probeAlive` | booléen | `true` si une session `esp_ping` est actuellement active vers la passerelle |
+
+**Lecture** : `msSinceEcho` proche de `msSinceNetOk` et croissant sans
+retomber signale une sonde qui ne reçoit plus rien — comparer au journal
+(WARN « Sonde ICMP muette… » / INFO « Sonde ICMP rétablie… »). `selfRearms`
+à son plafond signifie que le crédit de confiance accordé à la récupération
+elle-même est épuisé : seule une preuve externe (ou un vrai reboot)
+réarmera la suite. `probeAlive = false` avec WiFi associé signale une sonde
+qui n'a pas encore pu démarrer (passerelle pas encore connue par DHCP).
+
+**Compatibilité** : absent d'un firmware ≤ 2.53.0 → traiter l'absence comme
+« information indisponible ».
+
 #### Paramètre `hf` — planchers mémoire multi-masques (v2.49.0, additif conditionnel)
 
 Le paramètre **`?hf=1`** ajoute un objet **`hf`** à la réponse (feature-122, lot

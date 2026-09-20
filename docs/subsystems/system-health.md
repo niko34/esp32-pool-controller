@@ -2,9 +2,19 @@
 
 - **Fichiers** : [`src/main.cpp`](../../src/main.cpp) (`checkSystemHealth`, `performFailSafeRestart`, `performAutoHealRestart`, `enterMaintenanceMode`, `initAutoHealRtcState`, `ensureNetworkProbe`, `onNetPingSuccess`), [`src/self_heal_logic.h`](../../src/self_heal_logic.h) / [`.cpp`](../../src/self_heal_logic.cpp), [`src/net_health_logic.h`](../../src/net_health_logic.h) / [`.cpp`](../../src/net_health_logic.cpp), [`src/history_guard_logic.h`](../../src/history_guard_logic.h) / [`.cpp`](../../src/history_guard_logic.cpp) (+ coquille dans [`src/history.cpp`](../../src/history.cpp))
 - **Pas de singleton** : logique portée par des fonctions libres de `main.cpp` + trois modules purs `self_heal_logic` (heap), `net_health_logic` (connectivité) et `history_guard_logic` (disjoncteur de boot-loop history).
-- **Décisions architecturales** : [ADR-0029](../adr/0029-auto-guerison-heap.md) (auto-guérison mémoire), [ADR-0030](../adr/0030-watchdog-connectivite.md) (watchdog de connectivité), [ADR-0031](../adr/0031-disjoncteur-bootloop-history.md) (disjoncteur de boot-loop history), [ADR-0037](../adr/0037-postmortem-oom-et-integrite-tas.md) (post-mortem d'allocation RTC + contrôle d'intégrité périodique du tas, v2.18.8), [ADR-0038](../adr/0038-metrique-memoire-allouable-8-bits.md) (**mesure 8 bits = mémoire réellement allouable**, v2.19.0), [ADR-0058](../adr/0058-gardes-heap-metrique-8-bits.md) (**bascule des gardes sur la métrique 8 bits**, v2.33.0), [ADR-0077](../adr/0077-metrique-de-garde-exclut-les-pools-inatteignables.md) (**une métrique de garde exclut les pools qu'un `malloc()` ne peut pas atteindre**, v2.49.0).
+- **Décisions architecturales** : [ADR-0029](../adr/0029-auto-guerison-heap.md) (auto-guérison mémoire), [ADR-0030](../adr/0030-watchdog-connectivite.md) (watchdog de connectivité), [ADR-0031](../adr/0031-disjoncteur-bootloop-history.md) (disjoncteur de boot-loop history), [ADR-0037](../adr/0037-postmortem-oom-et-integrite-tas.md) (post-mortem d'allocation RTC + contrôle d'intégrité périodique du tas, v2.18.8), [ADR-0038](../adr/0038-metrique-memoire-allouable-8-bits.md) (**mesure 8 bits = mémoire réellement allouable**, v2.19.0), [ADR-0058](../adr/0058-gardes-heap-metrique-8-bits.md) (**bascule des gardes sur la métrique 8 bits**, v2.33.0), [ADR-0077](../adr/0077-metrique-de-garde-exclut-les-pools-inatteignables.md) (**une métrique de garde exclut les pools qu'un `malloc()` ne peut pas atteindre**, v2.49.0), [ADR-0084](../adr/0084-ce-qui-prouve-qu-un-reseau-est-vivant.md) (**preuve externe vs auto-produite et crédit de réarmement plafonné**, bug-134, v2.53.1).
 
 > ✅ **v2.33.0 — l'auto-guérison heap et le WARN lisent enfin la métrique 8 bits** ([ADR-0058](../adr/0058-gardes-heap-metrique-8-bits.md), bug-080 lot A). L'ancienne mesure `ESP.getMaxAllocHeap()` (pool `MALLOC_CAP_INTERNAL`, IRAM 32 bits comprise) possède un **plancher infranchissable ~27 636 o** : les gardes calées dessus n'ont **jamais déclenché** — le PANIC du 29/08 et la famine de 9 min du 02/09 (1 466 échecs d'allocation) sont passés sans une seule alerte. `checkHeapHealth()` échantillonne désormais `heapLargestFreeBlock8Bit()`, avec les seuils recalibrés : **auto-guérison à 4 096 o** (`kRestartMaxAllocHeapBytes`), **WARN + flush + cadence rapprochée à 12 288 o** (`kLowHeapWarnBytes`). L'immunité aux creux transitoires (jusqu'à 1 268 o pendant quelques secondes en régime normal) vient du **débounce temporel** — 3 mesures consécutives, cadence 5 s sous le WARN, soit une famine continue ≥ 10-15 s avant restart — pas du niveau du seuil. Les logs disent `maxBloc8=`.
+
+
+> ⚠️ **Aucune ancre par numéro de ligne dans ce document.** Elles ont pourri
+> **trois fois** sur la seule journée du 2026-09-20 : périmées avant bug-134,
+> recomptées sur un arbre intermédiaire pendant le lot, puis décalées de 8 à 14
+> lignes par la ronde de correction qui a suivi. Un renvoi de ligne faux **fait
+> croire à une justification** — c'est le défaut que feature-132 a réparé dans
+> `src/constants.h`, et qui s'est reproduit ici. Les symboles sont donc nommés :
+> un `grep` sur le nom de la fonction les retrouve toujours, et ne périme jamais.
+
 
 ## Rôle
 
@@ -51,8 +61,8 @@ Historique des modes de défaillance « appareil injoignable » (5 traités) : `
 
 Coredump 2026-07-28 (v2.11.0, `bad_alloc` dans un broadcast WS) : le plus gros bloc peut s'effondrer sous ~2 Ko **entre deux ticks de 60 s** — à cadence fixe, le débounce (3 ticks = **~180 s**) ne confirme jamais avant le crash. Correctif ([ADR-0029 §Amendement](../adr/0029-auto-guerison-heap.md#amendement-2026-07-28--échantillonnage-adaptatif-v2111)) :
 
-- Le bloc heap est **extrait** de `checkSystemHealth()` vers `checkHeapHealth()` ([`main.cpp:793`](../../src/main.cpp)) — déplacement à **diff logique nul** (une seule ligne ajoutée : export de l'échantillon `lastHeapMaxAllocSample` ; sentinelle `UINT32_MAX` avant le premier échantillon → cadence normale au boot). `checkHeapHealth()` est la **source unique** de la mesure du plus gros bloc (`heapLargestFreeBlock8Bit()` depuis v2.33.0) et du compteur `consecutiveBelow`.
-- Son timer dans `loop()` ([`main.cpp:329`](../../src/main.cpp)) est cadencé par la fonction **pure** `heapSampleIntervalMs(maxAllocHeap, warnThreshold, normalMs, fastMs)` (`self_heal_logic`, +5 tests natifs) : **60 s** (`kHealthCheckIntervalMs`) si `maxAllocHeap ≥ kLowHeapWarnBytes`, **5 s** (`kHeapCheckFastIntervalMs`) en dessous → le débounce `kAutoHealDebounceChecks` (3 ticks) confirme un heap critique en **~15 s au lieu de ~180 s**.
+- Le bloc heap est **extrait** de `checkSystemHealth()` vers `checkHeapHealth()` ([`src/main.cpp`](../../src/main.cpp)) — déplacement à **diff logique nul** (une seule ligne ajoutée : export de l'échantillon `lastHeapMaxAllocSample` ; sentinelle `UINT32_MAX` avant le premier échantillon → cadence normale au boot). `checkHeapHealth()` est la **source unique** de la mesure du plus gros bloc (`heapLargestFreeBlock8Bit()` depuis v2.33.0) et du compteur `consecutiveBelow`.
+- Son timer dans `loop()` ([`src/main.cpp`](../../src/main.cpp)) est cadencé par la fonction **pure** `heapSampleIntervalMs(maxAllocHeap, warnThreshold, normalMs, fastMs)` (`self_heal_logic`, +5 tests natifs) : **60 s** (`kHealthCheckIntervalMs`) si `maxAllocHeap ≥ kLowHeapWarnBytes`, **5 s** (`kHeapCheckFastIntervalMs`) en dessous → le débounce `kAutoHealDebounceChecks` (3 ticks) confirme un heap critique en **~15 s au lieu de ~180 s**.
 - **Invariants ADR-0029 inchangés** : seuils, débounce, uptime minimal, budget partagé, mode maintenance, garde OTA — seule la fréquence d'observation change.
 
 ## Instrumentation du tas (v2.9.1 — trace INFO désactivée en 2.10.2, portée par `checkHeapHealth()` depuis 2.11.1)
@@ -65,13 +75,13 @@ La trace INFO périodique persistée :
 Heap: libre=<getFreeHeap> maxBloc=<getMaxAllocHeap> minLibre=<getMinFreeHeap>
 ```
 
-(émise toutes les `kHeapLogIntervalMs = 5 min`, ou sur chute de `maxBloc` > `kHeapLogDropBytes = 8 Ko` depuis la dernière émission — elle visualisait la fragmentation : `maxBloc` s'effondre alors que `libre` reste correct) est **désactivée depuis la v2.10.2** : le bloc d'émission est **mis en commentaire** dans `checkHeapHealth()` ([`main.cpp:805`](../../src/main.cpp)), pour ne plus consommer le journal 64 Ko avec de la télémétrie de routine. Pour ré-instrumenter (diagnostic d'un nouvel épisode de fragmentation), **décommenter le bloc** — le commentaire sur place documente la marche à suivre.
+(émise toutes les `kHeapLogIntervalMs = 5 min`, ou sur chute de `maxBloc` > `kHeapLogDropBytes = 8 Ko` depuis la dernière émission — elle visualisait la fragmentation : `maxBloc` s'effondre alors que `libre` reste correct) est **désactivée depuis la v2.10.2** : le bloc d'émission est **mis en commentaire** dans `checkHeapHealth()` ([`src/main.cpp`](../../src/main.cpp)), pour ne plus consommer le journal avec de la télémétrie de routine (⚠️ le texte d'origine parlait d'un « journal 64 Ko » — corrigé le 2026-09-20 : le journal persistant est plafonné à **8 Ko** avec rotation à 6 Ko, `Logger::kMaxLogFileBytes`, ce qui rend l'argument d'économie *plus* fort, pas moins). Pour ré-instrumenter (diagnostic d'un nouvel épisode de fragmentation), **décommenter le bloc** — le commentaire sur place documente la marche à suivre.
 
-**Restent actifs** : au **premier** franchissement à la baisse de `kLowHeapWarnBytes = 12 288 o` (plus gros bloc 8 bits — était 20 000 sur la métrique brute jusqu'à la v2.32.x), un WARN « Heap fragmenté sous seuil d'alerte: maxBloc8=… » est émis **et** un `flushToDisk()` **one-shot** capture la descente sur disque même si le redémarrage n'est jamais atteint. Le déclencheur est **ré-armé** dès que `maxBloc8` repasse au-dessus du seuil ([`main.cpp:826`](../../src/main.cpp)).
+**Restent actifs** : au **premier** franchissement à la baisse de `kLowHeapWarnBytes = 12 288 o` (plus gros bloc 8 bits — était 20 000 sur la métrique brute jusqu'à la v2.32.x), un WARN « Heap fragmenté sous seuil d'alerte: maxBloc8=… » est émis **et** un `flushToDisk()` **one-shot** capture la descente sur disque même si le redémarrage n'est jamais atteint. Le déclencheur est **ré-armé** dès que `maxBloc8` repasse au-dessus du seuil ([`src/main.cpp`](../../src/main.cpp)).
 
 ### Alerte `low_memory` en transition (v2.11.1, churn-heap Q4)
 
-L'alerte heap **total** (CRIT « Mémoire faible » + MQTT `low_memory`, seuil `kMinFreeHeapBytes`, restée dans `checkSystemHealth()` à 60 s) est passée d'une **ré-émission à chaque tick** tant que le heap restait sous le seuil (chaque CRITICAL déclenchant un `flushToDisk()` immédiat — re-flush disque toutes les 60 s au pire moment) à une émission **sur transition** uniquement (pattern edge, [`main.cpp:879`](../../src/main.cpp)) : une alerte CRIT + MQTT à l'**entrée** sous le seuil, une INFO « Mémoire rétablie » au **retour** au-dessus.
+L'alerte heap **total** (CRIT « Mémoire faible » + MQTT `low_memory`, seuil `kMinFreeHeapBytes`, restée dans `checkSystemHealth()` à 60 s) est passée d'une **ré-émission à chaque tick** tant que le heap restait sous le seuil (chaque CRITICAL déclenchant un `flushToDisk()` immédiat — re-flush disque toutes les 60 s au pire moment) à une émission **sur transition** uniquement (pattern edge, [`src/main.cpp`](../../src/main.cpp)) : une alerte CRIT + MQTT à l'**entrée** sous le seuil, une INFO « Mémoire rétablie » au **retour** au-dessus.
 
 > ⚠️ **Limite assumée (revue 2.11.1)** : `publishAlert()` publie en **non-retained** — un abonné MQTT hors ligne au moment de la transition **rate l'épisode** (il n'y a plus de ré-émission périodique pour le rattraper). Le risque est borné par l'INFO de rétablissement (l'épisode est encadré dans le journal) et par le fait qu'un heap total durablement bas finit en auto-guérison, qui émet ses propres alertes.
 
@@ -1023,11 +1033,11 @@ Le résultat du contrôle est aussi consigné dans les **drapeaux du post-mortem
                                    (fenêtre glissante kAutoHealRebootWindowMs = 15 min)
 ```
 
-### Redémarrage propre — séquence partagée `performFailSafeRestart()` ([`main.cpp:632`](../../src/main.cpp:632))
+### Redémarrage propre — séquence partagée `performFailSafeRestart()` ([`src/main.cpp`](../../src/main.cpp))
 
 Depuis v2.9.2, la séquence de reboot est **factorisée** dans `performFailSafeRestart(reason, alertType, alertMsg)`, appelée par **les deux** watchdogs :
 
-- `performAutoHealRestart(maxAllocHeap)` ([`main.cpp:656`](../../src/main.cpp:656)) → délègue avec `alertType = "auto_reboot"` (gel heap).
+- `performAutoHealRestart(maxAllocHeap)` ([`src/main.cpp`](../../src/main.cpp)) → délègue avec `alertType = "auto_reboot"` (gel heap).
 - watchdog de connectivité → appelle directement avec `alertType = "network_stall_reboot"` (gel réseau).
 
 Séquence **fail-safe, ordre imposé par pool-chemistry (condition C1) — NE PAS réordonner** :
@@ -1044,7 +1054,7 @@ Le compteur RTC incrémenté à l'étape 3 est **partagé** entre heap et résea
 
 > **Reboot = pompes OFF = état fail-safe.** Le fail-safe **total** au boot suppose un **pulldown sur la gate des MOSFET** (GPIO25 pH / GPIO33 ORP) — condition matérielle hors périmètre logiciel ([ADR-0029](../adr/0029-auto-guerison-heap.md)).
 
-### Mode maintenance — `enterMaintenanceMode()` ([`main.cpp:626`](../../src/main.cpp:626))
+### Mode maintenance — `enterMaintenanceMode()` ([`src/main.cpp`](../../src/main.cpp))
 
 Condition pool-chemistry **C2** : quand `kAutoHealMaxReboots` (3) reboots ont eu lieu dans la fenêtre — **toutes causes confondues** (heap et/ou réseau, cf. budget partagé) — on **n'enchaîne plus** de reboot. Idempotent (flag `maintenanceMode`) :
 
@@ -1053,7 +1063,7 @@ Condition pool-chemistry **C2** : quand `kAutoHealMaxReboots` (3) reboots ont eu
 - **Aucun restart** : l'appareil reste **joignable** (web + MQTT) pour diagnostic.
 - **Sortie** : redémarrage **manuel** du contrôleur.
 
-### Compteur anti-boucle en RAM RTC — `initAutoHealRtcState()` ([`main.cpp:570`](../../src/main.cpp:570))
+### Compteur anti-boucle en RAM RTC — `initAutoHealRtcState()` ([`src/main.cpp`](../../src/main.cpp))
 
 - `rtcAutoHealRebootCount` / `rtcAutoHealWindowStartEpoch` en **RAM RTC** (survivent au reboot logiciel), protégés par un magic word `kAutoHealRtcMagic`.
 - **Power-on / brownout** (magic absent) → compteur remis à zéro : un vrai power-cycle ne verrouille jamais en maintenance.
@@ -1086,7 +1096,7 @@ SelfHealDecision evaluateSelfHeal(const SelfHealInputs& in);
 2. `uptimeMs >= minUptimeMs` **ET** `maxAllocHeap < restartThreshold` **ET** `consecutiveBelow >= debounceChecks` → `Restart`.
 3. sinon → `Continue`.
 
-Le compteur `consecutiveBelow` (statique dans `checkHeapHealth` depuis v2.11.1) est incrémenté tant que `maxBloc < seuil`, remis à 0 sinon. Aucune décision n'est évaluée en mode maintenance ni pendant une OTA (`if (!maintenanceMode && !isOtaInProgress())`, [`main.cpp:849`](../../src/main.cpp)).
+Le compteur `consecutiveBelow` (statique dans `checkHeapHealth` depuis v2.11.1) est incrémenté tant que `maxBloc < seuil`, remis à 0 sinon. Aucune décision n'est évaluée en mode maintenance ni pendant une OTA (`if (!maintenanceMode && !isOtaInProgress())`, [`src/main.cpp`](../../src/main.cpp)).
 
 Le module expose aussi la **cadence d'échantillonnage adaptative** (v2.11.1) :
 
@@ -1100,19 +1110,104 @@ uint32_t heapSampleIntervalMs(uint32_t maxAllocHeap, uint32_t warnThreshold,
 
 ## Watchdog de connectivité (v2.9.2)
 
-Second watchdog applicatif, **indépendant du watchdog heap**, ciblant le gel de la **pile lwIP** (web/mDNS/ICMP morts, WiFi associé, heap sain). Décision architecturale : [ADR-0030](../adr/0030-watchdog-connectivite.md).
+Second watchdog applicatif, **indépendant du watchdog heap**, ciblant le gel de la **pile lwIP** (web/mDNS/ICMP morts, WiFi associé, heap sain). Décision architecturale : [ADR-0030](../adr/0030-watchdog-connectivite.md) (sonde ICMP + réponse graduée), amendée par [ADR-0084](../adr/0084-ce-qui-prouve-qu-un-reseau-est-vivant.md) (bug-134, v2.53.1 : classification des preuves de vie et crédit de réarmement).
 
 ### Signe de vie — sonde ICMP passerelle
 
 Le signe de vie **primaire** est une **sonde ICMP active** vers la passerelle par défaut (`esp_ping`, header `ping/ping_sock.h`), **indépendante de MQTT** (contrainte : MQTT peut être désactivé) :
 
-- **Session persistante unique** (`netPingHandle`), (re)créée de façon **idempotente** par `ensureNetworkProbe()` ([`main.cpp:673`](../../src/main.cpp:673)) tant que le WiFi est associé. Cadence `kNetworkProbeIntervalMs = 30 s`, timeout `kNetworkProbeTimeoutMs = 2 s`.
-- Chaque echo reply prouve que **toute** la chaîne (RX → lwIP → TX) fonctionne. Le callback `onNetPingSuccess()` ([`main.cpp:666`](../../src/main.cpp:666)), invoqué par le thread interne `esp_ping` (**hors** `loopTask`), rafraîchit l'horloge `lastNetworkOkMs` (`volatile`, accès 32 bits aligné).
+- **Session persistante unique** (`netPingHandle`), (re)créée de façon **idempotente** par `ensureNetworkProbe()` ([`src/main.cpp`](../../src/main.cpp)) tant que le WiFi est associé. Cadence `kNetworkProbeIntervalMs = 30 s`, timeout `kNetworkProbeTimeoutMs = 2 s`.
+- Chaque echo reply prouve que **toute** la chaîne (RX → lwIP → TX) fonctionne. Le callback `onNetPingSuccess()` ([`src/main.cpp`](../../src/main.cpp)), invoqué par le thread interne `esp_ping` (**hors** `loopTask`), rafraîchit l'horloge `lastNetworkOkMs` (`volatile`, accès 32 bits aligné) — via la porte unique de réarmement décrite plus bas (bug-134).
 - L'horloge de stall mesurée dans `checkSystemHealth()` est `msSinceNetOk = millis() - lastNetworkOkMs`.
 
 ### Anti-faux-positif — gating WiFi
 
-Tant que `WiFi.isConnected()` est **faux**, l'horloge de stall est **gelée** (`lastNetworkOkMs = millis()`) et le palier soft **réarmé** ([`main.cpp:812`](../../src/main.cpp:812)). Conséquence : une coupure WiFi légitime, un broker MQTT down ou un reboot de box **ne déclenchent rien**. La perte de WiFi reste gérée par la logique de reconnexion / AP de secours existante, **pas** par ce watchdog.
+Tant que `WiFi.isConnected()` est **faux**, l'horloge de stall est **gelée** (`lastNetworkOkMs = millis()`) et le palier soft **réarmé** ([`src/main.cpp`](../../src/main.cpp)). Conséquence : une coupure WiFi légitime, un broker MQTT down ou un reboot de box **ne déclenchent rien**. La perte de WiFi reste gérée par la logique de reconnexion / AP de secours existante, **pas** par ce watchdog.
+
+### Réarmement plafonné à crédit — six sources et leur classe (bug-134, v2.53.1)
+
+L'incident du 2026-09-19 (le contrôleur a redémarré avec une IP DHCP obtenue
+trois minutes plus tôt) a montré qu'un simple **OU** entre toutes les preuves
+de vie ouvre deux boucles infinies — **démontrées**, pas supposées : une IP
+DHCP obtenue déclenche un soft recover qui obtient une IP qui réarme…
+(boucle A), et une sonde ICMP recréée sur silence réarme, retombe en silence
+90 s plus tard, se recrée… (boucle B). Dans les deux cas la preuve de vie est
+**fabriquée par la récupération elle-même**, pas par un tiers. Décision
+architecturale : [ADR-0084](../adr/0084-ce-qui-prouve-qu-un-reseau-est-vivant.md)
+(amende [ADR-0030](../adr/0030-watchdog-connectivite.md) sur « quelles preuves
+comptent »).
+
+**Règle retenue** : un signe de vie que la récupération fabrique elle-même ne
+peut pas financer indéfiniment son propre report.
+
+| Source | Site | Classe | Réarme |
+|---|---|---|---|
+| Écho ICMP passerelle | `onNetPingSuccess()` ([`src/main.cpp`](../../src/main.cpp)) | **Externe** (`IcmpEcho`) | Toujours, **et** remet le crédit d'auto-réarmement à 0 |
+| Trafic applicatif servi (HTTP `/data`, WebSocket, ACK MQTT, resync NTP) | `notifyNetworkActivity()` ([`src/main.cpp`](../../src/main.cpp)) | **Externe** (`AppTraffic`) | Toujours, **et** remet le crédit à 0 |
+| IP obtenue par DHCP | `ARDUINO_EVENT_WIFI_STA_GOT_IP` ([`src/main.cpp`](../../src/main.cpp)) | **Auto-produite** (`IpAcquired`) | Seulement si le crédit n'est pas épuisé (`kNetworkSelfRearmMax = 2`), puis l'incrémente |
+| (Re)démarrage de la sonde ICMP | `ensureNetworkProbe()` ([`src/main.cpp`](../../src/main.cpp)) | **Auto-produite** (`ProbeStarted`) | Idem — **toujours** plafonné, plus jamais inconditionnel (c'est ce qui ferme la boucle B) |
+| WiFi non associé | branche `else` de `checkSystemHealth()` ([`src/main.cpp`](../../src/main.cpp)) | Gel de l'horloge (pas un réarmement de preuve de vie) | L'horloge est simplement maintenue à `millis()` tant que le WiFi n'est pas associé |
+| Silence de sonde confirmé ≥ 90 s | `netProbeSeemsDead()` + `checkSystemHealth()` ([`src/main.cpp`](../../src/main.cpp)) | Déclencheur de recréation forcée (`ProbeStarted` au tick suivant) | Passe par la même porte plafonnée que toute recréation de sonde |
+
+Les deux premières sources passent par `notifyNetworkLifeSign()`
+([`src/main.cpp`](../../src/main.cpp)), **porte unique** de réarmement qui
+applique `evaluateNetRearm()` (`src/net_health_logic.{h,cpp}`, logique pure) :
+
+```cpp
+enum class NetLifeSign : uint8_t { IcmpEcho, AppTraffic, IpAcquired, ProbeStarted };
+
+struct NetRearmInputs {
+  NetLifeSign sign;
+  uint8_t     selfRearmCount;  // crédit déjà consommé par des preuves auto-produites
+  uint8_t     maxSelfRearms;   // kNetworkSelfRearmMax
+};
+
+struct NetRearmOutcome {
+  bool    rearmClock;
+  uint8_t newSelfRearmCount;
+};
+
+NetRearmOutcome evaluateNetRearm(const NetRearmInputs& in);
+```
+
+**Pourquoi `kNetworkSelfRearmMax = 2` et pas 0 ou l'infini** : à 0, la
+première IP obtenue après un soft recover ne réarmerait jamais rien — la
+détection redeviendrait celle d'avant le correctif dans le cas où **seule**
+la reconnexion WiFi a réellement réparé le lien (passerelle qui vient de
+revenir, par exemple). À l'infini, on retombe dans la boucle A/B. **2**
+laisse un court crédit de confiance à la récupération (une reconnexion WiFi
+réelle *et* une recréation de sonde consécutive peuvent légitimement
+survenir dans le même épisode) sans jamais permettre un report indéfini :
+au-delà, l'horloge de stall poursuit sa course vers le reboot, qui reste
+alors **inévitable** — c'est le garde-fou qui protège le critère « passerelle
+réellement injoignable ⇒ reboot toujours a lieu ».
+
+### Observabilité de la sonde — silence et recréation forcée (A3, bug-134)
+
+`onNetPingSuccess()` n'écrivait aucune ligne en cas de succès et
+`on_ping_timeout` est délibérément `nullptr` : le journal était **aveugle** à
+la santé de la sonde ICMP elle-même tant qu'aucune alerte watchdog ne se
+déclenchait — c'est ce qui a rendu le diagnostic du 19/09 déductif plutôt que
+factuel. Deux mécanismes ferment cet angle mort :
+
+- **`netProbeSeemsDead(msSinceLastEcho, kNetworkProbeSilenceMs)`** (logique
+  pure, `net_health_logic`) : la sonde est jugée **morte** si aucun écho n'a
+  été reçu depuis `kNetworkProbeSilenceMs = 90 000` ms (3 échos manqués à
+  `kNetworkProbeIntervalMs = 30 s`). Évalué dans `checkSystemHealth()`
+  ([`src/main.cpp`](../../src/main.cpp)).
+- **Trace sur transition uniquement** (même pattern que `lastBelowMinFreeHeap`,
+  pas une ligne par ping) : WARN « Sonde ICMP muette (…s, N échos manqués) —
+  recréation » à la déclaration de mort, INFO « Sonde ICMP rétablie (N échos) »
+  au retour à la vie. La déclaration de mort pose `netProbeRestartRequested`,
+  consommé au tick **suivant** par `ensureNetworkProbe(true)` — la recréation
+  forcée passe par la même porte plafonnée que `ARDUINO_EVENT_WIFI_STA_GOT_IP`
+  (`ProbeStarted`, crédit partagé).
+- **Champs de diagnostic additifs sur `GET /get-system-info`** (bloc `net`,
+  purement additif, [`docs/API.md`](../API.md#get-get-system-info--write)) :
+  `icmpEchoes` (compteur total d'échos depuis le boot), `msSinceEcho`,
+  `msSinceNetOk`, `selfRearms` (crédit actuellement consommé), `probeAlive`
+  (session `esp_ping` active). Lectures d'atomiques/`volatile` uniquement — ni
+  allocation, ni parcours de tas ([`src/main.cpp`](../../src/main.cpp)).
 
 ### Machine à états `net_health` — réponse graduée
 
@@ -1167,7 +1262,7 @@ NetHealthDecision evaluateNetHealth(const NetHealthInputs& in);
 5. `msSinceLastNetOk >= softStallMs` ET `!softRecoverAttempted` → `SoftRecover`.
 6. sinon → `Continue`.
 
-**Tests** : 25 tests natifs dédiés (gating WiFi, paliers soft/hard, uptime minimal, plafond partagé, réarmement du soft).
+**Tests** (mesuré le 2026-09-20 sur `test/test_native_net_health/test_net_health.cpp`, ADR-0073) : **42 cas** — 25 préexistants pour `evaluateNetHealth()` (gating WiFi, paliers soft/hard, uptime minimal, plafond partagé, réarmement du soft) + 17 nouveaux (bug-134) pour `evaluateNetRearm()` / `netProbeSeemsDead()` : classification externe/auto-produite, remise à 0 du crédit par une preuve externe, plafond `kNetworkSelfRearmMax`, et validation par **mutation** des deux boucles fermées (retirer le plafond sur `ProbeStarted`, ou réarmer `GOT_IP` sans passer par le crédit, tue un test).
 
 ## Budget anti-boucle PARTAGÉ (heap + réseau)
 
@@ -1269,7 +1364,7 @@ esptool.py erase_region 0x7B0000 0x40000   # efface la partition history (256 Ko
 
 ## Debounce de la ré-annonce mDNS (v2.9.1)
 
-`checkSystemHealth()` consomme aussi le drapeau `mdnsReannounceRequested` (posé par le handler d'événement WiFi `STA_GOT_IP`) pour ré-annoncer `poolcontroller.local` en contexte `loopTask` (mDNS/lwIP non thread-safe). Depuis v2.9.1, la ré-annonce est **debouncée** ([`main.cpp:708`](../../src/main.cpp:708)) :
+`checkSystemHealth()` consomme aussi le drapeau `mdnsReannounceRequested` (posé par le handler d'événement WiFi `STA_GOT_IP`) pour ré-annoncer `poolcontroller.local` en contexte `loopTask` (mDNS/lwIP non thread-safe). Depuis v2.9.1, la ré-annonce est **debouncée** ([`src/main.cpp`](../../src/main.cpp)) :
 
 - exécutée **uniquement** si l'IP a **réellement** changé (`currentIp != mdnsLastAnnouncedIp`),
 - **et** au plus une fois toutes les `kMdnsReannounceMinIntervalMs = 30 s`.
@@ -1293,6 +1388,8 @@ Sinon, un `debug(...)` « Ré-annonce mDNS débouncée » trace l'oscillation ig
 | `kNetworkProbeTimeoutMs` | `2000` (2 s) | Timeout d'un echo ICMP |
 | `kNetworkStallSoftMs` | `120000` (2 min) | Pile muette depuis ce délai → SoftRecover (reconnexion WiFi) |
 | `kNetworkStallRebootMs` | `300000` (5 min) | Pile muette depuis ce délai → Restart fail-safe |
+| `kNetworkSelfRearmMax` | `2` | Crédit max de réarmements **auto-produits** (`IpAcquired`, `ProbeStarted`) avant épuisement — au-delà, plus aucun réarmement tant qu'une preuve **externe** ne remet le crédit à 0 (bug-134, v2.53.1) |
+| `kNetworkProbeSilenceMs` | `90000` (90 s) | Silence de la sonde ICMP (3 échos manqués à `kNetworkProbeIntervalMs`) → recréation forcée (bug-134, v2.53.1) |
 | `kMdnsReannounceMinIntervalMs` | `30000` (30 s) | Intervalle mini entre 2 ré-annonces mDNS |
 | `kHistoryInitCrashThreshold` | `2` | Crashs consécutifs pendant l'init history → effacement de la partition (**hors** budget `kAutoHealMaxReboots`) |
 | `kHistoryCrashCountNvsKey` | `"crash_cnt"` | Clé NVS du compteur du disjoncteur (namespace `hist_meta`, clé `part_sz` intacte) |
@@ -1330,6 +1427,7 @@ Voir [MQTT.md](../MQTT.md#alertes).
 - **Fenêtre expirée** : après 15 min sans reboot, le compteur (partagé) est purgé au boot suivant → les deux auto-guérisons redeviennent disponibles.
 - **Coupure WiFi légitime** : ne déclenche **aucune** action du watchdog de connectivité (horloge de stall gelée tant que le WiFi n'est pas associé).
 - **Passerelle qui filtre l'ICMP echo** : le signe de vie primaire serait perdu → risque de reboot à tort. Sur LAN domestique standard, la passerelle répond ([ADR-0030](../adr/0030-watchdog-connectivite.md)).
+- **Client HTTP actif pendant tout l'épisode** : une requête `/data` servie est une preuve **externe** (`AppTraffic`) — elle réarme **sans limite** et peut donc différer indéfiniment un reboot fail-safe, y compris si la passerelle est réellement injoignable. **Ce n'est pas une régression de bug-134** : c'est déjà le comportement de la version précédente, et le critère « passerelle injoignable ⇒ reboot toujours » est donc **plus faible qu'il n'y paraît** en présence d'un client actif ([ADR-0084](../adr/0084-ce-qui-prouve-qu-un-reseau-est-vivant.md)).
 - **Épisode combiné heap + réseau** : les reboots des deux causes se cumulent dans le **même** budget → bascule en maintenance plus tôt (voulu).
 - **NVS indisponible au boot** : le disjoncteur history dégrade silencieusement (compteur lu à 0 → `Proceed`) — jamais de blocage du boot.
 - **Échec de l'effacement de la partition** (`esp_partition_erase_range != ESP_OK`) : log CRIT « échec de l'effacement », pas d'alerte MQTT (flag non posé), le montage est tenté quand même.

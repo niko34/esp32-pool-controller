@@ -3282,6 +3282,14 @@ constexpr uint32_t kNetworkStallSoftMs     = 120000;  // 2 min - stall → soft 
 constexpr uint32_t kNetworkStallRebootMs   = 300000;  // 5 min - stall → reboot fail-safe
 constexpr uint32_t kNetworkProbeTimeoutMs  = 2000;    // 2s - timeout echo ICMP
 
+// bug-134 : réarmement plafonné pour les preuves de vie AUTO-PRODUITES par la
+// récupération elle-même (IP DHCP obtenue, sonde ICMP relancée) — cf.
+// net_health_logic.h (NetLifeSign, evaluateNetRearm). Sans plafond, ces preuves
+// financent indéfiniment leur propre report et le reboot fail-safe n'arrive
+// jamais (boucles A et B démontrées dans la spec bug-134).
+constexpr uint8_t  kNetworkSelfRearmMax   = 2;        // Crédit max de réarmements auto-produits avant épuisement
+constexpr uint32_t kNetworkProbeSilenceMs = 90000;    // 90s - silence sonde ICMP (3 échos manqués à kNetworkProbeIntervalMs) → recréation forcée
+
 // ============================================================================
 // TIME CONSTANTS - Valeurs temporelles de référence
 // ============================================================================

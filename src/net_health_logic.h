@@ -54,4 +54,53 @@ struct NetHealthInputs {
 //   6. sinon → Continue.
 NetHealthDecision evaluateNetHealth(const NetHealthInputs& in);
 
+// =============================================================================
+// Réarmement du watchdog de connectivité — logique PURE (bug-134, v2.53.1)
+// =============================================================================
+// L'incident du 2026-09-19 a montré que réarmer l'horloge de stall sur TOUTE
+// preuve de vie ouvre deux boucles infinies : une IP DHCP obtenue déclenche un
+// soft recover qui obtient une IP qui réarme... (boucle A), et une sonde ICMP
+// recréée sur silence réarme, retombe en silence 90 s plus tard, se recrée...
+// (boucle B). Dans les deux cas la preuve de vie est FABRIQUÉE PAR LA
+// RÉCUPÉRATION ELLE-MÊME, pas par un tiers. Règle retenue : un signe de vie que
+// la récupération fabrique elle-même ne peut pas financer indéfiniment son
+// propre report.
+enum class NetLifeSign : uint8_t {
+  IcmpEcho,    // écho ICMP passerelle reçu — preuve EXTERNE
+  AppTraffic,  // trafic applicatif servi (HTTP/WS/MQTT/NTP) — preuve EXTERNE
+  IpAcquired,  // IP obtenue par DHCP (GOT_IP) — preuve AUTO-PRODUITE
+  ProbeStarted // sonde ICMP (re)démarrée — preuve AUTO-PRODUITE
+};
+
+// Entrées de la décision de réarmement.
+struct NetRearmInputs {
+  NetLifeSign sign;            // nature de la preuve de vie reçue
+  uint8_t     selfRearmCount;  // crédit déjà consommé par des preuves auto-produites
+  uint8_t     maxSelfRearms;   // plafond du crédit (kNetworkSelfRearmMax)
+};
+
+// Sortie de la décision de réarmement.
+struct NetRearmOutcome {
+  bool    rearmClock;        // true = la coquille doit réarmer lastNetworkOkMs
+  uint8_t newSelfRearmCount; // nouvelle valeur du crédit à mémoriser
+};
+
+// Décide si une preuve de vie réarme l'horloge de stall, et met à jour le
+// crédit de réarmements auto-produits. Règle EXACTE (conditions C1/C2 du gate
+// pool-chemistry, bloquantes) :
+//   - preuve EXTERNE (IcmpEcho, AppTraffic) : réarme TOUJOURS ET remet le
+//     crédit à 0 — seule une preuve externe revalide toute la confiance
+//     (C2 : le crédit n'est JAMAIS remis à zéro par IpAcquired ni ProbeStarted) ;
+//   - preuve AUTO-PRODUITE (IpAcquired, ProbeStarted) : réarme seulement si
+//     `selfRearmCount < maxSelfRearms`, puis incrémente le crédit consommé
+//     (C1 : ProbeStarted passe TOUJOURS par ce crédit, jamais de réarmement
+//     inconditionnel — c'est ce qui ferme la boucle B). Crédit épuisé → aucun
+//     réarmement : l'horloge court jusqu'au reboot, qui reste alors inévitable.
+NetRearmOutcome evaluateNetRearm(const NetRearmInputs& in);
+
+// Sonde ICMP jugée morte si aucun écho reçu depuis `silenceMs` (typiquement
+// kNetworkProbeSilenceMs, trois échos manqués à kNetworkProbeIntervalMs).
+// Logique pure : compare deux durées, ne lit ni ne modifie l'état de la sonde.
+bool netProbeSeemsDead(uint32_t msSinceLastEcho, uint32_t silenceMs);
+
 #endif // NET_HEALTH_LOGIC_H
