@@ -26,6 +26,15 @@
 // CONTRAINTE : pas d'Arduino.h, pas de FreeRTOS — <stdio.h>/<stddef.h>/<stdint.h>
 // uniquement, fonctions inline (header-only, rien à ajouter au build natif ni à
 // build_src_filter).
+//
+// bug-121 : la rafale n'est plus republiée à chaque reconnexion MQTT (voir
+// discovery_fingerprint_logic.h) — seulement sur changement d'empreinte, 1re
+// connexion, rafale précédente incomplète, ou redémarrage HA détecté. Cette
+// synthèse porte donc désormais le MOTIF (`DiscoveryTally.reason`) et le COÛT
+// RÉEL mesuré (octets offerts, plancher heap 8 bits avant/après la boucle de
+// publication) — pas seulement sa durée : une rafale plus rare doit être plus
+// informative, pour ne jamais reproduire l'hypothèse fausse de bug-121 (« la
+// rafale épuise les tampons TX ») sans preuve chiffrée à l'appui.
 // =============================================================================
 
 #include <stddef.h>
@@ -33,6 +42,7 @@
 #include <stdio.h>
 
 #include "constants.h"  // kDiscoveryFailTopicMax (self-contained : stddef/stdint/time.h)
+#include "discovery_fingerprint_logic.h"  // bug-121 : DiscoveryReason + discoveryReasonLabel (self-contained : stdint.h)
 
 /**
  * @brief Compteurs d'une rafale de découverte Home Assistant.
@@ -48,6 +58,14 @@ struct DiscoveryTally {
   uint32_t burstSeq;        // Numéro de rafale (distingue deux reconnexions rapprochées)
   uint32_t durationMs;      // Durée totale de la rafale (ms)
   char     firstFailTopic[kDiscoveryFailTopicMax];  // Topic du 1er échec (queue conservée)
+  // bug-121 (D2) : coût RÉEL d'une rafale — pas seulement sa durée. Accumulé
+  // par l'appelant dans la lambda publishConfig(), JAMAIS déclaré/estimé.
+  uint32_t bytesOffered;    // Σ(len(topic) + len(payload) + 2) sur TOUTES les tentatives
+  uint32_t maxBloc8Before;  // heapLargestFreeBlock8Bit() juste AVANT la boucle de publication
+  uint32_t maxBloc8After;   // heapLargestFreeBlock8Bit() juste APRÈS la boucle de publication
+  // bug-121 (A4) : motif de la rafale — None ne doit jamais atteindre le
+  // formateur (l'appelant filtre en amont, silence = cas nominal).
+  DiscoveryReason reason;
 };
 
 /**
@@ -63,6 +81,10 @@ inline void discoveryTallyInit(DiscoveryTally& t, uint32_t burstSeq) {
   t.burstSeq = burstSeq;
   t.durationMs = 0;
   t.firstFailTopic[0] = '\0';
+  t.bytesOffered = 0;
+  t.maxBloc8Before = 0;
+  t.maxBloc8After = 0;
+  t.reason = DiscoveryReason::None;
 }
 
 /**
@@ -143,9 +165,18 @@ inline const char* discoveryOrdinalSuffix(uint16_t n) {
  * @brief Formate la ligne de synthèse d'une rafale terminée.
  *
  * Formes émises (une seule ligne, quel que soit le nombre d'échecs) :
- *   Découverte HA #3 : 54/54 entités, 0 échec, 1240 ms
- *   Découverte HA #4 : 12/54 entités, 42 échecs, interrompue à la 13e (…), 310 ms
- *   Découverte HA #7 : 52/54 entités, 2 échecs épars, 1er à la 9e (…), 1180 ms
+ *   Découverte HA #3 (1re connexion) : 54/54 entités, 0 échec, 9214 o, maxBloc8 21492→21236, 1240 ms
+ *   Découverte HA #4 (empreinte changée) : 12/54 entités, 42 échecs, interrompue à la 13e (…), 2048 o, maxBloc8 21000→20800, 310 ms
+ *   Découverte HA #7 (rafale précédente incomplète) : 52/54 entités, 2 échecs épars, 1er à la 9e (…), 8900 o, maxBloc8 21400→21100, 1180 ms
+ * (exemples repris tels quels de test_discovery_report.cpp — fixtures de test
+ * figées à 54 entités avant la migration à 60, PAS un relevé réel ; voir la
+ * même note dans docs/subsystems/mqtt-manager.md.)
+ *
+ * bug-121 (A4/D2) : le motif (`t.reason`) et le coût mesuré (octets offerts,
+ * plancher heap 8 bits avant/après, ADR-0038 — jamais la mémoire libre)
+ * s'ajoutent à la synthèse feature-109. `t.reason` ne doit JAMAIS valoir
+ * `DiscoveryReason::None` ici : l'appelant ne déclenche une rafale (et donc cet
+ * appel) que pour un motif réel — le silence du cas nominal est géré en amont.
  *
  * @param buf Buffer de destination (kDiscoverySummaryLineMax recommandé).
  * @param bufLen Taille du buffer, NUL compris.
@@ -159,23 +190,30 @@ inline int discoveryFormatSummary(char* buf, size_t bufLen, const DiscoveryTally
   const unsigned att = (unsigned)t.attempted;
   const unsigned fail = (unsigned)t.failed;
   const unsigned dur = (unsigned)t.durationMs;
+  const unsigned bytesOffered = (unsigned)t.bytesOffered;
+  const unsigned before = (unsigned)t.maxBloc8Before;
+  const unsigned after = (unsigned)t.maxBloc8After;
+  const char* reasonLabel = discoveryReasonLabel(t.reason);
 
   if (fail == 0) {
-    return snprintf(buf, bufLen, "Découverte HA #%u : %u/%u entités, 0 échec, %u ms",
-                    seq, pub, att, dur);
+    return snprintf(buf, bufLen,
+                    "Découverte HA #%u (%s) : %u/%u entités, 0 échec, %u o, maxBloc8 %u\xE2\x86\x92%u, %u ms",
+                    seq, reasonLabel, pub, att, bytesOffered, before, after, dur);
   }
   const char* plural = (fail > 1) ? "s" : "";
   const unsigned idx = (unsigned)t.firstFailIndex;
   if (discoveryTallyInterrupted(t)) {
     return snprintf(buf, bufLen,
-                    "Découverte HA #%u : %u/%u entités, %u échec%s, interrompue à la %u%s (%s), %u ms",
-                    seq, pub, att, fail, plural, idx, discoveryOrdinalSuffix(t.firstFailIndex),
-                    t.firstFailTopic, dur);
+                    "Découverte HA #%u (%s) : %u/%u entités, %u échec%s, interrompue à la %u%s (%s), "
+                    "%u o, maxBloc8 %u\xE2\x86\x92%u, %u ms",
+                    seq, reasonLabel, pub, att, fail, plural, idx, discoveryOrdinalSuffix(t.firstFailIndex),
+                    t.firstFailTopic, bytesOffered, before, after, dur);
   }
   return snprintf(buf, bufLen,
-                  "Découverte HA #%u : %u/%u entités, %u échec%s épars, 1er à la %u%s (%s), %u ms",
-                  seq, pub, att, fail, plural, idx, discoveryOrdinalSuffix(t.firstFailIndex),
-                  t.firstFailTopic, dur);
+                  "Découverte HA #%u (%s) : %u/%u entités, %u échec%s épars, 1er à la %u%s (%s), "
+                  "%u o, maxBloc8 %u\xE2\x86\x92%u, %u ms",
+                  seq, reasonLabel, pub, att, fail, plural, idx, discoveryOrdinalSuffix(t.firstFailIndex),
+                  t.firstFailTopic, bytesOffered, before, after, dur);
 }
 
 /**

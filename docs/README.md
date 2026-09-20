@@ -127,7 +127,9 @@ docs/
 │   ├── 0079-planning-filtration-fige-a-l-arret-promu-a-minuit.md
 │   ├── 0081-recensement-du-tas-et-non-livraison-de-la-lecture-de-contenu.md
 │   ├── 0082-arene-circulaire-du-journal-en-ram-interne-statique.md
-│   └── 0083-ecriture-atomique-historique-et-contrat-de-format-persiste.md
+│   ├── 0083-ecriture-atomique-historique-et-contrat-de-format-persiste.md
+│   ├── 0084-ce-qui-prouve-qu-un-reseau-est-vivant.md
+│   └── 0085-republication-decouverte-ha-sur-empreinte.md
 │
 ├── API.md               ← Référence REST + WebSocket
 ├── MQTT.md              ← Topics MQTT + auto-discovery Home Assistant

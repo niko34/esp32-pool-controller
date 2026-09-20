@@ -15,11 +15,15 @@
 #include "history.h"          // bug-100 : historyFopenDeferralCount (diagnostic retenu)
 #include "web_routes_data.h"  // bug-100 : logsExportFopenDeferralCount (diagnostic retenu)
 #include "discovery_report_logic.h"  // feature-109 : synthèse pure d'une rafale de découverte HA
+#include "discovery_fingerprint_logic.h"  // bug-121 : empreinte + décision de republication
+#include "heap_metrics.h"  // bug-121 (D2) : heapLargestFreeBlock8Bit() — jamais la mémoire libre (ADR-0038)
 #include <ArduinoJson.h>
 #include <esp_task_wdt.h>
 #include <WiFi.h>
 #include <lwip/sockets.h>
 #include <errno.h>
+#include <Preferences.h>
+#include <string.h>  // memcmp — comparaison bornée du payload homeassistant/status (revue bug-121)
 
 using mqtt_internal::OutboundMsg;
 using mqtt_internal::InboundCmd;
@@ -66,6 +70,42 @@ bool isNumericPayload(const String& s) {
   }
   return digitSeen;
 }
+
+// bug-121 : empreinte 32 bits du jeu de découverte HA — voir
+// discovery_fingerprint_logic.h pour le détail des invariants. Lit mqttCfg
+// SOUS configMutex (jamais topicsMutex tenu en même temps, cf. mqtt_manager.h)
+// — appelable UNIQUEMENT depuis mqttTask (connectInTask/publishDiscovery).
+// Échec de prise du mutex → empreinte neutre (0) : décision conservatrice
+// (une empreinte à 0 ne colle presque jamais à un enregistrement NVS réel,
+// donc ce cas déclenche une rafale plutôt que de la sauter à tort).
+uint32_t computeDiscoveryFingerprint() {
+  String topicSnap, serverSnap;
+  int portSnap = 0;
+  {
+    static unsigned long lastWarnMs = 0;
+    // bug-121 (revue) : configMutex est RÉCURSIF (xSemaphoreCreateRecursiveMutex,
+    // config.cpp) — Take/Give non récursifs fonctionnent tant que rien d'autre
+    // ne le tient déjà de façon récursive depuis cette même tâche, mais c'est un
+    // piège du dépôt (2ᵉ occurrence relevée en revue). On s'aligne sur
+    // refreshTopics() : TakeRecursive/GiveRecursive partout où configMutex est pris.
+    if (xSemaphoreTakeRecursive(configMutex, pdMS_TO_TICKS(kConfigMutexTimeoutMs)) != pdTRUE) {
+      warnConfigMutexTimeout(lastWarnMs, "computeDiscoveryFingerprint");
+      return 0;
+    }
+    topicSnap = mqttCfg.topic;
+    serverSnap = mqttCfg.server;
+    portSnap = mqttCfg.port;
+    xSemaphoreGiveRecursive(configMutex);
+  }
+  uint32_t h = kDiscoveryFnvOffsetBasis;
+  h = discoveryFnv1aStr(h, FIRMWARE_VERSION);
+  h = discoveryFnv1aStr(h, HA_DISCOVERY_PREFIX);
+  h = discoveryFnv1aStr(h, HA_DEVICE_ID);
+  h = discoveryFnv1aStr(h, topicSnap.c_str());
+  h = discoveryFnv1aStr(h, serverSnap.c_str());
+  h = discoveryFnv1aU32(h, (uint32_t)portSnap);
+  return h;
+}
 }  // namespace
 
 MqttManager mqttManager;
@@ -97,6 +137,25 @@ void MqttManager::begin() {
   }
 
   refreshTopics();
+
+  // bug-121 (revue, bloquant 2) : construit UNE fois — jamais réinventé en dur
+  // au site de subscribe() ni à celui de messageCallback().
+  _haStatusTopic = String(HA_DISCOVERY_PREFIX) + kHaStatusTopicSuffix;
+
+  // bug-121 : chargement UNIQUE de l'empreinte de découverte persistée — AVANT
+  // la création de mqttTask, donc sans concurrence possible à cet instant
+  // précis (même convention que `topics` ci-dessus). Tous les accès ultérieurs
+  // à _storedRecord/_recordValid se font depuis mqttTask exclusivement.
+  {
+    Preferences prefs;
+    if (prefs.begin(kDiscoveryNvsNamespace, /*readOnly=*/true)) {
+      size_t got = prefs.getBytes(kDiscoveryNvsRecordKey, &_storedRecord, sizeof(_storedRecord));
+      _recordValid = (got == sizeof(_storedRecord));
+      prefs.end();
+    } else {
+      _recordValid = false;  // Namespace jamais écrit (1er boot après flash) — attendu, pas une erreur.
+    }
+  }
 
   // Création des queues — allouées une fois, jamais libérées (cycle de vie = vie du firmware)
   outQueue = xQueueCreate(kMqttOutQueueLength, sizeof(OutboundMsg));
@@ -342,6 +401,43 @@ void MqttManager::taskLoop() {
       mqtt.loop();  // peut bloquer brièvement (setSocketTimeout=2s) — isolé de loopTask
     }
 
+    // 1bis) bug-121 (A3) : redémarrage HA détecté (message de naissance vu par
+    // messageCallback) — republication motif HaRestart. Ne passe PAS par
+    // discoveryDecide() : le motif est déjà connu avec certitude, pas besoin
+    // de le redéduire de l'empreinte.
+    // bug-121 (revue, bloquant 1) : un message RETENU côté courtier (retain
+    // configurable, pratiqué par une partie des installations) est redélivré à
+    // CHAQUE subscribe() — donc à CHAQUE reconnexion — sans amortisseur, ce
+    // chemin ferait de tout le lot un no-op (rafale à nouveau systématique) et,
+    // pire, non borné si HA redémarre en boucle. Debounce sur
+    // _lastDiscoveryMarkMs (posé à l'ouverture ET la fermeture de TOUTE
+    // rafale, feature-122) : le drapeau n'est PAS consommé tant que la fenêtre
+    // n'est pas écoulée — il sera réévalué au tour suivant (≤ kMqttTaskLoopTimeoutMs),
+    // donc un vrai redémarrage HA reste honoré dès que le silence se prolonge.
+    static bool sHaRestartSuppressLogged = false;  // Edge-triggered : un seul DEBUG par fenêtre de debounce, pas un par tour de 100ms.
+    if (mqtt.connected() && _discoveryForceRequested.load(std::memory_order_relaxed)) {
+      const uint32_t lastMarkMs = _lastDiscoveryMarkMs.load(std::memory_order_relaxed);
+      // Soustraction non signée : correcte au repliement de millis() (24,8 j).
+      const uint32_t sinceLastBurstMs = (uint32_t)millis() - lastMarkMs;
+      if (lastMarkMs == 0 || sinceLastBurstMs >= kDiscoveryHaRestartDebounceMs) {
+        _discoveryForceRequested.store(false, std::memory_order_relaxed);
+        sHaRestartSuppressLogged = false;
+        discoveryPublished = false;
+        esp_task_wdt_reset();
+        publishDiscovery(DiscoveryReason::HaRestart);
+        esp_task_wdt_reset();
+      } else if (!sHaRestartSuppressLogged) {
+        sHaRestartSuppressLogged = true;
+        if (authCfg.debugLogsEnabled) {
+          systemLogger.debug("Découverte HA : redémarrage HA ignoré (rafale il y a " +
+                             String(sinceLastBurstMs) + " ms, debounce " +
+                             String(kDiscoveryHaRestartDebounceMs) + " ms)");
+        }
+      }
+    } else {
+      sHaRestartSuppressLogged = false;
+    }
+
     // 2) Publications périodiques signalées depuis loopTask via flags atomiques.
     //    On lit/snapshot les états sous configMutex DANS la tâche pour éviter
     //    que loopTask n'attende sur un mutex pendant qu'on publie ~15 messages.
@@ -428,6 +524,12 @@ void MqttManager::connectInTask() {
     }
 
     connectedAtomic.store(true, std::memory_order_relaxed);
+    // bug-121 (revue) : horodatage de LA CONNEXION (pas de la dernière rafale)
+    // — sert à discriminer, dans messageCallback(), un message de naissance HA
+    // RETENU (redélivré en quelques ms après le subscribe() ci-dessous, sur
+    // CETTE session) d'un VRAI redémarrage HA (arrive sur une session déjà
+    // établie, longtemps après la connexion). mqttTask uniquement.
+    _connectedAtMs = (uint32_t)millis();
     systemLogger.info("MQTT connecté !");
 
     // Status online : direct (on est dans la tâche) — court-circuite outQueue
@@ -455,10 +557,32 @@ void MqttManager::connectInTask() {
     // feature-056 : mode d'installation + signal filtration externe
     mqtt.subscribe(topics.installModeCommand.c_str());
     mqtt.subscribe(topics.filtrationExternalStateCommand.c_str());
+    // bug-121 (A3) : message de naissance HA — seul chemin de récupération si
+    // les topics retain sont perdus côté courtier SANS redémarrage de
+    // l'appareil (purge du courtier avec HA qui reste up : voir périmètre
+    // réduit de bug-121, aucun bouton HTTP dans ce lot).
+    mqtt.subscribe(_haStatusTopic.c_str());
 
-    discoveryPublished = false;
+    // bug-121 : republication conditionnée à l'EMPREINTE, plus à la seule
+    // reconnexion (voir discovery_fingerprint_logic.h). `forced` reste false
+    // ici : la récupération explicite (bouton) est hors périmètre, et le
+    // redémarrage HA emprunte un chemin séparé (taskLoop, cf. messageCallback).
     esp_task_wdt_reset();
-    publishDiscovery();              // 54 publish — long si CPL lossy
+    const uint32_t currentFp = computeDiscoveryFingerprint();
+    const DiscoveryReason discoveryReason =
+        discoveryDecide(_storedRecord, _recordValid, currentFp, /*forced=*/false, /*haRestart=*/false);
+    discoveryPublished = false;
+    if (discoveryReason == DiscoveryReason::None) {
+      // Cas NOMINAL (A4) : silence en INFO. Les 60 topics retain déjà en
+      // place côté courtier suffisent — republier serait du travail pur.
+      discoveryPublished = true;
+      if (authCfg.debugLogsEnabled) {
+        systemLogger.debug("Découverte HA : empreinte inchangée — rafale évitée (fp=0x" +
+                           String(currentFp, HEX) + ")");
+      }
+    } else {
+      publishDiscovery(discoveryReason);  // 60 publish — long si CPL lossy
+    }
     esp_task_wdt_reset();
     publishAllStatesInternal();      // ~15 publish
     esp_task_wdt_reset();
@@ -1380,6 +1504,40 @@ void MqttManager::publishDiagnosticInternal() {
 
 void MqttManager::messageCallback(char* topic, byte* payload, unsigned int length) {
   String topicStr(topic);
+
+  // bug-121 (A3) : message de naissance HA — seul chemin de récupération si
+  // les topics retain sont perdus côté courtier sans redémarrage de l'appareil
+  // (voir périmètre réduit de bug-121). ⚠️ Ne PASSE JAMAIS par inQueue : cette
+  // file mène aux actionneurs sous configMutex (drainCommandQueue) — poser un
+  // atomique et sortir immédiatement, rien d'autre.
+  if (topicStr == _haStatusTopic) {
+    // bug-121 (revue, mineur) : comparaison BORNÉE — pas de String += construite
+    // caractère par caractère (jusqu'à 1,5 Ko sur un payload hostile avant cette
+    // revue). "online" fait exactement 6 octets : toute autre longueur est
+    // rejetée avant même de regarder le contenu.
+    const bool isOnline = (length == 6 && memcmp(payload, "online", 6) == 0);
+    if (isOnline) {
+      // bug-121 (revue, bloquant 1 — 2ᵉ passe) : discriminant PRINCIPAL, à la
+      // SOURCE, avant même de poser le drapeau — pas un debounce a posteriori.
+      // Un message retenu côté courtier est redélivré en quelques ms après le
+      // subscribe() de connectInTask (_connectedAtMs) : tout "online" vu dans
+      // cette fenêtre est une redélivrance de session, PAS un redémarrage HA —
+      // il est DROPPÉ ici, sans jamais poser _discoveryForceRequested. Un vrai
+      // redémarrage HA arrive sur une session déjà établie (elapsed grand) et
+      // passe ce filtre ; kDiscoveryHaRestartDebounceMs (taskLoop) reste
+      // au-dessus comme second filet anti-flapping (HA qui boucle).
+      const uint32_t elapsedSinceConnectMs = (uint32_t)millis() - _connectedAtMs;
+      if (discoveryHaBirthIsGenuineRestart(elapsedSinceConnectMs, kDiscoveryHaRestartGraceMs)) {
+        _discoveryForceRequested.store(true, std::memory_order_relaxed);
+      } else if (authCfg.debugLogsEnabled) {
+        systemLogger.debug("Découverte HA : birth HA ignoré (" +
+                           String(elapsedSinceConnectMs) +
+                           " ms après connexion — redélivrance d'un message retenu, pas un redémarrage)");
+      }
+    }
+    return;
+  }
+
   InboundCmd cmd;
   cmd.payload[0] = '\0';
 
@@ -1945,7 +2103,13 @@ void MqttManager::shutdownForRestart() {
 // publishDiscovery — exécuté UNIQUEMENT depuis mqttTask (lors de la connect réussie)
 // ============================================================================
 
-void MqttManager::publishDiscovery() {
+void MqttManager::publishDiscovery(DiscoveryReason reason) {
+  // bug-121 : garde défensive — les deux call sites (connectInTask, taskLoop)
+  // filtrent déjà None en amont ; ce cas ne devrait jamais se présenter, mais
+  // le silence (pas de rafale, pas de log) reste le comportement SÛR si un
+  // futur appelant l'atteignait par erreur, plutôt qu'une rafale non motivée.
+  if (reason == DiscoveryReason::None) return;
+
   // feature-109 : la garde composite d'origine confondait deux cas très
   // différents. On la scinde.
   // Cas 1 — rafale déjà publiée pour cette connexion : no-op de garde, silence
@@ -1976,6 +2140,22 @@ void MqttManager::publishDiscovery() {
   _lastDiscoveryMarkMs.store((uint32_t)startMs, std::memory_order_relaxed);
   DiscoveryTally tally;
   discoveryTallyInit(tally, _discoveryBurstSeq);
+  tally.reason = reason;
+  // bug-121 (D2) : plancher heap 8 bits AVANT la boucle de publication — jamais
+  // la mémoire libre (ADR-0038). C'est la sonde qui empêche la fausse défaite
+  // décrite dans bug-121 : montrer que la rafale ne consomme pas la ressource
+  // rare, sans prétendre guérir les déconnexions qu'elle ne cause pas.
+  tally.maxBloc8Before = heapLargestFreeBlock8Bit();
+  // bug-121 : hachage cumulé des topics RÉELLEMENT publiés (mesuré, jamais
+  // déclaré) — alimenté entité par entité dans publishConfig() ci-dessous.
+  uint32_t entityHashAccum = kDiscoveryFnvOffsetBasis;
+  // bug-121 (revue, mineur) : calculée UNE fois ici et réutilisée à la
+  // persistance NVS (fin de fonction) — un second appel y recalculerait une
+  // valeur potentiellement DIFFÉRENTE (mqttCfg a pu changer entre les deux, ou
+  // un timeout de configMutex a pu renvoyer 0 à l'un des deux appels sans que
+  // l'autre soit affecté), avec un 0 par timeout qui finirait persisté en NVS
+  // et ferait republier à tort à la prochaine reconnexion.
+  const uint32_t currentFp = computeDiscoveryFingerprint();
 
   JsonDocument doc;
   const String discoveryBase = String(HA_DISCOVERY_PREFIX) + "/";
@@ -1996,6 +2176,15 @@ void MqttManager::publishDiscovery() {
     // feature-109 : comptage pur, zéro allocation, zéro écriture au journal —
     // c'est tout ce que fait la boucle des 54 publications.
     discoveryTallyRecord(tally, configTopic.c_str(), ok);
+    // bug-121 (D2) : octets OFFERTS (tentés), qu'il y ait échec ou non — c'est
+    // le coût payé côté pile TCP, pas seulement le coût des succès. "+2" =
+    // MQTT_MAX_HEADER_SIZE minimal (les 3 octets fixes + longueur variable sont
+    // approximés par cette marge — voir la garde bufferSize de safePublish/PubSubClient).
+    tally.bytesOffered += (uint32_t)(configTopic.length() + payload.length() + 2);
+    // bug-121 : identité du jeu d'entités RÉELLEMENT offert, mesurée — pas
+    // déduite du compte d'attempted (qui ne dirait rien si le contenu changeait
+    // à nombre d'entités égal).
+    entityHashAccum = discoveryFnv1aStr(entityHashAccum, configTopic.c_str());
     // Le détail par entité survit en DEBUG (non persisté quand DEBUG est off).
     // La garde est ICI, au site d'appel, et non dans Logger::debug() qui
     // court-circuite en interne (logger.cpp) : sans elle, la concaténation
@@ -2816,6 +3005,37 @@ void MqttManager::publishDiscovery() {
   publishConfig(topic);
 
   discoveryPublished = true;
+
+  // bug-121 (D2) : plancher heap 8 bits APRÈS la boucle — la sonde qui prouve
+  // (ou infirme) que la rafale consomme la ressource rare.
+  tally.maxBloc8After = heapLargestFreeBlock8Bit();
+
+  // bug-121 (A1/A2) : persistance NVS de l'empreinte tenue à jour — AU PLUS
+  // UNE écriture par rafale, et seulement si l'enregistrement diffère de celui
+  // déjà en NVS (pas d'usure NVS pour confirmer un état déjà écrit).
+  {
+    // bug-121 (revue, mineur) : `{}` — zéro-initialise la struct (pas d'octet
+    // de bourrage indéterminé écrit en NVS par putBytes()).
+    DiscoveryRecord newRecord{};
+    newRecord.fingerprint = currentFp;  // calculée UNE fois en tête de fonction — voir le commentaire là-bas
+    newRecord.entityHash = entityHashAccum;
+    newRecord.entityCount = tally.attempted;
+    newRecord.complete = (tally.failed == 0) ? 1 : 0;
+    if (!_recordValid || discoveryRecordDiffers(_storedRecord, newRecord)) {
+      esp_task_wdt_reset();
+      Preferences prefs;
+      if (prefs.begin(kDiscoveryNvsNamespace, /*readOnly=*/false)) {
+        prefs.putBytes(kDiscoveryNvsRecordKey, &newRecord, sizeof(newRecord));
+        prefs.end();
+      } else {
+        systemLogger.warning("Découverte HA : échec ouverture NVS — empreinte non persistée "
+                             "(prochaine reconnexion republiera à tort)");
+      }
+      esp_task_wdt_reset();
+    }
+    _storedRecord = newRecord;
+    _recordValid = true;
+  }
 
   // feature-109 : cette ligne REMPLACE les 54 lignes INFO de la rafale (et non
   // s'y ajoute). Soustraction non signée : correcte au repliement de millis().

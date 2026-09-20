@@ -102,6 +102,53 @@
   qui reste Accepté.
 - `docs/API.md` : documentation du bloc `net` de `/get-system-info`.
 
+> **Ce qui change pour vous — découverte Home Assistant (bug-121, cible
+> 2.53.1)** : après une coupure MQTT, l'appareil ne republie plus
+> systématiquement ses 60 entités Home Assistant à chaque reconnexion — elles
+> étaient déjà conservées par le courtier (`retain`), la republication était
+> un travail redondant. La rafale complète n'a lieu que si le courtier a
+> perdu ses messages retenus, si une nouvelle version de firmware ajoute une
+> entité, ou si Home Assistant redémarre. Rien ne change dans Home Assistant
+> lui-même : mêmes entités, mêmes valeurs, mêmes réglages. **Ce lot ne
+> corrige pas les coupures MQTT elles-mêmes** — un `debugger` a établi le
+> 08/09 qu'elles ont une cause distincte (fragmentation mémoire, suivie sous
+> `bug-080`), pas la republication de découverte : les coupures continueront
+> d'apparaître dans le journal après ce lot, et ce n'est pas un échec du
+> correctif.
+>
+> ⚠️ Le bouton « Forcer la republication » envisagé initialement n'est **pas**
+> livré dans ce lot (retiré le 20/09 pour rester en firmware seul, sans mise
+> à jour du filesystem) : le seul rattrapage automatique si le courtier perd
+> ses messages retenus est un redémarrage de Home Assistant.
+
+### Firmware
+
+- **MQTT / Home Assistant (bug-121)** : la rafale de découverte HA n'est plus
+  déclenchée à chaque reconnexion, mais sur changement d'une **empreinte**
+  (version de firmware, préfixe `homeassistant/`, identifiant d'appareil,
+  topic de base, serveur, port), persistée en NVS pour survivre au
+  redémarrage. Republication si : aucun enregistrement valide (flash neuf),
+  empreinte différente, rafale précédente incomplète, ou message de naissance
+  Home Assistant (`homeassistant/status` == `online`, nouvel abonnement).
+  Sinon, silence complet.
+- **MQTT** : la ligne de synthèse d'une rafale de découverte porte désormais
+  le **motif** de son déclenchement et son **coût mesuré** (octets offerts,
+  plus gros bloc contigu du tas 8 bits avant/après) — pas seulement sa durée.
+
+### Documentation
+
+- `docs/MQTT.md` : conditions exactes de republication de la découverte HA,
+  abonnement à `homeassistant/status`, et geste manuel
+  (`mosquitto_sub --remove-retained`) pour les topics orphelins après un
+  changement de préfixe.
+- `docs/subsystems/mqtt-manager.md` : nouvelle règle de republication,
+  correction d'un décompte d'entités périmé (« 54 » affiché alors que
+  `publishDiscovery()` en publie 60), format de journalisation enrichi.
+- [ADR-0085](docs/adr/0085-republication-decouverte-ha-sur-empreinte.md)
+  (nouveau) : republication sur empreinte plutôt que sur reconnexion,
+  alternatives écartées (sentinelle en aller-retour, purge des orphelins,
+  republication systématique).
+
 ---
 
 ## [2.53.0] - 2026-09-19

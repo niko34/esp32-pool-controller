@@ -10,6 +10,8 @@
 #include <freertos/task.h>
 #include <atomic>
 
+#include "discovery_fingerprint_logic.h"  // bug-121 : DiscoveryRecord / DiscoveryReason (self-contained : stdint.h)
+
 struct MqttTopics {
   String base;
   String temperatureState;
@@ -171,6 +173,35 @@ private:
   // 0 = jamais de rafale (sentinelle documentée dans heapCtxDiscoveryWindowActive).
   std::atomic<uint32_t> _lastDiscoveryMarkMs{0};
 
+  // bug-121 : dernier enregistrement de découverte connu — chargé UNE fois
+  // depuis la NVS dans begin() (avant la création de mqttTask, donc sans
+  // concurrence possible à cet instant précis — même convention que `topics`,
+  // voir le commentaire de topicsMutex ci-dessus), puis lu/écrit UNIQUEMENT
+  // depuis mqttTask (connectInTask/publishDiscovery). Persisté au plus une
+  // fois par rafale, et seulement si discoveryRecordDiffers() le juge changé.
+  DiscoveryRecord _storedRecord{};
+  bool _recordValid = false;
+  // bug-121 (revue, bloquant 2) : topic de naissance HA, construit UNE fois
+  // dans begin() depuis HA_DISCOVERY_PREFIX + kHaStatusTopicSuffix — jamais
+  // "homeassistant/status" en dur (le code hache pourtant ce même préfixe dans
+  // l'empreinte : il admet donc qu'il peut changer). Utilisé au subscribe()
+  // ET à la comparaison dans messageCallback() : un seul site de vérité.
+  String _haStatusTopic;
+  // bug-121 (revue) : date de LA CONNEXION en cours (posée dans connectInTask,
+  // JUSTE avant les subscribe()) — mqttTask uniquement, lu/écrit depuis
+  // connectInTask ET messageCallback (même tâche). Sert à absorber un message
+  // de naissance HA RETENU côté courtier : il est redélivré en quelques ms
+  // après le subscribe(), donc à l'intérieur de kDiscoveryHaRestartGraceMs —
+  // un VRAI redémarrage HA arrive sur une session déjà établie, bien après.
+  uint32_t _connectedAtMs = 0;
+  // bug-121 : posé par messageCallback() (mqttTask) à la réception du message
+  // de naissance HA (`homeassistant/status` == "online"), consommé par
+  // taskLoop() (même tâche, mais franchit conceptuellement la frontière
+  // callback/boucle — atomique pour rester correct si ce contrat évolue).
+  // Aucun autre écrivain : le bouton HTTP de republication forcée est HORS du
+  // périmètre de ce lot (voir bug-121, section « périmètre réduit »).
+  std::atomic<bool> _discoveryForceRequested{false};
+
   // Reconnect/backoff — accédés UNIQUEMENT depuis mqttTask
   bool reconnectRequested = false;
   unsigned long lastAttempt = 0;
@@ -200,7 +231,11 @@ private:
   bool _rebootPending = false;
   unsigned long _rebootRequestedAtMs = 0;
 
-  void publishDiscovery();
+  // bug-121 : le motif (voir discovery_fingerprint_logic.h) doit être connu
+  // AVANT l'appel — plus de recalcul interne conditionnant un no-op silencieux.
+  // Appelant responsable de ne PAS appeler avec DiscoveryReason::None (les deux
+  // call sites de mqtt_manager.cpp filtrent déjà ce cas en amont).
+  void publishDiscovery(DiscoveryReason reason);
   void refreshTopics();
 
   // feature-021 : caches pour publication edge-triggered de l'alerte calibration

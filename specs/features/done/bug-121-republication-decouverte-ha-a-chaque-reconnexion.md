@@ -2,10 +2,12 @@
 - **ID** : bug-121
 - **Slug** : republication-decouverte-ha-a-chaque-reconnexion
 - **Type** : bug — **republication redondante** (travail inutile au moment le plus fragile). ⚠️ L'hypothèse de « boucle de déconnexion » est **RÉFUTÉE** — voir le verdict du 08/09 ci-dessous
-- **Statut** : todo
+- **Statut** : **done** (2026-09-20) — revue `code-reviewer` **Approved** en 3e passe. Code + tests livrés le 2026-09-20 (A1, A2, A4, D2, T1, T2 ;
+  A3 partiellement couvert, voir plus bas). Reste : revue `code-reviewer` avant
+  clôture vers `done/`.
 - **Priorité** : **normale** — abaissée le 08/09 : les 13 déconnexions MQTT ne relèvent PAS de cette spec, elles sont rattachées à `bug-080`
-- **Version cible** : 2.49.0
-- **Dernière mise à jour** : 2026-09-08
+- **Version cible** : 2.53.1 (corrigée le 2026-09-20 — la 2.49.0 d'origine est dépassée, le firmware est en 2.53.0)
+- **Dernière mise à jour** : 2026-09-20 (doc-writer — checklist livrables + section « Périmètre réduit »)
 - **Spec(s) liée(s)** : `bug-080` lot C (fragmentation du tas — même signature d'allocation), ADR-0010 (stabilité MQTT), ADR-0011 (mqttTask dédiée), ADR-0033 (budget de journalisation)
 
 ## Domaines touchés
@@ -188,7 +190,7 @@ publishDiscovery();              // 54 publish — long si CPL lossy
 ```
 
 Or `publishDiscovery()` publie chaque entité avec **`retain = true`**
-(`mqtt_manager.cpp:1991`, `safePublish(configTopic, payload, true)`). Le courtier
+(`safePublish(configTopic, payload, true)` — **ligne 1995** sur HEAD au 2026-09-20 ; la rédaction citait 1991). Le courtier
 conserve donc ces messages : Home Assistant les relit **de lui-même** à son
 propre redémarrage, sans que l'appareil ait à les réémettre.
 
@@ -266,48 +268,95 @@ levé) — il ne mémorise rien d'une connexion à l'autre.
 
 ## Fichiers potentiellement concernés
 - `src/mqtt_manager.cpp` — `:459` (le reset), `publishDiscovery()` `:1948`,
-  la lambda `publishConfig` `:1987`
+  la lambda `publishConfig` (**:1991** sur HEAD ; la rédaction citait 1987)
 - `src/mqtt_manager.h` — état de mémorisation
 - `src/constants.h` — clé NVS éventuelle
 - `docs/MQTT.md` — contrat de découverte et conditions de republication
 - `docs/subsystems/mqtt-manager.md` — la nouvelle règle
 - `docs/adr/` — probable
 
+## Périmètre réduit
+
+Le plan initial de l'`architect` prévoyait un bouton « Forcer la republication »
+dans l'UI Paramètres, plus un champ `mqtt_force_discovery` sur
+`POST /save-config`, pour piloter explicitement `DiscoveryReason::Recovery`
+(paramètre `forced` de `discoveryDecide()`). **Retiré par l'utilisateur le
+2026-09-20** pour livrer ce lot en **firmware seul**, sans reconstruction du
+filesystem LittleFS (`data/` inchangé, pas de rebuild `build_fs.sh`).
+
+Conséquence : `DiscoveryReason::Recovery` et le paramètre `forced` existent
+dans `discovery_fingerprint_logic.h`, sont couverts par les tests unitaires
+(§4-5 de `test/test_native_discovery_fingerprint/test_discovery_fingerprint.cpp`),
+mais **n'ont aucun appelant firmware** — `_discoveryForceRequested` n'est posé
+à `true` que par le message de naissance HA (motif `HaRestart`, chemin séparé
+qui court-circuite `discoveryDecide()` dans `taskLoop()`), jamais par une route
+HTTP. C'est un **point d'extension tracé**, pas du code mort : trois
+commentaires y renvoient explicitement — `src/mqtt_manager.cpp:520-521`,
+`src/mqtt_manager.cpp:1467-1468`, `src/mqtt_manager.h:188-189` — et la
+docstring de `discoveryDecide()` dans `src/discovery_fingerprint_logic.h:148-149`.
+
+C'est directement la cause du livrable **A3 partiel** : sans ce bouton, il
+n'existe **aucun** moyen déclenché par l'utilisateur de forcer une
+récupération — seul le redémarrage de Home Assistant (détecté via
+`homeassistant/status`) déclenche une rafale de rattrapage.
+
 ## Livrables — check-list
 - [x] D1 — **`debugger`** : causalité **RÉFUTÉE** le 08/09. Verdict et preuve
       ci-dessous. Le reste du lot se justifie sur son seul mérite.
-- [ ] D2 — Mesurer le **coût réel** d'une rafale : octets totaux émis, durée,
-      tampons TX consommés, `maxBloc8` avant/après. Les 211 ms journalisés sont
-      une durée, pas un coût mémoire.
-- [ ] A1 — Empreinte du jeu de découverte (version de firmware + nombre et
-      identité des entités + préfixe), persistée pour survivre au redémarrage
-- [ ] A2 — Republication conditionnée à l'empreinte, jamais à la reconnexion seule
-- [ ] A3 — Chemin de récupération si les messages retenus sont perdus côté
-      courtier, sans redémarrage de l'appareil
-- [ ] A4 — Journalisation : dire **pourquoi** une rafale a lieu (empreinte
-      changée / récupération / première connexion), et rester **muet** quand elle
-      est évitée — le silence est le cas nominal
-- [ ] C1 — `docs/MQTT.md`, `docs/subsystems/mqtt-manager.md`
-- [ ] C2 — ADR si la décision verrouille le contrat de découverte
-- [ ] C3 — `CHANGELOG.md`
-- [ ] T1 — Tests : empreinte inchangée → aucune republication ; version bumpée →
+- [x] D2 — Coût réel d'une rafale mesuré et **journalisé à chaque rafale**
+      (`bytesOffered`, `maxBloc8Before`/`maxBloc8After` — ADR-0038, jamais la
+      mémoire libre). Voir `DiscoveryTally` (`src/discovery_report_logic.h`) et
+      la ligne de synthèse enrichie.
+- [x] A1 — Empreinte 32 bits FNV-1a (version firmware + préfixe HA + device ID +
+      topic de base + serveur + port), persistée en NVS
+      (`src/discovery_fingerprint_logic.h`, `DiscoveryRecord`,
+      `constants.h:kDiscoveryNvsNamespace/kDiscoveryNvsRecordKey`).
+- [x] A2 — Republication conditionnée à `discoveryDecide()` (empreinte,
+      1re connexion, rafale précédente incomplète), jamais à la seule
+      reconnexion — voir `mqtt_manager.cpp` (`connectInTask`).
+- [ ] A3 — **Partiellement couvert.** Le seul chemin de récupération livré est
+      le message de naissance HA (`homeassistant/status` == `online`, motif
+      `HaRestart`). Un courtier purgé **sans** redémarrage de Home Assistant
+      n'a **aucun rattrapage automatique** dans ce lot — le bouton de
+      récupération manuelle prévu par l'architecte est hors périmètre, voir
+      « Périmètre réduit » ci-dessous.
+- [x] A4 — Journalisation : le motif (`DiscoveryReason`) figure dans la ligne de
+      synthèse, et le cas nominal (aucune rafale) reste **muet** — aucun appel
+      à `publishDiscovery()` n'est fait avec `DiscoveryReason::None`.
+- [x] C1 — `docs/MQTT.md`, `docs/subsystems/mqtt-manager.md` mis à jour
+      (2026-09-20, `doc-writer`) — condition de republication, abonnement
+      `homeassistant/status`, geste manuel pour les orphelins, décompte
+      d'entités corrigé (54 → 60).
+- [x] C2 — [ADR-0085](../../docs/adr/0085-republication-decouverte-ha-sur-empreinte.md)
+      créé (critères 1, 2, 3, 4).
+- [x] C3 — `CHANGELOG.md` mis à jour, section `[Unreleased]` (cible 2.53.1) —
+      **sans** affirmer que les déconnexions MQTT sont corrigées.
+- [x] T1 — Tests : empreinte inchangée → aucune republication ; version bumpée →
       republication ; entité ajoutée → republication ; préfixe changé →
       republication ; reconnexions en rafale → une seule au plus
-- [ ] T2 — **Mutation** : au moins un mutant sur la condition d'empreinte, et un
-      sur la persistance (empreinte non sauvegardée → republication à chaque boot)
+      (`test/test_native_discovery_fingerprint/`).
+- [x] T2 — **Mutation** : mutants sur la condition d'empreinte (§5 du fichier de
+      test, persistance absente → republication à chaque boot) couverts dans
+      `test_discovery_fingerprint.cpp`.
 
 ## Nouvelles signatures / API
 - Endpoints HTTP nouveaux : aucun
 - Champs WebSocket nouveaux : aucun
-- Topics MQTT nouveaux : aucun — **le contrat de découverte ne change pas**, seule
-  la *fréquence* de republication change
-- Constantes : clé NVS d'empreinte
+- Topics MQTT nouveaux : aucune **publication** nouvelle — **le contrat de
+  découverte ne change pas**, seule la *fréquence* de republication change.
+  Un **abonnement** nouveau est ajouté côté appareil : `homeassistant/status`
+  (message de naissance HA, `mqtt.subscribe(...)` dans `connectInTask()`,
+  `src/mqtt_manager.cpp:522`) — observable côté courtier (ACL, logs
+  d'abonnement), documenté dans `docs/MQTT.md`.
+- Constantes : `kDiscoveryNvsNamespace` / `kDiscoveryNvsRecordKey` (clé NVS de
+  l'empreinte), `kDiscoverySummaryLineMax` porté de 160 à 256 o
+  (`src/constants.h`)
 
 ## Sécurité chimique
 - Dosage impliqué : **non**
 - Filtration requise : non
 - Calibration touchée : non
-- Risque identifié : **aucun** — mais attention, `mqtt_manager.cpp:470` republie à
+- Risque identifié : **aucun** — mais attention, `mqtt_manager.cpp` (**:469-481** sur HEAD) republie à
   chaque reconnexion l'alerte `pump_unusable`, **non retenue** et prescrite par
   l'ADR-0034 (pool-chemistry P1). **Cette republication-là doit être préservée** :
   elle n'est pas de la découverte, et la confondre avec elle supprimerait une
@@ -330,7 +379,9 @@ levé) — il ne mémorise rien d'une connexion à l'autre.
 - Aucun
 
 ### Topics MQTT
-- Aucun nouveau. La **fréquence** de republication des topics `.../config` change.
+- Aucune publication nouvelle. La **fréquence** de republication des topics
+  `.../config` change. Un abonnement nouveau est ajouté :
+  `homeassistant/status` (message de naissance HA).
 
 ### Documentation à produire / mettre à jour
 - `docs/MQTT.md`, `docs/subsystems/mqtt-manager.md`, `CHANGELOG.md`, ADR probable.

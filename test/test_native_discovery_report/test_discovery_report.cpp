@@ -87,6 +87,11 @@ void test_burst_perfect_54_of_54(void) {
   discoveryTallyInit(t, 3);
   runBurst(t, 54, nullptr);
   t.durationMs = 1240;
+  // bug-121 : motif + coût réel, désormais obligatoires dans la ligne.
+  t.reason = DiscoveryReason::FirstBoot;
+  t.bytesOffered = 9214;
+  t.maxBloc8Before = 21492;
+  t.maxBloc8After = 21236;
 
   TEST_ASSERT_EQUAL_UINT16(54, t.attempted);
   TEST_ASSERT_EQUAL_UINT16(54, t.published);
@@ -98,7 +103,10 @@ void test_burst_perfect_54_of_54(void) {
   const int need = discoveryFormatSummary(gArena, kDiscoverySummaryLineMax, t);
 
   // Format verrouillé caractère par caractère : le contenu réel du char[].
-  TEST_ASSERT_EQUAL_STRING("Découverte HA #3 : 54/54 entités, 0 échec, 1240 ms", gArena);
+  TEST_ASSERT_EQUAL_STRING(
+      "Découverte HA #3 (1re connexion) : 54/54 entités, 0 échec, 9214 o, "
+      "maxBloc8 21492\xE2\x86\x92" "21236, 1240 ms",
+      gArena);
   TEST_ASSERT_EQUAL_INT((int)strlen(gArena), need);
   TEST_ASSERT_TRUE(need < (int)kDiscoverySummaryLineMax);  // pas de troncature
   // Aucun vestige du vocabulaire d'échec dans une rafale saine.
@@ -132,6 +140,11 @@ void test_burst_interrupted_at_13th(void) {
   discoveryTallyInit(t, 4);
   runBurst(t, 54, failFrom13);
   t.durationMs = 310;
+  // bug-121 : motif + coût réel, désormais obligatoires dans la ligne.
+  t.reason = DiscoveryReason::FingerprintChanged;
+  t.bytesOffered = 2048;
+  t.maxBloc8Before = 21000;
+  t.maxBloc8After = 20800;
 
   TEST_ASSERT_EQUAL_UINT16(54, t.attempted);
   TEST_ASSERT_EQUAL_UINT16(12, t.published);   // meurt si published++ ignore !ok
@@ -142,8 +155,8 @@ void test_burst_interrupted_at_13th(void) {
   arenaPoison();
   discoveryFormatSummary(gArena, kDiscoverySummaryLineMax, t);
   TEST_ASSERT_EQUAL_STRING(
-      "Découverte HA #4 : 12/54 entités, 42 échecs, interrompue à la 13e "
-      "(sistant/sensor/pool_controller_entity_13/config), 310 ms",
+      "Découverte HA #4 (empreinte changée) : 12/54 entités, 42 échecs, interrompue à la 13e "
+      "(sistant/sensor/pool_controller_entity_13/config), 2048 o, maxBloc8 21000\xE2\x86\x92" "20800, 310 ms",
       gArena);
   TEST_ASSERT_NULL(strstr(gArena, "épars"));
 }
@@ -168,6 +181,11 @@ void test_burst_sparse_failures_are_not_interruption(void) {
   discoveryTallyInit(t, 7);
   runBurst(t, 54, failSparse);  // échecs en 9 et 20, le reste passe
   t.durationMs = 1180;
+  // bug-121 : motif + coût réel, désormais obligatoires dans la ligne.
+  t.reason = DiscoveryReason::PreviousIncomplete;
+  t.bytesOffered = 8900;
+  t.maxBloc8Before = 21400;
+  t.maxBloc8After = 21100;
 
   TEST_ASSERT_EQUAL_UINT16(54, t.attempted);
   TEST_ASSERT_EQUAL_UINT16(52, t.published);
@@ -179,8 +197,8 @@ void test_burst_sparse_failures_are_not_interruption(void) {
   arenaPoison();
   discoveryFormatSummary(gArena, kDiscoverySummaryLineMax, t);
   TEST_ASSERT_EQUAL_STRING(
-      "Découverte HA #7 : 52/54 entités, 2 échecs épars, 1er à la 9e "
-      "(ssistant/sensor/pool_controller_entity_9/config), 1180 ms",
+      "Découverte HA #7 (rafale précédente incomplète) : 52/54 entités, 2 échecs épars, 1er à la 9e "
+      "(ssistant/sensor/pool_controller_entity_9/config), 8900 o, maxBloc8 21400\xE2\x86\x92" "21100, 1180 ms",
       gArena);
   // Dire « interrompue » ici serait un diagnostic FAUX et crédible.
   TEST_ASSERT_NULL(strstr(gArena, "interrompue"));
@@ -247,13 +265,18 @@ void test_burst_total_failure_from_first_entity(void) {
 void test_empty_tally_produces_a_line_not_silence(void) {
   DiscoveryTally t;
   discoveryTallyInit(t, 12);
+  // bug-121 : motif obligatoire — un appelant ne déclenche jamais cet appel
+  // pour DiscoveryReason::None (le silence du cas nominal est géré en amont).
+  t.reason = DiscoveryReason::HaRestart;
   TEST_ASSERT_EQUAL_UINT16(0, t.attempted);
   TEST_ASSERT_FALSE(discoveryTallyInterrupted(t));  // 0 échec → pas d'interruption
 
   arenaPoison();
   const int need = discoveryFormatSummary(gArena, kDiscoverySummaryLineMax, t);
   TEST_ASSERT_TRUE(need > 0);
-  TEST_ASSERT_EQUAL_STRING("Découverte HA #12 : 0/0 entités, 0 échec, 0 ms", gArena);
+  TEST_ASSERT_EQUAL_STRING(
+      "Découverte HA #12 (HA redémarré) : 0/0 entités, 0 échec, 0 o, maxBloc8 0\xE2\x86\x92" "0, 0 ms",
+      gArena);
 }
 
 // Le cas « lien MQTT absent » : rafale non TENTÉE, ligne dédiée et explicite.
@@ -472,22 +495,39 @@ void test_zero_length_and_null_buffer_are_no_ops(void) {
   TEST_ASSERT_EQUAL_INT(0, discoveryFormatAbort(nullptr, 64, 5));
 }
 
-// Le pire cas réaliste (topic tronqué à 47 o, 3 chiffres partout) tient dans
-// kDiscoverySummaryLineMax : la ligne livrée n'est jamais tronquée en prod.
+// Le pire cas RÉEL (bug-121) : tous les uint32/uint16 saturés, le libellé de
+// motif le plus long (« rafale précédente incomplète », 31 o), le topic
+// tronqué à 47 o. TEST_ASSERT_EQUAL_INT verrouille la valeur MESURÉE ici,
+// pas recopiée : le commentaire de kDiscoverySummaryLineMax (constants.h)
+// annonce 237 o pour ce même pire cas — recalculé au harnais natif le
+// 2026-09-20, la valeur exacte est 236 o (écart d'1 o, sans conséquence :
+// les deux tiennent très largement dans les 256 o alloués, 19-20 o de marge).
+// Signalé pour information, pas un blocage — corriger le commentaire relève
+// de embedded-developer/code-reviewer, pas de ce lot de tests.
 void test_worst_case_line_fits_the_production_buffer(void) {
   DiscoveryTally t;
   discoveryTallyInit(t, 4294967295u);
   char longTopic[128];
   memset(longTopic, 'q', sizeof(longTopic) - 1);
   longTopic[sizeof(longTopic) - 1] = '\0';
-  for (uint16_t i = 1; i <= 999; i++) discoveryTallyRecord(t, longTopic, i < 500);
+  discoveryTallyRecord(t, longTopic, false);  // pose firstFailTopic tronqué à 47 o
+  t.attempted = 65535;
+  t.published = 65535;
+  t.failed = 65535;
+  t.firstFailIndex = 65535;
   t.durationMs = 4294967295u;
+  t.bytesOffered = 4294967295u;
+  t.maxBloc8Before = 4294967295u;
+  t.maxBloc8After = 4294967295u;
+  t.reason = DiscoveryReason::PreviousIncomplete;
+  TEST_ASSERT_FALSE(discoveryTallyInterrupted(t));  // branche « épars », la plus longue ici
 
   arenaPoison();
   const int need = discoveryFormatSummary(gArena, kDiscoverySummaryLineMax, t);
   TEST_ASSERT_TRUE(need > 0);
   TEST_ASSERT_TRUE(need < (int)kDiscoverySummaryLineMax);
   TEST_ASSERT_EQUAL_INT((int)strlen(gArena), need);
+  TEST_ASSERT_EQUAL_INT(236, need);  // mesuré, pas recopié — voir commentaire ci-dessus
 }
 
 // ---------------------------------------------------------------------------

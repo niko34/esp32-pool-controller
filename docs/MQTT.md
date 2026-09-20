@@ -416,6 +416,55 @@ Le contrôleur publie automatiquement sa configuration pour Home Assistant au d�
 **Préfixe discovery :** `homeassistant/`
 **Device ID :** `poolcontroller`
 
+### Republication : conditionnée à l'empreinte, pas à chaque reconnexion (bug-121, v2.53.1)
+
+Le **contrat de découverte ne change pas** : mêmes topics, mêmes charges
+utiles, même `retain=true`. Ce qui change est la **fréquence** à laquelle la
+rafale complète est rejouée.
+
+Jusqu'en 2.53.0, une reconnexion MQTT republiait l'intégralité des entités —
+travail redondant, puisque ces messages `retain=true` sont déjà conservés par
+le courtier. Depuis 2.53.1, la rafale n'a lieu que si :
+
+- **aucun enregistrement** de la dernière rafale n'est trouvé en NVS (flash
+  neuf, NVS effacée) ;
+- l'**empreinte** de la configuration a changé (version de firmware, préfixe
+  `homeassistant/`, identifiant d'appareil, topic de base, **serveur** ou
+  **port** du courtier) ;
+- la **rafale précédente était incomplète** (au moins un échec de publication) ;
+- Home Assistant vient de **redémarrer** (voir abonnement ci-dessous).
+
+Dans tous les autres cas — la grande majorité des reconnexions — **rien n'est
+republié**. Détail firmware, format de journalisation et coût mesuré d'une
+rafale : [`docs/subsystems/mqtt-manager.md`](subsystems/mqtt-manager.md#republication-conditionnée-à-lempreinte-pas-à-la-reconnexion-bug-121-v2531).
+
+### Abonnement à `homeassistant/status` (bug-121, v2.53.1)
+
+Le contrôleur s'abonne désormais à `homeassistant/status` — le **message de
+naissance** que Home Assistant publie (`online` au démarrage, `offline` à
+l'extinction propre, LWT MQTT). À la réception de `online`, une rafale de
+découverte complète est déclenchée inconditionnellement, sans consulter
+l'empreinte : c'est le seul chemin de récupération automatique si les topics
+retenus ont été perdus côté courtier.
+
+⚠️ Ce chemin ne couvre **que** le redémarrage de Home Assistant. Un courtier
+**purgé** (perte des messages retenus) **sans** que Home Assistant redémarre
+n'a **aucun rattrapage automatique** dans cette version — voir la section
+« Périmètre réduit » de la spec `bug-121`.
+
+### Changement de préfixe : topics orphelins, geste manuel
+
+Changer le préfixe `homeassistant/` (ou le topic de base) fait cesser la
+republication sur les **anciens** topics `.../config` — l'empreinte change,
+donc la rafale part sur les **nouveaux** topics, mais les anciens restent
+**retenus côté courtier** et ne sont pas purgés automatiquement. C'est déjà le
+comportement d'avant bug-121 : **aucune régression**, seulement documenté ici
+pour la première fois. Pour nettoyer manuellement les topics orphelins :
+
+```bash
+mosquitto_sub -h <broker> -t 'homeassistant/#' --remove-retained --retained-only
+```
+
 | Type | Nom dans HA | Topic état | Topic commande |
 |------|-------------|-----------|----------------|
 | Sensor | Piscine Température | `{base}/temperature` | — |

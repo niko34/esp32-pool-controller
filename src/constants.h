@@ -105,7 +105,72 @@ constexpr size_t kDiscoveryFailTopicMax   = 48;   // Topic du 1er échec mémori
 // donc la troncature impossible, sans peser sur la pile de mqttTask
 // (kMqttTaskStackSize) : le buffer de synthèse et celui du détail DEBUG ne
 // coexistent jamais (scopes disjoints).
-constexpr size_t kDiscoverySummaryLineMax = 160;  // Buffer pile d'UNE ligne de synthèse de rafale
+// bug-121 : la ligne porte désormais aussi le MOTIF (jusqu'à « rafale
+// précédente incomplète », 31 o UTF-8) et le COÛT mesuré (octets offerts +
+// plancher heap 8 bits avant/après). ⚠️ RECALCULÉ, pas recopié (ADR-0073
+// s'applique à ce chiffre comme au compteur de suites de tests) — et recalculé
+// une SECONDE fois en revue de code, qui avait elle-même signalé une première
+// version fausse (224). Piège de saturation à éviter : `attempted`,
+// `published`, `failed` et `firstFailIndex` sont des `uint16_t` (5 chiffres
+// max, PAS 10 — les saturer en uint32 comme le reste de la ligne surestime le
+// pire cas). `published + failed == attempted` est un invariant réel de
+// discoveryTallyRecord() (chaque entité tentée est comptée dans l'un OU
+// l'autre, jamais les deux) — mais cet invariant NE DÉPARTAGE PAS les deux
+// formes : un état « épars » qui le respecte atteint déjà 236 o
+// (published=55535, failed=10000, firstFailIndex=10000), et un état
+// « interrompue » qui le respecte tout autant atteint 237 o
+// (published=55535, failed=10000, firstFailIndex=55536 — SEUL firstFailIndex
+// change entre les deux, l'invariant est identique des deux côtés). C'est la
+// comparaison ENTRE LES DEUX MAXIMA, chacun retrouvé par recherche EXHAUSTIVE
+// sur `discoveryFormatSummary()` réel (pas une reconstruction à la main du
+// format) sur toute la plage valide de `firstFailIndex` (1..attempted-failed+1),
+// qui tranche — pas l'invariant lui-même. L'erreur des deux évaluations
+// manuelles précédentes (224, puis un « épars »=236 avancé comme le maximum
+// absolu) venait d'une sous-saturation de la forme « interrompue »
+// (firstFailIndex=1, published=0) qui lui faisait perdre des chiffres sans
+// raison. Pire cas réel retenu : **237 o, forme « interrompue »**. 256 o
+// laissent 19 o de marge sans peser sur la pile de mqttTask.
+constexpr size_t kDiscoverySummaryLineMax = 256;  // Buffer pile d'UNE ligne de synthèse de rafale
+
+// bug-121 : empreinte de la découverte HA, persistée en NVS pour survivre au
+// redémarrage (DiscoveryRecord, voir src/discovery_fingerprint_logic.h).
+// Namespace et clé Preferences/nvs_flash : ≤ 15 caractères chacun (contrainte
+// ESP-IDF, silencieusement tronquée au-delà — vérifié : les deux tiennent).
+constexpr const char* kDiscoveryNvsNamespace = "mqtt_disc";  // 9 caractères
+constexpr const char* kDiscoveryNvsRecordKey = "fp_rec";     // 6 caractères — DiscoveryRecord en octets bruts (putBytes/getBytes)
+
+// bug-121 (revue, bloquant 2) : suffixe du topic de naissance HA — le code
+// hache POURTANT HA_DISCOVERY_PREFIX dans l'empreinte (il admet donc que ce
+// préfixe peut changer). "homeassistant/status" en dur aux DEUX sites d'usage
+// (subscribe + messageCallback) réinventait le préfixe : le jour où il change,
+// l'abonnement pointe à côté et le seul chemin de récupération (A3) meurt en
+// silence. Le préfixe reste HA_DISCOVERY_PREFIX (source unique, config.h) ;
+// seul le suffixe est nommé ici, concaténé UNE fois (mqtt_manager.h/.cpp,
+// membre _haStatusTopic) et réutilisé aux deux sites.
+constexpr const char* kHaStatusTopicSuffix = "/status";
+
+// bug-121 (revue, bloquant 1 — 2ᵉ passe) : un message de naissance HA RETENU
+// (retain=true côté broker, configurable et pratiqué par une partie des
+// installations) est redélivré en quelques ms APRÈS LE subscribe() de CHAQUE
+// (re)connexion. Le discriminant n'est PAS « depuis la dernière rafale »
+// (`_lastDiscoveryMarkMs` peut dater d'heures — un birth retenu redélivré 13
+// fois sur 13 reconnexions du 08/09 aurait déclenché 13 rafales) mais « depuis
+// LA CONNEXION » (`_connectedAtMs`, mqtt_manager.h) : un message retenu arrive
+// sur une session TOUT JUSTE établie, un vrai redémarrage HA arrive sur une
+// session déjà ancienne. Tout `homeassistant/status`==`online` reçu dans cette
+// fenêtre après `_connectedAtMs` est donc DROPPÉ par messageCallback() — pas
+// mis en file, pas debounce : ignoré à la source, silencieusement.
+constexpr uint32_t kDiscoveryHaRestartGraceMs = 5000;
+
+// bug-121 (revue, bloquant 1 — 1ʳᵉ passe, conservé comme second filet) :
+// anti-flapping PAR-DESSUS kDiscoveryHaRestartGraceMs — couvre un HA qui
+// redémarre réellement, mais en boucle rapide (chaque redémarrage passe le
+// filtre grace ci-dessus car il arrive sur une session déjà établie). Mesuré
+// depuis _lastDiscoveryMarkMs (posé à l'ouverture ET à la fermeture de toute
+// rafale, feature-122) : un second signal HaRestart dans cette fenêtre est
+// ignoré (silence, DEBUG seulement), le drapeau restant posé pour réévaluation
+// au tour suivant — jamais perdu, seulement différé.
+constexpr uint32_t kDiscoveryHaRestartDebounceMs = 60000;
 
 // Intervalles capteurs (voir aussi sensors.cpp pour détails internes)
 constexpr unsigned long kTempSensorIntervalMs = 2000;     // 2s - Lecture température DS18B20
