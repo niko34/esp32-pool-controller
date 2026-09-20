@@ -48,6 +48,16 @@ String rangeOrNa(const PurgeChannelState& ch, unsigned int decimals) {
   return String(lo, decimals) + "→" + String(hi, decimals);
 }
 
+// feature-097 : étendue (max−min) des STATISTIQUES DE BLOC d'une voie au
+// moment du verdict — la grandeur exacte jugée par purgeStabilityEvaluate(),
+// distincte du rawMin→rawMax ci-dessus (qui porte sur les lectures brutes
+// depuis le reset). Nécessaire pour re-calibrer les planchers de bruit
+// (kPurgeNoiseFloorPh/Orp) sans nouvelle capture manuelle de trace 5 s.
+String blockRangeOrNa(const PurgeChannelState& ch, unsigned int decimals) {
+  const float r = purgeChannelRange(ch);
+  return isnan(r) ? String("n/a") : String(r, decimals);
+}
+
 OutageResetKind resetKindFromEsp(esp_reset_reason_t r) {
   switch (r) {
     case ESP_RST_SW:       return OutageResetKind::kSoftware;
@@ -206,8 +216,16 @@ void MeasureValidityManager::update() {
 void MeasureValidityManager::logPurgeEnd(uint32_t /*nowMs*/) {
   const uint32_t dur = _state.lastPurgeDurationS;
   const String durStr = String(dur / 60UL) + " min " + String(dur % 60UL) + " s";
-  const String ranges = "pH " + rangeOrNa(_stab.ph, 3) + " ; ORP " +
-                        rangeOrNa(_stab.orp, 1) + " mV";
+  // feature-097 : le journal portait déjà le rawMin→rawMax (bruts depuis le
+  // reset) ; il gagne ici l'étendue des BLOCS au moment du verdict — c'est
+  // elle que compare purgeStabilityEvaluate() aux seuils kPurge*StableRange,
+  // pas le rawMin→rawMax (cf. avertissement de lecture dans la spec
+  // feature-097 §A). Cette fonction est appelée AVANT purgeStabilityReset() :
+  // _stab porte encore l'état de la purge qui vient de se terminer.
+  const String ranges = "pH brut " + rangeOrNa(_stab.ph, 3) + " (blocs " +
+                        blockRangeOrNa(_stab.ph, 3) + ") ; ORP brut " +
+                        rangeOrNa(_stab.orp, 1) + " mV (blocs " +
+                        blockRangeOrNa(_stab.orp, 1) + " mV)";
 
   switch (_state.lastPurgeEnd) {
     case PurgeEnd::kWaived:

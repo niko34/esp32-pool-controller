@@ -2,6 +2,61 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [Unreleased] - 2026-09-20
+
+> **Ce qui change pour vous** : le matin, la mesure pH/ORP passe plus souvent
+> « stable » dès la durée plancher (10 min) au lieu de traîner jusqu'à 15-20
+> min, voire plus. Sur une trace terrain réelle du 20/09, la porte de mesure
+> ouvre désormais au plancher dans **16 fenêtres sur 16** contre 13/16 avant.
+> Les re-purges (mesures qui redeviennent instables juste après l'ouverture)
+> sont **rendues rares**, pas supprimées : si une vraie dérive physique de
+> l'eau se reproduit (comme celle observée le 20/09), la re-purge reste le
+> comportement **correct** — elle protège le premier dosage du matin d'une
+> eau qui n'est pas encore stabilisée. Aucun écran ni réglage ne change.
+
+### Firmware
+
+- **Purge des mesures (feature-097)** : l'estimateur de bloc du détecteur de
+  stabilité de purge (`purge_stability_logic`) passe de la **médiane** à la
+  **moyenne interquartile** (on écarte le quart des lectures les plus basses
+  et les plus hautes d'un bloc, on moyenne le reste). Aucun seuil, aucune
+  fenêtre, aucune hystérésis n'a changé — seule la statistique qui les
+  alimente. Cause : le pH brut de ce bassin est un signal anti-corrélé,
+  presque à deux niveaux (autocorrélation lag 1 = −0,440, mesuré le
+  2026-09-20), sur lequel une médiane **bascule** au lieu de moyenner. Ces
+  bascules produisaient à elles seules 3 fenêtres de stabilité sur 16 en
+  échec — pas une excursion réelle de l'eau. Mesuré sur trace terrain :
+  étendue max de fenêtre 0,192 → 0,089 pH (voie ORP : 11,5 → 8,7 mV).
+  Contrepartie assumée (arbitrage `pool-chemistry`) : le point de rupture aux
+  lectures aberrantes isolées recule de 50 % à 25 % d'un bloc.
+- **Purge des mesures** : le journal `[STAB]` de fin de purge affiche
+  désormais, en plus du min→max brut déjà présent, l'étendue des
+  **statistiques de bloc** au moment du verdict — c'est cette valeur, et non
+  le brut, que le détecteur compare aux seuils de stabilité.
+- **Purge des mesures** : correction d'un bug latent (jamais observé en
+  production, valeurs actuelles inchangées) dans le `static_assert` reliant
+  le plancher de purge à la fenêtre de stabilité — il supposait en silence
+  « 1 bloc = 1 minute murale » ; il est désormais exprimé en durée réelle.
+  Deux `static_assert` ajoutés verrouillent par ailleurs la marge de
+  détection de dérive de la re-fermeture et l'écart entre seuil d'ouverture
+  et plancher de bruit mesuré.
+
+### Documentation
+
+- **Amendement daté de l'[ADR-0059](docs/adr/0059-purge-adaptative-fenetre-de-medianes.md)** (§1.2) : la médiane devient la moyenne
+  interquartile, avec le pourquoi mesuré et les planchers de bruit terrain.
+  Rectifie aussi une affirmation de l'ADR d'origine (« seuils = bruit de
+  mesure observé ») qui reposait en réalité sur du bruit **synthétique**, pas
+  sur une mesure — la mesure réelle donne 13/16 fenêtres passantes avec
+  l'ancien estimateur, pas « une fois sur deux ».
+- `docs/subsystems/measure-validity.md` : détecteur de stabilité (estimateur
+  de bloc, planchers de bruit mesurés, format du journal `[STAB]` enrichi),
+  limites connues mises à jour avec les chiffres terrain du 2026-09-20.
+- `docs/subsystems/sensors.md` : nouveau § sur le signal pH brut à deux
+  niveaux et la perturbation de mode commun pH/ORP observée sur ce bassin.
+
+---
+
 ## [2.53.0] - 2026-09-19
 
 > **Ce qui change pour vous** : une coupure d'alimentation pendant une

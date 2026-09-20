@@ -39,6 +39,7 @@
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "constants.h"
@@ -805,6 +806,499 @@ void test_E_parametres_de_production_dans_les_bornes(void) {
 }
 
 // =============================================================================
+// F — FEATURE-097 : MOYENNE INTERQUARTILE (nouvel estimateur de bloc)
+// =============================================================================
+// Chiffres validés le 2026-09-20 en réexécutant l'algorithme RÉEL (pas une
+// réimplémentation Python) : voir scratch de vérification en tête de rapport
+// test-engineer. Toute valeur ci-dessous est mesurée, pas recopiée de la spec.
+
+// --- Chargement de la fixture réelle -----------------------------------------
+// test/fixtures/f097_purge_noise_20260920.csv — 300 échantillons uniques à 5 s,
+// bruit réel pH/ORP sur eau établie (2026-09-20). `pio test -e native` exécute
+// depuis la racine du dépôt, mais on tolère des préfixes de repli comme le fait
+// déjà test_native_history_persist_format (readProjectFile).
+struct NoiseFixture {
+  float ph[300];
+  float orp[300];
+  int n;
+};
+
+static bool loadNoiseFixture(NoiseFixture& fx) {
+  const char* prefixes[4] = {"", "../", "../../", "../../../"};
+  char path[256];
+  FILE* fp = NULL;
+  for (int i = 0; i < 4 && fp == NULL; ++i) {
+    snprintf(path, sizeof(path), "%stest/fixtures/f097_purge_noise_20260920.csv", prefixes[i]);
+    fp = fopen(path, "rb");
+  }
+  if (fp == NULL) return false;
+  fx.n = 0;
+  char line[256];
+  while (fgets(line, sizeof(line), fp) != NULL && fx.n < 300) {
+    if (line[0] == '#' || line[0] == '\n') continue;
+    if (strncmp(line, "t_ms", 4) == 0) continue;
+    long t;
+    float ph, orp, phf, orpf, temp;
+    if (sscanf(line, "%ld,%f,%f,%f,%f,%f", &t, &ph, &orp, &phf, &orpf, &temp) == 6) {
+      fx.ph[fx.n] = ph;
+      fx.orp[fx.n] = orp;
+      fx.n++;
+    }
+  }
+  fclose(fp);
+  return fx.n == 300;
+}
+
+// --- Canal "ombre" : rejoue la meme mecanique d'anneau que channelAdd() de
+// purgeStabilityLogic.cpp, mais avec une fonction de statistique de bloc
+// INJECTEE (median ou IQM) — sert a comparer les DEUX estimateurs sur le
+// MEME flux, sans dupliquer l'etat de production. Utilise par F6 (C2b/c).
+struct Shadow {
+  float buf[kPurgeStabilityMaxSamplesPerMin];
+  int cnt = 0;
+  float blocks[kPurgeStabilityMaxWindowMin];
+  int head = 0, count = 0;
+};
+static void shadowAdd(Shadow& ch, float v, int spm, int windowMin,
+                      float (*stat)(const float*, uint8_t)) {
+  if (isnan(v)) return;
+  ch.buf[ch.cnt++] = v;
+  if (ch.cnt >= spm) {
+    const float s = stat(ch.buf, (uint8_t)ch.cnt);
+    ch.cnt = 0;
+    ch.blocks[ch.head] = s;
+    ch.head = (ch.head + 1) % windowMin;
+    if (ch.count < windowMin) ch.count++;
+  }
+}
+static float shadowRange(const Shadow& ch) {
+  if (ch.count == 0) return NAN;
+  float lo = ch.blocks[0], hi = ch.blocks[0];
+  for (int i = 1; i < ch.count; ++i) {
+    if (ch.blocks[i] < lo) lo = ch.blocks[i];
+    if (ch.blocks[i] > hi) hi = ch.blocks[i];
+  }
+  return hi - lo;
+}
+
+// -----------------------------------------------------------------------------
+// F1 — C1 pool-chemistry : trim = max(1, n/4), jamais n/4 nu, pour n = 1..60.
+// -----------------------------------------------------------------------------
+// Conception : v[0] = 0.0 (aberrant bas), v[n-1] = 100.0 (aberrant haut),
+// milieu constant à 7.0. Avec trim >= 1 (n >= 3), les DEUX aberrants sont
+// systématiquement écartés (un par côté suffit) et le résultat reste 7.0,
+// QUELLE QUE SOIT la valeur exacte de trim au-delà de 1 (les valeurs du milieu
+// sont toutes égales) — la revue de code l'a prouvé algébriquement
+// (n − 2·trim >= ⌈n/2⌉ >= 1 sur tout l'intervalle). Le cas n = 3 est LE cas
+// critique : n/4 = 0 sans le max(1, ...), ce qui donnerait la MOYENNE SIMPLE
+// (0 + 7 + 100)/3 = 35,67 — à des kilomètres de 7,0. n = 1, 2 retombent sur la
+// médiane (déjà couverte en section A) : vérifiés ici pour la continuité de
+// la boucle paramétrée. Balayage jusqu'à 60 (= kPurgeStabilityMaxSamplesPerMin,
+// la borne autorisée par constants.h pour kPurgeSamplesPerMin), et pas
+// seulement jusqu'à 12 : preuve par construction sur TOUT l'intervalle
+// exploitable, pas seulement la valeur de production actuelle.
+void test_F1_trim_max1_n_sur_4_pour_n_1_a_60(void) {
+  for (int n = 1; n <= kPurgeStabilityMaxSamplesPerMin; ++n) {
+    float v[kPurgeStabilityMaxSamplesPerMin];
+    char msg[48];
+    snprintf(msg, sizeof(msg), "n=%d", n);
+    if (n <= 2) {
+      for (int i = 0; i < n; ++i) v[i] = 7.0f + (float)i;
+      TEST_ASSERT_FLOAT_WITHIN_MESSAGE(1e-5f, purgeStabilityMedian(v, (uint8_t)n),
+                                       purgeStabilityBlockStat(v, (uint8_t)n), msg);
+      continue;
+    }
+    v[0] = 0.0f;
+    v[n - 1] = 100.0f;
+    for (int i = 1; i < n - 1; ++i) v[i] = 7.0f;
+    const float bs = purgeStabilityBlockStat(v, (uint8_t)n);
+    // MUTANT « garde C1 » (trim = n/4 nu, sans max(1,.)) : a n=3, bs deviendrait
+    // 35,67. A ne pas confondre avec le mutant (b) de la spec, qui est le
+    // passage a la moyenne simple.
+    TEST_ASSERT_FLOAT_WITHIN_MESSAGE(1e-4f, 7.0f, bs, msg);
+  }
+}
+
+// -----------------------------------------------------------------------------
+// F2 — Bloc alterné RÉEL de la minute 22 (trace du 20/09) : la bascule vs la
+// moyenne, à l'octet.
+// -----------------------------------------------------------------------------
+// Valeur IQM mesurée en réexécutant purgeStabilityBlockStat() sur ces 12
+// valeurs exactes : 6,9673 (médiane : 7,0595 ≈ 7,059). Ce test fige la valeur
+// RÉELLE du code — c'est elle qui fait foi pour toute non-régression future.
+void test_F2_bloc_alterne_reel_minute_22(void) {
+  const float bloc[12] = {7.051f, 6.747f, 7.083f, 6.752f, 7.083f, 6.743f,
+                          7.085f, 6.775f, 7.079f, 6.749f, 7.079f, 7.068f};
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 7.0595f, purgeStabilityMedian(bloc, 12));
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 6.9673f, purgeStabilityBlockStat(bloc, 12));
+  // La bascule de la médiane VS le lissage de l'IQM, sur la même donnée :
+  // écart de 0,092, très supérieur à la précision flottante — c'est bien
+  // l'estimateur qui change de comportement, pas un artefact d'arrondi.
+  TEST_ASSERT_TRUE(purgeStabilityMedian(bloc, 12) - purgeStabilityBlockStat(bloc, 12) > 0.05f);
+}
+
+// -----------------------------------------------------------------------------
+// F3 — Rejeu du PLATEAU RÉEL (fixture 20/09) à travers le pipeline complet
+// (purgeStabilityAddSample + purgeStabilityEvaluate, comme en production).
+// -----------------------------------------------------------------------------
+// MUTANT (a) IQM → médiane — MUTANT CRITIQUE : sans lui, rien ne protège le
+// correctif. Avec l'IQM, 16/16 fenêtres ouvrent ; avec la médiane, 13/16
+// seulement (mesuré indépendamment en Python et vérifié par une seconde
+// implémentation ici). Ce test bascule de vert à rouge si channelAdd()
+// revient à purgeStabilityMedian().
+// MUTANT (c) trim = n/4 → n/6 : ne change PAS le compte 16/16 sur cette
+// fixture (le bruit y est trop loin du seuil pour que ça bascule un booléen),
+// mais RESSERRE l'étendue max mesurée de 0,089 à 0,074 — d'où le verrou sur
+// la valeur numérique, pas seulement sur le comptage.
+void test_F3_rejeu_plateau_reel_16_sur_16(void) {
+  NoiseFixture fx;
+  TEST_ASSERT_TRUE_MESSAGE(loadNoiseFixture(fx),
+      "fixture test/fixtures/f097_purge_noise_20260920.csv introuvable ou incomplete (300 attendus)");
+
+  PurgeStabilityState st;
+  purgeStabilityReset(st);
+  const PurgeStabilityParams p = prodParams();
+  int stableCount = 0, evaluated = 0;
+  float maxPhRange = 0.0f, maxOrpRange = 0.0f;
+  for (int i = 0; i < fx.n; ++i) {
+    purgeStabilityAddSample(st, p, fx.ph[i], fx.orp[i]);
+    if ((i + 1) % kSpm != 0) continue;
+    const PurgeStabilityVerdict v = purgeStabilityEvaluate(st, p);
+    if (!v.anyFull) continue;
+    evaluated++;
+    if (v.stable) stableCount++;
+    if (v.phRange > maxPhRange) maxPhRange = v.phRange;
+    if (!isnan(v.orpRange) && v.orpRange > maxOrpRange) maxOrpRange = v.orpRange;
+    char msg[64];
+    snprintf(msg, sizeof(msg), "fenetre %d : eau etablie ne doit jamais refermer", evaluated);
+    TEST_ASSERT_FALSE_MESSAGE(v.unstable, msg);
+  }
+  char msg[160];
+  snprintf(msg, sizeof(msg), "%d/%d fenetres stables (etendue pH max %.4f, ORP max %.2f mV)",
+           stableCount, evaluated, (double)maxPhRange, (double)maxOrpRange);
+  TEST_ASSERT_EQUAL_INT_MESSAGE(16, evaluated, msg);
+  TEST_ASSERT_EQUAL_INT_MESSAGE(16, stableCount, msg);
+  // Verrou numerique (tolerance large pour le passage float32, assez fine pour
+  // distinguer du mutant n/6 [0,074] et de la mediane [0,192]).
+  TEST_ASSERT_FLOAT_WITHIN_MESSAGE(0.004f, 0.0893f, maxPhRange, msg);
+  TEST_ASSERT_TRUE_MESSAGE(maxOrpRange <= 15.0f, msg);
+}
+
+// -----------------------------------------------------------------------------
+// F4 — C3 pool-chemistry : 4 lectures aberrantes sur 12 -> jamais stable,
+// dans les deux directions (14,0 et 0,0). 0 a 3 -> verdict inchange.
+// -----------------------------------------------------------------------------
+// Conception : baseline plate 7,00 sur 9 blocs (fenetre pleine), PUIS un seul
+// bloc contamine par k lectures a la valeur aberrante (les 12 - k autres a
+// 7,00). Avec trim = max(1, 12/4) = 3 : k <= 3 aberrantes sont TOUTES
+// absorbees par le trim (au plus 3 ecartees d'un cote) -> bloc inchange a
+// 7,00 pile, verdict INCHANGE (stable). A k = 4, une aberrante deborde du
+// trim et contamine la moyenne du milieu -> le bloc derive de +/-1,17 pH,
+// bien au-dela du seuil de re-fermeture (0,30) -> unstable. C'est exactement
+// le "decrochage a 4/12" du gate pool-chemistry, mesure sur le code reel :
+// k=0..3 -> phRange=0 (stable) ; k=4 -> phRange=1,1667 (unstable).
+// MUTANT (b) IQM -> moyenne simple : a k=1 deja, une moyenne deplacerait le
+// bloc de (14,0-7,0)/12 = 0,58 -> phRange >> 0,30 -> unstable des k=1, alors
+// que le comportement attendu est "verdict inchange jusqu'a k=3". Ce test
+// tue donc directement le mutant (b).
+static PurgeStabilityVerdict replayContaminatedBlock(const PurgeStabilityParams& p,
+                                                     float aberrant, int k) {
+  PurgeStabilityState st;
+  purgeStabilityReset(st);
+  for (int m = 0; m < kW - 1; ++m) feedFlat(st, p, 1, 7.00f);
+  for (int s = 0; s < kSpm; ++s) {
+    const float v = (s < k) ? aberrant : 7.00f;
+    purgeStabilityAddSample(st, p, v, NAN);
+  }
+  return purgeStabilityEvaluate(st, p);
+}
+void test_F4_aberrantes_0_a_3_inchange_4_decroche_deux_directions(void) {
+  const float directions[2] = {14.0f, 0.0f};
+  const PurgeStabilityParams p = prodParams();
+  for (int d = 0; d < 2; ++d) {
+    for (int k = 0; k <= 3; ++k) {
+      const PurgeStabilityVerdict v = replayContaminatedBlock(p, directions[d], k);
+      char msg[96];
+      snprintf(msg, sizeof(msg), "direction %.1f, k=%d : verdict devrait etre INCHANGE (stable)",
+               (double)directions[d], k);
+      TEST_ASSERT_FLOAT_WITHIN_MESSAGE(1e-4f, 0.0f, v.phRange, msg);
+      TEST_ASSERT_TRUE_MESSAGE(v.stable, msg);
+      TEST_ASSERT_FALSE_MESSAGE(v.unstable, msg);
+    }
+    const PurgeStabilityVerdict v4 = replayContaminatedBlock(p, directions[d], 4);
+    char msg[96];
+    snprintf(msg, sizeof(msg), "direction %.1f, k=4 : DOIT decrocher (jamais stable)",
+             (double)directions[d]);
+    TEST_ASSERT_FALSE_MESSAGE(v4.stable, msg);
+    TEST_ASSERT_TRUE_MESSAGE(v4.phRange > 1.0f, msg);
+  }
+}
+
+// -----------------------------------------------------------------------------
+// F5 — C4 pool-chemistry : re-fermeture, 0,035 pH/min referme, 0,030 ne
+// referme pas.
+// -----------------------------------------------------------------------------
+// Etablit d'abord une fenetre STABLE (plat 10 min), puis applique une derive
+// monotone continue et cherche le premier instant `unstable`. Mesure sur le
+// code reel : 0,030 -> jamais unstable en 15 min (etendue plafonne a 0,27,
+// sous le seuil 0,30) ; 0,035 -> unstable des la 1re fenetre pleine suivant le
+// debut de la derive (etendue 0,315 > 0,30), conforme au static_assert de
+// constants.h (kPurgeMinDetectedDriftPhPerMin = 0,035).
+// A NOTER (acte, pas corrige) : la re-fermeture REELLE observee sur le
+// terrain se declenche vers 0,0333 pH/min (§B des releves terrain, ecarts
+// 0,300 a 0,382 juste au-dessus du seuil) — plus bas que la limite theorique
+// 0,035 exigee par C4. Cet ecart est du au BRUIT qui s'ajoute a la derive
+// reelle et "assiste" le franchissement du seuil ; sur une derive VRAIE et
+// PARFAITEMENT LISSE (ce test), la sensibilite mesuree est exactement celle
+// du static_assert, pas celle, plus fine, vue sur le terrain bruite. Les
+// declenchements "assistes par le bruit" sous 0,0333 restent donc PERDUS par
+// une derive lisse en dessous de 0,035 — comportement voulu, pas un defaut.
+void test_F5_reclose_0035_referme_0030_ne_referme_pas(void) {
+  const PurgeStabilityParams p = prodParams();
+  const float slopes[2] = {0.030f, 0.035f};
+  const bool expectUnstable[2] = {false, true};
+  for (int k = 0; k < 2; ++k) {
+    PurgeStabilityState st;
+    purgeStabilityReset(st);
+    feedFlat(st, p, kW, 7.00f);
+    TEST_ASSERT_TRUE(purgeStabilityEvaluate(st, p).stable);
+    float ph = 7.00f;
+    bool unstableSeen = false;
+    int minuteUnstable = -1;
+    for (int m = 1; m <= 15; ++m) {
+      for (int s = 0; s < kSpm; ++s) {
+        purgeStabilityAddSample(st, p, ph, NAN);
+        ph += slopes[k] / kSpm;
+      }
+      const PurgeStabilityVerdict v = purgeStabilityEvaluate(st, p);
+      if (v.unstable && !unstableSeen) { unstableSeen = true; minuteUnstable = m; }
+    }
+    char msg[96];
+    snprintf(msg, sizeof(msg), "pente %.3f pH/min : unstable=%d (attendu %d), vu a t+%d",
+             (double)slopes[k], unstableSeen, expectUnstable[k], minuteUnstable);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(expectUnstable[k] ? 1 : 0, unstableSeen ? 1 : 0, msg);
+  }
+}
+
+// -----------------------------------------------------------------------------
+// F6 — C2 pool-chemistry (AMENDE le 2026-09-20 apres revue) : rejeu du fond en
+// V du 04/09 AVEC LE BRUIT REEL DE LA FIXTURE.
+// -----------------------------------------------------------------------------
+// HISTORIQUE DE L'AMENDEMENT (a lire avant de retoucher ce test) :
+//   La version initiale de C2(b) exigeait "etendue IQM >= etendue mediane au
+//   fond du V" (dominance d'etendue). Mesuree a 8/30 (27%), PAS a 30/30 —
+//   remontee a pool-chemistry, qui a reconnu l'erreur de formulation : un
+//   bruit plus FORT gonfle l'etendue et masque la deflation dangereuse ; la
+//   mediane ne "dominait" que par accident (plus bruyante), pas par securite.
+//   La grandeur de surete est DETERMINISTE et INDEPENDANTE de l'estimateur :
+//   la marge du V (0,2025 contre le seuil 0,15, soit 0,0525) ne se comprime
+//   QUE si le bruit ampute cette marge — d'autant plus rare que sigma est
+//   petit (IQM : 0,0263 ; mediane : 0,0458). D'ou le nouveau C2(b) : comparer
+//   le TAUX DE FAUSSE OUVERTURE, pas l'etendue.
+// C2(a) — ACCEPTE NON BLOQUANT : parite avec l'existant (voir mesure
+//   ci-dessous), et la fenetre exposee est le fond du V a pH BAS ou l'acide
+//   est de toute facon refuse par la butee 6,20 (fail-closed) ; seul l'ORP
+//   peut doser, deja borne par ses limites par injection et horaires.
+// C2(b) NOUVEAU — taux de fausse ouverture, balayage EXHAUSTIF des 300
+//   dephasages possibles (pas un echantillon de 30) : IQM <= mediane.
+//   Mesure : IQM 2/300 (dephasages 169, 170 — meme evenement physique a 5 s
+//   pres), mediane (canal "ombre", meme pipeline pH+ORP, calcule en parallele
+//   sur le meme flux bruite) 2/300 (dephasages 85, 87) -> EGALITE, donc
+//   IQM <= mediane est VRAIE (au pire a egalite, jamais pire).
+// C2(c) NOUVEAU — exposition maximale d'une fausse ouverture bornee par
+//   kPurgeWindowMin (10 min) : mesuree a 5 min (dephasage 170). Sentinelle de
+//   derive de la borne, pas seulement du fait qu'elle soit "rattrapee".
+// Dominance d'etendue (8/30) CONSERVEE en sentinelle diagnostique (pas un
+// critere d'acceptation) : un saut a 30/30 signale toujours le mutant (a)
+// IQM -> mediane (les deux canaux deviennent identiques).
+static bool shadowMedianVerdict(Shadow& chPh, Shadow& chOrp, const PurgeStabilityParams& p,
+                                float phv, float orpv, bool* outUnstable) {
+  shadowAdd(chPh, phv, kSpm, kW, purgeStabilityMedian);
+  shadowAdd(chOrp, orpv, kSpm, kW, purgeStabilityMedian);
+  const bool phFull = chPh.count >= kW, orpFull = chOrp.count >= kW;
+  const float phRange = shadowRange(chPh), orpRange = shadowRange(chOrp);
+  const bool stable = phFull && orpFull && phRange <= p.phStableRange && orpRange <= p.orpStableRange;
+  *outUnstable = (phFull && phRange > p.phRecloseRange) || (orpFull && orpRange > p.orpRecloseRange);
+  return stable;
+}
+void test_F6_c2_taux_fausse_ouverture_et_exposition_max(void) {
+  NoiseFixture fx;
+  TEST_ASSERT_TRUE_MESSAGE(loadNoiseFixture(fx),
+      "fixture test/fixtures/f097_purge_noise_20260920.csv introuvable ou incomplete (300 attendus)");
+  double sumPh = 0.0, sumOrp = 0.0;
+  for (int i = 0; i < fx.n; ++i) { sumPh += fx.ph[i]; sumOrp += fx.orp[i]; }
+  const float meanPh = (float)(sumPh / fx.n), meanOrp = (float)(sumOrp / fx.n);
+  float resPh[300], resOrp[300];
+  for (int i = 0; i < fx.n; ++i) { resPh[i] = fx.ph[i] - meanPh; resOrp[i] = fx.orp[i] - meanOrp; }
+
+  const PurgeStabilityParams p = prodParams();
+
+  // --- C2(b) : balayage EXHAUSTIF des 300 dephasages, IQM (production) vs
+  // mediane (canal ombre pH+ORP), meme flux bruite. --------------------------
+  int falseOpensIqm = 0, falseOpensMed = 0, maxExposureIqm = -1;
+  char worstMsg[160] = {0};
+  for (int phase = 0; phase < fx.n; ++phase) {
+    // IQM, via le pipeline de PRODUCTION reel (integration, pas une copie).
+    {
+      PurgeStabilityState st;
+      purgeStabilityReset(st);
+      int idx = phase;
+      int firstStable = -1, recloseAfter = -1;
+      for (int s = 0; s < 45 * kSpm; ++s) {
+        const float m = (float)s / kSpm;
+        const float phv = ph0409(m) + resPh[idx % fx.n];
+        const float orpv = orp0409(m) + resOrp[idx % fx.n];
+        idx++;
+        purgeStabilityAddSample(st, p, phv, orpv);
+        if ((s + 1) % kSpm != 0) continue;
+        const int minute = (s + 1) / kSpm;
+        const PurgeStabilityVerdict v = purgeStabilityEvaluate(st, p);
+        if (v.stable && firstStable < 0) firstStable = minute;
+        if (firstStable > 0 && firstStable < 40 && v.unstable && recloseAfter < 0) {
+          recloseAfter = minute;
+        }
+      }
+      if (firstStable > 0 && firstStable < 40) {
+        falseOpensIqm++;
+        char msg[128];
+        snprintf(msg, sizeof(msg), "dephasage %d : IQM ouvre t+%d, referme t+%d (exposition %d min)",
+                 phase, firstStable, recloseAfter, recloseAfter - firstStable);
+        // C2(c) : l'exposition ne doit JAMAIS deborder kPurgeWindowMin.
+        TEST_ASSERT_TRUE_MESSAGE(recloseAfter > 0, msg);
+        TEST_ASSERT_TRUE_MESSAGE(recloseAfter - firstStable <= (int)kW, msg);
+        if (recloseAfter - firstStable > maxExposureIqm) maxExposureIqm = recloseAfter - firstStable;
+        strncpy(worstMsg, msg, sizeof(worstMsg) - 1);
+      }
+    }
+    // Mediane, canal ombre (meme regles d'agregation pH+ORP que la production).
+    {
+      Shadow chPh, chOrp;
+      int idx = phase;
+      int firstStable = -1;
+      for (int s = 0; s < 45 * kSpm; ++s) {
+        const float m = (float)s / kSpm;
+        const float phv = ph0409(m) + resPh[idx % fx.n];
+        const float orpv = orp0409(m) + resOrp[idx % fx.n];
+        idx++;
+        bool unstable = false;
+        const bool stable = shadowMedianVerdict(chPh, chOrp, p, phv, orpv, &unstable);
+        if ((s + 1) % kSpm != 0) continue;
+        const int minute = (s + 1) / kSpm;
+        if (stable && firstStable < 0) firstStable = minute;
+        (void)unstable;
+      }
+      if (firstStable > 0 && firstStable < 40) falseOpensMed++;
+    }
+  }
+  char msgB[220];
+  snprintf(msgB, sizeof(msgB),
+           "C2(b) taux de fausse ouverture sur %d dephasages : IQM %d, mediane %d (exigence IQM<=mediane) — %s",
+           fx.n, falseOpensIqm, falseOpensMed, worstMsg);
+  TEST_ASSERT_TRUE_MESSAGE(falseOpensIqm <= falseOpensMed, msgB);
+  printf("  [info] F6(b) : %s\n", msgB);
+  char msgC[160];
+  snprintf(msgC, sizeof(msgC), "C2(c) exposition max mesuree %d min (doit rester <= kPurgeWindowMin=%d)",
+           maxExposureIqm, (int)kW);
+  TEST_ASSERT_TRUE_MESSAGE(maxExposureIqm <= (int)kW, msgC);
+  printf("  [info] F6(c) : %s\n", msgC);
+
+  // --- Sentinelle diagnostique (PAS un critere d'acceptation depuis
+  // l'amendement) : dominance d'etendue au fond du V, echantillonnee sur 30
+  // dephasages regulierement espaces. Un saut a 30/30 signale le mutant (a).
+  int dominanceCount = 0, shifts = 0;
+  for (int phase = 0; phase < 300; phase += 10) {
+    shifts++;
+    PurgeStabilityState st;
+    purgeStabilityReset(st);
+    int idx = phase;
+    float medBlocks[kPurgeStabilityMaxWindowMin];
+    int medHead = 0, medCount = 0;
+    float minuteBuf[kPurgeStabilityMaxSamplesPerMin];
+    int minuteCount = 0;
+    float medMinRangeInV = 1e9f, iqmMinRangeInV = 1e9f;
+    for (int s = 0; s < 20 * kSpm; ++s) {
+      const float m = (float)s / kSpm;
+      const float phv = ph0409(m) + resPh[idx % fx.n];
+      const float orpv = orp0409(m) + resOrp[idx % fx.n];
+      idx++;
+      purgeStabilityAddSample(st, p, phv, orpv);
+      minuteBuf[minuteCount++] = phv;
+      if (minuteCount >= kSpm) {
+        const float med = purgeStabilityMedian(minuteBuf, (uint8_t)minuteCount);
+        minuteCount = 0;
+        medBlocks[medHead] = med;
+        medHead = (medHead + 1) % kW;
+        if (medCount < kW) medCount++;
+      }
+      if ((s + 1) % kSpm != 0) continue;
+      const int minute = (s + 1) / kSpm;
+      if (medCount >= kW && minute >= 10 && minute <= 20) {
+        float lo = medBlocks[0], hi = medBlocks[0];
+        for (int kk = 1; kk < medCount; ++kk) {
+          if (medBlocks[kk] < lo) lo = medBlocks[kk];
+          if (medBlocks[kk] > hi) hi = medBlocks[kk];
+        }
+        const float medRange = hi - lo;
+        const float iqmRange = purgeChannelRange(st.ph);
+        if (medRange < medMinRangeInV) medMinRangeInV = medRange;
+        if (iqmRange < iqmMinRangeInV) iqmMinRangeInV = iqmRange;
+      }
+    }
+    if (iqmMinRangeInV >= medMinRangeInV) dominanceCount++;
+  }
+  char msgD[128];
+  snprintf(msgD, sizeof(msgD), "sentinelle dominance (diagnostique) : %d/%d", dominanceCount, shifts);
+  TEST_ASSERT_TRUE_MESSAGE(dominanceCount >= 6 && dominanceCount <= 10, msgD);
+  printf("  [info] F6(sentinelle) : %s\n", msgD);
+}
+
+// -----------------------------------------------------------------------------
+// F7 — Plateau POST-OUVERTURE : 0 re-fermeture sur >= 30 dephasages.
+// -----------------------------------------------------------------------------
+// Distinct de F6 (qui rejoue le fond du V, AVANT plateau) : ici l'eau est deja
+// ETABLIE (fixture seule, pas de synthetique 0409), rejouee 60 min (cycle de
+// la fixture 300 x 5 s = 25 min, boucle sur elle-meme) a 30 dephasages
+// differents. Le bruit REEL, meme repete en boucle, ne doit jamais depasser
+// le seuil de re-fermeture (0,30 pH / 30 mV) : mesure sur le code reel,
+// 0/30 dephasages refermes.
+void test_F7_plateau_post_ouverture_0_refermeture_30_dephasages(void) {
+  NoiseFixture fx;
+  TEST_ASSERT_TRUE_MESSAGE(loadNoiseFixture(fx),
+      "fixture test/fixtures/f097_purge_noise_20260920.csv introuvable ou incomplete (300 attendus)");
+  const PurgeStabilityParams p = prodParams();
+  int reclosed = 0;
+  int shifts = 0;
+  char worstMsg[128] = {0};
+  for (int phase = 0; phase < 300; phase += 10) {
+    shifts++;
+    PurgeStabilityState st;
+    purgeStabilityReset(st);
+    int idx = phase;
+    bool sawUnstable = false;
+    int firstUnstableMinute = -1;
+    for (int s = 0; s < 60 * kSpm; ++s) {
+      const float phv = fx.ph[idx % fx.n];
+      const float orpv = fx.orp[idx % fx.n];
+      idx++;
+      purgeStabilityAddSample(st, p, phv, orpv);
+      if ((s + 1) % kSpm != 0) continue;
+      const int minute = (s + 1) / kSpm;
+      const PurgeStabilityVerdict v = purgeStabilityEvaluate(st, p);
+      if (v.unstable && !sawUnstable) { sawUnstable = true; firstUnstableMinute = minute; }
+    }
+    if (sawUnstable) {
+      reclosed++;
+      snprintf(worstMsg, sizeof(worstMsg), "dephasage %d : instable a t+%d", phase, firstUnstableMinute);
+    }
+  }
+  char msg[192];
+  snprintf(msg, sizeof(msg), "%d/%d dephasages refermes sur eau etablie (attendu 0) — %s",
+           reclosed, shifts, worstMsg);
+  TEST_ASSERT_EQUAL_INT_MESSAGE(30, shifts, msg);
+  TEST_ASSERT_EQUAL_INT_MESSAGE(0, reclosed, msg);
+}
+
+// =============================================================================
 // Runner
 // =============================================================================
 int main(int argc, char** argv) {
@@ -840,5 +1334,13 @@ int main(int argc, char** argv) {
   RUN_TEST(test_E_rejeu_0409_bruit_fausse_ouverture_refermee_par_c1);
   RUN_TEST(test_E_rejeu_0209_plongeon_tardif_declenche_unstable);
   RUN_TEST(test_E_parametres_de_production_dans_les_bornes);
+  // F — feature-097 : moyenne interquartile
+  RUN_TEST(test_F1_trim_max1_n_sur_4_pour_n_1_a_60);
+  RUN_TEST(test_F2_bloc_alterne_reel_minute_22);
+  RUN_TEST(test_F3_rejeu_plateau_reel_16_sur_16);
+  RUN_TEST(test_F4_aberrantes_0_a_3_inchange_4_decroche_deux_directions);
+  RUN_TEST(test_F5_reclose_0035_referme_0030_ne_referme_pas);
+  RUN_TEST(test_F6_c2_taux_fausse_ouverture_et_exposition_max);
+  RUN_TEST(test_F7_plateau_post_ouverture_0_refermeture_30_dephasages);
   return UNITY_END();
 }

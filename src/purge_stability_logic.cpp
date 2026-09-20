@@ -1,6 +1,6 @@
 // =============================================================================
 // purge_stability_logic — Détecteur PUR de stabilité des bruts pH/ORP
-// (feature-091, v2.34.0)
+// (feature-091, v2.34.0 ; estimateur de bloc feature-097, v2.54+)
 // =============================================================================
 // Voir purge_stability_logic.h pour les règles. Compile en natif ET sur cible —
 // aucune dépendance Arduino, aucune allocation.
@@ -23,6 +23,21 @@ uint8_t clampWindow(uint8_t v) {
   if (v < 1) return 1;
   if (v > kPurgeStabilityMaxWindowMin) return kPurgeStabilityMaxWindowMin;
   return v;
+}
+
+// Copie v[0..n) dans out[0..n) puis trie out par insertion (n borné, aucune
+// allocation). Partagé par purgeStabilityMedian() et purgeStabilityBlockStat().
+void sortedCopy(const float* v, uint8_t n, float* out) {
+  for (uint8_t i = 0; i < n; ++i) out[i] = v[i];
+  for (uint8_t i = 1; i < n; ++i) {
+    const float key = out[i];
+    int j = (int)i - 1;
+    while (j >= 0 && out[j] > key) {
+      out[j + 1] = out[j];
+      --j;
+    }
+    out[j + 1] = key;
+  }
 }
 
 void channelReset(PurgeChannelState& ch) {
@@ -49,9 +64,10 @@ void channelAdd(PurgeChannelState& ch, float v, uint8_t samplesPerMin, uint8_t w
     ch.minuteBuf[ch.minuteCount++] = v;
   }
   if (ch.minuteCount >= samplesPerMin) {
-    const float med = purgeStabilityMedian(ch.minuteBuf, ch.minuteCount);
+    // feature-097 : moyenne interquartile, plus la médiane (voir en-tête .h).
+    const float stat = purgeStabilityBlockStat(ch.minuteBuf, ch.minuteCount);
     ch.minuteCount = 0;
-    ch.medians[ch.medianHead] = med;
+    ch.medians[ch.medianHead] = stat;
     ch.medianHead = (uint8_t)((ch.medianHead + 1) % windowMin);
     if (ch.medianCount < windowMin) ch.medianCount++;
   }
@@ -69,19 +85,38 @@ float purgeStabilityMedian(const float* v, uint8_t n) {
   if (n == 0) return NAN;
   if (n > kPurgeStabilityMaxSamplesPerMin) n = kPurgeStabilityMaxSamplesPerMin;
   float tmp[kPurgeStabilityMaxSamplesPerMin];
-  for (uint8_t i = 0; i < n; ++i) tmp[i] = v[i];
-  // Tri par insertion (n ≤ 60 : trivial, sans récursion ni allocation).
-  for (uint8_t i = 1; i < n; ++i) {
-    const float key = tmp[i];
-    int j = (int)i - 1;
-    while (j >= 0 && tmp[j] > key) {
-      tmp[j + 1] = tmp[j];
-      --j;
-    }
-    tmp[j + 1] = key;
-  }
+  sortedCopy(v, n, tmp);
   if (n & 1U) return tmp[n / 2];
   return 0.5f * (tmp[n / 2 - 1] + tmp[n / 2]);
+}
+
+float purgeStabilityBlockStat(const float* v, uint8_t n) {
+  if (n == 0) return NAN;
+  if (n > kPurgeStabilityMaxSamplesPerMin) n = kPurgeStabilityMaxSamplesPerMin;
+  // n <= 2 : rien à écarter de chaque côté sans vider le bloc — la moyenne
+  // interquartile EST la médiane dans ce cas.
+  if (n <= 2) return purgeStabilityMedian(v, n);
+  float tmp[kPurgeStabilityMaxSamplesPerMin];
+  sortedCopy(v, n, tmp);
+  // C1 (gate pool-chemistry, feature-097) : max(1, n/4), jamais n/4 nu. Sans ce
+  // garde-fou, kPurgeSamplesPerMin = 3 — valeur basse AUTORISÉE par l'assert
+  // constants.h (kPurgeSamplesPerMin >= 3) — donnerait trim = 0, c'est-à-dire
+  // la MOYENNE SIMPLE : explicitement refusée par le gate (point de rupture
+  // nul, une seule lecture I2C aberrante à 14,0 empoisonne 10 fenêtres).
+  uint8_t trim = (uint8_t)(n / 4);
+  if (trim < 1) trim = 1;
+  float sum = 0.0f;
+  uint8_t count = 0;
+  for (uint8_t i = trim; i < (uint8_t)(n - trim); ++i) {
+    sum += tmp[i];
+    ++count;
+  }
+  // Ceinture par-dessus une bretelle démontrée : pour n dans [3;60] et
+  // trim = max(1, n/4), n - 2*trim >= ceil(n/2) >= 1, donc count == 0 est
+  // algébriquement impossible ici. Gardé quand même pour ne pas dépendre de
+  // cette preuve si trim ou n changeaient un jour sans qu'on la refasse.
+  if (count == 0) return purgeStabilityMedian(v, n);
+  return sum / (float)count;
 }
 
 void purgeStabilityReset(PurgeStabilityState& st) {

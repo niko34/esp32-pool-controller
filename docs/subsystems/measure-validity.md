@@ -2,7 +2,7 @@
 
 - **Fichiers** : [`src/measure_validity.h`](../../src/measure_validity.h), [`src/measure_validity.cpp`](../../src/measure_validity.cpp) (coquille impure) + [`src/measure_validity_logic.h`](../../src/measure_validity_logic.h), [`src/measure_validity_logic.cpp`](../../src/measure_validity_logic.cpp) (machine d'état pure) + [`src/purge_stability_logic.h`](../../src/purge_stability_logic.h), [`src/purge_stability_logic.cpp`](../../src/purge_stability_logic.cpp) (détecteur de stabilité pur)
 - **Singleton** : `extern MeasureValidityManager measureValidity;`
-- **Introduit par** : feature-061 (v2.13.0) ; étendu à la température en itération 2 (v2.13.0) ; porte d'alimentation des filtres en v2.20.3 ; **purge adaptative par la feature-091 (v2.34.0)** — [ADR-0059](../adr/0059-purge-adaptative-fenetre-de-medianes.md)
+- **Introduit par** : feature-061 (v2.13.0) ; étendu à la température en itération 2 (v2.13.0) ; porte d'alimentation des filtres en v2.20.3 ; **purge adaptative par la feature-091 (v2.34.0)** — [ADR-0059](../adr/0059-purge-adaptative-fenetre-de-medianes.md) ; **estimateur de bloc remplacé par la moyenne interquartile en feature-097 (v2.54+)** — [amendement 2026-09-20 de l'ADR-0059](../adr/0059-purge-adaptative-fenetre-de-medianes.md#amendement-2026-09-20--lestimateur-de-bloc-devient-la-moyenne-interquartile-feature-097-v254)
 
 ## Rôle
 
@@ -22,7 +22,7 @@ Le verdict est consommé par :
 
 | Module | Rôle | Testé en natif |
 |---|---|---|
-| `purge_stability_logic` (pur) | Médianes par minute, fenêtre glissante, verdict `stable` / `unstable` | `test/test_native_purge_stability/` (25 tests : rejeux 02/09 et 04/09, dérives lentes, ORP en pente, démonstration W = 8 à tort) |
+| `purge_stability_logic` (pur) | Statistique de bloc par minute (moyenne interquartile depuis feature-097), fenêtre glissante, verdict `stable` / `unstable` | `test/test_native_purge_stability/` (32 tests, mesuré le 2026-09-20 par `grep -c "^void test_"` : rejeux 02/09 et 04/09, dérives lentes, ORP en pente, démonstration W = 8 à tort, plus 7 tests feature-097 sur le bloc alterné réel, le rejeu plateau 16/16, le point de rupture et la re-fermeture) |
 | `measure_validity_logic` (pur) | Machine d'état porte/purge (`measureValidityTick`), circulation établie (C4), décision de dispense après coupure courte (C3, `evaluateOutageContinuity`) | `test/test_native_measure_validity/` |
 | `measure_validity` (coquille) | Collecte : `resolveWaterPresence()`, `millis()`, bruts EZO, `esp_reset_reason()`, mémoire RTC ; journal ; alerte MQTT ; cache sous spinlock | — |
 
@@ -31,13 +31,15 @@ Le verdict est consommé par :
 Par voie (pH brut, ORP brut — **sans** offset pH, [ADR-0039](../adr/0039-offset-ph-applique-en-sortie-des-accesseurs.md)) :
 
 1. les lectures EZO (cadence `kPhOrpSensorIntervalMs` = 5 s) sont accumulées dans un tampon de minute ; une « minute » est définie en **nombre de lectures valides** (`kPurgeSamplesPerMin` = 12, NaN ignorés), pas en temps mural ;
-2. à chaque minute pleine, la **médiane** est poussée dans un anneau de `kPurgeWindowMin` = 10 médianes ;
-3. **`stable`** = anneau plein **ET** étendue (max − min des 10 médianes) ≤ `kPurgeStablePhRange` 0,15 pH **ET** ≤ `kPurgeStableOrpRange` 15 mV ;
+2. à chaque minute pleine, la **moyenne interquartile** (`purgeStabilityBlockStat()`, feature-097 — on écarte `trim = max(1, n/4)` valeurs de chaque extrémité triée et on moyenne le reste ; anciennement la médiane) est poussée dans un anneau de `kPurgeWindowMin` = 10 statistiques de bloc ;
+3. **`stable`** = anneau plein **ET** étendue (max − min des 10 statistiques de bloc) ≤ `kPurgeStablePhRange` 0,15 pH **ET** ≤ `kPurgeStableOrpRange` 15 mV ;
 4. **`unstable`** (refermeture C1) = étendue > `kPurgeRecloseRangePh` 0,30 pH ou > `kPurgeRecloseRangeOrp` 30 mV (= 2 × seuil, verrouillé par `static_assert`).
 
 Agrégation des deux voies (`purgeStabilityEvaluate`) : une voie **jamais lue** est ignorée ; une voie lue mais dont l'anneau n'est **pas plein** bloque l'ouverture sans provoquer de refermeture ; aucune voie lue ⇒ ni stable ni instable (attente du plafond). Le verdict porte aussi `phRange` / `orpRange` pour le journal.
 
-**Pourquoi W = 10** : le rinçage est un V (descente ≈ −0,047 pH/min, remontée ≈ +0,043 pH/min le 04/09). Le fond du V occupe une demi-fenêtre de chaque côté, donc la pente détectable vaut **seuil / ((W − 1) / 2)** : 0,10 pH/min à W = 4 (aveugle au V, ouverture à t+7 à pH 5,6), 0,043 à W = 8 (ouverture à t+13 à pH 5,71, 5 millièmes sous le seuil, puis refermeture à t+17), **0,033 à W = 10** (ouverture sur le plateau, pH 6,88, à t+47 sans bruit / t+46-62 avec bruit). 10 est la capacité de l'anneau (`kPurgeStabilityMaxWindowMin`). Détail : [ADR-0059](../adr/0059-purge-adaptative-fenetre-de-medianes.md).
+**Pourquoi W = 10** : le rinçage est un V (descente ≈ −0,047 pH/min, remontée ≈ +0,043 pH/min le 04/09). Le fond du V occupe une demi-fenêtre de chaque côté, donc la pente détectable vaut **seuil / ((W − 1) / 2)** : 0,10 pH/min à W = 4 (aveugle au V, ouverture à t+7 à pH 5,6), 0,043 à W = 8 (ouverture à t+13 à pH 5,71, 5 millièmes sous le seuil, puis refermeture à t+17), **0,033 à W = 10** (ouverture sur le plateau, pH 6,88, à t+47 sans bruit / t+46-62 avec bruit). 10 est la capacité de l'anneau (`kPurgeStabilityMaxWindowMin`). Ce paramètre-là — la géométrie de la fenêtre — n'a **pas** changé en feature-097. Détail : [ADR-0059](../adr/0059-purge-adaptative-fenetre-de-medianes.md).
+
+**Pourquoi la moyenne interquartile et pas la médiane** (feature-097, mesure du 2026-09-20) : le pH brut de ce bassin est un signal anti-corrélé, presque à deux niveaux (autocorrélation lag 1 = −0,440 — voir [sensors.md](sensors.md#signal-ph-brut--anti-corrélation-et-mode-commun-feature-097)). Sur un tel signal, la médiane bascule sur le niveau momentanément majoritaire au lieu de le moyenner : c'est cet artefact, et non une excursion réelle de l'eau, qui produisait 3 fenêtres sur 16 en échec sur la trace terrain. La moyenne interquartile (écarter `trim = max(1, n/4)` valeurs de chaque extrémité) absorbe l'alternance au lieu de trancher dessus : 16/16 fenêtres ouvrent au plancher sur la même trace, contre 13/16 avant. Détail chiffré et alternatives écartées : [amendement 2026-09-20 de l'ADR-0059](../adr/0059-purge-adaptative-fenetre-de-medianes.md#amendement-2026-09-20--lestimateur-de-bloc-devient-la-moyenne-interquartile-feature-097-v254).
 
 ### Machine d'état (`measureValidityTick`, une transition par tick, priorité décroissante)
 
@@ -56,12 +58,14 @@ Toutes les soustractions de temps sont non signées (repliement de `millis()` s�
 
 | Constante | Valeur | Rôle |
 |---|---|---|
-| `kPurgeWindowMin` | 10 | Fenêtre de médianes (min) — `static_assert` ∈ [2 ; 10] |
+| `kPurgeWindowMin` | 10 | Fenêtre de statistiques de bloc (min) — `static_assert` ∈ [2 ; 10] |
 | `kPurgeSamplesPerMin` | 12 | Lectures EZO par minute (5 s) — `static_assert` ∈ [3 ; 60] |
 | `kPurgeStablePhRange` / `kPurgeStableOrpRange` | 0,15 pH / 15 mV | Étendue max sur la fenêtre pour « stable » |
 | `kPurgeRecloseRangePh` / `kPurgeRecloseRangeOrp` | 0,30 pH / 30 mV | Seuil de refermeture C1 (= 2 × stable, `static_assert`) |
-| `kPurgeFloorMs` | 600 000 (10 min) | Plancher — `static_assert` ≥ `kPurgeWindowMin` × 60 s |
+| `kPurgeFloorMs` | 600 000 (10 min) | Plancher — `static_assert` ≥ durée réelle de `kPurgeWindowMin` blocs (corrigé feature-097 : dépendait implicitement de `kPurgeSamplesPerMin` sans le dire) |
 | `kPurgeCapMs` | 5 400 000 (90 min) | Plafond — `static_assert` ≥ 1 h et > plancher |
+| `kPurgeNoiseFloorPh` / `kPurgeNoiseFloorOrp` (feature-097, v2.54+) | 0,10 pH / 10,0 mV | Plancher de bruit **mesuré** (étendue max d'une fenêtre de statistiques de bloc sur eau établie, trace du 2026-09-20) — compile-time uniquement, jamais lu à l'exécution ; `static_assert` `kPurgeStable*Range > kPurgeNoiseFloor*` |
+| `kPurgeMinDetectedDriftPhPerMin` (feature-097, v2.54+) | 0,035 pH/min | Dérive minimale que la re-fermeture (C1) doit encore détecter — relie l'hystérésis ×2 au span réel de la fenêtre (`static_assert`), plutôt qu'à une simple égalité aveugle au nombre d'intervalles |
 | `kShortOutageS` | 10 s | Durée max d'une coupure « courte » (dispense C3) — `static_assert` ≤ 30 |
 | `kOutageWaiverMinIntervalS` | 3 600 s | Au plus une dispense par heure — `static_assert` ≥ 600 |
 
@@ -154,20 +158,21 @@ Eau présente au premier `update()` → front montant vu au boot → **purge com
 | Boot, mémoire RTC absente | INFO | `[STAB] Démarrage à froid (mémoire RTC absente) → purge complète à la reprise d'eau` |
 | Boot, dispense refusée | INFO | `[STAB] Coupure <N s \| de durée inconnue> (<motif>) → purge complète à la reprise d'eau` |
 | Front montant d'eau | INFO | `[STAB] Reprise de circulation — purge des mesures pH/ORP (plancher 10 min, fin sur stabilité, plafond 90 min) ; bruts : pH=6.957 ORP=556.0 mV (eau stagnante)` |
-| Fin de purge par stabilité | INFO | `[STAB] Fin de purge par stabilité (X min Y s, pH a→b ; ORP a→b mV) — mesures pH/ORP représentatives` |
-| Fin de purge au plafond | **WARNING** | `[STAB] Purge des mesures ouverte au PLAFOND (X min Y s) sans stabilité (pH a→b ; ORP a→b mV) — sonde bruyante ou transitoire long ; régulation reprise, à surveiller` + `mqttManager.publishAlert("measures_purge_timeout", msg)` |
+| Fin de purge par stabilité | INFO | `[STAB] Fin de purge par stabilité (X min Y s, pH brut a→b (blocs c) ; ORP brut a→b mV (blocs c mV)) — mesures pH/ORP représentatives` |
+| Fin de purge au plafond | **WARNING** | `[STAB] Purge des mesures ouverte au PLAFOND (X min Y s) sans stabilité (pH brut a→b (blocs c) ; ORP brut a→b mV (blocs c mV)) — sonde bruyante ou transitoire long ; régulation reprise, à surveiller` + `mqttManager.publishAlert("measures_purge_timeout", msg)` |
 | Purge dispensée | INFO | `[STAB] Purge dispensée (coupure N s) — mesures pH/ORP représentatives immédiatement` |
 | Refermeture C1 | **WARNING** | `[STAB] Re-purge n°N — mesures redevenues instables après ouverture (étendue pH … / ORP … mV) : porte refermée jusqu'à nouvelle stabilité` |
-| Fin de re-purge | INFO | `[STAB] Fin de re-purge n°N (X min Y s, pH … ; ORP … mV) — mesures de nouveau représentatives` |
+| Fin de re-purge | INFO | `[STAB] Fin de re-purge n°N (X min Y s, pH brut a→b (blocs c) ; ORP brut a→b mV (blocs c mV)) — mesures de nouveau représentatives` |
 
-`a→b` = bruts min → max observés pendant la purge (`rangeOrNa`) ; une mesure absente s'écrit `n/a`, jamais `nan` ni `0.00`. Une retombée d'eau pendant la purge n'émet rien côté `[STAB]` (le gel des filtres est journalisé par `sensors`, voir [sensors.md](sensors.md)).
+`a→b` = bruts min → max observés pendant la purge (`rangeOrNa`) ; une mesure absente s'écrit `n/a`, jamais `nan` ni `0.00`. **`blocs c` (feature-097, v2.54+)** = étendue (max − min) des **statistiques de bloc** au moment du verdict (`purgeChannelRange()`) — c'est cette grandeur, distincte du `a→b` brut, que compare `purgeStabilityEvaluate()` aux seuils `kPurge*StableRange` / `kPurge*RecloseRange`. ⚠️ Les deux valeurs peuvent sembler contradictoires (ex. « 16 min déclarées stables » pendant que le brut balaie 1,5 unité) : elles ne parlent pas de la même grandeur, voir [feature-097 §A](../../specs/features/doing/feature-097-seuil-de-stabilite-sur-donnees-terrain.md). Une retombée d'eau pendant la purge n'émet rien côté `[STAB]` (le gel des filtres est journalisé par `sensors`, voir [sensors.md](sensors.md)).
 
 ## Limites connues (assumées, GO `pool-chemistry` option (a), fail-closed)
 
-- Une **dérive lente ≤ 0,017 pH/min** est jugée stable (0,15 pH sur 9 min d'écart entre médianes extrêmes).
+- Une **dérive lente ≤ 0,017 pH/min** est jugée stable (0,15 pH sur 9 min d'écart entre statistiques de bloc extrêmes). Inchangé par feature-097 : sur une rampe linéaire, médiane et moyenne interquartile renvoient la même valeur centrale — seul le bruit change, pas la sensibilité à une dérive monotone.
 - L'**ORP seul** ne détecte pas une pente ≤ 1,6 mV/min (voie secondaire : seuil 15 mV ≈ 13,5 mV de bruit).
-- Sur **eau plate avec bruit ±0,18 pH**, l'étendue de 10 médianes ≈ 0,16 ≈ seuil : ouverture au plancher dans 12 graines sur 21, **queue possible jusqu'à t+29** (`test_E_rejeu_0409_5_graines_ouvrent_ou_plafond`). Élargir le seuil à 0,20 (option (b)) a été **refusé** ; des médianes sur 2 min (option (c)) sont la piste préférée → [feature-097](../../specs/features/todo/feature-097-seuil-de-stabilite-sur-donnees-terrain.md), décision sur ≥ 5 matins de télémétrie `measures_purge_last_*` (au plus tôt le 10/09/2026).
+- **(historique, corrigé par feature-097)** Sur du bruit **synthétique** ±0,18 pH (LCG à graine fixe, pas une mesure terrain), l'étendue de 10 médianes ≈ 0,16 ≈ seuil : ouverture au plancher dans 12 graines sur 21, queue possible jusqu'à t+29. La trace **réelle** capturée le 2026-09-20 (`test/fixtures/f097_purge_noise_20260920.csv`, 25 min, eau établie) donne une image différente : avec l'ancien estimateur (médiane), **13 fenêtres sur 16 (81 %)** ouvraient déjà — le seuil n'était pas sous le plancher de bruit, contrairement à l'estimation. Ce qui échouait, c'étaient des **bascules de médiane** sur un signal pH bimodal (autocorrélation lag 1 = −0,440, voir [sensors.md](sensors.md#signal-ph-brut--anti-corrélation-et-mode-commun-feature-097)), pas un seuil trop serré. **Corrigé** : l'estimateur de bloc est devenu la **moyenne interquartile** — 16/16 fenêtres ouvrent désormais au plancher sur la même trace, aucun seuil n'a changé. Détail : [amendement 2026-09-20 de l'ADR-0059](../adr/0059-purge-adaptative-fenetre-de-medianes.md#amendement-2026-09-20--lestimateur-de-bloc-devient-la-moyenne-interquartile-feature-097-v254), [feature-097](../../specs/features/doing/feature-097-seuil-de-stabilite-sur-donnees-terrain.md).
 - Coût nominal : ≈ 10 min + 65 s de ré-amorçage des filtres après une longue coupure (contre 15 min de minuterie avant), mais ~47 min un matin de rinçage réel — c'est le prix d'une ouverture **sur le plateau** au lieu du fond du V.
+- **Point de rupture de l'estimateur de bloc en recul, feature-097** : la moyenne interquartile tolère moins de lectures aberrantes qu'une médiane avant de dériver significativement (25 % d'un bloc, contre 50 % pour la médiane — 3 lectures aberrantes sur 12 encore amorties, 4 sur 12 décrochent). Arbitrage explicite `pool-chemistry`, en échange de la disparition des bascules d'interrupteur sur le signal bimodal réel. Détail : amendement ADR-0059 ci-dessus.
 
 ## Cas limites
 

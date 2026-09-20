@@ -3,7 +3,7 @@
 - **Statut** : Accepté
 - **Date** : 2026-09-04
 - **Décideurs** : gate `pool-chemistry` (**GO SOUS CONDITIONS C1-C6** le 04/09 17:15, **deux ré-arbitrages** de la fenêtre les 18:40 et 19:10, **GO final option (a)** à 20:50 avec les conditions 6-11), `architect`, `test-engineer` (rejeux du CSV terrain — c'est lui qui a invalidé les deux premières fenêtres), `code-reviewer` (Approved 21:15), utilisateur (retrait du réglage)
-- **Spec(s) liée(s)** : [feature-091](../../specs/features/done/feature-091-purge-adaptative-stabilisation.md) ; suite ouverte : [feature-097](../../specs/features/todo/feature-097-seuil-de-stabilite-sur-donnees-terrain.md) ; journal d'arbitrage : `specs/plan-2026-09-regulation-et-robustesse.md` §6
+- **Spec(s) liée(s)** : [feature-091](../../specs/features/done/feature-091-purge-adaptative-stabilisation.md) ; suite ouverte : [feature-097](../../specs/features/doing/feature-097-seuil-de-stabilite-sur-donnees-terrain.md) ; journal d'arbitrage : `specs/plan-2026-09-regulation-et-robustesse.md` §6
 
 ## Contexte
 
@@ -171,7 +171,7 @@ mesure a bougé »), et le badge des cartes pH/ORP passe du compte à rebours à
   indéfiniment **en silence** ; la disponibilité l'emporte, sous réserve d'alerte.
 - **Médianes sur 2 min, ou statistique robuste** (option (c), **différée**) — c'est la piste
   préférée pour la queue d'ouvertures tardives, mais elle se tranche sur des **données
-  réelles**, pas sur des rejeux bruités synthétiques : → [feature-097](../../specs/features/todo/feature-097-seuil-de-stabilite-sur-donnees-terrain.md),
+  réelles**, pas sur des rejeux bruités synthétiques : → [feature-097](../../specs/features/doing/feature-097-seuil-de-stabilite-sur-donnees-terrain.md),
   décidable sur **≥ 5 matins** de télémétrie `measures_purge_last_*`, au plus tôt le
   10/09/2026.
 - **Fonder la fin de purge sur un volume d'eau renouvelé calculé** (rejetée) — exigerait la
@@ -237,6 +237,39 @@ mesure a bougé »), et le badge des cartes pH/ORP passe du compte à rebours à
   dispense (micro-coupures de filtration sans reboot, par exemple) est une décision
   chimique, pas une optimisation.
 
+## Amendement 2026-09-20 — l'estimateur de bloc devient la moyenne interquartile (feature-097, v2.54+)
+
+**Ce qui change** : au §1.2, « la **médiane** de chaque minute pleine entre dans un anneau » devient « la **moyenne interquartile** de chaque minute pleine entre dans un anneau ». **Rien d'autre ne bouge** : fenêtre `W = 10`, seuils d'ouverture (0,15 pH / 15 mV), hystérésis de refermeture ×2 (0,30 pH / 30 mV), plancher 10 min, plafond 90 min, retrait du réglage utilisateur — tout est **inchangé**. Cet amendement corrige l'**estimateur qui alimente** ces seuils, pas les seuils eux-mêmes.
+
+**Pourquoi.** Trace réelle capturée le 2026-09-20 (`test/fixtures/f097_purge_noise_20260920.csv`, 300 échantillons à 5 s, 25 min, eau établie) : le pH brut de ce bassin n'est pas du bruit autour d'une moyenne, c'est un signal **anti-corrélé, presque à deux niveaux** — autocorrélation au lag 1 = **−0,440** (0 attendu pour du bruit IID), saut moyen entre deux lectures = 1,47 σ (1,128 σ attendu), 197 changements de signe sur 299 autour de la médiane (~150 attendus). Bloc réel de la minute 22 :
+
+```
+7.051 · 6.747 · 7.083 · 6.752 · 7.083 · 6.743 · 7.085 · 6.775 · 7.079 · 6.749 · 7.079 · 7.068
+```
+
+— deux niveaux séparés de ~0,21, en alternance quasi stricte. **Sur un tel signal, la médiane n'est pas une moyenne robuste : c'est un interrupteur.** Elle bascule sur le niveau momentanément majoritaire (sept lectures hautes contre cinq → elle saute ; cinq contre sept → elle retombe). C'est cette bascule — pas une excursion réelle de l'eau — qui produisait 3 des 16 fenêtres en échec sur la trace terrain. La corrélation instantanée pH↔ORP (+0,462, l'ORP étant lui aussi anti-corrélé à −0,396) signe une perturbation de **mode commun** sur les deux électrodes, cohérente avec les courants de fuite de la pompe de filtration déjà admis sur ce projet (voir [subsystems/sensors.md](../subsystems/sensors.md#signal-ph-brut--anti-corrélation-et-mode-commun-feature-097)).
+
+**Ce que ça corrige, mesuré à seuils et fenêtre INCHANGÉS** :
+
+| Estimateur | σ du bloc | étendue de fenêtre min / méd / max | ouverture pH ≤ 0,15 (16 fenêtres) |
+|---|---|---|---|
+| médiane (ADR-0059 d'origine) | 0,0458 | 0,075 / 0,095 / 0,192 | 13/16 |
+| moyenne interquartile (retenue) | 0,0263 | 0,068 / 0,074 / 0,089 | 16/16 |
+
+Voie ORP, même chemin de code : max 11,5 → 8,7 mV — gain obtenu sans toucher un seuil.
+
+**Rectification d'une affirmation de l'ADR d'origine.** Le §1 ci-dessus écrivait « seuils = bruit de mesure observé sur le bassin de référence ». C'était une **estimation présentée comme une mesure** : le bruit utilisé au moment de l'arbitrage du 04/09 était **synthétique**, uniforme ±0,18 pH, généré par un LCG à graine fixe (`test/test_native_purge_stability/`, section E) — il n'y avait alors aucune trace réelle de bruit d'eau établie. Le chiffre qui en découlait (« ouverture au plancher une fois sur deux ») était une propriété du bruit synthétique, pas du bassin. La première tentative de mesure réelle du 2026-09-20 était elle-même **invalide** : le script de capture interrogeait `/debug/sensor_trace?page=N` alors que la route attend `?offset=N&count=M` ([`src/web_routes_debug.cpp:33`](../../src/web_routes_debug.cpp)) — le paramètre `page` étant ignoré en silence, les six requêtes renvoyaient toutes `offset=0` : 50 échantillons uniques présentés comme 300, avec des discontinuités artificielles aux raccords. Les chiffres qui en étaient issus (étendue médiane 0,176, ORP 18,5 mV, « critère conjoint 0/16 ») sont **faux et ne doivent pas être recopiés**. La mesure corrigée, sur la trace réellement rejouée le même jour, donne **13/16 (81 %)** avec l'ancien estimateur — le seuil n'était donc pas sous le plancher de bruit, contrairement à ce que la trace invalide laissait croire.
+
+**Planchers de bruit mesurés** (`kPurgeNoiseFloorPh` = 0,10 pH, `kPurgeNoiseFloorOrp` = 10,0 mV, `src/constants.h`) : étendue maximale d'une fenêtre de 10 statistiques de bloc (moyenne interquartile) sur eau établie, arrondie au-dessus, trace du 2026-09-20 ci-dessus. ⚠️ Une seule trace, une seule session (porte ouverte, 1 h 40 après la re-purge n°1 du même matin) : la marge retenue face au seuil d'ouverture (0,15 / 0,10 = 1,5×) est **serrée**, pas généreuse. Un `static_assert` (`kPurgeStablePhRange > kPurgeNoiseFloorPh` et son homologue ORP) rend visible à la compilation tout futur resserrement du seuil sous ce plancher — c'est l'assert qui manquait et qui aurait rendu visible dès le 04/09 que la question méritait d'être posée (même si, avec l'ancien estimateur, la réponse était non).
+
+**Le seul sacrifice** : le point de rupture (fraction de lectures aberrantes d'un bloc tolérée sans dérive significative) recule de **50 %** (médiane) à **25 %** (moyenne interquartile, `trim = max(1, n/4)`). Mesuré sur le bloc réel avec des lectures injectées à 14,0 pH : la moyenne interquartile dérive **moins** que la médiane jusqu'à 3 lectures aberrantes sur 12, et ne décroche qu'à 4 sur 12. Arbitré explicitement par le gate `pool-chemistry` de feature-097 comme un compromis acceptable, en échange de la disparition des bascules d'interrupteur.
+
+**Ce qui ne change pas** : le fond en V du rinçage reste détecté avec la même marge (0,0525 sur 0,03 exigé) — sur une rampe linéaire, médiane et moyenne interquartile renvoient toutes deux la valeur centrale du bloc, seul le bruit change. La re-fermeture C1 garde sa pente de déclenchement (0,0333 pH/min), avec un hystérésis **plus généreux** en pratique (l'écart entre plancher de bruit et seuil de refermeture passe de 0,108 à 0,211 avec le nouvel estimateur, sans qu'aucune constante n'ait bougé).
+
+**Alternatives réexaminées et écartées** — voir [feature-097](../../specs/features/doing/feature-097-seuil-de-stabilite-sur-donnees-terrain.md) §Options évaluées le 04/09 pour le détail chiffré : seuil élargi à 0,20 (confirmé refusé, marge sur le V nulle), médianes sur blocs de 2 min (raccourcit l'horizon et casse l'invariant de refermeture), statistique de tendance/pente (aveugle au fond du V), seuil dérivé en direct de la dispersion (boucle auto-réalisatrice), moyenne simple (point de rupture nul, écartée pour la même raison qui avait fait choisir la médiane à l'origine).
+
+**Décideurs de l'amendement** : gate `pool-chemistry` (feature-097, arbitrage du point de rupture 50 %→25 %, révocation du GO SOUS CONDITIONS du 20/09 rendu sur un plancher de bruit surestimé du double), `test-engineer` (rejeu de la fixture terrain), `code-reviewer`.
+
 ## Références
 
 - Code : [`src/purge_stability_logic.h`](../../src/purge_stability_logic.h) /
@@ -256,7 +289,7 @@ mesure a bougé »), et le badge des cartes pH/ORP passe du compte à rebours à
   (plancher, deux refermetures puis plafond). Mutation W 10 → 8 tuée par 6 tests ;
   « plancher < fenêtre » tué par `static_assert`.
 - Spec : [feature-091](../../specs/features/done/feature-091-purge-adaptative-stabilisation.md),
-  suite [feature-097](../../specs/features/todo/feature-097-seuil-de-stabilite-sur-donnees-terrain.md)
+  suite [feature-097](../../specs/features/doing/feature-097-seuil-de-stabilite-sur-donnees-terrain.md)
 - Doc : [subsystems/measure-validity.md](../subsystems/measure-validity.md),
   [subsystems/sensors.md](../subsystems/sensors.md),
   [API.md](../API.md), [MQTT.md](../MQTT.md),

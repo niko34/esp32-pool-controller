@@ -2805,11 +2805,22 @@ constexpr unsigned long kStabilizationDurationOrpMs = 180000UL;  // 3 min — OR
 // (l'ancien stabilizationDelayMin : trop court on dose sur du transitoire, trop
 // long on perd du temps de régulation chaque matin).
 //
-// Détecteur : une MÉDIANE PAR MINUTE de chaque brut (12 lectures EZO à 5 s), sur
-// une fenêtre glissante de kPurgeWindowMin minutes ; « stable » = fenêtre pleine
-// ET étendue (max−min des médianes) ≤ seuil sur les DEUX voies. Seuils = bruit
-// de mesure observé sur le bassin de référence (dispersion pH brut ~0,36 sur
-// les LECTURES, ~0,10-0,15 sur les médianes minute) : 0,15 pH / 15 mV.
+// Détecteur : une statistique PAR MINUTE de chaque brut (12 lectures EZO à
+// 5 s), sur une fenêtre glissante de kPurgeWindowMin minutes ; « stable » =
+// fenêtre pleine ET étendue (max−min des statistiques de bloc) ≤ seuil sur les
+// DEUX voies. Seuils = bruit de mesure observé sur le bassin de référence
+// (dispersion pH brut ~0,36 sur les LECTURES, ~0,10-0,15 sur les statistiques
+// de bloc) : 0,15 pH / 15 mV.
+//
+// ESTIMATEUR DE BLOC (feature-097, v2.54+, amendement daté ADR-0059 §1.2) :
+// MOYENNE INTERQUARTILE, plus la médiane d'origine. Mesure terrain du 20/09 :
+// le pH brut de ce bassin est anti-corrélé, presque à deux niveaux
+// (autocorrélation lag 1 = −0,440) — sur un tel signal la médiane n'est pas
+// une moyenne robuste, c'est un INTERRUPTEUR qui bascule sur le niveau
+// momentanément majoritaire. Voir purge_stability_logic.h pour le détail et le
+// bloc réel mesuré. Aucun seuil ci-dessous n'a changé ; seul l'estimateur qui
+// les alimente a changé. Planchers de bruit mesurés avec le nouvel
+// estimateur : voir kPurgeNoiseFloorPh / kPurgeNoiseFloorOrp ci-dessous.
 //
 // FENÊTRE = 10 min (double arbitrage pool-chemistry du 04/09 après rejeux
 // natifs) : W médianes couvrent W−1 intervalles, la pente minimale détectable
@@ -2850,6 +2861,25 @@ constexpr uint32_t kPurgeCapMs            = 5400000UL; // 90 min
 // ×2 : un simple retour au bruit d'ouverture ne referme pas.
 constexpr float    kPurgeRecloseRangePh   = 0.30f;    // = 2 × kPurgeStablePhRange
 constexpr float    kPurgeRecloseRangeOrp  = 30.0f;    // = 2 × kPurgeStableOrpRange
+// PLANCHERS DE BRUIT (feature-097, v2.54+) — étendue max mesurée d'une fenêtre
+// de 10 statistiques de bloc (moyenne interquartile) sur eau ÉTABLIE, trace du
+// 2026-09-20 (`test/fixtures/f097_purge_noise_20260920.csv`, 25 min, 300
+// échantillons) : pH 0,089 max, ORP 8,7 mV max — arrondis au-dessus. Compile
+// time UNIQUEMENT (static_assert plus bas) : jamais lues à l'exécution, elles
+// ne pilotent aucun seuil en direct — un plancher lu au runtime serait mesuré
+// PENDANT la purge, donc gonflé par le transitoire lui-même (piste écartée,
+// voir spec feature-097 §Options évaluées).
+// ⚠️ Une seule trace, porte ouverte, mesurée le 20/09 ; marge retenue
+// (kPurgeStablePhRange / kPurgeNoiseFloorPh = 0,15 / 0,10) : 1,5× SEULEMENT.
+constexpr float    kPurgeNoiseFloorPh                = 0.10f;   // pH, plancher de bruit mesuré
+constexpr float    kPurgeNoiseFloorOrp               = 10.0f;   // mV, idem
+// Dérive de sonde MINIMALE qui DOIT ENCORE être détectée par la re-fermeture
+// (C1) — l'assert plus bas garantit qu'une dérive AU MOINS aussi rapide que
+// celle-ci referme la porte (kPurgeRecloseRangePh <= cette dérive × span de la
+// fenêtre). Sert de base à cet invariant reliant kPurgeRecloseRangePh au span
+// réel de la fenêtre, plutôt qu'à une simple égalité ×2 aveugle au nombre
+// d'intervalles.
+constexpr float    kPurgeMinDetectedDriftPhPerMin    = 0.035f;  // pH/min
 // COUPURE COURTE (C3 pool-chemistry) : un redémarrage LOGICIEL (OTA, panic,
 // watchdog) de ≤ 10 s alors que l'eau était présente ne renouvelle pas l'eau de
 // la conduite — la purge est DISPENSÉE. Mémoire RTC (survit au reset, pas à la
@@ -2857,7 +2887,14 @@ constexpr float    kPurgeRecloseRangeOrp  = 30.0f;    // = 2 × kPurgeStableOrpR
 constexpr uint32_t kShortOutageS             = 10;    // durée max d'une coupure « courte »
 constexpr uint32_t kOutageWaiverMinIntervalS = 3600;  // 1 dispense max par heure
 
-static_assert(kPurgeFloorMs >= (uint32_t)kPurgeWindowMin * 60000UL,
+// feature-097 : bug latent corrigé — la version précédente comparait
+// kPurgeFloorMs à kPurgeWindowMin * 60000UL, ce qui suppose en silence
+// « 1 bloc = 1 minute murale ». La durée réelle d'un bloc dépend de
+// kPurgeSamplesPerMin ET de la cadence de lecture ; l'écrire en durée réelle
+// rend le calcul robuste si l'un des deux change un jour. Vaut 600 000 ms
+// aujourd'hui des deux côtés : l'égalité est satisfaite, rien ne bouge.
+static_assert(kPurgeFloorMs >= (uint64_t)kPurgeWindowMin * kPurgeSamplesPerMin *
+                                    kPhOrpSensorIntervalMs,
               "Plancher de purge plus court que la fenetre de stabilite : "
               "la porte s'ouvrirait sur une fenetre incomplete");
 static_assert(kPurgeFloorMs < kPurgeCapMs,
@@ -2882,8 +2919,33 @@ static_assert((uint64_t)kFiltrationMinRepresentativeSamples * kFiltrationTempSam
 static_assert(kPurgeRecloseRangePh == 2.0f * kPurgeStablePhRange &&
                   kPurgeRecloseRangeOrp == 2.0f * kPurgeStableOrpRange,
               "Hysteresis de re-fermeture != 2 x seuil d'ouverture (C1)");
+// feature-097 : l'égalité ×2 ci-dessus ne dit rien du SPAN réel de la fenêtre
+// (W-1 intervalles) — elle ne garantit la détection de dérive « par
+// coïncidence » qu'à W = 10 fixé. On lui adjoint l'invariant explicite : la
+// dérive minimale qui DOIT ENCORE être détectée (kPurgeMinDetectedDriftPhPerMin),
+// une fois convertie en étendue sur la durée réelle couverte par W-1
+// intervalles, doit rester AU-DESSUS du seuil de re-fermeture — sinon une
+// dérive à cette vitesse ne le franchirait jamais. Vaut
+// 0,035 * 9 * 12 * 5000 / 60000 = 0,315 ; seuil 0,30 ⇒ 0,30 <= 0,315 ✓
+// aujourd'hui (0,035 pH/min EST détectée, cf. test F5 / condition C4).
+static_assert(kPurgeRecloseRangePh <=
+                  kPurgeMinDetectedDriftPhPerMin *
+                      (float)(kPurgeWindowMin - 1) * (float)kPurgeSamplesPerMin *
+                      (float)kPhOrpSensorIntervalMs / 60000.0f,
+              "Reclose pH au-dela de la derive minimale qui doit rester "
+              "detectee sur le span reel de la fenetre (C1) : la geometrie a "
+              "change sans que l'hysteresis ait ete revalidee");
 static_assert(kPurgeStablePhRange > 0.0f && kPurgeStableOrpRange > 0.0f,
               "Seuil de stabilite nul : la porte ne s'ouvrirait qu'au plafond");
+// feature-097 : l'assert qui aurait rendu visible dès le 2026-09-04 que le
+// seuil d'ouverture était en-dessous du plancher de bruit mesuré (ce n'était
+// PAS le cas — cf. spec feature-097 §Verdict — mais rien ne le garantissait).
+static_assert(kPurgeStablePhRange > kPurgeNoiseFloorPh,
+              "Seuil de stabilite pH sous le plancher de bruit mesure : la "
+              "porte n'ouvrirait jamais avant le plafond");
+static_assert(kPurgeStableOrpRange > kPurgeNoiseFloorOrp,
+              "Seuil de stabilite ORP sous le plancher de bruit mesure : la "
+              "porte n'ouvrirait jamais avant le plafond");
 static_assert(kPurgeWindowMin >= 2 && kPurgeWindowMin <= 10,
               "Fenetre de stabilite hors de [2 ; 10] min");
 static_assert(kPurgeSamplesPerMin >= 3 && kPurgeSamplesPerMin <= 60,

@@ -14,13 +14,36 @@
 // PRINCIPE :
 //   - chaque VOIE (pH brut, ORP brut) accumule les lectures d'une « minute »
 //     (params.samplesPerMin lectures valides, 12 à la cadence EZO de 5 s) puis
-//     en calcule la MÉDIANE (robuste à une lecture aberrante isolée) ;
-//   - les médianes alimentent un anneau glissant de params.windowMin minutes ;
+//     en calcule la MOYENNE INTERQUARTILE (voir plus bas — feature-097) ;
+//   - les statistiques de bloc alimentent un anneau glissant de
+//     params.windowMin minutes ;
 //   - la voie est STABLE quand l'anneau est PLEIN et que son étendue
-//     (max − min des médianes) est ≤ params.*StableRange ;
+//     (max − min des statistiques de bloc) est ≤ params.*StableRange ;
 //   - la voie est INSTABLE (critère de re-fermeture, C1 pool-chemistry) quand
 //     l'anneau est plein et que son étendue est > params.*RecloseRange (2× le
 //     seuil d'ouverture : hystérésis).
+//
+// POURQUOI LA MÉDIANE A ÉTÉ ABANDONNÉE (feature-097, mesure du 2026-09-20) :
+//   le pH brut de ce bassin n'est pas du bruit autour d'une moyenne — c'est un
+//   signal ANTI-CORRÉLÉ, presque à DEUX NIVEAUX (autocorrélation au lag 1 :
+//   −0,440 ; saut moyen entre deux lectures : 1,47 σ). Bloc réel mesuré
+//   (minute 22, trace du 20/09) :
+//     7.051 · 6.747 · 7.083 · 6.752 · 7.083 · 6.743 · 7.085 · 6.775 · 7.079 ·
+//     6.749 · 7.079 · 7.068
+//   — deux niveaux séparés de ~0,21, en alternance quasi stricte. Sur un tel
+//   signal, la MÉDIANE N'EST PAS UNE MOYENNE ROBUSTE : c'est un INTERRUPTEUR.
+//   Sept lectures hautes contre cinq et elle saute sur le niveau haut ; cinq
+//   contre sept et elle retombe sur le niveau bas. Ce sont ces bascules — pas
+//   une excursion réelle de l'eau — qui produisaient la majorité des fenêtres
+//   en échec sur données terrain (3 sur 16). La moyenne interquartile, elle,
+//   moyenne les deux niveaux au lieu d'en choisir un : elle absorbe
+//   l'alternance au lieu de trancher dessus.
+//   ⚠️ NE PAS RESTAURER LA MÉDIANE « pour la robustesse » : c'est précisément
+//   l'argument qui l'avait fait choisir à l'origine (ADR-0059 §1.2, amendé par
+//   feature-097) — il est valide contre une lecture aberrante ISOLÉE, pas
+//   contre un signal bimodal. Le point de rupture recule de 50 % à 25 % des
+//   lectures d'un bloc (arbitrage explicite pool-chemistry, feature-097) :
+//   c'est le prix payé, en échange de la disparition des bascules.
 //
 // AGRÉGATION des deux voies :
 //   - une voie JAMAIS lue depuis le reset (NaN permanent : module absent, sonde
@@ -68,8 +91,11 @@ struct PurgeStabilityParams {
 struct PurgeChannelState {
   float minuteBuf[kPurgeStabilityMaxSamplesPerMin];  // lectures de la minute en cours
   uint8_t minuteCount;                                // lectures valides accumulées
-  float medians[kPurgeStabilityMaxWindowMin];         // anneau de médianes-minute
-  uint8_t medianCount;                                // médianes valides (≤ windowMin)
+  // Anneau des statistiques de bloc (moyenne interquartile depuis feature-097 ;
+  // le nom du champ garde « medians » pour ne pas remuer tout le fichier —
+  // c'est la valeur de purgeStabilityBlockStat() qui y est stockée).
+  float medians[kPurgeStabilityMaxWindowMin];
+  uint8_t medianCount;                                // statistiques valides (≤ windowMin)
   uint8_t medianHead;                                 // prochaine position d'écriture
   bool everSampled;                                   // ≥ 1 lecture valide depuis reset
   float rawMin;                                       // min des bruts depuis reset
@@ -105,16 +131,25 @@ PurgeStabilityVerdict purgeStabilityEvaluate(const PurgeStabilityState& st,
                                              const PurgeStabilityParams& p);
 
 // --- Accesseurs de diagnostic / journal -------------------------------------
-// Étendue (max − min) des médianes d'une voie ; NaN si aucune médiane.
+// Étendue (max − min) des statistiques de bloc d'une voie ; NaN si aucun bloc.
 float purgeChannelRange(const PurgeChannelState& ch);
-// Nombre de médianes-minute disponibles (0..windowMin).
+// Nombre de statistiques de bloc disponibles (0..windowMin).
 uint8_t purgeChannelMinutes(const PurgeChannelState& ch);
 // min/max des BRUTS depuis le reset (NaN si jamais lue).
 float purgeChannelRawMin(const PurgeChannelState& ch);
 float purgeChannelRawMax(const PurgeChannelState& ch);
 
-// Médiane d'un tableau de n flottants (n ≥ 1), sans modifier l'entrée. Exposée
-// pour les tests (tri par insertion sur une copie bornée).
+// Médiane d'un tableau de n flottants (n ≥ 1), sans modifier l'entrée. N'est
+// plus l'estimateur de bloc utilisé par channelAdd() depuis feature-097 (voir
+// plus haut), mais reste exportée : elle sert de référence de comparaison aux
+// tests, et pour n ≤ 2 elle EST la définition de purgeStabilityBlockStat().
 float purgeStabilityMedian(const float* v, uint8_t n);
+
+// Statistique de bloc retenue (feature-097) : moyenne interquartile — on écarte
+// trim = max(1, n/4) valeurs les plus basses et trim les plus hautes, on
+// moyenne les n − 2·trim valeurs centrales. Pour n ≤ 2, retombe sur la médiane
+// (rien à écarter). Sans modifier l'entrée (tri sur une copie bornée, tri par
+// insertion partagé avec purgeStabilityMedian()). Exposée pour les tests.
+float purgeStabilityBlockStat(const float* v, uint8_t n);
 
 #endif  // PURGE_STABILITY_LOGIC_H

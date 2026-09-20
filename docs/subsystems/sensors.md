@@ -313,6 +313,29 @@ Lissage logiciel **robuste** des mesures EZO pour livrer une valeur représentat
 
 > **Refonte feature-058 ([ADR-0027](../adr/0027-filtre-tendance-centrale.md))** — La chaîne d'origine (rejet de saut `maxStep` → médiane(7) → EMA + re-sync anti latch-up) **collait** au haut ou au bas d'une oscillation soutenue (le rejet de saut traitait les transitions comme aberrantes → n'intégrait qu'un côté de l'enveloppe), et pouvait **figer** la valeur sur un nombre trompeur via le latch. Elle est remplacée par un **estimateur de tendance centrale** dont la valeur est **découplée** du drapeau d'instabilité. La cause racine du bruit reste **matérielle** ; ce filtre livre en attendant une valeur **honnête et centrée**, plus sûre qu'une valeur collée ou gelée.
 
+### Signal pH brut — anti-corrélation et mode commun (feature-097)
+
+Fait mesuré sur le bassin de référence, distinct de la robustesse du filtre ci-dessous : le pH **brut** de ce bassin n'est **pas** du bruit blanc autour d'une moyenne — c'est un signal **anti-corrélé, presque à deux niveaux**. Trace du 2026-09-20 (`test/fixtures/f097_purge_noise_20260920.csv`, 300 échantillons à 5 s, 25 min, eau établie, porte ouverte) :
+
+| Indice | Mesuré | Attendu si bruit IID |
+|---|---|---|
+| Autocorrélation au lag 1 | **−0,440** | 0 |
+| Saut moyen entre 2 lectures consécutives | 0,173 pH = **1,47 σ** | 1,128 σ (≈ 0,133) |
+| Changements de signe autour de la médiane | **197 / 299** | ~150 |
+
+Bloc réel de 12 lectures (minute 22 de la trace) :
+
+```
+7.051 · 6.747 · 7.083 · 6.752 · 7.083 · 6.743 · 7.085 · 6.775 · 7.079 · 6.749 · 7.079 · 7.068
+```
+
+— deux niveaux séparés de ~0,21 pH, en **alternance quasi stricte** d'une lecture à l'autre. La corrélation instantanée pH↔ORP vaut **+0,462**, et l'ORP est lui aussi anti-corrélé (**−0,396**) : les **deux électrodes voient la même perturbation**, à l'instant même de la lecture — signature d'un **mode commun**, pas d'un bruit indépendant par voie. Explication retenue sur ce projet : les **courants de fuite de la pompe de filtration**, hypothèse déjà admise sur ce bassin et confirmée ici indépendamment par la mesure d'anti-corrélation croisée pH/ORP.
+
+**Pourquoi c'est un fait durable, pas une anecdote de la feature-097** :
+- une **médiane** sur un tel signal n'est pas une moyenne robuste, c'est un **interrupteur** qui bascule sur le niveau momentanément majoritaire (7 lectures hautes contre 5 → elle saute) — c'est ce qui a fait remplacer l'estimateur de bloc du détecteur de purge par une moyenne interquartile, voir [measure-validity.md](measure-validity.md#détecteur-de-stabilité-purge_stability_logic) et l'[amendement 2026-09-20 de l'ADR-0059](../adr/0059-purge-adaptative-fenetre-de-medianes.md#amendement-2026-09-20--lestimateur-de-bloc-devient-la-moyenne-interquartile-feature-097-v254) ;
+- toute **future statistique** calculée sur le brut (nouveau filtre, nouvelle garde, nouveau diagnostic) doit être vérifiée sur un signal bimodal avant d'être calée sur une hypothèse de bruit gaussien ou uniforme ;
+- ce même mode commun conditionne la **butée de sécurité brute pH 6,20** (comparaison d'un seuil dur à une lecture isolée d'un signal qui alterne entre deux niveaux) — hors périmètre de feature-097, traité par une spec dédiée avec son propre gate `pool-chemistry` (voir feature-097 §Hors périmètre).
+
 ### Chaîne de filtrage
 
 ```text
