@@ -12,12 +12,18 @@
 // persistant fait 8 Ko : sur-journaliser détruirait la fenêtre forensique de
 // l'épisode, leçon du crash du 15/08).
 //
-// Les repères TERRAIN mesurés le 05/09 sont dans les tests EN VALEURS ABSOLUES :
-// ce sont eux qui justifient le seuil, et ce sont eux qui doivent mourir si
-// quelqu'un le déplace.
+// Les repères TERRAIN mesurés le 05/09 (HISTORIQUES — état d'alors, avant
+// feature-129/feature-131) sont dans les tests EN VALEURS ABSOLUES : ce sont
+// eux qui justifient le seuil, et ce sont eux qui doivent mourir si quelqu'un
+// le déplace.
 //   - plateau calme post-B-2 ......... 13 300 o → doit être SERVI
 //   - plancher rafale 6 requêtes ..... 14 324 o → doit être SERVI
 //   - plancher absolu du firmware ....  1 908 o → doit être REFUSÉ
+//
+// Repère feature-132 (2026-09-20, post-feature-131) : plancher glissant le
+// plus bas mesuré sous rafale de 9 requêtes parallèles = 19 444 o, 0 refus sur
+// 171 requêtes. Le seuil n'a PAS bougé : ces repères de 05/09 restent des
+// planchers de non-régression valides, ils ne sont plus le pire cas observé.
 //
 // Les tests de frontière et de calibrage utilisent DÉLIBÉRÉMENT la vraie
 // constante kStaticFileMinAllocBytes (constants.h) plutôt qu'un 8192 recopié :
@@ -32,7 +38,9 @@
 void setUp(void) {}
 void tearDown(void) {}
 
-// --- Repères terrain du 05/09 (bug-080, mesures firmware) --------------------
+// --- Repères terrain du 05/09 (bug-080, mesures firmware, HISTORIQUES) -------
+// Revérifiés le 2026-09-20 (feature-132) : toujours des planchers valides,
+// mais plus le pire cas observé (cf. commentaire d'en-tête, 19 444 o).
 static const uint32_t kTerrainPlateauCalme = 13300;   // plateau post-B-2
 static const uint32_t kTerrainPlancherRafale = 14324; // 6 requêtes statiques
 static const uint32_t kTerrainPlancherAbsolu = 1908;  // pire valeur enregistrée

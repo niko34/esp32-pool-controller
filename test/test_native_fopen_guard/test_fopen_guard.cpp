@@ -21,10 +21,17 @@
 // constants.h plutôt qu'un 5120/8192 recopié : un test qui recopie le seuil ne
 // peut pas détecter qu'on l'a déplacé.
 //
-// Repères TERRAIN, en valeurs absolues (relevés bug-080 du 05/09/2026) :
+// Repères TERRAIN, en valeurs absolues (relevés bug-080 du 05/09/2026,
+// HISTORIQUES — état d'alors, avant feature-129/feature-131) :
 //   - plateau calme post-B-2 ......... 13 300 o → doit être ADMIS (A et B)
 //   - plancher rafale 6 requêtes ..... 14 324 o → doit être ADMIS (A et B)
 //   - plancher absolu du firmware ....  1 908 o → doit être REFUSÉ (A et B)
+//
+// Repère feature-132 (2026-09-20, post-feature-131) : plancher glissant le
+// plus bas mesuré sous rafale de 9 requêtes parallèles = 19 444 o (0 refus sur
+// 171 requêtes). Le seuil n'a PAS bougé (cf. constants.h) : ces repères de
+// 05/09 restent valides comme plancher de non-régression, ils ne sont plus le
+// pire cas observé.
 // =============================================================================
 
 #include <unity.h>
@@ -35,7 +42,9 @@
 void setUp(void) {}
 void tearDown(void) {}
 
-// --- Repères terrain du 05/09 (bug-080, mesures firmware) --------------------
+// --- Repères terrain du 05/09 (bug-080, mesures firmware, HISTORIQUES) -------
+// Revérifiés le 2026-09-20 (feature-132) : toujours des planchers valides,
+// mais plus le pire cas observé (cf. commentaire d'en-tête, 19 444 o).
 static const uint32_t kTerrainPlateauCalme   = 13300;
 static const uint32_t kTerrainPlancherRafale = 14324;
 static const uint32_t kTerrainPlancherAbsolu = 1908;

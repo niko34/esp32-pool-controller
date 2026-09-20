@@ -463,23 +463,51 @@ constexpr size_t kHttpHeapMarginBytes = 4096;
 // → besoin AVEC 2 pbuf en vol ≈ 874 + 2 × 1 622 ≈ 4 118 o.
 // 8 192 = ×9,4 sur le besoin dur, ×1,99 sur le besoin avec contention TCP.
 //
-// Compatibilité terrain (relevés du 05/09) : plateau calme post-B-2 13 300 o
+// Compatibilité terrain — relevés du 05/09/2026, HISTORIQUES, état d'alors
+// (avant feature-129 et feature-131) : plateau calme post-B-2 13 300 o
 // (+38 % au-dessus du seuil), plancher de rafale 6 requêtes 14 324 o, plancher
-// absolu firmware 1 908 o (là, la garde DOIT mordre). Le plateau a décru de
-// façon MONOTONE (42 996 → 26 612 → 20 468 → 15 860 → 13 300) sans jamais
-// remonter hors reboot : si la décroissance reprend, la garde deviendra visible
-// en régime calme — C'EST LE SIGNAL VOULU, pas un défaut à corriger en relevant
-// le seuil. Un refus hors PANIC prouve que le lot C (cause de la fragmentation)
-// est dû.
-// INTERDICTION (ADR) : ne JAMAIS descendre ce seuil sous 6 144 o pour « faire
-// taire » la garde — en dessous il devient ambigu avec le barreau WS et la marge
-// tombe sous ×1,6 du besoin réel.
+// absolu firmware 1 908 o (là, la garde DOIT mordre). Le plateau avait alors
+// décru de façon monotone (42 996 → 26 612 → 20 468 → 15 860 → 13 300). Ces
+// relevés sont CONSERVÉS tels quels : ils documentent pourquoi la garde a été
+// posée, pas l'état actuel du tas.
+//
+// feature-132 (réexamen post-feature-131, 2026-09-20) : la décroissance
+// ci-dessus est INVERSÉE, pas prolongée. Relevé du 2026-09-20 (v2.53.0, après
+// feature-129 + feature-131) : ambiant instantané 34 804 o pendant la
+// campagne ; planchers de fenêtre glissante observés 19 444 à 34 804 o, le
+// plus bas sous rafale de 9 requêtes parallèles 19 444 o (×2,37 du seuil,
+// ×4,72 du besoin avec contention) ;
+// 0 refus sur 171 requêtes (19 rafales, assets + lecture de sonde), toutes en
+// 200. Décision : le seuil NE CHANGE PAS — la prémisse d'un pic d'historique
+// dimensionnant ce seuil était fausse (le bloc de dimensionnement ci-dessus ne
+// contient aucun terme d'historique ; feature-131 a supprimé un concurrent sur
+// le même tas, pas un terme de cette somme), et aucun 503 n'est observé à
+// baisser. Le seul palier intermédiaire crédible (7 168) ramènerait la marge à
+// ×1,74 — sous le ×1,99 revendiqué — pour un gain non mesuré, et déplacerait en
+// silence le second palier dérivé de fs_guard.cpp (`probeFloorArmed`, cf. plus
+// bas) de 16 384 à 14 336.
+//
+// Ne jamais descendre ce seuil sous 6 144 o : en dessous, le seuil devient
+// indistinguable de kWsPushMinAllocBytes au diagnostic, et la marge tombe sous
+// ×1,6 du besoin avec contention TCP.
 // Écartés : 6 144 (identique au barreau WS, donc indistinguable au diagnostic) ;
-// 12 288 (à 1 012 o du plateau calme → UI perdue sur une mauvaise minute).
+// 7 168 (marge ×1,74, sous le ×1,99 revendiqué, pour un gain non mesuré) ;
+// 12 288 (à 1 012 o du plateau calme d'alors → UI perdue sur une mauvaise minute).
 //
 // 6ᵉ barreau de l'échelle ADR-0058 (cf. bloc « ÉCHELLE COMPLÈTE » plus bas) —
 // les 5 barreaux existants restent INCHANGÉS (condition C5 des gates B-1/B-2).
-constexpr uint32_t kStaticFileMinAllocBytes = 8192;       // Plus gros bloc 8 bits < seuil → fichiers statiques refusés (503)
+//
+// Partage vérifié (feature-132) : ce seuil est consommé par 11 sites de CODE
+// (hors commentaires et #include) sur 6 fichiers, plus un palier DÉRIVÉ
+// implicite — toute future modification déplacerait onze comportements et un
+// palier caché, pas un seul. Pas de numéros de ligne ici : ils rancissent
+// (cf. le renvoi périmé que ce lot corrige) — un grep sur le nom de la
+// constante les retrouve toujours :
+//   fs_guard.cpp (2, dont le palier DÉRIVÉ probeFloorArmed = maxAlloc8 <
+//     2 × kStaticFileMinAllocBytes, soit un second seuil implicite à 16 384 o)
+//   · logger.cpp (2) · history.cpp (2) · web_server.cpp (3)
+//   · web_routes_data.cpp (1) · web_helpers.cpp (1).
+constexpr uint32_t kStaticFileMinAllocBytes = 8192;       // Plus gros bloc 8 bits < seuil → fichiers statiques refusés (503) — valeur revérifiée le 2026-09-20, inchangée (feature-132)
 
 // Position du 6ᵉ barreau verrouillée à la COMPILATION, pas seulement par la suite
 // native : une échelle mal ordonnée doit casser le build, pas un test.
@@ -488,7 +516,10 @@ static_assert(kStaticFileMinAllocBytes > kWsPushMinAllocBytes &&
               "6e barreau ADR-0058 : la garde 503 doit s'intercaler entre les pushes WS "
               "sautes et le WARN heap — sinon l'appareil rebooterait avant d'avoir "
               "jamais refuse une page.");
-static_assert(kStaticFileMinAllocBytes >= 6144, "Interdiction ADR : cf. constants.h:271-274");
+static_assert(kStaticFileMinAllocBytes >= 6144,
+              "Interdiction ADR : ne jamais descendre ce seuil sous 6144 o, sinon il "
+              "devient indistinguable de kWsPushMinAllocBytes au diagnostic et la "
+              "marge tombe sous x1,6 du besoin avec contention TCP (feature-132).");
 
 // Silence exigé avant de clore un épisode de refus (front descendant).
 // C'est d'abord une GARDE DE COÛT : httpLowHeapNeedsHeapSample() n'autorise la

@@ -324,6 +324,64 @@ d'allocation** (`heap_metrics.h` y réserve l'entonnoir borné d'`oom_guard.cpp`
 
 ---
 
+### Réexamen du seuil `kStaticFileMinAllocBytes`, feature-132 (2026-09-20) — il ne change pas
+
+feature-132 a rouvert le seuil **après feature-131**, pour vérifier si la
+disparition du pic d'allocation de l'historique le rendait surdimensionné.
+**Décision : `kStaticFileMinAllocBytes` reste à 8 192.** Deux raisons, dans
+l'ordre de force :
+
+1. **La prémisse était fausse.** Le bloc de dimensionnement
+   (`constants.h:445-464`) ne contient **aucun terme d'historique** : verrou
+   récursif newlib (92 o), expansion du pool `FILE` (428 o),
+   `esp_littlefs_open` (~190 o), `AsyncFileResponse` (156 o), chemins (~100 o),
+   pbufs lwip (1 622 o pièce) — besoin dur **874 o**, **4 118 o** avec deux
+   pbufs en vol. feature-131 a supprimé un **concurrent** sur le même tas, pas
+   un **terme** de cette somme.
+2. **La garde ne refuse rien.** Campagne du **2026-09-20**, lecture seule sur
+   l'appareil en production (v2.53.0, 192.168.1.48), qui dose pendant la
+   mesure — méthode : rafale parallèle des 9 assets d'`index.html`, encadrée de
+   lectures `GET /get-system-info?hf=1`, plancher lu sur `hf.i8.wb`
+   (`fetch_min` glissant, fenêtre 30 min) : **19 rafales, 171 requêtes d'assets
+   + 38 lectures de sonde = 209 requêtes HTTP, toutes en 200, zéro 503**.
+   Plancher glissant le plus bas atteint : **19 444 o** (×2,37 du seuil, ×4,72
+   du besoin avec contention). Détail complet, y compris la table par fenêtre :
+   [feature-132](../../specs/features/done/feature-132-rouvrir-le-seuil-de-la-garde-fichiers-avec-des-mesures.md).
+
+**Le seuil est partagé** — **11 sites sur 6 fichiers** le consomment directement
+(`web_server.cpp` ×3 · `history.cpp` ×2 · `logger.cpp` ×2 · `fs_guard.cpp` ×2 ·
+`web_helpers.cpp` ×1 · `web_routes_data.cpp` ×1), et `fs_guard.cpp` en dérive un
+**second palier implicite à 16 384 o**
+(`probeFloorArmed = maxAlloc8 < 2 × kStaticFileMinAllocBytes`).
+⚠️ Les **noms de fichiers** sont donnés sans numéro de ligne à dessein : un
+renvoi par ligne rancit, et c'est très exactement le défaut que feature-132 a
+réparé dans `constants.h`. Un `grep kStaticFileMinAllocBytes src/*.cpp` les
+retrouve tous, et ne périme jamais. *(Comptage du 2026-09-20 : `heap_metrics.cpp`
+et `web_routes_config.cpp` citent la constante en **commentaire** et ne sont donc
+pas des sites.)* Le seul palier
+intermédiaire crédible en dessous (7 168) aurait fait glisser ce second palier
+à 14 336 **en silence**, sans qu'aucune mesure ne le justifie — c'est ce qui a
+achevé de fermer la porte à un ajustement pour un gain non mesuré.
+
+⚠️ **Ce que la mesure du 2026-09-20 NE dit PAS** (à ne pas combler par
+supposition) : elle lit ce qui est **disponible** à l'admission, jamais ce que
+le service **consomme** — le besoin reste le budget de `constants.h`, établi
+par désassemblage ; un `delta = 0` sur `hf.i8.wb` ne veut pas dire « gratuit »,
+seulement « n'a pas déplacé le creux déjà enregistré dans la fenêtre » ; elle
+ne voit pas le pic intra-requête (la sonde de `web_server.cpp` — celle qui
+appelle `heapNoteHttpGetSample` dans le filtre de la garde 503 — échantillonne
+à l'**admission** du GET, avant le service) ; ce n'est pas un pire cas annuel
+(19 rafales sur deux jours, un appareil, un firmware, un réseau) ; et l'ambiant
+n'est pas une constante — pendant cette campagne l'**instantané** vaut
+uniformément **34 804 o**, tandis que les **planchers de fenêtre glissante**
+vont de 19 444 à 34 804 o (deux grandeurs distinctes, à ne pas confondre), et le
+55 284 o relevé au suivi de feature-131 vient encore d'une autre fenêtre. Tout chiffre
+cité ci-dessus porte sa date (2026-09-20) et sa méthode ; ne pas le recopier
+sans revérifier (ADR-0073 — trois compteurs divergents ont circulé le jour même
+pour cette campagne avant le recomptage définitif à 19/171).
+
+---
+
 ## Observabilité des refus
 
 **Aucun log dans `fs_guard.cpp`, à aucun niveau.** Un `ERROR`/`CRITICAL` y
@@ -568,5 +626,6 @@ les trois cas. À réévaluer si un quatrième site de coquille apparaît.
 - [ADR-0058](../adr/0058-gardes-heap-metrique-8-bits.md) — échelle des seuils en métrique 8 bits (**7ᵉ barreau** `5 120` ajouté par ADR-0070)
 - [ADR-0076](../adr/0076-reconciliation-du-tmp-de-rotation-au-boot.md) — le site **#14** : réconciliation du `.tmp` de rotation au boot, classe B, contrainte d'ordre
 - [ADR-0083](../adr/0083-ecriture-atomique-historique-et-contrat-de-format-persiste.md) — le site **#1 a disparu** : écriture atomique `.tmp`+`rename` de l'historique, plus de crédit de l'ancien fichier
+- [feature-132](../../specs/features/done/feature-132-rouvrir-le-seuil-de-la-garde-fichiers-avec-des-mesures.md) — réexamen du seuil `kStaticFileMinAllocBytes` post-feature-131 : mesuré, **inchangé**
 - [ADR-0017](../adr/0017-logique-metier-pure-humble-object-testabilite.md) — pourquoi le prédicat vit dans `fopen_guard_logic` et la coquille dans `fs_guard`
 - [history.md](history.md) · [logger.md](logger.md) · [web-server.md](web-server.md) · [oom-guard.md](oom-guard.md)

@@ -152,7 +152,18 @@ Besoin dur d'une ouverture (valeurs **réelles**, corrigées ci-dessus) :
 
 **Classe A — contention TCP réelle → 6ᵉ barreau EXISTANT, `8192`** (marge
 **×1,99** sur 4 118 o). Aucun barreau n'est créé : la classe A réutilise
-`kStaticFileMinAllocBytes`. Y appartiennent :
+`kStaticFileMinAllocBytes`.
+
+> 📋 **Annotation du 2026-09-20 (feature-132, post-feature-131)** : ce budget
+> (874 o dur, 4 118 o avec contention, marge ×1,99) a été **revérifié sur
+> l'appareil en production, en charge** — pas seulement recalculé — et
+> **confirmé inchangé**. La campagne mesure un plancher glissant sous rafale de
+> 19 444 o (×2,37 du seuil) et zéro refus sur 209 requêtes HTTP. Le seuil ne
+> descend pas : le §b lui-même ne comportait déjà aucun terme d'historique, la
+> prémisse qui aurait justifié de le baisser après feature-131 était fausse.
+> Détail : [`docs/subsystems/acces-fichiers.md` § Réexamen du seuil](../subsystems/acces-fichiers.md#réexamen-du-seuil-kstaticfileminallocbytes-feature-132-2026-09-20--il-ne-change-pas).
+
+Y appartiennent :
 - les deux sites de `saveToFile()`, atteignables depuis **`POST /history/import`**
   (→ `importData()` → `saveToFile()`, sur `async_tcp`) ;
 - **tout le journal**, parce que `flushToDisk()` s'exécute **sur la tâche qui

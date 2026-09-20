@@ -169,7 +169,7 @@ reportées).
 - [x] `max_alloc_8bit` **ne chute pas** pendant une sauvegarde d'historique — garanti **par construction** (les deux passes n'allouent que sur la pile, 128 o + 512 o, aucun tas engagé) ; instrumentation F1 en place pour l'observer sur le terrain (cf. Suivi post-déploiement)
 - [x] Le fichier produit est **identique** à celui de la version précédente pour un même jeu de points — comparaison octet à octet, 684 octets, 0 divergence
 - [x] Une coupure simulée en cours d'écriture ne laisse jamais un `/history.json` tronqué en place — couvert par `test/test_native_history_atomicity/`
-- [ ] Aucune sauvegarde reportée (`loggerFopenDeferralCount` / compteurs `fs_guard` à 0) sur ≥ 24 h — **NON coché, exige une observation en production** ; voir Suivi post-déploiement ①
+- [x] Aucune sauvegarde reportée sur ≥ 24 h — **VÉRIFIÉ le 2026-09-20 à 18:11**. Couverture continue du 19/09 17:37:55 (déploiement) au 20/09 18:11:48, soit **24 h 34 min**, par deux captures qui se recouvrent (`journal_20260920_0530.txt` puis relevé direct) : **0 report, 0 redémarrage, 0 famine mémoire, 0 échec de renommage, 0 écriture partielle**
 - [x] `pio test -e native` vert, zéro régression — **53 suites / 1 916 cas** (référence avant le lot : 50 suites / 1 874 cas)
 
 ## Plan de test manuel
@@ -199,8 +199,16 @@ Ces deux points exigent une observation sur cible réelle ; ils ne bloquent pas
 la clôture du lot mais **doivent** être vérifiés avant tout déploiement de
 longue durée :
 
-① **Aucune sauvegarde reportée sur ≥ 24 h** — critère d'acceptation non
-   coché ci-dessus. À vérifier via `loggerFopenDeferralCount()` / le compteur
+① **Aucune sauvegarde reportée sur ≥ 24 h** — ✅ **CLOS le 2026-09-20 à 18:11.**
+   Couverture continue 19/09 17:37:55 → 20/09 18:11:48 (**24 h 34 min**), sans
+   trou, par recouvrement de `journal_20260920_0530.txt` (qui remonte au
+   redémarrage de déploiement) et d'un relevé direct. Résultat : **0 report,
+   0 redémarrage, 0 famine mémoire, 0 échec de renommage, 0 écriture
+   partielle**, 21 sauvegardes réussies journalisées sur la seule fenêtre
+   courante. ⚠️ Le journal persistant ne fait que 8 Ko : un relevé unique en fin
+   de fenêtre n'aurait couvert que ~14 h. C'est le recouvrement des captures
+   cron qui rend la preuve complète.
+   *(énoncé d'origine ci-dessous)* À vérifier via `loggerFopenDeferralCount()` / le compteur
    `hdef` du topic MQTT retenu `<base>/diagnostic`, sur un appareil en usage
    normal pendant au moins 24 h après déploiement.
 
