@@ -2,7 +2,7 @@
 - **ID** : feature-097
 - **Slug** : seuil-de-stabilite-sur-donnees-terrain
 - **Type** : feature (réglage sur données — condition 10 du gate pool-chemistry v2.34.0)
-- **Statut** : doing — **verrou d'entrée LEVÉ le 2026-09-20** : 8 matins dépouillés (le protocole exigeait 5) et la trace 5 s enfin capturée. Le critère « ne rien changer » de la spec est **écarté** (cf. §Verdict du critère de décision)
+- **Statut** : **done** (2026-09-21) — A8 tranchée par les captures matinales du 21/09 (§F). **verrou d'entrée LEVÉ le 2026-09-20** : 8 matins dépouillés (le protocole exigeait 5) et la trace 5 s enfin capturée. Le critère « ne rien changer » de la spec est **écarté** (cf. §Verdict du critère de décision)
 - **Priorité** : moyenne
 - **Version cible** : 2.54+ (firmware courant : 2.53.0)
 - **Dernière mise à jour** : 2026-09-20
@@ -361,6 +361,75 @@ avec la filtration et la traverse, c'est (2).
 pas être close par omission : si c'est un dégazage réel, raccourcir la purge ne
 corrige rien et l'écart initial du KPI reste faux.
 
+### F. La question du 06/09 — TRANCHÉE le 2026-09-21
+
+Deux traces de 25 min, **validées** (300 échantillons uniques chacune, offsets
+`0/50/100/150/200/250` vérifiés), plus une troisième après l'ouverture.
+Firmware **2.53.0** — feature-097 **n'était pas déployée**, donc c'est bien
+l'ancien estimateur qui est observé.
+
+#### La chronologie, en médianes-minute du pH brut
+
+```
+07:15 → 07:28   7,306 … 7,310   eau stagnante, PARFAITEMENT PLATE (étendue 0,014)
+07:29:01        6,715           DÉMARRAGE FILTRATION — chute immédiate
+07:33 → 07:40   5,96 … 5,98     FOND DU V, ~7 minutes
+07:41 → 08:10   5,98 → 6,72     remontée monotone, ~30 minutes
+08:10           6,72            PLATEAU
+08:12:05        fin de purge par stabilité, 43 min 3 s (pH 5.827→6.904)
+```
+
+Plateau confirmé par la pente, mesurée sur la trace post-ouverture : **0,032
+pH/min** sur la première moitié de la fenêtre contre **0,018** sur la seconde,
+et l'étendue de la dernière fenêtre de 10 médianes retombée à **0,171**.
+
+#### Le verdict
+
+**Ni « purge trop courte » ni « dégazage matinal réel » au sens où la spec posait
+la question.** La montée post-ouverture est la **queue de la convalescence du
+rinçage** — le fond en V que l'ADR-0059 décrit déjà, dont la remontée complète
+prend **~40 minutes**, très au-delà du plancher de 10 min.
+
+**Ce matin le détecteur a eu raison** : la purge s'est terminée à 08:12, soit
+**juste après** que la remontée ait plafonné vers 08:10. Il a correctement
+attendu.
+
+**Le 06/09, la purge a duré 13 minutes** — le fond du V était à peine passé et la
+remontée entamée depuis quelques minutes. La porte s'est donc ouverte **au milieu
+de la rampe**, et ce qui a été pris pour un dégazage n'était que la suite du
+rinçage. Pour **ce matin-là précisément**, la réponse est donc **(1) purge trop
+courte** — mais ce n'est **pas** un défaut systématique du détecteur.
+
+C'est cohérent avec la médiane de 16,5 min sur 8 matins : certaines purges
+attendent la convalescence, d'autres non. **C'est un tirage** — exactement ce que
+ce lot corrige en remplaçant un estimateur qui bascule par un estimateur qui
+moyenne.
+
+#### ⚠️ Un piège d'interprétation, à ne pas reproduire
+
+L'eau stagnante lisait **7,31** à 07:28, et la remontée plafonne à **6,72**.
+**Le 7,31 n'est PAS la valeur du bassin** : l'eau immobile dans la chambre a sa
+propre chimie (accumulation de CO₂), et sa lecture brute n'est pas comparable à
+celle de l'eau en circulation. Prendre la valeur stagnante pour une cible fait
+croire que la convalescence est inachevée alors qu'elle a plafonné.
+
+*(Cette erreur a été commise en direct pendant l'analyse du 21/09, puis corrigée
+par le calcul de pente.)*
+
+#### Conséquence chiffrée sur le KPI
+
+À l'ouverture, `[KPI] pH : départ — écart initial −0,10`. Le plateau mesuré est
+de **6,72 brut**, soit **7,22 corrigé** (offset +0,50) pour une cible de 7,30 :
+**écart réel −0,08**. L'écart affiché est donc **juste ce matin**, la purge ayant
+attendu le plateau. Il ne l'était pas le 06/09 (−0,02 annoncé « déjà à la
+cible ») : la mesure était lue au milieu d'une remontée.
+
+#### Données
+
+`/root/pool-captures/f097/trace_20260921_054001_matin.json` ·
+`trace_20260921_060501_matin.json` · `trace_*_post-ouverture.json`, avec les
+journaux correspondants.
+
 ## Fichiers potentiellement concernés
 - `src/purge_stability_logic.{h,cpp}` — statistique / taille de bloc
 - `src/constants.h` — constantes kPurge*, static_asserts
@@ -405,12 +474,10 @@ corrige rien et l'écart initial du KPI reste faux.
       durées et étendues de purge ; ils ne couvrent ni la dérive du pH filtré
       post-ouverture, ni l'écart entre démarrage de filtration et fin de purge —
       le discriminant que la question exige. Deux captures programmées le
-      2026-09-21 (07:40 et 08:05 locales, couvrant 07:15 → 08:05) trancheront :
-      inflexion à la fin de la purge ⇒ (1) « purge trop courte » ; inflexion dès
-      le démarrage de la filtration et qui la traverse ⇒ (2) « dégazage matinal
-      réel ». Cette question ne bloque pas ce lot (elle ne porte pas sur
-      l'estimateur, seulement sur la durée réelle du transitoire physique) et
-      reste **à trancher dans un cycle ultérieur** de cette même spec.
+      2026-09-21 (07:40 et 08:05 locales) ont tranché — **voir §F ci-dessous.**
+      **Verdict : ni (1) ni (2) au sens où la question les posait.** La montée est
+      la **convalescence du rinçage** (le fond en V d'ADR-0059), et le 06/09 la
+      porte s'était ouverte **en plein milieu de la rampe**. **A8 est CLOSE.**
 - [x] **A9** — Tests natifs : bloc alterné réel de la minute 22 (médiane 7,059 vs
       IQM 6,9673) · rejeu plateau v2 → 16/16 · rejeu V du 04/09 sans bruit et avec
       bruit réel sur ≥ 30 déphasages → **0 ouverture avant le plateau** ·
@@ -544,8 +611,9 @@ corrige rien et l'écart initial du KPI reste faux.
   `[Unreleased] - 2026-09-20` plutôt que `[2.54.0]`, dans l'attente d'une
   décision explicite de bump (doc-writer ne modifie pas `src/`, et ce n'est pas
   à lui de trancher seul le numéro de version).
-- **Spec non déplacée vers `done/`** : A8 reste ouverte par construction (deux
-  captures programmées le 2026-09-21). **A10 est confirmé** : les 4 mutants ont
+- **A8 CLOSE le 2026-09-21** par les captures matinales (§F) : la montée
+  post-ouverture est la convalescence du rinçage, et le 06/09 la porte s'était
+  ouverte au milieu de la rampe. Spec déplacée vers `done/`. **A10 est confirmé** : les 4 mutants ont
   été tués par le `test-engineer` puis rejoués indépendamment par le
   `code-reviewer`. La spec reste dans `doing/` tant que A8 n'est pas statuée par
   la mesure — c'est le seul item qui la retient.

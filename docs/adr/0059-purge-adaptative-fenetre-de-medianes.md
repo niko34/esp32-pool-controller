@@ -3,7 +3,7 @@
 - **Statut** : Accepté
 - **Date** : 2026-09-04
 - **Décideurs** : gate `pool-chemistry` (**GO SOUS CONDITIONS C1-C6** le 04/09 17:15, **deux ré-arbitrages** de la fenêtre les 18:40 et 19:10, **GO final option (a)** à 20:50 avec les conditions 6-11), `architect`, `test-engineer` (rejeux du CSV terrain — c'est lui qui a invalidé les deux premières fenêtres), `code-reviewer` (Approved 21:15), utilisateur (retrait du réglage)
-- **Spec(s) liée(s)** : [feature-091](../../specs/features/done/feature-091-purge-adaptative-stabilisation.md) ; suite ouverte : [feature-097](../../specs/features/doing/feature-097-seuil-de-stabilite-sur-donnees-terrain.md) ; journal d'arbitrage : `specs/plan-2026-09-regulation-et-robustesse.md` §6
+- **Spec(s) liée(s)** : [feature-091](../../specs/features/done/feature-091-purge-adaptative-stabilisation.md) ; suite ouverte : [feature-097](../../specs/features/done/feature-097-seuil-de-stabilite-sur-donnees-terrain.md) ; journal d'arbitrage : `specs/plan-2026-09-regulation-et-robustesse.md` §6
 
 ## Contexte
 
@@ -171,7 +171,7 @@ mesure a bougé »), et le badge des cartes pH/ORP passe du compte à rebours à
   indéfiniment **en silence** ; la disponibilité l'emporte, sous réserve d'alerte.
 - **Médianes sur 2 min, ou statistique robuste** (option (c), **différée**) — c'est la piste
   préférée pour la queue d'ouvertures tardives, mais elle se tranche sur des **données
-  réelles**, pas sur des rejeux bruités synthétiques : → [feature-097](../../specs/features/doing/feature-097-seuil-de-stabilite-sur-donnees-terrain.md),
+  réelles**, pas sur des rejeux bruités synthétiques : → [feature-097](../../specs/features/done/feature-097-seuil-de-stabilite-sur-donnees-terrain.md),
   décidable sur **≥ 5 matins** de télémétrie `measures_purge_last_*`, au plus tôt le
   10/09/2026.
 - **Fonder la fin de purge sur un volume d'eau renouvelé calculé** (rejetée) — exigerait la
@@ -266,7 +266,7 @@ Voie ORP, même chemin de code : max 11,5 → 8,7 mV — gain obtenu sans touche
 
 **Ce qui ne change pas** : le fond en V du rinçage reste détecté avec la même marge (0,0525 sur 0,03 exigé) — sur une rampe linéaire, médiane et moyenne interquartile renvoient toutes deux la valeur centrale du bloc, seul le bruit change. La re-fermeture C1 garde sa pente de déclenchement (0,0333 pH/min), avec un hystérésis **plus généreux** en pratique (l'écart entre plancher de bruit et seuil de refermeture passe de 0,108 à 0,211 avec le nouvel estimateur, sans qu'aucune constante n'ait bougé).
 
-**Alternatives réexaminées et écartées** — voir [feature-097](../../specs/features/doing/feature-097-seuil-de-stabilite-sur-donnees-terrain.md) §Options évaluées le 04/09 pour le détail chiffré : seuil élargi à 0,20 (confirmé refusé, marge sur le V nulle), médianes sur blocs de 2 min (raccourcit l'horizon et casse l'invariant de refermeture), statistique de tendance/pente (aveugle au fond du V), seuil dérivé en direct de la dispersion (boucle auto-réalisatrice), moyenne simple (point de rupture nul, écartée pour la même raison qui avait fait choisir la médiane à l'origine).
+**Alternatives réexaminées et écartées** — voir [feature-097](../../specs/features/done/feature-097-seuil-de-stabilite-sur-donnees-terrain.md) §Options évaluées le 04/09 pour le détail chiffré : seuil élargi à 0,20 (confirmé refusé, marge sur le V nulle), médianes sur blocs de 2 min (raccourcit l'horizon et casse l'invariant de refermeture), statistique de tendance/pente (aveugle au fond du V), seuil dérivé en direct de la dispersion (boucle auto-réalisatrice), moyenne simple (point de rupture nul, écartée pour la même raison qui avait fait choisir la médiane à l'origine).
 
 **Décideurs de l'amendement** : gate `pool-chemistry` (feature-097, arbitrage du point de rupture 50 %→25 %, révocation du GO SOUS CONDITIONS du 20/09 rendu sur un plancher de bruit surestimé du double), `test-engineer` (rejeu de la fixture terrain), `code-reviewer`.
 
@@ -289,7 +289,7 @@ Voie ORP, même chemin de code : max 11,5 → 8,7 mV — gain obtenu sans touche
   (plancher, deux refermetures puis plafond). Mutation W 10 → 8 tuée par 6 tests ;
   « plancher < fenêtre » tué par `static_assert`.
 - Spec : [feature-091](../../specs/features/done/feature-091-purge-adaptative-stabilisation.md),
-  suite [feature-097](../../specs/features/doing/feature-097-seuil-de-stabilite-sur-donnees-terrain.md)
+  suite [feature-097](../../specs/features/done/feature-097-seuil-de-stabilite-sur-donnees-terrain.md)
 - Doc : [subsystems/measure-validity.md](../subsystems/measure-validity.md),
   [subsystems/sensors.md](../subsystems/sensors.md),
   [API.md](../API.md), [MQTT.md](../MQTT.md),
