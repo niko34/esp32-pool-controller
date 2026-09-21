@@ -2,7 +2,7 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
-## [Unreleased] - 2026-09-20
+## [2.53.1] - 2026-09-21
 
 > **Ce qui change pour vous** : le matin, la mesure pH/ORP passe plus souvent
 > « stable » dès la durée plancher (10 min) au lieu de traîner jusqu'à 15-20
