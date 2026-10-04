@@ -71,7 +71,7 @@ Chaque ligne **peut** porter un bouton secondaire « Ouvrir l'injection manuelle
 
 Le raccourci n'est proposé que pour une **liste blanche** de causes — uniquement celles où le dosage automatique doute de la **mesure** elle-même (lecture NaN, filtre non prêt/instable, fenêtres de lissage ou de purge), jamais pour une **panne** (ton `fault`) ni pour la cause bénigne « filtration arrêtée » : sur ces causes, l'injection manuelle serait soit non pertinente, soit refusée par les mêmes gardes que le dosage automatique (elle ne contourne que l'absence de jugement de stabilité, pas les limites journalière/horaire/anti-rafale). Asymétrie voulue entre voies : proposé **par défaut sur l'ORP** (un excès de chlore se dissipe), uniquement sur le **pH** si le bandeau ne concerne que cette voie. Jamais présenté comme l'action recommandée (bouton secondaire, pas primaire).
 
-Verdict sécurité chimique (gate `pool-chemistry`, conditions opposables C1-C6) et libellés imposés mot à mot : voir la spec [feature-138](../../specs/features/doing/feature-138-dater-et-rafraichir-l-etat-de-blocage-du-dosage.md).
+Verdict sécurité chimique (gate `pool-chemistry`, conditions opposables C1-C6) et libellés imposés mot à mot : voir la spec [feature-138](../../specs/features/done/feature-138-dater-et-rafraichir-l-etat-de-blocage-du-dosage.md).
 
 ## Plage des mini-graphiques : journée en cours (v2.18.9)
 

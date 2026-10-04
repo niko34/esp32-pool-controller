@@ -3,7 +3,7 @@
 - **Statut** : Accepté
 - **Date** : 2026-10-04
 - **Décideurs** : architect, embedded-developer, web-ui-developer, pool-chemistry, test-engineer, code-reviewer, utilisateur (arbitrage final)
-- **Spec(s) liée(s)** : [feature-138](../../specs/features/doing/feature-138-dater-et-rafraichir-l-etat-de-blocage-du-dosage.md)
+- **Spec(s) liée(s)** : [feature-138](../../specs/features/done/feature-138-dater-et-rafraichir-l-etat-de-blocage-du-dosage.md)
 - **Étend** : [ADR-0071](0071-parite-data-trame-capteurs.md) (parité `/data` ↔ `sensor_data`, mécanisme d'exceptions `kDataOnly`)
 
 ## Contexte
@@ -174,6 +174,6 @@ arbitrage d'un bump de ce buffer.
 
 - Code : [`src/ws_manager.cpp`](../../src/ws_manager.cpp) (`_buildSensorJson`, décompte d'octets et élagage), [`src/web_routes_data.cpp`](../../src/web_routes_data.cpp) (`handleGetData`, champs non élagués côté `/data`), [`src/constants.h`](../../src/constants.h) (`kWsFrameBufBytes`, commentaire corrigé ; `kDoseBlockedForMaxS`), [`src/dose_block_duration_logic.h`](../../src/dose_block_duration_logic.h) (module pur), [`src/pump_controller.{h,cpp}`](../../src/pump_controller.h) (`setRefusalCode()`, `_refusalCodeSinceMs`)
 - Test : [`test/test_native_ws_data_parity/test_ws_data_parity.cpp`](../../test/test_native_ws_data_parity/test_ws_data_parity.cpp) (entrées `kDataOnly`), [`test/test_native_dose_block_duration/`](../../test/test_native_dose_block_duration/)
-- Spec : [`specs/features/doing/feature-138-dater-et-rafraichir-l-etat-de-blocage-du-dosage.md`](../../specs/features/doing/feature-138-dater-et-rafraichir-l-etat-de-blocage-du-dosage.md)
+- Spec : [`specs/features/done/feature-138-dater-et-rafraichir-l-etat-de-blocage-du-dosage.md`](../../specs/features/done/feature-138-dater-et-rafraichir-l-etat-de-blocage-du-dosage.md)
 - Doc : [`docs/subsystems/ws-manager.md`](../subsystems/ws-manager.md#champs-sensor_data-ajoutés-en-v2540--durée-du-refus-de-dosage-feature-138-et-élagage-de-ph_integralph_integral_term), [`docs/subsystems/pump-controller.md`](../subsystems/pump-controller.md#durée-du-refus-courant-par-voie-feature-138-v2540), [`docs/API.md`](../API.md#champs-ajoutés-en-feature-025-lissage-mesures--régulation-p-temporisée), [`docs/features/page-dashboard.md`](../features/page-dashboard.md#bandeau--dosage-bloqué--feature-138-v2540)
 - ADR liés : [ADR-0071](0071-parite-data-trame-capteurs.md) (parité `/data` ↔ `sensor_data`, mécanisme d'exceptions étendu ici), [ADR-0073](0073-chiffre-consigne-porte-sa-methode.md) (chiffrage au pire cas structurel du clamp, pas du type), [ADR-0058](0058-gardes-heap-metrique-8-bits.md) et [ADR-0082](0082-arene-circulaire-du-journal-en-ram-interne-statique.md) (famine mémoire 8 bits, contexte de la rectification `.bss`), [ADR-0017](0017-logique-metier-pure-humble-object-testabilite.md) (module pur `dose_block_duration_logic`)
