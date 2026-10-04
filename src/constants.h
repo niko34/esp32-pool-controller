@@ -380,7 +380,11 @@ constexpr uint32_t kWsSkipWarnThrottleMs = 30000;         // 30s - throttle du w
 // Itération 3 (bug-dosage-fantome) : 3072 → 3584. La trame capteurs mesurait déjà
 // ~2,8 Ko et gagne +7 champs (calendrier d'impulsion pH/ORP) ; sans marge, les
 // pushes sauteraient SILENCIEUSEMENT (warn throttlé seulement). Coût : +512 o en
-// .bss statique — hors heap 8 bits, aucun impact sur la famine mémoire.
+// .bss statique. ⚠️ Correction (feature-138, 2026-10-04) : contrairement à
+// l'affirmation précédente, ce n'est PAS « hors heap 8 bits » — le .bss est en
+// DRAM, et le tas 8 bits n'est jamais que le reliquat de cette même DRAM après
+// soustraction du .bss/.data. Le .bss ne FRAGMENTE pas (pas d'impact sur
+// max_alloc_8bit), mais il réduit bien le total disponible.
 constexpr size_t kWsFrameBufBytes = 3584;                 // Taille du buffer statique de trame WS
 
 // Récolte des clients WS zombies (investigation churn-heap §G1/G2) : un client qui
@@ -1733,6 +1737,18 @@ constexpr size_t kDoseBlockedReasonMaxLen = 96;
 // causes pourront s'ajouter à l'énum sans jamais heurter la sentinelle.
 constexpr uint8_t kDoseBlockedCodeNone  = 0;
 constexpr uint8_t kDoseBlockedCodeGuard = 250;
+
+// Durée depuis laquelle le code de refus COURANT est inchangé, par voie
+// (feature-138) : `phDoseBlockedForS` / `orpDoseBlockedForS`, publiés sur
+// /data ET le WebSocket (mêmes clés, parité obligatoire). Unité : la seconde.
+// `null` quand aucun refus (même convention que *DoseBlockedCode) — couvre
+// aussi bien « plus de blocage » que « jamais dosé depuis le boot ».
+// ⚠️ Budget d'octets (ADR-0073) : c'est ce CLAMP qui fixe le nombre de
+// chiffres décimaux (5, donc "86400" sur 5 caractères), PAS le type C sous-jacent
+// (un uint32_t pourrait aller jusqu'à 4294967295, 10 chiffres). Le prochain
+// lecteur qui recompte le pire cas de la trame doit se baser sur ce clamp, pas
+// sur la borne du type — sinon il retombe sur 10 chiffres et un faux dépassement.
+constexpr uint32_t kDoseBlockedForMaxS = 86400;  // 24h - plafond de durée affichée ("≥ 24 h" au-delà, côté UI)
 
 // Persistance exigée avant d'escalader une cause de refus de type PANNE DE
 // MESURE (sonde figée, plus aucune mesure acceptée) en `warning` + alerte MQTT.

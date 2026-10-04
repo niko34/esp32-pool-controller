@@ -15,6 +15,7 @@
 #include <esp_task_wdt.h>
 #include <string.h>  // strlcpy / strnlen / memcpy — tampon de cause de refus (R2)
 #include <time.h>
+#include <atomic>   // feature-138 : barrière compilateur de setRefusalCode()
 
 PumpControllerClass PumpController;
 
@@ -558,6 +559,27 @@ static void copyReasonBounded(const char* src, char* out, size_t outSize) {
   utf8ClampInPlace(out);
 }
 
+// feature-138 — seul point d'écriture de _lastRefusalCode. Voir le commentaire
+// de la déclaration (pump_controller.h) pour l'invariant d'ordre.
+void PumpControllerClass::setRefusalCode(int pumpIndex, uint8_t code) {
+  if (pumpIndex < 0 || pumpIndex > 1) return;
+  if (code != _lastRefusalCode[pumpIndex]) {
+    // Date posée AVANT le code (cf. invariant documenté en .h).
+    _refusalCodeSinceMs[pumpIndex] = (uint32_t)millis();
+  }
+  // BARRIÈRE COMPILATEUR (revue feature-138) : l'ordre source ne suffisait pas.
+  // Ni l'un ni l'autre de ces objets n'est volatile ou atomique — rien
+  // n'empêchait le compilateur de réordonner les deux écritures, ce qui
+  // rouvrait exactement le défaut que l'ordre ferme : un lecteur async voyant
+  // le NOUVEAU code avec l'ANCIENNE date annoncerait « bloqué depuis 9 h » sur
+  // un blocage d'une seconde. Barrière compilateur seule (aucune instruction
+  // émise) : elle suffit ici, la SRAM interne de l'ESP32 n'est pas mise en
+  // cache, donc la visibilité inter-cœurs est immédiate une fois l'ordre des
+  // écritures figé.
+  std::atomic_signal_fence(std::memory_order_release);
+  _lastRefusalCode[pumpIndex] = code;
+}
+
 void PumpControllerClass::copyPhDoseBlockedReason(char* out, size_t outSize) const {
   copyReasonBounded(_lastRefusalCause[0], out, outSize);
 }
@@ -575,7 +597,8 @@ void PumpControllerClass::logRefusalOnce(int pumpIndex, const String& cause,
   // Code posé AVANT le texte : un lecteur async qui verrait le nouveau texte
   // avec l'ancien code afficherait une cause périmée ; dans l'ordre inverse il
   // voit au pire le nouveau code avec l'ancien texte, et le code fait foi.
-  _lastRefusalCode[pumpIndex] = newCode;
+  // feature-138 : setRefusalCode() horodate aussi le changement (durée exposée).
+  setRefusalCode(pumpIndex, newCode);
 
   // v2.25.1 — PANNES de mesure : le filtre n'est pas « en train de chauffer », la
   // sonde ne répond plus (figée, ou plus aucune mesure acceptée depuis maxAgeMs).
@@ -653,7 +676,7 @@ void PumpControllerClass::logRefusalOnce(int pumpIndex, const String& cause,
 void PumpControllerClass::resetRefusalLogState(int pumpIndex) {
   if (pumpIndex < 0 || pumpIndex > 1) return;
   _lastRefusalCause[pumpIndex][0] = '\0';
-  _lastRefusalCode[pumpIndex] = kDoseBlockedCodeNone;  // v2.25.1 : code ⇔ texte
+  setRefusalCode(pumpIndex, kDoseBlockedCodeNone);  // v2.25.1 : code ⇔ texte
   // Dosage de nouveau autorisé : l'épisode de panne (s'il y en avait un) est
   // clos — le prochain devra ré-attendre la temporisation avant d'alerter.
   _sensorFaultSinceMs[pumpIndex] = 0;
@@ -671,7 +694,7 @@ void PumpControllerClass::setGuardRefusalCause(int pumpIndex, const String& caus
   // runtime (seuils, mesures) et ne sont pas énumérables ; le client les affiche
   // via le TEXTE. Posée AVANT le texte (cf. logRefusalOnce) pour qu'un lecteur
   // async ne puisse jamais associer un texte de garde à un code de canDose().
-  _lastRefusalCode[pumpIndex] = kDoseBlockedCodeGuard;
+  setRefusalCode(pumpIndex, kDoseBlockedCodeGuard);
   storeRefusalCause(pumpIndex, cause.c_str());
   _refusalCauseFromGuard[pumpIndex] = true;
 }
@@ -690,7 +713,7 @@ void PumpControllerClass::clearGuardRefusalCause(int pumpIndex) {
   if (!_refusalCauseFromGuard[pumpIndex]) return;
   _refusalCauseFromGuard[pumpIndex] = false;
   _lastRefusalCause[pumpIndex][0] = '\0';
-  _lastRefusalCode[pumpIndex] = kDoseBlockedCodeNone;  // v2.25.1 : code ⇔ texte
+  setRefusalCode(pumpIndex, kDoseBlockedCodeNone);  // v2.25.1 : code ⇔ texte
 }
 
 // =============================================================================

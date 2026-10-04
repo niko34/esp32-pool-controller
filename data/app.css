@@ -3708,6 +3708,78 @@ h1, h2, h3 {
   .regul-alert__cta { width: 100%; margin-top: 8px; }
 }
 
+/* ---------- feature-138 (B2) : bandeau « dosage bloqué », hors panneau dev ---------- */
+/* Structure calquée sur .regul-alert ci-dessus : un conteneur, une ligne par
+   voie (pH/ORP), chacune masquable indépendamment. Ton réservé au rouge pour
+   les PANNES (fault) ; normal/unknown restent neutres — filtration arrêtée la
+   nuit est le cas NORMAL, pas une alerte. */
+.dose-block-banner {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+.dose-block-banner[hidden] { display: none !important; }
+.dose-block-banner__stale-note {
+  display: none;
+  font-size: 12px;
+  color: var(--muted);
+}
+.dose-block-banner.is-stale { opacity: 0.6; }
+.dose-block-banner.is-stale .dose-block-banner__stale-note { display: block; }
+.dose-block-banner__row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px 14px;
+  border-radius: var(--card-radius);
+  border: 1px solid var(--border);
+  background: var(--panel2);
+  box-shadow: var(--shadow-sm);
+}
+.dose-block-banner__row[hidden] { display: none !important; }
+.dose-block-banner__row--fault {
+  border: 1px solid rgba(185, 28, 28, 0.35);
+  background: rgba(185, 28, 28, 0.08);
+  color: var(--danger);
+}
+.dose-block-banner__row--unknown { color: var(--muted); }
+.dose-block-banner__dot {
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  margin-top: 6px;
+  border-radius: 50%;
+  background: var(--muted);
+}
+.dose-block-banner__row--fault .dose-block-banner__dot {
+  background: var(--danger);
+  animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+.dose-block-banner__body { flex: 1 1 auto; min-width: 0; }
+.dose-block-banner__label {
+  display: block;
+  font-size: 13px;
+  font-weight: 700;
+}
+.dose-block-banner__duration {
+  display: block;
+  margin-top: 3px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text);
+}
+/* C4 (pool-chemistry) : btn--secondary à dessein, jamais bouton primaire — le
+   raccourci n'est jamais l'action recommandée. */
+.dose-block-banner__cta { flex: 0 0 auto; align-self: center; }
+@media (max-width: 480px) {
+  .dose-block-banner__row { flex-wrap: wrap; }
+  .dose-block-banner__cta { width: 100%; margin-top: 8px; }
+}
+@media (max-width: 360px) {
+  .dose-block-banner__cta { min-height: 44px; min-width: 44px; }
+}
+
 /* ---------- feature-031 : modale de confirmation générique ---------- */
 .confirm-modal__message {
   margin: 0;

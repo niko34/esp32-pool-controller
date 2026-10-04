@@ -43,6 +43,36 @@ Le firmware n'arme ces drapeaux que si la filtration tourne, que les mesures son
 
 Une variante `regul-alert--inline` du même style est réutilisée dans la carte Régulation pH pour la bannière de bascule automatique en manuel.
 
+## Bandeau « Dosage bloqué » (feature-138, v2.54.0)
+
+`<div class="dose-block-banner" id="dose-block-banner" hidden>`, juste **après** `#regul-alert` et avant la grille de cartes. Rend lisible, sans ouvrir le panneau développeur, **depuis combien de temps** le dosage est refusé et **pourquoi** — une ligne par voie (`#dose-block-row-ph` / `#dose-block-row-orp`), rendue par `updateDoseBlockBanner(json)`.
+
+Motivation — incident du **2026-10-02** : après des pluies diluviennes, de la boue a couvert le fond du bassin, les deux voies ont été déclarées instables et **tout dosage automatique s'est arrêté**, chlore compris, au moment précis où la demande en chlore était maximale. Le code de refus (`phDoseBlockedCode` / `orpDoseBlockedCode`) existait déjà, mais sans durée ni affichage hors panneau dev — l'utilisateur a diagnostiqué à tort « le calcul de dispersion est bloqué » sur une valeur qui s'était en réalité déjà recalculée trois fois en deux minutes.
+
+**Trois informations par ligne**, réutilisant **strictement** la taxonomie existante `DOSE_BLOCK_CODES` / `_doseBlockInfo()` (aucune nouvelle classification) :
+
+- **la voie** (pH ou chlore/ORP) ;
+- **la cause en clair** (même libellé français que le reste de l'UI) ;
+- **la durée**, au format partagé `_elapsedText()` (« bloqué depuis 12 min », etc.), source `phDoseBlockedForS` / `orpDoseBlockedForS` — voir [API.md](../API.md#champs-ajoutés-en-feature-025-lissage-mesures--régulation-p-temporisée).
+
+**Absent si rien n'est bloqué** — pas de bandeau permanent qui s'ignore : `box.hidden = true` dès que ni pH ni ORP n'ont de code de refus actif.
+
+**Non-duplication avec `#regul-alert`** : si cette bannière affiche déjà une voie (`phFilterAlarm` / `orpFilterAlarm`), la ligne correspondante de `#dose-block-banner` est supprimée pour cette voie — les deux bandeaux ne répètent jamais la même information.
+
+**Fusion en une seule ligne** « *cause* (pH et chlore) » **uniquement** si les deux voies partagent le **même code** ET le même ton `normal` ; **jamais** pour `fault` ou `unknown`, où une panne par voie doit rester lisible individuellement (deux pannes différentes qui tombent sur le même code resteraient deux pannes à traiter séparément).
+
+**Ton et accessibilité** : `role="alert"` réservé au ton `fault` (panne) ; `role="status" aria-live="polite"` sinon — ne pas sur-alerter sur du **bénin** (filtration arrêtée la nuit est le cas **normal**, pas une panne, et le bandeau ne doit jamais crier dessus).
+
+**Péremption WebSocket** : `#dose-block-banner` fait partie de la liste marquée `.is-stale` par `_onDisconnect()` (au même titre que `#ph-card-stats` / `#orp-card-stats`) — **plus** un texte explicite (`.dose-block-banner__stale-note`, « Information non rafraîchie (connexion perdue) ») : l'opacité seule n'explique rien à un lecteur d'écran.
+
+### Raccourci vers l'injection manuelle (B3)
+
+Chaque ligne **peut** porter un bouton secondaire « Ouvrir l'injection manuelle », **lien de navigation pur** (comme `#regul-alert-cta`) vers `#/ph` ou `#/orp` — **jamais** de présélection de volume/durée/produit, **jamais** de bascule du mode de régulation (basculer `ph_regulation_mode`/`orp_regulation_mode` persiste la config et **coupe** la régulation automatique : le raccourci ne touche à aucun des deux). Un clic ouvre d'abord une **confirmation explicite**, distincte de celle du bouton d'injection, avec des libellés qui rappellent — selon la voie — l'absence de garde de stabilité sur l'injection manuelle, l'exigence d'un contrôle au réactif, et pour le pH qu'une injection d'acide ne se reprend pas.
+
+Le raccourci n'est proposé que pour une **liste blanche** de causes — uniquement celles où le dosage automatique doute de la **mesure** elle-même (lecture NaN, filtre non prêt/instable, fenêtres de lissage ou de purge), jamais pour une **panne** (ton `fault`) ni pour la cause bénigne « filtration arrêtée » : sur ces causes, l'injection manuelle serait soit non pertinente, soit refusée par les mêmes gardes que le dosage automatique (elle ne contourne que l'absence de jugement de stabilité, pas les limites journalière/horaire/anti-rafale). Asymétrie voulue entre voies : proposé **par défaut sur l'ORP** (un excès de chlore se dissipe), uniquement sur le **pH** si le bandeau ne concerne que cette voie. Jamais présenté comme l'action recommandée (bouton secondaire, pas primaire).
+
+Verdict sécurité chimique (gate `pool-chemistry`, conditions opposables C1-C6) et libellés imposés mot à mot : voir la spec [feature-138](../../specs/features/doing/feature-138-dater-et-rafraichir-l-etat-de-blocage-du-dosage.md).
+
 ## Plage des mini-graphiques : journée en cours (v2.18.9)
 
 Les mini-graphiques des cartes pH, ORP et Température n'affichent **que la journée en cours**, à partir de **minuit local**. Une fenêtre glissante de 24 h (comportement v2.18.4) faisait apparaître une portion de la veille en tête de courbe, ce qui brouillait la lecture « où en est-on aujourd'hui ».

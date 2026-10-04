@@ -89,7 +89,10 @@
       if (_wsHeartbeatTimer) { clearTimeout(_wsHeartbeatTimer); _wsHeartbeatTimer = null; }
       if (_wsReconnectTimer) return;  // onerror fires before onclose — schedule only once
       setNetStatus('bad', 'Déconnecté');
-      ['#ph-card-stats', '#orp-card-stats'].forEach(sel => {
+      // feature-138 (B2) : #dose-block-banner péremption — la classe pose l'opacité
+      // (app.css), et révèle un texte explicite (.dose-block-banner__stale-note,
+      // caché par défaut) : l'opacité seule n'explique rien à un lecteur d'écran.
+      ['#ph-card-stats', '#orp-card-stats', '#dose-block-banner'].forEach(sel => {
         const el = $(sel);
         if (el) el.classList.add('is-stale');
       });
@@ -3123,6 +3126,11 @@
   // ---------- Sensor data loop (/data) ----------
   const SENSOR_REFRESH_MS = 30000;
   const SENSOR_RETRY_MS = 2000;
+  // feature-138 (B1) : cadence de FETCH des lignes de dispersion (panneau Avancé
+  // uniquement, cf. _armDispersionRefresh). Volontairement moins agressive que
+  // le heartbeat WS (kWsHeartbeatMs = 12000) : une page restée ouverte ne doit
+  // pas concurrencer la détection de perte de connexion.
+  const DISPERSION_REFRESH_MS = 15000;
   let lastSensorDataLoadTime = 0; // Timestamp du dernier chargement des données
   let sensorDataLoadInFlight = null;
   let sensorDataRetryTimer = null;
@@ -5981,20 +5989,35 @@
     return { cls: 'good', label: `Calibré · sonde ${Math.round(min)} %` };
   }
 
-  // Met en forme l'âge en libellé lisible : "il y a 14 h", "il y a 12 min", "jamais"
-  function formatProbeAge(ageMs) {
-    if (ageMs == null || ageMs >= PH_SLOPE_NEVER) return 'jamais';
-    if (ageMs < 60 * 1000) return 'à l\'instant';
-    const minutes = Math.floor(ageMs / 60000);
-    if (minutes < 60) return `il y a ${minutes} min`;
+  // feature-138 (B1/B2) : helper d'âge PARTAGÉ — il était écrit deux fois
+  // (ici et dans _filterAgeText) et le sera une troisième fois pour la durée
+  // de blocage du dosage (bandeau #dose-block-banner) : on ne lisse ni ne
+  // moyenne, la durée est toujours recalculée depuis l'horodatage source.
+  // `preposition` porte le verbe complet ("il y a", "relevé il y a", "bloqué
+  // depuis"...) ; `instantMs`/`instantText`, si fournis, figent les toutes
+  // premières secondes (jamais utilisé pour une durée de BLOCAGE : "bloqué
+  // depuis à l'instant" n'aurait pas de sens).
+  function _elapsedText(ms, preposition, instantMs = null, instantText = "à l'instant") {
+    if (ms == null || !isFinite(ms) || ms < 0) return null;
+    if (instantMs != null && ms < instantMs) return instantText;
+    const sec = Math.floor(ms / 1000);
+    if (sec < 60) return `${preposition} ${sec} s`;
+    const minutes = Math.floor(sec / 60);
+    if (minutes < 60) return `${preposition} ${minutes} min`;
     const hours = Math.floor(minutes / 60);
     const remMin = minutes - hours * 60;
     if (hours < 24) {
-      return remMin === 0 ? `il y a ${hours} h` : `il y a ${hours} h ${remMin} min`;
+      return remMin === 0 ? `${preposition} ${hours} h` : `${preposition} ${hours} h ${remMin} min`;
     }
     const days = Math.floor(hours / 24);
     const remHours = hours - days * 24;
-    return remHours === 0 ? `il y a ${days} j` : `il y a ${days} j ${remHours} h`;
+    return remHours === 0 ? `${preposition} ${days} j` : `${preposition} ${days} j ${remHours} h`;
+  }
+
+  // Met en forme l'âge en libellé lisible : "il y a 14 h", "il y a 12 min", "jamais"
+  function formatProbeAge(ageMs) {
+    if (ageMs == null || ageMs >= PH_SLOPE_NEVER) return 'jamais';
+    return _elapsedText(ageMs, 'il y a', 60000);
   }
 
   // Met à jour le chip d'état sonde pH dans la carte « Lecture pH ».
@@ -6171,9 +6194,7 @@
     const st = _filterState[prefix];
     if (!st || !st.lastRawAt) return '--';
     const age = Date.now() - st.lastRawAt;
-    if (age < 10000) return "à l'instant";
-    if (age < 60000) return `il y a ${Math.round(age / 1000)} s`;
-    if (age < 3600000) return `il y a ${Math.round(age / 60000)} min`;
+    if (age < 3600000) return _elapsedText(age, 'il y a', 10000);
     return formatProbeAge(age);
   }
 
@@ -6316,6 +6337,199 @@
     const e = DOSE_BLOCK_CODES[code];
     if (e) return { code, label: e.label, tone: e.tone };
     return { code, label: `Cause inconnue (code ${code})`, tone: 'unknown' };
+  }
+
+  // ---- feature-138 (B2/B3) : bandeau #dose-block-banner, hors panneau dev ----
+  // Réutilise STRICTEMENT la taxonomie DOSE_BLOCK_CODES / _doseBlockInfo()
+  // ci-dessus : aucune nouvelle classification.
+  // Code 2 = « Filtration arrêtée » (cf. DOSE_BLOCK_CODES) : cause bénigne au
+  // sens chimique, condition C6 du gate pool-chemistry pour B3.
+  const DOSE_BLOCK_FILTRATION_STOPPED_CODE = 2;
+  // kDoseBlockedForMaxS côté firmware (constants.h) : au-delà, la durée réelle
+  // n'est plus connue, l'UI rend « ≥ 24 h », jamais une estimation.
+  const DOSE_BLOCKED_FOR_MAX_S = 86400;
+
+  function _doseBlockDurationText(durationS) {
+    if (typeof durationS !== 'number' || !isFinite(durationS) || durationS < 0) return '—';
+    if (durationS >= DOSE_BLOCKED_FOR_MAX_S) return 'bloqué depuis ≥ 24 h';
+    return _elapsedText(durationS * 1000, 'bloqué depuis') || '—';
+  }
+
+  // null si la voie n'est pas bloquée, OU si #regul-alert affiche déjà cette
+  // voie (non-duplication voulue entre les deux bandeaux).
+  function _doseBlockRowData(json, prefix) {
+    const info = _doseBlockInfo(json, prefix);
+    if (!info || info.tone === 'none') return null;
+    if (json?.[prefix + 'FilterAlarm'] === true) return null;
+    const raw = json?.[prefix + 'DoseBlockedForS'];
+    const durationS = (typeof raw === 'number' && isFinite(raw)) ? raw : null;
+    return { prefix, code: info.code, label: info.label, tone: info.tone, durationS };
+  }
+
+  // feature-138 (B3) — GO SOUS CONDITIONS pool-chemistry (C1 à C6, 2026-10-04).
+  // LIEN DE NAVIGATION PUR, comme #regul-alert-cta : ne touche JAMAIS
+  // ph/orp_regulation_mode (basculer ce sélecteur persiste la config et COUPE
+  // la régulation automatique — cf. le handler de #ph_regulation_mode). Aucune
+  // présélection de volume/durée/produit (C1) : on se contente de naviguer vers
+  // #/ph ou #/orp après une confirmation EXPLICITE et distincte de celle du
+  // bouton d'injection (C2) qui porte les libellés imposés (C3).
+  async function _openManualInjectShortcut(prefix) {
+    const isOrp = prefix === 'orp';
+    const title = isOrp
+      ? "Ouvrir l’injection manuelle — chlore (ORP)"
+      : "Ouvrir l’injection manuelle — pH";
+    // Libellés IMPOSÉS MOT À MOT par le gate pool-chemistry de feature-138
+    // (condition C3, verdict du 2026-10-04). NE PAS reformuler, NE PAS abréger :
+    // une première version tronquée avait perdu l'avertissement sur les
+    // chloramines, l'instruction « n'augmentez pas la dose » et le rappel des
+    // limites. Toute évolution de ce texte exige un nouveau passage du gate.
+    const message = isOrp
+      ? "La mesure est actuellement déclarée non représentative.\n\n" +
+        "L’appareil a refusé le dosage automatique parce qu’il ne fait plus confiance à la mesure ORP — pas parce que l’eau serait correcte. " +
+        "L’injection manuelle n’applique aucune garde de stabilité : elle vous obéira sur une mesure que l’appareil juge fausse. " +
+        "C’est volontaire — c’est vous qui jugez de la représentativité.\n\n" +
+        "Avant d’injecter, contrôlez le chlore libre au réactif (DPD) et le pH.\n\n" +
+        "En eau chargée de matière organique (après pluie, boue, nettoyage de fond), l’ORP ne remonte pas tant que le point de rupture n’est pas atteint : " +
+        "poursuivre la consigne peut former des chloramines et vider un bidon sans effet mesurable. " +
+        "Si le DPD montre du chlore libre alors que l’ORP reste bas, le problème n’est pas un manque de chlore — n’augmentez pas la dose.\n\n" +
+        "Les limites journalière et horaire restent appliquées."
+      : "La mesure est actuellement déclarée non représentative.\n\n" +
+        "L’appareil a refusé le dosage automatique pH parce qu’il ne fait plus confiance à la mesure. " +
+        "L’injection manuelle n’applique aucune garde de stabilité.\n\n" +
+        "Une injection d’acide ne se reprend pas : si la mesure est fausse et le pH réellement bas, vous l’enfoncez. " +
+        "Contrôlez le pH au réactif (rouge de phénol ou photomètre) et vérifiez l’offset pH avant toute injection.\n\n" +
+        "Les limites journalière et horaire restent appliquées.";
+    if (!(await confirmDialog({ title, message, confirmLabel: 'Ouvrir', cancelLabel: 'Annuler' }))) return;
+    location.hash = isOrp ? '#/orp' : '#/ph';
+  }
+
+  function _renderDoseBlockRow(container, { label, tone, durationText, shortcutPrefix }) {
+    container.innerHTML = '';
+    container.classList.remove(
+      'dose-block-banner__row--normal', 'dose-block-banner__row--fault', 'dose-block-banner__row--unknown'
+    );
+    container.classList.add(`dose-block-banner__row--${tone}`);
+    // role="alert" réservé au ton fault : ne pas sur-alerter sur du bénin
+    // (filtration arrêtée la nuit est le cas NORMAL).
+    container.setAttribute('role', tone === 'fault' ? 'alert' : 'status');
+    if (tone === 'fault') container.removeAttribute('aria-live');
+    else container.setAttribute('aria-live', 'polite');
+
+    const dot = document.createElement('span');
+    dot.className = 'dose-block-banner__dot';
+    dot.setAttribute('aria-hidden', 'true');
+    container.appendChild(dot);
+
+    const body = document.createElement('div');
+    body.className = 'dose-block-banner__body';
+    const strong = document.createElement('strong');
+    strong.className = 'dose-block-banner__label';
+    strong.textContent = label;
+    const dur = document.createElement('span');
+    dur.className = 'dose-block-banner__duration';
+    dur.textContent = durationText;
+    body.appendChild(strong);
+    body.appendChild(dur);
+    container.appendChild(body);
+
+    if (shortcutPrefix) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      // btn--secondary à dessein (C4) : jamais présenté comme l'action recommandée.
+      btn.className = 'btn btn--secondary dose-block-banner__cta';
+      btn.textContent = 'Ouvrir l’injection manuelle';
+      btn.addEventListener('click', () => _openManualInjectShortcut(shortcutPrefix));
+      container.appendChild(btn);
+    }
+    container.hidden = false;
+  }
+
+  // Bandeau d'état de blocage du dosage (B2), hors panneau développeur.
+  // Absent si rien n'est bloqué — pas de bandeau permanent qui s'ignore.
+  function updateDoseBlockBanner(json) {
+    const box = $("#dose-block-banner");
+    const rowPh = $("#dose-block-row-ph");
+    const rowOrp = $("#dose-block-row-orp");
+    if (!box || !rowPh || !rowOrp) return;
+
+    const ph = _doseBlockRowData(json, 'ph');
+    const orp = _doseBlockRowData(json, 'orp');
+
+    if (!ph && !orp) {
+      box.hidden = true;
+      rowPh.hidden = true;
+      rowOrp.hidden = true;
+      return;
+    }
+
+    // LISTE BLANCHE des causes ouvrant le raccourci (2e passage pool-chemistry,
+    // 2026-10-04). Une simple exclusion de « filtration arrêtée » ne suffisait
+    // PAS : le dialogue annonce « la mesure est déclarée non représentative »,
+    // or les codes 8-14 sont des LIMITES (mélange, journalière, horaire,
+    // cycles, anti-rafale) et le code 7 une stabilisation post-calibration.
+    // Sur ces causes le dialogue aurait MENTI, et surtout l'injection manuelle
+    // est soumise AUX MÊMES gardes (evaluateManualInject, gardes 3 et 5 à 9) :
+    // le raccourci aurait mené à un refus — en poussant à relever la limite,
+    // exactement le travers que la condition C6 visait.
+    // Ne restent que les causes de DÉFIANCE ENVERS LA MESURE, où l'injection
+    // manuelle est l'échappatoire voulue (feature-006) :
+    //   3  ReadingNaN            lecture filtrée NaN, état indéterminé
+    //   4  FilterNotReady        filtre non prêt, état indéterminé
+    //   15 ReadingNaNWarmup      fenêtre de lissage en remplissage
+    //   18 ReadingNaNGateClosed  mesures non représentatives (purge)
+    //   19 FilterWarmup          fenêtre de lissage en remplissage
+    //   22 FilterGateClosed      mesures non représentatives (purge)
+    // Les PANNES (16, 17, 20, 21) sont déjà écartées par le ton `fault`, et un
+    // code inconnu l'est par la liste blanche elle-même — on ne peut alors pas
+    // exclure « filtration arrêtée ».
+    // ⚠️ Toute addition à cette liste exige un passage du gate pool-chemistry.
+    const DOSE_BLOCK_SHORTCUT_CODES = [3, 4, 15, 18, 19, 22];
+    // NB : le code 5 (capteur instable) est volontairement ABSENT — il porte
+    // le ton `fault`, donc la condition de ton l'écarte déjà. L'inscrire ici
+    // ferait croire qu'il est offert alors qu'il est inatteignable.
+    const canShortcut = (row) => !!row
+      && (row.tone === 'normal' || row.tone === 'unknown')
+      && row.code !== DOSE_BLOCK_FILTRATION_STOPPED_CODE
+      && DOSE_BLOCK_SHORTCUT_CODES.includes(row.code);
+
+    // Fusion UNIQUEMENT si même code ET ton normal — JAMAIS pour fault/unknown :
+    // une panne par voie doit rester lisible individuellement.
+    if (ph && orp && ph.code === orp.code && ph.tone === 'normal' && orp.tone === 'normal') {
+      const durations = [ph.durationS, orp.durationS].filter((v) => v != null);
+      const durationS = durations.length ? Math.min(...durations) : null;
+      _renderDoseBlockRow(rowPh, {
+        label: `${ph.label} (pH et chlore)`,
+        tone: 'normal',
+        durationText: _doseBlockDurationText(durationS),
+        // C4 : ligne fusionnée → raccourci par défaut sur l'ORP uniquement.
+        shortcutPrefix: canShortcut(ph) ? 'orp' : null,
+      });
+      rowOrp.hidden = true;
+      box.hidden = false;
+      return;
+    }
+
+    if (ph) {
+      _renderDoseBlockRow(rowPh, {
+        label: ph.label, tone: ph.tone,
+        durationText: _doseBlockDurationText(ph.durationS),
+        shortcutPrefix: canShortcut(ph) ? 'ph' : null,
+      });
+    } else {
+      rowPh.hidden = true;
+    }
+
+    if (orp) {
+      _renderDoseBlockRow(rowOrp, {
+        label: orp.label, tone: orp.tone,
+        durationText: _doseBlockDurationText(orp.durationS),
+        shortcutPrefix: canShortcut(orp) ? 'orp' : null,
+      });
+    } else {
+      rowOrp.hidden = true;
+    }
+
+    box.hidden = false;
   }
 
   function _renderFilterModalValues(prefix, json) {
@@ -6686,6 +6900,8 @@
         updateFilterChip('orp', json);
         // v2.20.3 (D5) : bannière tableau de bord « régulation à l'arrêt »
         updateRegulationAlert(json);
+        // feature-138 (B2) : bandeau « dosage bloqué » (voie, cause, durée)
+        updateDoseBlockBanner(json);
 
         const tempCurrentValue = $("#temp_current_value");
         const tempCurrentLabel = $("#temp_current_label");
@@ -8664,6 +8880,10 @@
     el.appendChild(pill);
   }
 
+  // feature-138 (B1) : horodatage CLIENT du dernier fetch RÉUSSI (pas du dernier
+  // essai) — c'est depuis cette date que la ligne de dispersion affiche son âge.
+  let _filterStateLastFetchAt = null;
+
   async function loadFilterState() {
     if (_filterStateLoading) return;
     _filterStateLoading = true;
@@ -8680,6 +8900,8 @@
       if (typeof json.orp?.dispersion_max === "number") _dispThresholds.orp = json.orp.dispersion_max;
       _applyDispThreshold("ph", _traceDispPhChart, "#trace_disp_ph_seuil", (v) => _fmtVirgule(v, 2));
       _applyDispThreshold("orp", _traceDispOrpChart, "#trace_disp_orp_seuil", (v) => `${v} mV`);
+      _filterStateLastFetchAt = Date.now();
+      _renderDispAge();
     } catch (e) {
       console.error("[trace] filter state load failed:", e);
       // Panne isolée : seules ces deux lignes se dégradent, le reste de la
@@ -8690,6 +8912,39 @@
       }
     } finally {
       _filterStateLoading = false;
+    }
+  }
+
+  // feature-138 (B1) : DEUX horloges distinctes, volontairement séparées.
+  //  - un tick d'AFFICHAGE local (_dispAgeTickTimer) qui recalcule le texte
+  //    d'âge depuis _filterStateLastFetchAt, SANS réseau ;
+  //  - un intervalle de FETCH (_dispFetchTimer) qui rappelle loadFilterState().
+  // Les deux sont armés/désarmés ENSEMBLE par _armDispersionRefresh(), appelée
+  // au changement de route ET au visibilitychange — le hash ne change pas
+  // quand l'onglet passe en arrière-plan, donc l'un sans l'autre laisserait
+  // tourner des requêtes panneau fermé ou onglet caché.
+  let _dispAgeTickTimer = null;
+  let _dispFetchTimer = null;
+
+  function _renderDispAge() {
+    const el = $("#trace_disp_age");
+    if (!el) return;
+    if (_filterStateLastFetchAt == null) { el.textContent = "—"; return; }
+    const txt = _elapsedText(Date.now() - _filterStateLastFetchAt, "relevé il y a");
+    el.textContent = txt || "—";
+  }
+
+  function _armDispersionRefresh() {
+    const shouldRun = _isPanelDevActive() && !document.hidden;
+    if (shouldRun) {
+      if (!_dispAgeTickTimer) _dispAgeTickTimer = setInterval(_renderDispAge, 1000);
+      if (!_dispFetchTimer) {
+        _dispFetchTimer = setInterval(loadFilterState, DISPERSION_REFRESH_MS);
+        loadFilterState(); // à la réouverture : premier appel immédiat, pas d'attente
+      }
+    } else {
+      if (_dispAgeTickTimer) { clearInterval(_dispAgeTickTimer); _dispAgeTickTimer = null; }
+      if (_dispFetchTimer) { clearInterval(_dispFetchTimer); _dispFetchTimer = null; }
     }
   }
 
@@ -8873,8 +9128,11 @@
     });
 
     // Chargement à l'activation de l'onglet Avancé uniquement (pas de polling permanent)
+    // feature-138 (B1) : _armDispersionRefresh() gère elle-même le cas « panneau
+    // fermé » (désarme) — loadFilterState() n'est donc plus appelée directement ici.
     const onRouteChange = () => {
-      if (_isPanelDevActive()) { loadSensorTrace(); loadFilterState(); }
+      if (_isPanelDevActive()) loadSensorTrace();
+      _armDispersionRefresh();
     };
     window.addEventListener("hashchange", onRouteChange);
     onRouteChange();
@@ -10965,6 +11223,10 @@
         // Petit délai pour laisser Safari libérer la socket avant d'en ouvrir une nouvelle
         setTimeout(initWebSocket, 100);
       }
+      // feature-138 (B1) : le hash ne change pas quand l'onglet passe en
+      // arrière-plan — sans ce rappel, un panneau Avancé resté ouvert dans un
+      // onglet caché continuerait de fetcher _dispersion dans le vide.
+      _armDispersionRefresh();
     });
 
     // Charger la config avant d'ouvrir le WebSocket : l'ESP32 a fini de traiter

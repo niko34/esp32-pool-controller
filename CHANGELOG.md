@@ -2,6 +2,70 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [2.54.0] - 2026-10-04
+
+> **Ce qui change pour vous** : quand le dosage automatique pH ou chlore est
+> refusé, le tableau de bord affiche désormais un **bandeau** — la voie
+> concernée, la cause en clair, et **depuis combien de temps** c'est bloqué —
+> sans avoir besoin d'ouvrir le panneau développeur. Motif : le 2026-10-02,
+> après des pluies diluviennes ayant couvert le fond du bassin de boue, les
+> deux voies ont été déclarées instables et **tout dosage automatique s'est
+> arrêté, chlore compris**, au moment précis où la demande en chlore était
+> maximale — et rien à l'écran principal ne le signalait. Dans le panneau
+> Avancé, les lignes de dispersion portent maintenant leur âge et se
+> rafraîchissent automatiquement tant que l'onglet reste ouvert, au lieu de
+> rester figées sur un relevé ancien (c'est ce relevé figé qui avait fait
+> croire, ce jour-là, que « le calcul de dispersion était bloqué » — il avait
+> en réalité déjà été recalculé trois fois en deux minutes).
+
+### Fonctionnalités
+
+- **Dosage** : bandeau « Dosage bloqué » sur le tableau de bord, hors panneau
+  développeur — voie, cause en clair, durée. Disparaît dès que plus rien
+  n'est bloqué. Se marque périmé si le WebSocket se déconnecte.
+- **Dosage** : raccourci « Ouvrir l'injection manuelle » depuis ce bandeau,
+  réservé aux causes où le dosage automatique doute de la **mesure** (jamais
+  sur une panne, ni quand la filtration est à l'arrêt) — sans présélection de
+  volume, avec une confirmation et des rappels de sécurité dédiés par voie.
+- **Panneau Avancé** : les lignes de dispersion pH/ORP affichent leur âge
+  (« relevé il y a 12 s ») et se rafraîchissent automatiquement tant que
+  l'onglet est ouvert ; plus aucune requête réseau une fois l'onglet fermé.
+
+### Firmware
+
+- **Dosage** : le contrôleur expose désormais, par voie, la durée (en
+  secondes) depuis laquelle le code de refus courant est inchangé
+  (`phDoseBlockedForS` / `orpDoseBlockedForS`), publiée à l'identique sur
+  `/data` et le WebSocket. Remise à zéro à chaque changement de code, y
+  compris vers « plus de refus » ; repliement de `millis()` traité
+  explicitement (arithmétique non signée, aucune comparaison `now < since`).
+- **WebSocket** : pour financer ce nouveau champ sous le plafond dur de la
+  trame `sensor_data` (`kWsFrameBufBytes`), `ph_integral` et
+  `ph_integral_term` sont **retirés de la seule trame WebSocket** — ils
+  restent publiés sur `/data`, MQTT et Home Assistant, où ils sont un contrat
+  externe. **Changement observable pour tout client WebSocket tiers** qui
+  lirait ces deux clés : elles ne sont plus poussées toutes les 5 s, il faut
+  désormais les lire via `GET /data`. Voir [ADR-0086](docs/adr/0086-trame-websocket-sous-ensemble-choisi-de-data.md).
+
+### Documentation
+
+- `docs/API.md` : champs `phDoseBlockedForS` / `orpDoseBlockedForS` ; rappel
+  explicite que le piège déjà documenté de `dispersion: null` n'était **pas**
+  en cause dans l'incident du 2026-10-02 — le défaut était l'absence de
+  rafraîchissement de l'affichage, pas le traitement du `null`.
+- `docs/subsystems/ws-manager.md` : budget d'octets recompté (marge WS
+  43 → 39 o), nouvelles entrées `kDataOnly` pour `ph_integral` /
+  `ph_integral_term`, correction d'un commentaire inexact sur l'impact du
+  `.bss` statique sur le tas 8 bits.
+- `docs/subsystems/pump-controller.md` : `setRefusalCode()`, seul point
+  d'écriture du code de refus et de sa date, et l'invariant d'ordre associé.
+- `docs/features/page-dashboard.md` : bandeau « Dosage bloqué » et son
+  raccourci.
+- `docs/user/src/guide-utilisation.html` : mention du nouveau bandeau.
+- **ADR créé** : [`0086-trame-websocket-sous-ensemble-choisi-de-data.md`](docs/adr/0086-trame-websocket-sous-ensemble-choisi-de-data.md) — la trame WebSocket n'est plus un miroir de `/data`, tout champ futur devra être financé par un retrait ou un relèvement explicite de `kWsFrameBufBytes`.
+
+---
+
 ## [2.53.1] - 2026-09-21
 
 > **Ce qui change pour vous** : le matin, la mesure pH/ORP passe plus souvent

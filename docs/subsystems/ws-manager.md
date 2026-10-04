@@ -776,6 +776,36 @@ Borne **structurelle du type**, refaite et non recopiée. Le type est `bool` ; l
 
 > ⚠️ **MARGE RÉSIDUELLE : 43 o** sous `kWsFrameBufBytes = 3584` (elle était de 67 o). **C'est UNE clé booléenne de plus, pas deux.** Acceptable pour ce lot ; **pas pour le suivant** : le prochain champ de cette trame devra **consommer la réserve de 49 o** (`ph_integral` + `ph_integral_term`, sans consommateur client depuis feature-092 — arbitrage exigeant une exception motivée dans la sentinelle de parité, **toujours pas pris**) **ou** relever `kWsFrameBufBytes` par **ADR**. Rappel du mode de défaillance : le dépassement **saute** le push (garde `measureJson(doc) + 1 > cap`, `_oversizedFrames` + warn throttlé), il ne **tronque** jamais — et le pire cas de longueur **coïncide** avec l'escalade de sécurité pH, donc avec le moment où perdre la trame coûte le plus cher.
 
+### Champs `sensor_data` ajoutés en v2.54.0 — durée du refus de dosage (feature-138), et élagage de `ph_integral`/`ph_integral_term`
+
+Incident fondateur (2026-10-02) : après des pluies diluviennes, les deux voies pH et ORP ont été déclarées instables et **tout dosage automatique s'est arrêté**, chlore compris, au pire moment. Le code de refus (`*DoseBlockedCode`) était déjà publié, mais sa **durée** ne l'était pas — « bloqué » et « bloqué depuis 9 h » n'appellent pas la même réaction, et un relevé sans date avait déjà produit un diagnostic faux côté UI (voir [page-dashboard.md](../features/page-dashboard.md#bandeau--dosage-bloqué--feature-138-v2540)).
+
+| Champ | Type | Description |
+|---|---|---|
+| `phDoseBlockedForS` | uint32 \| null | Secondes depuis lesquelles `phDoseBlockedCode` est inchangé. `null` **identique à la règle du code** — aucun refus en cours. `0` est une durée valide (refus qui vient de commencer). Clampé à `kDoseBlockedForMaxS` = **86400** (24 h). Calculé par le module pur `doseBlockElapsedS()` ([`src/dose_block_duration_logic.h`](../../src/dose_block_duration_logic.h), ADR-0017) — arithmétique non signée, exacte à travers le repliement de `millis()` (24,8 j). |
+| `orpDoseBlockedForS` | uint32 \| null | Équivalent ORP. |
+
+Source : `PumpController.getPhDoseBlockedForS()` / `getOrpDoseBlockedForS()`, lecture seule d'un `uint32_t` membre (`_refusalCodeSinceMs[]`) écrit par un **seul** point d'écriture, `setRefusalCode()` — voir [pump-controller.md](pump-controller.md#durée-du-refus-courant-par-voie-feature-138-v2540). ⚠️ `0` dans `_refusalCodeSinceMs[]` n'est **pas** une sentinelle « pas d'épisode » (contrairement à `_sensorFaultSinceMs`) : la validité est portée par `*DoseBlockedCode != kDoseBlockedCodeNone`, jamais par cette valeur elle-même — 0 est une milliseconde parfaitement normale au boot et après repliement.
+
+#### Budget de payload — méthode ([ADR-0073](../adr/0073-chiffre-consigne-porte-sa-methode.md))
+
+Borne **structurelle du CLAMP applicatif** (`kDoseBlockedForMaxS = 86400`, 5 chiffres décimaux), **pas** la borne du type C (`uint32_t` irait à 4294967295, 10 chiffres) — c'est ce clamp, pas le type, qu'il faut relire au prochain recomptage :
+
+| Fragment sérialisé | Décompte | Octets |
+|---|---|---:|
+| `"phDoseBlockedForS":86400,` | 1+17+1+1+5+1 | **26** |
+| `"orpDoseBlockedForS":86400,` | 1+18+1+1+5+1 | **27** |
+
+Pire cas d'ajout : **53 o**. `null` (4 o) est plus court, donc jamais dimensionnant.
+
+**Élagage simultané, dans la même trame** (décision utilisateur du 2026-10-04, option (a) — voir [ADR-0086](../adr/0086-trame-websocket-sous-ensemble-choisi-de-data.md)) : `ph_integral` (23 o) et `ph_integral_term` (26 o) sont retirés de **cette seule trame**, soit **−49 o**. Plus aucun consommateur côté client depuis feature-092 (grep vérifié : les clés client sont `ph_integral_pct`, `ph_integral_saturated`, l'id DOM `ph_integral_warning` — trois clés distinctes). Les deux champs restent publiés intacts sur `/data`, MQTT et Home Assistant, où ils sont un contrat externe — exception motivée dans la sentinelle de parité (`test_ws_data_parity`, deux entrées `kDataOnly`, voir plus bas).
+
+**Pire cas de trame : 3541 (hérité de v2.47.1) − 49 (élagage) + 53 (durée) = 3545 o.** Gabarit `StaticJson<3584>` inchangé, **aucun bump**. **Marge résiduelle sous le seul plafond DUR** (`sWsFrameBuf`, `kWsFrameBufBytes = 3584` o) : **3584 − 3545 = 39 o** (elle était de 43 o). L'élagage compense presque entièrement l'ajout, à **4 o** près. Côté `/data`, les deux durées **ne sont pas élaguées** (`ph_integral` / `ph_integral_term` y restent) : charge pire cas 2912 + 53 = 2965 o, gabarit `StaticJson<>` porté de **2944 à 3072** (aucun plafond dur sur ce chemin, marge purement documentaire).
+
+> ⚠️ **Marge résiduelle : 39 o, sous le seul plafond DUR.** C'est **moins d'une clé courte supplémentaire** : le prochain champ de cette trame exige un retrait compensatoire ou un relèvement de `kWsFrameBufBytes` — décision d'**ADR**, pas de routine ([ADR-0086](../adr/0086-trame-websocket-sous-ensemble-choisi-de-data.md) pose désormais explicitement que la trame WS n'est **pas** un miroir de `/data`). Rappel du mode de défaillance : le dépassement **saute** le push (garde `measureJson(doc) + 1 > cap`, `_oversizedFrames` + warn throttlé), il ne **tronque** jamais.
+>
+> ⚠️ **Correction d'une affirmation fausse portée par le commentaire de `kWsFrameBufBytes`** (`constants.h`) depuis le bump v2.21.1 : il justifiait l'augmentation par « +512 o en `.bss` statique — **hors heap 8 bits**, aucun impact sur la famine mémoire ». C'est **inexact** : le `.bss` est en DRAM, et le tas 8 bits n'est jamais que le **reliquat** de cette même DRAM après soustraction du `.bss`/`.data`. Le `.bss` ne **fragmente** pas (aucun impact sur `max_alloc_8bit`), mais il **réduit bien le total disponible** — c'est ce raisonnement, et non une distinction heap/`.bss`, qui faisait passer l'option « relever `kWsFrameBufBytes` » pour gratuite dans les arbitrages précédents. Commentaire corrigé dans le code ; voir [ADR-0086](../adr/0086-trame-websocket-sous-ensemble-choisi-de-data.md) pour le raisonnement complet.
+
 ### Le second axe de parité — `/data` ↔ `sensor_data` (`PARITE-DATA`)
 
 [ADR-0071](../adr/0071-parite-data-trame-capteurs.md) étend au **second axe** le principe posé par [ADR-0065](../adr/0065-trame-websocket-etat-mutable-pas-constantes.md) pour l'axe `config`. Deux différences de fond :
@@ -791,7 +821,7 @@ Marqueurs commentés, lus tels quels par la sentinelle : `>>> PARITE-DATA:DEBUT`
 |---|---:|---|
 | `kWsOnlyLive` — état vivant servi par **aucune** route HTTP | **18** | **Dette inventoriée** (antérieure à feature-092), déclarée pour rendre la sentinelle utilisable, pas pour valider le motif. Sous **cliquet** `kWsOnlyLiveCeiling = 18` : le compte ne peut **jamais augmenter** — une clé neuve va dans `/data`. |
 | `kWsPlusOtherRoute` — clés **dual-sourcées** | **8** | Absentes de `/data` mais servies par une **autre** route HTTP, dont le **nom est obligatoire** et asserté non vide : **7** par `GET /get-config` (`ph_container_ml`, `orp_container_ml`, `lighting_enabled`, `boost_active`, `boost_until`, `install_mode`, `mqtt_connected`) et **1** par `GET /get-logs` (`uptime_ms` — la table de la sentinelle abrège la route en « GET /logs »). Catégorie qui **n'existe pas** sur l'axe config : une règle « aucune clé WS-seule » les signalerait à tort. |
-| `kDataOnly` — clés servies par `/data` seul | **2** (était 3) | `ph_pump_amplitude_duty`, `orp_pump_amplitude_duty` (grandeurs de **calibration**, lues dans des vues de diagnostic). La 3ᵉ entrée — l'objet `flow_assist` — a été **retirée** en v2.47.1 : elle est devenue bilatérale (`bug-082`), et c'est la sentinelle qui l'a exigé. |
+| `kDataOnly` — clés servies par `/data` seul | **4** (était 2) | `ph_pump_amplitude_duty`, `orp_pump_amplitude_duty` (grandeurs de **calibration**, lues dans des vues de diagnostic) ; **+2 en v2.54.0** (feature-138) : `ph_integral`, `ph_integral_term` — élaguées de la **seule** trame WS pour financer `*DoseBlockedForS` (décision utilisateur, [ADR-0086](../adr/0086-trame-websocket-sous-ensemble-choisi-de-data.md)), restent un contrat externe sur `/data`/MQTT/HA. La 3ᵉ entrée d'origine — l'objet `flow_assist` — a été **retirée** en v2.47.1 : elle est devenue bilatérale (`bug-082`), et c'est la sentinelle qui l'a exigé. |
 | `kFlowAssistDataOnly` — champs **imbriqués** de `flow_assist` servis par `/data` seul | **7** | Second axe, v2.47.1 (`bug-082`) : `active`, `pump`, `phase`, `remaining_s`, `purges_left`, `purge_s`, `measure_s` — champs de **session**, lus à l'ouverture de l'assistant après un `GET /data` **forcé**. Motif écrit obligatoire, **cliquet à 7**, et **`aborted` / `flow255` y sont formellement interdits**. |
 
 Décompte **vérifié par mesure** et non supposé : les **26** clés WS-seules constatées = 18 « état vivant » + 8 dual-sourcées.

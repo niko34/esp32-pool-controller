@@ -470,16 +470,16 @@ size_t WsManager::_buildSensorJson(char* buf, size_t cap) const {
   // désormais un retrait compensatoire OU un relèvement de kWsFrameBufBytes
   // (décision d'ADR, pas de routine).
   //
-  // ÉLAGAGE CHIFFRÉ, NON APPLIQUÉ (arbitrage hors de ce fichier) : `ph_integral`
-  // (pH·s) et `ph_integral_term` n'ont plus AUCUN consommateur côté client après
-  // feature-092. Les retirer de CETTE TRAME seulement (en les gardant sur /data,
-  // sur MQTT et donc dans Home Assistant, où ils sont un contrat externe)
-  // rendrait :
+  // ÉLAGAGE CHIFFRÉ — APPLIQUÉ par feature-138 (2026-10-04, décision utilisateur,
+  // option (a) du budget d'octets) : `ph_integral` (pH·s) et `ph_integral_term`
+  // n'ont plus AUCUN consommateur côté client après feature-092. Retirés de
+  // CETTE TRAME seulement (gardés intacts sur /data, MQTT et donc Home
+  // Assistant, où ils sont un contrat externe) :
   //   "ph_integral":-43200.0,    = 23 o
-  //   "ph_integral_term":-6.000, = 26 o   → 49 o, portant la marge à 186 o.
-  // Ce n'est PAS gratuit : les deux clés deviendraient /data-seules, ce qui
-  // exige une exception motivée dans la sentinelle de parité. Ne rien retirer
-  // sans cette décision.
+  //   "ph_integral_term":-6.000, = 26 o   → 49 o restitués au budget WS.
+  // Pas gratuit : les deux clés sont désormais /data-seules — exception motivée
+  // dans la sentinelle de parité (test_ws_data_parity, entrées kDataOnly). Voir
+  // le tally final feature-138 plus bas dans ce fichier.
   // MARGE RÉSIDUELLE SOUS LE SEUL PLAFOND DUR, sWsFrameBuf
   // (kWsFrameBufBytes = 3584 o, constants.h) : 3584 − 2992 = 592 o (elle était
   // de 742 o avant cet ajout). Aucun bump de kWsFrameBufBytes n'est requis.
@@ -544,11 +544,9 @@ size_t WsManager::_buildSensorJson(char* buf, size_t cap) const {
   // retrait compensatoire OU un relèvement de kWsFrameBufBytes (décision d'ADR,
   // pas de routine).
   //
-  // RÉSERVE DOCUMENTÉE, NON DÉPENSÉE ICI : retirer `ph_integral` (23 o) et
-  // `ph_integral_term` (26 o) de CETTE SEULE trame — sans consommateur client
-  // depuis feature-092 — rendrait 49 o et porterait la marge à 116 o. Cet
-  // arbitrage exige une exception motivée dans la sentinelle de parité (les deux
-  // clés deviendraient /data-seules) : il reste à prendre, il n'est PAS pris.
+  // RÉSERVE DÉPENSÉE par feature-138 (2026-10-04) : `ph_integral` (23 o) et
+  // `ph_integral_term` (26 o) sont retirés de CETTE SEULE trame — voir le tally
+  // final plus bas, après l'ajout de `*DoseBlockedForS`.
   //
   // feature-068 (A4) : +1 booléen `tempFrozenAlarm` — drapeau « sonde de
   // température d'eau figée » (SensorManager::isTemperatureFrozen). SEUL ce
@@ -578,7 +576,37 @@ size_t WsManager::_buildSensorJson(char* buf, size_t cap) const {
   // nouveau champ de cette trame exige désormais un retrait compensatoire OU un
   // relèvement de kWsFrameBufBytes (décision d'ADR, pas de routine).
   // La RÉSERVE documentée ci-dessus (`ph_integral` + `ph_integral_term`, 49 o)
-  // n'a PAS été dépensée pour cet ajout : elle reste disponible en entier.
+  // a depuis été dépensée par feature-138, cf. tally ci-dessous.
+  //
+  // feature-138 (v2.54.0, 2026-10-04) : +2 champs de DURÉE du refus de dosage
+  // courant par voie (parité /data ↔ WS, mêmes clés des deux côtés), ET élagage
+  // de `ph_integral` + `ph_integral_term` de CETTE SEULE trame (décision
+  // utilisateur, option (a) ci-dessus — Ne PAS rouvrir, cf. spec feature-138).
+  //
+  // MÉTHODE DE CHIFFRAGE (ADR-0073) : borne STRUCTURELLE du type qui porte la
+  // valeur. `*DoseBlockedForS` est un uint32_t MAIS borné par le CLAMP
+  // applicatif kDoseBlockedForMaxS = 86400 (24h, constants.h) — c'est ce clamp
+  // qui fixe le nombre de chiffres décimaux (5, « 86400 »), PAS la borne du
+  // type (qui irait à 4294967295, 10 chiffres). `null` (4 o) quand aucun refus
+  // n'est en cours, plus court, donc jamais dimensionnant.
+  //   "phDoseBlockedForS":86400,  → 1+17+1+1+5+1 = 26 o
+  //   "orpDoseBlockedForS":86400, → 1+18+1+1+5+1 = 27 o   → 53 o.
+  // Élagage : "ph_integral":-43200.0, (23 o) + "ph_integral_term":-6.000,
+  // (26 o) retirés → −49 o.
+  //
+  // Pire cas de trame : 3541 (décompte bug-082/feature-068) − 49 (élagage) +
+  // 53 (durée de blocage) = 3545 o, SOUS le gabarit documentaire 3584 (aucun
+  // bump) et SOUS le seul plafond DUR, kWsFrameBufBytes = 3584 o.
+  //
+  // MARGE RÉSIDUELLE SOUS LE SEUL PLAFOND DUR, sWsFrameBuf
+  // (kWsFrameBufBytes = 3584 o, constants.h) : 3584 − 3545 = 39 o (elle était de
+  // 43 o avant cet ajout — l'élagage de 49 o a presque entièrement compensé les
+  // 53 o de durée ajoutés, à 4 o près). Rappel du mode de défaillance : le
+  // dépassement SAUTE le push (garde `measureJson(doc) + 1 > cap` en fin de
+  // fonction, qui incrémente _oversizedFrames et journalise un warn throttlé)
+  // — il ne TRONQUE jamais. Tout nouveau champ de cette trame exige désormais
+  // un retrait compensatoire OU un relèvement de kWsFrameBufBytes (décision
+  // d'ADR, pas de routine) — la marge n'absorbe plus qu'une seule clé courte.
   StaticJson<3584> doc;
   doc["type"] = "sensor_data";
   JsonObject d = doc["data"].to<JsonObject>();
@@ -654,6 +682,14 @@ size_t WsManager::_buildSensorJson(char* buf, size_t cap) const {
   const uint8_t orpDoseCode = PumpController.getOrpDoseBlockedCode();
   if (phDoseCode  != kDoseBlockedCodeNone) d["phDoseBlockedCode"]  = phDoseCode;  else d["phDoseBlockedCode"]  = nullptr;
   if (orpDoseCode != kDoseBlockedCodeNone) d["orpDoseBlockedCode"] = orpDoseCode; else d["orpDoseBlockedCode"] = nullptr;
+  // feature-138 : DURÉE (s) depuis laquelle le code de refus ci-dessus est
+  // inchangé, par voie — mêmes clés que /data (parité obligatoire, grep des
+  // deux côtés). `null` IDENTIQUE au code : c'est le CODE qui porte la
+  // décision de publier `null`, jamais cette durée (0 est une valeur valide :
+  // un refus qui vient de commencer). Bornée à kDoseBlockedForMaxS (24h) par
+  // le module pur doseBlockElapsedS() (dose_block_duration_logic.h).
+  if (phDoseCode  != kDoseBlockedCodeNone) d["phDoseBlockedForS"]  = PumpController.getPhDoseBlockedForS();  else d["phDoseBlockedForS"]  = nullptr;
+  if (orpDoseCode != kDoseBlockedCodeNone) d["orpDoseBlockedForS"] = PumpController.getOrpDoseBlockedForS(); else d["orpDoseBlockedForS"] = nullptr;
   // D2 (v2.25.0) : « la butée BRUTE mord » — état qu'AUCUN client ne peut
   // déduire du pH corrigé publié (un offset saisi à tort rend le corrigé
   // rassurant pendant que la mesure capteur est hors limite). Booléens STRICTS,
@@ -724,22 +760,25 @@ size_t WsManager::_buildSensorJson(char* buf, size_t cap) const {
   // v2.26.0 (C5) : TERME INTÉGRAL pH — observabilité de la levée de Ki (le terme
   // intégral fournit TOUTE la charge à l'équilibre, où le proportionnel s'annule ;
   // sans ces champs, une intégrale saturée resterait invisible).
-  //   ph_integral      = intégrale accumulée (pH·s)
-  //   ph_integral_term = contribution au débit moyen demandé (mL/min)
   //   ph_integral_pct  = remplissage de l'anti-windup (% de integralMax)
   //   ph_integral_saturated = VERDICT d'épisode de saturation (booléen) — v2.26.0
   //     (revue, mineure n°1). Le seuil (95 % de `demande / débit soutenable`) et
   //     son hystérésis restent au FIRMWARE : comparer soi-même 95 % au
   //     REMPLISSAGE (`ph_integral_pct`) confond deux grandeurs et annonce
   //     « vérifiez le bidon » sur une régulation saine.
-  // Champs et règles STRICTEMENT identiques à /data (web_routes_data.cpp) : mêmes
+  // feature-138 : `ph_integral` (pH·s) et `ph_integral_term` (mL/min) sont
+  // ÉLAGÉS de CETTE SEULE trame — plus aucun consommateur côté client depuis
+  // feature-092 (grep vérifié : les clés client sont `ph_integral_pct`,
+  // `ph_integral_saturated` et l'id DOM `ph_integral_warning`, trois clés
+  // distinctes). Ils restent publiés intacts sur /data, MQTT et Home Assistant,
+  // où ils sont un contrat externe — exception motivée de la sentinelle de
+  // parité (test_ws_data_parity, entrées kDataOnly). Cf. ADR « La trame
+  // WebSocket est un sous-ensemble choisi de /data » et le décompte d'octets
+  // plus haut dans ce fichier.
+  // Champs restants STRICTEMENT identiques à /data (web_routes_data.cpp) : mêmes
   // noms, mêmes arrondis, NaN → null explicite. Pas d'équivalent ORP : Ki_ORP
   // reste 0 (asymétrie voulue, hors périmètre du gate v2.26.0).
-  float phIntegral    = PumpController.getPhIntegral();
-  float phIntegralTrm = PumpController.getPhIntegralTerm();
   float phIntegralPct = PumpController.getPhIntegralPct();
-  if (!isnan(phIntegral))    d["ph_integral"]      = round(phIntegral * 10.0f) / 10.0f;         else d["ph_integral"]      = nullptr;
-  if (!isnan(phIntegralTrm)) d["ph_integral_term"] = round(phIntegralTrm * 1000.0f) / 1000.0f;  else d["ph_integral_term"] = nullptr;
   if (!isnan(phIntegralPct)) d["ph_integral_pct"]  = round(phIntegralPct * 10.0f) / 10.0f;      else d["ph_integral_pct"]  = nullptr;
   d["ph_integral_saturated"] = PumpController.isPhIntegralSaturated();
   // feature-085 (v2.28.0) : FEEDFORWARD pH — dose de base apprise. Champs et

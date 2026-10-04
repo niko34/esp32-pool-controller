@@ -129,7 +129,8 @@ docs/
 │   ├── 0082-arene-circulaire-du-journal-en-ram-interne-statique.md
 │   ├── 0083-ecriture-atomique-historique-et-contrat-de-format-persiste.md
 │   ├── 0084-ce-qui-prouve-qu-un-reseau-est-vivant.md
-│   └── 0085-republication-decouverte-ha-sur-empreinte.md
+│   ├── 0085-republication-decouverte-ha-sur-empreinte.md
+│   └── 0086-trame-websocket-sous-ensemble-choisi-de-data.md
 │
 ├── API.md               ← Référence REST + WebSocket
 ├── MQTT.md              ← Topics MQTT + auto-discovery Home Assistant

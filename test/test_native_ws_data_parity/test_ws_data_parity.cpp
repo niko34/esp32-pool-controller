@@ -195,6 +195,10 @@ static const WsOnlyKey kDataOnly[] = {
    "Rapport cyclique d'amplitude de la pompe pH : grandeur de CALIBRATION, lue dans les vues de diagnostic servies par /data — jamais un affichage temps reel."},
   {"orp_pump_amplitude_duty",
    "Rapport cyclique d'amplitude de la pompe ORP : meme grandeur de calibration, meme usage de diagnostic que la voie pH."},
+  {"ph_integral",
+   "Integrale pH accumulee (pH.s), ELAGUEE de la trame WS par feature-138 (option a, decision utilisateur du 2026-10-04) : plus aucun consommateur cote client depuis feature-092. Reste un contrat externe sur /data, MQTT et Home Assistant."},
+  {"ph_integral_term",
+   "Contribution au debit moyen demande (mL/min) du terme integral pH, ELAGUEE de la trame WS par feature-138 pour le meme motif et la meme decision que ph_integral ci-dessus — budget d'octets de sWsFrameBuf."},
 };
 static const size_t kDataOnlyCount = sizeof(kDataOnly) / sizeof(kDataOnly[0]);
 

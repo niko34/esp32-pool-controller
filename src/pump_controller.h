@@ -11,6 +11,7 @@
 #include "ph_persist_logic.h"    // feature-084 : persistance de l'intégrale (PURE)
 #include "ph_feedforward_logic.h"  // feature-085 : dose de base apprise (PURE)
 #include "ph_session_logic.h"      // feature-094 : porte de session pH (PURE)
+#include "dose_block_duration_logic.h"  // feature-138 : durée du refus courant (PURE)
 
 struct PumpDriver {
   int pwmPin;    // Pin PWM Gate MOSFET (IRLZ44N)
@@ -209,6 +210,20 @@ private:
   // Cf. getPhDoseBlockedCode() pour la sémantique des valeurs.
   uint8_t _lastRefusalCode[2] = {kDoseBlockedCodeNone, kDoseBlockedCodeNone};
 
+  // feature-138 — millis() du dernier CHANGEMENT du code ci-dessus, par voie.
+  // Remise à zéro de la DURÉE (pas forcément de ce timestamp) à chaque
+  // changement de code, y compris vers kDoseBlockedCodeNone (« plus de
+  // refus ») : cf. setRefusalCode(), seul point d'écriture.
+  // ⚠️ Ne PAS traiter `0` comme « pas d'épisode » (contrairement à
+  // _sensorFaultSinceMs ci-dessus) : 0 est une valeur de millis() parfaitement
+  // valide au boot et après repliement. La validité est portée par
+  // `_lastRefusalCode[i] != kDoseBlockedCodeNone`, jamais par ce champ.
+  // Écrit/lu en loopTask uniquement, lu aussi en contexte async (getters) —
+  // lecture 32 bits non garantie atomique sur Xtensa mais course bénigne
+  // assumée (patron _sensorFaultSinceMs) : pire cas, une durée décalée d'un
+  // tour de loop, jamais une décision de dosage.
+  uint32_t _refusalCodeSinceMs[2] = {0, 0};
+
   // v2.25.1 — escalade des causes de PANNE DE MESURE (sonde figée / plus aucune
   // mesure acceptée) en `warning` + alerte MQTT dédiée, sous condition de
   // PERSISTANCE (kDoseSensorFaultAlertDelayMs) : le transitoire de ré-amorçage à
@@ -231,6 +246,17 @@ private:
   // Écriture BORNÉE d'une cause dans _lastRefusalCause[pumpIndex] (troncature
   // sûre en UTF-8). Seul point d'écriture du tampon, loopTask uniquement.
   void storeRefusalCause(int pumpIndex, const char* cause);
+
+  // feature-138 — SEUL point d'écriture de _lastRefusalCode (les quatre anciens
+  // sites d'affectation directe deviennent des appels à ce setter). Horodate le
+  // changement AVANT de poser le nouveau code : un lecteur async qui tombe
+  // entre les deux instructions voit alors l'ANCIEN code avec la NOUVELLE date
+  // (durée sous-estimée, bénigne) — jamais le NOUVEAU code avec l'ANCIENNE date,
+  // qui annoncerait « bloqué depuis 9 h » sur un blocage d'une seconde.
+  // C'est l'ordre INVERSE de logRefusalOnce pour le texte (code avant texte,
+  // là où il faut date avant code ici) — chacun protège contre son propre
+  // pire cas de lecture déchirée. loopTask uniquement.
+  void setRefusalCode(int pumpIndex, uint8_t code);
 
   // ===== D1 (v2.25.0) : PROPRIÉTÉ de la chaîne de cause ======================
   // Deux écrivains alimentent `_lastRefusalCause` — la SURVEILLANCE pH/ORP
@@ -1049,6 +1075,24 @@ public:
   // au rafraîchissement suivant, jamais une décision de dosage.
   uint8_t getPhDoseBlockedCode() const { return _lastRefusalCode[0]; }
   uint8_t getOrpDoseBlockedCode() const { return _lastRefusalCode[1]; }
+
+  // ===== feature-138 : durée (s) du refus COURANT, par voie ===================
+  // Bornée à kDoseBlockedForMaxS (24h), arithmétique non signée exacte à
+  // travers le repliement de millis() — cf. doseBlockElapsedS()
+  // (dose_block_duration_logic.h, module PUR). `null` côté /data et WS quand
+  // *DoseBlockedCode vaut kDoseBlockedCodeNone : c'est ce code qui porte la
+  // décision de publier `null`, jamais la valeur retournée ici (0 est une
+  // durée valide : un refus qui vient de commencer).
+  uint32_t getPhDoseBlockedForS() const {
+    return doseBlockElapsedS((uint32_t)millis(), _refusalCodeSinceMs[0],
+                              _lastRefusalCode[0] != kDoseBlockedCodeNone,
+                              kDoseBlockedForMaxS);
+  }
+  uint32_t getOrpDoseBlockedForS() const {
+    return doseBlockElapsedS((uint32_t)millis(), _refusalCodeSinceMs[1],
+                              _lastRefusalCode[1] != kDoseBlockedCodeNone,
+                              kDoseBlockedForMaxS);
+  }
 
   // ===== D2 (v2.25.0) : « la butée BRUTE mord » — LECTURE SEULE ==============
   // Aucun client ne peut déduire ces deux états du pH CORRIGÉ publié : c'est

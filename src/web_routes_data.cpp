@@ -199,7 +199,30 @@ static void handleGetData(AsyncWebServerRequest* request) {
   // documentaire, ce chemin n'a aucun plafond dur. Le budget CONTRAIGNANT de
   // cet ajout est celui de la trame WS (kWsFrameBufBytes), décompté dans
   // src/ws_manager.cpp : marge portée de 67 à 43 o.
-  StaticJson<2944> doc;
+  //
+  // feature-138 (v2.54.0, 2026-10-04) : +2 champs de DURÉE du refus de dosage
+  // courant par voie (parité /data ↔ WS, mêmes clés des deux côtés). Ces
+  // champs ne sont PAS retirés côté /data (contrairement au WS, qui élague
+  // `ph_integral`/`ph_integral_term` pour les financer — décision utilisateur,
+  // à NE PAS rouvrir, cf. spec feature-138, option (a)).
+  //
+  // MÉTHODE DE CHIFFRAGE (ADR-0073) : borne STRUCTURELLE du type qui porte la
+  // valeur. `*DoseBlockedForS` est un uint32_t MAIS borné par le CLAMP
+  // applicatif kDoseBlockedForMaxS = 86400 (24h, constants.h) — c'est ce clamp
+  // qui fixe le nombre de chiffres décimaux (5, « 86400 »), PAS la borne du
+  // type (qui irait à 4294967295, 10 chiffres) : à recompter sur le clamp, pas
+  // sur le type, au prochain ajout. `null` (4 o) quand aucun refus n'est en
+  // cours, plus court, donc jamais dimensionnant.
+  //   "phDoseBlockedForS":86400,  → 1+17+1+1+5+1 = 26 o
+  //   "orpDoseBlockedForS":86400, → 1+18+1+1+5+1 = 27 o   → 53 o.
+  // Charge pire cas : 2912 (mesure v2.47.1/feature-068) + 53 = 2965 o, soit
+  // 21 o AU-DESSUS de l'ancien gabarit 2944 : le bump 2944 → 3072 n'est donc
+  // PAS un confort, il est REQUIS. Marge documentaire : 3072 − 2965 = 107 o.
+  // Rappel : ce chemin (sendJsonResponse) n'a aucun plafond dur — contrairement
+  // à sWsFrameBuf côté WS (kWsFrameBufBytes, seul plafond DUR du projet) — donc
+  // aucune troncature n'est possible ici, cette marge n'est qu'un indicateur
+  // d'hygiène.
+  StaticJson<3072> doc;
 
   // feature-025 : la "valeur courante" (champs ph/orp) reflète la valeur FILTRÉE
   // (médiane + EMA), alignée sur le WS. Le brut reste exposé séparément (phRaw/orpRaw).
@@ -377,6 +400,14 @@ static void handleGetData(AsyncWebServerRequest* request) {
     const uint8_t orpCode = PumpController.getOrpDoseBlockedCode();
     if (phCode  != kDoseBlockedCodeNone) doc["phDoseBlockedCode"]  = phCode;  else doc["phDoseBlockedCode"]  = nullptr;
     if (orpCode != kDoseBlockedCodeNone) doc["orpDoseBlockedCode"] = orpCode; else doc["orpDoseBlockedCode"] = nullptr;
+    // feature-138 : DURÉE (s) depuis laquelle le code ci-dessus est inchangé,
+    // par voie — mêmes clés que le WS (parité obligatoire, grep des deux
+    // côtés). `null` IDENTIQUE au code : c'est le CODE qui porte la décision
+    // de publier `null`, jamais cette durée (0 est une valeur valide : un
+    // refus qui vient de commencer). Bornée à kDoseBlockedForMaxS (24h) par le
+    // module pur doseBlockElapsedS() (dose_block_duration_logic.h).
+    if (phCode  != kDoseBlockedCodeNone) doc["phDoseBlockedForS"]  = PumpController.getPhDoseBlockedForS();  else doc["phDoseBlockedForS"]  = nullptr;
+    if (orpCode != kDoseBlockedCodeNone) doc["orpDoseBlockedForS"] = PumpController.getOrpDoseBlockedForS(); else doc["orpDoseBlockedForS"] = nullptr;
     // « La butée BRUTE mord » — indéductible du pH corrigé publié : c'est tout
     // l'objet de ces deux booléens. Recalculés à chaque tick de la surveillance,
     // SANS latch (un latch reproduirait le défaut D1 de la cause collante).

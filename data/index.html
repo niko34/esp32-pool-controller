@@ -190,6 +190,15 @@
             <a class="btn btn--secondary regul-alert__cta" id="regul-alert-cta" href="#/ph">Diagnostiquer</a>
           </div>
 
+          <!-- feature-138 (B2) : bandeau d'état de blocage du dosage, hors du
+               panneau développeur — une ligne par voie, cause en clair + durée.
+               Non-duplication voulue avec #regul-alert ci-dessus : si celui-ci
+               est déjà visible pour une voie, ce bandeau ne la répète pas. -->
+          <div class="dose-block-banner" id="dose-block-banner" hidden>
+            <div class="dose-block-banner__stale-note">Information non rafraîchie (connexion perdue)</div>
+            <div class="dose-block-banner__row" id="dose-block-row-ph" hidden></div>
+            <div class="dose-block-banner__row" id="dose-block-row-orp" hidden></div>
+          </div>
 
           <!-- Cartes principales -->
           <div class="grid grid--status-cards">
@@ -2346,6 +2355,10 @@ action:
                     <div class="kv__row"><span class="kv__k">Dispersion pH</span><span class="kv__v" id="trace_disp_ph">—</span></div>
                     <div class="kv__row"><span class="kv__k">Dispersion ORP</span><span class="kv__v" id="trace_disp_orp">—</span></div>
                   </div>
+                  <!-- feature-138 (B1) : la dispersion ci-dessus est un instantané —
+                       cette ligne porte sa date et se rafraîchit tant que l'onglet
+                       Avancé est visible (cf. _armDispersionRefresh dans app.js). -->
+                  <div class="muted small" id="trace_disp_age" style="margin:-6px 0 12px">—</div>
 
                   <div class="muted small" id="trace_status" hidden>Aucune donnée dans le buffer.</div>
 

@@ -102,6 +102,11 @@ void copyOrpDoseBlockedReason(char* out, size_t outSize) const;
 //                                 (message à valeurs runtime → lire le TEXTE).
 uint8_t getPhDoseBlockedCode() const;
 uint8_t getOrpDoseBlockedCode() const;
+// feature-138 (v2.54.0) — durée (s) depuis laquelle le code ci-dessus est
+// inchangé, par voie. Bornée à kDoseBlockedForMaxS (24h), repliement millis()
+// traité (module pur dose_block_duration_logic.h). Voir section dédiée plus bas.
+uint32_t getPhDoseBlockedForS() const;
+uint32_t getOrpDoseBlockedForS() const;
 
 // Butées de sécurité sur le pH BRUT : true = la butée mord pour ce produit.
 // Exposées à /data ET au WebSocket (parité stricte) pour que l'UI puisse avertir
@@ -730,6 +735,16 @@ Les états **normaux** (`FilterWarmup`, `FilterGateClosed`, et leurs équivalent
 #### Ordre d'écriture code / texte
 
 Le **code est écrit avant le texte** dans `logRefusalOnce()` et dans `setGuardRefusalCause()`. Un lecteur asynchrone (`async_tcp`) qui verrait le nouveau texte avec l'ancien code afficherait une cause **périmée** ; dans cet ordre il voit au pire le nouveau code avec l'ancien texte, et le **code fait foi**. `resetRefusalLogState()` et `clearGuardRefusalCause()` remettent les deux à zéro ensemble (invariant code ⇔ texte).
+
+#### Durée du refus courant par voie (feature-138, v2.54.0)
+
+Incident fondateur (2026-10-02) : après des pluies diluviennes, les deux voies ont été déclarées instables et tout dosage automatique s'est arrêté, chlore compris. Le code de refus était déjà exposé ; sa **durée** ne l'était pas, et un relevé sans date a produit un diagnostic faux côté UI (« le calcul de dispersion est bloqué » alors qu'il avait déjà été recalculé trois fois) — voir [page-dashboard.md](../features/page-dashboard.md#bandeau--dosage-bloqué--feature-138-v2540).
+
+- **`_refusalCodeSinceMs[2]`** — `millis()` du dernier **changement** de `_lastRefusalCode[]`, par voie. `0` n'y est **pas** une sentinelle « pas d'épisode » (contrairement à `_sensorFaultSinceMs` ci-dessus, qui collisionne avec la milliseconde 0 après boot et après repliement) : la validité est portée uniquement par `_lastRefusalCode[i] != kDoseBlockedCodeNone`.
+- **`setRefusalCode(int pumpIndex, uint8_t code)`** — **seul point d'écriture** de `_lastRefusalCode[]`. Les quatre anciennes affectations directes (`logRefusalOnce()`, `resetRefusalLogState()`, `setGuardRefusalCause()`, `clearGuardRefusalCause()`) sont devenues des appels à ce setter ; un grep ne doit plus montrer qu'**une seule** affectation directe du tableau.
+- ⚠️ **Invariant d'ordre — date AVANT code**, et c'est l'**ordre inverse** de la règle code-avant-texte ci-dessus : un lecteur async qui tombe entre les deux écritures du setter voit alors l'**ancien** code avec la **nouvelle** date — durée **sous-estimée**, bénigne — jamais le **nouveau** code avec l'**ancienne** date, qui annoncerait « bloqué depuis 9 h » sur un blocage d'une seconde. Chaque ordre protège contre le pire cas de lecture déchirée propre à son propre champ (texte périmé d'un côté, durée mensongère de l'autre).
+- **`getPhDoseBlockedForS()` / `getOrpDoseBlockedForS()`** — durée en secondes depuis le dernier changement, bornée à `kDoseBlockedForMaxS` (24 h, `constants.h`) par le module pur [`doseBlockElapsedS()`](../../src/dose_block_duration_logic.h) (ADR-0017, header-only, testable nativement) : arithmétique **non signée**, exacte à travers le repliement de `millis()` (24,8 j) — aucune comparaison `now < since`, aucune branche de rattrapage. `0` est une durée **valide** (refus qui vient de commencer) ; c'est `*DoseBlockedCode != kDoseBlockedCodeNone`, jamais cette durée, qui décide de publier `null` côté JSON. Publiés à l'identique sur `/data` et le WebSocket (`phDoseBlockedForS` / `orpDoseBlockedForS`, parité obligatoire) — voir [ws-manager.md](ws-manager.md#champs-sensor_data-ajoutés-en-v2540--durée-du-refus-de-dosage-feature-138-et-élagage-de-ph_integralph_integral_term).
+- Aucun mutex nouveau : écriture par `loopTask` seul, lecture alignée par `async_tcp` ; pire cas une durée en retard d'un tour de loop, jamais une décision de dosage (même course bénigne assumée que `_sensorFaultSinceMs`).
 
 > ⚠️ **Invariant** : toute évolution future de la décision de dosage **passe par `dosing_logic`** et doit conserver l'équivalence stricte (table d'équivalence validée par `pool-chemistry`). La logique pure est verrouillée par les tests natifs (`test/test_native_dosing/`, dont un **verrou de non-régression** du bug pause-mélange v2.2.5 : une injection auto dure **≥ `minInjectionTimeMs`** avant que la pause ne s'arme). Voir [BUILD.md](../BUILD.md) pour `pio test -e native`.
 
