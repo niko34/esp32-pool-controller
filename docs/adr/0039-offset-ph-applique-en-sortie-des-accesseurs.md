@@ -76,6 +76,7 @@ L'équivalence mathématique qui rend ce choix possible — la médiane et l'EMA
 
 ## Références
 
+- **Correctif lié (2026-10-05, v2.55.1)** : la priorité des causes de refus pH (butée brute vs garde corrigée) a été rendue **discriminante** côté acide, précisément parce que c'est la valeur **corrigée** qui fait foi à l'écran — conséquence directe du principe posé ici, pas une nouvelle décision. Voir [`docs/subsystems/pump-controller.md`](../subsystems/pump-controller.md#priorité-des-causes-pour-lacide-discriminante-depuis-v2551) et [`bug-135`](../../specs/features/todo/bug-135-butee-brute-ph-se-declenche-sur-une-lecture-isolee.md).
 - Code : [`src/ph_offset.h`](../../src/ph_offset.h) (logique pure), [`src/sensors.h`](../../src/sensors.h) / [`src/sensors.cpp`](../../src/sensors.cpp) (accesseurs + copie locale `_phOffset`), [`src/pump_controller.cpp`](../../src/pump_controller.cpp) (`isPhRawFloorBlocking`, `isOrpInhibitedByPhRaw`), [`src/web_routes_config.cpp`](../../src/web_routes_config.cpp) (validation + refus 400), [`src/constants.h`](../../src/constants.h) (`kPhOffset*`, `kPhRaw*`)
 - Tests : `test/test_native_ph_offset/` (dont l'invariance par translation du filtre réel)
 - Spec : `specs/features/doing/feature-067-offset-mesure-ph.md`

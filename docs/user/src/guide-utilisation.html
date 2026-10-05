@@ -395,7 +395,7 @@ l'autre</strong>&nbsp;: ils peuvent fonctionner en même temps.</p>
   vérifier le taux de chlore avant la baignade — l'appareil mesure le
   potentiel de désinfection, pas le taux de chlore en tant que tel.</li>
 
-  <li><strong>Chloration de secours</strong> (nouveau, version&nbsp;2.55)&nbsp;:
+  <li><strong>Chloration de secours</strong> (version&nbsp;2.55)&nbsp;:
   pour une eau trouble ou des sondes devenues douteuses (après de fortes
   pluies, par exemple), ce mode injecte un volume de chlore fixe — 1&nbsp;500
   mL par jour au maximum, plafonné à 2&nbsp;000&nbsp;mL/jour même combiné au
@@ -403,6 +403,16 @@ l'autre</strong>&nbsp;: ils peuvent fonctionner en même temps.</p>
   au maximum. Le détail de ce que ce mode fait et ne fait pas est au
   chapitre&nbsp;4, «&nbsp;…un bandeau annonce que le dosage est bloqué&nbsp;».</li>
 </ul>
+
+<p><strong>Depuis la version&nbsp;2.55.1</strong>, ce sous-bloc n'apparaît
+sur la carte <strong>que lorsque la chloration de secours est
+active</strong>&nbsp;: au repos, le widget ne montre que le Mode Boost, plus
+court qu'avant. Il n'y a d'ailleurs plus de bouton «&nbsp;Activer&nbsp;» à cet
+endroit&nbsp;: l'activation se fait désormais depuis le bandeau «&nbsp;Dosage
+bloqué&nbsp;» (chapitre&nbsp;4) au moment précis où elle est pertinente, ou
+via l'interrupteur Home Assistant / MQTT. Une fois activée, la carte
+réapparaît avec son état, son échéance et son bouton
+«&nbsp;Arrêter&nbsp;».</p>
 
 <p>Si les deux sont activés en même temps&nbsp;: la carte affiche l'effet
 <strong>réellement</strong> obtenu (par exemple «&nbsp;Filtration prolongée +
@@ -916,12 +926,17 @@ ne se reprend pas.</p>
 
 <p><strong>Depuis la version&nbsp;2.55</strong>, si le blocage concerne le
 <strong>chlore</strong>, le bandeau propose en plus un bouton
-«&nbsp;Activer la chloration de secours&nbsp;» — voir ci-dessous. Ce bouton
-ne fait rien immédiatement&nbsp;: il vous amène à la carte «&nbsp;Modes
-temporaires&nbsp;» du tableau de bord, où une confirmation reste
-nécessaire avant toute activation. Si la régulation du chlore est en mode
-Manuel, le bandeau l'indique à la place&nbsp;: la chloration de secours n'est
-pas disponible tant que vous dosez vous-même.</p>
+«&nbsp;Activer la chloration de secours&nbsp;» — voir ci-dessous. Une
+confirmation reste nécessaire avant toute activation. Si la régulation du
+chlore est en mode Manuel, le bandeau l'indique à la place&nbsp;: la
+chloration de secours n'est pas disponible tant que vous dosez vous-même.</p>
+
+<p><strong>Depuis la version&nbsp;2.55.1</strong>, c'est devenu le seul
+endroit d'où activer ce mode depuis le tableau de bord&nbsp;: le bouton
+«&nbsp;Activer&nbsp;» a disparu de la carte «&nbsp;Modes
+temporaires&nbsp;», qui ne reste consultable que pour arrêter un mode déjà
+actif. Le bouton du bandeau ouvre désormais directement la confirmation,
+au lieu de vous renvoyer vers la carte.</p>
 
 <h3>… la chloration de secours&nbsp;: injecter du chlore sans faire confiance
 aux sondes</h3>

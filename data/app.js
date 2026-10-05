@@ -4124,10 +4124,21 @@
     return null;
   }
 
+  // feature-140 (v2.55.1) : retour utilisateur sur la 2.55.1 — proposer
+  // l'activation en permanence dans le widget ne sert à rien (le bandeau
+  // d'alerte la propose déjà au bon moment) et alourdit inutilement le
+  // widget. Le sous-bloc est désormais masqué ENTIÈREMENT (séparateur
+  // compris) quand le mode est INACTIF, et visible quand il est ACTIF — pas
+  // de suppression pure : un dosage à l'aveugle en cours doit rester
+  // consultable, avec son échéance et son bouton Arrêter (L2 demande
+  // explicitement à l'utilisateur de désactiver le mode lui-même). Le bouton
+  // Activer du widget est SUPPRIMÉ du DOM (pas seulement masqué) : l'activation
+  // ne se fait plus que depuis le bandeau de blocage (_activateRescueChlorine).
   function updateRescueCard() {
     const badge = $("#detail-rescue-status");
     if (!badge) return;
-    const startBtn = $("#detail-rescue-start");
+    const block = $("#temp-mode-rescue");
+    const sep = $("#temp-mode-rescue-sep");
     const stopBtn = $("#detail-rescue-stop");
     const hintEl = $("#detail-rescue-hint");
     const untilRow = $("#detail-rescue-until-row");
@@ -4140,15 +4151,11 @@
     const active = until > 0;
     const dosing = active && !!data.rescue_dosing;
 
-    // feature-140 : lecture NVS (contrat « publication »), PAS le mode effectif
-    // — le secours ne modifie jamais orp_regulation_mode en NVS, donc la
-    // valeur publiée reste la configuration réelle de l'utilisateur.
-    const orpMode = cfg.orp_regulation_mode || "automatic";
-    const isManual = orpMode === "manual";
-
     // feature-140 : rescue_lift — raison de FIN du mode (0 = aucune fin
-    // récente). Rétrocompat : champ absent (firmware ancien) ⇒ 0, aucun
-    // toast, aucune erreur (même patron que rescue_until/rescue_dosing).
+    // récente). Indépendant de la visibilité du bloc : un événement de levée
+    // doit être annoncé même si le sous-bloc vient de se masquer.
+    // Rétrocompat : champ absent (firmware ancien) ⇒ 0, aucun toast, aucune
+    // erreur (même patron que rescue_until/rescue_dosing).
     const lift = Number.isFinite(data.rescue_lift) ? data.rescue_lift : 0;
     if (lift !== 0 && lift !== _rescueLastAnnouncedLift) {
       if (lift === 1) {
@@ -4171,48 +4178,24 @@
       _rescueLastAnnouncedLift = 0;
     }
 
-    if (isManual) {
-      // L8
-      const l8 = "Chloration de secours indisponible : la régulation du chlore est en mode Manuel. Repassez en Automatique ou Programmée pour l'utiliser.";
-      if (hintEl) { hintEl.textContent = l8; hintEl.style.display = ""; }
-      if (startBtn) {
-        startBtn.style.display = "";
-        startBtn.disabled = true;
-        startBtn.setAttribute('aria-disabled', 'true');
-        startBtn.title = l8;
-      }
-      if (stopBtn) stopBtn.style.display = "none";
-      badge.textContent = "Indisponible";
-      badge.className = "state-badge state-badge--off";
-      if (untilRow) untilRow.style.display = "none";
-      if (reasonEl) { reasonEl.hidden = true; reasonEl.textContent = ""; }
-      return;
-    }
-
-    if (startBtn) {
-      startBtn.disabled = false;
-      startBtn.removeAttribute('aria-disabled');
-      startBtn.removeAttribute('title');
-    }
-
     if (!active) {
-      badge.textContent = "Inactif";
-      badge.className = "state-badge state-badge--off";
-      if (untilRow) untilRow.style.display = "none";
-      if (reasonEl) { reasonEl.hidden = true; reasonEl.textContent = ""; }
-      if (hintEl) {
-        // L1
-        hintEl.textContent = "Pour eau trouble ou sonde douteuse : injecte un volume de chlore fixe, sans tenir compte des sondes. Maintient une désinfection minimale — ne rattrape pas une eau boueuse : seul le retrait mécanique de la boue le fait.";
-        hintEl.style.display = "";
-      }
-      if (startBtn) startBtn.style.display = "";
-      if (stopBtn) stopBtn.style.display = "none";
+      // Masquage ENTIER, séparateur compris : le widget ne contient alors que
+      // le Boost et retrouve sa hauteur d'avant.
+      if (block) block.style.display = "none";
+      if (sep) sep.style.display = "none";
       return;
     }
 
-    // Actif.
-    if (hintEl) hintEl.style.display = "none";
-    if (startBtn) startBtn.style.display = "none";
+    // Actif : sous-bloc visible.
+    if (block) block.style.display = "";
+    if (sep) sep.style.display = "";
+    if (hintEl) {
+      // L1 — libellé IMPOSÉ par le gate pool-chemistry, repris MOT À MOT : ne
+      // JAMAIS le reformuler. Affiché tant que le mode tourne : il continue
+      // de décrire ce qui est en cours (pas seulement ce qu'on propose).
+      hintEl.textContent = "Pour eau trouble ou sonde douteuse : injecte un volume de chlore fixe, sans tenir compte des sondes. Maintient une désinfection minimale — ne rattrape pas une eau boueuse : seul le retrait mécanique de la boue le fait.";
+      hintEl.style.display = "";
+    }
     if (stopBtn) stopBtn.style.display = "";
     if (untilRow) {
       untilRow.style.display = "";
@@ -4238,6 +4221,43 @@
         if (reason) { reasonEl.textContent = reason; reasonEl.hidden = false; }
         else { reasonEl.hidden = true; reasonEl.textContent = ""; }
       }
+    }
+  }
+
+  // feature-140 (v2.55.1) : activation de la chloration de secours — appelée
+  // DEPUIS LE BANDEAU UNIQUEMENT (le bouton Activer du widget a été retiré du
+  // DOM, cf. updateRescueCard ci-dessus). La confirmation L2 reste un passage
+  // obligé, quel que soit l'appelant.
+  async function _activateRescueChlorine() {
+    // L2 — confirmation IMPOSÉE par le gate pool-chemistry (feature-140),
+    // reprise MOT À MOT : ne pas reformuler sans nouveau passage du gate.
+    const ok = await confirmDialog({
+      title: "Activer la chloration de secours ?",
+      message: "Le dosage se fera à l'aveugle, sans contrôle de l'ORP, pendant 48 h au maximum. Volume plafonné à 1500 mL par jour. Le pH n'est jamais dosé dans ce mode. Il maintient une désinfection minimale — il ne rattrape pas une eau boueuse : seul le retrait mécanique de la boue le fait. Désactivez-le dès que les sondes sont de nouveau fiables.",
+      confirmLabel: 'Activer',
+      cancelLabel: 'Annuler',
+    });
+    if (!ok) return;
+    try {
+      const response = await authFetch("/rescue/start", { method: "POST" });
+      if (response.ok) {
+        const r = await response.json().catch(() => ({}));
+        if (latestSensorData) {
+          latestSensorData.rescue_until = (r.rescue_until != null) ? r.rescue_until : latestSensorData.rescue_until;
+        }
+        updateRescueCard();
+        updateTempModesEffect();
+        showToast("Chloration de secours activée.", "info");
+      } else if (response.status === 409) {
+        const r = await response.json().catch(() => ({}));
+        // L8 / refus horloge non synchronisée : message renvoyé tel quel par le firmware.
+        showToast(r.message || "Activation impossible.", "error");
+      } else {
+        showToast("Erreur lors de l'activation de la chloration de secours", "error");
+      }
+    } catch (e) {
+      console.error('Erreur activation chloration de secours:', e);
+      showToast("Erreur de connexion", "error");
     }
   }
 
@@ -6158,44 +6178,11 @@
       });
     }
 
-    // Boutons Chloration de secours (feature-140), décalqués du Boost.
-    const rescueStartBtn = $("#detail-rescue-start");
+    // Bouton Arrêter de la Chloration de secours (feature-140), décalqué du
+    // Boost. Le bouton Activer n'existe plus dans le widget (v2.55.1) :
+    // l'activation se fait désormais uniquement depuis le bandeau de blocage
+    // (_activateRescueChlorine, cf. _renderDoseBlockRow).
     const rescueStopBtn = $("#detail-rescue-stop");
-
-    if (rescueStartBtn) {
-      rescueStartBtn.addEventListener('click', async () => {
-        // L2 — confirmation IMPOSÉE par le gate pool-chemistry (feature-140),
-        // reprise MOT À MOT : ne pas reformuler sans nouveau passage du gate.
-        const ok = await confirmDialog({
-          title: "Activer la chloration de secours ?",
-          message: "Le dosage se fera à l'aveugle, sans contrôle de l'ORP, pendant 48 h au maximum. Volume plafonné à 1500 mL par jour. Le pH n'est jamais dosé dans ce mode. Désactivez-le dès que les sondes sont de nouveau fiables.",
-          confirmLabel: 'Activer',
-          cancelLabel: 'Annuler',
-        });
-        if (!ok) return;
-        try {
-          const response = await authFetch("/rescue/start", { method: "POST" });
-          if (response.ok) {
-            const r = await response.json().catch(() => ({}));
-            if (latestSensorData) {
-              latestSensorData.rescue_until = (r.rescue_until != null) ? r.rescue_until : latestSensorData.rescue_until;
-            }
-            updateRescueCard();
-            updateTempModesEffect();
-            showToast("Chloration de secours activée.", "info");
-          } else if (response.status === 409) {
-            const r = await response.json().catch(() => ({}));
-            // L8 / refus horloge non synchronisée : message renvoyé tel quel par le firmware.
-            showToast(r.message || "Activation impossible.", "error");
-          } else {
-            showToast("Erreur lors de l'activation de la chloration de secours", "error");
-          }
-        } catch (e) {
-          console.error('Erreur activation chloration de secours:', e);
-          showToast("Erreur de connexion", "error");
-        }
-      });
-    }
 
     if (rescueStopBtn) {
       rescueStopBtn.addEventListener('click', async () => {
@@ -6652,7 +6639,17 @@
     if (code === DOSE_BLOCK_CODE_GUARD) {
       // Garde de sécurité pH/ORP : message porteur de valeurs runtime (seuils,
       // mesure), rédigé en clair côté firmware et non énumérable → on cite.
-      return { code, label: text || 'Sécurité pH/ORP active', tone: 'fault' };
+      //
+      // ⚠️ Le TON dépend de la VOIE, et l'ignorer crie à la panne sur un cas
+      // bénin. Côté chlore, cette garde n'est pas un défaut : c'est l'inhibition
+      // sur pH indisponible ou trop haut — transitoire au réamorçage du filtre,
+      // normale en régulation. La table porte déjà `toneOrp` pour ce code ; il
+      // n'était lu que par le rendu des pastilles, pas par le bandeau, qui
+      // affichait donc un bandeau ROUGE pendant la stabilisation suivant un
+      // simple redémarrage (constaté en production le 2026-10-05, v2.55.0).
+      const g = DOSE_BLOCK_CODES[code];
+      const guardTone = (prefix === 'orp' && g && g.toneOrp) ? g.toneOrp : 'fault';
+      return { code, label: text || 'Sécurité pH/ORP active', tone: guardTone };
     }
     const e = DOSE_BLOCK_CODES[code];
     if (e) return { code, label: e.label, tone: e.tone };
@@ -6757,8 +6754,10 @@
     // DOSE_BLOCK_SHORTCUT_CODES que le raccourci ci-dessous, sans extension.
     // Placé AVANT le bouton secondaire existant (btn--primary ici, c'est
     // l'action recommandée — contrairement au raccourci d'injection manuelle).
-    // ⚠️ Le clic N'ACTIVE PAS : il défile et met le focus sur le sous-bloc
-    // secours — la confirmation L2 (confirmDialog) reste un passage obligé.
+    // ⚠️ v2.55.1 : le bouton Activer n'existe plus dans le widget « Modes
+    // temporaires » (il disparaît avec le sous-bloc secours quand le mode est
+    // inactif) — le clic ici déclenche donc DIRECTEMENT la confirmation L2 via
+    // _activateRescueChlorine(), qui reste un passage obligé.
     if (shortcutPrefix === 'orp') {
       const cfg = window._config || {};
       const isManual = (cfg.orp_regulation_mode || 'automatic') === 'manual';
@@ -6777,14 +6776,7 @@
         rescueBtn.type = 'button';
         rescueBtn.className = 'btn btn--primary dose-block-banner__cta';
         rescueBtn.textContent = 'Activer la chloration de secours';
-        rescueBtn.addEventListener('click', () => {
-          const card = $("#dashboard-temp-modes-card");
-          if (card && typeof card.scrollIntoView === 'function') {
-            card.scrollIntoView({ behavior: 'smooth', block: 'center' });
-          }
-          const startBtn = $("#detail-rescue-start");
-          if (startBtn) startBtn.focus();
-        });
+        rescueBtn.addEventListener('click', () => { _activateRescueChlorine(); });
         container.appendChild(rescueBtn);
       }
     }
@@ -6848,6 +6840,50 @@
       && (row.tone === 'normal' || row.tone === 'unknown')
       && row.code !== DOSE_BLOCK_FILTRATION_STOPPED_CODE
       && DOSE_BLOCK_SHORTCUT_CODES.includes(row.code);
+
+    // Fusion CAUSE RACINE pH → CONSÉQUENCE ORP (production 2026-10-05, v2.55.0,
+    // redémarrage OTA) : « Mesures non représentatives (stabilisation) » (pH)
+    // et « Sécurité pH/ORP active » / pH trop haut (ORP, code 250) sont la
+    // MÊME cause, pas deux causes — le code 250 n'est qu'une conséquence du pH
+    // indisponible. Ce cas se produit à CHAQUE redémarrage et reprise de
+    // filtration : c'est le scénario le plus fréquent du bandeau.
+    //
+    // CONDITION DE FUSION, non négociable, codée EXPLICITEMENT (pas par
+    // approximation sur les textes) : orp.code === DOSE_BLOCK_CODE_GUARD (250)
+    // ET ph.code ∈ DOSE_BLOCK_SHORTCUT_CODES ({3,4,15,18,19,22}). Toute AUTRE
+    // valeur côté ORP (quota journalier, inhibition sur pH haut en régulation
+    // stable, pompe non caractérisée, filtre ORP instable…) est une cause
+    // INDÉPENDANTE ⇒ deux lignes, SANS EXCEPTION : fusionner là masquerait un
+    // second problème réel, ce qui serait pire que la redondance.
+    //
+    // ⚠️ Libellé IMPOSÉ MOT À MOT par le gate pool-chemistry (feature-140,
+    // 2026-10-06), opposable au même titre que L1-L9 : ne JAMAIS le
+    // reformuler, abréger ou tronquer, et ne JAMAIS élargir la condition de
+    // fusion ci-dessus sans un nouveau passage du gate.
+    if (ph && orp && orp.code === DOSE_BLOCK_CODE_GUARD && DOSE_BLOCK_SHORTCUT_CODES.includes(ph.code)) {
+      const durations = [ph.durationS, orp.durationS].filter((v) => v != null);
+      // « bloqué depuis » = la PLUS ANCIENNE des deux durées : la ligne décrit
+      // la cause RACINE (pH), afficher l'âge de la conséquence (ORP, souvent
+      // bien plus courte — 32 s contre 2 min observées en production) sous-
+      // estimerait la durée réelle pendant laquelle le dosage chlore est
+      // suspendu.
+      const durationS = durations.length ? Math.max(...durations) : null;
+      _renderDoseBlockRow(rowPh, {
+        // %s = ph.label, repris TEL QUEL depuis DOSE_BLOCK_CODES (non reformulé).
+        label: `${ph.label} — dosage pH et dosage chlore suspendus tous les deux. Reprise automatique dès que les mesures sont de nouveau représentatives.`,
+        tone: 'normal', // jamais fault — cohérent avec toneOrp (code 250, voie ORP)
+        durationText: _doseBlockDurationText(durationS),
+        // Le chaînage feature-140 reste attaché à la ligne fusionnée : la
+        // ligne ORP absorbée ne doit PAS faire disparaître le bouton
+        // « Activer la chloration de secours » ni le libellé L7. La liste
+        // blanche DOSE_BLOCK_SHORTCUT_CODES est de toute façon satisfaite par
+        // construction (condition de fusion ci-dessus porte déjà sur ph.code).
+        shortcutPrefix: canShortcut(ph) ? 'orp' : null,
+      });
+      rowOrp.hidden = true;
+      box.hidden = false;
+      return;
+    }
 
     // Fusion UNIQUEMENT si même code ET ton normal — JAMAIS pour fault/unknown :
     // une panne par voie doit rester lisible individuellement.

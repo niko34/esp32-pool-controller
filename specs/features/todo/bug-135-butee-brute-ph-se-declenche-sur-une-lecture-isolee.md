@@ -131,6 +131,39 @@ prouvée saine (`EZO pH slope : acide=101,0 % base=100,0 % zéro=−1,03 mV`, re
 du 19/09). Le message envoie donc l'utilisateur sur une fausse piste, au moment
 précis où il cherche à comprendre.
 
+## Note du 2026-10-05 — correctif d'étiquetage appliqué hors cycle (pas une clôture)
+
+Un défaut **d'étiquetage** distinct a été corrigé dans `src/pump_controller.cpp`
+(même garde, même bloc), validé GO par un gate `pool-chemistry` dédié :
+en production avec `ph_offset = 0,50`, le bandeau affichait « pH brut sous la
+butée de sécurité (5.94 < 6.20) » pendant que la carte pH affichait **6.4**
+(corrigé) — irréconciliable pour l'utilisateur, alors que la décision de
+blocage elle-même était correcte.
+
+Cause : à `offset == kPhOffsetMax`, `kPhFloorRawHard = kPhFloorCorrected −
+kPhOffsetMax` rend les deux inégalités (brut < butée, corrigé < plancher)
+**identiques** — les deux gardes mordent alors ensemble par construction. La
+butée brute prenait la main inconditionnellement sur la cause de refus
+(`setGuardRefusalCause`) même dans ce cas non discriminant, affichant un
+message qui ne cite que le brut alors que c'est le corrigé qui fait foi à
+l'écran.
+
+Correctif : la cause de refus de la butée brute (et son log critique +
+alerte MQTT « offset probablement erroné ») ne sont désormais émis **que si
+discriminants** (la butée mord ET la garde corrigée ne mord pas). Quand les
+deux mordent, c'est la cause **corrigée** qui prime, posée inconditionnellement.
+Aucun seuil, aucune hystérésis, aucune condition de blocage modifiée —
+`blocked = rawHard || low` est strictement inchangé. `pio run` et
+`pio test -e native` verts (56 suites / 2023 cas), zéro régression.
+
+**Ce qui reste dans le périmètre de bug-135** : ce correctif ne touche QUE
+l'étiquetage/la priorité des causes de refus. Le défaut de fond — une
+comparaison à un seuil dur sur une **lecture brute isolée**, sans statistique
+robuste — est intact et reste entièrement à traiter ici (A1-A5, D1-D4). Ne pas
+considérer ce lot comme un début de résolution de la question de la fenêtre
+glissante : les deux chantiers sont orthogonaux, l'un corrige un message,
+l'autre une méthode d'échantillonnage.
+
 ## Contraintes techniques
 
 - **ADR-0039** : la butée s'évalue sur le **brut sans offset**. Non négociable.

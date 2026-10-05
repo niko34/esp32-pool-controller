@@ -2,6 +2,76 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [2.55.1] - 2026-10-05
+
+> **Ce qui change pour vous** : quand un dosage d'acide est refusé, le message
+> affiché dans le bandeau « Dosage bloqué » ne peut plus contredire la carte
+> pH. Constaté en production : avec un offset réglé au maximum (0,50), le
+> bandeau citait « pH brut sous la butée de sécurité (5.94 < 6.20) » pendant
+> que la carte affichait **6,4** — deux chiffres pour une même grandeur. La
+> décision de bloquer l'injection était correcte (6,44 corrigé sous le
+> plancher 6,70) ; seule l'étiquette était illisible. Par ailleurs, après
+> usage réel, le widget « Modes temporaires » est simplifié : le sous-bloc
+> « Chloration de secours » ne s'affiche plus que quand le mode est actif.
+
+### Fonctionnalités
+
+- **Widget « Modes temporaires »** : le sous-bloc « Chloration de secours »
+  (feature-140) était affiché en permanence, séparateur compris, avec un
+  bouton « Activer » — ce qui allongeait le widget pour une action qui ne
+  sert que dans une situation précise, et que le bandeau « Dosage bloqué »
+  propose déjà au bon moment (libellé L7). Demande formulée par
+  l'utilisateur après usage réel. Le sous-bloc est désormais **masqué
+  entièrement quand le mode est inactif** (le widget ne contient alors que
+  le Boost) et **s'affiche quand il est actif**, avec badge d'état,
+  échéance, cause de non-injection et bouton Arrêter — un dosage aveugle en
+  cours doit rester consultable et interruptible. Le bouton **Activer est
+  retiré du DOM** : l'activation ne se fait plus que depuis le bandeau
+  d'alerte (confirmation L2 déclenchée directement) ou via l'interrupteur
+  MQTT / Home Assistant. ⚠️ Le maintien du bloc en état **actif** est une
+  **condition de sécurité chimique**, pas une préférence d'ergonomie : sans
+  statut ni interrupteur visibles, jusqu'à 48 h de dosage aveugle seraient
+  invisibles depuis le tableau de bord. Libellé **L2** révisé (absorbe
+  l'avertissement que portait **L1**, non reformulé, non tronqué) ; **L1**
+  et **L7** inchangés. Voir
+  [`docs/features/page-dashboard.md`](docs/features/page-dashboard.md#sous-bloc-chloration-de-secours-feature-140-v2550--masquage-conditionnel-et-retrait-du-bouton-activer-en-v2551).
+
+### Firmware
+
+- **Régulation pH** : correction de la priorité des causes de refus d'acide.
+  La butée de dernier recours sur le pH brut ne prend désormais la main sur
+  le message affiché (et sur le log critique / l'alerte MQTT « offset
+  probablement erroné ») que lorsqu'elle est **discriminante** — c'est-à-dire
+  quand elle mord seule, sans que la garde sur le pH corrigé morde aussi.
+  Quand les deux gardes mordent en même temps (cas systématique à
+  `offset == 0,50`, car `kPhFloorRawHard = kPhFloorCorrected − kPhOffsetMax`
+  rend alors les deux inégalités identiques), c'est la cause **corrigée** —
+  la valeur qui fait foi à l'écran — qui est désormais toujours affichée.
+  Aucun seuil, aucune hystérésis, aucune condition de blocage n'est modifié ;
+  seul l'étiquetage change. Validé GO par le gate `pool-chemistry` dédié du
+  2026-10-05. Voir `docs/subsystems/pump-controller.md#priorité-des-causes-pour-lacide-discriminante-depuis-v2551`
+  et le suivi dans [`bug-135`](specs/features/todo/bug-135-butee-brute-ph-se-declenche-sur-une-lecture-isolee.md)
+  (le défaut de fond — comparaison à un seuil dur sur une lecture brute
+  isolée — reste ouvert, ce correctif ne le traite pas).
+
+### Documentation
+
+- `docs/subsystems/pump-controller.md` : règle de priorité des causes de
+  refus pH (chemin acide), textes imposés, asymétrie avec le chemin base
+  (non modifié).
+- `docs/adr/0039-offset-ph-applique-en-sortie-des-accesseurs.md` : note de
+  renvoi vers ce correctif.
+- `docs/features/page-dashboard.md` : masquage conditionnel du sous-bloc
+  Chloration de secours, retrait du bouton Activer, les deux chemins
+  d'activation restants (bandeau, MQTT/HA).
+- `docs/user/src/guide-utilisation.html` : widget plus court à l'écran,
+  activation depuis le bandeau d'alerte.
+- `docs/user/src/guide-regulation.html` : le mode **Programmée** de la
+  régulation chlore comme accès **permanent** à l'équivalent de la
+  chloration de secours, hors blocage constaté par l'appareil.
+
+---
+
 ## [2.55.0] - 2026-10-05
 
 > **Ce qui change pour vous** : le tableau de bord propose désormais une
@@ -39,6 +109,15 @@
 - **Bandeau « Dosage bloqué »** (feature-138) : quand le blocage concerne
   le chlore, un bouton propose désormais d'activer la chloration de
   secours — raccourci de navigation, la confirmation reste nécessaire.
+- **Bandeau « Dosage bloqué » — correctif (constaté le 2026-10-05, juste
+  après un redémarrage OTA)** : le bandeau n'alarme plus sur une cause
+  bénigne et ne dédouble plus une cause unique. Avant correctif, un
+  simple réamorçage du filtre pH affichait **deux bandeaux redondants** —
+  l'un gris (pH, stabilisation), l'autre **rouge** (ORP, inhibition sur pH
+  indisponible) — alors que c'était la même cause présentée deux fois,
+  et que l'inhibition du chlore sur pH indisponible n'est jamais une
+  panne. Les deux lignes sont désormais fusionnées en une seule, ton
+  neutre, et affichent la durée de la cause racine (pH).
 
 ### Firmware
 

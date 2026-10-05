@@ -61,6 +61,15 @@ Motivation — incident du **2026-10-02** : après des pluies diluviennes, de la
 
 **Fusion en une seule ligne** « *cause* (pH et chlore) » **uniquement** si les deux voies partagent le **même code** ET le même ton `normal` ; **jamais** pour `fault` ou `unknown`, où une panne par voie doit rester lisible individuellement (deux pannes différentes qui tombent sur le même code resteraient deux pannes à traiter séparément).
 
+**Correctif production (2026-10-05, v2.55.0+, constaté juste après le redémarrage OTA)** : deux défauts corrigés sur la voie ORP.
+
+1. **Ton par voie manquant sur le code de garde 250.** `DOSE_BLOCK_CODES[250]` porte `tone: 'fault'` (pastille de dosage) et `toneOrp: 'normal'` (côté chlore, cette garde n'est que l'inhibition sur pH indisponible/haut — transitoire et bénigne, pas une panne). Avant correctif, `_doseBlockInfo()` ignorait `toneOrp` et codait `'fault'` en dur pour ce bandeau : un simple réamorçage de filtre affichait une ligne **rouge** d'alarme. `_doseBlockInfo()` lit désormais `toneOrp` quand `prefix === 'orp'`.
+2. **Deuxième règle de fusion, bornée strictement** (s'ajoute à celle ci-dessus, ne la remplace pas) : quand `orp.code === 250` (garde de sécurité pH/ORP) **ET** `ph.code` fait partie de la liste blanche `{3, 4, 15, 18, 19, 22}` (mesure pH non représentative), les deux lignes décrivent en réalité **une seule cause** — le pH indisponible suspend le pH *et* inhibe le chlore par conséquence — et sont fusionnées. Texte imposé mot à mot : « *label pH* — dosage pH et dosage chlore suspendus tous les deux. Reprise automatique dès que les mesures sont de nouveau représentatives. », ton `normal`. Toute autre cause ORP sous le code 250 (quota journalier, filtre ORP instable…) **reste sur sa propre ligne** : fusionner là masquerait un second problème réel.
+   - **Durée affichée = la plus ancienne des deux** (celle de la cause racine pH, pas de la conséquence ORP) : afficher l'âge, plus court, de la conséquence sous-estimerait la durée réelle de suspension du chlore.
+   - Le bouton « Activer la chloration de secours » (voir [chaînage B4](#chaînage-depuis-le-bandeau--dosage-bloqué--b4-feature-140)) et le libellé **L7** restent attachés à la ligne fusionnée — la fusion ne les fait pas disparaître.
+
+⚠️ **Leçon pour la suite** : une surface neuve (ce bandeau, feature-138) a réutilisé la taxonomie `DOSE_BLOCK_CODES` existante, mais n'en a repris que la moitié — le ton générique `tone`, sans l'override par voie `toneOrp` déjà présent dans la table pour le code 250. Un test ne voit pas cet oubli (le code compile, les deux champs existent) ; un œil humain devant l'écran l'attrape en une seconde. Vérifier systématiquement, pour toute nouvelle consommation de `DOSE_BLOCK_CODES`, que les variantes par voie (`toneOrp`, `pillOrp`) sont lues partout où leur équivalent générique l'est.
+
 **Ton et accessibilité** : `role="alert"` réservé au ton `fault` (panne) ; `role="status" aria-live="polite"` sinon — ne pas sur-alerter sur du **bénin** (filtration arrêtée la nuit est le cas **normal**, pas une panne, et le bandeau ne doit jamais crier dessus).
 
 **Péremption WebSocket** : `#dose-block-banner` fait partie de la liste marquée `.is-stale` par `_onDisconnect()` (au même titre que `#ph-card-stats` / `#orp-card-stats`) — **plus** un texte explicite (`.dose-block-banner__stale-note`, « Information non rafraîchie (connexion perdue) ») : l'opacité seule n'explique rien à un lecteur d'écran.
@@ -351,12 +360,48 @@ Permet d'activer d'un geste le **Mode Boost** : surchloration temporaire du jour
 
 > **Effet chlore gaté au mode ORP `automatic`** : en mode de régulation ORP Manuel / Programmé, le Boost n'étend que la filtration (la cible et la limite chlore ne sont pas relevées). Comportement porté par le firmware ([pump-controller.md §Mode Boost](../subsystems/pump-controller.md#mode-boost-feature-053)). De même, si la filtration n'est pas gérée par PoolController, le Boost ne prolonge pas la filtration. Le toast adaptatif ci-dessus signale ces cas ; côté firmware, `startBoost()` logue un `warning` par levier inerte (couvre aussi l'activation via Home Assistant).
 
-### Sous-bloc Chloration de secours (feature-140, v2.55.0)
+### Sous-bloc Chloration de secours (feature-140, v2.55.0 — **masquage conditionnel et retrait du bouton Activer en v2.55.1**)
 
 Surcouche **non destructive** du mode Programmé existant (feature-011) : permet de continuer à injecter du chlore (volume fixe, aveugle à l'ORP) quand les sondes sont déclarées non fiables — eau trouble, boue au fond du bassin. Verdict sécurité chimique (gate `pool-chemistry`, deux passages — conditions #1 à #12) et libellés imposés mot à mot : voir la spec [feature-140](../../specs/features/done/feature-140-chloration-de-secours-et-widget-des-modes-temporaires.md) et [ADR-0087](../adr/0087-ce-qu-un-mode-temporaire-a-le-droit-de-faire.md). Détail firmware : [pump-controller.md §Chloration de secours](../subsystems/pump-controller.md#chloration-de-secours-feature-140).
 
-- **Inactif** : bouton **Activer** → confirmation explicite (`confirmDialog`, libellé **L2**, imposé mot à mot : *« Le dosage se fera à l'aveugle, sans contrôle de l'ORP, pendant 48 h au maximum. Volume plafonné à 1500 mL par jour. Le pH n'est jamais dosé dans ce mode. Désactivez-le dès que les sondes sont de nouveau fiables. »*) avant tout appel à `POST /rescue/start`. Le hint sous le bouton reprend **L1** mot à mot.
-- **Mode ORP Manuel** : le bouton est **désactivé** (pas un simple masquage — `aria-disabled` + `title`) et le hint affiche **L8** à la place : *« Chloration de secours indisponible : la régulation du chlore est en mode Manuel. Repassez en Automatique ou Programmée pour l'utiliser. »* Même refus côté firmware (409 `mode_manual`) si l'UI était contournée.
+> **Retour d'usage réel (v2.55.1)** : afficher le sous-bloc en permanence,
+> avec son bouton Activer, alourdissait le widget pour une action qui ne
+> sert que dans une situation précise — et que le bandeau « Dosage bloqué »
+> propose déjà au bon moment (libellé **L7**). Le sous-bloc `#temp-mode-rescue`
+> (séparateur `#temp-mode-rescue-sep` compris) est désormais **masqué
+> entièrement** quand le mode est **inactif** (`rescue_until <= 0`) — le
+> widget ne contient alors que le Boost, et retrouve sa hauteur d'avant
+> feature-140. Il **réapparaît** dès que le mode est **actif**, avec badge
+> d'état, échéance, cause de non-injection et bouton Arrêter : un dosage à
+> l'aveugle en cours doit rester consultable et interruptible, L2 demandant
+> explicitement à l'utilisateur de le désactiver lui-même. **Le bouton
+> Activer est retiré du DOM** (pas seulement masqué) : l'activation ne se
+> fait plus que depuis le bandeau de blocage (L7, confirmation L2
+> déclenchée directement par `_activateRescueChlorine()`) ou depuis
+> l'interrupteur MQTT / Home Assistant « Chloration de secours ».
+>
+> ⚠️ **Ce masquage est une condition du gate `pool-chemistry`, pas une
+> simple préférence d'ergonomie** : le bandeau d'alerte qui propose
+> l'activation disparaît précisément quand le dosage reprend — ce que fait
+> l'activation du secours elle-même. Un retrait total du bloc (y compris en
+> mode actif) aurait laissé tourner jusqu'à 48 h de dosage aveugle **sans
+> statut ni interrupteur visibles**, et aurait transformé le libellé L2
+> (« Désactivez-le dès que les sondes sont de nouveau fiables ») en promesse
+> intenable. Voir aussi [la condition documentaire sur le mode Programmée](#chloration-de-secours--le-mode-programmée-reste-laccès-permanent-v2551)
+> ci-dessous.
+>
+> **Libellé L2 révisé** (absorbe désormais l'avertissement que portait L1,
+> qui n'est plus visible avant activation puisque le bouton Activer a
+> disparu du widget) : *« Le dosage se fera à l'aveugle, sans contrôle de
+> l'ORP, pendant 48 h au maximum. Volume plafonné à 1500 mL par jour. Le pH
+> n'est jamais dosé dans ce mode. Il maintient une désinfection minimale —
+> il ne rattrape pas une eau boueuse : seul le retrait mécanique de la boue
+> le fait. Désactivez-le dès que les sondes sont de nouveau fiables. »* L1
+> et L7 sont **inchangés** ; L1 reste affiché dans le bloc une fois actif
+> (`#detail-rescue-hint`).
+
+- **Inactif** : sous-bloc **masqué**, séparateur compris. Rien à activer depuis le widget — voir l'encart ci-dessus pour les deux chemins d'activation restants (bandeau, MQTT/HA).
+- **Mode ORP Manuel** : le refus **L8** reste affiché par le bandeau de blocage à la place du bouton « Activer la chloration de secours » (voir [Chaînage](#chaînage-depuis-le-bandeau--dosage-bloqué--b4-feature-140) ci-dessous) : *« Chloration de secours indisponible : la régulation du chlore est en mode Manuel. Repassez en Automatique ou Programmée pour l'utiliser. »* Même refus côté firmware (409 `mode_manual`) si l'activation était contournée (MQTT/HA).
 - **Actif** (`rescue_until > 0`) : affiche son **échéance** (`#detail-rescue-until`, format `JJ/MM à HH:MM`, **jamais** fusionnée avec celle du Boost — deux natures différentes, minuit local vs 48 h glissantes) et un bouton **Arrêter** → `POST /rescue/stop`. Le badge distingue deux états :
   - **« Actif »** (badge `--ok`) : `rescue_dosing === true`, le secours injecte réellement en ce moment.
   - **« Actif · en attente »** (badge `--warn`, `aria-label` explicite — la couleur seule ne porte pas l'information pour un lecteur d'écran) : armé mais **rien n'est injecté actuellement**. Un callout `#rescue-reason-callout` explique pourquoi, par priorité **L3 (filtration à l'arrêt) > L4 (pH connu et > 7,6) > L5 (plafond journalier atteint)** — dérivé côté client de champs `/data` déjà existants (`water_present`, `phFiltered` + `ph_offset`, `orp_daily_ml`), **aucun champ WS dédié**.
@@ -386,7 +431,35 @@ Les causes « armé mais non dosant » (L3/L4/L5) **n'entrent pas** dans cette l
 
 ### Chaînage depuis le bandeau « Dosage bloqué » (B4, feature-140)
 
-Sur la **ligne ORP uniquement** du bandeau de blocage (voir [section dédiée](#bandeau--dosage-bloqué--feature-138-v2540)) — le secours ne concerne jamais le pH — un bouton `btn--primary` « Activer la chloration de secours » (libellé **L7**) est placé **avant** le bouton secondaire « Ouvrir l'injection manuelle » existant, même liste blanche de causes `[3,4,15,18,19,22]`, **sans extension**. ⚠️ **Le clic n'active rien** : il fait défiler la page jusqu'à `#dashboard-temp-modes-card` et pose le focus sur `#detail-rescue-start` — la confirmation **L2** reste un passage obligé. Si le mode ORP effectif est `manual`, le bouton est remplacé par le texte **L8** (pas de bouton proposé pour une action refusée).
+Sur la **ligne ORP uniquement** du bandeau de blocage (voir [section dédiée](#bandeau--dosage-bloqué--feature-138-v2540)) — le secours ne concerne jamais le pH — un bouton `btn--primary` « Activer la chloration de secours » (libellé **L7**) est placé **avant** le bouton secondaire « Ouvrir l'injection manuelle » existant, même liste blanche de causes `[3,4,15,18,19,22]`, **sans extension**. Si le mode ORP effectif est `manual`, le bouton est remplacé par le texte **L8** (pas de bouton proposé pour une action refusée).
+
+> **v2.55.1 — c'est désormais le SEUL chemin d'activation du widget** (avec
+> l'interrupteur MQTT/Home Assistant). Le bouton Activer a été retiré du
+> sous-bloc `#temp-mode-rescue` : le clic ici déclenche **directement** la
+> confirmation **L2** via `_activateRescueChlorine()`, au lieu de défiler
+> jusqu'à la carte et d'y poser le focus (comportement v2.55.0, retiré). La
+> confirmation **L2** reste un passage obligé dans tous les cas.
+
+#### Chloration de secours : le mode Programmée reste l'accès permanent (v2.55.1)
+
+Depuis que l'activation ne passe plus que par le bandeau de blocage, la
+**chloration de secours n'est accessible QUE si l'appareil a lui-même
+constaté un blocage** sur la voie ORP. **Hors blocage constaté**,
+l'équivalent durable de la chloration de secours est le **mode
+Programmée** de la régulation chlore (réglage permanent, page `/orp` —
+feature-011) : un volume quotidien fixe, aveugle à l'ORP, exactement le
+mécanisme que réutilise la chloration de secours en coulisses (voir
+[pump-controller.md §Chloration de secours](../subsystems/pump-controller.md#chloration-de-secours-feature-140)).
+
+⚠️ **Armer le secours de façon préventive n'a pas d'intérêt chimique** :
+si les sondes sont jugées fiables, la régulation **Automatique** fait
+mieux qu'un volume fixe aveugle — doser à l'aveugle quand la mesure est
+bonne n'est qu'une perte de précision, jamais un gain. Le cas réellement
+difficile — une sonde **dérivée mais stable** (donc jugée fiable par
+l'appareil, donc **invisible** du bandeau) — ne se diagnostique **pas** en
+armant le secours par précaution : il se diagnostique au **réactif DPD**
+(mesure indépendante de la sonde) et se traite, le cas échéant, en
+basculant la régulation chlore sur le mode **Programmée**.
 
 ## Actions
 
@@ -398,7 +471,7 @@ Sur la **ligne ORP uniquement** du bandeau de blocage (voir [section dédiée](#
 | `#detail-lighting-off` | `POST /lighting/off` |
 | Boost — Activer | `POST /boost/start` (toast rappel baignade) |
 | Boost — Arrêter | `POST /boost/stop` |
-| Chloration de secours — Activer | `POST /rescue/start` (confirmation L2 préalable) |
+| Chloration de secours — Activer (depuis le bandeau « Dosage bloqué » **ou** MQTT/HA — plus de bouton dans le widget depuis v2.55.1) | `POST /rescue/start` (confirmation L2 préalable) |
 | Chloration de secours — Arrêter | `POST /rescue/stop` |
 | Liens engrenage | Navigation SPA (fragment `#/ph`, etc.) |
 

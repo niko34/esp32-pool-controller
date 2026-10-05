@@ -293,12 +293,20 @@
                   </div>
                 </div>
 
-                <hr class="temp-mode__sep">
+                <hr class="temp-mode__sep" id="temp-mode-rescue-sep" style="display:none;">
 
                 <!-- Sous-bloc Chloration de secours (feature-140, nouveau).
                      Surcouche non destructive du mode Programmée existant,
-                     48h glissantes, 1500 mL/j (plafond dur 2000 mL/j). -->
-                <div id="temp-mode-rescue">
+                     48h glissantes, 1500 mL/j (plafond dur 2000 mL/j).
+                     v2.55.1 : masqué ENTIÈREMENT (séparateur compris) quand le
+                     mode est inactif — proposer l'activation en permanence ici
+                     ne sert à rien, le bandeau de blocage le propose déjà au
+                     bon moment (_activateRescueChlorine). Pas de bouton
+                     Activer : l'activation ne se fait plus QUE depuis le
+                     bandeau ; seul le bouton Arrêter reste, car un dosage à
+                     l'aveugle en cours doit rester consultable et interruptible
+                     (L2 demande explicitement à l'utilisateur de désactiver). -->
+                <div id="temp-mode-rescue" style="display:none;">
                   <div class="card__status-header">
                     <div class="card__status-icon card__status-icon--transparent">
                       <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -308,7 +316,7 @@
                     <div class="card__status-info">
                       <div class="card__status-label">Chloration de secours</div>
                       <div class="card__status-state">
-                        <span class="state-badge state-badge--off" id="detail-rescue-status">Inactif</span>
+                        <span class="state-badge state-badge--off" id="detail-rescue-status">Actif</span>
                       </div>
                     </div>
                   </div>
@@ -322,8 +330,7 @@
                        l'aria-label explicite (distinction warn/ok non daltonienne). -->
                   <div class="callout callout--warn" id="rescue-reason-callout" role="status" hidden></div>
                   <div class="detail-actions">
-                    <button class="btn btn--primary" id="detail-rescue-start">Activer</button>
-                    <button class="btn btn--danger" id="detail-rescue-stop" style="display:none;">Arrêter</button>
+                    <button class="btn btn--danger" id="detail-rescue-stop">Arrêter</button>
                   </div>
                 </div>
 

@@ -773,3 +773,89 @@ en gate 1).
 `src/web_routes_data.cpp`, `src/ws_manager.cpp`, `data/index.html`,
 `data/app.js`, `data/app.css`, `test/test_native_temp_mode/` (nouveau),
 `test/test_native_ws_data_parity/test_ws_data_parity.cpp`.
+
+### Correctifs post-production (2026-10-05, retour de production, juste après le déploiement 2.55.0)
+
+Deux défauts d'affichage constatés sur `#dose-block-banner` (feature-138) juste
+après un redémarrage OTA, sans rapport avec la logique de dosage elle-même —
+corrigés dans `data/app.js` :
+
+1. **Ton erroné sur la voie ORP pour le code de garde 250.** `_doseBlockInfo()`
+   codait `tone: 'fault'` en dur pour `DOSE_BLOCK_CODE_GUARD`, sans tenir
+   compte de la voie, alors que `DOSE_BLOCK_CODES[250]` porte déjà
+   `toneOrp: 'normal'` (lu jusque-là uniquement par le rendu des pastilles).
+   Résultat en production : un bandeau **rouge** d'alarme pour l'inhibition du
+   chlore sur pH indisponible — bénigne et transitoire à chaque réamorçage du
+   filtre. Corrigé : `_doseBlockInfo()` lit `toneOrp` quand `prefix === 'orp'`.
+2. **Redondance de deux lignes décrivant la même cause.** « Mesures non
+   représentatives (stabilisation) » (pH, codes {3,4,15,18,19,22}) et
+   « Sécurité pH/ORP active » (ORP, code 250) sont la cause racine et sa
+   conséquence, pas deux causes. Nouvelle règle de fusion, **strictement
+   bornée** (`orp.code === 250` ET `ph.code` dans la liste blanche
+   `{3,4,15,18,19,22}` uniquement — toute autre cause ORP sous 250 reste sur sa
+   propre ligne), texte imposé mot à mot, ton `normal`, durée affichée = la
+   plus ancienne des deux (cause racine, pas conséquence). Le bouton
+   « Activer la chloration de secours » (B4) et le libellé L7 restent
+   attachés à la ligne fusionnée.
+
+**Leçon retenue** : une surface neuve (le bandeau feature-138) a réutilisé la
+taxonomie `DOSE_BLOCK_CODES` existante mais n'en a repris que la moitié — le
+ton générique, sans l'override par voie déjà présent dans la table pour le
+code 250. Un test ne voit pas ce genre d'oubli ; un œil humain devant l'écran
+l'attrape en une seconde. Voir
+[`docs/features/page-dashboard.md`](../../docs/features/page-dashboard.md#bandeau--dosage-bloqué--feature-138-v2540)
+pour le détail et la check-list de vigilance pour toute future consommation
+de cette table.
+
+### Correctif post-production (2026-10-05, v2.55.1, retour d'usage réel)
+
+Demande de l'utilisateur après avoir vécu avec le widget quelques jours :
+afficher en permanence le sous-bloc « Chloration de secours » (bouton
+Activer compris) alourdissait inutilement le widget « Modes temporaires »
+pour une action qui ne sert que dans une situation précise — et que le
+bandeau « Dosage bloqué » (feature-138) propose déjà au bon moment (L7).
+
+- **`#temp-mode-rescue` (séparateur `#temp-mode-rescue-sep` compris) est
+  désormais masqué entièrement quand `rescue_until <= 0`** — le widget ne
+  contient alors que le Boost. Il réapparaît quand le mode est **actif**,
+  avec badge, échéance, cause de non-injection et bouton Arrêter.
+- **Le bouton Activer est retiré du DOM** (`data/app.js`,
+  `updateRescueCard()`) : l'activation ne se fait plus que depuis le
+  bandeau de blocage (`_activateRescueChlorine()`, appelé directement par
+  le bouton L7 — plus de simple défilement + focus) ou via l'interrupteur
+  MQTT/HA.
+- **Libellé L2 révisé** pour absorber l'avertissement que portait **L1**
+  (qui n'est plus visible avant activation, le bouton du widget ayant
+  disparu) : « Le dosage se fera à l'aveugle, sans contrôle de l'ORP,
+  pendant 48 h au maximum. Volume plafonné à 1500 mL par jour. Le pH n'est
+  jamais dosé dans ce mode. Il maintient une désinfection minimale — il ne
+  rattrape pas une eau boueuse : seul le retrait mécanique de la boue le
+  fait. Désactivez-le dès que les sondes sont de nouveau fiables. » L1 et
+  L7 **inchangés** ; L1 reste affiché dans le bloc actif.
+
+⚠️ **Condition posée par le gate `pool-chemistry` sur ce correctif, non
+négociable** : le maintien du bloc à l'état **actif** (statut, échéance,
+bouton Arrêter) n'est pas une question d'ergonomie — le bandeau qui propose
+l'activation disparaît dès que le dosage reprend, ce que fait précisément
+l'activation du secours. Un retrait total aurait laissé tourner jusqu'à
+48 h de dosage aveugle sans statut ni interrupteur visibles depuis le
+tableau de bord, et aurait rendu intenable la promesse de L2 (« désactivez-le
+vous-même »). Le gate a également exigé que
+[`docs/user/src/guide-regulation.html`](../../docs/user/src/guide-regulation.html)
+dise explicitement que, hors blocage constaté par l'appareil, l'accès
+permanent à l'équivalent de ce mode est le **mode Programmée** de la
+régulation chlore (page Chlore) — sans quoi l'activation devient
+introuvable entre deux épisodes de blocage — et que l'armement préventif du
+secours n'a **pas** d'intérêt chimique (la régulation Automatique fait
+mieux quand les sondes sont fiables) ; le cas réellement difficile — sonde
+dérivée mais stable, donc jugée fiable — se diagnostique au **réactif DPD**
+et se traite par le mode Programmée.
+
+**Fichiers modifiés** : `data/app.js`, `data/index.html` (et leur CSS
+inchangé). Aucun changement firmware. Voir
+[`docs/features/page-dashboard.md`](../../docs/features/page-dashboard.md#sous-bloc-chloration-de-secours-feature-140-v2550--masquage-conditionnel-et-retrait-du-bouton-activer-en-v2551)
+pour le détail à l'écran.
+
+⚠️ **Capture d'écran à refaire** : `screenshots/03_Tableau_de_bord.jpg`
+montre encore le widget avec le sous-bloc de secours visible en permanence
+— à reprendre pour montrer le widget au repos (Boost seul).

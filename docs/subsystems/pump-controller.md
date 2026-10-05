@@ -427,7 +427,9 @@ L'ordre surveillance → décision est garanti **dans le même tick** : aucune d
 
 ### 1. Refus de dosage pH (`isPhGuardBlocking`)
 
-Le seuil appliqué dépend du **produit déclaré** (`phCorrectionType`) : un acide ne peut violer qu'un seuil bas, une base qu'un seuil haut. La butée brute est évaluée **d'abord** — c'est le seul signal disponible quand l'offset est faux, sa cause doit primer dans le journal.
+Le seuil appliqué dépend du **produit déclaré** (`phCorrectionType`) : un acide ne peut violer qu'un seuil bas, une base qu'un seuil haut.
+
+⚠️ **Asymétrie assumée entre produits depuis la v2.55.1.** Côté **base** (`ph_plus`), la butée brute reste évaluée en premier et prime inconditionnellement dans le journal et dans la cause exposée (comportement historique, inchangé). Côté **acide** (`ph_minus`), la priorité est désormais **discriminante** — voir [ci-dessous](#priorité-des-causes-pour-lacide-discriminante-depuis-v2551). Les deux chemins ne sont pas symétriques : seul le chemin acide a été corrigé, parce que c'est lui qui a produit l'incident du 2026-10-05 (bug-135). Harmoniser le chemin base sur la même règle n'est pas fait et resterait à instruire via `pool-chemistry` si un incident analogue s'y produisait.
 
 | Produit | Butée [BRUT] | Seuil chimique [CORRIGÉ] |
 |---|---|---|
@@ -459,12 +461,31 @@ Les logs de relâche citent l'hystérésis : `[Dosage pH] pH remonté à 6.75 (p
 
 `critical` + alerte MQTT **`ph_guard`** à la transition ; `info` au retour, sans alerte. Un franchissement de butée brute et un franchissement de seuil corrigé sur le même tick valent **un seul** refus.
 
-| Garde | Message publié |
+Ce tableau décrit le texte **journalisé / publié en alerte MQTT** (`systemLogger.critical` + `mqttManager.publishAlert`). Côté acide, depuis la v2.55.1, il n'est **plus inconditionnel** — voir la note sous le tableau.
+
+| Garde | Message publié (log + MQTT) |
 |---|---|
 | Seuil bas [CORRIGÉ] | `pH 6.65 sous le plancher de sécurité 6.70 (offset=0.10) — injection d'acide refusée` |
-| Butée basse [BRUT] | `pH BRUT 6.18 sous la butée de sécurité 6.20 (offset=0.50) — injection d'acide refusée quelle que soit la valeur corrigée : offset positif probablement erroné, contrôler le pH au réactif` |
+| Butée basse [BRUT] | `pH BRUT 6.18 sous la butée de sécurité 6.20 (offset=0.50) — injection d'acide refusée quelle que soit la valeur corrigée : offset positif probablement erroné, contrôler le pH au réactif` — **émis seulement si la garde corrigée ne mord pas au même tick** (v2.55.1, voir ci-dessous) |
 | Plafond [CORRIGÉ] | `pH 7.65 au-dessus du plafond de sécurité 7.60 (offset=-0.10) — injection de pH+ refusée : au-delà, le chlore est peu actif et la régulation ORP est inhibée` |
-| Butée haute [BRUT] | `pH BRUT 8.14 au-dessus de la butée de sécurité 8.10 (offset=-0.20) — injection de pH+ refusée quelle que soit la valeur corrigée : offset négatif probablement erroné, contrôler le pH au réactif` |
+| Butée haute [BRUT] | `pH BRUT 8.14 au-dessus de la butée de sécurité 8.10 (offset=-0.20) — injection de pH+ refusée quelle que soit la valeur corrigée : offset négatif probablement erroné, contrôler le pH au réactif` — inconditionnel (chemin base, non modifié) |
+
+#### Priorité des causes pour l'acide — discriminante depuis v2.55.1
+
+**Incident du 2026-10-05** : sur un offset `ph_offset = 0,50` (le maximum autorisé), le bandeau « Dosage bloqué » affichait *« pH brut sous la butée de sécurité (5.94 < 6.20) »* pendant que la carte pH affichait **6,4 corrigé** — deux chiffres irréconciliables pour une même grandeur, alors que la décision de blocage elle-même était correcte (6,44 corrigé < 6,70). Cause : `kPhFloorRawHard = kPhFloorCorrected − kPhOffsetMax`, donc quand `offset == kPhOffsetMax`, `corrigé < 6,70 ⟺ brut < 6,20` — **les deux gardes mordent alors ensemble par construction**, et la butée brute prenait jusqu'ici la main **inconditionnellement** sur la cause de refus exposée (`setGuardRefusalCause`, lue par le bandeau/WS), alors qu'elle n'apportait plus d'information et évinçait la seule formulation vérifiable contre l'écran. [bug-135](../../specs/features/todo/bug-135-butee-brute-ph-se-declenche-sur-une-lecture-isolee.md) documente l'épisode complet, note du 2026-10-05.
+
+**Règle appliquée** (`src/pump_controller.cpp`, bloc `ACIDE`, validée GO par le gate `pool-chemistry` du 2026-10-05 — étiquetage seul, aucun seuil ni condition de blocage modifié) : la garde CORRIGÉE est évaluée en premier ([`pump_controller.cpp:889`](../../src/pump_controller.cpp:889)) ; la butée brute, évaluée ensuite, ne pose son log critique + alerte MQTT ni sa cause de refus que si elle est **discriminante** — elle mord **et** la garde corrigée ne mord **pas** au même tick ([`pump_controller.cpp:904`](../../src/pump_controller.cpp:904)). Quand les deux mordent, c'est **toujours** la cause corrigée qui est exposée, posée **inconditionnellement** ([`pump_controller.cpp:957`](../../src/pump_controller.cpp:957)) — c'est la valeur corrigée qui fait foi à l'écran (ADR-0039).
+
+Textes de **cause de refus** (`setGuardRefusalCause`, exposée au WS / au bandeau « Dosage bloqué » — distincts du texte log/MQTT ci-dessus), imposés mot à mot par le gate :
+
+| Cas | Texte de la cause de refus exposée |
+|---|---|
+| Garde corrigée mord (seule, ou les deux mordent) | `pH 6.65 sous le plancher de sécurité (6.70) — dosage acide suspendu.` |
+| Butée brute mord **seule** (discriminante) | `pH brut 5.94 sous la butée de dernier recours (6.20) alors que le pH corrigé (6.44) reste au-dessus du plancher (6.70) — dosage acide suspendu, vérifiez l'offset pH.` |
+
+⚠️ **Conséquence** : le texte « offset positif probablement erroné » (log + alerte MQTT de la butée brute) ne peut désormais survenir qu'avec `offset < kPhOffsetMax` — un offset `== kPhOffsetMax` (le cas le plus fréquent en pratique, celui de l'incident) ne le déclenche plus jamais puisque les deux gardes mordent alors systématiquement ensemble. Ce message n'est donc plus un bruit de fond : sa simple apparition signale une **divergence entre deux lectures** du pH brut (butée sur un échantillon instantané, garde corrigée sur la valeur filtrée) — c'est le mécanisme même que `bug-135` continue d'instruire (fenêtre glissante sur la butée brute, hors périmètre de ce correctif).
+
+Non touché par ce correctif : les seuils (6,20 / 6,70), l'hystérésis (0,05), `blocked = rawHard || low`, le chemin **base** (`ph_plus`, toujours prioritaire sur la butée brute, voir asymétrie ci-dessus).
 
 #### Escalade — 3 refus en 24 h, mode `automatic` uniquement
 

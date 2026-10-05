@@ -880,21 +880,56 @@ void PumpControllerClass::tickPhGuardSurveillance() {
     blocked = rawHardHigh || high;
   } else {
     // Produit ACIDE : seuil chimique bas sur le CORRIGÉ + butée sur le BRUT.
-    // La butée brute est évaluée d'abord : c'est le seul signal disponible quand
-    // l'offset est faux, et sa cause de refus doit primer dans le journal.
+    //
+    // La garde CORRIGÉE est calculée EN PREMIER — phGuardBlocksBelow() est pure
+    // (pas d'effet de bord, l'état `_phLowBlockActive` n'est lu que plus bas) —
+    // afin que la butée brute, juste après, puisse savoir si elle est
+    // DISCRIMINANTE avant de poser sa cause de refus. Voir le commentaire du
+    // bloc de la butée brute pour la justification complète.
+    const bool low = phGuardBlocksBelow(ph, kPhFloorCorrected, _phLowBlockActive);
+
+    // La butée brute est évaluée en second : c'est le signal de dernier recours
+    // quand l'offset est faux. Mais sa CAUSE DE REFUS NE PREND LA MAIN QUE SI
+    // ELLE EST DISCRIMINANTE — c'est-à-dire si elle mord ET que la garde
+    // corrigée, elle, ne mord pas (bug-135, gate pool-chemistry 2026-10-05).
+    // Raison : kPhFloorRawHard = kPhFloorCorrected − kPhOffsetMax, donc quand
+    // offset == kPhOffsetMax, « corrigé < plancher » et « brut < butée » sont
+    // EXACTEMENT la même inégalité : les deux gardes mordent alors ensemble par
+    // CONSTRUCTION, la butée brute n'apporte aucune information supplémentaire,
+    // et son message qui ne cite que le pH brut devient illisible comparé à
+    // l'écran (incident du 2026-10-05 : bandeau « brut 5.94 < 6.20 » pendant
+    // que la carte pH affichait 6.4 corrigé — la valeur qui fait foi). Ne pas
+    // restaurer l'ancienne priorité (butée brute toujours prioritaire) sans
+    // repasser par pool-chemistry.
     const bool rawHard = phGuardBlocksBelow(phRaw, kPhFloorRawHard, _phRawHardBlockActive);
     if (rawHard && !_phRawHardBlockActive) {
       _phRawHardBlockActive = true;
       newRefusal = true;
-      const String msg = "pH BRUT " + String(phRaw, 2) + " sous la butée de sécurité " +
-                         String(kPhFloorRawHard, 2) + " (offset=" + String(offset, 2) +
-                         ") — injection d'acide refusée quelle que soit la valeur "
-                         "corrigée : offset positif probablement erroné, contrôler "
-                         "le pH au réactif";
-      systemLogger.critical("[Dosage pH] " + msg);
-      mqttManager.publishAlert("ph_guard", msg);
-      setGuardRefusalCause(0, "pH brut sous la butée de sécurité (" + String(phRaw, 2) +
-                              " < " + String(kPhFloorRawHard, 2) + ")");
+      // Log critique + alerte MQTT : seulement si DISCRIMINANTE. Si la garde
+      // corrigée mord aussi (!low == false), le message « offset positif
+      // probablement erroné » est FAUX par construction — l'offset n'est pour
+      // rien dans ce refus-là, qui aurait eu lieu même avec un offset nul.
+      if (!low) {
+        const String msg = "pH BRUT " + String(phRaw, 2) + " sous la butée de sécurité " +
+                           String(kPhFloorRawHard, 2) + " (offset=" + String(offset, 2) +
+                           ") — injection d'acide refusée quelle que soit la valeur "
+                           "corrigée : offset positif probablement erroné, contrôler "
+                           "le pH au réactif";
+        systemLogger.critical("[Dosage pH] " + msg);
+        mqttManager.publishAlert("ph_guard", msg);
+      }
+      // Texte imposé MOT À MOT par le gate pool-chemistry (bug-135, 2026-10-05)
+      // — ne pas reformuler sans nouveau passage. Posé seulement si NON
+      // discriminante (cf. commentaire ci-dessus) : la garde corrigée pose sa
+      // propre cause plus bas, inconditionnellement.
+      if (!low) {
+        setGuardRefusalCause(0, "pH brut " + String(phRaw, 2) +
+                                " sous la butée de dernier recours (" +
+                                String(kPhFloorRawHard, 2) + ") alors que le pH "
+                                "corrigé (" + String(ph, 2) + ") reste au-dessus "
+                                "du plancher (" + String(kPhFloorCorrected, 2) +
+                                ") — dosage acide suspendu, vérifiez l'offset pH.");
+      }
     } else if (!rawHard && _phRawHardBlockActive) {
       _phRawHardBlockActive = false;
       systemLogger.info("[Dosage pH] pH brut remonté à " + String(phRaw, 2) + " (butée " +
@@ -903,7 +938,6 @@ void PumpControllerClass::tickPhGuardSurveillance() {
                         ") — butée brute levée");
     }
 
-    const bool low = phGuardBlocksBelow(ph, kPhFloorCorrected, _phLowBlockActive);
     if (low && !_phLowBlockActive) {
       _phLowBlockActive = true;
       newRefusal = true;
@@ -913,11 +947,15 @@ void PumpControllerClass::tickPhGuardSurveillance() {
       systemLogger.critical("[Dosage pH] " + msg);
       mqttManager.publishAlert("ph_guard", msg);
       // Cause exposée au WS (canDose n'est pas appelé tant que la garde bloque).
-      // La butée brute, plus grave, ne doit pas être écrasée si elle bloque aussi.
-      if (!_phRawHardBlockActive) {
-        setGuardRefusalCause(0, "pH sous le plancher de sécurité (" + String(ph, 2) +
-                                " < " + String(kPhFloorCorrected, 2) + ")");
-      }
+      // Texte imposé MOT À MOT par le gate pool-chemistry (bug-135, 2026-10-05)
+      // — ne pas reformuler sans nouveau passage. Posé INCONDITIONNELLEMENT
+      // (priorité INVERSÉE par rapport à l'ancienne version) : c'est la valeur
+      // CORRIGÉE qui fait foi à l'écran (carte pH), donc c'est TOUJOURS elle
+      // qui doit apparaître dans la cause de refus quand elle bloque — y
+      // compris quand la butée brute bloque aussi au même tick (cas non
+      // discriminant, voir le commentaire du bloc ci-dessus).
+      setGuardRefusalCause(0, "pH " + String(ph, 2) + " sous le plancher de sécurité (" +
+                              String(kPhFloorCorrected, 2) + ") — dosage acide suspendu.");
     } else if (!low && _phLowBlockActive) {
       _phLowBlockActive = false;
       systemLogger.info("[Dosage pH] pH remonté à " + String(ph, 2) + " (plancher " +
