@@ -238,38 +238,110 @@
               </div>
             </div>
 
-            <!-- Carte Boost (feature-053) -->
-            <div class="card card--status" id="dashboard-boost-card">
+            <!-- Carte Modes temporaires (feature-140) : regroupe Boost
+                 (feature-053) et Chloration de secours. Deux leviers
+                 INDÉPENDANTS, pas un choix unique — en mode Programmée le
+                 Boost perd sa surchloration mais conserve sa prolongation de
+                 filtration, utile avec de la boue. Aucune variable CSS
+                 nouvelle : réutilise --border, card__status-header,
+                 card__body, state-badge, detail-row, callout. -->
+            <div class="card card--status" id="dashboard-temp-modes-card">
               <div class="card__status-header">
                 <div class="card__status-icon card__status-icon--transparent">
                   <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91 0z"/>
-                    <path d="M12 15l-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z"/>
-                    <path d="M9 12H4s.55-3.03 2-4c1.62-1.08 5 0 5 0"/>
-                    <path d="M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5"/>
+                    <circle cx="12" cy="12" r="10"/>
+                    <polyline points="12 6 12 12 16 14"/>
                   </svg>
                 </div>
                 <div class="card__status-info">
-                  <div class="card__status-label">Boost</div>
-                  <div class="card__status-state">
-                    <span class="state-badge state-badge--off" id="detail-boost-status">Inactif</span>
-                  </div>
+                  <div class="card__status-label">Modes temporaires</div>
                 </div>
               </div>
               <div class="card__body">
-                <div class="detail-row">
-                  <div class="detail-label">Expiration</div>
-                  <div class="detail-value" id="detail-boost-until">—</div>
+
+                <!-- Sous-bloc Boost (feature-053) — markup et ids INCHANGÉS,
+                     simplement remonté comme sous-bloc (non-régression stricte). -->
+                <div id="temp-mode-boost">
+                  <div class="card__status-header">
+                    <div class="card__status-icon card__status-icon--transparent">
+                      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91 0z"/>
+                        <path d="M12 15l-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z"/>
+                        <path d="M9 12H4s.55-3.03 2-4c1.62-1.08 5 0 5 0"/>
+                        <path d="M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5"/>
+                      </svg>
+                    </div>
+                    <div class="card__status-info">
+                      <div class="card__status-label">Boost</div>
+                      <div class="card__status-state">
+                        <span class="state-badge state-badge--off" id="detail-boost-status">Inactif</span>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="detail-row">
+                    <div class="detail-label">Expiration</div>
+                    <div class="detail-value" id="detail-boost-until">—</div>
+                  </div>
+                  <div class="detail-row" id="detail-boost-effect-row" style="display:none;">
+                    <div class="detail-label">Effet</div>
+                    <div class="detail-value" id="detail-boost-effect">—</div>
+                  </div>
+                  <p class="field__hint" id="detail-boost-hint" style="margin:0 0 10px;">Surchloration renforcée jusqu'à minuit (filtration prolongée + cible ORP relevée).</p>
+                  <div class="detail-actions">
+                    <button class="btn btn--primary" id="detail-boost-start">Activer</button>
+                    <button class="btn btn--danger" id="detail-boost-stop" style="display:none;">Arrêter</button>
+                  </div>
                 </div>
-                <div class="detail-row" id="detail-boost-effect-row" style="display:none;">
-                  <div class="detail-label">Effet</div>
-                  <div class="detail-value" id="detail-boost-effect">—</div>
+
+                <hr class="temp-mode__sep">
+
+                <!-- Sous-bloc Chloration de secours (feature-140, nouveau).
+                     Surcouche non destructive du mode Programmée existant,
+                     48h glissantes, 1500 mL/j (plafond dur 2000 mL/j). -->
+                <div id="temp-mode-rescue">
+                  <div class="card__status-header">
+                    <div class="card__status-icon card__status-icon--transparent">
+                      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+                      </svg>
+                    </div>
+                    <div class="card__status-info">
+                      <div class="card__status-label">Chloration de secours</div>
+                      <div class="card__status-state">
+                        <span class="state-badge state-badge--off" id="detail-rescue-status">Inactif</span>
+                      </div>
+                    </div>
+                  </div>
+                  <p class="field__hint" id="detail-rescue-hint" style="margin:0 0 10px;"></p>
+                  <div class="detail-row" id="detail-rescue-until-row" style="display:none;">
+                    <div class="detail-label">Expiration</div>
+                    <div class="detail-value" id="detail-rescue-until">—</div>
+                  </div>
+                  <!-- role="status" : annonce la cause de blocage (L3/L4/L5) sans
+                       sur-alerter — badge « Actif · en attente » porte déjà
+                       l'aria-label explicite (distinction warn/ok non daltonienne). -->
+                  <div class="callout callout--warn" id="rescue-reason-callout" role="status" hidden></div>
+                  <div class="detail-actions">
+                    <button class="btn btn--primary" id="detail-rescue-start">Activer</button>
+                    <button class="btn btn--danger" id="detail-rescue-stop" style="display:none;">Arrêter</button>
+                  </div>
                 </div>
-                <p class="field__hint" id="detail-boost-hint" style="margin:0 0 10px;">Surchloration renforcée jusqu'à minuit (filtration prolongée + cible ORP relevée).</p>
-                <div class="detail-actions">
-                  <button class="btn btn--primary" id="detail-boost-start">Activer</button>
-                  <button class="btn btn--danger" id="detail-boost-stop" style="display:none;">Arrêter</button>
+
+                <!-- Ligne d'effet combiné (B2) : étend le patron honnête de
+                     feature-055 aux cas combinés Boost × Secours. Masquée si
+                     ni l'un ni l'autre n'est engagé (rien à rapporter). -->
+                <div class="detail-row" id="temp-modes-effect-row" style="display:none;">
+                  <div class="detail-label">Effet combiné</div>
+                  <div class="detail-value" id="temp-modes-effect">—</div>
                 </div>
+
+                <!-- Recommandation non bloquante du gate pool-chemistry :
+                     la prolongation de filtration est le seul levier
+                     réellement utile sur de la boue. -->
+                <div class="callout callout--info" id="temp-modes-suggest-boost" hidden>
+                  Suggestion : activez aussi le Boost pour prolonger la filtration — c'est le seul levier réellement utile sur de la boue.
+                </div>
+
               </div>
             </div>
 

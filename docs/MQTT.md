@@ -66,6 +66,8 @@ Tous les topics utilisent le préfixe configurable (ex: `pool/sensors`). Les val
 | Topic | Payload | Description |
 |-------|---------|-------------|
 | `{base}/boost` | `ON` / `OFF` | État du **Mode Boost** (surchloration temporaire du jour). Retain. `ON` tant que le boost est actif ; retombe automatiquement à `OFF` au prochain minuit local (expiration). Voir [ADR-0025](adr/0025-mode-boost.md). |
+| `{base}/rescue` | `ON` / `OFF` | État de la **Chloration de secours** (feature-140, v2.55.0) — surcouche aveugle à l'ORP, auto-expirante 48 h glissantes. Retain. Voir [ci-dessous](#topic-et-entité-ajoutés-en-feature-140-chloration-de-secours-v2550). |
+| `{base}/rescue_lift_reason` | `0` – `3` | Raison de la dernière fin de la Chloration de secours (feature-140). Retain. Voir [ci-dessous](#topic-et-entité-ajoutés-en-feature-140-chloration-de-secours-v2550). |
 | `{base}/lighting_schedule` | `ON` / `OFF` | Programmation horaire de l'éclairage active/inactive (feature-052, v2.17.0). Retain. Reflète le booléen `lightingCfg.scheduleEnabled`. Indépendant du relais manuel. Exposé en HA comme `select` « Mode Éclairage » (Programmation/Désactivé) via templates — le fil reste `ON`/`OFF` (bug-ha-eclairage-select, v2.17.2). |
 | `{base}/lighting_start` | `HH:MM` (ex. `20:00`) | Heure de début du créneau d'éclairage (feature-052, v2.17.0). Retain. |
 | `{base}/lighting_end` | `HH:MM` (ex. `23:30`) | Heure de fin du créneau d'éclairage (feature-052, v2.17.0). Retain. |
@@ -143,6 +145,7 @@ Tous les topics utilisent le préfixe configurable (ex: `pool/sensors`). Les val
 | `{base}/filtration_end/set` | `HH:MM` (ex. `20:30`) | Change l'heure de fin du créneau (symétrique, feature-051, v2.16.0) |
 | `{base}/lighting/set` | `ON` / `OFF` | Allume/éteint l'éclairage (contrôle manuel du relais) |
 | `{base}/boost/set` | `ON` / `OFF` | Active / désactive le **Mode Boost** (feature-053, v2.18.0). `ON` → active la surchloration temporaire du jour (filtration forcée + cible/limite chlore effectives relevées, cf. [ADR-0025](adr/0025-mode-boost.md)) ; `OFF` → désactive. **L'activation est refusée si l'heure n'est pas synchronisée** (l'expiration à minuit ne peut être calculée) → aucun changement + resync HA sur l'état réel. Payload invalide ignoré. Expire automatiquement au prochain minuit local. |
+| `{base}/rescue/set` | `ON` / `OFF` | Active / désactive la **Chloration de secours** (feature-140, v2.55.0). `ON` → active le dosage programmé aveugle à l'ORP pour 48 h glissantes au maximum (1500 mL/j, plafond dur 2000 mL/j — cf. [ADR-0087](adr/0087-ce-qu-un-mode-temporaire-a-le-droit-de-faire.md)) ; `OFF` → désactive. **Refusée** si la régulation ORP (NVS) est en mode Manuel, ou si l'heure n'est pas synchronisée → aucun changement + resync HA sur l'état réel + `warning` journalisé. Payload invalide ignoré. **Ne modifie jamais** `{base}/orp_regulation_mode`. |
 | `{base}/lighting_schedule/set` | `ON` / `OFF` | Active/désactive la programmation horaire (feature-052, v2.17.0). Payload validé `ON`/`OFF` (insensible à la casse) → `lightingCfg.scheduleEnabled` ; invalide → ignoré + `warning` + resync HA. Persisté NVS, appliqué via `lighting.update()`, republié. Broadcast WS config vers l'UI web |
 | `{base}/lighting_start/set` | `HH:MM` (ex. `20:00`) | Change l'heure de début du créneau (feature-052, v2.17.0). Validée `HH:MM` via `timeStringToMinutes` (format invalide → ignoré + `warning` + resync HA). Pilote `lightingCfg.startTime`, persisté NVS, appliqué, republié |
 | `{base}/lighting_end/set` | `HH:MM` (ex. `23:30`) | Change l'heure de fin du créneau (symétrique, `lightingCfg.endTime`, feature-052, v2.17.0) |
@@ -494,6 +497,7 @@ mosquitto_sub -h <broker> -t 'homeassistant/#' --remove-retained --retained-only
 | Switch | Filtration Marche/Arrêt | `{base}/filtration_state` | `{base}/filtration/set` |
 | Switch | Éclairage Piscine | `{base}/lighting_state` | `{base}/lighting/set` |
 | Switch | Boost | `{base}/boost` | `{base}/boost/set` |
+| Switch | Chloration de secours | `{base}/rescue` | `{base}/rescue/set` |
 | Select | Mode Éclairage | `{base}/lighting_schedule` | `{base}/lighting_schedule/set` |
 | Text | Éclairage début | `{base}/lighting_start` | `{base}/lighting_start/set` |
 | Text | Éclairage fin | `{base}/lighting_end` | `{base}/lighting_end/set` |
@@ -792,6 +796,31 @@ L'état `{base}/boost` (retain) est publié à la (re)connexion, à chaque chang
 **Activation refusée sans heure synchronisée** : si `{base}/boost/set` reçoit `ON` alors que l'horloge n'est pas synchronisée, la commande est **ignorée** (l'expiration à minuit serait incalculable) et l'état réel (`OFF`) est republié → le switch HA se resynchronise. Même politique de sécurité que la route HTTP `POST /boost/start` (`409 time_not_synced`, voir [API.md](API.md#post-booststart--write)).
 
 > **Effet chlore gaté au mode ORP `automatic`** : le relèvement de la cible ORP et de la limite journalière chlore ne s'applique qu'en mode de régulation ORP `automatic`. En mode Manuel / Programmé, l'activation du Boost n'étend **que la filtration** (l'injection manuelle reste bornée à la limite normale). Voir [ADR-0025](adr/0025-mode-boost.md).
+
+---
+
+## Topic et entité ajoutés en feature-140 (Chloration de secours, v2.55.0)
+
+La **Chloration de secours** est une surcouche temporaire non destructive du mode « Programmée » existant : volume de chlore fixe (1500 mL/j, plafond dur 2000 mL/j), aveugle à l'ORP, auto-expirant 48 h **glissantes** après l'activation (epoch — pas un ancrage sur minuit local, contrairement au Boost : voir [ADR-0087](adr/0087-ce-qu-un-mode-temporaire-a-le-droit-de-faire.md)). **Ne modifie jamais `{base}/orp_regulation_mode`.** Détails firmware : [`docs/subsystems/pump-controller.md`](subsystems/pump-controller.md#chloration-de-secours-feature-140). Décision structurante : [ADR-0087](adr/0087-ce-qu-un-mode-temporaire-a-le-droit-de-faire.md).
+
+| Entité | Type | `state_topic` | `command_topic` | `unique_id` | Détails |
+|--------|------|---------------|-----------------|-------------|---------|
+| Chloration de secours | `switch` | `{base}/rescue` | `{base}/rescue/set` | `poolcontroller_rescue_chlorine` | `payload_on: ON`, `payload_off: OFF`, `icon: mdi:flask-plus-outline` |
+
+| Topic | Payload | Description |
+|-------|---------|-------------|
+| `{base}/rescue` | `ON` / `OFF` | État **effectif** de la Chloration de secours (retain). `ON` tant que le mode est actif ; retombe automatiquement à `OFF` à l'expiration des 48 h, à la levée automatique (30 min de mesures ORP de nouveau fiables) ou à l'arrêt manuel. |
+| `{base}/rescue_lift_reason` | `0` – `3` | **Complément** (2026-10-05) : raison de la **dernière fin** du mode (`RescueLiftReason`), fenêtre de visibilité glissante de 90 s — `0` = aucune fin récente, `1` = levée automatique, `2` = expiration des 48 h, `3` = arrêt manuel. Retain, republié au cycle périodique (10 s) pour que le topic retombe à `0` de lui-même une fois la fenêtre écoulée. |
+
+L'état `{base}/rescue` (retain) est publié à la (re)connexion, à chaque changement (activation / désactivation / expiration / levée automatique) et au cycle périodique de publication.
+
+**Activation refusée** dans deux cas, sans jamais annoncer une activation qui n'a pas eu lieu (correctif revue, gate 2) :
+- **mode Manuel** : si la régulation ORP (NVS) est en `"manual"`, la commande `ON` est **ignorée** (double dosage évité — l'utilisateur dose déjà lui-même) et l'état réel republié. Même refus que la route HTTP `POST /rescue/start` (`409 mode_manual`).
+- **heure non synchronisée** : l'échéance 48 h serait indéterminable, même politique de sécurité que le Boost (minuit).
+
+**Désarmement automatique** : si `{base}/orp_regulation_mode/set` reçoit `manual` **pendant** que la Chloration de secours est active, le mode est désarmé automatiquement (`RescueLiftReason::Manual`) et l'état republié — même règle que le changement de mode via la route HTTP `/save-config`.
+
+> **Le pH n'est jamais dosé par ce mode** (condition #11 du gate `pool-chemistry`) : aucun topic pH n'est affecté par la Chloration de secours.
 
 ---
 

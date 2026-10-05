@@ -292,8 +292,10 @@ petit engrenage qui mène directement à sa page de détail.</p>
 </figure>
 
 <p><strong>Ce que vous voyez</strong> — six cartes&nbsp;: Filtration,
-Éclairage, pH, Chlore (ORP), Température et Boost. Les cartes de mesure
-affichent la valeur courante, la cible, et un mini-graphique de la
+Éclairage, pH, Chlore (ORP), Température et <strong>Modes
+temporaires</strong> (cette dernière regroupe depuis la version&nbsp;2.55 le
+Mode Boost et la Chloration de secours — voir plus bas). Les cartes de
+mesure affichent la valeur courante, la cible, et un mini-graphique de la
 <strong>journée en cours</strong> (depuis minuit — les courbes sont donc
 courtes le matin, c'est normal). Sous chaque valeur, un petit badge résume
 l'état&nbsp;:</p>
@@ -381,13 +383,34 @@ préfère avouer qu'il ne sait pas plutôt que d'afficher une valeur
 douteuse.</p>
 
 <p><strong>Ce que vous pouvez faire</strong> — démarrer ou arrêter la
-filtration, allumer ou éteindre l'éclairage, et activer le
-<strong>Mode Boost</strong>&nbsp;: après une journée de forte fréquentation,
-un seul bouton prolonge la filtration et relève temporairement la cible de
-chlore, jusqu'à minuit où tout revient automatiquement à la normale. À
-l'activation, un message vous rappelle de vérifier le taux de chlore avant
-la baignade — l'appareil mesure le potentiel de désinfection, pas le taux
-de chlore en tant que tel.</p>
+filtration, allumer ou éteindre l'éclairage, et activer l'un des deux
+<strong>modes temporaires</strong>, <strong>indépendamment l'un de
+l'autre</strong>&nbsp;: ils peuvent fonctionner en même temps.</p>
+
+<ul>
+  <li><strong>Mode Boost</strong>&nbsp;: après une journée de forte
+  fréquentation, un seul bouton prolonge la filtration et relève
+  temporairement la cible de chlore, jusqu'à minuit où tout revient
+  automatiquement à la normale. À l'activation, un message vous rappelle de
+  vérifier le taux de chlore avant la baignade — l'appareil mesure le
+  potentiel de désinfection, pas le taux de chlore en tant que tel.</li>
+
+  <li><strong>Chloration de secours</strong> (nouveau, version&nbsp;2.55)&nbsp;:
+  pour une eau trouble ou des sondes devenues douteuses (après de fortes
+  pluies, par exemple), ce mode injecte un volume de chlore fixe — 1&nbsp;500
+  mL par jour au maximum, plafonné à 2&nbsp;000&nbsp;mL/jour même combiné au
+  Boost — <strong>sans tenir compte des sondes</strong>, pendant 48&nbsp;heures
+  au maximum. Le détail de ce que ce mode fait et ne fait pas est au
+  chapitre&nbsp;4, «&nbsp;…un bandeau annonce que le dosage est bloqué&nbsp;».</li>
+</ul>
+
+<p>Si les deux sont activés en même temps&nbsp;: la carte affiche l'effet
+<strong>réellement</strong> obtenu (par exemple «&nbsp;Filtration prolongée +
+chloration de secours&nbsp;»). C'est volontaire&nbsp;: en Chloration de
+secours, le Boost ne relève plus la cible de chlore (il n'y a plus de cible à
+relever, le dosage ne regarde plus l'ORP), mais il continue de
+<strong>prolonger la filtration</strong> — utile précisément quand il y a de
+la boue à faire circuler.</p>
 
 <p>Enfin, si la régulation venait à s'arrêter alors qu'elle devrait
 tourner, une <strong>bannière rouge</strong> l'annonce en tête du tableau
@@ -890,6 +913,58 @@ toujours le chlore libre au réactif avant d'injecter&nbsp;: l'injection
 manuelle ne vérifie pas la stabilité de la mesure, c'est à vous de juger si
 elle est représentative. Pour le pH, rappelez-vous qu'une injection d'acide
 ne se reprend pas.</p>
+
+<p><strong>Depuis la version&nbsp;2.55</strong>, si le blocage concerne le
+<strong>chlore</strong>, le bandeau propose en plus un bouton
+«&nbsp;Activer la chloration de secours&nbsp;» — voir ci-dessous. Ce bouton
+ne fait rien immédiatement&nbsp;: il vous amène à la carte «&nbsp;Modes
+temporaires&nbsp;» du tableau de bord, où une confirmation reste
+nécessaire avant toute activation. Si la régulation du chlore est en mode
+Manuel, le bandeau l'indique à la place&nbsp;: la chloration de secours n'est
+pas disponible tant que vous dosez vous-même.</p>
+
+<h3>… la chloration de secours&nbsp;: injecter du chlore sans faire confiance
+aux sondes</h3>
+
+<p>Ce mode existe pour une situation précise&nbsp;: de l'eau trouble ou des
+sondes devenues douteuses (après de fortes pluies, par exemple), qui
+empêchent la régulation automatique de fonctionner et donc <strong>arrêtent
+tout dosage de chlore</strong> — au moment où la demande en désinfectant est
+souvent la plus forte. Activé depuis la carte «&nbsp;Modes
+temporaires&nbsp;», il injecte un volume de chlore <strong>fixe</strong>
+(1&nbsp;500&nbsp;mL par jour, 2&nbsp;000&nbsp;mL/jour au maximum même combiné
+au Boost), <strong>sans tenir compte des sondes</strong>, pendant
+48&nbsp;heures au maximum.</p>
+
+<p>Trois points importants à comprendre avant de l'activer&nbsp;:</p>
+
+<ul>
+  <li><strong>Ce mode maintient une désinfection minimale, il ne règle pas
+  une eau trouble.</strong> Si le fond du bassin est couvert de boue ou de
+  matières organiques, le chlore injecté est consommé par ces matières avant
+  de faire remonter le potentiel de désinfection&nbsp;: il est courant que le
+  chiffre ORP ne bouge pas du tout pendant les 48&nbsp;heures, même au volume
+  maximal. <strong>Seul le retrait mécanique</strong> de ce qui trouble l'eau
+  (épuisette, robot, aspiration) ramène l'eau à la normale — ce mode ne le
+  remplace pas.</li>
+  <li><strong>Le pH n'est jamais dosé par ce mode.</strong> Une injection
+  d'acide à l'aveugle, sur une mesure qu'on soupçonne déjà, ne se reprend
+  pas&nbsp;: ce risque n'est pas pris.</li>
+  <li><strong>Ce mode n'est pas disponible si la régulation du chlore est en
+  mode Manuel</strong> (vous dosez déjà vous-même — l'activer en plus
+  doserait deux fois).</li>
+</ul>
+
+<p>Le mode se termine de lui-même de trois façons&nbsp;: vous l'arrêtez
+manuellement&nbsp;; les 48&nbsp;heures maximum sont écoulées (un message vous
+rappelle alors de contrôler le chlore libre au réactif DPD et le pH avant de
+faire confiance à la régulation automatique, qui a déjà repris selon votre
+configuration habituelle)&nbsp;; ou les mesures de chlore redeviennent
+fiables pendant 30&nbsp;minutes d'affilée, auquel cas le mode se désactive
+automatiquement et la régulation automatique reprend. Dans tous les cas,
+votre réglage habituel du mode de régulation chlore (Automatique ou
+Programmée) <strong>n'est jamais modifié</strong>&nbsp;: la chloration de
+secours est une surcouche temporaire, pas un changement de configuration.</p>
 
 <h3>… une pastille annonce «&nbsp;Calibration requise&nbsp;» ou une sonde «&nbsp;usée&nbsp;»&nbsp;?</h3>
 

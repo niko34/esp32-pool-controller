@@ -716,6 +716,7 @@ Depuis v2.14.1, `drainCommandQueue()` positionne un flag local `needConfigBroadc
 | `{base}/filtration_start/set` | Validation `HH:MM` (`timeStringToMinutes` < 0 → ignoré + `warning` + resync HA, **avant** prise mutex). Sous `configMutex` **si changement** : `filtrationCfg.start = payload` + efface `forceOn`/`forceOff` + `saveMqttConfig()`. Hors mutex : `filtration.update()` (applique/recalcule) + `publishFiltrationState()` (feature-051) |
 | `{base}/filtration_end/set` | symétrique (`filtrationCfg.end`) — case groupée avec `FiltrationStart` (sélection via `bool isStart` + référence `String&`) |
 | `{base}/boost/set` | `ON` → `startBoost()` (refusé si heure non synchronisée) ; `OFF` → `stopBoost()` ; `publishBoostState()`. Surcouche temporaire non destructive auto-expirant à minuit (feature-053) |
+| `{base}/rescue/set` | `ON` → `startRescueChlorine()` (refusé si régulation ORP en mode Manuel **ou** heure non synchronisée — l'état réel, pas un succès présumé, détermine le log : `isRescueChlorineActive()` constaté **après** l'appel, jamais annoncé « activée » sur un refus) ; `OFF` → `stopRescueChlorine(RescueLiftReason::Manual)` ; `publishRescueState()` (état + `rescue_lift_reason`). Surcouche temporaire non destructive auto-expirante 48 h glissantes (feature-140, [ADR-0087](../adr/0087-ce-qu-un-mode-temporaire-a-le-droit-de-faire.md)) |
 
 ### Handler modes de régulation pH/ORP (feature-009, v2.7.0)
 
@@ -727,6 +728,8 @@ Cases `InboundCmdType::PhRegulationMode` / `OrpRegulationMode` de `drainCommandQ
 4. **Valeur invalide** : log `warning` « Mode régulation pH invalide (MQTT): ... » + aucun effet (pas d'écriture, pas de republish).
 
 Un changement de mode pendant une injection en cours ne l'interrompt pas : l'injection se termine naturellement et le nouveau mode prend effet au cycle de régulation suivant (validé pool-chemistry — mêmes gardes `canDose()` que la voie UI web).
+
+**Désarmement automatique de la Chloration de secours (feature-140)** : si `{base}/orp_regulation_mode/set` reçoit `manual` **pendant** que la Chloration de secours est active, le handler `OrpRegulationMode` appelle `stopRescueChlorine(RescueLiftReason::Manual)` + `publishRescueState()` dans la **même** section — condition #5 du gate `pool-chemistry` ([ADR-0087](../adr/0087-ce-qu-un-mode-temporaire-a-le-droit-de-faire.md)) : le mode Manuel et le dosage aveugle à l'ORP ne peuvent pas coexister (double dosage). Même garde côté route HTTP `/save-config` ([`web_routes_config.cpp`](../../src/web_routes_config.cpp)).
 
 ### Handlers volume quotidien + reboot (feature-050, v2.14.0)
 

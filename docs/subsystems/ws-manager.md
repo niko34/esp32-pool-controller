@@ -257,7 +257,7 @@ Buffer `_buildSensorJson()` bumpe de **1472 → 1536 octets** (+ `out.reserve` 1
 | `boost_active` | bool | `true` tant que le **Mode Boost** (surchloration temporaire du jour) est actif. Retombe automatiquement à `false` au prochain minuit local (expiration côté firmware) → l'UI voit la fin du boost sous ≤ 5 s sans reload. |
 | `boost_until` | int (epoch) | Instant d'expiration du Boost (epoch UNIX, prochain minuit local). `0` si le Boost est inactif. Permet à l'UI (carte Boost du dashboard) d'afficher l'heure de fin. |
 
-Valeurs lues via les getters `PumpController.isBoostActive()` / `getBoostUntilEpoch()`. Un changement d'état (activation via `POST /boost/start`, désactivation via `/boost/stop` ou commande HA `{base}/boost/set`, **ou expiration à minuit**) déclenche un push WS immédiat. Voir [pump-controller.md §Mode Boost](pump-controller.md#mode-boost-feature-053), [features/page-dashboard.md](../features/page-dashboard.md#carte-boost-feature-053) et [ADR-0025](../adr/0025-mode-boost.md).
+Valeurs lues via les getters `PumpController.isBoostActive()` / `getBoostUntilEpoch()`. Un changement d'état (activation via `POST /boost/start`, désactivation via `/boost/stop` ou commande HA `{base}/boost/set`, **ou expiration à minuit**) déclenche un push WS immédiat. Voir [pump-controller.md §Mode Boost](pump-controller.md#mode-boost-feature-053), [features/page-dashboard.md](../features/page-dashboard.md#carte-modes-temporaires-feature-140) et [ADR-0025](../adr/0025-mode-boost.md).
 
 ## Champs `sensor_data` ajoutés en feature-055 (effet Boost persistant, v2.18.2)
 
@@ -266,7 +266,7 @@ Valeurs lues via les getters `PumpController.isBoostActive()` / `getBoostUntilEp
 | `boost_filtration_extended` | bool | `true` ssi la filtration est gérée par PoolController (= `filtrationCfg.enabled`) : le levier « filtration prolongée » du Boost s'applique effectivement. |
 | `boost_chlorine_boosted` | bool | `true` ssi la régulation ORP est en mode `automatic` (= `orpRegulationMode == "automatic"`) : le levier « surchloration » (cible/limite chlore relevées) s'applique effectivement. |
 
-Ces deux booléens reflètent les **leviers réellement actifs** du Mode Boost et sont **calculés au vol** dans `_buildSensorJson()` à chaque cycle (indépendants de `boost_active`) : ils sont donc valides après une activation depuis Home Assistant **et** après un rechargement de page — contrairement aux booléens `filtration_extended` / `chlorine_boosted` de la seule réponse HTTP `POST /boost/start` (feature-054). L'UI (`updateBoostCard`, [page-dashboard.md](../features/page-dashboard.md#carte-boost-feature-053)) les utilise pour afficher une ligne « Effet » persistante quand le Boost est actif. Aucune logique de dosage n'est touchée.
+Ces deux booléens reflètent les **leviers réellement actifs** du Mode Boost et sont **calculés au vol** dans `_buildSensorJson()` à chaque cycle (indépendants de `boost_active`) : ils sont donc valides après une activation depuis Home Assistant **et** après un rechargement de page — contrairement aux booléens `filtration_extended` / `chlorine_boosted` de la seule réponse HTTP `POST /boost/start` (feature-054). L'UI (`updateBoostCard`, [page-dashboard.md](../features/page-dashboard.md#carte-modes-temporaires-feature-140)) les utilise pour afficher une ligne « Effet » persistante quand le Boost est actif. Aucune logique de dosage n'est touchée.
 
 Buffer `_buildSensorJson()` bumpe de **1600 → 1664 octets**.
 
@@ -806,6 +806,37 @@ Pire cas d'ajout : **53 o**. `null` (4 o) est plus court, donc jamais dimensionn
 >
 > ⚠️ **Correction d'une affirmation fausse portée par le commentaire de `kWsFrameBufBytes`** (`constants.h`) depuis le bump v2.21.1 : il justifiait l'augmentation par « +512 o en `.bss` statique — **hors heap 8 bits**, aucun impact sur la famine mémoire ». C'est **inexact** : le `.bss` est en DRAM, et le tas 8 bits n'est jamais que le **reliquat** de cette même DRAM après soustraction du `.bss`/`.data`. Le `.bss` ne **fragmente** pas (aucun impact sur `max_alloc_8bit`), mais il **réduit bien le total disponible** — c'est ce raisonnement, et non une distinction heap/`.bss`, qui faisait passer l'option « relever `kWsFrameBufBytes` » pour gratuite dans les arbitrages précédents. Commentaire corrigé dans le code ; voir [ADR-0086](../adr/0086-trame-websocket-sous-ensemble-choisi-de-data.md) pour le raisonnement complet.
 
+### Champs `sensor_data` ajoutés en v2.55.0 — Chloration de secours (feature-140), et migration de `filtration_state_source`/`filtration_ext_on` vers `/data`-seul
+
+Incident fondateur identique à la v2.54.0 ci-dessus (pluies diluviennes du 2026-10-02) : le mode Programmée existant permet de continuer à doser le chlore aveuglément, mais ce n'était accessible qu'en mutant `orp_regulation_mode` en NVS, sans borne de temps ni rappel de défaire ce changement. La Chloration de secours (feature-140) en fait une surcouche temporaire auto-expirante, décalquée du Mode Boost — voir [ADR-0087](../adr/0087-ce-qu-un-mode-temporaire-a-le-droit-de-faire.md) et [pump-controller.md §Chloration de secours](pump-controller.md#chloration-de-secours-feature-140).
+
+| Champ | Type | Description |
+|---|---|---|
+| `rescue_until` | integer (epoch) \| `0` | Échéance de la Chloration de secours (48 h glissantes depuis l'activation, **pas** minuit local). `0` si inactif. Même convention que `boost_until` : le client calcule le temps restant. |
+| `rescue_dosing` | boolean | Verdict **dérivé** « le secours dose-t-il réellement maintenant ? » = `isRescueChlorineActive() && !isOrpPhInhibited()` — **pas** un miroir de `rescue_until > 0` : une activation suspendue par un pH > 7,60 (condition #8 du gate) ne dose rien, et la ligne d'effet combiné du widget « Modes temporaires » doit pouvoir le dire. |
+| `rescue_lift` | integer (0-3) | Raison de la **dernière fin** du mode (`RescueLiftReason`, [`config.h`](../../src/config.h)), fenêtre de visibilité glissante de 90 s (`kRescueLiftReasonVisibleMs`, 3× la cadence `/data` — un client qui rafraîchit toutes les ~30 s est garanti de la voir au moins une fois). `0` = aucune fin récente ; `1` = levée automatique (30 min de mesures ORP fiables — **seul** cas où l'annonce « les mesures sont redevenues fiables » est vraie) ; `2` = expiration des 48 h ; `3` = arrêt manuel. Calculée à **chaque** lecture (aucun minuteur dédié à armer/désarmer), retombe à `0` d'elle-même. |
+
+**Élagage simultané, dans la même trame** (même patron qu'en v2.54.0, [ADR-0086](../adr/0086-trame-websocket-sous-ensemble-choisi-de-data.md)) : `filtration_state_source` et `filtration_ext_on` sont retirés de **cette seule trame** — **aucun consommateur dans `data/`** (vérifié par grep). Ils migrent **`/data`-seuls** ([`src/web_routes_data.cpp`](../../src/web_routes_data.cpp)), dérivés de `mqttCfg.installMode` seul et de `filtration.getExternalState()`, **sans** rappeler `filtration.resolveWaterPresence()` en contexte `async_tcp` (lecture non protégée de `state.running`, proscrite sur ce chemin). `wp.source` n'est donc plus lu dans `_buildSensorJson()` ; `wp` reste nécessaire pour `water_present`/`filtration_state_stale`.
+
+#### Budget de payload — méthode ([ADR-0073](../adr/0073-chiffre-consigne-porte-sa-methode.md))
+
+| Fragment sérialisé | Octets | Sens |
+|---|---:|---|
+| `"filtration_state_source":"commanded",` (plus longue valeur : `"commanded"`, 9 car.) | **38** | retrait |
+| `"filtration_ext_on":false,` | **26** | retrait |
+| `"rescue_until":1790000000,` (epoch 10 chiffres, borne structurelle `time_t` 32 bits) | **26** | ajout |
+| `"rescue_dosing":false,` | **22** | ajout |
+
+Retrait **64 o**, ajout **48 o**, net **−16 o**. Pire cas de trame : **3545 (hérité de v2.54.0) − 64 + 48 = 3529 o**, sous le gabarit `StaticJson<3584>` (aucun bump) — **marge portée de 39 à 55 o**.
+
+**Complément** (même cycle, retour `web-ui-developer`) : `+1` champ `rescue_lift` — `"rescue_lift":1,` = **16 o** (clé "rescue_lift" = 11 caractères, **pas** 12 ; plage 0-3 tient sur 1 chiffre, jamais dimensionnant). Pire cas de trame : **3529 + 16 = 3545 o**, toujours sous `kWsFrameBufBytes = 3584` (aucun bump).
+
+> **MARGE RÉSIDUELLE SOUS LE SEUL PLAFOND DUR** (`sWsFrameBuf`, `kWsFrameBufBytes = 3584` o) : **3584 − 3545 = 39 o** (elle était de 55 o avant ce complément, 39 o avant toute la feature-140 — l'élagage de 64 o avait plus que compensé les 48 o de `rescue_until`/`rescue_dosing`, et `rescue_lift` consomme exactement ce gain). Tout nouveau champ de cette trame exige un **retrait compensatoire** ou un relèvement de `kWsFrameBufBytes` — décision d'**ADR**, pas de routine.
+
+Côté `/data`, les deux champs migrés **s'ajoutent** (ils n'y existaient pas) et les trois champs secours sont servis à parité stricte — charge pire cas portée de 2965 à 3093 o, gabarit `StaticJson<>` porté de **3072 à 3200** (aucun plafond dur sur ce chemin, marge purement documentaire). Voir [API.md](../API.md#champs-ajoutés-en-feature-140-chloration-de-secours).
+
+**Cliquet `kWsOnlyLiveCeiling` abaissé 18 → 16** ([`test/test_native_ws_data_parity/test_ws_data_parity.cpp`](../../test/test_native_ws_data_parity/test_ws_data_parity.cpp)) : `filtration_state_source` et `filtration_ext_on` quittent `kWsOnlyLive` (la dette inventoriée se réduit, le plafond la suit — il ne peut **jamais** augmenter, seulement baisser quand une clé WS-seule migre ailleurs). `kDataOnly` passe de **4 à 6** entrées : les deux migrées s'ajoutent aux deux `ph_integral`/`ph_integral_term` de la v2.54.0.
+
 ### Le second axe de parité — `/data` ↔ `sensor_data` (`PARITE-DATA`)
 
 [ADR-0071](../adr/0071-parite-data-trame-capteurs.md) étend au **second axe** le principe posé par [ADR-0065](../adr/0065-trame-websocket-etat-mutable-pas-constantes.md) pour l'axe `config`. Deux différences de fond :
@@ -819,12 +850,12 @@ Marqueurs commentés, lus tels quels par la sentinelle : `>>> PARITE-DATA:DEBUT`
 
 | Catégorie | Compte | Règle |
 |---|---:|---|
-| `kWsOnlyLive` — état vivant servi par **aucune** route HTTP | **18** | **Dette inventoriée** (antérieure à feature-092), déclarée pour rendre la sentinelle utilisable, pas pour valider le motif. Sous **cliquet** `kWsOnlyLiveCeiling = 18` : le compte ne peut **jamais augmenter** — une clé neuve va dans `/data`. |
+| `kWsOnlyLive` — état vivant servi par **aucune** route HTTP | **16** (était 18) | **Dette inventoriée** (antérieure à feature-092), déclarée pour rendre la sentinelle utilisable, pas pour valider le motif. Sous **cliquet** `kWsOnlyLiveCeiling = 16` (abaissé de 18 en v2.55.0, feature-140) : le compte ne peut **jamais augmenter**, seulement baisser quand une clé WS-seule migre vers `/data` — ce qui vient d'arriver pour `filtration_state_source`/`filtration_ext_on`. |
 | `kWsPlusOtherRoute` — clés **dual-sourcées** | **8** | Absentes de `/data` mais servies par une **autre** route HTTP, dont le **nom est obligatoire** et asserté non vide : **7** par `GET /get-config` (`ph_container_ml`, `orp_container_ml`, `lighting_enabled`, `boost_active`, `boost_until`, `install_mode`, `mqtt_connected`) et **1** par `GET /get-logs` (`uptime_ms` — la table de la sentinelle abrège la route en « GET /logs »). Catégorie qui **n'existe pas** sur l'axe config : une règle « aucune clé WS-seule » les signalerait à tort. |
-| `kDataOnly` — clés servies par `/data` seul | **4** (était 2) | `ph_pump_amplitude_duty`, `orp_pump_amplitude_duty` (grandeurs de **calibration**, lues dans des vues de diagnostic) ; **+2 en v2.54.0** (feature-138) : `ph_integral`, `ph_integral_term` — élaguées de la **seule** trame WS pour financer `*DoseBlockedForS` (décision utilisateur, [ADR-0086](../adr/0086-trame-websocket-sous-ensemble-choisi-de-data.md)), restent un contrat externe sur `/data`/MQTT/HA. La 3ᵉ entrée d'origine — l'objet `flow_assist` — a été **retirée** en v2.47.1 : elle est devenue bilatérale (`bug-082`), et c'est la sentinelle qui l'a exigé. |
+| `kDataOnly` — clés servies par `/data` seul | **6** (était 4) | `ph_pump_amplitude_duty`, `orp_pump_amplitude_duty` (grandeurs de **calibration**, lues dans des vues de diagnostic) ; **+2 en v2.54.0** (feature-138) : `ph_integral`, `ph_integral_term` — élaguées de la **seule** trame WS pour financer `*DoseBlockedForS` ; **+2 en v2.55.0** (feature-140) : `filtration_state_source`, `filtration_ext_on` — élaguées pour financer `rescue_until`/`rescue_dosing` (même méthode, [ADR-0086](../adr/0086-trame-websocket-sous-ensemble-choisi-de-data.md)). Les quatre restent un contrat externe sur `/data`/MQTT/HA. La 3ᵉ entrée d'origine — l'objet `flow_assist` — a été **retirée** en v2.47.1 : elle est devenue bilatérale (`bug-082`), et c'est la sentinelle qui l'a exigé. |
 | `kFlowAssistDataOnly` — champs **imbriqués** de `flow_assist` servis par `/data` seul | **7** | Second axe, v2.47.1 (`bug-082`) : `active`, `pump`, `phase`, `remaining_s`, `purges_left`, `purge_s`, `measure_s` — champs de **session**, lus à l'ouverture de l'assistant après un `GET /data` **forcé**. Motif écrit obligatoire, **cliquet à 7**, et **`aborted` / `flow255` y sont formellement interdits**. |
 
-Décompte **vérifié par mesure** et non supposé : les **26** clés WS-seules constatées = 18 « état vivant » + 8 dual-sourcées.
+Décompte **vérifié par mesure** et non supposé : les **24** clés WS-seules constatées (v2.55.0, était 26) = 16 « état vivant » + 8 dual-sourcées.
 
 #### Le second axe **imbriqué** (v2.47.1, `bug-082`)
 

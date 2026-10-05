@@ -352,6 +352,11 @@ void setup() {
   // feature-053 : restaure l'état du Mode Boost (survit à un reboot dans la
   // journée ; expiré au chargement si minuit dépassé et heure valide).
   loadBoostState();
+  // feature-140 : restaure l'état de la Chloration de secours (survit à un
+  // reboot ; expiré au chargement si 48h dépassées et heure valide — condition
+  // #6 du gate : sans heure valide, isRescueChlorineActive() reste fail-closed
+  // sans qu'un reset ici soit nécessaire).
+  loadRescueState();
 
   // Initialisation authentification (après chargement config)
   authManager.setEnabled(authCfg.enabled);

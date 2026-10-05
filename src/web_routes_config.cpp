@@ -729,6 +729,14 @@ static void handleSaveConfig(AsyncWebServerRequest* request, uint8_t* data, size
       mqttCfg.orpRegulationMode = orpRegMode;
       mqttCfg.orpEnabled = (orpRegMode != "manual");
       systemLogger.info("Mode régulation ORP changé: " + orpRegMode);
+      // feature-140 (condition #5 du gate pool-chemistry) : bascule en Manuel
+      // pendant la chloration de secours => désarmement AUTOMATIQUE (sinon
+      // double dosage : l'utilisateur dose lui-même ET le secours continue).
+      if (orpRegMode == "manual" && isRescueChlorineActive(time(nullptr))) {
+        stopRescueChlorine(RescueLiftReason::Manual);
+        mqttManager.publishRescueState();
+        systemLogger.warning("[Secours] Désarmée : bascule en mode Manuel (HTTP)");
+      }
     }
   }
   if (!doc["orp_daily_target_ml"].isNull()) {

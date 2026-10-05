@@ -607,6 +607,53 @@ size_t WsManager::_buildSensorJson(char* buf, size_t cap) const {
   // — il ne TRONQUE jamais. Tout nouveau champ de cette trame exige désormais
   // un retrait compensatoire OU un relèvement de kWsFrameBufBytes (décision
   // d'ADR, pas de routine) — la marge n'absorbe plus qu'une seule clé courte.
+  //
+  // feature-140 (v2.55.0) : élagage de `filtration_state_source` et
+  // `filtration_ext_on` de CETTE SEULE trame (ADR-0086, patron feature-138) —
+  // AUCUN consommateur dans data/ (vérifié par grep), ils migrent /data-seuls
+  // (web_routes_data.cpp). Financent l'ajout de `rescue_until`/`rescue_dosing`
+  // (Chloration de secours, bilatéral /data ↔ WS).
+  //
+  // MÉTHODE DE CHIFFRAGE (ADR-0073) : chaînes/booléens au pire cas, comptés
+  // caractère par caractère.
+  //   Retrait : "filtration_state_source":"commanded", → 38 o (plus longue
+  //     valeur de WaterSource : "commanded" 9, "powered" 7, "external" 8).
+  //             "filtration_ext_on":false,              → 26 o
+  //     Total retrait : 64 o.
+  //   Ajout :   "rescue_until":1790000000,              → 26 o (epoch 10
+  //     chiffres, borne structurelle time_t 32 bits — au pire cas AVANT 2038 ;
+  //     `0` si inactif, plus court, jamais dimensionnant)
+  //             "rescue_dosing":false,                  → 22 o
+  //     Total ajout : 48 o.
+  //   Net : 48 − 64 = −16 o.
+  //
+  // Pire cas de trame : 3545 (décompte feature-138) − 64 (élagage) + 48 (ajout)
+  // = 3529 o, SOUS le gabarit documentaire 3584 (aucun bump) et SOUS le seul
+  // plafond DUR, kWsFrameBufBytes = 3584 o.
+  //
+  // MARGE RÉSIDUELLE SOUS LE SEUL PLAFOND DUR, sWsFrameBuf
+  // (kWsFrameBufBytes = 3584 o, constants.h) : 3584 − 3529 = 55 o (elle était
+  // de 39 o avant cet ajout — l'élagage de 64 o a plus que compensé les 48 o
+  // ajoutés). Tout nouveau champ de cette trame exige désormais un retrait
+  // compensatoire OU un relèvement de kWsFrameBufBytes (décision d'ADR, pas de
+  // routine).
+  //
+  // Complément feature-140 (2026-10-05) : +1 champ `rescue_lift` (code de
+  // raison de fin RescueLiftReason, uint8_t 0-3 — voir config.h), pour que
+  // l'UI distingue la levée automatique (seul cas où le libellé L6 est vrai)
+  // de l'expiration 48h et de l'arrêt manuel. Octet SÉRIALISÉ au pire cas,
+  // RECOMPTÉ caractère par caractère (clé "rescue_lift" = 11 caractères, PAS
+  // 12 — l'estimation initiale de ce complément était fausse d'un caractère,
+  // ne pas la recopier) :
+  //   "rescue_lift":1, → 1+11+1+1+1+1 = 16 o (1 chiffre : la plage 0-3 tient
+  //     toujours sur 1 caractère, aucune valeur n'est dimensionnante).
+  // Pire cas de trame : 3529 (décompte ci-dessus) + 16 = 3545 o, SOUS le
+  // gabarit documentaire 3584 (aucun bump) et SOUS kWsFrameBufBytes = 3584 o.
+  //
+  // MARGE RÉSIDUELLE SOUS LE SEUL PLAFOND DUR, sWsFrameBuf : 3584 − 3545 = 39 o
+  // (elle était de 55 o avant ce complément). Tout nouveau champ de cette
+  // trame exige désormais un retrait compensatoire OU un relèvement de
+  // kWsFrameBufBytes (décision d'ADR, pas de routine).
   StaticJson<3584> doc;
   doc["type"] = "sensor_data";
   JsonObject d = doc["data"].to<JsonObject>();
@@ -880,7 +927,13 @@ size_t WsManager::_buildSensorJson(char* buf, size_t cap) const {
     // feature-055 : leviers réellement actifs du Boost (affichage persistant du widget)
     // feature-056 : filtration prolongée seulement si PC gère la filtration (Managed).
     d["boost_filtration_extended"] = (mqttCfg.installMode == InstallMode::ManagedFiltration);
-    d["boost_chlorine_boosted"]    = (mqttCfg.orpRegulationMode == "automatic");
+    // feature-140 : verdict DÉRIVÉ (le Boost relève-t-il RÉELLEMENT le chlore
+    // maintenant ?), pas la config NVS brute — pendant la chloration de
+    // secours, le mode EFFECTIF est Scheduled et le Boost ne relève jamais le
+    // chlore (cf. getEffectiveOrpTarget/getEffectiveMaxChlorineMlPerDay),
+    // même si la NVS affiche encore "automatic". Lire la NVS ici ferait mentir
+    // cette ligne d'effet (feature-055).
+    d["boost_chlorine_boosted"]    = (PumpController.effectiveOrpMode() == OrpMode::Automatic);
   }
 
   // feature-056 : présence d'eau résolue (source UNIQUE) + mode d'installation.
@@ -891,20 +944,20 @@ size_t WsManager::_buildSensorJson(char* buf, size_t cap) const {
     d["install_mode"]  = installModeToString(mqttCfg.installMode);
     d["water_present"] = wp.waterPresent;
     d["filtration_state_stale"] = wp.stale;
-    const char* src = "commanded";
-    switch (wp.source) {
-      case WaterSource::FiltrationCommanded: src = "commanded"; break;
-      case WaterSource::PoweredAssumed:      src = "powered";   break;
-      case WaterSource::ExternalSignal:      src = "external";  break;
-    }
-    d["filtration_state_source"] = src;
+    // feature-140 : filtration_state_source et filtration_ext_on RETIRÉS de
+    // cette SEULE trame (ADR-0086, budget WS) — AUCUN consommateur dans data/
+    // (vérifié par grep). Ils migrent /data-seuls (web_routes_data.cpp, dérivés
+    // de mqttCfg.installMode seul et de filtration.getExternalState(), SANS
+    // rappeler filtration.resolveWaterPresence() en contexte async_tcp — cf.
+    // commentaire de ce handler). `wp.source` n'est donc plus lu ici ; `wp`
+    // reste nécessaire pour waterPresent/stale ci-dessus.
     // feature-056 : détail du signal externe pour la pill UI (mode external) —
     // distingue « Arrêtée » (OFF connu) de « Aucun signal » (boot) et donne l'âge.
     bool extOn = false, extKnown = false;
     uint32_t extLastMs = 0;
     filtration.getExternalState(extOn, extLastMs, extKnown);
+    (void)extOn;  // ne sert plus qu'à filtration_ext_on, retiré de cette trame
     d["filtration_ext_known"] = extKnown;
-    d["filtration_ext_on"]    = extOn;
     d["filtration_ext_age_s"] = extKnown ? (uint32_t)(((uint32_t)millis() - extLastMs) / 1000UL) : 0;
   }
 
@@ -1050,6 +1103,30 @@ size_t WsManager::_buildSensorJson(char* buf, size_t cap) const {
   // lit sur `temperature` / `temperature_raw`, déjà servis plus haut, et l'UI
   // fait primer « sonde absente ou invalide » sur « figée », plus sévère).
   d["tempFrozenAlarm"] = sensors.isTemperatureFrozen();
+  //
+  // CHLORATION DE SECOURS (feature-140) — échéance + verdict dérivé, FINANCE
+  // le retrait ci-dessus (ADR-0086) : budget compté dans le registre d'octets
+  // en tête de cette trame. rescue_until = rescueState.untilEpoch BRUT (0 si
+  // inactif, même convention que boost_until) — le client calcule le temps
+  // restant. rescue_dosing = verdict DÉRIVÉ « le secours dose-t-il réellement
+  // MAINTENANT » (actif ET pas suspendu par isOrpPhInhibited(), seule source
+  // de la suspension pH, condition #8 du gate) — PAS un simple miroir de
+  // rescue_until > 0 : une activation suspendue par un pH > 7,60 ne dose rien,
+  // et la ligne d'effet du widget « Modes temporaires » doit pouvoir le dire.
+  d["rescue_until"]  = (long)rescueState.untilEpoch;
+  d["rescue_dosing"] = isRescueChlorineActive(time(nullptr)) && !PumpController.isOrpPhInhibited();
+  // Complément feature-140 (2026-10-05, retour web-ui-developer) : une simple
+  // transition actif→inactif ne dit PAS pourquoi le mode s'est terminé, et le
+  // libellé L6 imposé par le gate (« les mesures ORP sont de nouveau fiables »)
+  // n'est VRAI que pour la levée automatique — l'afficher sur une expiration
+  // 48h mentirait sur l'état des sondes. `rescue_lift` (RescueLiftReason,
+  // config.h) distingue les trois fins : 1 = levée automatique, 2 = expiration
+  // 48h, 3 = arrêt manuel ; 0 = aucune fin récente. Fenêtre de visibilité
+  // kRescueLiftReasonVisibleMs (90s, RAM uniquement, PAS persisté) : un client
+  // qui rafraîchit /data toutes les ~30s est garanti de la voir au moins une
+  // fois avant qu'elle ne retombe à 0 d'elle-même (calculée à CHAQUE lecture,
+  // aucun minuteur dédié à armer/désarmer).
+  d["rescue_lift"] = getRescueLiftReasonCode(nowMs);
   // <<< PARITE-DATA:FIN
 
   d["time_synced"]   = (time(nullptr) >= kMinValidEpoch);

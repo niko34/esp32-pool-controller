@@ -12,6 +12,7 @@
 #include "ph_feedforward_logic.h"  // feature-085 : dose de base apprise (PURE)
 #include "ph_session_logic.h"      // feature-094 : porte de session pH (PURE)
 #include "dose_block_duration_logic.h"  // feature-138 : durée du refus courant (PURE)
+#include "temp_mode_logic.h"            // feature-140 : mode ORP EFFECTIF (PURE)
 
 struct PumpDriver {
   int pwmPin;    // Pin PWM Gate MOSFET (IRLZ44N)
@@ -738,6 +739,12 @@ private:
   // Verdict ORP du tick courant : true si le dosage chlore est inhibé.
   bool     _orpPhInhibitNow = false;
 
+  // feature-140 : minuteur de la levée automatique de la chloration de secours
+  // (condition #3 du gate). 0 = pas de tenue en cours ; sinon millis() du début
+  // de la tenue continue. Volontairement un millis() COURT (≤ 30 min, très sous
+  // le repliement 49,7 jours) — pas l'échéance epoch de la surcouche elle-même.
+  unsigned long _rescueStableSinceMs = 0;
+
   uint8_t  _phGuardRefusals = 0;         // Refus AUTOMATIQUES dans la fenêtre
   uint32_t _phGuardWindowStart = 0;      // millis() du 1er refus de la fenêtre
   // Débit limité de l'alerte « dosage pH programmé refusé » (pas de compteur ni
@@ -930,6 +937,24 @@ public:
   // Consommées par la régulation ORP automatic ET exposées à l'UI/WS/MQTT.
   float getEffectiveOrpTarget() const;
   float getEffectiveMaxChlorineMlPerDay() const;
+
+  // ===== feature-140 : mode ORP EFFECTIF + volume quotidien EFFECTIF =====
+  // Règle opposable (spec feature-140) : toute DÉCISION de dosage (combien,
+  // quand, quelle garde) lit effectiveOrpMode() / getEffectiveOrpDailyTargetMl() ;
+  // toute PUBLICATION d'état de configuration (HTTP/MQTT/WS) continue de lire
+  // mqttCfg.orpRegulationMode / mqttCfg.orpDailyTargetMl, INCHANGÉ. Délègue à
+  // temp_mode_logic.h (PUR) : NVS + isRescueChlorineActive(time(nullptr)) ici,
+  // la décision est dans effectiveOrpModePure()/effectiveOrpDailyTargetMlPure().
+  OrpMode effectiveOrpMode() const;
+  float getEffectiveOrpDailyTargetMl() const;
+
+  // Tenue continue de mesures ORP fiables pendant la chloration de secours
+  // (condition #3 du gate pool-chemistry) : lève le mode à SENS UNIQUE (termine,
+  // ne le ré-arme jamais) après kRescueChlorineAutoLiftHoldMs de
+  // !isOrpFilterUnstable() && measureValidity.measuresValid() consécutives.
+  // Appelé à CHAQUE tour d'update() ; no-op si le secours n'est pas actif (le
+  // minuteur est alors maintenu à zéro, prêt pour une activation future).
+  void tickRescueChlorineAutoLift(unsigned long nowMs);
 
   // DEMANDE l'application des paramètres PID de mqttCfg.regulationSpeed.
   // Appelable depuis N'IMPORTE QUEL contexte, y compris un handler web async :
@@ -1132,6 +1157,13 @@ public:
   bool isOrpPhRawGuardBlocked() const {
     return _orpPhInhibitNow && _orpPhRawThresholdActive;
   }
+
+  // feature-140 : verdict de suspension ORP-sur-pH exposé en LECTURE SEULE,
+  // pour composer `rescue_dosing` (parité /data ↔ WS) — alias public
+  // d'isOrpInhibitedByPh() (privée, réservée à la décision interne de
+  // dispatch dans update()). Aucune logique nouvelle, aucun effet de bord ;
+  // même course bénigne que les getters ci-dessus.
+  bool isOrpPhInhibited() const { return isOrpInhibitedByPh(); }
 
   // ===== v2.26.0 (C5) : observabilité du TERME INTÉGRAL pH — LECTURE SEULE =====
   // Trois grandeurs, publiées à l'IDENTIQUE sur /data ET sur la trame WS (mêmes

@@ -222,7 +222,36 @@ static void handleGetData(AsyncWebServerRequest* request) {
   // à sWsFrameBuf côté WS (kWsFrameBufBytes, seul plafond DUR du projet) — donc
   // aucune troncature n'est possible ici, cette marge n'est qu'un indicateur
   // d'hygiène.
-  StaticJson<3072> doc;
+  //
+  // feature-140 (v2.55.0) : +2 champs MIGRÉS depuis la trame WS (ADR-0086,
+  // `filtration_state_source`/`filtration_ext_on`, aucun ajout de grandeur —
+  // ils existaient déjà côté firmware) + 2 champs NEUFS (Chloration de
+  // secours, parité /data ↔ WS, MÊME passage, bloc PARITE-DATA). Octets
+  // SÉRIALISÉS au pire cas :
+  //   "filtration_state_source":"commanded", → 38 o (plus longue valeur de
+  //     WaterSource : "commanded" 9 car., contre "powered" 7 et "external" 8)
+  //   "filtration_ext_on":false,              → 26 o
+  //   "rescue_until":1790000000,               → 26 o (epoch 10 chiffres,
+  //     borne structurelle time_t 32 bits ; `0` si inactif, plus court)
+  //   "rescue_dosing":false,                   → 22 o
+  //   → 112 o (même décompte que src/ws_manager.cpp pour les 2 champs neufs).
+  // Charge pire cas : 2965 (mesure feature-138) + 112 = 3077 o, AU-DESSUS du
+  // gabarit documentaire 3072 → gabarit porté 3072 → 3200 (marge 123 o).
+  // Rappel : ce chemin n'a aucun plafond dur, ce bump est une hygiène de
+  // lecture, pas une garde — contrairement à kWsFrameBufBytes côté WS, où ce
+  // même ajout est financé par un retrait (cf. src/ws_manager.cpp, marge
+  // portée de 39 à 55 o).
+  //
+  // Complément feature-140 (2026-10-05) : +1 champ `rescue_lift` (même motif
+  // et même décompte que src/ws_manager.cpp — clé "rescue_lift" = 11
+  // caractères, PAS 12, ne pas recopier une estimation non vérifiée) :
+  //   "rescue_lift":1, → 1+11+1+1+1+1 = 16 o
+  // Charge pire cas : 3077 (décompte ci-dessus) + 16 = 3093 o, SOUS le gabarit
+  // 3200 (marge 107 o) → AUCUN bump. Rappel : ce chemin n'a aucun plafond dur ;
+  // le budget CONTRAIGNANT de cet ajout est celui de la trame WS
+  // (kWsFrameBufBytes), décompté dans src/ws_manager.cpp : marge portée de 55
+  // à 39 o.
+  StaticJson<3200> doc;
 
   // feature-025 : la "valeur courante" (champs ph/orp) reflète la valeur FILTRÉE
   // (médiane + EMA), alignée sur le WS. Le brut reste exposé séparément (phRaw/orpRaw).
@@ -332,6 +361,30 @@ static void handleGetData(AsyncWebServerRequest* request) {
     doc["measures_purge_last_duration_s"] = mv.lastPurgeDurationS;
     doc["measures_purge_last_end"] = mv.lastPurgeEnd;  // 0 aucune/1 stabilité/2 plafond/3 dispensée/4 re-purge
     doc["measures_purge_count"] = mv.purgeCount;
+  }
+  // feature-140 : filtration_state_source et filtration_ext_on MIGRENT depuis
+  // la trame WS (ADR-0086, aucun consommateur dans data/) vers /data-SEUL —
+  // contrat externe conservé (API/diagnostic). `source` ne dépend QUE de
+  // mqttCfg.installMode (resolveWaterPresent(), src/dosing_logic.cpp : le
+  // switch sur `in.mode` ignore filtrationCommandedOn pour ce champ) — on
+  // évite donc filtration.resolveWaterPresence(), qui lit state.running SANS
+  // lock et est PROSCRITE en contexte async_tcp (cf. commentaire plus haut).
+  // filtration_ext_on vient de getExternalState(), accesseur explicitement sûr
+  // en async (spinlock portMUX).
+  {
+    const char* src = "commanded";
+    switch (mqttCfg.installMode) {
+      case InstallMode::ManagedFiltration:  src = "commanded"; break;
+      case InstallMode::PoweredByFiltration: src = "powered";   break;
+      case InstallMode::ExternalFiltration:  src = "external";  break;
+    }
+    doc["filtration_state_source"] = src;
+    bool extOn = false, extKnown = false;
+    uint32_t extLastMs = 0;
+    filtration.getExternalState(extOn, extLastMs, extKnown);
+    (void)extKnown;  // ne sert qu'à filtration_ext_known/_age_s, restés WS-seuls
+    (void)extLastMs;
+    doc["filtration_ext_on"] = extOn;
   }
   doc["ph_dosing"] = PumpController.isPhDosing();
   doc["orp_dosing"] = PumpController.isOrpDosing();
@@ -569,6 +622,14 @@ static void handleGetData(AsyncWebServerRequest* request) {
   // Accesseur LECTURE SEULE d'un compteur de run (aucune I²C, aucun OneWire) :
   // sûr dans un handler AsyncWebServer.
   doc["tempFrozenAlarm"] = sensors.isTemperatureFrozen();
+  // feature-140 : Chloration de secours — échéance + verdict dérivé. MÊMES
+  // clés et MÊME calcul que ws_manager.cpp (parité /data ↔ WS obligatoire).
+  doc["rescue_until"]  = (long)rescueState.untilEpoch;
+  doc["rescue_dosing"] = isRescueChlorineActive(time(nullptr)) && !PumpController.isOrpPhInhibited();
+  // Complément feature-140 (2026-10-05) : code de raison de fin — MÊME clé,
+  // MÊME calcul que ws_manager.cpp (parité /data ↔ WS). Voir RescueLiftReason
+  // (config.h) et le commentaire détaillé côté WS.
+  doc["rescue_lift"] = getRescueLiftReasonCode(millis());
   // <<< PARITE-DATA:FIN
   doc["ph_daily_ml"] = safetyLimits.dailyPhInjectedMl;
   doc["orp_daily_ml"] = safetyLimits.dailyOrpInjectedMl;

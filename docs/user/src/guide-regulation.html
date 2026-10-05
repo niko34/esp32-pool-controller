@@ -634,6 +634,11 @@ court au plus long.</p>
       <td>Fenêtre des trois refus de sécurité pH avant suspension de la
       régulation automatique. Les quotas journaliers de produit se remettent
       à zéro chaque nuit.</td></tr>
+  <tr><td class="duree">48 heures</td>
+      <td>Durée maximale de la <strong>chloration de secours</strong>
+      (section&nbsp;8) — glissante depuis l'activation, pas calée sur minuit.
+      Le mode se termine avant ce terme si les mesures de chlore redeviennent
+      fiables 30&nbsp;minutes d'affilée.</td></tr>
   <tr><td class="duree">3 jours</td>
       <td>Premier apprentissage&nbsp;: aucune dose «&nbsp;de mémoire&nbsp;»
       avant 3&nbsp;journées observées. C'est aussi le nombre de journées
@@ -796,7 +801,60 @@ restauration d'une sauvegarde de réglages). Une petite note sous la rangée
 </ul>
 
 <!-- ══════════════════ 9. Ce que l'appareil ne fait jamais ══════════════════ -->
-<h2 class="page-break"><span class="num">8</span>Ce que l'appareil ne fait jamais</h2>
+<h2 class="page-break"><span class="num">8</span>La chloration de secours&nbsp;: maintenir une désinfection sans la mesure</h2>
+
+<p>Toute la logique décrite jusqu'ici repose sur une hypothèse&nbsp;: la
+mesure est fiable. Après de fortes pluies, de la boue au fond du bassin peut
+perturber les sondes pH <em>et</em> chlore en même temps&nbsp;: la régulation
+automatique, construite pour ne jamais doser « dans le doute », s'arrête
+alors sur les deux voies — chlore compris, au moment précis où la demande en
+désinfectant est la plus forte.</p>
+
+<p>La <strong>chloration de secours</strong> (carte «&nbsp;Modes
+temporaires&nbsp;» du tableau de bord, version&nbsp;2.55) existe pour ce cas
+précis. Elle réutilise le mode de dosage programmé existant — un volume
+quotidien fixe, versé pendant que la filtration tourne, sans jamais regarder
+la mesure de chlore — et l'arme pour une durée bornée&nbsp;: 1&nbsp;500&nbsp;mL
+par jour, 2&nbsp;000&nbsp;mL/jour au maximum (même combinée au Mode Boost),
+pendant 48&nbsp;heures glissantes au plus. Votre réglage habituel du mode de
+régulation chlore n'est <strong>jamais</strong> modifié&nbsp;: c'est une
+surcouche, pas un changement de configuration — à l'arrêt du mode, la
+régulation que vous avez choisie reprend seule, sans rien à vous rappeler.</p>
+
+<p><strong>Ce que ce mode ne fait pas&nbsp;:</strong> il ne corrige pas une
+eau trouble et ne traite pas un problème de boue. En eau chargée de matières
+organiques, le chlore injecté est consommé par ces matières avant de faire
+remonter le potentiel de désinfection&nbsp;: sur le terrain, 2&nbsp;litres par
+jour pendant trois jours n'ont pas fait bouger le chiffre ORP d'un bassin
+visé à 530&nbsp;mV, resté à 261&nbsp;mV. Le volume de chlore n'est, dans ce
+cas, pas le facteur qui limite&nbsp;: <strong>seul le retrait mécanique</strong>
+de ce qui trouble l'eau fait revenir la mesure. Ce mode est dimensionné pour
+<strong>maintenir</strong> une désinfection minimale pendant l'épisode, pas
+pour rattraper un retard.</p>
+
+<p>Trois garde-fous, non négociables&nbsp;:</p>
+
+<ul>
+  <li>le <strong>pH n'est jamais dosé</strong> par ce mode&nbsp;: une
+  injection d'acide à l'aveugle sur une mesure déjà suspecte ne se reprend
+  pas&nbsp;;</li>
+  <li>il est <strong>refusé</strong> si la régulation du chlore est en mode
+  Manuel — vous dosez déjà vous-même, l'activer doserait deux fois&nbsp;;</li>
+  <li>toutes les autres limites restent en place à l'identique&nbsp;:
+  présence d'eau, limite horaire, anti-rafale, surveillance du watchdog.</li>
+</ul>
+
+<p>Le mode se termine de trois façons&nbsp;: arrêt manuel&nbsp;; expiration
+des 48&nbsp;heures (l'appareil le signale et invite à contrôler le chlore
+libre au réactif DPD et le pH avant de faire confiance à la régulation
+automatique, qui a déjà repris)&nbsp;; ou levée automatique après
+30&nbsp;minutes de mesures de nouveau fiables — dans ce seul cas, l'appareil
+l'annonce comme telle. Cette levée automatique ne va <strong>jamais</strong>
+dans l'autre sens&nbsp;: elle termine le mode, elle ne le réarme pas si les
+mesures se dégradent de nouveau — vous décidez vous-même d'une nouvelle
+activation.</p>
+
+<h2 class="page-break"><span class="num">9</span>Ce que l'appareil ne fait jamais</h2>
 
 <p>Certaines règles ne souffrent aucune exception, quels que soient les
 réglages, les modes ou les circonstances&nbsp;:</p>
@@ -810,9 +868,10 @@ réglages, les modes ou les circonstances&nbsp;:</p>
   piscine — pas seulement celle qu'on lui a décrite.</li>
 
   <li><strong>Jamais deux chemins vers la pompe.</strong> Tout ce qui dose —
-  la part apprise, la part réactive, le mode boost, le mode programmé — passe
-  par le même circuit, les mêmes garde-fous et la même comptabilité. Aucune
-  fonction, aucun mode ne possède de raccourci vers la pompe.</li>
+  la part apprise, la part réactive, le mode boost, le mode programmé, la
+  chloration de secours (section&nbsp;8) — passe par le même circuit, les
+  mêmes garde-fous et la même comptabilité. Aucune fonction, aucun mode ne
+  possède de raccourci vers la pompe.</li>
 
   <li><strong>Jamais de dose sans eau en circulation, jamais de dose
   automatique sans mesure fiable.</strong> La présence d'eau conditionne

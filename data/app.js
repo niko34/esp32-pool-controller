@@ -4041,8 +4041,268 @@
     }
   }
 
+  // feature-140 : sous-bloc Chloration de secours du widget « Modes
+  // temporaires ». Consomme rescue_until/rescue_dosing (parité /data ↔ WS,
+  // trame sensor_data) et orp_regulation_mode (trame WS "config" / /get-config,
+  // via window._config — PAS latestSensorData, ce champ n'est publié que là).
+  // Rétrocompat : champs absents (firmware ancien) ⇒ secours traité inactif,
+  // aucune erreur affichée (même patron que boost_filtration_extended !== false).
+  //
+  // ⚠️ LIBELLÉS L1/L2/L3/L4/L5/L6/L7/L8 IMPOSÉS MOT À MOT par le gate
+  // pool-chemistry (feature-140) — ne JAMAIS les reformuler, abréger ou
+  // tronquer sans repasser ce gate. Précédent feature-138 : une version
+  // tronquée avait perdu l'avertissement sur les chloramines.
+  // rescue_lift (0-3, parité /data ↔ WS) remplace l'ancienne heuristique de
+  // transition active→inactive : 1 = levée automatique (30 min de mesures
+  // fiables, SEUL cas où L6 est vrai) ; 2 = expiration naturelle des 48h ;
+  // 3 = arrêt manuel (bouton, MQTT, bascule Manuel). Fenêtre glissante de 90 s
+  // côté firmware (3× la cadence /data) : ce compteur mémorise la dernière
+  // valeur déjà annoncée pour ne toaster qu'une fois par événement.
+  let _rescueLastAnnouncedLift = 0;
+
+  // Volume quotidien EFFECTIF de secours, reflet client de la condition C3 du
+  // gate pool-chemistry (feature-140) : min(1500, limite utilisateur si > 0,
+  // 2000). Sans ce calcul, une limite utilisateur < 1500 rendrait L5
+  // inatteignable côté client alors que le firmware plafonne déjà en dessous
+  // — angle mort que ce widget existe pour fermer. ⚠️ Le LIBELLÉ L5 reste
+  // IMPOSÉ mot à mot, y compris son « (1500 mL) » : seul le SEUIL de
+  // déclenchement est dérivé ici, jamais le texte affiché.
+  function _rescueEffectiveDailyMl(cfg) {
+    let vol = 1500; // miroir de kRescueChlorineDailyMl (constants.h)
+    const userLimit = cfg.max_orp_ml_per_day;
+    if (typeof userLimit === 'number' && userLimit > 0 && userLimit < vol) vol = userLimit;
+    const hardCap = 2000; // miroir de kRescueChlorineDailyHardCapMl (constants.h)
+    if (vol > hardCap) vol = hardCap;
+    return vol;
+  }
+
+  // Causes « armé mais non dosant » dérivées côté client de champs /data déjà
+  // existants (aucun champ WS dédié). Priorité IMPOSÉE par le gate :
+  // L3 (filtration) > L4 (pH) > L5 (plafond).
+  function _rescueReasonText(data, cfg) {
+    if (data.water_present === false) {
+      // L3
+      return "Sans effet pour l'instant : filtration à l'arrêt, aucune injection possible.";
+    }
+    const ph = data.phFiltered; // pH CORRIGÉ (brut + offset) — c'est ce que l'utilisateur reconnaît
+    if (typeof ph === 'number' && Number.isFinite(ph)) {
+      // ⚠️ Piège BRUT/CORRIGÉ récurrent sur ce projet (ADR-0039) : le firmware
+      // inhibe la chloration sur le pH FILTRÉ EN ÉCHELLE BRUTE
+      // (getPhFilteredRaw(), hors offset) — PAS sur phFiltered (corrigé).
+      // Les deux ne coïncident QUE si ph_offset == 0. Pour que ce callout ne
+      // reproduise pas l'angle mort qu'il existe pour fermer (badge « en
+      // attente » sans cause affichée si le seuil brut est franchi mais pas
+      // le corrigé, ou l'inverse), on RETRANCHE l'offset avant de comparer au
+      // seuil : NE PAS « corriger » ce signe, c'est délibéré.
+      const offset = (cfg && typeof cfg.ph_offset === 'number') ? cfg.ph_offset : 0;
+      const phRaw = ph - offset;
+      if (phRaw > 7.6) {
+        // L4 — gabarit, %s = pH CORRIGÉ (phFiltered) à 2 décimales — délibéré
+        // et contre-intuitif : seul le TEST de seuil passe en échelle brute,
+        // l'AFFICHAGE reste en échelle corrigée, la seule que l'utilisateur
+        // reconnaît sur le reste du tableau de bord.
+        return `Chloration suspendue : pH ${ph.toFixed(2)} — le chlore y est peu actif. Faire baisser le pH d'abord.`;
+      }
+    }
+    const effectiveDailyMl = _rescueEffectiveDailyMl(cfg || {});
+    if (typeof data.orp_daily_ml === 'number' && data.orp_daily_ml >= effectiveDailyMl) {
+      // L5a/L5b — PAIRE de libellés IMPOSÉS par le gate pool-chemistry, repris
+      // MOT À MOT : ne JAMAIS les reformuler, abréger ou tronquer sans
+      // repasser ce gate. Modifier l'un sans l'autre casse la cohérence du
+      // raisonnement : la conclusion « le facteur limitant n'est pas le
+      // chlore » (L5a) n'est valide QUE si le plein de 1500 mL a été atteint
+      // — plafonné par la limite utilisateur (L5b), cette conclusion serait
+      // fausse et détournerait l'utilisateur du seul correctif réel (relever
+      // sa limite).
+      if (effectiveDailyMl < 1500) {
+        // L5b — gabarit, %s = volume effectif, ENTIER, sans décimale.
+        return `Volume quotidien atteint (${Math.round(effectiveDailyMl)} mL), plafonné par votre limite journalière. Reprise demain. Ce volume est inférieur aux 1500 mL du mode de secours : on ne peut pas en conclure que le chlore n'est pas le facteur limitant.`;
+      }
+      // L5a
+      return "Volume quotidien atteint (1500 mL). Reprise demain. Si l'ORP ne monte pas malgré ce volume, le facteur limitant n'est pas le chlore.";
+    }
+    return null;
+  }
+
+  function updateRescueCard() {
+    const badge = $("#detail-rescue-status");
+    if (!badge) return;
+    const startBtn = $("#detail-rescue-start");
+    const stopBtn = $("#detail-rescue-stop");
+    const hintEl = $("#detail-rescue-hint");
+    const untilRow = $("#detail-rescue-until-row");
+    const untilEl = $("#detail-rescue-until");
+    const reasonEl = $("#rescue-reason-callout");
+    const data = latestSensorData || {};
+    const cfg = window._config || {};
+
+    const until = Number.isFinite(data.rescue_until) ? data.rescue_until : 0;
+    const active = until > 0;
+    const dosing = active && !!data.rescue_dosing;
+
+    // feature-140 : lecture NVS (contrat « publication »), PAS le mode effectif
+    // — le secours ne modifie jamais orp_regulation_mode en NVS, donc la
+    // valeur publiée reste la configuration réelle de l'utilisateur.
+    const orpMode = cfg.orp_regulation_mode || "automatic";
+    const isManual = orpMode === "manual";
+
+    // feature-140 : rescue_lift — raison de FIN du mode (0 = aucune fin
+    // récente). Rétrocompat : champ absent (firmware ancien) ⇒ 0, aucun
+    // toast, aucune erreur (même patron que rescue_until/rescue_dosing).
+    const lift = Number.isFinite(data.rescue_lift) ? data.rescue_lift : 0;
+    if (lift !== 0 && lift !== _rescueLastAnnouncedLift) {
+      if (lift === 1) {
+        // L6 — libellé IMPOSÉ par le gate pool-chemistry, repris MOT À MOT.
+        showToast(
+          "Chloration de secours levée automatiquement : les mesures ORP sont de nouveau fiables depuis 30 minutes. La régulation automatique a repris.",
+          "info"
+        );
+      } else if (lift === 2) {
+        // L9 — libellé IMPOSÉ par le gate pool-chemistry, repris MOT À MOT :
+        // ne JAMAIS le reformuler, abréger ou tronquer sans repasser ce gate.
+        showToast(
+          "Chloration de secours terminée : les 48 h maximum sont écoulées. Rien ne prouve que l'eau est redevenue fiable. La régulation automatique a déjà repris selon votre configuration : contrôlez le chlore libre au réactif DPD et le pH avant de lui faire confiance, et réarmez la chloration de secours si les sondes restent douteuses.",
+          "warning"
+        );
+      }
+      // lift === 3 (arrêt manuel) : aucun toast, l'utilisateur vient d'agir.
+      _rescueLastAnnouncedLift = lift;
+    } else if (lift === 0) {
+      _rescueLastAnnouncedLift = 0;
+    }
+
+    if (isManual) {
+      // L8
+      const l8 = "Chloration de secours indisponible : la régulation du chlore est en mode Manuel. Repassez en Automatique ou Programmée pour l'utiliser.";
+      if (hintEl) { hintEl.textContent = l8; hintEl.style.display = ""; }
+      if (startBtn) {
+        startBtn.style.display = "";
+        startBtn.disabled = true;
+        startBtn.setAttribute('aria-disabled', 'true');
+        startBtn.title = l8;
+      }
+      if (stopBtn) stopBtn.style.display = "none";
+      badge.textContent = "Indisponible";
+      badge.className = "state-badge state-badge--off";
+      if (untilRow) untilRow.style.display = "none";
+      if (reasonEl) { reasonEl.hidden = true; reasonEl.textContent = ""; }
+      return;
+    }
+
+    if (startBtn) {
+      startBtn.disabled = false;
+      startBtn.removeAttribute('aria-disabled');
+      startBtn.removeAttribute('title');
+    }
+
+    if (!active) {
+      badge.textContent = "Inactif";
+      badge.className = "state-badge state-badge--off";
+      if (untilRow) untilRow.style.display = "none";
+      if (reasonEl) { reasonEl.hidden = true; reasonEl.textContent = ""; }
+      if (hintEl) {
+        // L1
+        hintEl.textContent = "Pour eau trouble ou sonde douteuse : injecte un volume de chlore fixe, sans tenir compte des sondes. Maintient une désinfection minimale — ne rattrape pas une eau boueuse : seul le retrait mécanique de la boue le fait.";
+        hintEl.style.display = "";
+      }
+      if (startBtn) startBtn.style.display = "";
+      if (stopBtn) stopBtn.style.display = "none";
+      return;
+    }
+
+    // Actif.
+    if (hintEl) hintEl.style.display = "none";
+    if (startBtn) startBtn.style.display = "none";
+    if (stopBtn) stopBtn.style.display = "";
+    if (untilRow) {
+      untilRow.style.display = "";
+      if (untilEl) {
+        const d = new Date(until * 1000);
+        const p = (n) => String(n).padStart(2, "0");
+        untilEl.textContent = `${p(d.getDate())}/${p(d.getMonth() + 1)} à ${p(d.getHours())}:${p(d.getMinutes())}`;
+      }
+    }
+
+    if (dosing) {
+      badge.textContent = "Actif";
+      badge.className = "state-badge state-badge--ok";
+      badge.setAttribute('aria-label', "Chloration de secours active et en cours de dosage");
+      if (reasonEl) { reasonEl.hidden = true; reasonEl.textContent = ""; }
+    } else {
+      badge.textContent = "Actif · en attente";
+      badge.className = "state-badge state-badge--warn";
+      // Distinction warn/ok non daltonienne : aria-label explicite.
+      badge.setAttribute('aria-label', "Chloration de secours active mais ne dose pas actuellement");
+      if (reasonEl) {
+        const reason = _rescueReasonText(data, cfg);
+        if (reason) { reasonEl.textContent = reason; reasonEl.hidden = false; }
+        else { reasonEl.hidden = true; reasonEl.textContent = ""; }
+      }
+    }
+  }
+
+  // feature-140 (B2) : ligne d'effet combiné, 8 combinaisons. boost_chlorine_boosted
+  // devient naturellement faux quand le mode ORP effectif n'est plus automatic
+  // (donc déjà faux quand le secours est armé) : aucun calcul client à ajouter.
+  // chlorBoost × rescueDosing sont exclusifs par construction firmware.
+  function _tempModesEffectText(filtExt, chlorBoost, rescueDosing) {
+    if (chlorBoost && rescueDosing) {
+      // Ne devrait jamais être atteint (exclusif par construction firmware) —
+      // ne pas planter, ne pas coder la branche.
+      console.warn('[modes temporaires] état impossible : surchloration et chloration de secours actives simultanément');
+      return { text: "—", badge: 'warn' };
+    }
+    if (!filtExt && !chlorBoost && !rescueDosing) return { text: "Sans effet (filtration non gérée, ORP non automatique)", badge: 'warn' };
+    if (filtExt && !chlorBoost && !rescueDosing)  return { text: "Filtration prolongée seule", badge: 'ok' };
+    if (!filtExt && chlorBoost && !rescueDosing)  return { text: "Surchloration seule", badge: 'ok' };
+    if (filtExt && chlorBoost && !rescueDosing)   return { text: "Filtration prolongée + surchloration", badge: 'ok' };
+    if (!filtExt && !chlorBoost && rescueDosing)  return { text: "Chloration de secours seule", badge: 'ok' };
+    if (filtExt && !chlorBoost && rescueDosing)   return { text: "Filtration prolongée + chloration de secours", badge: 'ok' };
+    console.warn('[modes temporaires] combinaison inattendue', { filtExt, chlorBoost, rescueDosing });
+    return { text: "—", badge: 'warn' };
+  }
+
+  function updateTempModesEffect() {
+    const row = $("#temp-modes-effect-row");
+    const el = $("#temp-modes-effect");
+    const suggestEl = $("#temp-modes-suggest-boost");
+    if (!row || !el) return;
+    const data = latestSensorData || {};
+    const cfg = window._config || {};
+
+    const boostActive = (data.boost_active != null) ? !!data.boost_active : !!cfg.boost_active;
+    // Prospectif (toujours publié, indépendant de boost_active) : ne décrit un
+    // effet RÉEL qu'une fois combiné avec boostActive ci-dessous.
+    const filtExtAvailable = data.boost_filtration_extended !== false;
+    const chlorBoostAvailable = data.boost_chlorine_boosted !== false;
+    const effFiltExt = boostActive && filtExtAvailable;
+    const effChlorBoost = boostActive && chlorBoostAvailable;
+
+    const rescueActive = Number.isFinite(data.rescue_until) && data.rescue_until > 0;
+    const rescueDosing = rescueActive && !!data.rescue_dosing;
+
+    if (!boostActive && !rescueActive) {
+      // Rien d'engagé : pas de ligne d'effet à rapporter (chaque sous-bloc
+      // dit déjà « Inactif »).
+      row.style.display = "none";
+      if (suggestEl) suggestEl.hidden = true;
+      return;
+    }
+
+    row.style.display = "";
+    const { text, badge } = _tempModesEffectText(effFiltExt, effChlorBoost, rescueDosing);
+    el.textContent = text;
+    el.style.color = (badge === 'warn') ? 'var(--warn)' : '';
+
+    // Recommandation non bloquante du gate : secours armé + filtration non
+    // prolongée (et prolongeable sous l'install mode courant) ⇒ suggérer le Boost.
+    if (suggestEl) suggestEl.hidden = !(rescueActive && filtExtAvailable && !boostActive);
+  }
+
   function updateStatusCards() {
     updateBoostCard();  // feature-053 : indépendant de latestSensorData
+    updateRescueCard(); // feature-140 : indépendant de latestSensorData
+    updateTempModesEffect(); // feature-140 (B2) : ligne d'effet combiné
     updateExternalStatePill();  // feature-056 : pill signal filtration externe
     if (!latestSensorData) return;
 
@@ -5852,6 +6112,7 @@
               if (r.chlorine_boosted != null) latestSensorData.boost_chlorine_boosted = r.chlorine_boosted;
             }
             updateBoostCard();
+            updateTempModesEffect(); // feature-140 : la ligne d'effet combiné dépend aussi du Boost
             // feature-054 : toast adaptatif selon les leviers réellement actifs
             // (renvoyés par le firmware, source de vérité).
             const filtExt = r.filtration_extended !== false;   // défaut true si absent (rétrocompat)
@@ -5885,12 +6146,71 @@
           if (response.ok) {
             if (latestSensorData) { latestSensorData.boost_active = false; latestSensorData.boost_until = 0; }
             updateBoostCard();
+            updateTempModesEffect(); // feature-140 : la ligne d'effet combiné dépend aussi du Boost
             showToast("Boost désactivé", "success");
           } else {
             showToast("Erreur lors de l'arrêt du Boost", "error");
           }
         } catch (e) {
           console.error('Erreur arrêt boost:', e);
+          showToast("Erreur de connexion", "error");
+        }
+      });
+    }
+
+    // Boutons Chloration de secours (feature-140), décalqués du Boost.
+    const rescueStartBtn = $("#detail-rescue-start");
+    const rescueStopBtn = $("#detail-rescue-stop");
+
+    if (rescueStartBtn) {
+      rescueStartBtn.addEventListener('click', async () => {
+        // L2 — confirmation IMPOSÉE par le gate pool-chemistry (feature-140),
+        // reprise MOT À MOT : ne pas reformuler sans nouveau passage du gate.
+        const ok = await confirmDialog({
+          title: "Activer la chloration de secours ?",
+          message: "Le dosage se fera à l'aveugle, sans contrôle de l'ORP, pendant 48 h au maximum. Volume plafonné à 1500 mL par jour. Le pH n'est jamais dosé dans ce mode. Désactivez-le dès que les sondes sont de nouveau fiables.",
+          confirmLabel: 'Activer',
+          cancelLabel: 'Annuler',
+        });
+        if (!ok) return;
+        try {
+          const response = await authFetch("/rescue/start", { method: "POST" });
+          if (response.ok) {
+            const r = await response.json().catch(() => ({}));
+            if (latestSensorData) {
+              latestSensorData.rescue_until = (r.rescue_until != null) ? r.rescue_until : latestSensorData.rescue_until;
+            }
+            updateRescueCard();
+            updateTempModesEffect();
+            showToast("Chloration de secours activée.", "info");
+          } else if (response.status === 409) {
+            const r = await response.json().catch(() => ({}));
+            // L8 / refus horloge non synchronisée : message renvoyé tel quel par le firmware.
+            showToast(r.message || "Activation impossible.", "error");
+          } else {
+            showToast("Erreur lors de l'activation de la chloration de secours", "error");
+          }
+        } catch (e) {
+          console.error('Erreur activation chloration de secours:', e);
+          showToast("Erreur de connexion", "error");
+        }
+      });
+    }
+
+    if (rescueStopBtn) {
+      rescueStopBtn.addEventListener('click', async () => {
+        try {
+          const response = await authFetch("/rescue/stop", { method: "POST" });
+          if (response.ok) {
+            if (latestSensorData) { latestSensorData.rescue_until = 0; latestSensorData.rescue_dosing = false; }
+            updateRescueCard();
+            updateTempModesEffect();
+            showToast("Chloration de secours désactivée", "success");
+          } else {
+            showToast("Erreur lors de l'arrêt de la chloration de secours", "error");
+          }
+        } catch (e) {
+          console.error('Erreur arrêt chloration de secours:', e);
           showToast("Erreur de connexion", "error");
         }
       });
@@ -6431,6 +6751,43 @@
     body.appendChild(strong);
     body.appendChild(dur);
     container.appendChild(body);
+
+    // feature-140 (B4) : chaînage vers la chloration de secours, ligne ORP
+    // UNIQUEMENT (le secours ne concerne jamais le pH) — même liste blanche
+    // DOSE_BLOCK_SHORTCUT_CODES que le raccourci ci-dessous, sans extension.
+    // Placé AVANT le bouton secondaire existant (btn--primary ici, c'est
+    // l'action recommandée — contrairement au raccourci d'injection manuelle).
+    // ⚠️ Le clic N'ACTIVE PAS : il défile et met le focus sur le sous-bloc
+    // secours — la confirmation L2 (confirmDialog) reste un passage obligé.
+    if (shortcutPrefix === 'orp') {
+      const cfg = window._config || {};
+      const isManual = (cfg.orp_regulation_mode || 'automatic') === 'manual';
+      const rescueHint = document.createElement('p');
+      rescueHint.className = 'dose-block-banner__rescue-hint';
+      if (isManual) {
+        // L8 — libellé IMPOSÉ par le gate pool-chemistry, repris MOT À MOT.
+        rescueHint.textContent = "Chloration de secours indisponible : la régulation du chlore est en mode Manuel. Repassez en Automatique ou Programmée pour l'utiliser.";
+        container.appendChild(rescueHint);
+      } else {
+        // L7 — libellé IMPOSÉ par le gate pool-chemistry, repris MOT À MOT.
+        rescueHint.textContent = "Dosage du chlore bloqué : mesures non représentatives. Vous pouvez activer la chloration de secours pour continuer à injecter un volume fixe.";
+        container.appendChild(rescueHint);
+
+        const rescueBtn = document.createElement('button');
+        rescueBtn.type = 'button';
+        rescueBtn.className = 'btn btn--primary dose-block-banner__cta';
+        rescueBtn.textContent = 'Activer la chloration de secours';
+        rescueBtn.addEventListener('click', () => {
+          const card = $("#dashboard-temp-modes-card");
+          if (card && typeof card.scrollIntoView === 'function') {
+            card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          }
+          const startBtn = $("#detail-rescue-start");
+          if (startBtn) startBtn.focus();
+        });
+        container.appendChild(rescueBtn);
+      }
+    }
 
     if (shortcutPrefix) {
       const btn = document.createElement('button');

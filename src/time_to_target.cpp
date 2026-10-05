@@ -295,7 +295,12 @@ void TimeToTargetManager::tick() {
   in.band = pumpProtection.orpStartThreshold;
   in.maxPlausibleE0 = kTttMaxPlausibleE0Orp;
   in.boostActive = isBoostActive(time(nullptr));
-  in.automatic = !operatorOff && (mqttCfg.orpRegulationMode != "manual");
+  // feature-140 : DÉCISION (la voie ORP est-elle suivie ?) => mode EFFECTIF,
+  // pas la NVS brute — pendant la chloration de secours, le mode EFFECTIF
+  // reste Scheduled (!= Manual) même si la NVS affiche encore "automatic" avec
+  // un pH NaN ; l'indicateur continue donc de suivre la voie, comme pour un
+  // mode scheduled choisi directement par l'utilisateur.
+  in.automatic = !operatorOff && (PumpController.effectiveOrpMode() != OrpMode::Manual);
   tickChannel(kTttChannelOrp, in);
 
   // Mémoire RTC : elle ne porte QUE le volatil (progression de tenue et état

@@ -6,6 +6,7 @@
 #include "ph_guard_logic.h"  // v2.25.0 : roundPhOffsetToStep() (logique pure)
 #include "ph_integral_logic.h"  // v2.27.0 : phSustainableAvgFlow() (logique pure)
 #include "ph_actuator_limit_logic.h"  // feature-086 : phActuatorLimitStreak() (logique pure)
+#include "temp_mode_logic.h"  // feature-140 : rescueActivePure()/rescueDeadlinePure() (logique pure)
 #include <Preferences.h>
 #include <time.h>
 
@@ -31,6 +32,7 @@ PumpProtection pumpProtection;
 ProductConfig productCfg;
 bool productConfigDirty = false;
 BoostState boostState;
+RescueState rescueState;
 
 // Mutex pour protection concurrence
 SemaphoreHandle_t configMutex = nullptr;
@@ -1220,7 +1222,12 @@ void startBoost() {
   if (mqttCfg.installMode != InstallMode::ManagedFiltration) {
     systemLogger.warning("[Boost] Filtration non gérée par PoolController — le Boost NE prolonge PAS la filtration");
   }
-  if (mqttCfg.orpRegulationMode != "automatic") {
+  // feature-140 : le mode EFFECTIF, pas la NVS. Avec la chloration de secours
+  // active, la NVS peut encore dire "automatic" alors que le dosage est passé en
+  // programmé — le Boost est alors inerte sur le chlore SANS que ce log le dise.
+  // L'utilisateur armerait le Boost en croyant surchlorer, sans aucun signal.
+  // C'est précisément l'honnêteté d'effet que feature-055 a instaurée.
+  if (mqttCfg.orpRegulationMode != "automatic" || isRescueChlorineActive(time(nullptr))) {
     systemLogger.warning("[Boost] Régulation ORP non automatique — le Boost NE relève PAS le chlore (seule la filtration est prolongée, si gérée)");
   }
 }
@@ -1250,5 +1257,140 @@ void tickBoostExpiry(time_t now) {
     boostState.untilEpoch = 0;
     saveBoostState();
     systemLogger.info("[Boost] Expiré au passage de minuit — retour au comportement normal");
+  }
+}
+
+// =============================================================================
+// Chloration de secours (feature-140) — surcouche temporaire du mode scheduled
+// =============================================================================
+// Persistance NVS DÉDIÉE (namespace poolctrl, clés rescue_active/rescue_until) —
+// écriture ciblée, même motif que le Boost (éviter l'usure d'une réécriture
+// complète de la config générale).
+
+void saveRescueState() {
+  if (configMutex && xSemaphoreTakeRecursive(configMutex, pdMS_TO_TICKS(kConfigMutexTimeoutMs)) != pdTRUE) {
+    systemLogger.warning("[Config] saveRescueState: mutex timeout — état secours non persisté");
+    return;
+  }
+  Preferences prefs;
+  if (!prefs.begin("poolctrl", false)) {
+    systemLogger.error("Échec ouverture NVS pour état chloration de secours");
+    if (configMutex) xSemaphoreGiveRecursive(configMutex);
+    return;
+  }
+  prefs.putBool("rescue_active", rescueState.active);
+  prefs.putLong64("rescue_until", (int64_t)rescueState.untilEpoch);
+  prefs.end();
+  if (configMutex) xSemaphoreGiveRecursive(configMutex);
+}
+
+void loadRescueState() {
+  Preferences prefs;
+  if (!prefs.begin("poolctrl", true)) {
+    return;  // Pas de config, secours inactif par défaut
+  }
+  rescueState.active = prefs.getBool("rescue_active", false);
+  rescueState.untilEpoch = (time_t)prefs.getLong64("rescue_until", 0);
+  prefs.end();
+
+  // Condition #6 du gate (fail-closed) : on NE force PAS rescueState.active à
+  // false ici si l'heure est invalide — isRescueChlorineActive() le traduit
+  // déjà en « inactif » tant que l'heure n'est pas synchronisée, et redevient
+  // vrai de lui-même dès le retour de l'heure si l'échéance n'est pas dépassée
+  // (NTP reprend son cours normalement en quelques secondes au boot).
+  time_t now = time(nullptr);
+  if (rescueState.active && now >= kMinValidEpoch && now >= rescueState.untilEpoch) {
+    rescueState.active = false;
+    rescueState.untilEpoch = 0;
+    systemLogger.info("[Secours] État chargé expiré (48h dépassées) — chloration de secours inactive");
+  } else if (rescueState.active) {
+    systemLogger.info("[Secours] État restauré : chloration de secours active jusqu'à epoch " +
+                       String((long)rescueState.untilEpoch));
+  }
+}
+
+// Complément feature-140 (2026-10-05) : raison de FIN publiée à parité
+// /data ↔ WS (`rescue_lift`), RAM UNIQUEMENT — voir RescueLiftReason, config.h.
+// Statiques de TRADUCTION (fichier), pas de la persistance : aucun lien avec
+// RescueState ni la NVS, jamais lues par save/loadRescueState.
+static uint8_t sRescueLiftReason = 0;
+static unsigned long sRescueLiftReasonAtMs = 0;
+
+static void setRescueLiftReason(RescueLiftReason reason) {
+  sRescueLiftReason = static_cast<uint8_t>(reason);
+  sRescueLiftReasonAtMs = millis();
+}
+
+uint8_t getRescueLiftReasonCode(unsigned long nowMs) {
+  // Délègue entièrement à temp_mode_logic.h (PUR), testé nativement (D1,
+  // test-engineer feature-140) : ici, uniquement la collecte des deux statiques
+  // RAM ci-dessus. Comportement INCHANGÉ (même formule, même idiome
+  // qu'avant extraction — _rescueStableSinceMs, pump_controller.cpp).
+  // uint32_t explicite (voir temp_mode_logic.h) : `unsigned long` EST déjà un
+  // uint32_t sur ESP32 (cible de ce fichier) — conversion sans perte.
+  return rescueLiftReasonVisiblePure(sRescueLiftReason, (uint32_t)nowMs,
+                                      (uint32_t)sRescueLiftReasonAtMs,
+                                      (uint32_t)kRescueLiftReasonVisibleMs);
+}
+
+void startRescueChlorine() {
+  // Condition #5 du gate : mode Manuel incompatible (double dosage — "je dose
+  // moi-même" + injection aveugle). Lu en NVS : à l'activation, le secours
+  // n'est pas encore actif, donc mode EFFECTIF == mode NVS (effectiveOrpModePure
+  // avec rescueActive=false renvoie nvsMode inchangé).
+  if (mqttCfg.orpRegulationMode == "manual") {
+    systemLogger.warning("[Secours] Activation refusée : régulation du chlore en mode Manuel");
+    return;
+  }
+  time_t now = time(nullptr);
+  // Condition #6 : sans heure synchronisée, l'échéance 48h ne peut être
+  // calculée de façon fiable → refus (fail-closed), comme le Boost (minuit).
+  if (now < kMinValidEpoch) {
+    systemLogger.warning("[Secours] Activation refusée : heure non synchronisée (échéance 48h indéterminable)");
+    return;
+  }
+  rescueState.untilEpoch = rescueDeadlinePure(now, kRescueChlorineDurationS);
+  rescueState.active = true;
+  saveRescueState();
+  // Une nouvelle activation efface toute raison de fin encore visible d'un
+  // cycle précédent (ré-armement rapproché) : le secours est de nouveau actif,
+  // il n'y a plus de "fin récente" à rapporter.
+  setRescueLiftReason(RescueLiftReason::None);
+  systemLogger.info("[Secours] Chloration de secours activée jusqu'à epoch " +
+                     String((long)rescueState.untilEpoch) + " (48h, volume max " +
+                     String(kRescueChlorineDailyMl, 0) + " mL/j)");
+}
+
+void stopRescueChlorine(RescueLiftReason reason) {
+  rescueState.active = false;
+  rescueState.untilEpoch = 0;
+  saveRescueState();
+  setRescueLiftReason(reason);
+  switch (reason) {
+    case RescueLiftReason::AutoLift:
+      // Pas de log ici : PumpControllerClass::tickRescueChlorineAutoLift()
+      // émet DÉJÀ le libellé L6 (mot à mot, imposé par le gate) juste avant
+      // d'appeler cette fonction — un second log serait redondant.
+      break;
+    case RescueLiftReason::Expired48h:
+      systemLogger.info("[Secours] Chloration de secours expirée (48h écoulées) — retour au mode configuré");
+      break;
+    case RescueLiftReason::Manual:
+    default:
+      systemLogger.info("[Secours] Chloration de secours désactivée");
+      break;
+  }
+}
+
+bool isRescueChlorineActive(time_t now) {
+  return rescueActivePure(rescueState.active, now, rescueState.untilEpoch, kMinValidEpoch);
+}
+
+void tickRescueChlorineExpiry(time_t now) {
+  // Expire la chloration de secours 48h après activation. Mutualisé avec
+  // tickDailyRollover (appelé à chaque tour), SANS lien avec le passage de
+  // minuit — la durée du secours est glissante (condition #1 du gate).
+  if (rescueState.active && now >= kMinValidEpoch && now >= rescueState.untilEpoch) {
+    stopRescueChlorine(RescueLiftReason::Expired48h);
   }
 }

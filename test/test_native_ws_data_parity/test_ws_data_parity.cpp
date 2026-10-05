@@ -130,14 +130,10 @@ static const WsOnlyKey kWsOnlyLive[] = {
    "Temperature BRUTE sans offset, servie pour l'ecran de calibration uniquement : aucune route HTTP ne l'expose, la calibration se fait a l'ecoute des pushes WS."},
   {"reset_reason",
    "Cause du dernier redemarrage, consommee A LA RECEPTION de la trame (toast de redemarrage, app.js l.144) et jamais relue depuis latestSensorData : la charge /data ne peut donc rien effacer."},
-  {"filtration_state_source",
-   "Diagnostic d'origine du verdict de filtration (« interne » / « externe ») : aucune route HTTP ne le sert et AUCUN consommateur dans app.js — trace de journal, pas d'affichage."},
   {"filtration_state_stale",
    "Peremption du signal de filtration, evaluee a chaque push : aucune route HTTP ne le sert. Consomme avec la garde `=== true`, donc degradation silencieuse (« Filtration arretee » au lieu de « Signal perime ») apres une charge /data."},
   {"filtration_ext_known",
    "Presence d'un verdict de filtration EXTERNE, etat vivant du lien : aucune route HTTP ne le sert, garde `=== true` cote client."},
-  {"filtration_ext_on",
-   "Verdict de filtration externe (marche/arret) : aucune route HTTP ne le sert et aucun consommateur dans app.js — diagnostic de trame."},
   {"filtration_ext_age_s",
    "Age du dernier verdict externe, avance a la seconde : aucune route HTTP ne le sert, garde `Number.isFinite` cote client."},
   {"boost_filtration_extended",
@@ -152,8 +148,11 @@ static const WsOnlyKey kWsOnlyLive[] = {
 static const size_t kWsOnlyLiveCount = sizeof(kWsOnlyLive) / sizeof(kWsOnlyLive[0]);
 
 // CLIQUET (g) : borne de l'état constaté le 2026-09-07, feature-092. Le compte
-// ne doit JAMAIS augmenter — une clé neuve de la trame va dans /data.
-static const size_t kWsOnlyLiveCeiling = 18;
+// ne doit JAMAIS augmenter — une clé neuve de la trame va dans /data. Abaissé
+// 18 → 16 le 2026-10-05 (feature-140) : `filtration_state_source` et
+// `filtration_ext_on` ont migré vers kDataOnly (ADR-0086, financement du
+// budget WS) — la dette inventoriée se réduit, le plafond la suit.
+static const size_t kWsOnlyLiveCeiling = 16;
 
 // ---------------------------------------------------------------------------
 // CATÉGORIE 2 — clés DUAL-SOURCÉES : absentes de /data, mais servies par une
@@ -199,6 +198,10 @@ static const WsOnlyKey kDataOnly[] = {
    "Integrale pH accumulee (pH.s), ELAGUEE de la trame WS par feature-138 (option a, decision utilisateur du 2026-10-04) : plus aucun consommateur cote client depuis feature-092. Reste un contrat externe sur /data, MQTT et Home Assistant."},
   {"ph_integral_term",
    "Contribution au debit moyen demande (mL/min) du terme integral pH, ELAGUEE de la trame WS par feature-138 pour le meme motif et la meme decision que ph_integral ci-dessus — budget d'octets de sWsFrameBuf."},
+  {"filtration_state_source",
+   "Diagnostic d'origine du verdict de filtration (« commanded »/« powered »/« external »), ELAGUE de la trame WS par feature-140 (ADR-0086, aucun consommateur dans app.js) pour financer rescue_until/rescue_dosing — reste un contrat externe sur /data."},
+  {"filtration_ext_on",
+   "Verdict de filtration externe (marche/arret), ELAGUE de la trame WS par feature-140 pour le meme motif et la meme decision que filtration_state_source ci-dessus — budget d'octets de sWsFrameBuf."},
 };
 static const size_t kDataOnlyCount = sizeof(kDataOnly) / sizeof(kDataOnly[0]);
 

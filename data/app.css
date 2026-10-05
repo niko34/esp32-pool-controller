@@ -3119,6 +3119,21 @@ input.is-computed:disabled {
   animation: slideIn 0.3s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
+/* feature-140 : sous-blocs du widget « Modes temporaires » (Boost + Chloration
+   de secours) — en-têtes internes sans le padding latéral du
+   card__status-header top-level (déjà fourni par le card__body englobant).
+   Aucune variable CSS nouvelle : réutilise --stroke/--border existants. */
+#temp-mode-boost .card__status-header,
+#temp-mode-rescue .card__status-header {
+  padding: 0 0 12px;
+  margin-bottom: 12px;
+}
+.temp-mode__sep {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 16px 0;
+}
+
 @keyframes slideIn {
   from {
     opacity: 0;
@@ -3769,9 +3784,23 @@ h1, h2, h3 {
   line-height: 1.45;
   color: var(--text);
 }
-/* C4 (pool-chemistry) : btn--secondary à dessein, jamais bouton primaire — le
-   raccourci n'est jamais l'action recommandée. */
+/* C4 (pool-chemistry) : le raccourci d'INJECTION MANUELLE reste btn--secondary
+   à dessein, jamais bouton primaire — il n'est jamais l'action recommandée.
+   Cette classe .dose-block-banner__cta sert aussi (feature-140, B4) le bouton
+   d'activation de la chloration de secours, qui lui est bien btn--primary
+   (voulu par le design, validé par le gate) : l'interdiction ci-dessus ne vise
+   QUE le raccourci d'injection manuelle, pas ce second bouton. */
 .dose-block-banner__cta { flex: 0 0 auto; align-self: center; }
+/* feature-140 (B4) : contexte (L7) du bouton de chaînage vers la chloration
+   de secours, ligne ORP uniquement. */
+.dose-block-banner__rescue-hint {
+  display: block;
+  width: 100%;
+  margin: 4px 0 0;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text);
+}
 @media (max-width: 480px) {
   .dose-block-banner__row { flex-wrap: wrap; }
   .dose-block-banner__cta { width: 100%; margin-top: 8px; }

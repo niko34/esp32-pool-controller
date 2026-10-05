@@ -763,8 +763,10 @@ void setupControlRoutes(AsyncWebServer* server) {
     wsManager.requestConfigBroadcast(); // resync UI web (pattern bug-sync)
     // feature-054 : indiquer à l'UI quels leviers sont réellement actifs
     // (filtration prolongée seulement si gérée ; chlore relevé seulement si ORP automatic).
+    // feature-140 : verdict DÉRIVÉ sur le mode EFFECTIF (pas la NVS brute) —
+    // même motif que ws_manager.cpp:883 (boost_chlorine_boosted).
     const bool filtrationExtended = (mqttCfg.installMode == InstallMode::ManagedFiltration);  // feature-056
-    const bool chlorineBoosted = (mqttCfg.orpRegulationMode == "automatic");
+    const bool chlorineBoosted = (PumpController.effectiveOrpMode() == OrpMode::Automatic);
     String out = String("{\"boost_active\":true,\"boost_until\":") +
                  String((long)boostState.untilEpoch) +
                  ",\"filtration_extended\":" + (filtrationExtended ? "true" : "false") +
@@ -778,6 +780,47 @@ void setupControlRoutes(AsyncWebServer* server) {
     mqttManager.publishBoostState();
     wsManager.requestConfigBroadcast();
     req->send(200, "application/json", "{\"boost_active\":false,\"boost_until\":0}");
+  });
+
+  // feature-140 : Chloration de secours (surcouche temporaire du mode
+  // `scheduled`, 48h glissantes). Décalque du Boost ci-dessus : startRescueChlorine
+  // prend configMutex en interne (saveRescueState), REFUSE si l'heure n'est pas
+  // synchronisée (échéance 48h indéterminable, condition #6 du gate) ET si la
+  // régulation ORP (NVS) est en mode Manuel (condition #5 : double dosage).
+  // Le refus Manuel est vérifié AVANT l'appel (startRescueChlorine le refuse
+  // aussi en interne, mais sans distinguer la cause pour cette réponse HTTP).
+  server->on("/rescue/start", HTTP_POST, [](AsyncWebServerRequest *req) {
+    REQUIRE_AUTH(req, RouteProtection::WRITE);
+    if (mqttCfg.orpRegulationMode == "manual") {
+      // L8 — libellé IMPOSÉ par le gate pool-chemistry (feature-140), repris
+      // MOT À MOT : ne pas reformuler sans nouveau passage du gate.
+      req->send(409, "application/json",
+                "{\"error\":\"mode_manual\",\"message\":\"Chloration de secours indisponible : "
+                "la régulation du chlore est en mode Manuel. Repassez en Automatique ou "
+                "Programmée pour l'utiliser.\"}");
+      return;
+    }
+    startRescueChlorine();
+    if (!rescueState.active) {
+      // Refus fail-closed : heure non synchronisée (échéance 48h indéterminable).
+      req->send(409, "application/json",
+                "{\"error\":\"time_not_synced\",\"message\":\"Chloration de secours impossible : "
+                "horloge non synchronisée (échéance 48h indéterminable).\"}");
+      return;
+    }
+    mqttManager.publishRescueState();   // reflète immédiatement l'état sur HA
+    wsManager.requestConfigBroadcast(); // resync UI web (pattern bug-sync)
+    String out = String("{\"rescue_active\":true,\"rescue_until\":") +
+                 String((long)rescueState.untilEpoch) + "}";
+    req->send(200, "application/json", out);
+  });
+
+  server->on("/rescue/stop", HTTP_POST, [](AsyncWebServerRequest *req) {
+    REQUIRE_AUTH(req, RouteProtection::WRITE);
+    stopRescueChlorine(RescueLiftReason::Manual);  // arrêt manuel (bouton UI)
+    mqttManager.publishRescueState();
+    wsManager.requestConfigBroadcast();
+    req->send(200, "application/json", "{\"rescue_active\":false,\"rescue_until\":0}");
   });
 
   // ---------- POST /reset-sensor-filter?sensor=ph|orp ----------

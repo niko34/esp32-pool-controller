@@ -1102,7 +1102,12 @@ static inline uint8_t orpPhInhibitSeverity(uint8_t kind) {
 }
 
 void PumpControllerClass::tickOrpPhInhibitSurveillance() {
-  const bool requireKnownPh = (mqttCfg.orpRegulationMode == "automatic");
+  // feature-140 : DÉCISION de dosage => mode EFFECTIF (NVS + chloration de
+  // secours), jamais la NVS brute. Sans cela, une activation de secours avec
+  // la NVS restée sur "automatic" laisserait requireKnownPh vrai, un pH NaN
+  // poserait l'inhibition ORP, et la branche `scheduled` resterait fermée par
+  // `!isOrpInhibitedByPh()` — zéro injection, la feature morte à l'arrivée.
+  const bool requireKnownPh = (effectiveOrpMode() == OrpMode::Automatic);
   const float phRaw = sensors.getPhFilteredRaw();
 
   if (isnan(phRaw)) {
@@ -1413,10 +1418,17 @@ bool PumpControllerClass::canDose(int pumpIndex) {
   in.stabilizationActive = isStabilizationTimerActive(pumpIndex);
   in.mixingActive = (pumpIndex == 0) ? isPhMixingDelayActive(nowMs)
                                      : isOrpMixingDelayActive(nowMs);
-  // 6. Mode régulation = automatic.
+  // 6. Mode régulation = automatic. `mode` (NVS brute) ne sert plus qu'au
+  // libellé de cause ModeNotAutomatic ci-dessous — la voie pH garde la NVS (ce
+  // mode n'y a aucune prise), la voie ORP lit le mode EFFECTIF (feature-140,
+  // règle opposable : décision de dosage => effectif). canDose(1) n'est de
+  // toute façon appelé QUE depuis la branche déjà gardée par effectiveOrpMode()
+  // == Automatic (update(), 4154 et environs) : ce routage n'y change rien EN
+  // PRATIQUE, il reste la seule lecture correcte EN PRINCIPE.
   const String& mode = (pumpIndex == 0) ? mqttCfg.phRegulationMode
                                         : mqttCfg.orpRegulationMode;
-  in.modeAutomatic = (mode == "automatic");
+  in.modeAutomatic = (pumpIndex == 0) ? (mqttCfg.phRegulationMode == "automatic")
+                                      : (effectiveOrpMode() == OrpMode::Automatic);
   // 7. Limite journalière.
   in.dailyInjectedMl = (pumpIndex == 0) ? safetyLimits.dailyPhInjectedMl
                                         : safetyLimits.dailyOrpInjectedMl;
@@ -2596,23 +2608,84 @@ uint32_t PumpControllerClass::getPulsePhaseMs(int chem, uint32_t nowMs) const {
   return phase;
 }
 
+// feature-140 : mode ORP EFFECTIF (NVS + chloration de secours). Règle
+// opposable de la spec : TOUTE décision de dosage ORP lit cet accesseur,
+// jamais mqttCfg.orpRegulationMode directement. Délègue entièrement à
+// temp_mode_logic.h (PUR) : ici, uniquement la collecte (NVS + horloge).
+OrpMode PumpControllerClass::effectiveOrpMode() const {
+  OrpMode nvsMode = orpModeFromString(mqttCfg.orpRegulationMode.c_str());
+  bool rescue = isRescueChlorineActive(time(nullptr));
+  return effectiveOrpModePure(nvsMode, rescue);
+}
+
+// feature-140 : volume quotidien ORP EFFECTIF (NVS, ou volume de secours
+// composé avec le Boost). Mêmes garanties que ci-dessus — délègue à
+// effectiveOrpDailyTargetMlPure() (conditions #2/#3/#4 du gate).
+float PumpControllerClass::getEffectiveOrpDailyTargetMl() const {
+  bool rescue = isRescueChlorineActive(time(nullptr));
+  bool boost = isBoostActive(time(nullptr));
+  return effectiveOrpDailyTargetMlPure(
+      static_cast<float>(mqttCfg.orpDailyTargetMl), rescue, boost,
+      kRescueChlorineDailyMl, kBoostDailyFactor, safetyLimits.maxChlorineMlPerDay,
+      kRescueChlorineDailyHardCapMl);
+}
+
 // feature-053 : cible ORP effective (surcouche Mode Boost). Délègue à la logique
 // pure ; l'effet est réservé au mode ORP "automatic" ET au boost actif.
+// feature-140 : `autoMode` lit le mode EFFECTIF (NVS + secours), pas la NVS
+// brute — pendant la chloration de secours (effectif == Scheduled), le Boost
+// ne relève JAMAIS la cible ORP ici, exactement comme avant pour un mode
+// scheduled choisi par l'utilisateur (non-régression D3).
 float PumpControllerClass::getEffectiveOrpTarget() const {
   bool boost = isBoostActive(time(nullptr));
-  bool autoMode = (mqttCfg.orpRegulationMode == "automatic");
+  bool autoMode = (effectiveOrpMode() == OrpMode::Automatic);
   return effectiveOrpTargetPure(mqttCfg.orpTarget, boost, autoMode,
                                 kBoostOrpDeltaMv, kBoostOrpCeilingMv);
 }
 
 // feature-053 : limite journalière chlore effective (surcouche Mode Boost).
 // Le mode scheduled/manual voit toujours la limite NORMALE (le pur gère le gate
-// via autoMode — condition pool-chemistry #1).
+// via autoMode — condition pool-chemistry #1). feature-140 : `autoMode` lit le
+// mode EFFECTIF, même motif que getEffectiveOrpTarget() ci-dessus.
 float PumpControllerClass::getEffectiveMaxChlorineMlPerDay() const {
   bool boost = isBoostActive(time(nullptr));
-  bool autoMode = (mqttCfg.orpRegulationMode == "automatic");
+  bool autoMode = (effectiveOrpMode() == OrpMode::Automatic);
   return effectiveMaxChlorinePure(safetyLimits.maxChlorineMlPerDay, boost, autoMode,
                                   kBoostDailyFactor, kBoostDailyHardCapMl);
+}
+
+// feature-140 (condition #3 du gate pool-chemistry) : levée automatique de la
+// chloration de secours, À SENS UNIQUE — termine le mode, ne le RÉ-ARME jamais
+// (un état absorbant ne peut pas battre par construction, contrairement au
+// défaut corrigé par feature-139). Seuil : kRescueChlorineAutoLiftHoldMs
+// (30 min) de tenue CONTINUE de !isOrpFilterUnstable() &&
+// measureValidity.measuresValid() — les DEUX mêmes signaux que ceux qui
+// déclarent la mesure ORP exploitable ailleurs dans ce fichier.
+void PumpControllerClass::tickRescueChlorineAutoLift(unsigned long nowMs) {
+  if (!isRescueChlorineActive(time(nullptr))) {
+    _rescueStableSinceMs = 0;  // mode inactif : minuteur au repos
+    return;
+  }
+  const bool stable = !sensors.isOrpFilterUnstable() && measureValidity.measuresValid();
+  if (!stable) {
+    _rescueStableSinceMs = 0;  // la moindre instabilité réarme la tenue à zéro
+    return;
+  }
+  if (_rescueStableSinceMs == 0) {
+    _rescueStableSinceMs = nowMs;  // début d'une tenue continue
+    return;
+  }
+  if ((unsigned long)(nowMs - _rescueStableSinceMs) >= kRescueChlorineAutoLiftHoldMs) {
+    // Complément feature-140 : reason=AutoLift publié à parité /data ↔ WS
+    // (rescue_lift) — SEUL cas où le libellé L6 ci-dessous est vrai.
+    stopRescueChlorine(RescueLiftReason::AutoLift);
+    _rescueStableSinceMs = 0;
+    // L6 — libellé IMPOSÉ par le gate pool-chemistry (feature-140), repris MOT
+    // À MOT : ne pas reformuler sans nouveau passage du gate.
+    systemLogger.info("Chloration de secours levée automatiquement : les mesures "
+                       "ORP sont de nouveau fiables depuis 30 minutes. La régulation "
+                       "automatique a repris.");
+  }
 }
 
 // Reset journalier des compteurs ml + flags limite — appelé depuis update() avant canDose()
@@ -2624,6 +2697,12 @@ void PumpControllerClass::tickDailyRollover() {
   // feature-053 (condition pool-chemistry #3) : expirer le boost au passage de
   // minuit AVANT tout reset de compteur, dans les DEUX branches de rollover.
   tickBoostExpiry(time(nullptr));
+  // feature-140 : expiration de la chloration de secours (48h glissantes, SANS
+  // lien avec le passage de minuit — simplement mutualisée avec ce point déjà
+  // exécuté à chaque tour). Condition #7 du gate : le reboot ne remet PAS à
+  // zéro le compteur journalier partagé ; rien à faire ici pour ça, il n'est
+  // pas touché par cette fonction.
+  tickRescueChlorineExpiry(time(nullptr));
 
   // feature-011 (A6) : au passage de minuit, tracer le reliquat scheduled non
   // injecté (pas de rattrapage J+1 — décision produit : le reliquat est PERDU)
@@ -2642,12 +2721,14 @@ void PumpControllerClass::tickDailyRollover() {
           String(safetyLimits.dailyPhInjectedMl, 0) + "/" + String(eff, 0) + "mL)");
       }
     }
-    if (mqttCfg.orpRegulationMode == "scheduled" && mqttCfg.orpDailyTargetMl > 0) {
-      float eff = static_cast<float>(mqttCfg.orpDailyTargetMl);
-      if (safetyLimits.maxChlorineMlPerDay > 0.0f && eff > safetyLimits.maxChlorineMlPerDay) {
-        eff = safetyLimits.maxChlorineMlPerDay;
-      }
-      if (safetyLimits.dailyOrpInjectedMl < eff) {
+    // feature-140 : DÉCISION (ce qui a été réellement visé) => mode et volume
+    // EFFECTIFS. Pendant la chloration de secours, le mode EFFECTIF est
+    // Scheduled même si la NVS affiche "automatic" — le reliquat perdu doit
+    // alors être compté sur le volume de secours RÉELLEMENT visé, pas sur
+    // mqttCfg.orpDailyTargetMl (qui peut valoir 0 dans ce cas).
+    if (effectiveOrpMode() == OrpMode::Scheduled) {
+      float eff = getEffectiveOrpDailyTargetMl();  // clamp déjà appliqué (conditions #3/#4)
+      if (eff > 0.0f && safetyLimits.dailyOrpInjectedMl < eff) {
         systemLogger.info("[Scheduled ORP] Reliquat ORP perdu au passage de minuit : " +
           String(eff - safetyLimits.dailyOrpInjectedMl, 0) + "mL non injectés (" +
           String(safetyLimits.dailyOrpInjectedMl, 0) + "/" + String(eff, 0) + "mL)");
@@ -3243,6 +3324,13 @@ void PumpControllerClass::update() {
   // branche automatique, via isPhGuardBlocking(true).
   tickPhGuardSurveillance();
   tickOrpPhInhibitSurveillance();
+
+  // feature-140 (condition #3 du gate pool-chemistry) : levée automatique à
+  // SENS UNIQUE de la chloration de secours après 30 min continues de mesures
+  // ORP fiables. Placé APRÈS tickOrpPhInhibitSurveillance() (verdict du tick à
+  // jour), AVANT toute décision de dosage — si elle lève le mode ce tick-ci, la
+  // décision qui suit voit déjà le mode EFFECTIF retombé sur la NVS réelle.
+  tickRescueChlorineAutoLift(now);
 
   // ===== feature-084 (sujet 1) : ENTRETIEN DU TERME INTÉGRAL pH ==============
   // Le tick vivait DANS la conjonction d'éligibilité de la branche automatique,
@@ -4151,8 +4239,14 @@ void PumpControllerClass::update() {
   // par tickOrpPhInhibitSurveillance(), hors conjonction — elles partent donc même
   // quand le quota chlore journalier est atteint (orpSafetyOk faux), cas où cette
   // alerte est justement la seule à désigner la vraie cause.
-  const String& orpMode = mqttCfg.orpRegulationMode;
-  if (orpMode == "automatic" && orpLimitOk && orpSafetyOk && !isOrpInhibitedByPh() && canDose(1)) {
+  // feature-140 : DÉCISION de dosage => mode EFFECTIF (NVS + chloration de
+  // secours), jamais mqttCfg.orpRegulationMode directement — règle opposable
+  // de la spec. `orpEffectiveDailyTargetMl` est calculé une seule fois ici
+  // (inerte pour la branche automatic, utilisé par la branche scheduled
+  // ci-dessous et par sa condition d'entrée).
+  const OrpMode orpModeEff = effectiveOrpMode();
+  const float orpEffectiveDailyTargetMl = getEffectiveOrpDailyTargetMl();
+  if (orpModeEff == OrpMode::Automatic && orpLimitOk && orpSafetyOk && !isOrpInhibitedByPh() && canDose(1)) {
     // feature-025 : le PID auto consomme la mesure FILTRÉE (médiane + EMA).
     // canDose(1) a déjà garanti isOrpFilterReady() && !isOrpFilterUnstable() → non NaN.
     float orpValue = sensors.getOrpFiltered();
@@ -4362,8 +4456,8 @@ void PumpControllerClass::update() {
         " erreur=" + String(error, 0) + "mV" +
         " (cycle " + String(orpDosingState.cyclesToday) + "/" + String(pumpProtection.maxCyclesPerDay) + ")");
     }
-  } else if (orpMode == "scheduled" && orpLimitOk && orpSafetyOk &&
-             mqttCfg.orpDailyTargetMl > 0 && !isOrpInhibitedByPh()) {
+  } else if (orpModeEff == OrpMode::Scheduled && orpLimitOk && orpSafetyOk &&
+             orpEffectiveDailyTargetMl > 0.0f && !isOrpInhibitedByPh()) {
     // feature-067 (pool-chemistry #3) : l'inhibition sur pH brut élevé s'applique
     // AUSSI au mode Programmée — injecter du chlore à pH > 7,6 est inefficace et
     // conduit au surdosage (filet de sécurité, pas régulation sur la mesure).
@@ -4391,8 +4485,12 @@ void PumpControllerClass::update() {
       }
       // Log "plafonné" conservé en coquille — le plafonnement lui-même est
       // AUSSI appliqué dans evaluateScheduledDose (via maxDailyMl) ;
-      // effectiveDailyMl ne sert plus ici qu'aux logs.
-      float effectiveDailyMl = static_cast<float>(mqttCfg.orpDailyTargetMl);
+      // effectiveDailyMl ne sert plus ici qu'aux logs. feature-140 : base =
+      // volume EFFECTIF (orpEffectiveDailyTargetMl, déjà clampé par
+      // getEffectiveOrpDailyTargetMl() pendant la chloration de secours — ce
+      // bloc redevient alors un no-op silencieux, correct : rien à plafonner
+      // de plus).
+      float effectiveDailyMl = orpEffectiveDailyTargetMl;
       static bool orpCappedLogged = false;
       if (safetyLimits.maxChlorineMlPerDay > 0.0f && effectiveDailyMl > safetyLimits.maxChlorineMlPerDay) {
         if (!orpCappedLogged) {
@@ -4467,7 +4565,7 @@ void PumpControllerClass::update() {
           sin.nowMin = nowMin;
           sin.horizonMinutes = horizonMinutes;
           sin.windowMinutes = kScheduledWindowMinutes;
-          sin.dailyTargetMl = static_cast<float>(mqttCfg.orpDailyTargetMl);
+          sin.dailyTargetMl = orpEffectiveDailyTargetMl;  // feature-140 : volume EFFECTIF (NVS ou secours)
           sin.maxDailyMl = safetyLimits.maxChlorineMlPerDay;
           sin.dailyInjectedMl = safetyLimits.dailyOrpInjectedMl;
           sin.effectiveFlowMlPerMin = effectiveFlowMlPerMin;

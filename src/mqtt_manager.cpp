@@ -311,6 +311,10 @@ void MqttManager::refreshTopics() {
   // feature-053 : Mode Boost (switch ON/OFF).
   topics.boostState                 = base + "/boost";
   topics.boostCommand               = base + "/boost/set";
+  // feature-140 : Chloration de secours (switch ON/OFF).
+  topics.rescueState                = base + "/rescue";
+  topics.rescueCommand              = base + "/rescue/set";
+  topics.rescueLiftReasonState      = base + "/rescue_lift_reason";
   // feature-056 : mode d'installation + signal filtration externe.
   topics.installModeState           = base + "/install_mode";
   topics.installModeCommand         = base + "/install_mode/set";
@@ -554,6 +558,7 @@ void MqttManager::connectInTask() {
     mqtt.subscribe(topics.lightingStartCommand.c_str());
     mqtt.subscribe(topics.lightingEndCommand.c_str());
     mqtt.subscribe(topics.boostCommand.c_str());  // feature-053
+    mqtt.subscribe(topics.rescueCommand.c_str()); // feature-140
     // feature-056 : mode d'installation + signal filtration externe
     mqtt.subscribe(topics.installModeCommand.c_str());
     mqtt.subscribe(topics.filtrationExternalStateCommand.c_str());
@@ -784,6 +789,21 @@ void MqttManager::publishBoostState() {
   enqueueOutbound(topics.boostState, isBoostActive(time(nullptr)) ? "ON" : "OFF", true);
 }
 
+void MqttManager::publishRescueState() {
+  // feature-140 : reflète l'état EFFECTIF de la chloration de secours
+  // (isRescueChlorineActive expire fail-closed sans heure synchronisée — même
+  // motif que le Boost). Retain pour HA.
+  enqueueOutbound(topics.rescueState, isRescueChlorineActive(time(nullptr)) ? "ON" : "OFF", true);
+  // Complément feature-140 (2026-10-05) : code de raison de fin
+  // (RescueLiftReason, 0-3), MÊME source que /data et la trame WS
+  // (getRescueLiftReasonCode) — décroît à "0" de lui-même, repris par le
+  // prochain publishAllStates() périodique (kMqttPublishIntervalMs = 10s,
+  // largement sous la fenêtre de visibilité de 90s : aucun topic retain
+  // durablement périmé).
+  enqueueOutbound(topics.rescueLiftReasonState,
+                   String(getRescueLiftReasonCode(millis())), true);
+}
+
 void MqttManager::publishProductState() {
   // feature-027 : timeout → snapshot sauté, republication naturelle au prochain cycle (retain)
   if (configMutex && xSemaphoreTakeRecursive(configMutex, pdMS_TO_TICKS(kConfigMutexTimeoutMs)) != pdTRUE) {
@@ -956,6 +976,11 @@ void MqttManager::publishAllStatesInternal() {
   safePublish(topics.lightingEndState.c_str(), lightingCfg.endTime.c_str(), true);                      // feature-052
 
   safePublish(topics.boostState.c_str(), isBoostActive(time(nullptr)) ? "ON" : "OFF", true);  // feature-053
+  safePublish(topics.rescueState.c_str(), isRescueChlorineActive(time(nullptr)) ? "ON" : "OFF", true);  // feature-140
+  // Complément feature-140 : republication périodique du code de raison — SEUL
+  // mécanisme qui ramène le topic retain à "0" une fois la fenêtre de
+  // visibilité (90s) écoulée (aucun événement ne la déclenche explicitement).
+  safePublish(topics.rescueLiftReasonState.c_str(), String(getRescueLiftReasonCode(millis())).c_str(), true);
 
   // feature-056 : mode d'installation (managed/powered/external, retain)
   safePublish(topics.installModeState.c_str(), installModeToString(mqttCfg.installMode), true);
@@ -1564,6 +1589,7 @@ void MqttManager::messageCallback(char* topic, byte* payload, unsigned int lengt
   else if (topicStr == topics.lightingStartCommand)     cmd.type = InboundCmdType::LightingStart;
   else if (topicStr == topics.lightingEndCommand)       cmd.type = InboundCmdType::LightingEnd;
   else if (topicStr == topics.boostCommand)             cmd.type = InboundCmdType::Boost;
+  else if (topicStr == topics.rescueCommand)            cmd.type = InboundCmdType::Rescue;
   else if (topicStr == topics.installModeCommand)       cmd.type = InboundCmdType::InstallMode;
   else if (topicStr == topics.filtrationExternalStateCommand)   cmd.type = InboundCmdType::FiltrationExternalState;
   else return;
@@ -1818,6 +1844,13 @@ void MqttManager::drainCommandQueue() {
           if (changed) {
             systemLogger.info("Mode régulation ORP changé (MQTT): " + payloadStr);
           }
+          // feature-140 (condition #5 du gate pool-chemistry) : bascule en
+          // Manuel pendant la chloration de secours => désarmement AUTOMATIQUE.
+          if (payloadStr == "manual" && isRescueChlorineActive(time(nullptr))) {
+            stopRescueChlorine(RescueLiftReason::Manual);
+            publishRescueState();
+            systemLogger.warning("[Secours] Désarmée : bascule en mode Manuel (MQTT)");
+          }
         } else {
           systemLogger.warning("Mode régulation ORP invalide (MQTT): " + payloadStr);
         }
@@ -2014,6 +2047,35 @@ void MqttManager::drainCommandQueue() {
           systemLogger.warning("Commande Boost invalide (MQTT): " + payloadStr);
         }
         publishBoostState();
+        break;
+      }
+      case InboundCmdType::Rescue: {
+        // feature-140 : Chloration de secours (ON/OFF). start/stopRescueChlorine
+        // prennent configMutex en interne (saveRescueState) et s'exécutent ici sur
+        // loopTask — jamais d'appel MQTT direct. startRescueChlorine refuse en
+        // mode Manuel (condition #5 du gate) ou sans heure synchronisée (condition
+        // #6), silencieusement côté état (log warning) — republication de l'état
+        // réel via publishRescueState (resync HA sur payload invalide ou refus).
+        payloadStr.toUpperCase();
+        if (payloadStr == "ON") {
+          startRescueChlorine();
+          // feature-140 (gate 2, bloquant) : ne JAMAIS annoncer une activation
+          // REFUSÉE. startRescueChlorine() refuse en mode Manuel (condition #5)
+          // et sans heure synchronisée (condition #6) ; le log inconditionnel
+          // écrivait « activée » alors que rien ne s'était passé — journal
+          // contradictoire sur un chemin de dosage. On constate l'état réel.
+          if (isRescueChlorineActive(time(nullptr))) {
+            systemLogger.info("[Secours] Chloration de secours activée via MQTT/HA");
+          } else {
+            systemLogger.warning("[Secours] Activation REFUSÉE (mode Manuel ou heure non synchronisée) — commande MQTT/HA sans effet");
+          }
+        } else if (payloadStr == "OFF") {
+          stopRescueChlorine(RescueLiftReason::Manual);  // arrêt manuel (HA/MQTT)
+          systemLogger.info("[Secours] Chloration de secours désactivée via MQTT/HA");
+        } else {
+          systemLogger.warning("Commande Chloration de secours invalide (MQTT): " + payloadStr);
+        }
+        publishRescueState();
         break;
       }
       case InboundCmdType::InstallMode: {
@@ -2385,6 +2447,21 @@ void MqttManager::publishDiscovery(DiscoveryReason reason) {
   doc["state_on"] = "ON";
   doc["state_off"] = "OFF";
   doc["icon"] = "mdi:rocket-launch";
+  makeDevice(doc["device"].to<JsonObject>());
+  publishConfig(topic);
+
+  // feature-140 : switch Chloration de secours (surcouche temporaire du mode
+  // scheduled, 48h glissantes — décalque du Boost ci-dessus).
+  topic = discoveryBase + "switch/" + HA_DEVICE_ID + "_rescue_chlorine/config";
+  doc["name"] = "Chloration de secours";
+  doc["unique_id"] = String(HA_DEVICE_ID) + "_rescue_chlorine";
+  doc["state_topic"] = topics.rescueState;
+  doc["command_topic"] = topics.rescueCommand;
+  doc["payload_on"] = "ON";
+  doc["payload_off"] = "OFF";
+  doc["state_on"] = "ON";
+  doc["state_off"] = "OFF";
+  doc["icon"] = "mdi:flask-plus-outline";
   makeDevice(doc["device"].to<JsonObject>());
   publishConfig(topic);
 

@@ -2,6 +2,89 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [2.55.0] - 2026-10-05
+
+> **Ce qui change pour vous** : le tableau de bord propose désormais une
+> **Chloration de secours** — un bouton qui continue d'injecter un volume
+> de chlore fixe (1 500 mL/jour, 48 h au maximum) même quand les sondes pH
+> et ORP sont jugées non fiables. Motif : après les pluies diluviennes du
+> 2026-10-02, de la boue a couvert le fond du bassin, les deux voies de
+> mesure ont été déclarées instables et **tout dosage automatique s'est
+> arrêté, chlore compris**, au moment précis où la demande en chlore était
+> maximale. ⚠️ Ce mode **maintient une désinfection minimale**, il ne
+> « règle » pas une eau trouble — sur le terrain, 2 L/jour pendant trois
+> jours n'ont pas fait bouger l'ORP (261 mV pour une consigne de 530) :
+> seul le retrait mécanique de ce qui trouble l'eau fait revenir la
+> mesure. L'ex-carte « Boost » devient la carte **« Modes temporaires »**,
+> qui regroupe le Boost et cette nouveauté : les deux se combinent, ils ne
+> s'excluent pas.
+
+### Fonctionnalités
+
+- **Chloration de secours** : nouveau mode temporaire, non destructif
+  (ne modifie jamais votre réglage de régulation du chlore), qui injecte
+  un volume fixe sans tenir compte des sondes pendant 48 h glissantes au
+  maximum (1 500 mL/j, plafond dur 2 000 mL/j). Se lève automatiquement
+  si les mesures ORP redeviennent fiables 30 min d'affilée, ou expire de
+  lui-même au bout de 48 h — dans les deux cas, votre réglage habituel
+  reprend seul. Indisponible si la régulation du chlore est en mode
+  Manuel (double dosage). Le pH n'est jamais concerné.
+- **Tableau de bord** : la carte « Boost » devient la carte **« Modes
+  temporaires »**, qui regroupe le Boost et la Chloration de secours —
+  deux leviers indépendants, combinables, avec une ligne qui dit l'effet
+  réellement obtenu (ex. « Filtration prolongée + chloration de secours »).
+  Un badge distingue « Actif » de « Actif · en attente » (armé mais rien
+  n'est injecté : filtration à l'arrêt, pH trop haut, ou plafond du jour
+  atteint).
+- **Bandeau « Dosage bloqué »** (feature-138) : quand le blocage concerne
+  le chlore, un bouton propose désormais d'activer la chloration de
+  secours — raccourci de navigation, la confirmation reste nécessaire.
+
+### Firmware
+
+- **Régulation ORP** : introduction d'un accesseur de **mode ORP effectif**
+  (configuration persistée + chloration de secours) distinct de la
+  configuration publiée (`orp_regulation_mode`, inchangée en NVS) — règle
+  opposable : toute décision de dosage lit le mode effectif, toute
+  publication (HTTP/MQTT/WS) continue de lire la configuration. La
+  Chloration de secours réutilise la branche de dosage « Programmée »
+  existante (aucun second chemin de dosage).
+- **MQTT** : nouveaux topics `{base}/rescue` (état), `{base}/rescue/set`
+  (commande) et `{base}/rescue_lift_reason` (raison de la dernière fin du
+  mode) + nouvelle entité `switch` d'auto-discovery Home Assistant
+  « Chloration de secours ».
+- **WebSocket** : ⚠️ `filtration_state_source` et `filtration_ext_on`
+  quittent la trame WebSocket (`sensor_data`) — **changement observable
+  pour tout client WebSocket tiers** qui lirait ces deux clés, il faut
+  désormais les lire via `GET /data` (elles y restent, à l'identique).
+  Ce retrait finance l'ajout de `rescue_until` / `rescue_dosing` /
+  `rescue_lift` sous le plafond dur de la trame.
+
+### Documentation
+
+- `docs/features/page-dashboard.md` : carte « Modes temporaires », les
+  8 combinaisons d'effet, la distinction « Actif » / « Actif · en
+  attente », le chaînage depuis le bandeau de blocage.
+- `docs/subsystems/pump-controller.md` : section « Chloration de secours »
+  — mode effectif, composition avec le Boost, levée automatique à sens
+  unique, garde-fous conservés.
+- `docs/API.md`, `docs/MQTT.md` : routes `POST /rescue/start` \|
+  `/rescue/stop`, champs `/data` `rescue_until` / `rescue_dosing` /
+  `rescue_lift`, topics MQTT et auto-discovery HA.
+- `docs/subsystems/ws-manager.md`, `docs/subsystems/mqtt-manager.md` :
+  budget d'octets de la trame WebSocket (marge portée à 39 o, cliquet
+  `kWsOnlyLiveCeiling` abaissé 18 → 16), désarmement automatique du mode
+  secours sur bascule en Manuel.
+- `docs/user/src/guide-utilisation.html`, `docs/user/src/guide-regulation.html` :
+  la Chloration de secours expliquée côté utilisateur, avec l'avertissement
+  qu'elle ne traite pas une eau trouble.
+- **ADR** : [ADR-0087](docs/adr/0087-ce-qu-un-mode-temporaire-a-le-droit-de-faire.md)
+  — ce qu'un mode temporaire a le droit de faire sans qu'on le lui
+  rappelle (couple mode effectif/publié, non-exclusivité des surcouches
+  temporaires, 48 h glissantes disqualifiant l'ancrage sur minuit local).
+
+---
+
 ## [2.54.0] - 2026-10-04
 
 > **Ce qui change pour vous** : quand le dosage automatique pH ou chlore est

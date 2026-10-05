@@ -3324,6 +3324,52 @@ constexpr float kBoostDailyFactor = 1.5f;
 constexpr float kBoostDailyHardCapMl = 1000.0f;
 
 // ============================================================================
+// RESCUE CHLORINE CONSTANTS - Chloration de secours (feature-140)
+// ============================================================================
+// Surcouche temporaire NON destructive, empruntant la branche `scheduled`
+// EXISTANTE (aucun second chemin de dosage, cf. src/temp_mode_logic.*). Permet
+// de continuer à injecter du chlore quand les sondes pH/ORP sont déclarées non
+// fiables (eau trouble, boue au fond). Bornes FIGÉES par pool-chemistry
+// (feature-140, gate 1, verdict GO SOUS CONDITIONS du 2026-10-05) — ne JAMAIS
+// élargir sans nouveau passage.
+
+// Durée = 48h GLISSANTES (epoch, PAS minuit local — disqualifié techniquement,
+// condition #1 du gate) : une activation à 10h ne doit ni recevoir une
+// fraction de son volume ni mourir au rollover journalier de minuit. 72h
+// écarté (mode oublié, sans réévaluation).
+constexpr time_t kRescueChlorineDurationS = 172800;  // 48h = 2 * 24 * 3600
+
+// Volume quotidien dédié (MAINTIEN, jamais rattrapage) : le terrain prouve que
+// 2 L/j ne font pas bouger l'ORP sur une eau chargée en matière organique —
+// l'ORP ne remonte pas tant que le point de rupture n'est pas atteint, et le
+// volume injecté n'est donc pas le facteur limitant. 1500 mL/j ≈ 3x le besoin
+// d'entretien calculé (350-530 mL/j pour 30-50 m³, chlore 36°, condition #2).
+constexpr float kRescueChlorineDailyMl = 1500.0f;
+
+// Plafond dur ABSOLU, quel que soit maxChlorineMlPerDay ou une amplification
+// Boost combinée : jamais dépassé (le point terrain prouve 2000 mL/j déjà
+// inutile à franchir — conditions #2 et #4 du gate).
+constexpr float kRescueChlorineDailyHardCapMl = 2000.0f;
+
+// Seuil de LEVÉE AUTOMATIQUE à sens unique (condition #3 du gate — termine le
+// mode, ne le ré-arme JAMAIS) : tenue CONTINUE de mesures ORP fiables
+// (!isOrpFilterUnstable() && measureValidity.measuresValid()) avant de
+// considérer l'épisode terminé.
+constexpr uint16_t kRescueChlorineAutoLiftHoldMin = 30;
+constexpr unsigned long kRescueChlorineAutoLiftHoldMs =
+    (unsigned long)kRescueChlorineAutoLiftHoldMin * 60000UL;
+
+// Fenêtre de VISIBILITÉ du code de raison de fin (`rescue_lift`, RescueLiftReason)
+// publié à parité /data ↔ WS : complément du 2026-10-05 (retour web-ui-developer)
+// pour que l'UI distingue la levée automatique (seul cas où le libellé L6 du
+// gate est vrai) de l'expiration 48h et de l'arrêt manuel. 90s = 3x la cadence
+// de rafraîchissement de /data (~30s, cf. ws_manager.cpp) : couvre le pire cas
+// d'un client dont le poll tombe juste avant l'événement (verrait sinon 0
+// pendant tout un cycle) avec une marge supplémentaire contre la gigue — même
+// facteur de sécurité que kTimeToTargetHoldMin (3x la fenêtre de référence).
+constexpr unsigned long kRescueLiftReasonVisibleMs = 90000UL;
+
+// ============================================================================
 // OTA INTEGRITY CONSTANTS - Vérification d'intégrité SHA-256 (feature-026)
 // ============================================================================
 

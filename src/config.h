@@ -275,6 +275,34 @@ struct BoostState {
   time_t untilEpoch = 0;    // Instant d'expiration (prochain minuit local)
 };
 
+// feature-140 : état de la Chloration de secours (surcouche temporaire du
+// mode `scheduled`, 48h glissantes). Surcouche NON destructive : ne modifie
+// PAS `orp_regulation_mode` en NVS. Persisté en NVS DÉDIÉ (saveRescueState/
+// loadRescueState) pour survivre à un reboot ; auto-expirant 48h après
+// activation (tickRescueChlorineExpiry) OU levé automatiquement plus tôt si
+// les mesures ORP redeviennent fiables 30 min d'affilée (PumpController,
+// tickRescueChlorineAutoLift). Clés NVS `rescue_active` (13) et `rescue_until`
+// (12) — sous la limite Preferences de 15 caractères (`rescue_target_ml`, 16,
+// NE PASSERAIT PAS : le volume reste donc une CONSTANTE, kRescueChlorineDailyMl).
+struct RescueState {
+  bool active = false;      // Chloration de secours active
+  time_t untilEpoch = 0;    // Échéance (epoch, now + kRescueChlorineDurationS)
+};
+
+// Complément feature-140 (retour d'expérience web-ui-developer, 2026-10-05) :
+// le libellé L6 imposé par le gate pool-chemistry n'est VRAI que pour la
+// levée automatique — l'UI ne peut pas honnêtement l'afficher sur une simple
+// transition actif→inactif, qui confondrait aussi l'expiration 48h (sondes
+// peut-être toujours mauvaises) et l'arrêt manuel. RAM UNIQUEMENT, PAS
+// persisté : un reboot n'a, par construction, aucune « fin récente » à
+// rapporter (0 par défaut est donc toujours le bon repli au boot).
+enum class RescueLiftReason : uint8_t {
+  None       = 0,  // aucune fin récente (jamais armé, ou fenêtre de visibilité expirée)
+  AutoLift   = 1,  // levée automatique : 30 min de mesures ORP fiables — SEUL cas où L6 est vrai
+  Expired48h = 2,  // expiration naturelle des 48h — les sondes peuvent être toujours mauvaises
+  Manual     = 3,  // arrêt manuel (route/MQTT, ou désarmement sur bascule en mode Manuel)
+};
+
 struct TimezoneInfo {
   const char* id;
   const char* label;
@@ -313,6 +341,7 @@ extern PumpProtection pumpProtection;
 extern ProductConfig productCfg;
 extern bool productConfigDirty;
 extern BoostState boostState;
+extern RescueState rescueState;
 
 void saveProductConfig();
 void loadProductConfig();
@@ -447,6 +476,43 @@ bool isBoostActive(time_t now);
 // Expire le boost au passage de minuit. À appeler EN TÊTE de tickDailyRollover,
 // AVANT tout reset de compteur (condition pool-chemistry #3).
 void tickBoostExpiry(time_t now);
+
+// ==== Chloration de secours (feature-140) ====
+// Persistance NVS DÉDIÉE (namespace poolctrl, clés rescue_active/rescue_until) —
+// PAS via saveMqttConfig, même motif que le Boost (usure NVS).
+void saveRescueState();
+void loadRescueState();  // À appeler au boot ; n'expire PAS l'état en mémoire si
+                         // l'heure n'est pas encore synchronisée (fail-closed
+                         // porté par isRescueChlorineActive, pas par un reset ici).
+// Active la chloration de secours pour 48h (kRescueChlorineDurationS). REFUSE :
+// - si le mode de régulation ORP (NVS) est "manual" (condition #5 du gate :
+//   double dosage, l'utilisateur "dose lui-même") ;
+// - si l'heure n'est pas synchronisée (condition #6 : échéance indéterminable).
+void startRescueChlorine();
+// Désactive la chloration de secours et persiste immédiatement. Idempotent.
+// `reason` est publié (parité /data ↔ WS, fenêtre kRescueLiftReasonVisibleMs)
+// pour que l'UI distingue la levée automatique (seul cas où le libellé L6 du
+// gate est vrai) de l'expiration 48h et de l'arrêt manuel — défaut Manual :
+// c'est la catégorie de TOUS les appelants hors auto-lift/expiration (route
+// HTTP, commande MQTT, désarmement sur bascule en mode Manuel).
+void stopRescueChlorine(RescueLiftReason reason = RescueLiftReason::Manual);
+// True si la chloration de secours est active à l'instant `now`. Condition #6
+// du gate : si `now` < kMinValidEpoch (heure non synchro), renvoie FAIL-CLOSED
+// (false) — à l'INVERSE du Boost, qui préserve l'état persisté dans ce cas.
+bool isRescueChlorineActive(time_t now);
+// Expire la chloration de secours 48h après son activation. Appelé à chaque
+// tour depuis PumpControllerClass::tickDailyRollover (la durée n'est PAS liée
+// au passage de minuit, contrairement au Boost — l'appel est simplement
+// mutualisé avec un point déjà exécuté à chaque tick). Délègue à
+// stopRescueChlorine(Expired48h).
+void tickRescueChlorineExpiry(time_t now);
+
+// Code de raison de fin EFFECTIF à l'instant `nowMs` (RescueLiftReason, publié
+// en uint8_t) : None en dehors de la fenêtre de visibilité
+// kRescueLiftReasonVisibleMs qui suit le dernier stopRescueChlorine(). RAM
+// uniquement (voir RescueLiftReason ci-dessus) — jamais relu depuis la NVS,
+// toujours None juste après un boot.
+uint8_t getRescueLiftReasonCode(unsigned long nowMs);
 
 // ==== Mutex pour protection concurrence ====
 // Protège l'accès aux configurations partagées entre loop() et handlers async

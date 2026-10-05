@@ -2183,6 +2183,11 @@ Plus jamais de durée déduite du modèle linéaire (`calcInjectFlow` supprimé)
 | Boost — plafond cible ORP (feature-053) | `kBoostOrpCeilingMv` | 850 mV (< alerte `orp_abnormal` 900) | [`constants.h`](../../src/constants.h) |
 | Boost — facteur limite journalière chlore (feature-053) | `kBoostDailyFactor` | 1,5× | [`constants.h`](../../src/constants.h) |
 | Boost — plafond dur limite journalière chlore (feature-053) | `kBoostDailyHardCapMl` | 1000 mL | [`constants.h`](../../src/constants.h) |
+| Chloration de secours — durée glissante (feature-140) | `kRescueChlorineDurationS` | 172 800 s (48 h) | [`constants.h`](../../src/constants.h) |
+| Chloration de secours — volume quotidien dédié (feature-140) | `kRescueChlorineDailyMl` | 1500 mL/j | [`constants.h`](../../src/constants.h) |
+| Chloration de secours — plafond dur (feature-140) | `kRescueChlorineDailyHardCapMl` | 2000 mL/j | [`constants.h`](../../src/constants.h) |
+| Chloration de secours — tenue avant levée auto (feature-140) | `kRescueChlorineAutoLiftHoldMin` | 30 min | [`constants.h`](../../src/constants.h) |
+| Chloration de secours — fenêtre de visibilité de `rescue_lift` (feature-140) | `kRescueLiftReasonVisibleMs` | 90 000 ms | [`constants.h`](../../src/constants.h) |
 
 > Une refonte est prévue pour rendre une partie de ces paramètres modifiables via un mode expert UI (cf. spec en cours).
 
@@ -2272,7 +2277,7 @@ Chacun des deux leviers du Boost peut être **inerte** selon la config :
 - `!filtrationCfg.enabled` → « Filtration non gérée par PoolController — le Boost ne prolonge PAS la filtration ».
 - `orpRegulationMode != "automatic"` → « Régulation ORP non automatique — le Boost ne relève PAS le chlore ».
 
-La route `POST /boost/start` expose en parallèle ces deux états dans sa réponse 200 (`filtration_extended`, `chlorine_boosted`) pour que l'UI affiche un toast adaptatif ([API.md](../API.md#post-booststart--write), [page-dashboard.md](../features/page-dashboard.md#carte-boost-feature-053)). **Purement informatif** : aucun chemin de dosage ni aucune garde n'est modifié, l'activation n'est jamais bloquée.
+La route `POST /boost/start` expose en parallèle ces deux états dans sa réponse 200 (`filtration_extended`, `chlorine_boosted`) pour que l'UI affiche un toast adaptatif ([API.md](../API.md#post-booststart--write), [page-dashboard.md](../features/page-dashboard.md#carte-modes-temporaires-feature-140)). **Purement informatif** : aucun chemin de dosage ni aucune garde n'est modifié, l'activation n'est jamais bloquée.
 
 ### Garde-fous inchangés
 
@@ -2281,6 +2286,101 @@ La route `POST /boost/start` expose en parallèle ces deux états dans sa répon
 ### Testabilité native
 
 `effectiveOrpTargetPure` / `effectiveMaxChlorinePure` (bornage + gate mode) sont couvertes par la suite Unity native (**+14 tests boost**, 199 tests au total) : plafonds, non-abaissement, gate `automatic` vs Manuel/Programmé, arithmétique du delta et du facteur. Voir [BUILD.md](../BUILD.md) pour `pio test -e native`.
+
+## Chloration de secours (feature-140)
+
+**Deuxième surcouche temporaire non destructive**, décalquée du Mode Boost ci-dessus mais de nature différente : le Boost **amplifie** la régulation, la Chloration de secours la **remplace** temporairement par un volume fixe, aveugle à l'ORP. Objet : continuer à injecter du chlore quand les sondes pH/ORP sont déclarées non fiables (eau trouble, boue au fond du bassin après un épisode de pluie) — sans quoi tout dosage automatique s'arrête, chlore compris, au moment où la demande en désinfectant est la plus forte (incident fondateur du 2026-10-02). Décision structurante et bornes de sécurité : [ADR-0087](../adr/0087-ce-qu-un-mode-temporaire-a-le-droit-de-faire.md) (`pool-chemistry` GO sous conditions, deux passages — sur l'arbitrage initial puis sur le diff réel).
+
+### Aucun second chemin de dosage : la branche `scheduled` existante, empruntée
+
+La Chloration de secours **ne crée pas** de nouvelle logique de dosage : elle active la branche `scheduled` déjà en place (section [Mode `scheduled`](#mode-scheduled) ci-dessus), déjà validée `pool-chemistry` en feature-011, avec son propre volume quotidien dédié et son propre plafond dur. Le travail de la feature-140 est donc entièrement une **surcouche de découvrabilité, de réversibilité et de bornage dans le temps** — pas une nouvelle chimie.
+
+### Le piège qui a failli rendre la feature morte à l'arrivée : mode EFFECTIF vs NVS
+
+La branche `scheduled` ne s'ouvre que si `mqttCfg.orpRegulationMode == "scheduled"` **en NVS**. Or la Chloration de secours est non destructive : elle **n'écrit jamais** cette valeur. Avec la NVS restée sur `"automatic"` et un pH NaN (scénario nominal : boue sur les deux sondes), `tickOrpPhInhibitSurveillance()` aurait posé l'inhibition ORP (`requireKnownPh = (mode == "automatic")`), et `!isOrpInhibitedByPh()` aurait fermé la branche `scheduled` même activée — **zéro injection**, exactement le défaut que la feature doit corriger.
+
+La règle opposable qui referme ce piège (posée par [ADR-0087](../adr/0087-ce-qu-un-mode-temporaire-a-le-droit-de-faire.md)) :
+
+> **décision de dosage ⇒ mode ORP EFFECTIF · publication de configuration (HTTP/MQTT/WS) ⇒ valeur NVS, inchangée**
+
+Portée par `src/temp_mode_logic.h` (module **pur**, patron [ADR-0017](../adr/0017-logique-metier-pure-humble-object-testabilite.md)) :
+
+```cpp
+enum class OrpMode : uint8_t { Automatic = 0, Scheduled = 1, Manual = 2 };
+OrpMode effectiveOrpModePure(OrpMode nvsMode, bool rescueActive);
+// nvsMode == Manual            => Manual (fail-closed, condition #5 du gate)
+// rescueActive && nvsMode != Manual => Scheduled (quelle que soit la valeur NVS)
+// sinon                        => nvsMode inchangé (non-régression D3)
+```
+
+Côté coquille, `PumpControllerClass::effectiveOrpMode()` ([`pump_controller.cpp`](../../src/pump_controller.cpp)) collecte `mqttCfg.orpRegulationMode` (NVS) + `isRescueChlorineActive(time(nullptr))` et délègue la décision à `effectiveOrpModePure()`. **Tout site qui décide d'un dosage ORP lit cet accesseur**, jamais `mqttCfg.orpRegulationMode` directement — audité et routé en deux passes (un premier audit avait laissé passer quatre sites supplémentaires, `mqttCfg.orpDailyTargetMl` lu à quatre endroits) :
+
+- `tickOrpPhInhibitSurveillance()`, `canDose(1)`, la conjonction `automatic`/`scheduled` de `update()`, `tickDailyRollover()` (reliquat perdu à minuit), `time_to_target.cpp` (`in.automatic`), `web_routes_control.cpp:767` (`chlorBoost` publié par `/boost/start`) : **décision** ⇒ `effectiveOrpMode()`.
+- `ws_manager.cpp` (`boost_chlorine_boosted`), `mqtt_manager.cpp`, `web_routes_config.cpp` (`/get-config`) : **publication** ⇒ `mqttCfg.orpRegulationMode` (NVS), inchangée.
+
+`getEffectiveOrpDailyTargetMl()` compose, de façon symétrique, le volume quotidien EFFECTIF — délègue à `effectiveOrpDailyTargetMlPure()` :
+
+```cpp
+float effectiveOrpDailyTargetMlPure(float nvsDailyTargetMl, bool rescueActive,
+                                     bool boostActive, float rescueDailyMl,
+                                     float boostFactor, float maxChlorineMlPerDay,
+                                     float rescueHardCapMl);
+```
+
+- secours **inactif** : `nvsDailyTargetMl` inchangé (non-régression D3 : le Boost seul reste inerte sur le volume `scheduled`/`manual`, exactement comme avant cette feature).
+- secours **actif** : part de `kRescueChlorineDailyMl` (1500 mL), amplifié par le Boost (`× kBoostDailyFactor`) **si** `isBoostActive()`, puis les **deux** plafonds sont appliqués **en dernier**, dans cet ordre : limite utilisateur (`safetyLimits.maxChlorineMlPerDay`, si > 0 — **souveraine**) **puis** plafond dur `kRescueChlorineDailyHardCapMl`. ⚠️ **L'ordre ferme un chemin de contournement identifié par le gate** : un clamp au plafond dur *avant* l'amplification Boost laisserait passer `1500 × 1,5 = 2250` mL, au-dessus du plafond — fermé en appliquant le clamp dur **après** l'amplification (`temp_mode_logic.cpp:32-41`, vérifié au fichier et à la ligne par le gate 2).
+
+### État, persistance et activation
+
+`RescueState { bool active; time_t untilEpoch; }` ([`config.h`](../../src/config.h)), persisté en **NVS dédié** (namespace `poolctrl`, clés `rescue_active`/`rescue_until` — **sous** la limite Preferences de 15 caractères ; `rescue_target_ml` à 16 caractères ne passerait pas, d'où le choix d'une **constante** et non d'un réglage pour le volume). `saveRescueState()`/`loadRescueState()` ([`config.cpp`](../../src/config.cpp)), appelée au boot (`main.cpp`, après `loadBoostState()`).
+
+- `startRescueChlorine()` **refuse** (log `warning`, aucun état modifié) si :
+  - `mqttCfg.orpRegulationMode == "manual"` (condition #5 du gate — double dosage : l'utilisateur dose déjà lui-même, l'activer en plus doserait deux fois) ;
+  - l'heure n'est pas synchronisée (`now < kMinValidEpoch`, condition #6 — l'échéance 48 h serait indéterminable, même motif fail-closed que le Boost pour minuit).
+- Activation réussie : `rescueState.untilEpoch = rescueDeadlinePure(now, kRescueChlorineDurationS)` — **epoch**, **48 h glissantes depuis l'instant d'activation**, pas un ancrage sur minuit local (voir ci-dessous pourquoi).
+- `stopRescueChlorine(RescueLiftReason reason)` désactive et persiste immédiatement, **idempotent**. `reason` (voir plus bas) est publié à parité `/data` ↔ WS ↔ MQTT.
+- `isRescueChlorineActive(time_t now)` délègue à `rescueActivePure()` : **fail-closed** si `now < kMinValidEpoch` (⚠️ à l'**inverse** du Boost, qui préserve l'état persisté sans heure valide — le secours dose à l'aveugle pour 48 h d'affilée, le risque d'un mode « actif pour toujours » sans contrôle d'échéance est jugé plus grave qu'une interruption transitoire au redémarrage).
+
+### Pourquoi 48 h glissantes, et pas minuit local comme le Boost
+
+**Minuit local est disqualifié techniquement** (et non par préférence) : le compteur journalier de volume chlore (`safetyLimits.dailyOrpInjectedMl`) **remet aussi à zéro à minuit**. Ancrer l'expiration du secours sur minuit la ferait coïncider avec ce rollover — une activation à 10 h ne recevrait qu'une **fraction** de son volume avant de mourir au reset suivant. D'où une échéance **epoch**, glissante, sans lien avec le passage de minuit (`tickRescueChlorineExpiry()`, appelée depuis `tickDailyRollover()` par simple mutualisation d'un point déjà exécuté à chaque tour — **pas** parce que l'expiration dépend de minuit). 72 h a été écarté (mode oublié, sans réévaluation) — voir [ADR-0087](../adr/0087-ce-qu-un-mode-temporaire-a-le-droit-de-faire.md) pour l'arbitrage complet.
+
+### Levée automatique — à SENS UNIQUE
+
+`PumpControllerClass::tickRescueChlorineAutoLift(unsigned long nowMs)`, appelée à **chaque tour** d'`update()` (après `tickOrpPhInhibitSurveillance()`, avant toute décision de dosage) : après `kRescueChlorineAutoLiftHoldMs` (30 min) de tenue **continue** de `!sensors.isOrpFilterUnstable() && measureValidity.measuresValid()`, le mode est **levé** (`stopRescueChlorine(RescueLiftReason::AutoLift)`) et le log **L6** (libellé imposé mot à mot par le gate) est émis. ⚠️ **À sens unique par construction** : cette levée **termine** le mode, elle ne le **ré-arme jamais** — un état absorbant ne peut pas battre (contrairement au défaut corrigé par feature-139). La moindre instabilité réarme le minuteur de tenue à zéro ; le mode inactif maintient le minuteur à zéro (no-op).
+
+### Garde-fous conservés, sans exception
+
+- **Présence d'eau (filtration)**, watchdog, budget horaire, anti-cycling, anti-rafale, limites journalière/horaire : **tous hérités de la branche `scheduled` existante**, aucune dérogation.
+- **`isOrpInhibitedByPh()` conservée telle quelle** : pH connu et > 7,60 ⇒ chloration suspendue, **y compris en secours** (41 % de HOCl actif à pH 7,70 — le chlore y est peu efficace).
+- **Compteur journalier PARTAGÉ** (`safetyLimits.dailyOrpInjectedMl`), **aucun compteur dédié** : armer le secours après que le plafond normal soit déjà atteint ⇒ 0 mL (pas de contournement par activation du secours).
+- **Le reboot ne remet jamais à zéro** le compteur journalier (sinon un cycle de redémarrages contournerait le plafond).
+- **Le pH n'est jamais dosé** par ce mode — aucun chemin ne peut atteindre la pompe pH depuis la Chloration de secours (condition #11 du gate).
+- **Bascule en mode Manuel pendant le mode actif ⇒ désarmement automatique** (`web_routes_config.cpp`, `mqtt_manager.cpp` — même motif que le refus à l'activation, condition #5).
+
+### `RescueLiftReason` — trois fins distinctes, une seule clé publiée
+
+```cpp
+enum class RescueLiftReason : uint8_t {
+  None = 0, AutoLift = 1, Expired48h = 2, Manual = 3,
+};
+```
+
+Publiée en `uint8_t` (`rescue_lift`, parité `/data` ↔ WS ↔ MQTT `{base}/rescue_lift_reason`), **RAM uniquement, jamais persistée** — un reboot n'a, par construction, aucune « fin récente » à rapporter. Fenêtre de **visibilité glissante** `kRescueLiftReasonVisibleMs` (90 s — 3× la cadence `/data`) portée par `getRescueLiftReasonCode(nowMs)`, qui délègue à la fonction pure `rescueLiftReasonVisiblePure()` (arithmétique non signée, wrap-safe au repliement de `millis()`). Motif de la distinction : le libellé **L6** (« les mesures ORP sont de nouveau fiables ») n'est **vrai** que pour la levée automatique — l'afficher sur une expiration 48 h mentirait sur l'état réel des sondes. Le gate a exigé un libellé **séparé** pour l'expiration (**L9**, voir [API.md](../API.md#champs-ajoutés-en-feature-140-chloration-de-secours)), ton `warning`, qui rappelle que la régulation automatique a **déjà repris** et invite à contrôler le chlore libre au réactif DPD **et** le pH avant de lui faire confiance — indépendamment de la sonde qu'on soupçonne déjà.
+
+### Constantes (feature-140, `constants.h`)
+
+| Constante | Valeur | Rôle |
+|---|---:|---|
+| `kRescueChlorineDurationS` | 172 800 s (48 h) | Durée glissante depuis l'activation (epoch, pas minuit) |
+| `kRescueChlorineDailyMl` | 1500 mL/j | Volume quotidien dédié — **maintien, jamais rattrapage** (terrain : 2000 mL/j × 3 j n'ont pas fait bouger l'ORP, bloqué à 261 mV pour une consigne de 530) |
+| `kRescueChlorineDailyHardCapMl` | 2000 mL/j | Plafond dur absolu, appliqué **après** l'amplification Boost |
+| `kRescueChlorineAutoLiftHoldMin` / `…HoldMs` | 30 min | Tenue continue de mesures fiables avant levée automatique |
+| `kRescueLiftReasonVisibleMs` | 90 000 ms | Fenêtre de visibilité de `rescue_lift` (3× la cadence `/data`) |
+
+### Testabilité native
+
+`effectiveOrpModePure`, `rescueActivePure`, `rescueDeadlinePure`, `effectiveOrpDailyTargetMlPure`, `rescueLiftReasonVisiblePure` ([`src/temp_mode_logic.h`](../../src/temp_mode_logic.h) / [`.cpp`](../../src/temp_mode_logic.cpp)) sont couvertes par la suite native dédiée `test/test_native_temp_mode/` : mode effectif (Manuel prioritaire, secours bascule vers Scheduled, non-régression sans secours), composition Boost × secours et **ordre des clamps** (mutation dédiée : inverser l'ordre amplification/plafond dur doit tuer un test), fail-closed sans heure valide, fenêtre de visibilité de `rescue_lift` avec repliement de `millis()`. Voir [BUILD.md](../BUILD.md) pour `pio test -e native` — ne pas recopier de compteur de tests ici (ADR-0073), le mesurer avec `ls -d test/test_native_* | wc -l` et la dernière ligne de `pio test -e native`.
 
 ## Restauration des valeurs d'usine de régulation (feature-088, v2.31.0)
 
@@ -2328,7 +2428,7 @@ bool restoreRegulationDefaults();  // false = timeout mutex, RIEN modifié
 |-----------|-------------|
 | [`filtration`](filtration.md) | Arrêt filtration → `clearStabilizationTimer()` (l'arming au **démarrage** est retiré en v2.34.0 : la purge adaptative de [`measure_validity`](measure-validity.md) le remplace). **Boost** : `boostForce` prioritaire dans `decideFiltrationRun` force la marche tant que `isBoostActive()` (feature-053) |
 | [`sensors`](sensors.md) | Lecture **filtrée** `getPhFiltered()` / `getOrpFiltered()` pour l'erreur PID (+ `isPhFilterReady`/`isPhFilterUnstable` dans `canDose`). Brut `getPh()`/`getOrp()` pour logs uniquement (feature-025) |
-| [`mqtt_manager`](mqtt-manager.md) | Publication `ph_dosing`, `orp_dosing`, `ph_limit`, `orp_limit`, `ph/orp_mixing_delay_active`, `boost` (switch HA « Boost », feature-053) ; commande `{base}/boost/set` |
+| [`mqtt_manager`](mqtt-manager.md) | Publication `ph_dosing`, `orp_dosing`, `ph_limit`, `orp_limit`, `ph/orp_mixing_delay_active`, `boost` (switch HA « Boost », feature-053) ; commande `{base}/boost/set` ; `rescue` + `rescue_lift_reason` (switch HA « Chloration de secours », feature-140) ; commande `{base}/rescue/set` |
 | [`ota_manager`](ota-manager.md) | `setOtaInProgress(true)` arrête toutes les pompes |
 | [`web_routes_control`](web-server.md) | `/ph/inject/start`, `/orp/inject/start`, `/pump[12]/on` — gardes feature-006 : lecture `getCyclesToday`/`getRecentCycles`/`getStabilizationRemainingS(i)`/`get*UsedMs`, enregistrement via `requestManualCycleRecord` |
 
@@ -2377,7 +2477,7 @@ Hors compteurs journaliers, la **trace de bascule automatique pH** est persisté
 - [`src/constants.h`](../../src/constants.h) — `kPumpPhPin = 25`, `kPumpOrpPin = 33` (PCB v2, voir ADR-0012)
 - [`src/dosing_logic.h`](../../src/dosing_logic.h), [`src/dosing_logic.cpp`](../../src/dosing_logic.cpp) — décision de dosage pure (feature-036) + gardes d'injection manuelle `evaluateManualInject` (feature-006) + répartition scheduled `evaluateScheduledDose` (feature-011)
 - [`src/schedule_logic.h`](../../src/schedule_logic.h), [`src/schedule_logic.cpp`](../../src/schedule_logic.cpp) — `remainingRangeMinutes` (horizon de répartition scheduled, feature-011)
-- [ADR-0002](../adr/0002-mode-programmee-volume-quotidien.md), [ADR-0004](../adr/0004-mode-regulation-enum-3-valeurs.md), [ADR-0008](../adr/0008-persistance-cumuls-journaliers-nvs.md), [ADR-0012](../adr/0012-mapping-gpio-pcb-v2.md), [ADR-0014](../adr/0014-migration-atlas-ezo.md) (refonte `canDose`), [ADR-0016](../adr/0016-regulation-p-temporisee-vs-pid.md) (régulation P temporisée, feature-025), [ADR-0017](../adr/0017-logique-metier-pure-humble-object-testabilite.md) (logique pure Humble Object, feature-036), [ADR-0020](../adr/0020-budget-horaire-dosage-unique.md) (budget horaire unique auto + manuel, feature-006), [ADR-0021](../adr/0021-repartition-scheduled.md) (répartition scheduled par fenêtres de 15 min, feature-011), [ADR-0025](../adr/0025-mode-boost.md) (Mode Boost — surcouche « valeurs effectives » + relèvement borné de la limite chlore, feature-053), [ADR-0026](../adr/0026-mode-installation.md) (Mode d'installation — 3 archétypes de câblage + résolution unique de la présence d'eau, feature-056), [ADR-0039](../adr/0039-offset-ph-applique-en-sortie-des-accesseurs.md) (offset pH en sortie des accesseurs + filets sur le brut, feature-067), [ADR-0043](../adr/0043-dosage-proportionnel-de-temps-amplitude-calibree.md) (proportionnel de temps à amplitude calibrée, v2.21.0), [ADR-0044](../adr/0044-budget-horaire-et-temps-min-en-temps-pompe-on.md) (budget horaire et temps min en temps pompe-ON, v2.21.0), [ADR-0046](../adr/0046-accumulateur-demande-sous-pouls-minimal.md) (accumulateur sous le pouls minimal, v2.22.0), [ADR-0047](../adr/0047-calibration-de-type-par-defaut-et-gel-amplitude.md) (calibration de type par défaut + gel de l'amplitude, v2.23.0), [ADR-0050](../adr/0050-debit-pleine-puissance-constante-unique-de-flotte.md) (débit à 255 = constante unique de flotte, marge ≥ dispersion mesurée, v2.25.2), [ADR-0051](../adr/0051-pouls-minimal-double-rendement-avant-comptage.md) (pouls minimal 5 s → 10 s : rendement des démarrages d'abord, correction du comptage ensuite, v2.25.3), [ADR-0052](../adr/0052-terme-integral-ph-dimensionne-par-autorite.md) (**levée de `Ki = 0` sur le seul pH**, `integralMax` dimensionné par l'autorité, intégration signée sur le seuil d'arrêt, v2.26.0 — amende l'ADR-0016), [ADR-0053](../adr/0053-persistance-conditionnelle-integrale-ph.md) (**persistance conditionnelle de l'intégrale pH** sous sept garanties R1-R7 — la valeur relue n'est jamais appliquée au démarrage ; amende la clause « aucune persistance NVS » de l'ADR-0052, v2.27.0), [ADR-0054](../adr/0054-seuil-de-vraisemblance-fonction-de-la-configuration.md) (un seuil de vraisemblance dérivé d'un réglage configurable est une **fonction** de ce réglage, jamais une constante, v2.27.0)
+- [ADR-0002](../adr/0002-mode-programmee-volume-quotidien.md), [ADR-0004](../adr/0004-mode-regulation-enum-3-valeurs.md), [ADR-0008](../adr/0008-persistance-cumuls-journaliers-nvs.md), [ADR-0012](../adr/0012-mapping-gpio-pcb-v2.md), [ADR-0014](../adr/0014-migration-atlas-ezo.md) (refonte `canDose`), [ADR-0016](../adr/0016-regulation-p-temporisee-vs-pid.md) (régulation P temporisée, feature-025), [ADR-0017](../adr/0017-logique-metier-pure-humble-object-testabilite.md) (logique pure Humble Object, feature-036), [ADR-0020](../adr/0020-budget-horaire-dosage-unique.md) (budget horaire unique auto + manuel, feature-006), [ADR-0021](../adr/0021-repartition-scheduled.md) (répartition scheduled par fenêtres de 15 min, feature-011), [ADR-0025](../adr/0025-mode-boost.md) (Mode Boost — surcouche « valeurs effectives » + relèvement borné de la limite chlore, feature-053), [ADR-0026](../adr/0026-mode-installation.md) (Mode d'installation — 3 archétypes de câblage + résolution unique de la présence d'eau, feature-056), [ADR-0039](../adr/0039-offset-ph-applique-en-sortie-des-accesseurs.md) (offset pH en sortie des accesseurs + filets sur le brut, feature-067), [ADR-0043](../adr/0043-dosage-proportionnel-de-temps-amplitude-calibree.md) (proportionnel de temps à amplitude calibrée, v2.21.0), [ADR-0044](../adr/0044-budget-horaire-et-temps-min-en-temps-pompe-on.md) (budget horaire et temps min en temps pompe-ON, v2.21.0), [ADR-0046](../adr/0046-accumulateur-demande-sous-pouls-minimal.md) (accumulateur sous le pouls minimal, v2.22.0), [ADR-0047](../adr/0047-calibration-de-type-par-defaut-et-gel-amplitude.md) (calibration de type par défaut + gel de l'amplitude, v2.23.0), [ADR-0050](../adr/0050-debit-pleine-puissance-constante-unique-de-flotte.md) (débit à 255 = constante unique de flotte, marge ≥ dispersion mesurée, v2.25.2), [ADR-0051](../adr/0051-pouls-minimal-double-rendement-avant-comptage.md) (pouls minimal 5 s → 10 s : rendement des démarrages d'abord, correction du comptage ensuite, v2.25.3), [ADR-0052](../adr/0052-terme-integral-ph-dimensionne-par-autorite.md) (**levée de `Ki = 0` sur le seul pH**, `integralMax` dimensionné par l'autorité, intégration signée sur le seuil d'arrêt, v2.26.0 — amende l'ADR-0016), [ADR-0053](../adr/0053-persistance-conditionnelle-integrale-ph.md) (**persistance conditionnelle de l'intégrale pH** sous sept garanties R1-R7 — la valeur relue n'est jamais appliquée au démarrage ; amende la clause « aucune persistance NVS » de l'ADR-0052, v2.27.0), [ADR-0054](../adr/0054-seuil-de-vraisemblance-fonction-de-la-configuration.md) (un seuil de vraisemblance dérivé d'un réglage configurable est une **fonction** de ce réglage, jamais une constante, v2.27.0), [ADR-0087](../adr/0087-ce-qu-un-mode-temporaire-a-le-droit-de-faire.md) (**Chloration de secours** — couple mode ORP EFFECTIF / NVS publiée, non-exclusivité des surcouches temporaires, expiration epoch 48h disqualifiant minuit local, feature-140, v2.55.0)
 - [feature-084](../../specs/features/done/feature-084-integrale-ph-cadence-et-memoire.md) — cadence du tick d'entretien, reset sec temporisé, persistance NVS conditionnelle, anneau de charge acide (v2.27.0)
 - [feature-025](../../specs/features/done/feature-025-lissage-mesures-ph-orp-pid.md) — entrée filtrée, anti-windup, pause mélange, zone morte
 - [feature-036](../../specs/features/done/feature-036-dosage-testable-decision-pure.md) — extraction de la décision de dosage en module pur testable

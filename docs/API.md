@@ -328,6 +328,25 @@ curl -u admin:monmotdepasse http://poolcontroller.local/data
 > **v2.21.2 (bug-slope-boot-perdue) — pente sonde pH, parité de transport** : les 4 champs `phSlopeAcid` / `phSlopeBase` / `phSlopeZero` / `phSlopeAgeMs` sont **ajoutés à `/data`**. La trame WS `sensor_data` les portait **déjà** depuis feature-024 — c'est `/data` qui rattrape : un client sans WS (poll seul) ne pouvait jamais afficher la santé de sonde. Mêmes règles que le WS (voir le tableau feature-024 de la section [WS /ws](#ws-ws--write)) : pentes arrondies à **1 décimale**, zéro à **2 décimales** (mV), `null` si jamais lu ou invalidé (NaN) ; `phSlopeAgeMs` `null` si aucune `Slope,?` n'a jamais réussi. Lecture **cache uniquement** (zéro I²C dans le chemin async). Buffer `/data` porté de 1792 à **1920** octets.
 >
 > **feature-075 (v2.24.0) — objet `flow_assist`** : instantané **lecture seule** de la session de l'[assistant de mesure du débit](#assistant-de-mesure-du-débit-des-pompes-feature-075-v2240). Buffer `/data` porté de 1920 à **2304** octets.
+
+#### Champs ajoutés en feature-140 (Chloration de secours, v2.55.0)
+
+**Deux champs MIGRÉS depuis la trame WebSocket** ([ADR-0086](adr/0086-trame-websocket-sous-ensemble-choisi-de-data.md), aucune nouvelle grandeur — ils existaient déjà côté firmware, servis jusqu'ici seulement sur `/ws`) :
+
+| Champ | Type | Description |
+|-------|------|-------------|
+| `filtration_state_source` | string | Origine de `water_present` : `"commanded"` (managed), `"powered"` (powered), `"external"` (external). **`/data`-seul depuis la v2.55.0** — voir [WS /ws](#ws-ws--write). |
+| `filtration_ext_on` | boolean | Dernier état signalé par la filtration externe (`ON`/`OFF`). **`/data`-seul depuis la v2.55.0** — voir [WS /ws](#ws-ws--write). |
+
+**Trois champs NEUFS**, à parité stricte `/data` ↔ WebSocket (mêmes clés, même calcul) :
+
+| Champ | Type | Description |
+|-------|------|-------------|
+| `rescue_until` | integer (epoch) | Instant d'expiration de la **Chloration de secours** (48 h glissantes depuis l'activation — **pas** un ancrage sur minuit local, voir [ADR-0087](adr/0087-ce-qu-un-mode-temporaire-a-le-droit-de-faire.md)). `0` si le mode est inactif. Piloté par [`POST /rescue/start`](#post-rescuestart--write) \| [`/rescue/stop`](#post-rescuestop--write), jamais par `/save-config`. Persisté en NVS (survit à un reboot). |
+| `rescue_dosing` | boolean | Verdict **dérivé** « le secours dose-t-il réellement maintenant ? » = actif **et** pas suspendu par l'inhibition ORP-sur-pH (pH connu et > 7,60). **Pas** un simple miroir de `rescue_until > 0` : une activation armée peut être suspendue sans que `rescue_until` le dise (filtration à l'arrêt, pH haut, plafond journalier atteint — ces trois causes sont dérivées côté client d'autres champs `/data` déjà existants, voir [page-dashboard.md](features/page-dashboard.md#carte-modes-temporaires-feature-140)). |
+| `rescue_lift` | integer (0-3) | Raison de **fin récente** du mode, fenêtre de visibilité glissante de 90 s (`kRescueLiftReasonVisibleMs`) : `0` = aucune fin récente, `1` = levée automatique (30 min de mesures ORP de nouveau fiables — **seul** cas où l'annonce « les mesures sont redevenues fiables » est vraie), `2` = expiration naturelle des 48 h (la régulation automatique a déjà repris, rien ne prouve que l'eau est fiable — contrôle au réactif DPD recommandé), `3` = arrêt manuel. Retombe à `0` de lui-même, **pas** un événement à acquitter. |
+
+**Le pH n'est jamais dosé par ce mode** (condition #11 du gate `pool-chemistry`) : aucun champ pH n'est affecté par la Chloration de secours. Voir [MQTT.md](MQTT.md#topic-et-entité-ajoutés-en-feature-140-chloration-de-secours-v2550) pour les topics MQTT équivalents, et [pump-controller.md](subsystems/pump-controller.md#chloration-de-secours-feature-140) pour le détail firmware. Buffer `/data` porté à **3200** octets (chemin sans plafond dur, gabarit purement documentaire — le seul plafond dur du projet reste `kWsFrameBufBytes` côté WebSocket, voir [ws-manager.md](subsystems/ws-manager.md#champs-sensor_data-ajoutés-en-v2550--chloration-de-secours-feature-140-et-migration-de-filtration_state_sourcefiltration_ext_on-vers-data-seul)).
 >
 > ⚠️ **Corrigé en v2.47.1 (`bug-082`) — la mention d'origine « pas de champ WS » était un défaut, pas un choix.** `flow_assist` était servi par `/data` **seul** alors que la trame `sensor_data` **remplace `latestSensorData` en entier** toutes les 5 s : ses champs repassaient donc à `undefined` en quelques secondes. **Deux** champs sont désormais servis **des deux côtés**, avec les mêmes règles null/arrondi : **`aborted`** et **`flow255`** (tableau de 2, jamais un scalaire). Les **sept** autres restent `/data`-seuls — ils ne pilotent l'écran de l'assistant que **pendant** une session, et le client force un `GET /data` à son ouverture. Parité **assertée en CI** (sentinelle `test_native_ws_data_parity`, second axe imbriqué — [ADR-0071](adr/0071-parite-data-trame-capteurs.md)) ; budget de trame et méthode de chiffrage : [ws-manager.md](subsystems/ws-manager.md#champs-sensor_data-ajoutés-en-v2471--parité-de-flow_assist-bug-082).
 >
@@ -966,7 +985,7 @@ Champs notables de la réponse :
 | `ph_regulation_mode` | string | Mode de régulation pH : `"automatic"` (PID vers ph_target), `"scheduled"` (volume quotidien réparti sur 24 h), `"manual"` (aucune régulation automatique) |
 | `ph_daily_target_ml` | integer | Volume quotidien cible en mL pour le mode Programmée pH (0 = désactivé, borné par `max_ph_ml_per_day`) |
 | `ph_enabled` | boolean | Miroir dérivé de `ph_regulation_mode` : `true` si mode ≠ `"manual"`. Maintenu pour compatibilité MQTT / HA. ⚠️ **v2.25.0 — LECTURE SEULE** : le champ n'est **plus accepté en écriture** par `/save-config` (une clé envoyée est ignorée silencieusement). Il ouvrait un second chemin capable de rouvrir la régulation en contournant le gate d'acquittement, et de désynchroniser le couple mode/enabled en NVS. |
-| `orp_regulation_mode` | string | Mode de régulation ORP : `"automatic"` (PID vers orp_target), `"scheduled"` (volume quotidien de chlore, aveugle au capteur), `"manual"` (aucune régulation automatique) |
+| `orp_regulation_mode` | string | Mode de régulation ORP : `"automatic"` (PID vers orp_target), `"scheduled"` (volume quotidien de chlore, aveugle au capteur), `"manual"` (aucune régulation automatique). ⚠️ **v2.55.0 (feature-140)** : cette valeur est **toujours la configuration NVS brute**, jamais affectée par la Chloration de secours — pendant que ce mode est actif, la **décision de dosage** peut différer de cette valeur publiée (mode ORP *effectif*, voir [ADR-0087](adr/0087-ce-qu-un-mode-temporaire-a-le-droit-de-faire.md)) ; `rescue_until`/`rescue_dosing` (`GET /data`) disent ce qui se passe réellement. |
 | `orp_daily_target_ml` | integer | Volume quotidien cible en mL pour le mode Programmée ORP (0 = désactivé, borné par `max_orp_ml_per_day`) |
 | `orp_enabled` | boolean | Miroir dérivé de `orp_regulation_mode` : `true` si mode ≠ `"manual"`. Maintenu pour compatibilité MQTT / HA. |
 | `max_orp_ml_per_day` | float | Limite journalière ORP configurée (mL) — alias de `max_chlorine_ml_per_day` |
@@ -2034,11 +2053,11 @@ Champs ajoutés en feature-056 (mode d'installation, v2.19.0 — [ADR-0026](adr/
 |-------|------|-------------|
 | `install_mode` | string | Mode d'installation actif : `"managed"` / `"powered"` / `"external"`. |
 | `water_present` | boolean | Présence d'eau résolue (`resolveWaterPresent`), **source unique** des gardes de dosage. `managed` → filtration commandée ON ; `powered` → toujours `true` ; `external` → signal ON récent (< 180 s). |
-| `filtration_state_source` | string | Origine de `water_present` : `"commanded"` (managed), `"powered"` (powered), `"external"` (external). |
 | `filtration_state_stale` | boolean | Mode `external` uniquement : `true` si un signal a déjà été reçu mais qu'il est périmé (> 180 s) → dosage suspendu (fail-safe). |
 | `filtration_ext_known` | boolean | Mode `external` : `true` dès qu'au moins un signal externe a été reçu depuis le boot (`false` = « aucun signal », fail-safe OFF). |
-| `filtration_ext_on` | boolean | Dernier état signalé par la filtration externe (`ON`/`OFF`). |
 | `filtration_ext_age_s` | integer | Âge en secondes du dernier signal externe (`0` si `filtration_ext_known` est `false`). |
+
+> ⚠️ **v2.55.0 (feature-140) — `filtration_state_source` et `filtration_ext_on` RETIRÉS de cette trame WebSocket.** Aucun consommateur dans `data/` (vérifié par grep), ils financent le budget d'octets de la Chloration de secours ([ADR-0086](adr/0086-trame-websocket-sous-ensemble-choisi-de-data.md)) et migrent **`/data`-seuls** — voir [`GET /data`](#champs-ajoutés-en-feature-140-chloration-de-secours). **Changement observable pour tout client WebSocket tiers** qui lirait ces deux clés : il faut désormais les lire via `GET /data`.
 
 #### Objet `flow_assist` — deux champs en parité (bug-082, v2.47.1)
 
@@ -2306,6 +2325,50 @@ curl -u admin:monmotdepasse -X POST http://poolcontroller.local/boost/stop
 
 ```json
 { "success": true, "boost_active": false }
+```
+
+---
+
+### POST /rescue/start — WRITE
+
+Active la **Chloration de secours** (feature-140, v2.55.0) : surcouche temporaire non destructive qui emprunte la branche de dosage « Programmée » existante pour continuer à injecter du chlore (volume fixe, aveugle à l'ORP) quand les sondes sont déclarées non fiables. **Ne modifie jamais `orp_regulation_mode` en NVS.** Auto-expirant 48 h après l'activation (epoch, **glissant** — pas un ancrage sur minuit local, voir [ADR-0087](adr/0087-ce-qu-un-mode-temporaire-a-le-droit-de-faire.md)). Décision structurante et libellés imposés : voir la spec [feature-140](../specs/features/done/feature-140-chloration-de-secours-et-widget-des-modes-temporaires.md).
+
+```bash
+curl -u admin:monmotdepasse -X POST http://poolcontroller.local/rescue/start
+```
+
+**Réponse 200** :
+
+```json
+{ "rescue_active": true, "rescue_until": 1790150400 }
+```
+
+**Erreur 409** — mode de régulation ORP en Manuel (condition #5 du gate `pool-chemistry` : l'utilisateur dose déjà lui-même, l'activer en plus doserait deux fois) :
+
+```json
+{ "error": "mode_manual", "message": "Chloration de secours indisponible : la régulation du chlore est en mode Manuel. Repassez en Automatique ou Programmée pour l'utiliser." }
+```
+
+**Erreur 409** — heure non synchronisée (l'échéance 48 h serait indéterminable, même politique de sécurité que `POST /boost/start`) :
+
+```json
+{ "error": "time_not_synced", "message": "Chloration de secours impossible : horloge non synchronisée (échéance 48h indéterminable)." }
+```
+
+---
+
+### POST /rescue/stop — WRITE
+
+Désactive la Chloration de secours immédiatement. Retour au comportement normal selon la configuration réelle de l'utilisateur (`orp_regulation_mode` en NVS n'ayant jamais changé). Inconditionnel (jamais refusé).
+
+```bash
+curl -u admin:monmotdepasse -X POST http://poolcontroller.local/rescue/stop
+```
+
+**Réponse 200** :
+
+```json
+{ "rescue_active": false, "rescue_until": 0 }
 ```
 
 ---

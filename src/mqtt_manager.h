@@ -104,6 +104,9 @@ struct MqttTopics {
   String rebootCommand;             // Commande redémarrage (bouton HA)
   String boostState;                // feature-053 : état Mode Boost (ON/OFF, retain)
   String boostCommand;              // feature-053 : .../boost/set (ON/OFF)
+  String rescueState;                // feature-140 : état Chloration de secours (ON/OFF, retain)
+  String rescueCommand;              // feature-140 : .../rescue/set (ON/OFF)
+  String rescueLiftReasonState;      // feature-140 (complément) : code RescueLiftReason (0-3, retain)
   // feature-056 : mode d'installation + signal filtration externe
   String installModeState;          // Mode d'installation publié (managed/powered/external, retain)
   String installModeCommand;        // .../install_mode/set (managed/powered/external)
@@ -352,6 +355,7 @@ public:
   void publishLightingState();
   void publishDosingState();
   void publishBoostState();  // feature-053 : état Mode Boost (ON/OFF, retain)
+  void publishRescueState(); // feature-140 : état Chloration de secours (ON/OFF, retain) + rescue_lift_reason
   void publishProductState();
   void publishTargetState();
   void publishAlert(const String& alertType, const String& message);
@@ -418,6 +422,7 @@ enum class InboundCmdType : uint8_t {
   Boost,             // payload = "ON"|"OFF" (feature-053 : Mode Boost)
   FiltrationExternalState,  // payload = "ON"|"OFF" (feature-056 : signal filtration externe)
   InstallMode,       // payload = "managed"|"powered"|"external" (feature-056)
+  Rescue,            // payload = "ON"|"OFF" (feature-140 : Chloration de secours)
 };
 
 struct InboundCmd {

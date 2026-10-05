@@ -16,7 +16,7 @@ La page est une **grille de six cartes** (classe `grid--status-cards`) :
 3. **Carte pH** (`#dashboard-ph-card`) — valeur pH courante, cible, badge dosage actif, mini-graphique + légende « Lissé (régulation) » / interrupteur « Brut » (v2.38.0). Bandeau « Calibration requise » si la sonde n'a jamais été calibrée. Lien vers `/ph`.
 4. **Carte ORP** (`#dashboard-orp-card`) — valeur ORP courante (mV), cible, badge dosage actif, mini-graphique + même légende (v2.38.0). Bandeau calibration. Lien vers `/orp`.
 5. **Carte Température** (`#dashboard-temperature-card`) — valeur courante en °C, badge `#temperature-sensor-badge` (« Capteur indisponible » v2.10.5 + segments d'état mesure feature-061 itération 2), mini-graphique. Lien vers `/temperature`.
-6. **Carte Boost** (`#dashboard-boost-card`) — activation / désactivation du Mode Boost, heure d'expiration quand il est actif (feature-053, v2.18.0, voir [Carte Boost](#carte-boost-feature-053)).
+6. **Carte Modes temporaires** (`#dashboard-temp-modes-card`, feature-140, v2.55.0 — regroupe l'ex-carte Boost) — deux sous-blocs, `#temp-mode-boost` (Mode Boost, feature-053, markup inchangé) et `#temp-mode-rescue` (Chloration de secours, nouveau), voir [Carte Modes temporaires](#carte-modes-temporaires-feature-140).
 
 Chaque mini-graphique est rendu par **uPlot** (usine `createMiniLineChart`, feature-043 — remplace Chart.js) dans un conteneur dédié, alimenté par l'historique de la **journée en cours** (depuis minuit local — v2.18.9, était une fenêtre glissante de 24 h en v2.18.4 et 3 jours avant ; points bruts + moyennes horaires selon l'ancienneté — voir [Plage « journée en cours »](#plage-des-mini-graphiques--journée-en-cours-v2189)). La coloration de la courbe est **conditionnelle par segment** (vert dans la tolérance, interpolation continue vers le rouge au-delà, gris si donnée absente — `getMiniChartRGB`, app.js).
 
@@ -309,15 +309,20 @@ La carte Filtration lit :
 La carte Éclairage lit :
 - `lighting_enabled`, `lighting_schedule_enabled`, `lighting_start`, `lighting_end`
 
-La carte Boost lit :
-- `boost_active` (bool), `boost_until` (epoch d'expiration) — voir [Carte Boost](#carte-boost-feature-053)
-- `boost_filtration_extended`, `boost_chlorine_boosted` (bool, feature-055) — leviers réellement actifs, pilotent la ligne « Effet »
+La carte Modes temporaires lit :
+- `boost_active` (bool), `boost_until` (epoch d'expiration) — voir [Carte Modes temporaires](#carte-modes-temporaires-feature-140)
+- `boost_filtration_extended`, `boost_chlorine_boosted` (bool, feature-055) — leviers réellement actifs du Boost, pilotent sa ligne « Effet »
+- `rescue_until` (epoch, `0` si inactif), `rescue_dosing` (bool, verdict dérivé « dose réellement maintenant »), `rescue_lift` (0-3, raison de fin récente) — Chloration de secours (feature-140)
 
 Les mini-graphiques consomment `GET /get-history?range=24h` au chargement, puis se rafraîchissent par **polling HTTP incrémental toutes les 5 minutes** (`GET /get-history?range=24h&since=<dernier timestamp>`, ajout des nouveaux points en fin de série, avec insertion de la coupure > 90 min le cas échéant) — pas via WebSocket (`loadMiniChartData`, app.js). Depuis la **v2.18.9**, la réponse est **filtrée à minuit local** côté navigateur (seule la journée en cours est tracée) et un **changement de jour civil force un rechargement complet** au lieu de l'incrément — voir [Plage « journée en cours »](#plage-des-mini-graphiques--journée-en-cours-v2189). Le paramètre `range=24h` est conservé tel quel : le contrat HTTP est inchangé. Depuis la **v2.38.0**, la réponse porte en plus `phFiltered` / `orpFiltered` (mesure lissée, `null` au-delà de ~8 h) — voir [Mini-graphiques pH / ORP](#mini-graphiques-ph--orp--la-courbe-suit-le-nombre-affiché-feature-095-v2380).
 
-## Carte Boost (feature-053)
+## Carte Modes temporaires (feature-140)
 
-La carte **Boost** (`#dashboard-boost-card`, v2.18.0) permet d'activer d'un geste le **Mode Boost** : surchloration temporaire du jour (filtration prolongée + cible ORP relevée) après une forte fréquentation. Décision et bornes de sécurité : [ADR-0025](../adr/0025-mode-boost.md).
+La carte **Modes temporaires** (`#dashboard-temp-modes-card`, v2.55.0 — remplace l'ex-carte Boost, même emplacement dans la grille) regroupe **deux leviers indépendants**, chacun dans son propre sous-bloc : `#temp-mode-boost` (Mode Boost, feature-053, **markup et ids inchangés**, simplement remonté comme sous-bloc — aucune régression) et `#temp-mode-rescue` (Chloration de secours, nouveau). **Ce ne sont pas des choix exclusifs** : les deux peuvent être actifs en même temps, et le sont pour une raison concrète — en Programmée (NVS ou via la Chloration de secours), le Boost perd sa surchloration mais conserve sa **prolongation de filtration**, utile précisément quand il y a de la boue à faire circuler. Voir [ADR-0087](../adr/0087-ce-qu-un-mode-temporaire-a-le-droit-de-faire.md) pour la décision structurante derrière cette non-exclusivité et le couple mode effectif / mode publié qui la rend honnête.
+
+### Sous-bloc Boost (feature-053)
+
+Permet d'activer d'un geste le **Mode Boost** : surchloration temporaire du jour (filtration prolongée + cible ORP relevée) après une forte fréquentation. Décision et bornes de sécurité : [ADR-0025](../adr/0025-mode-boost.md).
 
 - **Boost inactif** : bouton **Activer le Boost**. Au clic → `POST /boost/start`. À l'activation, un **toast adaptatif** (v2.18.1, feature-054) informe selon les leviers réellement actifs, à partir des booléens `filtration_extended` / `chlorine_boosted` renvoyés par la réponse 200 :
 
@@ -346,6 +351,43 @@ La carte **Boost** (`#dashboard-boost-card`, v2.18.0) permet d'activer d'un gest
 
 > **Effet chlore gaté au mode ORP `automatic`** : en mode de régulation ORP Manuel / Programmé, le Boost n'étend que la filtration (la cible et la limite chlore ne sont pas relevées). Comportement porté par le firmware ([pump-controller.md §Mode Boost](../subsystems/pump-controller.md#mode-boost-feature-053)). De même, si la filtration n'est pas gérée par PoolController, le Boost ne prolonge pas la filtration. Le toast adaptatif ci-dessus signale ces cas ; côté firmware, `startBoost()` logue un `warning` par levier inerte (couvre aussi l'activation via Home Assistant).
 
+### Sous-bloc Chloration de secours (feature-140, v2.55.0)
+
+Surcouche **non destructive** du mode Programmé existant (feature-011) : permet de continuer à injecter du chlore (volume fixe, aveugle à l'ORP) quand les sondes sont déclarées non fiables — eau trouble, boue au fond du bassin. Verdict sécurité chimique (gate `pool-chemistry`, deux passages — conditions #1 à #12) et libellés imposés mot à mot : voir la spec [feature-140](../../specs/features/done/feature-140-chloration-de-secours-et-widget-des-modes-temporaires.md) et [ADR-0087](../adr/0087-ce-qu-un-mode-temporaire-a-le-droit-de-faire.md). Détail firmware : [pump-controller.md §Chloration de secours](../subsystems/pump-controller.md#chloration-de-secours-feature-140).
+
+- **Inactif** : bouton **Activer** → confirmation explicite (`confirmDialog`, libellé **L2**, imposé mot à mot : *« Le dosage se fera à l'aveugle, sans contrôle de l'ORP, pendant 48 h au maximum. Volume plafonné à 1500 mL par jour. Le pH n'est jamais dosé dans ce mode. Désactivez-le dès que les sondes sont de nouveau fiables. »*) avant tout appel à `POST /rescue/start`. Le hint sous le bouton reprend **L1** mot à mot.
+- **Mode ORP Manuel** : le bouton est **désactivé** (pas un simple masquage — `aria-disabled` + `title`) et le hint affiche **L8** à la place : *« Chloration de secours indisponible : la régulation du chlore est en mode Manuel. Repassez en Automatique ou Programmée pour l'utiliser. »* Même refus côté firmware (409 `mode_manual`) si l'UI était contournée.
+- **Actif** (`rescue_until > 0`) : affiche son **échéance** (`#detail-rescue-until`, format `JJ/MM à HH:MM`, **jamais** fusionnée avec celle du Boost — deux natures différentes, minuit local vs 48 h glissantes) et un bouton **Arrêter** → `POST /rescue/stop`. Le badge distingue deux états :
+  - **« Actif »** (badge `--ok`) : `rescue_dosing === true`, le secours injecte réellement en ce moment.
+  - **« Actif · en attente »** (badge `--warn`, `aria-label` explicite — la couleur seule ne porte pas l'information pour un lecteur d'écran) : armé mais **rien n'est injecté actuellement**. Un callout `#rescue-reason-callout` explique pourquoi, par priorité **L3 (filtration à l'arrêt) > L4 (pH connu et > 7,6) > L5 (plafond journalier atteint)** — dérivé côté client de champs `/data` déjà existants (`water_present`, `phFiltered` + `ph_offset`, `orp_daily_ml`), **aucun champ WS dédié**.
+    - **L5 est scindé en une paire opposable**, selon que le volume quotidien effectif (`min(1500, limite utilisateur si > 0, 2000)`) a été plafonné par la limite utilisateur ou non — la conclusion « le facteur limitant n'est pas le chlore » n'est valide **que** si le plein de 1500 mL a été atteint.
+- **Levée automatique, expiration, arrêt manuel** : trois fins distinctes, publiées par `rescue_lift` (0-3) avec une **fenêtre de visibilité de 90 s** — un `showToast` par événement, **une seule fois** (`_rescueLastAnnouncedLift`) :
+  - `1` (levée auto, 30 min de mesures ORP de nouveau fiables) → **L6**, ton `info` ;
+  - `2` (expiration des 48 h) → **L9**, ton `warning` — rappelle de contrôler le chlore libre au réactif DPD **et** le pH avant de faire confiance à la mesure, la régulation automatique ayant **déjà** repris ;
+  - `3` (arrêt manuel) → **aucun toast** (l'utilisateur vient d'agir).
+
+### Ligne d'effet combiné (B2, feature-140)
+
+Étend le patron honnête de feature-055 aux cas combinés Boost × Secours : `#temp-modes-effect-row` / `#temp-modes-effect`, masquée si ni l'un ni l'autre n'est engagé. **8 combinaisons possibles** (`chlorBoost` et `rescueDosing` sont **exclusifs par construction firmware** — `boost_chlorine_boosted` devient naturellement faux dès que le mode ORP effectif n'est plus `automatic`, donc déjà faux quand le secours est armé ; **aucun calcul client à ajouter**) :
+
+| Filtration prolongée | Surchloration (Boost) | Chloration de secours (dose) | Texte | Badge |
+|---|---|---|---|---|
+| ✗ | ✗ | ✗ | « Sans effet (filtration non gérée, ORP non automatique) » *(inchangé feature-055)* | `--warn` |
+| ✓ | ✗ | ✗ | « Filtration prolongée seule » | `--ok` |
+| ✗ | ✓ | ✗ | « Surchloration seule » | `--ok` |
+| ✓ | ✓ | ✗ | « Filtration prolongée + surchloration » | `--ok` |
+| ✗ | ✗ | ✓ | « Chloration de secours seule » | `--ok` |
+| ✓ | ✗ | ✓ | « Filtration prolongée + chloration de secours » | `--ok` |
+| — | ✓ | ✓ | **impossible** par construction — non codé, `console.warn` si jamais observé (ne plante pas) | — |
+
+Les causes « armé mais non dosant » (L3/L4/L5) **n'entrent pas** dans cette ligne globale — elles restent dans le callout du sous-bloc secours, pour que la ligne d'effet combiné reste honnête sur ce que le Boost fait réellement.
+
+**Recommandation non bloquante du gate** : secours armé et filtration non prolongée (et prolongeable sous le mode d'installation courant) → callout `#temp-modes-suggest-boost` suggère d'activer aussi le Boost — la prolongation de filtration est le seul levier réellement utile sur de la boue.
+
+### Chaînage depuis le bandeau « Dosage bloqué » (B4, feature-140)
+
+Sur la **ligne ORP uniquement** du bandeau de blocage (voir [section dédiée](#bandeau--dosage-bloqué--feature-138-v2540)) — le secours ne concerne jamais le pH — un bouton `btn--primary` « Activer la chloration de secours » (libellé **L7**) est placé **avant** le bouton secondaire « Ouvrir l'injection manuelle » existant, même liste blanche de causes `[3,4,15,18,19,22]`, **sans extension**. ⚠️ **Le clic n'active rien** : il fait défiler la page jusqu'à `#dashboard-temp-modes-card` et pose le focus sur `#detail-rescue-start` — la confirmation **L2** reste un passage obligé. Si le mode ORP effectif est `manual`, le bouton est remplacé par le texte **L8** (pas de bouton proposé pour une action refusée).
+
 ## Actions
 
 | Bouton | Endpoint HTTP |
@@ -356,6 +398,8 @@ La carte **Boost** (`#dashboard-boost-card`, v2.18.0) permet d'activer d'un gest
 | `#detail-lighting-off` | `POST /lighting/off` |
 | Boost — Activer | `POST /boost/start` (toast rappel baignade) |
 | Boost — Arrêter | `POST /boost/stop` |
+| Chloration de secours — Activer | `POST /rescue/start` (confirmation L2 préalable) |
+| Chloration de secours — Arrêter | `POST /rescue/stop` |
 | Liens engrenage | Navigation SPA (fragment `#/ph`, etc.) |
 
 La fonction `updateFiltrationBadges()` côté JS met à jour simultanément `#detail-filtration-status` (dashboard) et `#filtration-current-status` (page filtration) pour rester cohérent.
