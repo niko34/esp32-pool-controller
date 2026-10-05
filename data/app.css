@@ -3723,6 +3723,55 @@ h1, h2, h3 {
   .regul-alert__cta { width: 100%; margin-top: 8px; }
 }
 
+/* ---------- feature-140 (v2.55.3) : bandeau « chloration de secours active » ---------- */
+/* Structure calquée sur .regul-alert : un conteneur, un bouton d'action.
+   Affiché UNIQUEMENT quand rescue_until > 0 (cf. app.js). Ni masquable ni
+   repliable par l'utilisateur : PAS de bouton de fermeture, PAS de
+   details/summary — un dosage aveugle de 48h ne doit pas pouvoir être mis
+   hors de vue d'un clic. Deux tons SEULEMENT, jamais de rouge/fault : le mode
+   est voulu par l'utilisateur, ce n'est pas une panne. */
+.rescue-active-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px 14px;
+  margin-bottom: 14px;
+  border-radius: var(--card-radius);
+  border: 1px solid var(--border);
+  background: var(--panel2);
+  box-shadow: var(--shadow-sm);
+}
+.rescue-active-banner[hidden] { display: none !important; }
+.rescue-active-banner--info {
+  border-color: rgba(79, 143, 255, 0.25);
+  background: rgba(79, 143, 255, 0.08);
+}
+.rescue-active-banner--warning {
+  border-color: rgba(255, 193, 7, 0.35);
+  background: rgba(255, 193, 7, 0.10);
+}
+.rescue-active-banner__dot {
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  margin-top: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+.rescue-active-banner--warning .rescue-active-banner__dot { background: var(--warn); }
+.rescue-active-banner__body { flex: 1 1 auto; min-width: 0; }
+.rescue-active-banner__text {
+  display: block;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--text);
+}
+.rescue-active-banner__cta { flex: 0 0 auto; align-self: center; }
+@media (max-width: 480px) {
+  .rescue-active-banner { flex-wrap: wrap; }
+  .rescue-active-banner__cta { width: 100%; margin-top: 8px; }
+}
+
 /* ---------- feature-138 (B2) : bandeau « dosage bloqué », hors panneau dev ---------- */
 /* Structure calquée sur .regul-alert ci-dessus : un conteneur, une ligne par
    voie (pH/ORP), chacune masquable indépendamment. Ton réservé au rouge pour

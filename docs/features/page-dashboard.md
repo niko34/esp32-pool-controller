@@ -16,7 +16,7 @@ La page est une **grille de six cartes** (classe `grid--status-cards`) :
 3. **Carte pH** (`#dashboard-ph-card`) — valeur pH courante, cible, badge dosage actif, mini-graphique + légende « Lissé (régulation) » / interrupteur « Brut » (v2.38.0). Bandeau « Calibration requise » si la sonde n'a jamais été calibrée. Lien vers `/ph`.
 4. **Carte ORP** (`#dashboard-orp-card`) — valeur ORP courante (mV), cible, badge dosage actif, mini-graphique + même légende (v2.38.0). Bandeau calibration. Lien vers `/orp`.
 5. **Carte Température** (`#dashboard-temperature-card`) — valeur courante en °C, badge `#temperature-sensor-badge` (« Capteur indisponible » v2.10.5 + segments d'état mesure feature-061 itération 2), mini-graphique. Lien vers `/temperature`.
-6. **Carte Modes temporaires** (`#dashboard-temp-modes-card`, feature-140, v2.55.0 — regroupe l'ex-carte Boost) — deux sous-blocs, `#temp-mode-boost` (Mode Boost, feature-053, markup inchangé) et `#temp-mode-rescue` (Chloration de secours, nouveau), voir [Carte Modes temporaires](#carte-modes-temporaires-feature-140).
+6. **Carte Modes temporaires** (`#dashboard-temp-modes-card`, feature-140, v2.55.0 — regroupe l'ex-carte Boost) — un seul sous-bloc visible depuis la v2.55.2, `#temp-mode-boost` (Mode Boost, feature-053, markup inchangé) ; la Chloration de secours n'y a plus de représentation (état/contrôle déplacés vers le [bandeau dédié](#bandeau--chloration-de-secours-active-rescue-active-banner-feature-140-v2552) en tête de page), voir [Carte Modes temporaires](#carte-modes-temporaires-feature-140).
 
 Chaque mini-graphique est rendu par **uPlot** (usine `createMiniLineChart`, feature-043 — remplace Chart.js) dans un conteneur dédié, alimenté par l'historique de la **journée en cours** (depuis minuit local — v2.18.9, était une fenêtre glissante de 24 h en v2.18.4 et 3 jours avant ; points bruts + moyennes horaires selon l'ancienneté — voir [Plage « journée en cours »](#plage-des-mini-graphiques--journée-en-cours-v2189)). La coloration de la courbe est **conditionnelle par segment** (vert dans la tolérance, interpolation continue vers le rouge au-delà, gris si donnée absente — `getMiniChartRGB`, app.js).
 
@@ -42,6 +42,34 @@ Texte : `Le filtre de mesure est bloqué depuis plus de 5 minutes alors que la f
 Le firmware n'arme ces drapeaux que si la filtration tourne, que les mesures sont représentatives **et** que le filtre reste non prêt > 5 min : **aucun affichage** pendant une purge, un warmup ou une filtration à l'arrêt. La reprise se fait depuis le modal d'état filtre de la page concernée ([page-ph.md](page-ph.md#bouton--réarmer-le-filtre-ph--v2203), [page-orp.md](page-orp.md#bouton--réarmer-le-filtre-orp--v2203)).
 
 Une variante `regul-alert--inline` du même style est réutilisée dans la carte Régulation pH pour la bannière de bascule automatique en manuel.
+
+## Bandeau « Chloration de secours active » (`#rescue-active-banner`, feature-140, v2.55.2)
+
+`<div class="rescue-active-banner" id="rescue-active-banner" role="status" aria-live="polite" hidden>`, juste **après** `#regul-alert` et **avant** `#dose-block-banner` — le secours **répond** au blocage, il ne s'y ajoute pas.
+
+**Retour d'usage réel (v2.55.2)** : jusqu'alors, l'état et le bouton Arrêter du secours vivaient dans un sous-bloc du widget « Modes temporaires » (`#temp-mode-rescue`, masqué/affiché selon l'activité, v2.55.1). Motif utilisateur : un dosage à l'aveugle en cours est un état notable qui mérite le **haut de page**, pas un bloc qu'il faut aller regarder dans un widget — même rapprochement que le bandeau « Mesures non représentatives ».
+
+**`#temp-mode-rescue` est retiré du DOM dans tous les états**, actif compris — pas masqué, supprimé. Le widget « Modes temporaires » ne contient plus que le **Boost**, en permanence — depuis la **v2.55.3**, cela inclut aussi la ligne d'effet combiné `#temp-modes-effect`, **retirée du DOM avec ses fonctions JS** (voir [Ligne d'effet combiné, retirée en v2.55.3](#ligne-deffet-combiné-b2-feature-140--retirée-en-v2553) pour le détail et la raison de ce retrait).
+
+**Affiché uniquement quand `rescue_until > 0`** (`updateRescueCard()`, app.js).
+
+⚠️ **Conditions du gate `pool-chemistry` — à traiter comme des règles de sécurité chimique, pas des préférences d'ergonomie** :
+
+- Le bouton **Arrêter** (`#rescue-active-banner-stop` → `POST /rescue/stop`) est **dans** le bandeau, pas seulement un texte qui y renvoie.
+- Le bandeau est **ni masquable ni repliable** : aucun bouton de fermeture, aucun `details`/`summary`. Un dosage aveugle de 48 h ne doit pas pouvoir être mis hors de vue d'un clic.
+- **Deux tons seulement**, jamais `critical`/`fault` : `info` (`.rescue-active-banner--info`) quand le secours dose réellement, `warning` (`.rescue-active-banner--warning`) quand il est armé mais en attente. Le mode est **voulu par l'utilisateur**, ce n'est pas une panne — un rouge permanent pendant 48 h userait le canal d'alerte exactement comme les deux bandeaux redondants corrigés en v2.55.1.
+
+**Paire de textes opposables** (au même titre que L1-L9 de la spec feature-140), rendus par `updateRescueCard()` — **ne jamais reformuler, abréger ou tronquer** sans repasser le gate `pool-chemistry` :
+
+- **Variante A — actif ET dosant** (`rescue_dosing === true`), ton `info` : *« Chloration de secours active jusqu'au %s : le chlore est injecté à volume fixe, sans contrôle de l'ORP. »* (`%s` = échéance au format `JJ/MM à HH:MM`, dérivée de `rescue_until`.)
+- **Variante B — actif mais en attente** (`rescue_dosing === false`), ton `warning` : *« Chloration de secours active jusqu'au %s, mais le chlore ne coule pas actuellement. %s »* (1er `%s` = échéance, 2nd `%s` = cause reprise **mot à mot** parmi L3/L4/L5a/L5b, `_rescueReasonText()`, priorité **L3 (filtration à l'arrêt) > L4 (pH > 7,6) > L5 (plafond journalier)** — inchangée depuis v2.55.0.)
+- **Phrase de suggestion Boost, ajoutée aux DEUX variantes (v2.55.3)**, jamais un bloc séparé : *« Suggestion : activez aussi le Boost pour prolonger la filtration — sur une eau chargée en matière organique, c'est le levier le plus utile, davantage que le chlore lui-même. »* **Conditionnelle** — condition du gate `pool-chemistry`, non négociable : affichée uniquement quand le secours est armé **et** que la filtration n'est pas déjà prolongée (`boost_active` faux, ou `boost_filtration_extended === false`) ; affichée en permanence elle deviendrait du décor. C'est l'**unique** endroit de l'application qui dit que la filtration prime sur le chlore — enseignement direct du terrain (2 L/jour pendant trois jours, ORP bloqué à 261 mV pour une consigne de 530 mV) et contre-pied du réflexe « ça ne monte pas, j'en remets ». Vient du widget « Modes temporaires » (ex-`#temp-modes-suggest-boost`), retiré en même temps que la ligne d'effet combiné — voir [Ligne d'effet combiné, retirée en v2.55.3](#ligne-deffet-combiné-b2-feature-140--retirée-en-v2553).
+
+**L1 disparaît de l'écran** avec le widget. C'est **admissible** : le libellé **L2**, déjà révisé en v2.55.1 pour absorber l'avertissement que portait L1, continue de le porter — ce n'est pas une perte d'information, L1 n'était de toute façon visible qu'au moment de l'activation (bouton désormais hors widget).
+
+**Incohérence fermée côté `#dose-block-banner`** : tant que le secours tourne déjà (`rescue_until > 0`, paramètre `rescueActive` de `_renderDoseBlockRow()`), l'offre **L7** et son bouton « Activer la chloration de secours » **disparaissent** de la ligne ORP du bandeau de blocage — proposer d'armer ce qui tourne déjà est le genre d'incohérence qui fait douter de tout le reste de l'affichage. La ligne **conserve** son texte de cause (la mesure EST toujours non représentative, c'est le cas nominal tant que le secours est actif) et son bouton « Ouvrir l'injection manuelle » (B3, voir [section dédiée](#raccourci-vers-linjection-manuelle-b3)).
+
+Verdict sécurité chimique et conditions opposables : voir la section « Correctif post-production (v2.55.2) » de la spec [feature-140](../../specs/features/done/feature-140-chloration-de-secours-et-widget-des-modes-temporaires.md) et [ADR-0087](../adr/0087-ce-qu-un-mode-temporaire-a-le-droit-de-faire.md) (décision structurante déjà actée — ce correctif ne fait que déplacer l'affichage).
 
 ## Bandeau « Dosage bloqué » (feature-138, v2.54.0)
 
@@ -327,7 +355,7 @@ Les mini-graphiques consomment `GET /get-history?range=24h` au chargement, puis 
 
 ## Carte Modes temporaires (feature-140)
 
-La carte **Modes temporaires** (`#dashboard-temp-modes-card`, v2.55.0 — remplace l'ex-carte Boost, même emplacement dans la grille) regroupe **deux leviers indépendants**, chacun dans son propre sous-bloc : `#temp-mode-boost` (Mode Boost, feature-053, **markup et ids inchangés**, simplement remonté comme sous-bloc — aucune régression) et `#temp-mode-rescue` (Chloration de secours, nouveau). **Ce ne sont pas des choix exclusifs** : les deux peuvent être actifs en même temps, et le sont pour une raison concrète — en Programmée (NVS ou via la Chloration de secours), le Boost perd sa surchloration mais conserve sa **prolongation de filtration**, utile précisément quand il y a de la boue à faire circuler. Voir [ADR-0087](../adr/0087-ce-qu-un-mode-temporaire-a-le-droit-de-faire.md) pour la décision structurante derrière cette non-exclusivité et le couple mode effectif / mode publié qui la rend honnête.
+La carte **Modes temporaires** (`#dashboard-temp-modes-card`, v2.55.0 — remplace l'ex-carte Boost, même emplacement dans la grille) ne contient, depuis la **v2.55.3**, que le sous-bloc `#temp-mode-boost` (Mode Boost, feature-053, **markup et ids inchangés**) — et rien d'autre. L'état et le contrôle de la **Chloration de secours** (`#temp-mode-rescue`, introduit v2.55.0, masqué conditionnellement v2.55.1) avaient déjà été **retirés de la carte** en v2.55.2, déplacés vers un [bandeau dédié en tête de page](#bandeau--chloration-de-secours-active-rescue-active-banner-feature-140-v2552). La **ligne d'effet combiné** (`#temp-modes-effect`) et la **suggestion Boost** (`#temp-modes-suggest-boost`) qui restaient dans la carte sont à leur tour **retirées du DOM en v2.55.3** — voir [Ligne d'effet combiné, retirée en v2.55.3](#ligne-deffet-combiné-b2-feature-140--retirée-en-v2553) pour le détail et la raison de ce retrait (l'information gagne à être **scindée**, pas supprimée). La non-exclusivité Boost / secours reste réelle côté firmware — en Programmée (NVS ou via la Chloration de secours), le Boost perd sa surchloration mais conserve sa **prolongation de filtration**, utile précisément pour faire circuler une eau chargée en matière organique — mais ne fait plus l'objet d'un affichage combiné : chaque effet est désormais dit **à côté de l'objet qu'il décrit** (le Boost dans la carte, le secours dans son bandeau). Voir [ADR-0087](../adr/0087-ce-qu-un-mode-temporaire-a-le-droit-de-faire.md) pour la décision structurante derrière cette non-exclusivité et le couple mode effectif / mode publié qui la rend honnête.
 
 ### Sous-bloc Boost (feature-053)
 
@@ -360,60 +388,29 @@ Permet d'activer d'un geste le **Mode Boost** : surchloration temporaire du jour
 
 > **Effet chlore gaté au mode ORP `automatic`** : en mode de régulation ORP Manuel / Programmé, le Boost n'étend que la filtration (la cible et la limite chlore ne sont pas relevées). Comportement porté par le firmware ([pump-controller.md §Mode Boost](../subsystems/pump-controller.md#mode-boost-feature-053)). De même, si la filtration n'est pas gérée par PoolController, le Boost ne prolonge pas la filtration. Le toast adaptatif ci-dessus signale ces cas ; côté firmware, `startBoost()` logue un `warning` par levier inerte (couvre aussi l'activation via Home Assistant).
 
-### Sous-bloc Chloration de secours (feature-140, v2.55.0 — **masquage conditionnel et retrait du bouton Activer en v2.55.1**)
+### Sous-bloc Chloration de secours — RETIRÉ en v2.55.2, voir le bandeau dédié
 
-Surcouche **non destructive** du mode Programmé existant (feature-011) : permet de continuer à injecter du chlore (volume fixe, aveugle à l'ORP) quand les sondes sont déclarées non fiables — eau trouble, boue au fond du bassin. Verdict sécurité chimique (gate `pool-chemistry`, deux passages — conditions #1 à #12) et libellés imposés mot à mot : voir la spec [feature-140](../../specs/features/done/feature-140-chloration-de-secours-et-widget-des-modes-temporaires.md) et [ADR-0087](../adr/0087-ce-qu-un-mode-temporaire-a-le-droit-de-faire.md). Détail firmware : [pump-controller.md §Chloration de secours](../subsystems/pump-controller.md#chloration-de-secours-feature-140).
+Depuis la **v2.55.2**, le widget « Modes temporaires » **ne contient plus aucune trace** de la Chloration de secours : le sous-bloc `#temp-mode-rescue` (badge d'état, échéance, callout de cause, bouton Arrêter) est **retiré du DOM** dans tous les états, actif compris — ce n'est plus un masquage conditionnel (comme en v2.55.1), c'est un retrait complet. L'état et le contrôle du mode vivent désormais dans un **bandeau dédié**, `#rescue-active-banner`, en tête de page — voir [Bandeau « Chloration de secours active »](#bandeau--chloration-de-secours-active-rescue-active-banner-feature-140-v2552) plus haut, qui documente les deux textes opposables, les conditions du gate `pool-chemistry` et la fermeture de l'offre L7 sur `#dose-block-banner` quand le secours tourne déjà.
 
-> **Retour d'usage réel (v2.55.1)** : afficher le sous-bloc en permanence,
-> avec son bouton Activer, alourdissait le widget pour une action qui ne
-> sert que dans une situation précise — et que le bandeau « Dosage bloqué »
-> propose déjà au bon moment (libellé **L7**). Le sous-bloc `#temp-mode-rescue`
-> (séparateur `#temp-mode-rescue-sep` compris) est désormais **masqué
-> entièrement** quand le mode est **inactif** (`rescue_until <= 0`) — le
-> widget ne contient alors que le Boost, et retrouve sa hauteur d'avant
-> feature-140. Il **réapparaît** dès que le mode est **actif**, avec badge
-> d'état, échéance, cause de non-injection et bouton Arrêter : un dosage à
-> l'aveugle en cours doit rester consultable et interruptible, L2 demandant
-> explicitement à l'utilisateur de le désactiver lui-même. **Le bouton
-> Activer est retiré du DOM** (pas seulement masqué) : l'activation ne se
-> fait plus que depuis le bandeau de blocage (L7, confirmation L2
-> déclenchée directement par `_activateRescueChlorine()`) ou depuis
-> l'interrupteur MQTT / Home Assistant « Chloration de secours ».
->
-> ⚠️ **Ce masquage est une condition du gate `pool-chemistry`, pas une
-> simple préférence d'ergonomie** : le bandeau d'alerte qui propose
-> l'activation disparaît précisément quand le dosage reprend — ce que fait
-> l'activation du secours elle-même. Un retrait total du bloc (y compris en
-> mode actif) aurait laissé tourner jusqu'à 48 h de dosage aveugle **sans
-> statut ni interrupteur visibles**, et aurait transformé le libellé L2
-> (« Désactivez-le dès que les sondes sont de nouveau fiables ») en promesse
-> intenable. Voir aussi [la condition documentaire sur le mode Programmée](#chloration-de-secours--le-mode-programmée-reste-laccès-permanent-v2551)
-> ci-dessous.
->
-> **Libellé L2 révisé** (absorbe désormais l'avertissement que portait L1,
-> qui n'est plus visible avant activation puisque le bouton Activer a
-> disparu du widget) : *« Le dosage se fera à l'aveugle, sans contrôle de
-> l'ORP, pendant 48 h au maximum. Volume plafonné à 1500 mL par jour. Le pH
-> n'est jamais dosé dans ce mode. Il maintient une désinfection minimale —
-> il ne rattrape pas une eau boueuse : seul le retrait mécanique de la boue
-> le fait. Désactivez-le dès que les sondes sont de nouveau fiables. »* L1
-> et L7 sont **inchangés** ; L1 reste affiché dans le bloc une fois actif
-> (`#detail-rescue-hint`).
+Le widget ne contient plus que le sous-bloc **Boost** (ci-dessus) — depuis la **v2.55.3**, la [ligne d'effet combiné](#ligne-deffet-combiné-b2-feature-140--retirée-en-v2553) (`#temp-modes-effect`) a elle aussi été retirée du DOM : seul le Boost subsiste dans la carte. Surcouche **non destructive** du mode Programmé existant (feature-011), verdict sécurité chimique et libellés imposés mot à mot : voir la spec [feature-140](../../specs/features/done/feature-140-chloration-de-secours-et-widget-des-modes-temporaires.md) et [ADR-0087](../adr/0087-ce-qu-un-mode-temporaire-a-le-droit-de-faire.md). Détail firmware : [pump-controller.md §Chloration de secours](../subsystems/pump-controller.md#chloration-de-secours-feature-140).
 
-- **Inactif** : sous-bloc **masqué**, séparateur compris. Rien à activer depuis le widget — voir l'encart ci-dessus pour les deux chemins d'activation restants (bandeau, MQTT/HA).
 - **Mode ORP Manuel** : le refus **L8** reste affiché par le bandeau de blocage à la place du bouton « Activer la chloration de secours » (voir [Chaînage](#chaînage-depuis-le-bandeau--dosage-bloqué--b4-feature-140) ci-dessous) : *« Chloration de secours indisponible : la régulation du chlore est en mode Manuel. Repassez en Automatique ou Programmée pour l'utiliser. »* Même refus côté firmware (409 `mode_manual`) si l'activation était contournée (MQTT/HA).
-- **Actif** (`rescue_until > 0`) : affiche son **échéance** (`#detail-rescue-until`, format `JJ/MM à HH:MM`, **jamais** fusionnée avec celle du Boost — deux natures différentes, minuit local vs 48 h glissantes) et un bouton **Arrêter** → `POST /rescue/stop`. Le badge distingue deux états :
-  - **« Actif »** (badge `--ok`) : `rescue_dosing === true`, le secours injecte réellement en ce moment.
-  - **« Actif · en attente »** (badge `--warn`, `aria-label` explicite — la couleur seule ne porte pas l'information pour un lecteur d'écran) : armé mais **rien n'est injecté actuellement**. Un callout `#rescue-reason-callout` explique pourquoi, par priorité **L3 (filtration à l'arrêt) > L4 (pH connu et > 7,6) > L5 (plafond journalier atteint)** — dérivé côté client de champs `/data` déjà existants (`water_present`, `phFiltered` + `ph_offset`, `orp_daily_ml`), **aucun champ WS dédié**.
-    - **L5 est scindé en une paire opposable**, selon que le volume quotidien effectif (`min(1500, limite utilisateur si > 0, 2000)`) a été plafonné par la limite utilisateur ou non — la conclusion « le facteur limitant n'est pas le chlore » n'est valide **que** si le plein de 1500 mL a été atteint.
-- **Levée automatique, expiration, arrêt manuel** : trois fins distinctes, publiées par `rescue_lift` (0-3) avec une **fenêtre de visibilité de 90 s** — un `showToast` par événement, **une seule fois** (`_rescueLastAnnouncedLift`) :
+- **Levée automatique, expiration, arrêt manuel** : trois fins distinctes, publiées par `rescue_lift` (0-3) avec une **fenêtre de visibilité de 90 s** — un `showToast` par événement, **une seule fois** (`_rescueLastAnnouncedLift`), indépendant de la visibilité du bandeau :
   - `1` (levée auto, 30 min de mesures ORP de nouveau fiables) → **L6**, ton `info` ;
   - `2` (expiration des 48 h) → **L9**, ton `warning` — rappelle de contrôler le chlore libre au réactif DPD **et** le pH avant de faire confiance à la mesure, la régulation automatique ayant **déjà** repris ;
   - `3` (arrêt manuel) → **aucun toast** (l'utilisateur vient d'agir).
 
-### Ligne d'effet combiné (B2, feature-140)
+L'**échéance** (format `JJ/MM à HH:MM`, dérivée de `rescue_until`) et la **cause de non-injection** (L3/L4/L5a/L5b) sont désormais rendues dans le texte du bandeau `#rescue-active-banner` plutôt que dans des éléments séparés (`#detail-rescue-until`, `#rescue-reason-callout` : supprimés) — voir le détail des deux variantes de texte dans la section du bandeau.
 
-Étend le patron honnête de feature-055 aux cas combinés Boost × Secours : `#temp-modes-effect-row` / `#temp-modes-effect`, masquée si ni l'un ni l'autre n'est engagé. **8 combinaisons possibles** (`chlorBoost` et `rescueDosing` sont **exclusifs par construction firmware** — `boost_chlorine_boosted` devient naturellement faux dès que le mode ORP effectif n'est plus `automatic`, donc déjà faux quand le secours est armé ; **aucun calcul client à ajouter**) :
+### Ligne d'effet combiné (B2, feature-140) — retirée en v2.55.3
+
+De la v2.55.0 à la v2.55.2, le widget portait une ligne `#temp-modes-effect-row` / `#temp-modes-effect` qui étendait le patron honnête de feature-055 aux cas combinés Boost × Secours, ainsi qu'un callout `#temp-modes-suggest-boost` suggérant d'activer le Boost quand le secours était armé sans filtration prolongée.
+
+**Les deux sont retirés du DOM en v2.55.3**, avec leurs fonctions JS (`_tempModesEffectText()`, `updateTempModesEffect()`). ⚠️ **Point à retenir** : le gate `pool-chemistry` n'a **pas** demandé de reloger la ligne d'effet combiné ailleurs — son argument est que l'information est **meilleure une fois scindée** : la ligne d'effet du Boost (`#detail-boost-effect`, feature-055) reste à côté du Boost, et les deux variantes A/B du [bandeau de secours](#bandeau--chloration-de-secours-active-rescue-active-banner-feature-140-v2552) disent ce que fait le secours à côté du secours. **Chacune est vérifiable à côté de l'objet qu'elle décrit** — ce qu'une ligne combinée ne permettait pas.
+
+La suggestion Boost, elle, **n'a pas disparu** : le gate a **refusé** sa suppression et l'a fait **déménager** dans le bandeau de secours, en phrase ajoutée aux variantes A et B (jamais un bloc séparé) — voir la [paire de textes opposables](#bandeau--chloration-de-secours-active-rescue-active-banner-feature-140-v2552). Motif du gate : c'est le **seul endroit de l'application qui dit que la filtration prime sur le chlore**, enseignement direct du terrain (2 L/jour pendant trois jours, ORP bloqué à 261 mV pour une consigne de 530 mV) et contre-pied du réflexe « ça ne monte pas, j'en remets ». Elle reste **conditionnelle**, inchangé depuis sa première version : affichée uniquement quand le secours est armé et la filtration non déjà prolongée.
+
+Pour mémoire, les **8 combinaisons** qu'affichait la ligne retirée (`chlorBoost` et `rescueDosing` étaient **exclusifs par construction firmware** — `boost_chlorine_boosted` devient naturellement faux dès que le mode ORP effectif n'est plus `automatic`, donc déjà faux quand le secours est armé) :
 
 | Filtration prolongée | Surchloration (Boost) | Chloration de secours (dose) | Texte | Badge |
 |---|---|---|---|---|
@@ -425,13 +422,19 @@ Surcouche **non destructive** du mode Programmé existant (feature-011) : permet
 | ✓ | ✗ | ✓ | « Filtration prolongée + chloration de secours » | `--ok` |
 | — | ✓ | ✓ | **impossible** par construction — non codé, `console.warn` si jamais observé (ne plante pas) | — |
 
-Les causes « armé mais non dosant » (L3/L4/L5) **n'entrent pas** dans cette ligne globale — elles restent dans le callout du sous-bloc secours, pour que la ligne d'effet combiné reste honnête sur ce que le Boost fait réellement.
-
-**Recommandation non bloquante du gate** : secours armé et filtration non prolongée (et prolongeable sous le mode d'installation courant) → callout `#temp-modes-suggest-boost` suggère d'activer aussi le Boost — la prolongation de filtration est le seul levier réellement utile sur de la boue.
+Les causes « armé mais non dosant » (L3/L4/L5) **n'entraient pas** dans cette ligne — elles restaient dans le callout du sous-bloc secours (lui-même retiré en v2.55.2, remplacé par la variante B du bandeau).
 
 ### Chaînage depuis le bandeau « Dosage bloqué » (B4, feature-140)
 
 Sur la **ligne ORP uniquement** du bandeau de blocage (voir [section dédiée](#bandeau--dosage-bloqué--feature-138-v2540)) — le secours ne concerne jamais le pH — un bouton `btn--primary` « Activer la chloration de secours » (libellé **L7**) est placé **avant** le bouton secondaire « Ouvrir l'injection manuelle » existant, même liste blanche de causes `[3,4,15,18,19,22]`, **sans extension**. Si le mode ORP effectif est `manual`, le bouton est remplacé par le texte **L8** (pas de bouton proposé pour une action refusée).
+
+> **v2.55.2 — fermeture d'une incohérence** : si le secours tourne **déjà**
+> (`rescue_until > 0`, paramètre `rescueActive` de `_renderDoseBlockRow()`),
+> le bouton L7 **n'est pas rendu du tout** — proposer d'armer un mode qui
+> tourne déjà est le genre d'incohérence qui fait douter de tout le reste de
+> l'affichage. Le texte de cause et le bouton « Ouvrir l'injection manuelle »
+> (B3) restent affichés : la mesure EST toujours non représentative pendant
+> que le secours tourne, c'est le cas nominal, pas une anomalie à masquer.
 
 > **v2.55.1 — c'est désormais le SEUL chemin d'activation du widget** (avec
 > l'interrupteur MQTT/Home Assistant). Le bouton Activer a été retiré du
@@ -461,6 +464,20 @@ armant le secours par précaution : il se diagnostique au **réactif DPD**
 (mesure indépendante de la sonde) et se traite, le cas échéant, en
 basculant la régulation chlore sur le mode **Programmée**.
 
+### Volume saisi à l'activation (feature-141, v2.56.0)
+
+Le volume journalier de la Chloration de secours n'est plus la constante `kRescueChlorineDailyMl` (1500 mL/j) : il est **saisi par l'utilisateur** dans le dialogue de confirmation ouvert par `_activateRescueChlorine()` (B4 ci-dessus), pré-rempli et borné. Arbitrage complet (chaîne de pré-remplissage, défauts par taille de bassin, deux clamps distincts) : [pump-controller.md §Chloration de secours](../subsystems/pump-controller.md#chloration-de-secours-feature-140), verdict `pool-chemistry` dans la spec [feature-141](../../specs/features/done/feature-141-volume-de-secours-saisi-a-l-activation.md).
+
+- **Champ** : libellé imposé « Volume de chlore par jour (mL) », `<input type="number">` **pré-rempli** depuis `cfg.rescue_ml` (déjà résolu côté serveur — jamais `0`, repli local `1500` si absent sur un firmware ancien). Aide sous le champ, imposée mot à mot : « Pré-rempli d'après votre configuration. En cas de doute, laissez la valeur proposée. » — l'utilisateur **valide sans rien toucher** par construction.
+- **Bornes de CONFORT du champ** (`_rescueVolumeInputMax(cfg)`) : `min = min(100, limite utilisateur)`, `max = min(2000, limite utilisateur si > 0)`. Ce ne sont **pas** des gardes — le clamp qui fait foi est **serveur** (`/rescue/start?ml=`), ces bornes ne font qu'éviter une incohérence visuelle évidente (ex. `min=100 max=60` si la limite de l'utilisateur est sous le plancher).
+- **Avertissement B2**, révélé dynamiquement dès que la saisie dépasse **1500 mL**, imposé mot à mot : « Au-delà de 1500 mL par jour, le bénéfice n'est pas démontré : quand l'eau est chargée en matière organique, l'ORP ne remonte pas tant que le point de rupture n'est pas atteint — augmenter le volume n'y change rien. » 1500 reste le seuil d'affichage de cet avertissement, mais n'est plus un plafond — une saisie supérieure est **acceptée**, les vraies bornes restent celles ci-dessus.
+- **L2 révisé** (la mention « plafonné à 1500 mL » n'a plus de sens, remplacée) : « Le dosage se fera à l'aveugle, sans contrôle de l'ORP, pendant 48 h au maximum. Le volume indiqué ci-dessous sera réparti sur la journée, sans jamais dépasser votre limite journalière. Le pH n'est jamais dosé dans ce mode. Il maintient une désinfection minimale — il ne traite pas la cause : quand l'eau est chargée en matière organique, seul le retrait mécanique des dépôts (brossage, aspiration, nettoyage du filtre) fait baisser cette charge. Désactivez-le dès que les sondes sont de nouveau fiables. »
+- **Soumission** : `POST /rescue/start?ml=<saisie>` (omis si la saisie n'est pas un entier positif — le serveur résout alors lui-même la chaîne de pré-remplissage). La réponse porte `rescue_ml`, le volume **réellement armé** après clamp serveur.
+- **B9 — un clamp n'est jamais silencieux** : si `rescue_ml` renvoyé diffère de la saisie, un toast `warning` l'annonce : « Volume ramené à `<N>` mL par vos limites de sécurité (valeur saisie : `<M>` mL). » Sinon, toast `info` habituel « Chloration de secours activée. »
+- **Fallback navigateur sans `<dialog>`** (`window.confirm()` natif) : pas de champ éditable possible — le message affiche le volume proposé en clair (« Volume proposé : `<N>` mL. ») et c'est cette valeur pré-remplie qui est envoyée telle quelle.
+
+**Correctif du bandeau actif et de L5a/L5b (B6)** : `_rescueEffectiveDailyMl(cfg)` lisait `let vol = 1500;` en dur — exact tant que le volume armé valait exactement 1500, **faux** dès qu'il devient variable (bassin « petit », ou saisie > 1500). La fonction lit désormais `cfg.rescue_ml` (parité stricte `/get-config` ↔ WS `config`, voir [API.md](../API.md#get-get-config--write)), avec repli `1500` **uniquement** si le champ est absent (rétrocompatibilité firmware ancien). Les libellés L5a/L5b restent **imposés mot à mot** ; seuls le seuil de bascule entre les deux et le volume affiché (`%s`) sont désormais dérivés de ce volume réel, jamais la constante.
+
 ## Actions
 
 | Bouton | Endpoint HTTP |
@@ -471,8 +488,8 @@ basculant la régulation chlore sur le mode **Programmée**.
 | `#detail-lighting-off` | `POST /lighting/off` |
 | Boost — Activer | `POST /boost/start` (toast rappel baignade) |
 | Boost — Arrêter | `POST /boost/stop` |
-| Chloration de secours — Activer (depuis le bandeau « Dosage bloqué » **ou** MQTT/HA — plus de bouton dans le widget depuis v2.55.1) | `POST /rescue/start` (confirmation L2 préalable) |
-| Chloration de secours — Arrêter | `POST /rescue/stop` |
+| Chloration de secours — Activer (depuis le bandeau « Dosage bloqué » **ou** MQTT/HA — plus de bouton dans le widget depuis v2.55.1, et l'offre disparaît du bandeau si le secours tourne déjà depuis v2.55.2) | `POST /rescue/start?ml=<volume saisi>` (confirmation L2 préalable, champ de volume — [feature-141](#volume-saisi-à-lactivation-feature-141-v2560), v2.56.0) |
+| Chloration de secours — Arrêter (`#rescue-active-banner-stop`, dans le bandeau `#rescue-active-banner` depuis v2.55.2 — était `#detail-rescue-stop` dans le widget) | `POST /rescue/stop` |
 | Liens engrenage | Navigation SPA (fragment `#/ph`, etc.) |
 
 La fonction `updateFiltrationBadges()` côté JS met à jour simultanément `#detail-filtration-status` (dashboard) et `#filtration-current-status` (page filtration) pour rester cohérent.
@@ -494,7 +511,7 @@ Le détail complet du cumul journalier (barre de progression, mL consommés / qu
 - [`data/index.html:162`](../../data/index.html:162) — structure HTML du dashboard
 - [`data/app.js`](../../data/app.js) — `latestSensorData`, `updateFiltrationBadges()`, `composeSensorBadge()`, `dailyCumulSegment()`, `getDosingStopReason()`, `updateDosingStatus()` + `dosingAnchor` (v2.21.1), rendu uPlot (`createMiniLineChart`), préférences d'interface `uiPrefGet()` / `uiPrefSet()` + `bindMiniRawToggles()` / `refreshMiniLegendAbsence()` (v2.38.0)
 - [`data/uPlot.iife.min.js`](../../data/uPlot.iife.min.js), [`data/uPlot.min.css`](../../data/uPlot.min.css) — bibliothèque uPlot 1.6.32 (voir [BUILD.md](../BUILD.md#bibliothèque-de-graphiques-uplot-frontend))
-- [`data/app.css`](../../data/app.css) — classes `.card--status`, `.compact-value`, `.dosing-status`, `.sensor-badge`, `.mini-legend*` (v2.38.0 — pastilles **neutres** à dessein : les traits sont colorés **par la valeur**, une pastille colorée mentirait sur la couleur réelle)
+- [`data/app.css`](../../data/app.css) — classes `.card--status`, `.compact-value`, `.dosing-status`, `.sensor-badge`, `.mini-legend*` (v2.38.0 — pastilles **neutres** à dessein : les traits sont colorés **par la valeur**, une pastille colorée mentirait sur la couleur réelle) ; `.rescue-active-banner`, `.rescue-active-banner--info` / `--warning` (v2.55.2, pas de variante `--critical`/`--fault` — voir [Bandeau « Chloration de secours active »](#bandeau--chloration-de-secours-active-rescue-active-banner-feature-140-v2552))
 - [`src/ws_manager.cpp`](../../src/ws_manager.cpp) — `broadcastSensorData()` pousse les champs consommés ici
 - [`src/web_routes_data.cpp`](../../src/web_routes_data.cpp) — `GET /data`, `GET /get-history`
 

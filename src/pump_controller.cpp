@@ -2659,12 +2659,18 @@ OrpMode PumpControllerClass::effectiveOrpMode() const {
 // feature-140 : volume quotidien ORP EFFECTIF (NVS, ou volume de secours
 // composé avec le Boost). Mêmes garanties que ci-dessus — délègue à
 // effectiveOrpDailyTargetMlPure() (conditions #2/#3/#4 du gate).
+// feature-141 : le volume de secours N'EST PLUS la constante kRescueChlorineDailyMl
+// (qui ne sert plus que de repli final de la chaîne de pré-remplissage) — il
+// est SAISI à l'activation et porté par rescueState.dailyMl, lu ICI une seule
+// fois dans une locale (seule la SOURCE change, l'ordre des clamps C3/C4 ci-
+// après reste intouché — ne pas rouvrir C4).
 float PumpControllerClass::getEffectiveOrpDailyTargetMl() const {
   bool rescue = isRescueChlorineActive(time(nullptr));
   bool boost = isBoostActive(time(nullptr));
+  float rescueDailyMl = rescueState.dailyMl;
   return effectiveOrpDailyTargetMlPure(
       static_cast<float>(mqttCfg.orpDailyTargetMl), rescue, boost,
-      kRescueChlorineDailyMl, kBoostDailyFactor, safetyLimits.maxChlorineMlPerDay,
+      rescueDailyMl, kBoostDailyFactor, safetyLimits.maxChlorineMlPerDay,
       kRescueChlorineDailyHardCapMl);
 }
 

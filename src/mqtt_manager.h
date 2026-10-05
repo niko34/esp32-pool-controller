@@ -107,6 +107,12 @@ struct MqttTopics {
   String rescueState;                // feature-140 : état Chloration de secours (ON/OFF, retain)
   String rescueCommand;              // feature-140 : .../rescue/set (ON/OFF)
   String rescueLiftReasonState;      // feature-140 (complément) : code RescueLiftReason (0-3, retain)
+  // feature-141 : volume quotidien de secours ARMÉ/PROPOSÉ (mL, entier, retain,
+  // dédupliqué). Exigence d'annonce du gate pool-chemistry : l'invisibilité du
+  // volume est un problème SPÉCIFIQUEMENT Home Assistant (switch binaire sans
+  // champ numérique) — se corrige ici, pas dans la trame WebSocket (ADR-0086,
+  // marge déjà au plancher).
+  String rescueDailyMlState;         // feature-141 : .../rescue_ml (mL, retain, dédupliqué)
   // feature-056 : mode d'installation + signal filtration externe
   String installModeState;          // Mode d'installation publié (managed/powered/external, retain)
   String installModeCommand;        // .../install_mode/set (managed/powered/external)
@@ -276,16 +282,18 @@ private:
   // ⚠️ kDedupCacheSlots est un NOMBRE DE SLOTS, pas le plus grand indice : les
   // indices utilisés vont de 0 à kDedupCacheSlots − 1. Historique des NOMBRES :
   // 23 (avant feature-092) → 28 (feature-092, 5 topics de composition) → 29
-  // (feature-068, +1 slot pour temp_sensor_frozen, publié à l'indice 28).
+  // (feature-068, +1 slot pour temp_sensor_frozen, publié à l'indice 28) → 30
+  // (feature-141, +1 slot 29 pour rescue_ml — résolu via rescueDailyMlForDisplay(),
+  // qui peut varier hors activation, d'où la déduplication).
   // MÉTHODE DE VÉRIFICATION (ADR-0073 — à REFAIRE, pas à recopier) : les indices
   // réellement passés se relèvent par
   //   grep -oE 'safePublishDedup\([0-9]+' src/mqtt_manager.cpp | grep -oE '[0-9]+' | sort -n
-  // Relevé du 07/09/2026 : 0 à 28, contigus, sans trou ni doublon → plus grand
-  // indice 28, donc 29 slots exactement. Un slot manquant ne planterait pas :
+  // Relevé du 2026-10-05 : 0 à 29, contigus, sans trou ni doublon → plus grand
+  // indice 29, donc 30 slots exactement. Un slot manquant ne planterait pas :
   // safePublishDedup borne l'indice et se contente de NE PLUS dédupliquer, ce
   // qui republierait un topic retain à chaque cycle — dégradation silencieuse.
-  static constexpr int kDedupCacheSlots = 29;
-  // MEM-EXEMPT(ADR-0082) : tableau à 29 slots FIXES, connus à la compilation, jamais sur le chemin de journalisation [feature-131]
+  static constexpr int kDedupCacheSlots = 30;
+  // MEM-EXEMPT(ADR-0082) : tableau à 30 slots FIXES, connus à la compilation, jamais sur le chemin de journalisation [feature-131]
   String _lastFilterPub[kDedupCacheSlots];
   // Publie `payload` sur `topic` uniquement si différent du dernier publié (slot `cacheIdx`).
   void safePublishDedup(int cacheIdx, const char* topic, const String& payload);

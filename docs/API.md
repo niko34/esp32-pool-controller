@@ -938,6 +938,7 @@ curl -u admin:monmotdepasse http://poolcontroller.local/get-config
   "ph_offset_step": 0.1,
   "boost_active": false,
   "boost_until": 0,
+  "rescue_ml": 1500,
   "regulation_defaults": {
     "ph_target": 7.3,
     "orp_target": 600,
@@ -994,6 +995,7 @@ Champs notables de la réponse :
 | `debug_logs_enabled` | boolean | Active la production des logs de niveau `DEBUG` côté firmware (default `false`). Quand `false`, `Logger::debug()` court-circuite immédiatement (early return). Les niveaux `INFO`/`WARN`/`ERROR`/`CRITICAL` ne sont pas affectés. Modifiable via Paramètres → Avancé → « Logs DEBUG activés ». Persisté en NVS sous la clé `debug_logs`. Effet immédiat, pas de redémarrage requis. |
 | `boost_active` | boolean | Mode Boost actif (feature-053, v2.18.0). `true` tant que la surchloration temporaire du jour est en cours. Piloté par `POST /boost/start` \| `/boost/stop` (jamais par `/save-config`). Persisté en NVS (survit à un reboot dans la journée), expire automatiquement au prochain minuit local. Voir [ADR-0025](adr/0025-mode-boost.md). |
 | `boost_until` | integer (epoch) | Instant d'expiration du Boost (epoch UNIX, prochain minuit local). `0` si le Boost est inactif. Permet à l'UI d'afficher l'heure de fin. |
+| `rescue_ml` | integer (mL) | **v2.56.0 (feature-141)** — Volume quotidien de la **Chloration de secours** : **ARMÉ** si le mode est actif, **PROPOSÉ** (chaîne de pré-remplissage) sinon. **Jamais `0`** et jamais la constante `1500` en dur — résolu par `rescueDailyMlForDisplay()` ([pump-controller.md](subsystems/pump-controller.md#chloration-de-secours-feature-140)), chaîne : `orp_daily_target_ml` (si > 0) → défaut par taille de bassin → repli final 1500 mL, puis borné par les mêmes clamps que l'activation. Pré-remplit le champ du dialogue d'activation et sert de seuil pour les libellés L5a/L5b du bandeau actif. **Parité stricte `/get-config` ↔ trame WS `config`** (même clé, même calcul, un seul lecteur firmware) — ne JAMAIS servir ce champ d'un seul côté (voir [ws-manager.md](subsystems/ws-manager.md)). |
 | `ph_auto_manual_epoch` | integer (epoch) | **v2.20.3** — Instant (epoch UNIX) de la dernière **bascule automatique** de la régulation pH en mode `manual` par le filet de sécurité « refus de garde pH répétés en mode `automatic` » (feature-067, refondu en v2.25.0). `0` = aucune bascule en attente d'acquittement. Vaut `0` si l'horloge n'était pas synchronisée au moment de la bascule (la `reason` reste renseignée). Persisté en NVS (`ph_am_epoch`). **Lecture seule** : jamais accepté en écriture par `/save-config`. |
 | `ph_auto_manual_reason` | string | **v2.20.3** — Cause en clair (français) de cette bascule, ex. `"3 refus de garde pH en 24 h — régulation pH basculée en manuel. Diagnostic sonde EZO NORMAL (…) : la sonde n'est pas en cause. …"` (message conditionné au diagnostic EZO depuis la v2.25.0). Chaîne vide si `ph_auto_manual_epoch` vaut `0`. Persisté en NVS (`ph_am_reason`). |
 
@@ -2333,15 +2335,19 @@ curl -u admin:monmotdepasse -X POST http://poolcontroller.local/boost/stop
 
 Active la **Chloration de secours** (feature-140, v2.55.0) : surcouche temporaire non destructive qui emprunte la branche de dosage « Programmée » existante pour continuer à injecter du chlore (volume fixe, aveugle à l'ORP) quand les sondes sont déclarées non fiables. **Ne modifie jamais `orp_regulation_mode` en NVS.** Auto-expirant 48 h après l'activation (epoch, **glissant** — pas un ancrage sur minuit local, voir [ADR-0087](adr/0087-ce-qu-un-mode-temporaire-a-le-droit-de-faire.md)). Décision structurante et libellés imposés : voir la spec [feature-140](../specs/features/done/feature-140-chloration-de-secours-et-widget-des-modes-temporaires.md).
 
+**Paramètre `ml` (query, optionnel) — v2.56.0 (feature-141)** : volume quotidien **saisi** par l'utilisateur dans le dialogue d'activation, en mL entiers. **Absent ou non numérique** ⇒ la valeur est résolue par la **chaîne de pré-remplissage** (`orp_daily_target_ml` si > 0, sinon défaut par taille de bassin, sinon 1500 mL de repli). **Fourni** ⇒ seulement **borné** côté serveur, jamais réinterprété ni refusé : plancher **100 mL/j** (sous ce plancher, l'illusion d'une désinfection sans la fournir est jugée pire que ne pas armer le mode), plafond `min(limite journalière utilisateur si > 0, 2000 mL/j)`. **Le clamp serveur fait foi** — l'UI n'est qu'un confort, jamais une garde. Une valeur `> 1500` est acceptée : 1500 n'est plus qu'un **défaut**, pas un plafond (le bénéfice au-delà n'est simplement pas démontré — voir le libellé d'avertissement dans [page-dashboard.md](features/page-dashboard.md#chaînage-depuis-le-bandeau--dosage-bloqué--b4-feature-140)).
+
 ```bash
-curl -u admin:monmotdepasse -X POST http://poolcontroller.local/rescue/start
+curl -u admin:monmotdepasse -X POST "http://poolcontroller.local/rescue/start?ml=1200"
 ```
 
 **Réponse 200** :
 
 ```json
-{ "rescue_active": true, "rescue_until": 1790150400 }
+{ "rescue_active": true, "rescue_until": 1790150400, "rescue_ml": 1200 }
 ```
+
+`rescue_ml` est le volume **réellement armé** après clamp serveur — peut différer de `ml` envoyé si hors bornes (ex. `ml=10` ⇒ `rescue_ml: 100`). C'est sur cette valeur que le client doit se recaler (`window._config.rescue_ml`), pas sur la saisie brute.
 
 **Erreur 409** — mode de régulation ORP en Manuel (condition #5 du gate `pool-chemistry` : l'utilisateur dose déjà lui-même, l'activer en plus doserait deux fois) :
 

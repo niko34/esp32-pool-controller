@@ -282,11 +282,18 @@ struct BoostState {
 // activation (tickRescueChlorineExpiry) OU levé automatiquement plus tôt si
 // les mesures ORP redeviennent fiables 30 min d'affilée (PumpController,
 // tickRescueChlorineAutoLift). Clés NVS `rescue_active` (13) et `rescue_until`
-// (12) — sous la limite Preferences de 15 caractères (`rescue_target_ml`, 16,
-// NE PASSERAIT PAS : le volume reste donc une CONSTANTE, kRescueChlorineDailyMl).
+// (12) — sous la limite Preferences de 15 caractères.
+// ⚠️ feature-141 : le volume N'EST PLUS une CONSTANTE (`kRescueChlorineDailyMl`
+// ne sert plus que de REPLI FINAL de la chaîne de pré-remplissage) — il est
+// SAISI par l'utilisateur à l'activation, persisté sous `rescue_ml` (9
+// caractères, sous la même limite de 15 ; l'obstacle initial à un nom plus
+// parlant comme `rescue_target_ml` (16) était le NOM, pas le concept).
 struct RescueState {
   bool active = false;      // Chloration de secours active
   time_t untilEpoch = 0;    // Échéance (epoch, now + kRescueChlorineDurationS)
+  float dailyMl = 0.0f;     // Volume quotidien ARMÉ (feature-141) — 0 = jamais armé
+                            // depuis le boot ; voir rescueDailyMlForDisplay() pour
+                            // la valeur à AFFICHER (jamais 0, résolue par la chaîne).
 };
 
 // Complément feature-140 (retour d'expérience web-ui-developer, 2026-10-05) :
@@ -488,7 +495,17 @@ void loadRescueState();  // À appeler au boot ; n'expire PAS l'état en mémoir
 // - si le mode de régulation ORP (NVS) est "manual" (condition #5 du gate :
 //   double dosage, l'utilisateur "dose lui-même") ;
 // - si l'heure n'est pas synchronisée (condition #6 : échéance indéterminable).
-void startRescueChlorine();
+// feature-141 : `requestedDailyMl` — volume SAISI par l'utilisateur, SANS
+// valeur par défaut (les deux appelants doivent se prononcer explicitement) :
+// - > 0  : valeur EXPLICITEMENT fournie (route HTTP `?ml=`) — seulement
+//   BORNÉE (clampRescueDailyMlPure), jamais réinterprétée par la chaîne de
+//   pré-remplissage (10 mL saisis redeviennent 100, jamais un défaut).
+// - <= 0 : AUCUNE valeur fournie (commande MQTT ON, ou `?ml=` absent/non
+//   numérique) — résolue via resolveRescueDailyMlPure SANS étage taille de
+//   bassin (invariant feature-090 : PoolSize n'est consultée QUE par
+//   rescueDailyMlForDisplay(), jamais sur ce chemin de résolution serveur).
+//   Chaîne : orp_daily_target_ml (NVS) si > 0, sinon kRescueChlorineDailyMl.
+void startRescueChlorine(float requestedDailyMl);
 // Désactive la chloration de secours et persiste immédiatement. Idempotent.
 // `reason` est publié (parité /data ↔ WS, fenêtre kRescueLiftReasonVisibleMs)
 // pour que l'UI distingue la levée automatique (seul cas où le libellé L6 du
@@ -506,6 +523,16 @@ bool isRescueChlorineActive(time_t now);
 // mutualisé avec un point déjà exécuté à chaque tick). Délègue à
 // stopRescueChlorine(Expired48h).
 void tickRescueChlorineExpiry(time_t now);
+
+// feature-141 : volume quotidien de secours à AFFICHER (jamais 0, jamais la
+// constante en dur) — SEUL lecteur de kRescueChlorineDailyBySizeMl (constants.h)
+// dans tout le firmware. Résout rescueState.dailyMl (ARMÉ si actif, dernier
+// stocké ou 0 sinon) via resolveRescueDailyMlPure, étage taille de bassin
+// INCLUS (ce n'est PAS le chemin MQTT — restauration/affichage générique).
+// Utilisé par le pré-remplissage du dialogue (`rescue_ml`, /get-config et
+// trame WS `config`) et par loadRescueState() pour réparer un stockage NVS
+// absent/hors bornes.
+float rescueDailyMlForDisplay();
 
 // Code de raison de fin EFFECTIF à l'instant `nowMs` (RescueLiftReason, publié
 // en uint8_t) : None en dehors de la fenêtre de visibilité

@@ -117,4 +117,43 @@ float effectiveOrpDailyTargetMlPure(float nvsDailyTargetMl, bool rescueActive,
 uint8_t rescueLiftReasonVisiblePure(uint8_t reasonCode, uint32_t nowMs,
                                      uint32_t setAtMs, uint32_t visibleMs);
 
+// =============================================================================
+// feature-141 — Volume de la chloration de secours SAISI à l'activation
+// =============================================================================
+// Deux fonctions, deux usages distincts — ne JAMAIS les confondre :
+//   - clampRescueDailyMlPure : une valeur EXPLICITEMENT fournie (saisie
+//     utilisateur, ou toute valeur déjà résolue) n'est QUE bornée. 10 mL saisis
+//     redeviennent 100, jamais remplacés par un défaut : c'est le test manuel
+//     #3 de la spec (« Saisir 10 : ramené à 100 »).
+//   - resolveRescueDailyMlPure : une valeur ABSENTE ou hors bornes (stockage
+//     NVS corrompu, ou aucune valeur fournie à l'activation) est REMPLACÉE par
+//     la chaîne de pré-remplissage, qui se termine par le MÊME clamp — zéro
+//     duplication de la logique de bornage.
+// Ce clamp de SAISIE est DISTINCT des clamps C3/C4 de
+// effectiveOrpDailyTargetMlPure ci-dessus : il s'applique UNE SEULE FOIS, à
+// l'armement, et ne voit JAMAIS le Boost. L'introduire dans
+// effectiveOrpDailyTargetMlPure déplacerait l'ordre des opérations et
+// rouvrirait C4 (cf. note en tête de cette fonction) : 1900 mL saisis + Boost
+// (x1,5 = 2850) doivent rester plafonnés à 2000, jamais à 100.
+
+// Borne une valeur de volume quotidien de secours : plancher
+// kRescueChlorineDailyMinMl (100 mL, FIGÉ — pas un paramètre, borne chimique
+// non négociable, verdict pool-chemistry feature-141), PUIS plafond
+// min(userDailyLimitMl si > 0, hardCapMl) — la limite utilisateur reste
+// SOUVERAINE même sous le plancher de 100 (elle peut l'abaisser plus bas que
+// 100 si l'utilisateur a configuré une limite journalière plus stricte).
+float clampRescueDailyMlPure(float requestedMl, float userDailyLimitMl, float hardCapMl);
+
+// Résout le volume quotidien de secours à utiliser quand `storedMl` est
+// ABSENT ou hors bornes (condition #2 du gate pool-chemistry feature-141:
+// « un secours armé à 0 mL est un mode qui ment » — jamais 0). Chaîne, par
+// ordre : orpDailyTargetMl (> 0) -> sizeDefaultMl (> 0, sinon étage SAUTÉ,
+// cf. chemin MQTT qui ne consulte jamais PoolSize, invariant feature-090) ->
+// fallbackMl (JAMAIS 0). Se termine par UN SEUL appel à
+// clampRescueDailyMlPure, qu'une valeur de la chaîne ait été retenue ou que
+// `storedMl` soit déjà valide.
+float resolveRescueDailyMlPure(float storedMl, float orpDailyTargetMl,
+                                float sizeDefaultMl, float fallbackMl,
+                                float userDailyLimitMl, float hardCapMl);
+
 #endif  // TEMP_MODE_LOGIC_H

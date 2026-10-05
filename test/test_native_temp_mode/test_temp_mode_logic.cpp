@@ -349,6 +349,186 @@ void test_rescue_lift_reason_millis_rollover_expired_past_window(void) {
 }
 
 // =============================================================================
+// feature-141 — clampRescueDailyMlPure : plancher 100, plafond souverain
+// =============================================================================
+
+static const float kRefRescueDailyMinMl = 100.0f;
+
+void test_clamp_floor_100_applied_when_below(void) {
+  // Saisie 10 mL, pas de limite utilisateur (0 = désactivée) : remontée à 100.
+  float v = clampRescueDailyMlPure(10.0f, /*userDailyLimitMl=*/0.0f, kRefRescueHardCapMl);
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 100.0f, v);
+}
+
+void test_clamp_ceiling_is_user_limit_when_below_hard_cap(void) {
+  // Limite utilisateur 1800 < plafond dur 2000 : la limite utilisateur gouverne.
+  float v = clampRescueDailyMlPure(2500.0f, /*userDailyLimitMl=*/1800.0f, kRefRescueHardCapMl);
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 1800.0f, v);
+}
+
+void test_clamp_ceiling_is_hard_cap_when_no_user_limit(void) {
+  // userDailyLimitMl = 0 (désactivée) : seul le plafond dur borne au-dessus.
+  float v = clampRescueDailyMlPure(2500.0f, /*userDailyLimitMl=*/0.0f, kRefRescueHardCapMl);
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 2000.0f, v);
+}
+
+void test_clamp_hard_cap_wins_over_generous_user_limit(void) {
+  // Limite utilisateur 2500 > plafond dur 2000 : le plafond dur reste ultime
+  // (même garde que effectiveOrpDailyTargetMlPure, ici sur la saisie directe).
+  float v = clampRescueDailyMlPure(2500.0f, /*userDailyLimitMl=*/2500.0f, kRefRescueHardCapMl);
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 2000.0f, v);
+}
+
+void test_clamp_user_limit_sovereign_even_below_floor_100(void) {
+  // ⚠️ Cas signalé par la spec feature-141 : limite utilisateur 60 (< 100).
+  // Le plancher 100 est appliqué D'ABORD (volume -> 100), PUIS le plafond
+  // (min(60, 2000) = 60) s'applique : 100 > 60 => résultat 60, PAS 100.
+  // Comportement voulu par pool-chemistry : « la limite utilisateur reste
+  // SOUVERAINE même sous le plancher » — une limite journalière de sécurité
+  // configurée à 60 mL/j doit rester respectée même par le secours.
+  float v = clampRescueDailyMlPure(10.0f, /*userDailyLimitMl=*/60.0f, kRefRescueHardCapMl);
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 60.0f, v);
+}
+
+// =============================================================================
+// feature-141 — resolveRescueDailyMlPure : storedMl absent/hors bornes =>
+// chaîne, JAMAIS 0 (condition #2 du gate)
+// =============================================================================
+
+void test_resolve_stored_zero_falls_back_to_chain_never_zero(void) {
+  // storedMl = 0 (sentinelle NVS absente) : hors bornes (< 100) => chaîne.
+  float v = resolveRescueDailyMlPure(/*storedMl=*/0.0f, /*orpDailyTargetMl=*/700.0f,
+                                      /*sizeDefaultMl=*/1000.0f, /*fallbackMl=*/kRefRescueDailyMl,
+                                      /*userDailyLimitMl=*/0.0f, kRefRescueHardCapMl);
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 700.0f, v);
+  TEST_ASSERT_TRUE(v > 0.0f);
+}
+
+void test_resolve_stored_negative_falls_back_to_chain_never_zero(void) {
+  // storedMl = -1 (corruption NVS plausible, uint16 ne le permet pas mais la
+  // fonction pure doit rester défensive) : hors bornes => chaîne.
+  float v = resolveRescueDailyMlPure(/*storedMl=*/-1.0f, /*orpDailyTargetMl=*/700.0f,
+                                      /*sizeDefaultMl=*/1000.0f, /*fallbackMl=*/kRefRescueDailyMl,
+                                      /*userDailyLimitMl=*/0.0f, kRefRescueHardCapMl);
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 700.0f, v);
+  TEST_ASSERT_TRUE(v > 0.0f);
+}
+
+void test_resolve_stored_below_floor_falls_back_to_chain_never_zero(void) {
+  // storedMl = 50 : sous le plancher 100 => hors bornes => chaîne (PAS
+  // simplement remonté à 100 — une valeur SOUS bornes est REMPLACÉE, pas
+  // seulement bornée, cf. commentaire de temp_mode_logic.h).
+  float v = resolveRescueDailyMlPure(/*storedMl=*/50.0f, /*orpDailyTargetMl=*/700.0f,
+                                      /*sizeDefaultMl=*/1000.0f, /*fallbackMl=*/kRefRescueDailyMl,
+                                      /*userDailyLimitMl=*/0.0f, kRefRescueHardCapMl);
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 700.0f, v);
+  TEST_ASSERT_TRUE(v > 0.0f);
+}
+
+void test_resolve_stored_above_hard_cap_falls_back_to_chain_never_zero(void) {
+  // storedMl = 5000 (au-delà du plafond dur 2000) : hors bornes => chaîne.
+  float v = resolveRescueDailyMlPure(/*storedMl=*/5000.0f, /*orpDailyTargetMl=*/700.0f,
+                                      /*sizeDefaultMl=*/1000.0f, /*fallbackMl=*/kRefRescueDailyMl,
+                                      /*userDailyLimitMl=*/0.0f, kRefRescueHardCapMl);
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 700.0f, v);
+  TEST_ASSERT_TRUE(v > 0.0f);
+}
+
+void test_resolve_chain_branch1_programmed_target_wins(void) {
+  // Étage 1 : orpDailyTargetMl > 0 l'emporte sur les étages 2 et 3.
+  float v = resolveRescueDailyMlPure(/*storedMl=*/0.0f, /*orpDailyTargetMl=*/700.0f,
+                                      /*sizeDefaultMl=*/1000.0f, /*fallbackMl=*/kRefRescueDailyMl,
+                                      /*userDailyLimitMl=*/0.0f, kRefRescueHardCapMl);
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 700.0f, v);
+}
+
+void test_resolve_chain_branch2_size_default_when_no_target(void) {
+  // Étage 2 : orpDailyTargetMl = 0 (non renseigné) => défaut par taille.
+  float v = resolveRescueDailyMlPure(/*storedMl=*/0.0f, /*orpDailyTargetMl=*/0.0f,
+                                      /*sizeDefaultMl=*/1000.0f, /*fallbackMl=*/kRefRescueDailyMl,
+                                      /*userDailyLimitMl=*/0.0f, kRefRescueHardCapMl);
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 1000.0f, v);
+}
+
+void test_resolve_chain_branch3_fallback_when_no_target_no_size(void) {
+  // Étage 3 : ni cible programmée ni défaut taille => repli final, JAMAIS 0.
+  float v = resolveRescueDailyMlPure(/*storedMl=*/0.0f, /*orpDailyTargetMl=*/0.0f,
+                                      /*sizeDefaultMl=*/0.0f, /*fallbackMl=*/kRefRescueDailyMl,
+                                      /*userDailyLimitMl=*/0.0f, kRefRescueHardCapMl);
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, kRefRescueDailyMl, v);
+  TEST_ASSERT_TRUE(v > 0.0f);
+}
+
+void test_resolve_size_stage_skipped_on_mqtt_path_invariant_feature_090(void) {
+  // Chemin MQTT (startRescueChlorine, config.cpp) : sizeDefaultMl = 0.0f
+  // PASSÉ EXPLICITEMENT par l'appelant pour ne JAMAIS consulter PoolSize sans
+  // intervention humaine visible (invariant feature-090). orpDailyTargetMl = 0
+  // (non renseigné) => l'étage taille est SAUTÉ (pas remplacé par 0) => repli
+  // direct sur kRescueChlorineDailyMl, comme config.cpp:1399-1402.
+  float v = resolveRescueDailyMlPure(/*storedMl=*/0.0f, /*orpDailyTargetMl=*/0.0f,
+                                      /*sizeDefaultMl=*/0.0f, /*fallbackMl=*/kRefRescueDailyMl,
+                                      /*userDailyLimitMl=*/0.0f, kRefRescueHardCapMl);
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, kRefRescueDailyMl, v);
+}
+
+void test_resolve_nominal_first_boot_v2_56_0_rescue_ml_absent_from_nvs(void) {
+  // ⚠️ CAS NOMINAL, pas un cas limite : au tout premier boot de la 2.56.0 (ou
+  // après un `nvs_flash_erase`), la clé `rescue_ml` N'EXISTE PAS encore dans
+  // la NVS -> Preferences::getUShort("rescue_ml", 0) renvoie 0 (la sentinelle
+  // par défaut), EXACTEMENT comme loadRescueState() (config.cpp:1299). C'est
+  // le chemin de restauration générique (étage taille INCLUS, PAS le chemin
+  // MQTT) : rescueDailyMlForDisplay() passe le vrai sizeDefault. Ici,
+  // orp_daily_target_ml non renseigné (0, install neuve) et taille bassin
+  // Medium (1000) => le volume affiché/armé DOIT être 1000, jamais 0.
+  float v = resolveRescueDailyMlPure(/*storedMl=*/0.0f, /*orpDailyTargetMl=*/0.0f,
+                                      /*sizeDefaultMl=*/1000.0f, /*fallbackMl=*/kRefRescueDailyMl,
+                                      /*userDailyLimitMl=*/0.0f, kRefRescueHardCapMl);
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 1000.0f, v);
+  TEST_ASSERT_TRUE(v > 0.0f);
+}
+
+// =============================================================================
+// D3 — LE TEST QUI COMPTE LE PLUS (dette de feature-140, condition #4 du gate
+// feature-141) : 1900 mL SAISIS (donc déjà dans les bornes, inchangés par
+// clampRescueDailyMlPure à l'activation) + Boost actif => volume effectif
+// 2000, JAMAIS 1900 x 1,5 = 2850. Seule une valeur-limite proche du plafond
+// dur peut prouver que le clamp C4 s'applique bien APRÈS l'amplification —
+// une relecture du code ne le prouve pas.
+// =============================================================================
+
+void test_D3_rescue_1900_plus_boost_clamped_to_2000_never_2850(void) {
+  float v = effectiveOrpDailyTargetMlPure(/*nvsDailyTargetMl=*/0.0f, /*rescueActive=*/true,
+                                           /*boostActive=*/true, /*rescueDailyMl=*/1900.0f,
+                                           kRefBoostFactor, /*maxChlorineMlPerDay=*/0.0f,
+                                           kRefRescueHardCapMl);
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 2000.0f, v);
+  TEST_ASSERT_FALSE(v > 2000.001f);
+  // Négation explicite : la valeur non clampée (1900 x 1,5) ne doit JAMAIS
+  // apparaître en sortie — c'est précisément le chemin de contournement que
+  // la condition #4 du gate ferme par l'ORDRE des opérations.
+  TEST_ASSERT_FALSE((v > 2849.0f) && (v < 2851.0f));
+}
+
+void test_D3_just_below_boost_threshold_not_clamped(void) {
+  // Juste SOUS le seuil où l'amplification franchirait le plafond dur
+  // (2000 / 1,5 = 1333,33...) : 1333 x 1,5 = 1999,5 < 2000, PAS clampé —
+  // prouve que le clamp n'intervient QUE quand c'est nécessaire, pas en
+  // permanence (sinon le test D3 ne prouverait rien de l'ORDRE des
+  // opérations, juste un clamp systématique à 2000).
+  float v = effectiveOrpDailyTargetMlPure(0.0f, true, true, /*rescueDailyMl=*/1333.0f,
+                                           kRefBoostFactor, 0.0f, kRefRescueHardCapMl);
+  TEST_ASSERT_FLOAT_WITHIN(0.01f, 1999.5f, v);
+  TEST_ASSERT_TRUE(v < 2000.0f);
+}
+
+void test_D3_just_above_boost_threshold_clamped_to_2000(void) {
+  // Juste AU-DESSUS du même seuil : 1334 x 1,5 = 2001 > 2000 => clampé à 2000.
+  float v = effectiveOrpDailyTargetMlPure(0.0f, true, true, /*rescueDailyMl=*/1334.0f,
+                                           kRefBoostFactor, 0.0f, kRefRescueHardCapMl);
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 2000.0f, v);
+}
+
+// =============================================================================
 int main(int argc, char** argv) {
   UNITY_BEGIN();
 
@@ -392,6 +572,26 @@ int main(int argc, char** argv) {
   RUN_TEST(test_rescue_lift_reason_zero_well_after_window);
   RUN_TEST(test_rescue_lift_reason_millis_rollover_still_visible);
   RUN_TEST(test_rescue_lift_reason_millis_rollover_expired_past_window);
+
+  RUN_TEST(test_clamp_floor_100_applied_when_below);
+  RUN_TEST(test_clamp_ceiling_is_user_limit_when_below_hard_cap);
+  RUN_TEST(test_clamp_ceiling_is_hard_cap_when_no_user_limit);
+  RUN_TEST(test_clamp_hard_cap_wins_over_generous_user_limit);
+  RUN_TEST(test_clamp_user_limit_sovereign_even_below_floor_100);
+
+  RUN_TEST(test_resolve_stored_zero_falls_back_to_chain_never_zero);
+  RUN_TEST(test_resolve_stored_negative_falls_back_to_chain_never_zero);
+  RUN_TEST(test_resolve_stored_below_floor_falls_back_to_chain_never_zero);
+  RUN_TEST(test_resolve_stored_above_hard_cap_falls_back_to_chain_never_zero);
+  RUN_TEST(test_resolve_chain_branch1_programmed_target_wins);
+  RUN_TEST(test_resolve_chain_branch2_size_default_when_no_target);
+  RUN_TEST(test_resolve_chain_branch3_fallback_when_no_target_no_size);
+  RUN_TEST(test_resolve_size_stage_skipped_on_mqtt_path_invariant_feature_090);
+  RUN_TEST(test_resolve_nominal_first_boot_v2_56_0_rescue_ml_absent_from_nvs);
+
+  RUN_TEST(test_D3_rescue_1900_plus_boost_clamped_to_2000_never_2850);
+  RUN_TEST(test_D3_just_below_boost_threshold_not_clamped);
+  RUN_TEST(test_D3_just_above_boost_threshold_clamped_to_2000);
 
   return UNITY_END();
 }

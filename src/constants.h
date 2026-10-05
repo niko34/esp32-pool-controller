@@ -3342,14 +3342,45 @@ constexpr time_t kRescueChlorineDurationS = 172800;  // 48h = 2 * 24 * 3600
 // Volume quotidien dédié (MAINTIEN, jamais rattrapage) : le terrain prouve que
 // 2 L/j ne font pas bouger l'ORP sur une eau chargée en matière organique —
 // l'ORP ne remonte pas tant que le point de rupture n'est pas atteint, et le
-// volume injecté n'est donc pas le facteur limitant. 1500 mL/j ≈ 3x le besoin
-// d'entretien calculé (350-530 mL/j pour 30-50 m³, chlore 36°, condition #2).
+// volume injecté n'est donc pas le facteur limitant.
+// ⚠️ RATIONALE CORRIGÉE par le gate pool-chemistry le 2026-10-05 (feature-141) :
+// ce n'était PAS « 3x le besoin d'entretien » (350-530 mL/j, chiffre
+// THÉORIQUE) — les relevés de terrain (resets de minuit, 939 à 1500+ mL/j)
+// montrent une demande RÉELLE 2 à 3x supérieure à ce calcul. 1500 n'a donc
+// jamais été une marge large : c'est à peu près la demande mesurée d'un grand
+// bassin. Depuis feature-141, ce n'est plus LA valeur (identique pour tous les
+// bassins) : c'est le DÉFAUT grand bassin (table ci-dessous) ET le repli final
+// de la chaîne de pré-remplissage quand ni une cible ORP programmée ni un
+// défaut par taille ne sont disponibles.
 constexpr float kRescueChlorineDailyMl = 1500.0f;
 
 // Plafond dur ABSOLU, quel que soit maxChlorineMlPerDay ou une amplification
 // Boost combinée : jamais dépassé (le point terrain prouve 2000 mL/j déjà
 // inutile à franchir — conditions #2 et #4 du gate).
 constexpr float kRescueChlorineDailyHardCapMl = 2000.0f;
+
+// feature-141 — Plancher ABSOLU du volume SAISI par l'utilisateur à
+// l'activation : ni 0 ni 5 mL. Verdict pool-chemistry du 2026-10-05: « un
+// secours à 20 mL/j donnerait l'ILLUSION d'une désinfection sans la fournir —
+// pire que ne pas l'armer ». La limite journalière utilisateur reste
+// SOUVERAINE même sous ce plancher (clampRescueDailyMlPure, temp_mode_logic.*).
+constexpr float kRescueChlorineDailyMinMl = 100.0f;
+
+// feature-141 — Défauts par taille de bassin, PRÉ-REMPLISSAGE uniquement
+// (étage 2 de la chaîne, derrière orp_daily_target_ml) : jamais consultés sur
+// le chemin MQTT (invariant feature-090, PoolSize n'entre JAMAIS dans un
+// calcul de quota sans intervention humaine visible). Table SÉPARÉE de
+// kRegulationDefaultsBySize à DESSEIN — le visa pool-chemistry du 31/08/2026
+// sur cette dernière interdit explicitement tout QUOTA de dosage dans cette
+// table (regulation_defaults.h). Base : 3 mg/L/jour de Cl₂ (haut de la demande
+// réelle mesurée), chlore 36° ≈ 114 g Cl₂/L ⇒ ≈ 26 mL/m³/jour. Indexée par la
+// sérialisation de PoolSize (regulation_defaults.h : Small=0, Medium=1,
+// Large=2) — SEUL lecteur dans le firmware : config.cpp::rescueDailyMlForDisplay().
+constexpr float kRescueChlorineDailyBySizeMl[3] = {
+  500.0f,   // Small  (≈ 20 m³)
+  1000.0f,  // Medium (≈ 40 m³)
+  1500.0f,  // Large  (≈ 60 m³ et plus)
+};
 
 // Seuil de LEVÉE AUTOMATIQUE à sens unique (condition #3 du gate — termine le
 // mode, ne le ré-arme JAMAIS) : tenue CONTINUE de mesures ORP fiables

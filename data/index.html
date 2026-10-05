@@ -190,6 +190,21 @@
             <a class="btn btn--secondary regul-alert__cta" id="regul-alert-cta" href="#/ph">Diagnostiquer</a>
           </div>
 
+          <!-- feature-140 (v2.55.3, gate pool-chemistry) : bandeau « chloration
+               de secours active », affiché UNIQUEMENT quand rescue_until > 0.
+               Placé AVANT #dose-block-banner : le secours RÉPOND au blocage,
+               il ne s'y ajoute pas. ⚠️ NI MASQUABLE NI REPLIABLE — pas de
+               bouton de fermeture, pas de details/summary : un dosage aveugle
+               de 48h ne doit pas pouvoir être mis hors de vue d'un clic. Le
+               bouton Arrêter est le SEUL contrôle qu'il porte. -->
+          <div class="rescue-active-banner rescue-active-banner--info" id="rescue-active-banner" role="status" aria-live="polite" hidden>
+            <span class="rescue-active-banner__dot" aria-hidden="true"></span>
+            <div class="rescue-active-banner__body">
+              <span class="rescue-active-banner__text" id="rescue-active-banner-text"></span>
+            </div>
+            <button class="btn btn--danger rescue-active-banner__cta" id="rescue-active-banner-stop">Arrêter</button>
+          </div>
+
           <!-- feature-138 (B2) : bandeau d'état de blocage du dosage, hors du
                panneau développeur — une ligne par voie, cause en clair + durée.
                Non-duplication voulue avec #regul-alert ci-dessus : si celui-ci
@@ -238,13 +253,17 @@
               </div>
             </div>
 
-            <!-- Carte Modes temporaires (feature-140) : regroupe Boost
-                 (feature-053) et Chloration de secours. Deux leviers
-                 INDÉPENDANTS, pas un choix unique — en mode Programmée le
-                 Boost perd sa surchloration mais conserve sa prolongation de
-                 filtration, utile avec de la boue. Aucune variable CSS
-                 nouvelle : réutilise --border, card__status-header,
-                 card__body, state-badge, detail-row, callout. -->
+            <!-- Carte Modes temporaires (feature-053/feature-140). v2.55.4 :
+                 ne contient QUE le Boost — l'état, l'activation et toute
+                 mention de la Chloration de secours ont déménagé (bandeau
+                 dédié #rescue-active-banner quand active, offre d'activation
+                 uniquement depuis #dose-block-banner, suggestion Boost
+                 intégrée aux variantes A/B de ce même bandeau). La ligne
+                 d'effet honnête de feature-055 (#detail-boost-effect,
+                 ci-dessous) reste INCHANGÉE et décrit le Boost seul. Aucune
+                 variable CSS nouvelle : réutilise --border,
+                 card__status-header, card__body, state-badge, detail-row,
+                 callout. -->
             <div class="card card--status" id="dashboard-temp-modes-card">
               <div class="card__status-header">
                 <div class="card__status-icon card__status-icon--transparent">
@@ -291,62 +310,6 @@
                     <button class="btn btn--primary" id="detail-boost-start">Activer</button>
                     <button class="btn btn--danger" id="detail-boost-stop" style="display:none;">Arrêter</button>
                   </div>
-                </div>
-
-                <hr class="temp-mode__sep" id="temp-mode-rescue-sep" style="display:none;">
-
-                <!-- Sous-bloc Chloration de secours (feature-140, nouveau).
-                     Surcouche non destructive du mode Programmée existant,
-                     48h glissantes, 1500 mL/j (plafond dur 2000 mL/j).
-                     v2.55.1 : masqué ENTIÈREMENT (séparateur compris) quand le
-                     mode est inactif — proposer l'activation en permanence ici
-                     ne sert à rien, le bandeau de blocage le propose déjà au
-                     bon moment (_activateRescueChlorine). Pas de bouton
-                     Activer : l'activation ne se fait plus QUE depuis le
-                     bandeau ; seul le bouton Arrêter reste, car un dosage à
-                     l'aveugle en cours doit rester consultable et interruptible
-                     (L2 demande explicitement à l'utilisateur de désactiver). -->
-                <div id="temp-mode-rescue" style="display:none;">
-                  <div class="card__status-header">
-                    <div class="card__status-icon card__status-icon--transparent">
-                      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                        <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
-                      </svg>
-                    </div>
-                    <div class="card__status-info">
-                      <div class="card__status-label">Chloration de secours</div>
-                      <div class="card__status-state">
-                        <span class="state-badge state-badge--off" id="detail-rescue-status">Actif</span>
-                      </div>
-                    </div>
-                  </div>
-                  <p class="field__hint" id="detail-rescue-hint" style="margin:0 0 10px;"></p>
-                  <div class="detail-row" id="detail-rescue-until-row" style="display:none;">
-                    <div class="detail-label">Expiration</div>
-                    <div class="detail-value" id="detail-rescue-until">—</div>
-                  </div>
-                  <!-- role="status" : annonce la cause de blocage (L3/L4/L5) sans
-                       sur-alerter — badge « Actif · en attente » porte déjà
-                       l'aria-label explicite (distinction warn/ok non daltonienne). -->
-                  <div class="callout callout--warn" id="rescue-reason-callout" role="status" hidden></div>
-                  <div class="detail-actions">
-                    <button class="btn btn--danger" id="detail-rescue-stop">Arrêter</button>
-                  </div>
-                </div>
-
-                <!-- Ligne d'effet combiné (B2) : étend le patron honnête de
-                     feature-055 aux cas combinés Boost × Secours. Masquée si
-                     ni l'un ni l'autre n'est engagé (rien à rapporter). -->
-                <div class="detail-row" id="temp-modes-effect-row" style="display:none;">
-                  <div class="detail-label">Effet combiné</div>
-                  <div class="detail-value" id="temp-modes-effect">—</div>
-                </div>
-
-                <!-- Recommandation non bloquante du gate pool-chemistry :
-                     la prolongation de filtration est le seul levier
-                     réellement utile sur de la boue. -->
-                <div class="callout callout--info" id="temp-modes-suggest-boost" hidden>
-                  Suggestion : activez aussi le Boost pour prolonger la filtration — c'est le seul levier réellement utile sur de la boue.
                 </div>
 
               </div>

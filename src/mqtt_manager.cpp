@@ -315,6 +315,7 @@ void MqttManager::refreshTopics() {
   topics.rescueState                = base + "/rescue";
   topics.rescueCommand              = base + "/rescue/set";
   topics.rescueLiftReasonState      = base + "/rescue_lift_reason";
+  topics.rescueDailyMlState         = base + "/rescue_ml";  // feature-141
   // feature-056 : mode d'installation + signal filtration externe.
   topics.installModeState           = base + "/install_mode";
   topics.installModeCommand         = base + "/install_mode/set";
@@ -802,6 +803,11 @@ void MqttManager::publishRescueState() {
   // durablement périmé).
   enqueueOutbound(topics.rescueLiftReasonState,
                    String(getRescueLiftReasonCode(millis())), true);
+  // feature-141 : reflète IMMÉDIATEMENT le volume résolu à l'activation (ou le
+  // volume proposé une fois désactivé) — sans attendre le prochain cycle
+  // périodique dédupliqué (slot 29, jusqu'à kMqttPublishIntervalMs plus tard).
+  enqueueOutbound(topics.rescueDailyMlState,
+                   String((long)lroundf(rescueDailyMlForDisplay())), true);
 }
 
 void MqttManager::publishProductState() {
@@ -981,6 +987,12 @@ void MqttManager::publishAllStatesInternal() {
   // mécanisme qui ramène le topic retain à "0" une fois la fenêtre de
   // visibilité (90s) écoulée (aucun événement ne la déclenche explicitement).
   safePublish(topics.rescueLiftReasonState.c_str(), String(getRescueLiftReasonCode(millis())).c_str(), true);
+  // feature-141 : volume quotidien de secours ARMÉ/PROPOSÉ — exigence
+  // d'annonce du gate pool-chemistry (l'invisibilité est spécifiquement un
+  // problème Home Assistant). Dédupliqué (slot 29) : rescueDailyMlForDisplay()
+  // peut varier hors activation (orp_daily_target_ml ou taille de bassin
+  // modifiés pendant que le secours est inactif).
+  safePublishDedup(29, topics.rescueDailyMlState.c_str(), String((long)lroundf(rescueDailyMlForDisplay())));
 
   // feature-056 : mode d'installation (managed/powered/external, retain)
   safePublish(topics.installModeState.c_str(), installModeToString(mqttCfg.installMode), true);
@@ -2058,7 +2070,15 @@ void MqttManager::drainCommandQueue() {
         // réel via publishRescueState (resync HA sur payload invalide ou refus).
         payloadStr.toUpperCase();
         if (payloadStr == "ON") {
-          startRescueChlorine();
+          // feature-141 — arbitrage TRANCHÉ (2026-10-05) : le switch HA ON/OFF
+          // ne transporte AUCUN volume (changer de type d'entité HA est hors
+          // périmètre). 0.0f = « non fourni » : startRescueChlorine() résout
+          // alors orp_daily_target_ml si renseigné, sinon kRescueChlorineDailyMl
+          // — SANS étage taille de bassin, PoolSize n'est JAMAIS consultée sur
+          // ce chemin (invariant feature-090). PAS D'HÉRITAGE de la dernière
+          // valeur saisie (décision explicitement écartée par le gate : coût
+          // d'une clé de fraîcheur supplémentaire pour un cas trop étroit).
+          startRescueChlorine(0.0f);
           // feature-140 (gate 2, bloquant) : ne JAMAIS annoncer une activation
           // REFUSÉE. startRescueChlorine() refuse en mode Manuel (condition #5)
           // et sans heure synchronisée (condition #6) ; le log inconditionnel
@@ -2462,6 +2482,22 @@ void MqttManager::publishDiscovery(DiscoveryReason reason) {
   doc["state_on"] = "ON";
   doc["state_off"] = "OFF";
   doc["icon"] = "mdi:flask-plus-outline";
+  makeDevice(doc["device"].to<JsonObject>());
+  publishConfig(topic);
+
+  // feature-141 : volume quotidien de secours ARMÉ/PROPOSÉ — exigence
+  // d'annonce du gate pool-chemistry, conservée depuis feature-140 : un ON
+  // envoyé depuis HA arme un volume que l'utilisateur HA ne voit nulle part
+  // ailleurs (le switch ci-dessus ne porte que ON/OFF). Capteur en LECTURE
+  // SEULE (pas de command_topic) : le volume se SAISIT côté interface web,
+  // jamais depuis HA.
+  topic = discoveryBase + "sensor/" + HA_DEVICE_ID + "_rescue_ml/config";
+  doc["name"] = "Volume Chloration de secours";
+  doc["unique_id"] = String(HA_DEVICE_ID) + "_rescue_ml";
+  doc["state_topic"] = topics.rescueDailyMlState;
+  doc["unit_of_measurement"] = "mL";
+  doc["icon"] = "mdi:cup-water";
+  doc["state_class"] = "measurement";
   makeDevice(doc["device"].to<JsonObject>());
   publishConfig(topic);
 

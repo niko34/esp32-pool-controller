@@ -800,7 +800,16 @@ void setupControlRoutes(AsyncWebServer* server) {
                 "Programmée pour l'utiliser.\"}");
       return;
     }
-    startRescueChlorine();
+    // feature-141 : volume quotidien SAISI à l'activation (`ml`, entier mL).
+    // Absent ou non numérique ⇒ 0.0f (= non fourni) : startRescueChlorine()
+    // résout alors via la chaîne de pré-remplissage. AUCUN rejet 4xx pour une
+    // valeur hors bornes — le CLAMP SERVEUR (condition bloquante du gate) la
+    // RAMÈNE dans les bornes, il ne refuse jamais une saisie.
+    float requestedMl = 0.0f;
+    if (req->hasParam("ml")) {
+      requestedMl = req->getParam("ml")->value().toFloat();
+    }
+    startRescueChlorine(requestedMl);
     if (!rescueState.active) {
       // Refus fail-closed : heure non synchronisée (échéance 48h indéterminable).
       req->send(409, "application/json",
@@ -811,7 +820,8 @@ void setupControlRoutes(AsyncWebServer* server) {
     mqttManager.publishRescueState();   // reflète immédiatement l'état sur HA
     wsManager.requestConfigBroadcast(); // resync UI web (pattern bug-sync)
     String out = String("{\"rescue_active\":true,\"rescue_until\":") +
-                 String((long)rescueState.untilEpoch) + "}";
+                 String((long)rescueState.untilEpoch) +
+                 ",\"rescue_ml\":" + String((long)lroundf(rescueState.dailyMl)) + "}";
     req->send(200, "application/json", out);
   });
 

@@ -132,6 +132,10 @@ static void handleGetConfig(AsyncWebServerRequest* request) {
   // et chacune des 3 colonnes passent de 8 à 7 valeurs (≈ −65 o au total), et la
   // clé de premier niveau disparaît. La marge 3776 est donc CONSERVÉE TELLE
   // QUELLE : elle ne fait que s'élargir. Ne pas la réduire sans recompter.
+  // feature-141 : +1 clé rescue_ml (17 o au pire, entier 4 chiffres) — la
+  // marge 3776 l'absorbe sans ajustement (StaticJson<N> n'est que documentaire
+  // ici, sérialisation dans une String croissante via sendJsonResponse, aucun
+  // plafond dur contrairement au buffer WS).
   StaticJson<3776> doc;
   // >>> PARITE-CONFIG:DEBUT
   // CONVENTION NORMATIVE (lue telle quelle par la sentinelle
@@ -319,6 +323,13 @@ static void handleGetConfig(AsyncWebServerRequest* request) {
   // feature-053 : Mode Boost (état effectif + epoch d'expiration, 0 si inactif).
   doc["boost_active"] = isBoostActive(time(nullptr));
   doc["boost_until"] = (long)boostState.untilEpoch;
+
+  // feature-141 : volume quotidien de secours ARMÉ si actif, PROPOSÉ (chaîne
+  // de pré-remplissage) sinon — JAMAIS 0. SEUL moyen pour le dialogue
+  // d'activation de connaître la valeur à pré-remplir, et pour le bandeau
+  // actif de connaître le seuil réel (corrige app.js:4071, qui supposait 1500
+  // en dur).
+  doc["rescue_ml"] = (int)lroundf(rescueDailyMlForDisplay());
 
   // feature-088 : valeurs d'usine des réglages de régulation — le dialogue de
   // confirmation avant/après de l'UI lit le FIRMWARE, jamais des constantes JS.

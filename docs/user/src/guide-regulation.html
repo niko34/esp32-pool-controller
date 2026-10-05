@@ -804,31 +804,44 @@ restauration d'une sauvegarde de réglages). Une petite note sous la rangée
 <h2 class="page-break"><span class="num">8</span>La chloration de secours&nbsp;: maintenir une désinfection sans la mesure</h2>
 
 <p>Toute la logique décrite jusqu'ici repose sur une hypothèse&nbsp;: la
-mesure est fiable. Après de fortes pluies, de la boue au fond du bassin peut
-perturber les sondes pH <em>et</em> chlore en même temps&nbsp;: la régulation
+mesure est fiable. Après de fortes pluies, une eau chargée en matière
+organique peut perturber les sondes pH <em>et</em> chlore en même temps&nbsp;: la régulation
 automatique, construite pour ne jamais doser « dans le doute », s'arrête
 alors sur les deux voies — chlore compris, au moment précis où la demande en
 désinfectant est la plus forte.</p>
 
-<p>La <strong>chloration de secours</strong> (carte «&nbsp;Modes
-temporaires&nbsp;» du tableau de bord, version&nbsp;2.55) existe pour ce cas
-précis. Elle réutilise le mode de dosage programmé existant — un volume
+<p>La <strong>chloration de secours</strong> (version&nbsp;2.55) existe pour
+ce cas précis. Depuis la version&nbsp;2.55.2, son état et son bouton
+«&nbsp;Arrêter&nbsp;» ne sont plus sur la carte «&nbsp;Modes
+temporaires&nbsp;» du tableau de bord&nbsp;: tant que le mode est actif, un
+bandeau dédié apparaît en haut de page pour les porter. Elle réutilise le mode de dosage programmé existant — un volume
 quotidien fixe, versé pendant que la filtration tourne, sans jamais regarder
-la mesure de chlore — et l'arme pour une durée bornée&nbsp;: 1&nbsp;500&nbsp;mL
-par jour, 2&nbsp;000&nbsp;mL/jour au maximum (même combinée au Mode Boost),
-pendant 48&nbsp;heures glissantes au plus. Votre réglage habituel du mode de
+la mesure de chlore — pendant 48&nbsp;heures glissantes au plus. <strong>Depuis
+la version&nbsp;2.56</strong>, vous <strong>saisissez</strong> vous-même ce
+volume quotidien au moment d'activer le mode&nbsp;: un champ pré-rempli
+selon votre configuration (votre propre cible de dosage programmé si vous en
+avez une, sinon un repère selon la taille de votre bassin), que vous pouvez
+ajuster ou laisser tel quel — l'activation reste possible sans y toucher.
+Toute saisie est bornée automatiquement&nbsp;: au minimum
+100&nbsp;mL/jour (en dessous, le mode donnerait l'illusion d'une
+désinfection sans la fournir réellement), au maximum votre limite
+journalière si vous en avez réglé une, sinon 2&nbsp;000&nbsp;mL/jour — même
+combinée au Mode Boost. Dépasser 1&nbsp;500&nbsp;mL/jour est accepté, avec un
+avertissement&nbsp;: au-delà, rien ne prouve que doser davantage aide (voir
+ci-dessous). Votre réglage habituel du mode de
 régulation chlore n'est <strong>jamais</strong> modifié&nbsp;: c'est une
 surcouche, pas un changement de configuration — à l'arrêt du mode, la
 régulation que vous avez choisie reprend seule, sans rien à vous rappeler.</p>
 
-<p><strong>Ce que ce mode ne fait pas&nbsp;:</strong> il ne corrige pas une
-eau trouble et ne traite pas un problème de boue. En eau chargée de matières
-organiques, le chlore injecté est consommé par ces matières avant de faire
-remonter le potentiel de désinfection&nbsp;: sur le terrain, 2&nbsp;litres par
-jour pendant trois jours n'ont pas fait bouger le chiffre ORP d'un bassin
-visé à 530&nbsp;mV, resté à 261&nbsp;mV. Le volume de chlore n'est, dans ce
-cas, pas le facteur qui limite&nbsp;: <strong>seul le retrait mécanique</strong>
-de ce qui trouble l'eau fait revenir la mesure. Ce mode est dimensionné pour
+<p><strong>Ce que ce mode ne fait pas&nbsp;:</strong> il maintient une
+désinfection minimale, il ne traite pas la cause. Quand l'eau est chargée
+en matière organique, le chlore injecté est consommé par ces matières avant
+de faire remonter le potentiel de désinfection&nbsp;: sur le terrain,
+2&nbsp;litres par jour pendant trois jours n'ont pas fait bouger le chiffre
+ORP d'un bassin visé à 530&nbsp;mV, resté à 261&nbsp;mV. Le volume de chlore
+n'est, dans ce cas, pas le facteur qui limite&nbsp;: <strong>seul le retrait
+mécanique des dépôts</strong> (brossage, aspiration, nettoyage du filtre)
+fait baisser cette charge. Ce mode est dimensionné pour
 <strong>maintenir</strong> une désinfection minimale pendant l'épisode, pas
 pour rattraper un retard.</p>
 

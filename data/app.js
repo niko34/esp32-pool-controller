@@ -4061,14 +4061,24 @@
   let _rescueLastAnnouncedLift = 0;
 
   // Volume quotidien EFFECTIF de secours, reflet client de la condition C3 du
-  // gate pool-chemistry (feature-140) : min(1500, limite utilisateur si > 0,
-  // 2000). Sans ce calcul, une limite utilisateur < 1500 rendrait L5
+  // gate pool-chemistry (feature-140/141) : min(cfg.rescue_ml, limite
+  // utilisateur si > 0, 2000). feature-141 : la source n'est plus la
+  // constante kRescueChlorineDailyMl mais le volume réellement ARMÉ, exposé
+  // en parité stricte /get-config ↔ trame WS "config" (cfg.rescue_ml). Sans
+  // ce calcul, une limite utilisateur inférieure au volume armé rendrait L5
   // inatteignable côté client alors que le firmware plafonne déjà en dessous
-  // — angle mort que ce widget existe pour fermer. ⚠️ Le LIBELLÉ L5 reste
-  // IMPOSÉ mot à mot, y compris son « (1500 mL) » : seul le SEUIL de
-  // déclenchement est dérivé ici, jamais le texte affiché.
+  // — angle mort que ce widget existe pour fermer. ⚠️ Les LIBELLÉS L5a/L5b
+  // restent IMPOSÉS mot à mot : seuls le SEUIL de déclenchement et le volume
+  // affiché sont dérivés ici, jamais le texte lui-même.
   function _rescueEffectiveDailyMl(cfg) {
-    let vol = 1500; // miroir de kRescueChlorineDailyMl (constants.h)
+    // feature-141 (correctif B6) : ce `let vol = 1500;` était un VRAI BUG — la
+    // fonction alimente le bandeau actif, recalculé à chaque /data, pas
+    // seulement à l'ouverture du dialogue. Correct tant que le volume armé
+    // valait exactement 1500 ; faux dès qu'il devient variable (bassin
+    // « petit », ou saisie > 1500). Repli 1500 UNIQUEMENT si cfg.rescue_ml est
+    // absent (rétrocompat firmware ancien) — jamais une valeur qui prétend
+    // remplacer le clamp serveur.
+    let vol = (typeof cfg.rescue_ml === 'number' && cfg.rescue_ml > 0) ? cfg.rescue_ml : 1500;
     const userLimit = cfg.max_orp_ml_per_day;
     if (typeof userLimit === 'number' && userLimit > 0 && userLimit < vol) vol = userLimit;
     const hardCap = 2000; // miroir de kRescueChlorineDailyHardCapMl (constants.h)
@@ -4108,42 +4118,38 @@
     if (typeof data.orp_daily_ml === 'number' && data.orp_daily_ml >= effectiveDailyMl) {
       // L5a/L5b — PAIRE de libellés IMPOSÉS par le gate pool-chemistry, repris
       // MOT À MOT : ne JAMAIS les reformuler, abréger ou tronquer sans
-      // repasser ce gate. Modifier l'un sans l'autre casse la cohérence du
-      // raisonnement : la conclusion « le facteur limitant n'est pas le
-      // chlore » (L5a) n'est valide QUE si le plein de 1500 mL a été atteint
-      // — plafonné par la limite utilisateur (L5b), cette conclusion serait
-      // fausse et détournerait l'utilisateur du seul correctif réel (relever
-      // sa limite).
-      if (effectiveDailyMl < 1500) {
-        // L5b — gabarit, %s = volume effectif, ENTIER, sans décimale.
-        return `Volume quotidien atteint (${Math.round(effectiveDailyMl)} mL), plafonné par votre limite journalière. Reprise demain. Ce volume est inférieur aux 1500 mL du mode de secours : on ne peut pas en conclure que le chlore n'est pas le facteur limitant.`;
+      // repasser ce gate. feature-141 : le seuil de bascule entre les deux
+      // n'est plus « < 1500 » mais « volume effectif < volume demandé »
+      // (cfg.rescue_ml, repli 1500 si absent — rétrocompat firmware ancien).
+      // Modifier l'un sans l'autre casse la cohérence du raisonnement : la
+      // conclusion « le facteur limitant n'est pas le chlore » (L5a) n'est
+      // valide QUE si le plein DEMANDÉ a été atteint — plafonné par la limite
+      // utilisateur (L5b), cette conclusion serait fausse et détournerait
+      // l'utilisateur du seul correctif réel (relever sa limite ou le volume
+      // demandé).
+      const requestedMl = (typeof (cfg || {}).rescue_ml === 'number' && cfg.rescue_ml > 0) ? cfg.rescue_ml : 1500;
+      if (effectiveDailyMl < requestedMl) {
+        // L5b — gabarit, %s = volume effectif puis volume demandé, ENTIERS, sans décimale.
+        return `Volume quotidien atteint (${Math.round(effectiveDailyMl)} mL), plafonné par votre limite journalière. Reprise demain. Ce volume est inférieur aux ${Math.round(requestedMl)} mL que vous avez demandés : on ne peut pas en conclure que le chlore n'est pas le facteur limitant.`;
       }
-      // L5a
-      return "Volume quotidien atteint (1500 mL). Reprise demain. Si l'ORP ne monte pas malgré ce volume, le facteur limitant n'est pas le chlore.";
+      // L5a — gabarit, %s = volume effectif, ENTIER, sans décimale.
+      return `Volume quotidien atteint (${Math.round(effectiveDailyMl)} mL). Reprise demain. Si l'ORP ne monte pas malgré ce volume, le facteur limitant n'est pas le chlore.`;
     }
     return null;
   }
 
-  // feature-140 (v2.55.1) : retour utilisateur sur la 2.55.1 — proposer
-  // l'activation en permanence dans le widget ne sert à rien (le bandeau
-  // d'alerte la propose déjà au bon moment) et alourdit inutilement le
-  // widget. Le sous-bloc est désormais masqué ENTIÈREMENT (séparateur
-  // compris) quand le mode est INACTIF, et visible quand il est ACTIF — pas
-  // de suppression pure : un dosage à l'aveugle en cours doit rester
-  // consultable, avec son échéance et son bouton Arrêter (L2 demande
-  // explicitement à l'utilisateur de désactiver le mode lui-même). Le bouton
-  // Activer du widget est SUPPRIMÉ du DOM (pas seulement masqué) : l'activation
-  // ne se fait plus que depuis le bandeau de blocage (_activateRescueChlorine).
+  // feature-140 (v2.55.3, gate pool-chemistry) : l'état et le bouton Arrêter
+  // de la Chloration de secours ont quitté le widget « Modes temporaires »
+  // pour devenir un bandeau PLEINE PAGE (#rescue-active-banner), affiché
+  // UNIQUEMENT quand rescue_until > 0, placé AVANT #dose-block-banner (le
+  // secours RÉPOND au blocage, il ne s'y ajoute pas). Le widget ne contient
+  // plus aucune trace du mode (DOM retiré, cf. index.html) : L1 disparaît de
+  // l'écran avec lui — admissible, le L2 révisé en porte désormais
+  // l'avertissement. Ni masquable ni repliable : pas de bouton de fermeture.
   function updateRescueCard() {
-    const badge = $("#detail-rescue-status");
-    if (!badge) return;
-    const block = $("#temp-mode-rescue");
-    const sep = $("#temp-mode-rescue-sep");
-    const stopBtn = $("#detail-rescue-stop");
-    const hintEl = $("#detail-rescue-hint");
-    const untilRow = $("#detail-rescue-until-row");
-    const untilEl = $("#detail-rescue-until");
-    const reasonEl = $("#rescue-reason-callout");
+    const banner = $("#rescue-active-banner");
+    if (!banner) return;
+    const textEl = $("#rescue-active-banner-text");
     const data = latestSensorData || {};
     const cfg = window._config || {};
 
@@ -4152,8 +4158,8 @@
     const dosing = active && !!data.rescue_dosing;
 
     // feature-140 : rescue_lift — raison de FIN du mode (0 = aucune fin
-    // récente). Indépendant de la visibilité du bloc : un événement de levée
-    // doit être annoncé même si le sous-bloc vient de se masquer.
+    // récente). Indépendant de la visibilité du bandeau : un événement de
+    // levée doit être annoncé même si le bandeau vient de se masquer.
     // Rétrocompat : champ absent (firmware ancien) ⇒ 0, aucun toast, aucune
     // erreur (même patron que rescue_until/rescue_dosing).
     const lift = Number.isFinite(data.rescue_lift) ? data.rescue_lift : 0;
@@ -4179,75 +4185,173 @@
     }
 
     if (!active) {
-      // Masquage ENTIER, séparateur compris : le widget ne contient alors que
-      // le Boost et retrouve sa hauteur d'avant.
-      if (block) block.style.display = "none";
-      if (sep) sep.style.display = "none";
+      banner.hidden = true;
       return;
     }
 
-    // Actif : sous-bloc visible.
-    if (block) block.style.display = "";
-    if (sep) sep.style.display = "";
-    if (hintEl) {
-      // L1 — libellé IMPOSÉ par le gate pool-chemistry, repris MOT À MOT : ne
-      // JAMAIS le reformuler. Affiché tant que le mode tourne : il continue
-      // de décrire ce qui est en cours (pas seulement ce qu'on propose).
-      hintEl.textContent = "Pour eau trouble ou sonde douteuse : injecte un volume de chlore fixe, sans tenir compte des sondes. Maintient une désinfection minimale — ne rattrape pas une eau boueuse : seul le retrait mécanique de la boue le fait.";
-      hintEl.style.display = "";
-    }
-    if (stopBtn) stopBtn.style.display = "";
-    if (untilRow) {
-      untilRow.style.display = "";
-      if (untilEl) {
-        const d = new Date(until * 1000);
-        const p = (n) => String(n).padStart(2, "0");
-        untilEl.textContent = `${p(d.getDate())}/${p(d.getMonth() + 1)} à ${p(d.getHours())}:${p(d.getMinutes())}`;
-      }
+    const d = new Date(until * 1000);
+    const p = (n) => String(n).padStart(2, "0");
+    const untilText = `${p(d.getDate())}/${p(d.getMonth() + 1)} à ${p(d.getHours())}:${p(d.getMinutes())}`;
+
+    // ⚠️ PAIRE de libellés IMPOSÉS par le gate pool-chemistry (feature-140,
+    // 2026-10-06), opposables au même titre que L1-L9 : ne JAMAIS les
+    // reformuler, abréger ou tronquer sans repasser ce gate.
+    let text;
+    if (dosing) {
+      // Variante A — actif ET dosant. %s = échéance JJ/MM à HH:MM.
+      banner.className = "rescue-active-banner rescue-active-banner--info";
+      text = `Chloration de secours active jusqu'au ${untilText} : le chlore est injecté à volume fixe, sans contrôle de l'ORP.`;
+    } else {
+      // Variante B — actif mais en attente. 1er %s = échéance, 2nd %s = cause
+      // reprise MOT À MOT parmi L3/L4/L5a/L5b (priorité L3 > L4 > L5 inchangée,
+      // cf. _rescueReasonText).
+      banner.className = "rescue-active-banner rescue-active-banner--warning";
+      const reason = _rescueReasonText(data, cfg) || "";
+      text = `Chloration de secours active jusqu'au ${untilText}, mais le chlore ne coule pas actuellement. ${reason}`;
     }
 
-    if (dosing) {
-      badge.textContent = "Actif";
-      badge.className = "state-badge state-badge--ok";
-      badge.setAttribute('aria-label', "Chloration de secours active et en cours de dosage");
-      if (reasonEl) { reasonEl.hidden = true; reasonEl.textContent = ""; }
-    } else {
-      badge.textContent = "Actif · en attente";
-      badge.className = "state-badge state-badge--warn";
-      // Distinction warn/ok non daltonienne : aria-label explicite.
-      badge.setAttribute('aria-label', "Chloration de secours active mais ne dose pas actuellement");
-      if (reasonEl) {
-        const reason = _rescueReasonText(data, cfg);
-        if (reason) { reasonEl.textContent = reason; reasonEl.hidden = false; }
-        else { reasonEl.hidden = true; reasonEl.textContent = ""; }
-      }
+    // Recommandation du gate pool-chemistry (feature-140, 2026-10-06), déménagée
+    // du widget (v2.55.4) : phrase ajoutée aux variantes A et B — PAS un texte
+    // séparé. ⚠️ Libellé IMPOSÉ MOT À MOT : c'est le seul endroit de
+    // l'application qui dit que la filtration prime sur le chlore (contre-pied
+    // du réflexe « ça ne monte pas, j'en remets »), gardé CONDITIONNEL pour ne
+    // pas devenir du décor — affichée UNIQUEMENT quand la filtration n'est PAS
+    // déjà prolongée (Boost inactif, ou boost_filtration_extended === false).
+    const boostActive = (data.boost_active != null) ? !!data.boost_active : !!cfg.boost_active;
+    const filtExtAvailable = data.boost_filtration_extended !== false;
+    const filtrationAlreadyExtended = boostActive && filtExtAvailable;
+    if (!filtrationAlreadyExtended) {
+      text += " Suggestion : activez aussi le Boost pour prolonger la filtration — sur une eau chargée en matière organique, c'est le levier le plus utile, davantage que le chlore lui-même.";
     }
+
+    if (textEl) textEl.textContent = text;
+    banner.hidden = false;
   }
 
-  // feature-140 (v2.55.1) : activation de la chloration de secours — appelée
+  // feature-141 (B1) : borne max de CONFORT pour le champ de saisie du
+  // dialogue d'activation — PAS une garde. Même mirroir que le clamp serveur
+  // (conditions C3/C4 du gate pool-chemistry) : min(limite journalière
+  // utilisateur si > 0, kRescueChlorineDailyHardCapMl). Le clamp qui fait foi
+  // est côté serveur (/rescue/start) — voir B9 pour l'annonce d'un écart.
+  function _rescueVolumeInputMax(cfg) {
+    let max = 2000; // miroir de kRescueChlorineDailyHardCapMl (constants.h)
+    const userLimit = cfg.max_orp_ml_per_day;
+    if (typeof userLimit === 'number' && userLimit > 0 && userLimit < max) max = userLimit;
+    return max;
+  }
+
+  // feature-140 (v2.55.2) : activation de la chloration de secours — appelée
   // DEPUIS LE BANDEAU UNIQUEMENT (le bouton Activer du widget a été retiré du
   // DOM, cf. updateRescueCard ci-dessus). La confirmation L2 reste un passage
   // obligé, quel que soit l'appelant.
+  // feature-141 : le volume quotidien n'est plus une constante — il est saisi
+  // ici, pré-rempli depuis cfg.rescue_ml (déjà résolu côté serveur par la
+  // chaîne de pré-remplissage). Ergonomie IMPOSÉE par le gate pool-chemistry :
+  // l'utilisateur doit pouvoir valider SANS RIEN LIRE ni toucher au champ.
   async function _activateRescueChlorine() {
-    // L2 — confirmation IMPOSÉE par le gate pool-chemistry (feature-140),
-    // reprise MOT À MOT : ne pas reformuler sans nouveau passage du gate.
+    const cfg = window._config || {};
+
+    // Rétrocompat : cfg.rescue_ml absent/nul (firmware ancien) ⇒ repli local
+    // 1500, jamais 0 — même principe que la condition bloquante 2 du gate.
+    const prefill = (typeof cfg.rescue_ml === 'number' && Number.isFinite(cfg.rescue_ml) && cfg.rescue_ml > 0)
+      ? Math.round(cfg.rescue_ml) : 1500;
+    const maxBound = _rescueVolumeInputMax(cfg);
+
+    const node = document.createElement('div');
+
+    // L2 — confirmation IMPOSÉE par le gate pool-chemistry (feature-141,
+    // révision du texte feature-140), reprise MOT À MOT : ne pas reformuler
+    // sans nouveau passage du gate. La mention « plafonné à 1500 mL » a
+    // disparu : 1500 n'est plus qu'un défaut, les vraies bornes sont
+    // ailleurs (C3/C4, inchangées).
+    const introP = document.createElement('p');
+    introP.style.margin = '0 0 12px';
+    introP.textContent = "Le dosage se fera à l'aveugle, sans contrôle de l'ORP, pendant 48 h au maximum. Le volume indiqué ci-dessous sera réparti sur la journée, sans jamais dépasser votre limite journalière. Le pH n'est jamais dosé dans ce mode. Il maintient une désinfection minimale — il ne traite pas la cause : quand l'eau est chargée en matière organique, seul le retrait mécanique des dépôts (brossage, aspiration, nettoyage du filtre) fait baisser cette charge. Désactivez-le dès que les sondes sont de nouveau fiables.";
+    node.appendChild(introP);
+
+    // B1/B3 — champ de volume + libellé/aide IMPOSÉS mot à mot par le gate.
+    // Pré-rempli, modifiable, borné pour le confort (le clamp qui fait foi
+    // est serveur, cf. _rescueVolumeInputMax et B9 plus bas).
+    const fieldLabel = document.createElement('label');
+    fieldLabel.style.cssText = 'display:flex;align-items:center;gap:6px;font-size:0.9em;flex-wrap:wrap;margin:0';
+    fieldLabel.appendChild(document.createTextNode('Volume de chlore par jour (mL)'));
+    const volumeInput = document.createElement('input');
+    volumeInput.type = 'number';
+    // feature-141 (recommandation gate 2) : quand la limite journalière de
+    // l'utilisateur est INFÉRIEURE au plancher de 100, min et max s'inversent et
+    // l'attribut devient incohérent. Le clamp serveur fait foi de toute façon,
+    // mais un champ qui s'affiche min=100 max=60 est une incohérence visible.
+    volumeInput.min = String(Math.min(100, maxBound));
+    volumeInput.max = String(maxBound);
+    volumeInput.step = '1';
+    volumeInput.value = String(prefill);
+    volumeInput.style.cssText = 'width:90px;padding:4px 6px;border:1px solid var(--border);border-radius:6px;background:var(--input-bg);color:var(--text);font-size:1em';
+    fieldLabel.appendChild(volumeInput);
+    node.appendChild(fieldLabel);
+
+    const aideP = document.createElement('p');
+    aideP.className = 'muted small';
+    aideP.style.margin = '4px 0 0';
+    aideP.textContent = "Pré-rempli d'après votre configuration. En cas de doute, laissez la valeur proposée.";
+    node.appendChild(aideP);
+
+    // B2 — avertissement IMPOSÉ mot à mot, révélé dynamiquement dès que la
+    // saisie dépasse 1500 mL (1500 n'est plus un plafond, mais le seuil où le
+    // bénéfice chimique cesse d'être démontré — gate pool-chemistry
+    // feature-141). textContent uniquement : messageNode ne passe jamais par
+    // innerHTML (cf. confirmDialog).
+    const warnDiv = document.createElement('div');
+    warnDiv.className = 'callout callout--warn';
+    warnDiv.style.margin = '10px 0 0';
+    warnDiv.hidden = true;
+    warnDiv.textContent = "Au-delà de 1500 mL par jour, le bénéfice n'est pas démontré : quand l'eau est chargée en matière organique, l'ORP ne remonte pas tant que le point de rupture n'est pas atteint — augmenter le volume n'y change rien.";
+    node.appendChild(warnDiv);
+
+    const updateWarn = () => {
+      const v = parseInt(volumeInput.value, 10);
+      warnDiv.hidden = !(Number.isFinite(v) && v > 1500);
+    };
+    volumeInput.addEventListener('input', updateWarn);
+    updateWarn();
+
     const ok = await confirmDialog({
       title: "Activer la chloration de secours ?",
-      message: "Le dosage se fera à l'aveugle, sans contrôle de l'ORP, pendant 48 h au maximum. Volume plafonné à 1500 mL par jour. Le pH n'est jamais dosé dans ce mode. Il maintient une désinfection minimale — il ne rattrape pas une eau boueuse : seul le retrait mécanique de la boue le fait. Désactivez-le dès que les sondes sont de nouveau fiables.",
+      // Fallback window.confirm() natif (navigateur sans <dialog>) : pas de
+      // champ éditable possible, le volume pré-rempli est envoyé tel quel.
+      message: `${introP.textContent}\n\nVolume proposé : ${prefill} mL.`,
+      messageNode: node,
       confirmLabel: 'Activer',
       cancelLabel: 'Annuler',
     });
     if (!ok) return;
+
+    // ⚠️ Lire la valeur de l'input APRÈS confirmDialog : le nœud reste vivant
+    // dans cette closure (feature-141). NaN ⇒ n'envoie rien, le serveur résout
+    // lui-même la chaîne de pré-remplissage (condition bloquante 2 du gate :
+    // jamais 0 mL).
+    const submittedRaw = parseInt(volumeInput.value, 10);
+    const hasSubmitted = Number.isFinite(submittedRaw) && submittedRaw > 0;
+    const url = hasSubmitted ? `/rescue/start?ml=${submittedRaw}` : "/rescue/start";
+
     try {
-      const response = await authFetch("/rescue/start", { method: "POST" });
+      const response = await authFetch(url, { method: "POST" });
       if (response.ok) {
         const r = await response.json().catch(() => ({}));
         if (latestSensorData) {
           latestSensorData.rescue_until = (r.rescue_until != null) ? r.rescue_until : latestSensorData.rescue_until;
         }
+        // Reflet optimiste du volume réellement armé (parité /get-config ↔
+        // WS « config ») : évite d'attendre le prochain cycle pour que le
+        // bandeau (_rescueEffectiveDailyMl) et L5a/L5b soient justes.
+        if (window._config && r.rescue_ml != null) window._config.rescue_ml = r.rescue_ml;
+        // B9 — un clamp n'est jamais silencieux : si le serveur a résolu un
+        // volume différent de la saisie, l'utilisateur doit le savoir.
+        if (hasSubmitted && r.rescue_ml != null && r.rescue_ml !== submittedRaw) {
+          showToast(`Volume ramené à ${r.rescue_ml} mL par vos limites de sécurité (valeur saisie : ${submittedRaw} mL).`, "warning");
+        } else {
+          showToast("Chloration de secours activée.", "info");
+        }
         updateRescueCard();
-        updateTempModesEffect();
-        showToast("Chloration de secours activée.", "info");
       } else if (response.status === 409) {
         const r = await response.json().catch(() => ({}));
         // L8 / refus horloge non synchronisée : message renvoyé tel quel par le firmware.
@@ -4261,68 +4365,9 @@
     }
   }
 
-  // feature-140 (B2) : ligne d'effet combiné, 8 combinaisons. boost_chlorine_boosted
-  // devient naturellement faux quand le mode ORP effectif n'est plus automatic
-  // (donc déjà faux quand le secours est armé) : aucun calcul client à ajouter.
-  // chlorBoost × rescueDosing sont exclusifs par construction firmware.
-  function _tempModesEffectText(filtExt, chlorBoost, rescueDosing) {
-    if (chlorBoost && rescueDosing) {
-      // Ne devrait jamais être atteint (exclusif par construction firmware) —
-      // ne pas planter, ne pas coder la branche.
-      console.warn('[modes temporaires] état impossible : surchloration et chloration de secours actives simultanément');
-      return { text: "—", badge: 'warn' };
-    }
-    if (!filtExt && !chlorBoost && !rescueDosing) return { text: "Sans effet (filtration non gérée, ORP non automatique)", badge: 'warn' };
-    if (filtExt && !chlorBoost && !rescueDosing)  return { text: "Filtration prolongée seule", badge: 'ok' };
-    if (!filtExt && chlorBoost && !rescueDosing)  return { text: "Surchloration seule", badge: 'ok' };
-    if (filtExt && chlorBoost && !rescueDosing)   return { text: "Filtration prolongée + surchloration", badge: 'ok' };
-    if (!filtExt && !chlorBoost && rescueDosing)  return { text: "Chloration de secours seule", badge: 'ok' };
-    if (filtExt && !chlorBoost && rescueDosing)   return { text: "Filtration prolongée + chloration de secours", badge: 'ok' };
-    console.warn('[modes temporaires] combinaison inattendue', { filtExt, chlorBoost, rescueDosing });
-    return { text: "—", badge: 'warn' };
-  }
-
-  function updateTempModesEffect() {
-    const row = $("#temp-modes-effect-row");
-    const el = $("#temp-modes-effect");
-    const suggestEl = $("#temp-modes-suggest-boost");
-    if (!row || !el) return;
-    const data = latestSensorData || {};
-    const cfg = window._config || {};
-
-    const boostActive = (data.boost_active != null) ? !!data.boost_active : !!cfg.boost_active;
-    // Prospectif (toujours publié, indépendant de boost_active) : ne décrit un
-    // effet RÉEL qu'une fois combiné avec boostActive ci-dessous.
-    const filtExtAvailable = data.boost_filtration_extended !== false;
-    const chlorBoostAvailable = data.boost_chlorine_boosted !== false;
-    const effFiltExt = boostActive && filtExtAvailable;
-    const effChlorBoost = boostActive && chlorBoostAvailable;
-
-    const rescueActive = Number.isFinite(data.rescue_until) && data.rescue_until > 0;
-    const rescueDosing = rescueActive && !!data.rescue_dosing;
-
-    if (!boostActive && !rescueActive) {
-      // Rien d'engagé : pas de ligne d'effet à rapporter (chaque sous-bloc
-      // dit déjà « Inactif »).
-      row.style.display = "none";
-      if (suggestEl) suggestEl.hidden = true;
-      return;
-    }
-
-    row.style.display = "";
-    const { text, badge } = _tempModesEffectText(effFiltExt, effChlorBoost, rescueDosing);
-    el.textContent = text;
-    el.style.color = (badge === 'warn') ? 'var(--warn)' : '';
-
-    // Recommandation non bloquante du gate : secours armé + filtration non
-    // prolongée (et prolongeable sous l'install mode courant) ⇒ suggérer le Boost.
-    if (suggestEl) suggestEl.hidden = !(rescueActive && filtExtAvailable && !boostActive);
-  }
-
   function updateStatusCards() {
     updateBoostCard();  // feature-053 : indépendant de latestSensorData
-    updateRescueCard(); // feature-140 : indépendant de latestSensorData
-    updateTempModesEffect(); // feature-140 (B2) : ligne d'effet combiné
+    updateRescueCard(); // feature-140 : indépendant de latestSensorData (bandeau #rescue-active-banner)
     updateExternalStatePill();  // feature-056 : pill signal filtration externe
     if (!latestSensorData) return;
 
@@ -6132,7 +6177,7 @@
               if (r.chlorine_boosted != null) latestSensorData.boost_chlorine_boosted = r.chlorine_boosted;
             }
             updateBoostCard();
-            updateTempModesEffect(); // feature-140 : la ligne d'effet combiné dépend aussi du Boost
+            updateRescueCard(); // feature-140 : la suggestion Boost du bandeau secours dépend aussi de l'état du Boost
             // feature-054 : toast adaptatif selon les leviers réellement actifs
             // (renvoyés par le firmware, source de vérité).
             const filtExt = r.filtration_extended !== false;   // défaut true si absent (rétrocompat)
@@ -6166,7 +6211,7 @@
           if (response.ok) {
             if (latestSensorData) { latestSensorData.boost_active = false; latestSensorData.boost_until = 0; }
             updateBoostCard();
-            updateTempModesEffect(); // feature-140 : la ligne d'effet combiné dépend aussi du Boost
+            updateRescueCard(); // feature-140 : la suggestion Boost du bandeau secours dépend aussi de l'état du Boost
             showToast("Boost désactivé", "success");
           } else {
             showToast("Erreur lors de l'arrêt du Boost", "error");
@@ -6179,10 +6224,11 @@
     }
 
     // Bouton Arrêter de la Chloration de secours (feature-140), décalqué du
-    // Boost. Le bouton Activer n'existe plus dans le widget (v2.55.1) :
-    // l'activation se fait désormais uniquement depuis le bandeau de blocage
+    // Boost. v2.55.3 : vit désormais DANS #rescue-active-banner (plus dans le
+    // widget « Modes temporaires », qui ne porte plus aucune trace du mode).
+    // L'activation se fait uniquement depuis le bandeau de blocage
     // (_activateRescueChlorine, cf. _renderDoseBlockRow).
-    const rescueStopBtn = $("#detail-rescue-stop");
+    const rescueStopBtn = $("#rescue-active-banner-stop");
 
     if (rescueStopBtn) {
       rescueStopBtn.addEventListener('click', async () => {
@@ -6191,7 +6237,6 @@
           if (response.ok) {
             if (latestSensorData) { latestSensorData.rescue_until = 0; latestSensorData.rescue_dosing = false; }
             updateRescueCard();
-            updateTempModesEffect();
             showToast("Chloration de secours désactivée", "success");
           } else {
             showToast("Erreur lors de l'arrêt de la chloration de secours", "error");
@@ -6706,7 +6751,7 @@
         "L’injection manuelle n’applique aucune garde de stabilité : elle vous obéira sur une mesure que l’appareil juge fausse. " +
         "C’est volontaire — c’est vous qui jugez de la représentativité.\n\n" +
         "Avant d’injecter, contrôlez le chlore libre au réactif (DPD) et le pH.\n\n" +
-        "En eau chargée de matière organique (après pluie, boue, nettoyage de fond), l’ORP ne remonte pas tant que le point de rupture n’est pas atteint : " +
+        "En eau chargée en matière organique (après de fortes pluies, un apport de dépôts, un nettoyage de fond), l’ORP ne remonte pas tant que le point de rupture n’est pas atteint : " +
         "poursuivre la consigne peut former des chloramines et vider un bidon sans effet mesurable. " +
         "Si le DPD montre du chlore libre alors que l’ORP reste bas, le problème n’est pas un manque de chlore — n’augmentez pas la dose.\n\n" +
         "Les limites journalière et horaire restent appliquées."
@@ -6720,7 +6765,7 @@
     location.hash = isOrp ? '#/orp' : '#/ph';
   }
 
-  function _renderDoseBlockRow(container, { label, tone, durationText, shortcutPrefix }) {
+  function _renderDoseBlockRow(container, { label, tone, durationText, shortcutPrefix, rescueActive }) {
     container.innerHTML = '';
     container.classList.remove(
       'dose-block-banner__row--normal', 'dose-block-banner__row--fault', 'dose-block-banner__row--unknown'
@@ -6754,11 +6799,17 @@
     // DOSE_BLOCK_SHORTCUT_CODES que le raccourci ci-dessous, sans extension.
     // Placé AVANT le bouton secondaire existant (btn--primary ici, c'est
     // l'action recommandée — contrairement au raccourci d'injection manuelle).
-    // ⚠️ v2.55.1 : le bouton Activer n'existe plus dans le widget « Modes
-    // temporaires » (il disparaît avec le sous-bloc secours quand le mode est
-    // inactif) — le clic ici déclenche donc DIRECTEMENT la confirmation L2 via
+    // ⚠️ Le widget « Modes temporaires » n'affiche plus d'état/bouton secours
+    // du tout (v2.55.3, bandeau dédié #rescue-active-banner) — le clic ici
+    // déclenche donc DIRECTEMENT la confirmation L2 via
     // _activateRescueChlorine(), qui reste un passage obligé.
-    if (shortcutPrefix === 'orp') {
+    // ⚠️ v2.55.3 (gate pool-chemistry) : si le secours tourne DÉJÀ
+    // (rescueActive), l'offre L7 et son bouton DISPARAISSENT — proposer
+    // d'armer ce qui tourne déjà est l'incohérence que le gate a fermée. Le
+    // texte de la ligne et le bouton « Ouvrir l'injection manuelle » restent
+    // inchangés : la mesure EST toujours non représentative, c'est le cas
+    // nominal.
+    if (shortcutPrefix === 'orp' && !rescueActive) {
       const cfg = window._config || {};
       const isManual = (cfg.orp_regulation_mode || 'automatic') === 'manual';
       const rescueHint = document.createElement('p');
@@ -6803,6 +6854,10 @@
 
     const ph = _doseBlockRowData(json, 'ph');
     const orp = _doseBlockRowData(json, 'orp');
+    // feature-140 (v2.55.3) : secours DÉJÀ actif ⇒ supprime l'offre L7/bouton
+    // d'activation sur la ligne ORP (sinon : proposer d'armer ce qui tourne
+    // déjà). Le texte et le bouton d'injection manuelle restent inchangés.
+    const rescueActive = Number.isFinite(json?.rescue_until) && json.rescue_until > 0;
 
     if (!ph && !orp) {
       box.hidden = true;
@@ -6879,6 +6934,7 @@
         // blanche DOSE_BLOCK_SHORTCUT_CODES est de toute façon satisfaite par
         // construction (condition de fusion ci-dessus porte déjà sur ph.code).
         shortcutPrefix: canShortcut(ph) ? 'orp' : null,
+        rescueActive,
       });
       rowOrp.hidden = true;
       box.hidden = false;
@@ -6896,6 +6952,7 @@
         durationText: _doseBlockDurationText(durationS),
         // C4 : ligne fusionnée → raccourci par défaut sur l'ORP uniquement.
         shortcutPrefix: canShortcut(ph) ? 'orp' : null,
+        rescueActive,
       });
       rowOrp.hidden = true;
       box.hidden = false;
@@ -6907,6 +6964,7 @@
         label: ph.label, tone: ph.tone,
         durationText: _doseBlockDurationText(ph.durationS),
         shortcutPrefix: canShortcut(ph) ? 'ph' : null,
+        rescueActive,
       });
     } else {
       rowPh.hidden = true;
@@ -6917,6 +6975,7 @@
         label: orp.label, tone: orp.tone,
         durationText: _doseBlockDurationText(orp.durationS),
         shortcutPrefix: canShortcut(orp) ? 'orp' : null,
+        rescueActive,
       });
     } else {
       rowOrp.hidden = true;

@@ -2205,8 +2205,10 @@ Plus jamais de durée déduite du modèle linéaire (`calcInjectFlow` supprimé)
 | Boost — facteur limite journalière chlore (feature-053) | `kBoostDailyFactor` | 1,5× | [`constants.h`](../../src/constants.h) |
 | Boost — plafond dur limite journalière chlore (feature-053) | `kBoostDailyHardCapMl` | 1000 mL | [`constants.h`](../../src/constants.h) |
 | Chloration de secours — durée glissante (feature-140) | `kRescueChlorineDurationS` | 172 800 s (48 h) | [`constants.h`](../../src/constants.h) |
-| Chloration de secours — volume quotidien dédié (feature-140) | `kRescueChlorineDailyMl` | 1500 mL/j | [`constants.h`](../../src/constants.h) |
+| Chloration de secours — volume quotidien, **défaut grand bassin / repli final** (feature-140, rôle redéfini feature-141) | `kRescueChlorineDailyMl` | 1500 mL/j | [`constants.h`](../../src/constants.h) |
 | Chloration de secours — plafond dur (feature-140) | `kRescueChlorineDailyHardCapMl` | 2000 mL/j | [`constants.h`](../../src/constants.h) |
+| Chloration de secours — plancher d'efficacité du volume SAISI (feature-141) | `kRescueChlorineDailyMinMl` | 100 mL/j | [`constants.h`](../../src/constants.h) |
+| Chloration de secours — défauts de pré-remplissage par taille (feature-141) | `kRescueChlorineDailyBySizeMl[3]` | 500 / 1000 / 1500 mL/j | [`constants.h`](../../src/constants.h) |
 | Chloration de secours — tenue avant levée auto (feature-140) | `kRescueChlorineAutoLiftHoldMin` | 30 min | [`constants.h`](../../src/constants.h) |
 | Chloration de secours — fenêtre de visibilité de `rescue_lift` (feature-140) | `kRescueLiftReasonVisibleMs` | 90 000 ms | [`constants.h`](../../src/constants.h) |
 
@@ -2349,13 +2351,13 @@ float effectiveOrpDailyTargetMlPure(float nvsDailyTargetMl, bool rescueActive,
 ```
 
 - secours **inactif** : `nvsDailyTargetMl` inchangé (non-régression D3 : le Boost seul reste inerte sur le volume `scheduled`/`manual`, exactement comme avant cette feature).
-- secours **actif** : part de `kRescueChlorineDailyMl` (1500 mL), amplifié par le Boost (`× kBoostDailyFactor`) **si** `isBoostActive()`, puis les **deux** plafonds sont appliqués **en dernier**, dans cet ordre : limite utilisateur (`safetyLimits.maxChlorineMlPerDay`, si > 0 — **souveraine**) **puis** plafond dur `kRescueChlorineDailyHardCapMl`. ⚠️ **L'ordre ferme un chemin de contournement identifié par le gate** : un clamp au plafond dur *avant* l'amplification Boost laisserait passer `1500 × 1,5 = 2250` mL, au-dessus du plafond — fermé en appliquant le clamp dur **après** l'amplification (`temp_mode_logic.cpp:32-41`, vérifié au fichier et à la ligne par le gate 2).
+- secours **actif** : part de `rescueDailyMl` — **depuis la v2.56.0 (feature-141), c'est `rescueState.dailyMl` (le volume ARMÉ à l'activation, résolu par `resolveRescueDailyMlPure`/`clampRescueDailyMlPure`), plus la constante `kRescueChlorineDailyMl`** (qui ne sert plus que de repli final de la chaîne de pré-remplissage — voir [§ Volume saisi à l'activation](#volume-de-la-chloration-de-secours-saisi-à-lactivation-feature-141-v2560) ci-dessous) — amplifié par le Boost (`× kBoostDailyFactor`) **si** `isBoostActive()`, puis les **deux** plafonds sont appliqués **en dernier**, dans cet ordre : limite utilisateur (`safetyLimits.maxChlorineMlPerDay`, si > 0 — **souveraine**) **puis** plafond dur `kRescueChlorineDailyHardCapMl`. ⚠️ **L'ordre ferme un chemin de contournement identifié par le gate, et reste INCHANGÉ par feature-141** — seule la SOURCE de `rescueDailyMl` a changé (une constante devient une variable d'état), pas la séquence des opérations : un clamp au plafond dur *avant* l'amplification Boost laisserait passer `1900 × 1,5 = 2850` mL (ou `1500 × 1,5 = 2250` à l'époque de la constante), au-dessus du plafond — fermé en appliquant le clamp dur **après** l'amplification (`temp_mode_logic.cpp:32-41`, vérifié au fichier et à la ligne par le gate 2, puis re-vérifié sans régression par le gate feature-141).
 
 ### État, persistance et activation
 
-`RescueState { bool active; time_t untilEpoch; }` ([`config.h`](../../src/config.h)), persisté en **NVS dédié** (namespace `poolctrl`, clés `rescue_active`/`rescue_until` — **sous** la limite Preferences de 15 caractères ; `rescue_target_ml` à 16 caractères ne passerait pas, d'où le choix d'une **constante** et non d'un réglage pour le volume). `saveRescueState()`/`loadRescueState()` ([`config.cpp`](../../src/config.cpp)), appelée au boot (`main.cpp`, après `loadBoostState()`).
+`RescueState { bool active; time_t untilEpoch; float dailyMl; }` ([`config.h`](../../src/config.h)), persisté en **NVS dédié** (namespace `poolctrl`, clés `rescue_active`/`rescue_until`/**`rescue_ml`** — toutes **sous** la limite Preferences de 15 caractères). ⚠️ **v2.56.0 (feature-141)** : l'obstacle initial à un volume paramétrable était le **nom** de la clé (`rescue_target_ml`, 16 caractères, ne passerait pas), pas le concept — `rescue_ml` (9 caractères) l'a levé. Le volume **n'est donc plus une constante**. `saveRescueState()`/`loadRescueState()` ([`config.cpp`](../../src/config.cpp)), appelée au boot (`main.cpp`, après `loadBoostState()`) — les trois clés sont écrites/lues dans la **même transaction** Preferences.
 
-- `startRescueChlorine()` **refuse** (log `warning`, aucun état modifié) si :
+- `startRescueChlorine(float requestedDailyMl)` (signature élargie en v2.56.0) **refuse** (log `warning`, aucun état modifié) si :
   - `mqttCfg.orpRegulationMode == "manual"` (condition #5 du gate — double dosage : l'utilisateur dose déjà lui-même, l'activer en plus doserait deux fois) ;
   - l'heure n'est pas synchronisée (`now < kMinValidEpoch`, condition #6 — l'échéance 48 h serait indéterminable, même motif fail-closed que le Boost pour minuit).
 - Activation réussie : `rescueState.untilEpoch = rescueDeadlinePure(now, kRescueChlorineDurationS)` — **epoch**, **48 h glissantes depuis l'instant d'activation**, pas un ancrage sur minuit local (voir ci-dessous pourquoi).
@@ -2379,6 +2381,41 @@ float effectiveOrpDailyTargetMlPure(float nvsDailyTargetMl, bool rescueActive,
 - **Le pH n'est jamais dosé** par ce mode — aucun chemin ne peut atteindre la pompe pH depuis la Chloration de secours (condition #11 du gate).
 - **Bascule en mode Manuel pendant le mode actif ⇒ désarmement automatique** (`web_routes_config.cpp`, `mqtt_manager.cpp` — même motif que le refus à l'activation, condition #5).
 
+### Volume de la Chloration de secours saisi à l'activation (feature-141, v2.56.0)
+
+Jusqu'à la v2.55.x, le volume quotidien était la constante `kRescueChlorineDailyMl` (1500 mL/j), identique pour tous les bassins — **juste par coïncidence** pour l'utilisateur qui l'avait fixée : le gate `pool-chemistry` a corrigé lui-même, à cette occasion, le rationale d'origine (« ≈ 3× le besoin d'entretien calculé ») en confrontant les relevés de terrain (resets de minuit, 939-1500+ mL/j) — la demande **réelle** est 2 à 3× le calcul **théorique**, donc 1500 n'était jamais une large marge. Depuis la v2.56.0, le volume est **saisi par l'utilisateur à l'activation**, pré-rempli, borné, persisté en NVS (`rescue_ml`, dans `RescueState.dailyMl`).
+
+**Deux fonctions pures distinctes** ([`src/temp_mode_logic.h`](../../src/temp_mode_logic.h) / [`.cpp`](../../src/temp_mode_logic.cpp)) — à ne jamais confondre :
+
+```cpp
+float clampRescueDailyMlPure(float requestedMl, float userDailyLimitMl, float hardCapMl);
+float resolveRescueDailyMlPure(float storedMl, float orpDailyTargetMl, float sizeDefaultMl,
+                                float fallbackMl, float userDailyLimitMl, float hardCapMl);
+```
+
+- `clampRescueDailyMlPure` : une valeur **explicitement fournie** (saisie utilisateur, ou toute valeur déjà résolue) n'est **que bornée** — plancher **`kRescueChlorineDailyMinMl` (100 mL/j, FIGÉ)** appliqué **en premier**, puis plafond `min(userDailyLimitMl si > 0, hardCapMl)`. **10 mL saisis redeviennent 100, jamais remplacés par un défaut** (plan de test manuel #3 de la spec). ⚠️ **La limite journalière de l'utilisateur reste SOUVERAINE même sous le plancher de 100** : si elle est configurée à 60 mL/j, le volume armé sera 60, pas 100 — motif chimique posé par le gate, à citer tel quel : *« une limite journalière est une borne d'EXPOSITION, le plancher de 100 une borne d'EFFICACITÉ ; refuser l'armement serait pire, car on laisserait la boucle ORP doser sur une mesure reconnue non fiable, sans plafond de maintien »*. C'est le **seul** cas où le mode s'arme sous le plancher d'efficacité **sans toast côté UI** (saisie et valeur retenue étant déjà égales) : un `systemLogger.warning()` dédié comble cet angle mort (`startRescueChlorine()`, [`config.cpp`](../../src/config.cpp)).
+- `resolveRescueDailyMlPure` : une valeur **absente ou hors bornes** (`storedMl` non dans `[kRescueChlorineDailyMinMl, hardCapMl]` — stockage NVS corrompu, ou aucune valeur fournie à l'activation) est **remplacée** par la **chaîne de pré-remplissage**, puis passée par le **même** `clampRescueDailyMlPure` (zéro duplication du bornage) : `orpDailyTargetMl` (> 0) → `sizeDefaultMl` (> 0, sinon étage **sauté**) → `fallbackMl` (**jamais 0** — condition bloquante #2 du gate : *« un secours armé à 0 mL est un mode qui ment »*).
+
+**Ce clamp de saisie est DISTINCT des clamps C3/C4** de `effectiveOrpDailyTargetMlPure` (section ci-dessus) : il s'applique **une seule fois, à l'armement**, et ne voit **jamais** le Boost. Les deux ordres de clamp ne peuvent pas être fusionnés sans rouvrir C4 : `1900` mL saisis (déjà clampés à l'armement) + Boost (`× 1,5 = 2850`) doivent rester plafonnés à **2000** par C3/C4, jamais retomber à 100 par le clamp de saisie.
+
+**Chaîne de pré-remplissage côté HTTP** (dialogue d'activation web, `rescueDailyMlForDisplay()` dans [`config.cpp`](../../src/config.cpp), **seul lecteur** de `kRescueChlorineDailyBySizeMl` dans tout le firmware) : `orp_daily_target_ml` (NVS, mode Programmée) si renseigné → **défaut par taille de bassin** (table séparée ci-dessous) → `kRescueChlorineDailyMl` en repli final. Utilisée par `loadRescueState()` au boot (stockage absent/hors bornes) et exposée **à parité stricte** `/get-config` ↔ trame WS `config` (champ `rescue_ml`, voir [API.md](../API.md#get-get-config--write) / [ws-manager.md](ws-manager.md)).
+
+⚠️ **Défauts par taille — table SÉPARÉE de `kRegulationDefaultsBySize` à DESSEIN** : le visa `pool-chemistry` du 31/08/2026 sur cette dernière interdit explicitement tout **quota** de dosage ([`regulation_defaults.h`](../../src/regulation_defaults.h)). Un volume journalier de secours **est** un quota — l'étendre aurait violé cet arbitrage. `kRescueChlorineDailyBySizeMl[3]` (constants.h, indexé par la sérialisation de `PoolSize`) :
+
+| Taille | Volume de référence | Défaut |
+|---|---|---|
+| Petit | ≈ 20 m³ | 500 mL/j |
+| Moyen | ≈ 40 m³ | 1000 mL/j |
+| Grand | ≈ 60 m³ et plus | 1500 mL/j |
+
+Base : 3 mg/L/jour de Cl₂ (haut de la demande réelle mesurée), chlore 36° ≈ 114 g Cl₂/L ⇒ ≈ 26 mL/m³/jour. Ces défauts passent par le **même clamp C3/C4** que tout le reste une fois armés.
+
+**Chemin MQTT `ON` sans volume — invariant feature-090 préservé** : [`src/regulation_defaults.h:18-19`](../../src/regulation_defaults.h) pose que `PoolSize` « n'entre JAMAIS dans un calcul de dosage, de débit, de quota ou de correction ». Le pré-remplissage HTTP respecte la lettre de cet invariant (l'utilisateur **voit** et peut modifier la valeur avant de valider) — mais un `ON` MQTT arme le mode **sans qu'un humain ne voie ni ne modifie rien**. `MqttManager::drainCommandQueue()` appelle donc `startRescueChlorine(0.0f)`, qui résout **sans étage taille** : `orp_daily_target_ml` (si > 0) sinon `kRescueChlorineDailyMl` directement — `PoolSize` n'est **jamais consultée** sur ce chemin. **Pas d'héritage** de la dernière valeur saisie (arbitrage tranché le 2026-10-05 : le cas protégé était trop étroit pour justifier une seconde clé NVS de fraîcheur).
+
+**Log d'armement, provenance** : `startRescueChlorine()` nomme désormais le volume **et sa provenance** — « saisi » (route HTTP `?ml=`), « cible programmée » (`orp_daily_target_ml` > 0) ou « défaut » (repli `kRescueChlorineDailyMl`). Avant la v2.56.0, le log donnait le volume sans dire d'où il venait — impossible de savoir après coup avec quoi le mode avait tourné.
+
+**Annonce côté Home Assistant** : le switch `{base}/rescue` reste binaire (`ON`/`OFF`), aucun champ numérique ne peut y transiter sans changer son type d'entité HA (hors périmètre). L'exigence d'annonce du gate (l'invisibilité du volume est **spécifiquement** un problème Home Assistant) se résout par un **topic dédié** `{base}/rescue_ml` (sensor, lecture seule, auto-discovery HA) — voir [MQTT.md](../MQTT.md#topic-et-entité-ajoutées-en-feature-141-volume-de-secours-saisi-v2560). **Rien n'est ajouté à la trame `sensor_data`** pour cela : sa marge était à 39 o après `rescue_lift`, et le bandeau `#rescue-active-banner` porte déjà l'information pour qui regarde l'interface web.
+
 ### `RescueLiftReason` — trois fins distinctes, une seule clé publiée
 
 ```cpp
@@ -2389,19 +2426,21 @@ enum class RescueLiftReason : uint8_t {
 
 Publiée en `uint8_t` (`rescue_lift`, parité `/data` ↔ WS ↔ MQTT `{base}/rescue_lift_reason`), **RAM uniquement, jamais persistée** — un reboot n'a, par construction, aucune « fin récente » à rapporter. Fenêtre de **visibilité glissante** `kRescueLiftReasonVisibleMs` (90 s — 3× la cadence `/data`) portée par `getRescueLiftReasonCode(nowMs)`, qui délègue à la fonction pure `rescueLiftReasonVisiblePure()` (arithmétique non signée, wrap-safe au repliement de `millis()`). Motif de la distinction : le libellé **L6** (« les mesures ORP sont de nouveau fiables ») n'est **vrai** que pour la levée automatique — l'afficher sur une expiration 48 h mentirait sur l'état réel des sondes. Le gate a exigé un libellé **séparé** pour l'expiration (**L9**, voir [API.md](../API.md#champs-ajoutés-en-feature-140-chloration-de-secours)), ton `warning`, qui rappelle que la régulation automatique a **déjà repris** et invite à contrôler le chlore libre au réactif DPD **et** le pH avant de lui faire confiance — indépendamment de la sonde qu'on soupçonne déjà.
 
-### Constantes (feature-140, `constants.h`)
+### Constantes (feature-140 / feature-141, `constants.h`)
 
 | Constante | Valeur | Rôle |
 |---|---:|---|
 | `kRescueChlorineDurationS` | 172 800 s (48 h) | Durée glissante depuis l'activation (epoch, pas minuit) |
-| `kRescueChlorineDailyMl` | 1500 mL/j | Volume quotidien dédié — **maintien, jamais rattrapage** (terrain : 2000 mL/j × 3 j n'ont pas fait bouger l'ORP, bloqué à 261 mV pour une consigne de 530) |
-| `kRescueChlorineDailyHardCapMl` | 2000 mL/j | Plafond dur absolu, appliqué **après** l'amplification Boost |
+| `kRescueChlorineDailyMl` | 1500 mL/j | **feature-141** : n'est plus LA valeur — défaut de pré-remplissage « grand bassin » et repli final de la chaîne. Rationale terrain inchangée : maintien, jamais rattrapage (2000 mL/j × 3 j n'ont pas fait bouger l'ORP, bloqué à 261 mV pour une consigne de 530) |
+| `kRescueChlorineDailyHardCapMl` | 2000 mL/j | Plafond dur absolu, appliqué **après** l'amplification Boost — inchangé par feature-141 |
+| `kRescueChlorineDailyMinMl` (feature-141) | 100 mL/j | Plancher ABSOLU du volume **saisi** — FIGÉ, pas un paramètre (verdict `pool-chemistry` : « un secours à 20 mL/j donnerait l'illusion d'une désinfection sans la fournir ») |
+| `kRescueChlorineDailyBySizeMl[3]` (feature-141) | 500 / 1000 / 1500 mL/j | Défauts de **pré-remplissage** par taille de bassin — table séparée de `kRegulationDefaultsBySize` (visa pool-chemistry 31/08 : jamais de quota dans cette dernière) |
 | `kRescueChlorineAutoLiftHoldMin` / `…HoldMs` | 30 min | Tenue continue de mesures fiables avant levée automatique |
 | `kRescueLiftReasonVisibleMs` | 90 000 ms | Fenêtre de visibilité de `rescue_lift` (3× la cadence `/data`) |
 
 ### Testabilité native
 
-`effectiveOrpModePure`, `rescueActivePure`, `rescueDeadlinePure`, `effectiveOrpDailyTargetMlPure`, `rescueLiftReasonVisiblePure` ([`src/temp_mode_logic.h`](../../src/temp_mode_logic.h) / [`.cpp`](../../src/temp_mode_logic.cpp)) sont couvertes par la suite native dédiée `test/test_native_temp_mode/` : mode effectif (Manuel prioritaire, secours bascule vers Scheduled, non-régression sans secours), composition Boost × secours et **ordre des clamps** (mutation dédiée : inverser l'ordre amplification/plafond dur doit tuer un test), fail-closed sans heure valide, fenêtre de visibilité de `rescue_lift` avec repliement de `millis()`. Voir [BUILD.md](../BUILD.md) pour `pio test -e native` — ne pas recopier de compteur de tests ici (ADR-0073), le mesurer avec `ls -d test/test_native_* | wc -l` et la dernière ligne de `pio test -e native`.
+`effectiveOrpModePure`, `rescueActivePure`, `rescueDeadlinePure`, `effectiveOrpDailyTargetMlPure`, `rescueLiftReasonVisiblePure`, et depuis la v2.56.0 `clampRescueDailyMlPure` / `resolveRescueDailyMlPure` ([`src/temp_mode_logic.h`](../../src/temp_mode_logic.h) / [`.cpp`](../../src/temp_mode_logic.cpp)) sont couvertes par la suite native dédiée `test/test_native_temp_mode/` : mode effectif (Manuel prioritaire, secours bascule vers Scheduled, non-régression sans secours), composition Boost × secours et **ordre des clamps** (mutation dédiée : inverser l'ordre amplification/plafond dur doit tuer un test), fail-closed sans heure valide, fenêtre de visibilité de `rescue_lift` avec repliement de `millis()`, **plancher/plafond du volume saisi, chaîne de pré-remplissage à trois étages, `storedMl` absent/nul/hors bornes, et le cas longtemps manquant depuis feature-140 : 1900 mL saisis + Boost (`× 1,5`) ⇒ volume effectif plafonné à 2000, jamais 2850**. Validation par **mutation** (ADR obligatoire du workflow) : suppression du plancher, repli sur 0 au lieu de la chaîne, et déplacement du clamp du plafond dur font chacun mourir un test dédié. Voir [BUILD.md](../BUILD.md) pour `pio test -e native` — ne pas recopier de compteur de tests ici (ADR-0073), le mesurer avec `ls -d test/test_native_* | wc -l` et la dernière ligne de `pio test -e native`.
 
 ## Restauration des valeurs d'usine de régulation (feature-088, v2.31.0)
 

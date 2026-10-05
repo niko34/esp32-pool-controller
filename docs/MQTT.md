@@ -68,6 +68,7 @@ Tous les topics utilisent le préfixe configurable (ex: `pool/sensors`). Les val
 | `{base}/boost` | `ON` / `OFF` | État du **Mode Boost** (surchloration temporaire du jour). Retain. `ON` tant que le boost est actif ; retombe automatiquement à `OFF` au prochain minuit local (expiration). Voir [ADR-0025](adr/0025-mode-boost.md). |
 | `{base}/rescue` | `ON` / `OFF` | État de la **Chloration de secours** (feature-140, v2.55.0) — surcouche aveugle à l'ORP, auto-expirante 48 h glissantes. Retain. Voir [ci-dessous](#topic-et-entité-ajoutés-en-feature-140-chloration-de-secours-v2550). |
 | `{base}/rescue_lift_reason` | `0` – `3` | Raison de la dernière fin de la Chloration de secours (feature-140). Retain. Voir [ci-dessous](#topic-et-entité-ajoutés-en-feature-140-chloration-de-secours-v2550). |
+| `{base}/rescue_ml` | entier (mL) | **v2.56.0 (feature-141)** — Volume quotidien de la Chloration de secours **ARMÉ** si active, **PROPOSÉ** sinon. Retain, dédupliqué. Voir [ci-dessous](#topic-et-entité-ajoutées-en-feature-141-volume-de-secours-saisi-v2560). |
 | `{base}/lighting_schedule` | `ON` / `OFF` | Programmation horaire de l'éclairage active/inactive (feature-052, v2.17.0). Retain. Reflète le booléen `lightingCfg.scheduleEnabled`. Indépendant du relais manuel. Exposé en HA comme `select` « Mode Éclairage » (Programmation/Désactivé) via templates — le fil reste `ON`/`OFF` (bug-ha-eclairage-select, v2.17.2). |
 | `{base}/lighting_start` | `HH:MM` (ex. `20:00`) | Heure de début du créneau d'éclairage (feature-052, v2.17.0). Retain. |
 | `{base}/lighting_end` | `HH:MM` (ex. `23:30`) | Heure de fin du créneau d'éclairage (feature-052, v2.17.0). Retain. |
@@ -145,7 +146,7 @@ Tous les topics utilisent le préfixe configurable (ex: `pool/sensors`). Les val
 | `{base}/filtration_end/set` | `HH:MM` (ex. `20:30`) | Change l'heure de fin du créneau (symétrique, feature-051, v2.16.0) |
 | `{base}/lighting/set` | `ON` / `OFF` | Allume/éteint l'éclairage (contrôle manuel du relais) |
 | `{base}/boost/set` | `ON` / `OFF` | Active / désactive le **Mode Boost** (feature-053, v2.18.0). `ON` → active la surchloration temporaire du jour (filtration forcée + cible/limite chlore effectives relevées, cf. [ADR-0025](adr/0025-mode-boost.md)) ; `OFF` → désactive. **L'activation est refusée si l'heure n'est pas synchronisée** (l'expiration à minuit ne peut être calculée) → aucun changement + resync HA sur l'état réel. Payload invalide ignoré. Expire automatiquement au prochain minuit local. |
-| `{base}/rescue/set` | `ON` / `OFF` | Active / désactive la **Chloration de secours** (feature-140, v2.55.0). `ON` → active le dosage programmé aveugle à l'ORP pour 48 h glissantes au maximum (1500 mL/j, plafond dur 2000 mL/j — cf. [ADR-0087](adr/0087-ce-qu-un-mode-temporaire-a-le-droit-de-faire.md)) ; `OFF` → désactive. **Refusée** si la régulation ORP (NVS) est en mode Manuel, ou si l'heure n'est pas synchronisée → aucun changement + resync HA sur l'état réel + `warning` journalisé. Payload invalide ignoré. **Ne modifie jamais** `{base}/orp_regulation_mode`. |
+| `{base}/rescue/set` | `ON` / `OFF` | Active / désactive la **Chloration de secours** (feature-140, v2.55.0). `ON` → active le dosage programmé aveugle à l'ORP pour 48 h glissantes au maximum. **v2.56.0 (feature-141)** : le volume quotidien n'est **plus** fixé à 1500 mL/j — le switch HA ne transportant aucun champ numérique, `ON` résout le volume via `orp_daily_target_ml` (NVS, si > 0) sinon un repli de 1500 mL/j, **sans jamais consulter la taille du bassin** (invariant feature-090 : `PoolSize` ne doit jamais déterminer un quota sans intervention humaine visible). Plafond dur 2000 mL/j inchangé — cf. [ADR-0087](adr/0087-ce-qu-un-mode-temporaire-a-le-droit-de-faire.md). Le volume résolu est republié sur `{base}/rescue_ml` (voir [ci-dessous](#topic-et-entité-ajoutées-en-feature-141-volume-de-secours-saisi-v2560)) ; `OFF` → désactive. **Refusée** si la régulation ORP (NVS) est en mode Manuel, ou si l'heure n'est pas synchronisée → aucun changement + resync HA sur l'état réel + `warning` journalisé. Payload invalide ignoré. **Ne modifie jamais** `{base}/orp_regulation_mode`. |
 | `{base}/lighting_schedule/set` | `ON` / `OFF` | Active/désactive la programmation horaire (feature-052, v2.17.0). Payload validé `ON`/`OFF` (insensible à la casse) → `lightingCfg.scheduleEnabled` ; invalide → ignoré + `warning` + resync HA. Persisté NVS, appliqué via `lighting.update()`, republié. Broadcast WS config vers l'UI web |
 | `{base}/lighting_start/set` | `HH:MM` (ex. `20:00`) | Change l'heure de début du créneau (feature-052, v2.17.0). Validée `HH:MM` via `timeStringToMinutes` (format invalide → ignoré + `warning` + resync HA). Pilote `lightingCfg.startTime`, persisté NVS, appliqué, republié |
 | `{base}/lighting_end/set` | `HH:MM` (ex. `23:30`) | Change l'heure de fin du créneau (symétrique, `lightingCfg.endTime`, feature-052, v2.17.0) |
@@ -498,6 +499,7 @@ mosquitto_sub -h <broker> -t 'homeassistant/#' --remove-retained --retained-only
 | Switch | Éclairage Piscine | `{base}/lighting_state` | `{base}/lighting/set` |
 | Switch | Boost | `{base}/boost` | `{base}/boost/set` |
 | Switch | Chloration de secours | `{base}/rescue` | `{base}/rescue/set` |
+| Sensor | Volume Chloration de secours | `{base}/rescue_ml` | — |
 | Select | Mode Éclairage | `{base}/lighting_schedule` | `{base}/lighting_schedule/set` |
 | Text | Éclairage début | `{base}/lighting_start` | `{base}/lighting_start/set` |
 | Text | Éclairage fin | `{base}/lighting_end` | `{base}/lighting_end/set` |
@@ -801,11 +803,12 @@ L'état `{base}/boost` (retain) est publié à la (re)connexion, à chaque chang
 
 ## Topic et entité ajoutés en feature-140 (Chloration de secours, v2.55.0)
 
-La **Chloration de secours** est une surcouche temporaire non destructive du mode « Programmée » existant : volume de chlore fixe (1500 mL/j, plafond dur 2000 mL/j), aveugle à l'ORP, auto-expirant 48 h **glissantes** après l'activation (epoch — pas un ancrage sur minuit local, contrairement au Boost : voir [ADR-0087](adr/0087-ce-qu-un-mode-temporaire-a-le-droit-de-faire.md)). **Ne modifie jamais `{base}/orp_regulation_mode`.** Détails firmware : [`docs/subsystems/pump-controller.md`](subsystems/pump-controller.md#chloration-de-secours-feature-140). Décision structurante : [ADR-0087](adr/0087-ce-qu-un-mode-temporaire-a-le-droit-de-faire.md).
+La **Chloration de secours** est une surcouche temporaire non destructive du mode « Programmée » existant : volume de chlore fixe, aveugle à l'ORP, auto-expirant 48 h **glissantes** après l'activation (epoch — pas un ancrage sur minuit local, contrairement au Boost : voir [ADR-0087](adr/0087-ce-qu-un-mode-temporaire-a-le-droit-de-faire.md)). **v2.56.0 (feature-141) : le volume n'est plus la constante 1500 mL/j** — il est saisi par l'utilisateur à l'activation côté interface web (voir [ci-dessous](#topic-et-entité-ajoutées-en-feature-141-volume-de-secours-saisi-v2560)), borné `[100, min(limite utilisateur, 2000)]` mL/j. **Ne modifie jamais `{base}/orp_regulation_mode`.** Détails firmware : [`docs/subsystems/pump-controller.md`](subsystems/pump-controller.md#chloration-de-secours-feature-140). Décision structurante : [ADR-0087](adr/0087-ce-qu-un-mode-temporaire-a-le-droit-de-faire.md).
 
 | Entité | Type | `state_topic` | `command_topic` | `unique_id` | Détails |
 |--------|------|---------------|-----------------|-------------|---------|
 | Chloration de secours | `switch` | `{base}/rescue` | `{base}/rescue/set` | `poolcontroller_rescue_chlorine` | `payload_on: ON`, `payload_off: OFF`, `icon: mdi:flask-plus-outline` |
+| Volume Chloration de secours | `sensor` | `{base}/rescue_ml` | — | `poolcontroller_rescue_ml` | **v2.56.0 (feature-141)**, **lecture seule** (pas de `command_topic` : le volume se SAISIT côté interface web, jamais depuis HA). `unit_of_measurement: mL`, `state_class: measurement`, `icon: mdi:cup-water`. |
 
 | Topic | Payload | Description |
 |-------|---------|-------------|
@@ -817,6 +820,18 @@ L'état `{base}/rescue` (retain) est publié à la (re)connexion, à chaque chan
 **Activation refusée** dans deux cas, sans jamais annoncer une activation qui n'a pas eu lieu (correctif revue, gate 2) :
 - **mode Manuel** : si la régulation ORP (NVS) est en `"manual"`, la commande `ON` est **ignorée** (double dosage évité — l'utilisateur dose déjà lui-même) et l'état réel republié. Même refus que la route HTTP `POST /rescue/start` (`409 mode_manual`).
 - **heure non synchronisée** : l'échéance 48 h serait indéterminable, même politique de sécurité que le Boost (minuit).
+
+## Topic et entité ajoutées en feature-141 (Volume de secours saisi, v2.56.0)
+
+Le volume quotidien de la Chloration de secours n'est plus la constante `kRescueChlorineDailyMl` (1500 mL/j) : il est **saisi par l'utilisateur à l'activation** côté interface web, borné côté serveur, et persisté en NVS (`rescue_ml`). Détail complet de la chaîne de pré-remplissage et des deux clamps distincts : [`docs/subsystems/pump-controller.md`](subsystems/pump-controller.md#chloration-de-secours-feature-140).
+
+**`{base}/rescue_ml`** (`sensor`, lecture seule, retain, dédupliqué) : volume **ARMÉ** si le mode est actif, **PROPOSÉ** (chaîne de pré-remplissage) sinon. Jamais `0`. Publié :
+- immédiatement après chaque activation (`publishRescueState()`) ;
+- au cycle périodique (10 s), dédupliqué — `rescueDailyMlForDisplay()` peut varier hors activation (ex. `orp_daily_target_ml` ou la taille du bassin modifiés pendant que le secours est inactif).
+
+⚠️ **Pourquoi un `sensor` et pas un champ du `switch` existant** : Home Assistant n'a pas de type d'entité « switch avec paramètre numérique » sans changer le protocole du switch lui-même (hors périmètre de cette feature). Le volume **se saisit côté interface web uniquement** — ce capteur rend seulement visible, côté Home Assistant, ce qui a été armé, pour fermer l'angle mort qu'un `ON` envoyé depuis HA arme un volume que l'utilisateur HA ne voit nulle part ailleurs.
+
+**Chemin MQTT `ON` sans volume** (invariant feature-090, préservé à la lettre comme à l'esprit) : la résolution **saute l'étage « taille de bassin »** — `orp_daily_target_ml` (NVS, si > 0) sinon le repli 1500 mL/j. `PoolSize` n'est **jamais** consultée sur ce chemin, contrairement au pré-remplissage du dialogue web (qui, lui, inclut l'étage taille). Aucun héritage de la dernière valeur saisie : chaque `ON` sans volume explicite repart de cette chaîne, pas d'une mémoire de la saisie précédente (arbitrage tranché le 2026-10-05, voir la spec [feature-141](../specs/features/done/feature-141-volume-de-secours-saisi-a-l-activation.md)).
 
 **Désarmement automatique** : si `{base}/orp_regulation_mode/set` reçoit `manual` **pendant** que la Chloration de secours est active, le mode est désarmé automatiquement (`RescueLiftReason::Manual`) et l'état republié — même règle que le changement de mode via la route HTTP `/save-config`.
 

@@ -1192,11 +1192,17 @@ size_t WsManager::_buildConfigJson(char* buf, size_t cap) const {
   //     déclarées comme telles dans kHttpOnlyKeys : les pousser en continu
   //     coûterait ~120 o de trame pour des valeurs lues UNE fois par campagne,
   //     au changement de bidon.
-  // TAILLE SÉRIALISÉE de la trame complète (83 clés, format compact) : 2100 o en
-  // nominal, ≈ 2995 o au PIRE CAS (chaînes libres à 64 caractères, uint32
-  // saturés, flottants à 9 chiffres, raison de bascule à 427 o) → MARGE ≈ 589 o
+  // feature-141 : +1 clé, volume quotidien de secours (jamais 0, jamais la
+  // constante 1500 en dur) :
+  //   "rescue_ml":2000,                        → 1+ 9+1+1+ 4+1 =  17 o
+  //   → +17 o au pire cas (entier à 4 chiffres, plafond dur 2000).
+  //   (`rescue_ml` fait 9 caractères, pas 10 : un décompte à 18 figurait ici et
+  //    contredisait celui, juste, du registre plus bas — corrigé à la livraison.)
+  // TAILLE SÉRIALISÉE de la trame complète (84 clés, format compact) : 2118 o en
+  // nominal, ≈ 3013 o au PIRE CAS (chaînes libres à 64 caractères, uint32
+  // saturés, flottants à 9 chiffres, raison de bascule à 427 o) → MARGE ≈ 571 o
   // sous le seul plafond DUR, sWsFrameBuf (kWsFrameBufBytes = 3584 o,
-  // constants.h). Gabarit documentaire porté 2944 → 3008.
+  // constants.h). Gabarit documentaire porté 2944 → 3008 → 3072.
   // POURQUOI CE CHIFFRE COMPTE : c'est lui que lira le prochain contributeur pour
   // arbitrer son ajout. Avec l'ancienne valeur, il aurait cru disposer de 285 o
   // qui n'existent pas. Et le pire cas de longueur coïncide avec l'ESCALADE DE
@@ -1211,7 +1217,7 @@ size_t WsManager::_buildConfigJson(char* buf, size_t cap) const {
   // RÉSERVE CONNUE : `server`, `topic`, `username` et `wifi_ssid` ne sont bornés
   // NULLE PART (/save-config ne valide aucune longueur) ; la marge est prouvée
   // sous l'hypothèse d'environ 64 o par champ. Surveiller oversizedFrameCount().
-  StaticJson<3008> doc;
+  StaticJson<3072> doc;
   doc["type"] = "config";
   JsonObject d = doc["data"].to<JsonObject>();
 
@@ -1310,6 +1316,14 @@ size_t WsManager::_buildConfigJson(char* buf, size_t cap) const {
   // feature-053 : Mode Boost (état effectif + epoch d'expiration, 0 si inactif).
   d["boost_active"]        = isBoostActive(time(nullptr));
   d["boost_until"]         = (long)boostState.untilEpoch;
+
+  // feature-141 : volume quotidien de secours ARMÉ si actif, PROPOSÉ (chaîne
+  // de pré-remplissage) sinon — JAMAIS 0. Miroir STRICT de /get-config (même
+  // clé, même calcul) : rescueDailyMlForDisplay() est le SEUL lecteur de la
+  // table par taille (constants.h), appelé une seule fois côté firmware pour
+  // les DEUX transports. +17 o au pire cas ("rescue_ml":2000, — 1+9+1+1+4+1),
+  // comptés dans le gabarit documentaire ci-dessus (3008 → 3072).
+  d["rescue_ml"] = (int)lroundf(rescueDailyMlForDisplay());
 
   // bug-089 : bascule AUTOMATIQUE de la régulation pH en manuel (v2.20.3, C5).
   // État persistant ÉCRIT PAR LE FIRMWARE (pump_controller) sans action de

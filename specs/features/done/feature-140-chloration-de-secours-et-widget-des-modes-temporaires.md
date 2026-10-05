@@ -859,3 +859,120 @@ pour le détail à l'écran.
 ⚠️ **Capture d'écran à refaire** : `screenshots/03_Tableau_de_bord.jpg`
 montre encore le widget avec le sous-bloc de secours visible en permanence
 — à reprendre pour montrer le widget au repos (Boost seul).
+
+### Correctif post-production (2026-10-05, v2.55.2, retour d'usage réel)
+
+Demande de l'utilisateur après usage réel du widget en v2.55.1 : un dosage à
+l'aveugle en cours est un état notable qui mérite le **haut de page**, pas un
+bloc qu'il faut aller consulter dans un widget.
+
+- **Le sous-bloc `#temp-mode-rescue` est retiré du DOM dans tous les états**
+  (actif compris) — plus de masquage conditionnel, le markup disparaît. Le
+  widget « Modes temporaires » ne contient plus que le Boost, en permanence.
+  `#temp-modes-effect` (ligne d'effet combiné) est inchangé.
+- **Nouveau bandeau `#rescue-active-banner`**, pleine page, affiché
+  **uniquement** quand `rescue_until > 0`, placé **avant**
+  `#dose-block-banner` (le secours répond au blocage, il ne s'y ajoute pas).
+  Porte le **bouton Arrêter** directement (pas seulement le texte), est
+  **ni masquable ni repliable** (pas de bouton de fermeture, pas de
+  `details`/`summary`) et n'emploie **jamais** le ton `critical` — `info`
+  quand il dose, `warning` quand il est en attente : le mode est voulu par
+  l'utilisateur, ce n'est pas une panne.
+- **Paire de textes opposables, nouvelle** (remplace le badge + hint +
+  callout de la v2.55.1) :
+  - Variante A (dosant) : « Chloration de secours active jusqu'au %s : le
+    chlore est injecté à volume fixe, sans contrôle de l'ORP. »
+  - Variante B (en attente) : « Chloration de secours active jusqu'au %s,
+    mais le chlore ne coule pas actuellement. %s » (2nd `%s` = cause L3/L4/L5a/L5b
+    inchangée, priorité L3 > L4 > L5).
+- **L1 disparaît de l'écran** avec le widget — admissible **parce que le L2
+  révisé en v2.55.1 porte déjà l'avertissement qu'il contenait**. Ce n'est
+  pas une perte d'information.
+- **Incohérence fermée sur `#dose-block-banner`** : tant que le secours
+  tourne déjà (`rescue_until > 0`), l'offre **L7** et son bouton
+  « Activer la chloration de secours » **disparaissent** de la ligne
+  ORP — proposer d'armer ce qui tourne déjà aurait fait douter de tout le
+  reste de l'affichage. Le texte de la ligne et le bouton « Ouvrir
+  l'injection manuelle » sont **conservés** (la mesure EST toujours non
+  représentative, c'est le cas nominal).
+
+**Fichiers modifiés** : `data/index.html`, `data/app.js`, `data/app.css`.
+Aucun changement firmware. Voir
+[`docs/features/page-dashboard.md`](../../docs/features/page-dashboard.md#bandeau--chloration-de-secours-active--rescue-active-banner-feature-140-v2552)
+pour le détail à l'écran.
+
+⚠️ **Capture d'écran encore à refaire** : `screenshots/03_Tableau_de_bord.jpg`
+doit maintenant montrer le widget « Modes temporaires » **réduit au Boost
+seul**, sans aucune trace de la Chloration de secours (qui, active,
+apparaîtrait désormais en bandeau au-dessus de la grille de cartes, pas dans
+le widget).
+
+### Correctif post-production (2026-10-05, v2.55.3, demande produit + retour d'usage réel)
+
+Deux changements distincts, tous deux validés par le gate `pool-chemistry`.
+
+**1. Le mot « boue » disparaît des libellés de l'application.** Demande
+produit de l'utilisateur : c'est un cas très particulier, l'appareil
+s'adresse à toute situation d'eau dégradée. Le gate a **reformulé lui-même**
+les trois textes concernés — la reformulation **renforce** le propos : nommer
+les gestes correctifs est plus actionnable que nommer le problème. Vocabulaire
+retenu : « chargée en matière organique » et « retrait mécanique des dépôts »
+(brossage, aspiration, nettoyage du filtre) ; « eau dégradée » a été
+explicitement écarté, jugé trop vague pour porter un avertissement.
+
+Textes révisés, **opposables, consignés mot à mot** :
+
+- **L2** (confirmation d'activation) : « Le dosage se fera à l'aveugle, sans
+  contrôle de l'ORP, pendant 48 h au maximum. Volume plafonné à 1500 mL par
+  jour. Le pH n'est jamais dosé dans ce mode. Il maintient une désinfection
+  minimale — il ne traite pas la cause : quand l'eau est chargée en matière
+  organique, seul le retrait mécanique des dépôts (brossage, aspiration,
+  nettoyage du filtre) fait baisser cette charge. Désactivez-le dès que les
+  sondes sont de nouveau fiables. »
+- **Suggestion Boost** : « Suggestion : activez aussi le Boost pour prolonger
+  la filtration — sur une eau chargée en matière organique, c'est le levier
+  le plus utile, davantage que le chlore lui-même. »
+- **L3 côté ORP** (libellé d'injection manuelle, feature-138) : seule la
+  parenthèse d'ouverture change → « En eau chargée en matière organique
+  (après de fortes pluies, un apport de dépôts, un nettoyage de fond), … » ;
+  la suite (point de rupture, chloramines, « n'augmentez pas la dose »,
+  limites) est **strictement inchangée**.
+
+**2. Le widget « Modes temporaires » ne parle plus que du Boost.**
+`#temp-modes-effect` (ligne « Effet combiné ») et `#temp-modes-suggest-boost`
+sont retirés du DOM, avec leurs fonctions JS (`_tempModesEffectText()`,
+`updateTempModesEffect()`). `#detail-boost-effect` (ligne d'effet de
+feature-055) reste — seul effet encore affiché dans le widget.
+
+⚠️ **Enseignement de cette itération** : le gate n'a **pas** demandé de
+reloger la ligne « effet combiné ». Son argument : l'information est
+**meilleure une fois scindée** — la ligne d'effet du Boost reste à côté du
+Boost, les variantes A/B du bandeau de secours disent ce que fait le secours
+à côté du secours. **Chacune est vérifiable à côté de l'objet qu'elle
+décrit**, ce qu'une ligne combinée ne permettait pas.
+
+**3. La suggestion Boost déménage dans le bandeau de secours**, en phrase
+ajoutée aux variantes A et B — jamais un bloc séparé.
+
+⚠️ **Elle reste CONDITIONNELLE** — condition du gate, non négociable :
+affichée seulement quand le secours est armé **et** que la filtration n'est
+pas déjà prolongée. Affichée en permanence, elle deviendrait du décor.
+
+⚠️ **Le gate a REFUSÉ de la supprimer**, et son motif mérite d'être écrit :
+c'est le **seul endroit de l'application qui dit que la filtration prime sur
+le chlore**. C'est l'enseignement direct du terrain (2 L/jour pendant trois
+jours, ORP bloqué à 261 mV pour une consigne de 530 mV) et le contre-pied du
+réflexe « ça ne monte pas, j'en remets ».
+
+**Fichiers modifiés** : `data/app.js`, `data/index.html`. Aucun changement
+firmware. Voir
+[`docs/features/page-dashboard.md`](../../docs/features/page-dashboard.md#ligne-deffet-combiné-b2-feature-140--retirée-en-v2553)
+pour le détail à l'écran, et
+[`docs/user/src/guide-utilisation.html`](../../docs/user/src/guide-utilisation.html) /
+[`docs/user/src/guide-regulation.html`](../../docs/user/src/guide-regulation.html)
+pour le vocabulaire aligné côté documentation utilisateur (PDF non
+régénérés, à faire en release).
+
+⚠️ **Capture d'écran encore à refaire** : `screenshots/03_Tableau_de_bord.jpg`
+(widget « Modes temporaires » réduit au Boost seul, sans ligne d'effet ni
+suggestion).

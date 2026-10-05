@@ -1280,6 +1280,11 @@ void saveRescueState() {
   }
   prefs.putBool("rescue_active", rescueState.active);
   prefs.putLong64("rescue_until", (int64_t)rescueState.untilEpoch);
+  // feature-141 : volume quotidien ARMÉ, MÊME transaction NVS que les deux
+  // champs ci-dessus (même prefs.begin/end). uint16 : 0-65535, largement
+  // suffisant (plafond dur 2000) — 0 = absent, convention lue par
+  // resolveRescueDailyMlPure (cf. loadRescueState ci-dessous).
+  prefs.putUShort("rescue_ml", (uint16_t)lroundf(rescueState.dailyMl));
   prefs.end();
   if (configMutex) xSemaphoreGiveRecursive(configMutex);
 }
@@ -1291,7 +1296,17 @@ void loadRescueState() {
   }
   rescueState.active = prefs.getBool("rescue_active", false);
   rescueState.untilEpoch = (time_t)prefs.getLong64("rescue_until", 0);
+  rescueState.dailyMl = (float)prefs.getUShort("rescue_ml", 0);
   prefs.end();
+
+  // Condition #2 du gate pool-chemistry (feature-141, 2026-10-05) : absent
+  // (0, sentinelle), nul ou hors bornes ⇒ repli sur la CHAÎNE de
+  // pré-remplissage, JAMAIS sur 0 (« un secours armé à 0 mL est un mode qui
+  // ment »). Étage taille de bassin INCLUS : ceci est une RESTAURATION
+  // générique au boot, pas le chemin MQTT sans volume (invariant feature-090,
+  // cf. startRescueChlorine) — rescueDailyMlForDisplay() est le seul lecteur
+  // de la table par taille, réutilisé ici tel quel.
+  rescueState.dailyMl = rescueDailyMlForDisplay();
 
   // Condition #6 du gate (fail-closed) : on NE force PAS rescueState.active à
   // false ici si l'heure est invalide — isRescueChlorineActive() le traduit
@@ -1305,8 +1320,22 @@ void loadRescueState() {
     systemLogger.info("[Secours] État chargé expiré (48h dépassées) — chloration de secours inactive");
   } else if (rescueState.active) {
     systemLogger.info("[Secours] État restauré : chloration de secours active jusqu'à epoch " +
-                       String((long)rescueState.untilEpoch));
+                       String((long)rescueState.untilEpoch) + " (volume " +
+                       String(rescueState.dailyMl, 0) + " mL/j)");
   }
+}
+
+// feature-141 : volume quotidien de secours à AFFICHER — SEUL lecteur de
+// kRescueChlorineDailyBySizeMl dans tout le firmware (voir config.h). Résout
+// rescueState.dailyMl courant (ARMÉ si actif, dernier stocké ou 0 sinon) via
+// la chaîne de pré-remplissage, étage taille INCLUS.
+float rescueDailyMlForDisplay() {
+  const float sizeDefault = kRescueChlorineDailyBySizeMl[static_cast<uint8_t>(mqttCfg.poolSize)];
+  return resolveRescueDailyMlPure(rescueState.dailyMl,
+                                   static_cast<float>(mqttCfg.orpDailyTargetMl),
+                                   sizeDefault, kRescueChlorineDailyMl,
+                                   safetyLimits.maxChlorineMlPerDay,
+                                   kRescueChlorineDailyHardCapMl);
 }
 
 // Complément feature-140 (2026-10-05) : raison de FIN publiée à parité
@@ -1333,7 +1362,7 @@ uint8_t getRescueLiftReasonCode(unsigned long nowMs) {
                                       (uint32_t)kRescueLiftReasonVisibleMs);
 }
 
-void startRescueChlorine() {
+void startRescueChlorine(float requestedDailyMl) {
   // Condition #5 du gate : mode Manuel incompatible (double dosage — "je dose
   // moi-même" + injection aveugle). Lu en NVS : à l'activation, le secours
   // n'est pas encore actif, donc mode EFFECTIF == mode NVS (effectiveOrpModePure
@@ -1349,16 +1378,57 @@ void startRescueChlorine() {
     systemLogger.warning("[Secours] Activation refusée : heure non synchronisée (échéance 48h indéterminable)");
     return;
   }
+
+  // feature-141 : résolution du volume quotidien, SOURCE selon ce que
+  // l'appelant a fourni.
+  float resolvedMl;
+  const char* provenance;
+  if (requestedDailyMl > 0.0f) {
+    // Valeur EXPLICITEMENT saisie (route HTTP ?ml=) : seulement BORNÉE, jamais
+    // réinterprétée par la chaîne — 10 mL saisis redeviennent 100, pas un défaut.
+    resolvedMl = clampRescueDailyMlPure(requestedDailyMl, safetyLimits.maxChlorineMlPerDay,
+                                         kRescueChlorineDailyHardCapMl);
+    provenance = "saisi";
+  } else {
+    // Aucune valeur fournie (commande MQTT ON, ou ?ml= absent/non numérique) :
+    // chaîne SANS étage taille de bassin — invariant feature-090, PoolSize
+    // n'est consultée QUE par rescueDailyMlForDisplay() (pré-remplissage du
+    // dialogue), jamais sur ce chemin de résolution serveur. Décision tranchée
+    // du 2026-10-05 : pas d'héritage de la dernière valeur saisie (storedMl=0
+    // force la chaîne, sizeDefaultMl=0 saute l'étage taille).
+    resolvedMl = resolveRescueDailyMlPure(0.0f, static_cast<float>(mqttCfg.orpDailyTargetMl),
+                                           0.0f, kRescueChlorineDailyMl,
+                                           safetyLimits.maxChlorineMlPerDay,
+                                           kRescueChlorineDailyHardCapMl);
+    provenance = (mqttCfg.orpDailyTargetMl > 0) ? "cible programmée" : "défaut";
+  }
+
   rescueState.untilEpoch = rescueDeadlinePure(now, kRescueChlorineDurationS);
   rescueState.active = true;
+  rescueState.dailyMl = resolvedMl;
   saveRescueState();
   // Une nouvelle activation efface toute raison de fin encore visible d'un
   // cycle précédent (ré-armement rapproché) : le secours est de nouveau actif,
   // il n'y a plus de "fin récente" à rapporter.
   setRescueLiftReason(RescueLiftReason::None);
   systemLogger.info("[Secours] Chloration de secours activée jusqu'à epoch " +
-                     String((long)rescueState.untilEpoch) + " (48h, volume max " +
-                     String(kRescueChlorineDailyMl, 0) + " mL/j)");
+                     String((long)rescueState.untilEpoch) + " (48h, volume " +
+                     String(resolvedMl, 0) + " mL/j, provenance : " + provenance + ")");
+  // feature-141 (recommandation gate 2) : SEUL cas où le mode s'arme sous le
+  // plancher d'efficacité SANS aucun signal. La limite journalière de
+  // l'utilisateur est souveraine — c'est une borne d'EXPOSITION, le plancher de
+  // 100 une borne d'EFFICACITÉ, et la première l'emporte (refuser l'armement
+  // serait pire : la boucle ORP doserait alors sur une mesure reconnue non
+  // fiable, sans plafond de maintien). Mais le toast de clamp côté interface ne
+  // se déclenche pas ici, saisie et valeur retenue étant déjà égales : sans ce
+  // warning, un secours qui ne désinfecte pas s'armerait en silence.
+  if (resolvedMl < kRescueChlorineDailyMinMl) {
+    systemLogger.warning("[Secours] Volume armé " + String(resolvedMl, 0) +
+                         " mL/j SOUS le plancher d'efficacité " +
+                         String(kRescueChlorineDailyMinMl, 0) +
+                         " mL/j — imposé par votre limite journalière. La "
+                         "désinfection maintenue sera partielle.");
+  }
 }
 
 void stopRescueChlorine(RescueLiftReason reason) {

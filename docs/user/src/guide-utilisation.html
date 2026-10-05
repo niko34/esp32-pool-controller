@@ -395,32 +395,41 @@ l'autre</strong>&nbsp;: ils peuvent fonctionner en même temps.</p>
   vérifier le taux de chlore avant la baignade — l'appareil mesure le
   potentiel de désinfection, pas le taux de chlore en tant que tel.</li>
 
-  <li><strong>Chloration de secours</strong> (version&nbsp;2.55)&nbsp;:
-  pour une eau trouble ou des sondes devenues douteuses (après de fortes
-  pluies, par exemple), ce mode injecte un volume de chlore fixe — 1&nbsp;500
-  mL par jour au maximum, plafonné à 2&nbsp;000&nbsp;mL/jour même combiné au
-  Boost — <strong>sans tenir compte des sondes</strong>, pendant 48&nbsp;heures
-  au maximum. Le détail de ce que ce mode fait et ne fait pas est au
-  chapitre&nbsp;4, «&nbsp;…un bandeau annonce que le dosage est bloqué&nbsp;».</li>
+  <li><strong>Chloration de secours</strong> (version&nbsp;2.55, volume
+  saisi par vous depuis la version&nbsp;2.56)&nbsp;: pour une eau trouble ou
+  des sondes devenues douteuses (après de fortes pluies, par exemple), ce
+  mode injecte un volume de chlore fixe — que vous saisissez à l'activation,
+  pré-rempli selon votre configuration, borné entre 100&nbsp;mL/jour et
+  2&nbsp;000&nbsp;mL/jour même combiné au Boost (ou votre limite journalière
+  si elle est plus stricte) — <strong>sans tenir compte des sondes</strong>,
+  pendant 48&nbsp;heures au maximum. Le détail de ce que ce mode fait et ne
+  fait pas est au chapitre&nbsp;4, «&nbsp;…un bandeau annonce que le dosage
+  est bloqué&nbsp;».</li>
 </ul>
 
-<p><strong>Depuis la version&nbsp;2.55.1</strong>, ce sous-bloc n'apparaît
-sur la carte <strong>que lorsque la chloration de secours est
-active</strong>&nbsp;: au repos, le widget ne montre que le Mode Boost, plus
-court qu'avant. Il n'y a d'ailleurs plus de bouton «&nbsp;Activer&nbsp;» à cet
-endroit&nbsp;: l'activation se fait désormais depuis le bandeau «&nbsp;Dosage
-bloqué&nbsp;» (chapitre&nbsp;4) au moment précis où elle est pertinente, ou
-via l'interrupteur Home Assistant / MQTT. Une fois activée, la carte
-réapparaît avec son état, son échéance et son bouton
-«&nbsp;Arrêter&nbsp;».</p>
+<p>Depuis la version&nbsp;2.55.1, la carte «&nbsp;Modes temporaires&nbsp;»
+n'a plus de bouton «&nbsp;Activer&nbsp;» pour la chloration de secours&nbsp;:
+l'activation se fait depuis le bandeau «&nbsp;Dosage bloqué&nbsp;»
+(chapitre&nbsp;4) au moment précis où elle est pertinente, ou via
+l'interrupteur Home Assistant / MQTT.</p>
 
-<p>Si les deux sont activés en même temps&nbsp;: la carte affiche l'effet
-<strong>réellement</strong> obtenu (par exemple «&nbsp;Filtration prolongée +
-chloration de secours&nbsp;»). C'est volontaire&nbsp;: en Chloration de
-secours, le Boost ne relève plus la cible de chlore (il n'y a plus de cible à
-relever, le dosage ne regarde plus l'ORP), mais il continue de
-<strong>prolonger la filtration</strong> — utile précisément quand il y a de
-la boue à faire circuler.</p>
+<p><strong>Depuis la version&nbsp;2.55.2</strong>, la carte ne montre plus
+<strong>aucune trace</strong> de la chloration de secours&nbsp;: au repos
+comme pendant son activité, elle ne contient que le Mode Boost. Quand le
+mode est actif, son état, son échéance et son bouton
+«&nbsp;Arrêter&nbsp;» apparaissent dans un <strong>bandeau dédié</strong> en
+haut de page, au-dessus de la grille de cartes — comme la bannière qui
+signale des mesures non représentatives. Ce bandeau ne peut être ni masqué
+ni replié&nbsp;: un dosage à l'aveugle en cours reste visible tant qu'il
+dure.</p>
+
+<p>Si les deux modes sont activés en même temps&nbsp;: la carte «&nbsp;Modes
+temporaires&nbsp;» affiche l'effet <strong>réellement</strong> obtenu (par
+exemple «&nbsp;Filtration prolongée + chloration de secours&nbsp;»). C'est
+volontaire&nbsp;: en Chloration de secours, le Boost ne relève plus la cible
+de chlore (il n'y a plus de cible à relever, le dosage ne regarde plus
+l'ORP), mais il continue de <strong>prolonger la filtration</strong> — utile
+précisément pour faire circuler une eau chargée en matière organique.</p>
 
 <p>Enfin, si la régulation venait à s'arrêter alors qu'elle devrait
 tourner, une <strong>bannière rouge</strong> l'annonce en tête du tableau
@@ -934,9 +943,16 @@ chloration de secours n'est pas disponible tant que vous dosez vous-même.</p>
 <p><strong>Depuis la version&nbsp;2.55.1</strong>, c'est devenu le seul
 endroit d'où activer ce mode depuis le tableau de bord&nbsp;: le bouton
 «&nbsp;Activer&nbsp;» a disparu de la carte «&nbsp;Modes
-temporaires&nbsp;», qui ne reste consultable que pour arrêter un mode déjà
-actif. Le bouton du bandeau ouvre désormais directement la confirmation,
-au lieu de vous renvoyer vers la carte.</p>
+temporaires&nbsp;». Le bouton du bandeau ouvre directement la
+confirmation, au lieu de vous renvoyer vers la carte.</p>
+
+<p><strong>Depuis la version&nbsp;2.55.2</strong>, quand le mode est déjà
+actif, ce bouton <strong>disparaît aussi</strong> du bandeau «&nbsp;Dosage
+bloqué&nbsp;»&nbsp;: proposer d'activer un mode qui tourne déjà n'aurait
+aucun sens. Le texte expliquant la cause du blocage et le bouton
+«&nbsp;Ouvrir l'injection manuelle&nbsp;» restent affichés. Pour suivre
+l'état du mode une fois activé — et l'arrêter —, voir le bandeau dédié
+décrit ci-dessous.</p>
 
 <h3>… la chloration de secours&nbsp;: injecter du chlore sans faire confiance
 aux sondes</h3>
@@ -945,23 +961,36 @@ aux sondes</h3>
 sondes devenues douteuses (après de fortes pluies, par exemple), qui
 empêchent la régulation automatique de fonctionner et donc <strong>arrêtent
 tout dosage de chlore</strong> — au moment où la demande en désinfectant est
-souvent la plus forte. Activé depuis la carte «&nbsp;Modes
-temporaires&nbsp;», il injecte un volume de chlore <strong>fixe</strong>
-(1&nbsp;500&nbsp;mL par jour, 2&nbsp;000&nbsp;mL/jour au maximum même combiné
-au Boost), <strong>sans tenir compte des sondes</strong>, pendant
-48&nbsp;heures au maximum.</p>
+souvent la plus forte. Activé depuis le bandeau «&nbsp;Dosage
+bloqué&nbsp;» (voir chapitre&nbsp;4) ou via Home Assistant / MQTT, il
+injecte un volume de chlore <strong>fixe</strong>, <strong>sans tenir compte
+des sondes</strong>, pendant 48&nbsp;heures au maximum. Une fois actif, son
+état et son échéance apparaissent dans un bandeau dédié en haut du tableau
+de bord, qui porte aussi le bouton «&nbsp;Arrêter&nbsp;».</p>
+
+<p><strong>Depuis la version&nbsp;2.56</strong>, c'est vous qui saisissez ce
+volume au moment d'activer le mode&nbsp;: la fenêtre de confirmation propose
+un champ «&nbsp;Volume de chlore par jour (mL)&nbsp;», pré-rempli selon votre
+configuration (votre cible de dosage programmé si vous en avez réglé une,
+sinon un repère selon la taille de votre bassin), que vous pouvez modifier
+ou laisser tel quel — l'activation reste possible sans y toucher. Toute
+saisie est automatiquement ramenée dans des bornes de sécurité&nbsp;: au
+minimum 100&nbsp;mL/jour, au maximum votre limite journalière si vous en
+avez réglé une, sinon 2&nbsp;000&nbsp;mL/jour (même combiné au Boost). Saisir
+plus de 1&nbsp;500&nbsp;mL/jour est accepté, avec un avertissement&nbsp;:
+au-delà, rien ne prouve que doser davantage aide (voir ci-dessous).</p>
 
 <p>Trois points importants à comprendre avant de l'activer&nbsp;:</p>
 
 <ul>
-  <li><strong>Ce mode maintient une désinfection minimale, il ne règle pas
-  une eau trouble.</strong> Si le fond du bassin est couvert de boue ou de
-  matières organiques, le chlore injecté est consommé par ces matières avant
-  de faire remonter le potentiel de désinfection&nbsp;: il est courant que le
-  chiffre ORP ne bouge pas du tout pendant les 48&nbsp;heures, même au volume
-  maximal. <strong>Seul le retrait mécanique</strong> de ce qui trouble l'eau
-  (épuisette, robot, aspiration) ramène l'eau à la normale — ce mode ne le
-  remplace pas.</li>
+  <li><strong>Ce mode maintient une désinfection minimale, il ne traite pas
+  la cause.</strong> Si l'eau est chargée en matière organique, le chlore
+  injecté est consommé par ces matières avant de faire remonter le potentiel
+  de désinfection&nbsp;: il est courant que le chiffre ORP ne bouge pas du
+  tout pendant les 48&nbsp;heures, même au volume maximal — augmenter le
+  volume saisi n'y changera rien. <strong>Seul le retrait mécanique des
+  dépôts</strong> (brossage, aspiration, nettoyage du filtre) fait baisser
+  cette charge — ce mode ne le remplace pas.</li>
   <li><strong>Le pH n'est jamais dosé par ce mode.</strong> Une injection
   d'acide à l'aveugle, sur une mesure qu'on soupçonne déjà, ne se reprend
   pas&nbsp;: ce risque n'est pas pris.</li>
