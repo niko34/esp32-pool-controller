@@ -2210,11 +2210,16 @@ bool PumpControllerClass::isPhUndersizedSuspected() const {
 // ne pas la corriger dans ce cycle.
 //
 // POURQUOI CETTE TRACE EST ICI ET PAS AILLEURS : c'est la MÊME chaîne de sorties
-// anticipées qui produit l'asymétrie de comptabilité relevée sur feature-110
-// (l'état de comptabilité reste rémanent pendant la fenêtre aveugle, et toute la
-// durée de la coupure est créditée au débit plateau à la reprise). Deux défauts
-// de la même famille, dans la même fonction. Quiconque touche à update() doit
-// trouver les DEUX traces au même endroit, sinon il rejouera l'un ou l'autre.
+// anticipées qui produisait l'asymétrie de comptabilité relevée sur feature-110
+// (l'état de comptabilité restait rémanent pendant la fenêtre aveugle, et toute
+// la durée de la coupure était créditée au débit plateau à la reprise) — CORRIGÉ
+// en v2.61.0 (bug-115) par le point de sortie UNIQUE : `update()` enveloppe
+// désormais `updateDosingCore()` (ex-`update()`) et garantit par construction
+// que `settlePumpAccounting()` est appelée à chaque sortie, anticipée ou non —
+// ne pas rejouer ce défaut. Le défaut VOISIN ci-dessus (composition de dose
+// figée, bug-116) reste, lui, NON corrigé — même famille, même fonction.
+// Quiconque touche à update()/updateDosingCore() doit trouver les DEUX traces
+// au même endroit, sinon il rejouera l'un ou l'autre.
 DoseComposition PumpControllerClass::composeDose(int chemIndex, float error,
                                                  float deadband, float ffServed,
                                                  float ampFlow,
@@ -2987,40 +2992,49 @@ void PumpControllerClass::accountPumpVolume(int chem, int physIdx,
                                             unsigned long now, bool manualActive) {
   DosingState& st = (chem == 0) ? phDosingState : orpDosingState;
 
-  // feature-110 : deltaMs/volMl hissés au corps de la fonction — la
-  // comptabilisation du DÉMARRAGE (plus bas) doit pouvoir qualifier le delta
-  // RÉELLEMENT crédité ce tour. 0 / 0,0 = aucun crédit (premier tour, pompe
-  // éteinte au tour précédent, delta nul). L'arithmétique de volume est
-  // strictement inchangée : seule la PORTÉE des variables bouge.
-  unsigned long deltaMs = 0;
+  // État pour CE tour : pumpDuty reflète la commande appliquée (après
+  // applyPumpDuty, y compris sur les sorties anticipées qui l'ont forcée à 0).
+  bool onNow = (pumpDuty[physIdx] > 0);
+
+  // bug-115 (v2.61.0) : la décision de crédit et la transition d'état
+  // (_acctPumpOn[]/lastSafetyTimestamp) sont rendues par le module PUR
+  // evaluateAcctWindow() (src/acct_window_logic.h). `win.nextOn` est TOUJOURS
+  // posé à `onNow` : c'est ce qui rend la rémanence relevée par feature-110
+  // structurellement impossible, y compris quand cette fonction est appelée
+  // depuis une sortie anticipée d'updateDosingCore() (via
+  // settlePumpAccounting()) — la fenêtre aveugle ne peut plus s'accumuler,
+  // chaque appel règle son propre delta avant de repartir.
+  const AcctWindow win = evaluateAcctWindow(_acctPumpOn[chem],
+                                            (uint32_t)st.lastSafetyTimestamp,
+                                            onNow, (uint32_t)now);
+
+  // feature-110 : volMl hissé au corps de la fonction — la comptabilisation du
+  // DÉMARRAGE (plus bas) doit pouvoir qualifier le delta RÉELLEMENT crédité ce
+  // tour. 0,0 = aucun crédit (premier tour, pompe éteinte au tour précédent,
+  // delta nul). L'arithmétique de volume est strictement inchangée : seule la
+  // décision de crédit (win.creditDelta/win.deltaMs) vient désormais du module pur.
   float volMl = 0.0f;
 
-  if (_acctPumpOn[chem] && st.lastSafetyTimestamp != 0) {
-    deltaMs = now - st.lastSafetyTimestamp;
-    if (deltaMs > 0) {
-      if (_acctManual[chem]) {
-        uint8_t calDuty = pumpCalibratedDuty(physIdx);
-        float pulseFlow = pumpPulseFlow(physIdx);
-        float f = (calDuty != 0 && _acctManualDuty[chem] == calDuty && pulseFlow > 0.0f)
-                      ? pulseFlow          // duty calibré → débit MESURÉ
-                      : kPumpFlow255MlPerMin;  // sinon MAJORANT (fail-safe)
-        volMl = f * (float)deltaMs / 60000.0f;
-      } else {
-        volMl = pulseDeltaVolumeMl(_pulseState[chem].pulseStartMs, kPulseKickMs,
-                                   (uint32_t)st.lastSafetyTimestamp, (uint32_t)now,
-                                   kPumpFlow255MlPerMin, pumpPulseFlow(physIdx));
-        // Cumuls de session (log d'arrêt + garde temps minimum pompe-ON).
-        if (_pulseSession[chem]) {
-          _sessionVolMl[chem] += volMl;
-          _sessionOnMs[chem] += deltaMs;
-        }
+  if (win.creditDelta) {
+    if (_acctManual[chem]) {
+      uint8_t calDuty = pumpCalibratedDuty(physIdx);
+      float pulseFlow = pumpPulseFlow(physIdx);
+      float f = (calDuty != 0 && _acctManualDuty[chem] == calDuty && pulseFlow > 0.0f)
+                    ? pulseFlow          // duty calibré → débit MESURÉ
+                    : kPumpFlow255MlPerMin;  // sinon MAJORANT (fail-safe)
+      volMl = f * (float)win.deltaMs / 60000.0f;
+    } else {
+      volMl = pulseDeltaVolumeMl(_pulseState[chem].pulseStartMs, kPulseKickMs,
+                                 (uint32_t)st.lastSafetyTimestamp, (uint32_t)now,
+                                 kPumpFlow255MlPerMin, pumpPulseFlow(physIdx));
+      // Cumuls de session (log d'arrêt + garde temps minimum pompe-ON).
+      if (_pulseSession[chem]) {
+        _sessionVolMl[chem] += volMl;
+        _sessionOnMs[chem] += win.deltaMs;
       }
-      creditInjectedVolume(chem == 0, volMl);
     }
+    creditInjectedVolume(chem == 0, volMl);
   }
-
-  // État pour le PROCHAIN tour : pumpDuty reflète la commande appliquée CE tour.
-  bool onNow = (pumpDuty[physIdx] > 0);
 
   // feature-110 — COMPTAGE DES DÉMARRAGES, dénominateur du biais de comptage.
   // ÉVALUÉ AVANT la mise à jour de _acctPumpOn ci-dessous : c'est cet état
@@ -3029,11 +3043,12 @@ void PumpControllerClass::accountPumpVolume(int chem, int physIdx,
   // loopTask (même discipline que le volume juste au-dessus).
   // La garde productTrackingEnabled() est la MÊME que celle qui laisse avancer
   // productCfg.*TotalInjectedMl : N et V couvrent donc exactement le même
-  // ensemble d'événements, y compris l'angle mort hérité du `return` amont
-  // (eau absente, stabilisation, assistant de mesure).
+  // ensemble d'événements. bug-115 : cet ensemble s'étend désormais aux
+  // sorties anticipées (eau absente, stabilisation, assistant de mesure, OTA,
+  // maintenance) — l'angle mort hérité du `return` amont est fermé.
   const PumpStartAccounting acct =
       evaluatePumpStartAccounting(_acctPumpOn[chem], onNow,
-                                  (uint32_t)deltaMs, kAcctDeltaAnomalyMs);
+                                  win.deltaMs, kAcctDeltaAnomalyMs);
   if ((acct.countStart || acct.countAnomaly) && productTrackingEnabled(chem == 0)) {
     uint32_t& starts  = (chem == 0) ? productCfg.phStartCount        : productCfg.orpStartCount;
     uint32_t& anomCnt = (chem == 0) ? productCfg.phAcctAnomalyCount  : productCfg.orpAcctAnomalyCount;
@@ -3048,8 +3063,8 @@ void PumpControllerClass::accountPumpVolume(int chem, int physIdx,
     productConfigDirty = true;
   }
 
-  st.lastSafetyTimestamp = onNow ? now : 0;
-  _acctPumpOn[chem] = onNow;
+  st.lastSafetyTimestamp = win.nextTimestampMs;
+  _acctPumpOn[chem] = win.nextOn;
   _acctManual[chem] = manualActive;
   _acctManualDuty[chem] = manualActive ? pumpDuty[physIdx] : 0;
 }
@@ -3076,9 +3091,50 @@ void PumpControllerClass::creditManualInjectionFloor(int idx, float startCumulMl
   }
 }
 
+// ===== bug-115 (v2.61.0) : POINT DE PASSAGE UNIQUE de la comptabilité pompe ==
+// SEUL appelant d'accountPumpVolume(). Auto-suffisant : recalcule phIdx/orpIdx
+// et *ManualActive depuis mqttCfg / manualMode[] / pumpDuty[], exactement
+// comme le faisait la queue d'update() avant ce correctif — c'est ce qui rend
+// cette fonction appelable INDIFFÉREMMENT depuis la queue nominale
+// d'updateDosingCore() et depuis chacune de ses sorties anticipées (OTA,
+// maintenance, capteurs non initialisés, eau absente / stabilisation /
+// assistant de débit), toutes forçant déjà applyPumpDuty(*, 0) avant d'y
+// arriver (condition bloquante C1 du gate pool-chemistry : appeler le
+// comptable, ne jamais purger l'état à l'aveugle). Idempotent via
+// `_acctSettledThisTick` — voir update() ci-dessous. loopTask uniquement, sans
+// allocation, sans String, sans log (chemin de dosage, ADR-0082).
+void PumpControllerClass::settlePumpAccounting(unsigned long now) {
+  int phIdx  = pumpIndexFromNumber(mqttCfg.phPump);
+  int orpIdx = pumpIndexFromNumber(mqttCfg.orpPump);
+  bool phManualActive  = manualMode[phIdx]  && pumpDuty[phIdx]  > 0;
+  bool orpManualActive = manualMode[orpIdx] && pumpDuty[orpIdx] > 0;
+  accountPumpVolume(0, phIdx, now, phManualActive);
+  accountPumpVolume(1, orpIdx, now, orpManualActive);
+  _acctSettledThisTick = true;
+}
+
+// ===== bug-115 (v2.61.0) : ENVELOPPE de updateDosingCore() =================
+// `updateDosingCore()` (ex-`update()`) a QUATRE sorties anticipées — avec ce
+// correctif, chacune règle désormais elle-même la comptabilité pompe via
+// settlePumpAccounting(). Ce wrapper est le FILET DE SÉCURITÉ structurel :
+// toute sortie anticipée PRÉSENTE OU FUTURE est comptabilisée par
+// construction, qu'elle ait ou non pensé à appeler settlePumpAccounting() —
+// même motif qu'ADR-0070 pour `fopen` : il n'y a plus rien à ne pas oublier.
 void PumpControllerClass::update() {
   unsigned long now = millis();
+  _acctSettledThisTick = false;
+  updateDosingCore(now);
+  if (!_acctSettledThisTick) settlePumpAccounting(now);
+}
 
+// bug-115 (v2.61.0) : ex-update(). Renommée updateDosingCore(), corps NON
+// réindenté — `now` est désormais un PARAMÈTRE posé par le nouveau update()
+// ci-dessus, qui appelle aussi settlePumpAccounting() si cette fonction en est
+// sortie sans l'avoir déjà réglée elle-même (voir les QUATRE sorties
+// anticipées plus bas, chacune réglant désormais son propre delta juste après
+// avoir forcé applyPumpDuty(*, 0) — condition bloquante C1 du gate
+// pool-chemistry du 2026-10-08).
+void PumpControllerClass::updateDosingCore(unsigned long now) {
   // feature-011 : par défaut le débit planifié scheduled est indéfini (NAN →
   // null côté WS). Seule la branche scheduled le renseigne, quand elle
   // s'exécute avec une heure valide et un horizon > 0. Toute sortie anticipée
@@ -3256,6 +3312,7 @@ void PumpControllerClass::update() {
     closePhDosingSession(now, "OTA en cours");
     applyPumpDuty(0, 0);
     applyPumpDuty(1, 0);
+    settlePumpAccounting(now);  // bug-115 (v2.61.0) : C1 — régler avant de sortir
     return;
   }
 
@@ -3271,6 +3328,7 @@ void PumpControllerClass::update() {
     closePhDosingSession(now, "mode maintenance");
     applyPumpDuty(0, 0);
     applyPumpDuty(1, 0);
+    settlePumpAccounting(now);  // bug-115 (v2.61.0) : C1 — régler avant de sortir
     return;
   }
 
@@ -3367,6 +3425,7 @@ void PumpControllerClass::update() {
     // Respect du mode manuel (test développement) — cohérent avec le bloc canDose() ci-dessous
     if (!manualMode[0]) applyPumpDuty(0, 0);
     if (!manualMode[1]) applyPumpDuty(1, 0);
+    settlePumpAccounting(now);  // bug-115 (v2.61.0) : C1 — régler avant de sortir
     return;
   }
 
@@ -3406,6 +3465,11 @@ void PumpControllerClass::update() {
     // Ne pas arrêter les pompes en mode manuel (test développement)
     if (!manualMode[0]) applyPumpDuty(0, 0);
     if (!manualMode[1]) applyPumpDuty(1, 0);
+    // bug-115 (v2.61.0) : C1 — régler avant de sortir. Pompe laissée en
+    // manuel (manualMode[i] vrai) : onNow reste vrai côté comptabilité, aucun
+    // front n'est donc compté (C5) et le volume réellement écoulé pendant
+    // l'assistant de débit est intégralement crédité (C1, cas flowAssistSuspend).
+    settlePumpAccounting(now);
     return;
   }
 
@@ -4908,17 +4972,13 @@ void PumpControllerClass::update() {
     _carryPulseLogged[1] = false;
   }
 
-  // Comptabilité produit (itération 2, P4) : volume par delta de tick, calculé
-  // par pulseDeltaVolumeMl (kick au débit 255 MESURÉ + plateau au débit CALIBRÉ,
-  // exact et indépendant du jitter de loop) pour l'auto/scheduled ; MAJORANT
-  // flow255 pour le manuel (?duty=N), sauf duty == calibratedDuty → débit
-  // mesuré. Jamais zéro sur une pompe alimentée.
-  int phIdx  = pumpIndexFromNumber(mqttCfg.phPump);
-  int orpIdx = pumpIndexFromNumber(mqttCfg.orpPump);
-  bool phManualActive  = manualMode[phIdx]  && pumpDuty[phIdx]  > 0;
-  bool orpManualActive = manualMode[orpIdx] && pumpDuty[orpIdx] > 0;
-  accountPumpVolume(0, phIdx, now, phManualActive);
-  accountPumpVolume(1, orpIdx, now, orpManualActive);
+  // bug-115 (v2.61.0) : la comptabilité produit (itération 2, P4) passe
+  // désormais par le point de passage unique settlePumpAccounting() — mêmes
+  // calculs qu'avant ce correctif (pulseDeltaVolumeMl kick 255 MESURÉ + plateau
+  // CALIBRÉ pour l'auto/scheduled ; MAJORANT flow255 pour le manuel sauf duty
+  // == calibratedDuty → débit mesuré ; jamais zéro sur une pompe alimentée),
+  // désormais aussi atteignable depuis les quatre sorties anticipées ci-dessus.
+  settlePumpAccounting(now);
 
   // Sauvegarde NVS des compteurs journaliers
 

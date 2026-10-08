@@ -2,6 +2,45 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [2.61.0] - 2026-10-08
+
+> **Ce qui change pour vous** : les volumes de produit rapportés par l'appareil
+> changent de signification — ils sont désormais plus **fidèles** à ce qui a
+> réellement quitté le bidon, donc **la jauge de bidon descendra plus vite** à
+> consommation réelle inchangée. En contrepartie, un défaut est corrigé : après
+> une coupure (filtration, OTA, maintenance), un volume **fantôme** de 400 à
+> 950 mL était jusqu'ici crédité d'un coup au retour, et le redémarrage de la
+> pompe qui suit n'était pas compté. Aucun relevé de concordance jerricane
+> postérieur à cette version ne peut se comparer à un relevé antérieur.
+
+### Firmware
+- **Dosage (bug-115)** : correction de la rémanence de comptabilité aux
+  sorties anticipées de la régulation pH/ORP — une coupure (eau absente,
+  stabilisation, assistant de débit, OTA, mode maintenance) laissait l'état de
+  comptabilité figé jusqu'à la reprise, qui créditait alors **toute la durée
+  de la coupure** au débit plateau sans compter le redémarrage physique.
+  `update()` devient un point de passage unique autour de
+  `updateDosingCore()` : chaque sortie, présente ou future, règle désormais
+  elle-même sa comptabilité via `settlePumpAccounting()`. Conséquence assumée :
+  les marches de l'assistant de débit en mode manuel, jusqu'ici invisibles,
+  sont désormais comptées dans le volume de bidon rapporté.
+
+### Documentation
+- `docs/subsystems/pump-controller.md` : nouvelle section sur la correction de
+  la rémanence (point de passage unique, module pur `acct_window_logic.h`,
+  gardes CI, discontinuité métrologique) ; mise à jour des sections
+  « Comptabilité du volume » et « Comptage des démarrages de pompe ».
+- `docs/MQTT.md` : changement de signification de `ph_total_ml` / `orp_total_ml`
+  (topic `{base}/diagnostic`).
+- `docs/features/page-dosages.md` : avertissement sur le changement de
+  signification de « Volume injecté » et nécessité de noter la version de
+  firmware à chaque relevé de concordance.
+- [ADR-0091](docs/adr/0091-comptabilite-hors-du-corps-decisionnel-dupdate.md) :
+  nouvel ADR — la comptabilité des volumes est hors du corps décisionnel
+  d'`update()` ; acte la discontinuité métrologique introduite par ce correctif.
+
+---
+
 ## [2.60.0] - 2026-10-08
 
 > **Ce qui change pour vous** : rien de visible dans l'interface. Une seule

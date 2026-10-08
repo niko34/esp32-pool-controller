@@ -4,7 +4,7 @@
 | | |
 |---|---|
 | Type | bug (comptabilité des volumes → fiabilité d'une mesure de terrain) |
-| Statut | todo |
+| Statut | **implémenté (v2.61.0) — tests verts, revue OK. Déploiement différé** : la fenêtre de surveillance de `feature-136` (déployée le 2026-10-08 à 20:06, 3-5 jours + deux événements provoqués) doit se clore **avant** le déploiement de ce correctif, car les deux lots déplacent la quantité délivrée en sens opposés (condition bloquante `pool-chemistry`). Ne pas déployer avant le **2026-10-11** au plus tôt. |
 | Priorité | Haute **sur le fond**, mais **NE PAS IMPLÉMENTER avant la fin de la campagne de bidon** (voir ci-dessous) |
 | Version cible | à définir — **après** la campagne |
 | Relevé par | `code-reviewer`, 2026-09-07, pendant le cycle `feature-110` |
@@ -36,7 +36,9 @@ détruirait cette campagne propre à un ou deux jours de son terme.
 
 **Condition de levée** : relevé effectué (`orp_container_ml`,
 `orp_total_injected_ml`, `orp_starts`, restant **mesuré au doseur**) **avant** le
-clic « Nouveau bidon », qui efface la mesure.
+clic sur l'action de remise à niveau, qui efface la mesure.
+⚠️ **Elle s'appelle « Mettre à jour le niveau » depuis la v2.59.0** (feature-143) — « Nouveau
+bidon » n'existe plus. Même action : elle pose le volume ET remet les compteurs à zéro.
 
 ## ⚠️ VERROU DE CALENDRIER — lire avant tout
 **Ne pas implémenter tant que la campagne de concordance jerricane n'est pas close.**
@@ -88,11 +90,26 @@ delta doit repartir de la reprise, pas de l'arrêt, **et** le redémarrage physi
   la base de toute conclusion ultérieure sur le biais.
 
 ## Critères d'acceptation
-- [ ] La campagne de concordance en cours est **close** avant toute implémentation
-- [ ] À la reprise après chaque sortie anticipée, aucun volume fantôme n'est crédité
-- [ ] Le redémarrage physique est compté comme un démarrage
-- [ ] Test natif de chaque branche de sortie, **validé par mutation**
-- [ ] Les compteurs d'hygiène retombent à zéro sur les cas ainsi corrigés
+- [x] La campagne de concordance en cours est **close** avant toute implémentation
+      — relevé au jerricane fait le 2026-10-08 (2,85 L / 18 221,21 mL comptés / 356
+      démarrages, `orp_anom = 0`), compteurs remis à zéro ensuite
+- [x] À la reprise après chaque sortie anticipée, aucun volume fantôme n'est crédité
+      — point de passage unique `settlePumpAccounting()`, `nextOn = onNow` toujours
+      (`acct_window_logic.h`)
+- [x] Le redémarrage physique est compté comme un démarrage
+      — couvert par `test_D1_seq_on3_coupure6h_reprise_zero_fantome_deux_demarrages`
+- [x] Test natif de chaque branche de sortie, **validé par mutation** — réalisé
+      sous la forme **structurellement équivalente** actée par le plan
+      d'architecture : `pump_controller.cpp` n'étant pas compilable nativement,
+      la garantie « chaque sortie règle sa comptabilité » est structurelle (le
+      wrapper d'`update()`), couverte par la garde CI
+      `tools/check_acct_settle_single_point.sh` (deux contrôles, chacun éprouvé en
+      mutant le code en revue). Le contrat pur `evaluateAcctWindow()` et ses
+      séquences, eux, sont testés nativement et par mutation dans
+      `test/test_native_acct_window/`.
+- [ ] Les compteurs d'hygiène retombent à zéro sur les cas ainsi corrigés —
+      **vérifiable seulement après déploiement** ; différé par la fenêtre de
+      surveillance de `feature-136` (pas avant le 2026-10-11)
 
 ## Notes pour agent
 Un commentaire au-dessus de `composeDose()` (`src/pump_controller.cpp`, livré en
@@ -260,14 +277,16 @@ fantôme) : **δ change de valeur sans que le matériel ait bougé**. Il est **i
 comparer un relevé post-correctif à la campagne en cours. **La campagne jerricane qui
 s'achève est la DERNIÈRE du modèle actuel.**
 
-### ADR attendu — ⚠️ PAS 0088 ni 0089, tous deux pris
+### ADR attendu — ⚠️ PAS 0088, 0089 ni 0090, TOUS TROIS pris
 
 **0088 est occupé** par `docs/adr/0088-diffusion-websocket-ciblee-sur-registre-borne-sans-verrou.md`
 (bug-081, livré le 2026-10-08 pendant que ce lot attendait son verrou de calendrier).
 **0089 est occupé à son tour** par `docs/adr/0089-ce-qu-un-redemarrage-a-le-droit-doublier.md`
 (feature-136, implémentée le 2026-10-08 — même jour, verrou de calendrier levé en premier
 pour ce lot-là). Prendre **le prochain numéro réellement libre au moment de
-l'implémentation** — **0090** à ce jour (2026-10-08), à revérifier par `ls docs/adr/`
+l'implémentation** — **0091** à ce jour (2026-10-08 au soir), à revérifier par `ls docs/adr/`
+plutôt qu'à recopier : trois ADR ont été posés dans la seule journée du 2026-10-08, et ce
+numéro a déjà glissé deux fois pendant que cette spec attendait.
 plutôt qu'à recopier d'ici : d'autres lots peuvent avoir pris un numéro entre-temps.
 « La comptabilité des volumes est hors du corps décisionnel d'`update()` ». Décision
 structurante *et* verrou : elle acte la discontinuité métrologique ci-dessus.
@@ -309,3 +328,234 @@ bug-116 sera repris **après** les sept jours de surveillance.
 Conséquence à traiter dans bug-116 : son critère d'acceptation « aucune ligne du chemin de
 dosage modifiée » devient caduc, puisque bug-115 en modifie la structure. **À réécrire dans
 sa spec, pas à contourner.**
+
+
+---
+
+## ⚠️ Mise à jour du 2026-10-08 au soir — AVANT de relancer le cycle
+
+### Le verrou de calendrier est LEVÉ
+Le relevé au jerricane a été fait : **2,85 L mesurés** contre 18 221,21 mL comptés sur
+**356 démarrages** (bidon de 20 000 mL **nominal**, l'utilisateur a confirmé qu'il s'agissait de
+l'étiquette et non d'une mesure). Biais : **+1 071 mL, soit +6,25 %**. Campagne **non polluée**
+(`orp_anom = 0`). Les compteurs ont ensuite été remis à zéro sur un bidon de 5 L **mesuré**.
+
+➜ **Plus rien ne bloque l'implémentation.**
+
+### MAIS le terrain a bougé : feature-136 a été livrée ET DÉPLOYÉE entre-temps
+`feature-136` (v2.58.0, budget horaire persistant) touche `pump_controller.{h,cpp}` et
+`main.cpp`. Son cycle a **vérifié par `git diff`** que le périmètre de bug-115 restait intact —
+`_acctPumpOn[]`, `lastSafetyTimestamp`, `accountPumpVolume()`, `evaluatePumpStartAccounting` et
+la structure d'`update()` : **zéro ligne touchée**. Le plan d'architecture ci-dessus devrait donc
+rester applicable **sans rebase**.
+⚠️ **À REVÉRIFIER quand même** : le plan a été écrit contre l'état du code du matin.
+feature-136 a ajouté trois crochets dans `update()`, adjacents au bloc `_dailyCountersDirty` —
+exactement la zone où bug-115 veut poser son `settlePumpAccounting()`.
+
+### ⚠️ ET LE DÉPLOIEMENT RESTE BLOQUÉ, lui
+Le gate `pool-chemistry` a posé comme **condition bloquante** que les fenêtres de surveillance de
+feature-136 et bug-115 soient **strictement sérielles** : les deux lots déplacent la quantité
+délivrée **en sens opposés** (feature-136 fait mordre les freins plus tôt, bug-115 rend 408 à
+950 mL/jour), et *« une observation nette nulle ne permettrait pas de distinguer les deux
+fonctionnent de les deux sont cassés »*.
+
+**feature-136 a été déployée le 2026-10-08 à 20:06.** Sa fenêtre de surveillance est de
+**3 jours pleins** (5 si un jour sort le pH de 7,20-7,50), **plus deux événements provoqués** :
+un reboot OTA vérifiant un `usedMs` restauré **non nul**, et une coupure > 1 h.
+
+➜ **IMPLÉMENTER maintenant : oui. DÉPLOYER : pas avant le 2026-10-11 au plus tôt**, et seulement
+après clôture de la surveillance de feature-136.
+
+
+## 📍 Lignes RÉELLES au 2026-10-08 au soir (le plan citait des estimations du matin)
+
+Le fichier a dérivé de **+90 à +100 lignes** (feature-136 et les autres lots du jour).
+**Utiliser ces lignes-ci, pas celles du plan.**
+
+| Élément | Plan (matin) | **RÉEL (soir)** |
+|---|---|---|
+| `accountPumpVolume()` | ~2935-3004 | **2986-3055** |
+| `PumpControllerClass::update()` | ~3028 | **3079** |
+| Sortie **OTA** | ~3150 | `if` **3251**, `return` **3259** |
+| Sortie **maintenance** | ~3161 | `if` **3265**, `return` **3274** |
+| Sortie **`!sensors.isInitialized()`** | ~3256 | `if` **3357**, `return` **3370** |
+| Sortie **eau / stabilisation / flowAssist** | ~3285 | `if` **3386**, `return` **3409** |
+| Queue : appels normaux d'`accountPumpVolume()` | ~4815-4820 | **4920-4921** |
+| Trace jumelle bug-115 / bug-116 (`composeDose`) | ~2148-2166 | **2199-2217** |
+| `flowAssistStopRun()` | ~276 | **292** |
+| `flowAssistCreditAbortedRun()` | ~308 | **321** |
+| `flowAssistAllowsManualInjectOrReject()` | ~340 | **349** |
+
+### ⚠️ CORRECTION — il y a QUATRE sorties anticipées, pas cinq
+
+Le gate P1 du matin parle de **« couvrir les CINQ sorties »**. **C'est une imprécision interne
+à cette spec.** Vérifié sur le code : `update()` compte **QUATRE `return` anticipés distincts**
+— le triplet *eau absente / stabilisation / `flowAssistSuspend`* partage **un seul** `return`
+(ligne 3409), il ne compte donc pas pour trois.
+
+➜ Chercher une cinquième sortie serait une perte de temps, et en inventer une serait pire.
+Le wrapper les couvre **toutes par construction**, quel qu'en soit le nombre : c'est précisément
+l'argument qui a fait retenir le point de passage unique plutôt que la purge branche par branche.
+
+### Confirmation : feature-136 ne gêne pas
+`git show ad027f5 -- src/pump_controller.{cpp,h}` : **zéro occurrence** de `_acctPumpOn`,
+`lastSafetyTimestamp`, `accountPumpVolume`, `evaluatePumpStartAccounting`. Les trois crochets
+ajoutés par feature-136 (lignes **3179-3227**) vivent **avant** le `return` OTA et **ne créent
+aucune sortie anticipée** : ils resteront entièrement à l'intérieur de ce qui devient
+`updateDosingCore()`. **Le plan du wrapper est applicable sans rebase.**
+
+
+## ⚠️ Recommandation du gate P2 ÉCARTÉE — vérification faite, le gate s'est trompé
+
+Le gate `pool-chemistry` P2 relève, en **non bloquant**, que `settlePumpAccounting` serait
+« passé de ~4920 à **:4981**, donc **après** `closePhDosingSession` (:4943) et
+`_pulseSession = false` (:4953) », d'où un « log d'arrêt sous-déclaré d'un tick (< 0,1 mL) », et
+il recommande de déplacer l'appel « juste après :4919 pour restaurer l'ordre d'origine ».
+
+**Vérifié sur `git show HEAD:src/pump_controller.cpp` — l'ordre relatif est STRICTEMENT
+IDENTIQUE avant et après :**
+
+| | AVANT (HEAD) | APRÈS (v2.61.0) |
+|---|---|---|
+| `closePhDosingSession(now, "branche automatique suspendue…")` | 4879 | 4943 |
+| `_pulseSession[0] = false` | 4889 | 4953 |
+| `_pulseSession[1] = false` | 4906 | 4970 |
+| **comptabilité** | `accountPumpVolume` **4920** | `settlePumpAccounting` **4981** |
+
+La comptabilité était **déjà** après la fermeture de session et après les deux fins de pouls.
+Le décalage de **+61 lignes** vient du code ajouté par feature-136 et par ce lot, **pas** d'un
+déplacement relatif.
+
+➜ **Le « sous-déclaré d'un tick » est un comportement PRÉEXISTANT**, pas une régression de
+bug-115. Et l'exigence du plan — *« les deux `accountPumpVolume()` deviennent
+`settlePumpAccounting(now)` À LA MÊME POSITION ⇒ ordonnancement du chemin nominal strictement
+identique »* — **est tenue**.
+
+**Aucun déplacement effectué.** Le gate a comparé des numéros de ligne **absolus** entre deux
+versions d'un fichier qui a grossi de 60 lignes entre-temps. ⚠️ Si quelqu'un relit ce rapport
+plus tard et « corrige » l'ordre sur sa foi, il **introduira** la régression que le gate croyait
+voir.
+
+---
+
+## Notes d'implémentation (doc-writer, 2026-10-08)
+
+**Livré en v2.61.0** : `src/pump_controller.{h,cpp}` (point de passage unique,
+`update()`/`updateDosingCore()`/`settlePumpAccounting()`), `src/acct_window_logic.h`
+(module pur), `test/test_native_acct_window/` (suite native),
+`tools/check_acct_settle_single_point.sh` (garde CI, 2 contrôles) + job
+`hygiene-specs.yml`, `src/web_routes_control.cpp` (commentaires corrigés, aucune
+ligne de logique touchée). Doc : voir CHANGELOG `[2.61.0]`.
+
+**Documentation mise à jour** : `docs/subsystems/pump-controller.md` (nouvelle
+section « Correction de la rémanence »), `docs/MQTT.md` (changement de
+signification `ph_total_ml`/`orp_total_ml`), `docs/features/page-dosages.md`
+(avertissement jauge + estampillage version), `CHANGELOG.md [2.61.0]`,
+[ADR-0091](../../docs/adr/0091-comptabilite-hors-du-corps-decisionnel-dupdate.md)
+(nouveau — la comptabilité est hors du corps décisionnel d'`update()`), et
+`specs/features/todo/bug-116-instantane-de-composition-perime-en-fenetre-operateur.md`
+(critère d'acceptation « aucune ligne modifiée » marqué caduc, à reformuler à la
+reprise).
+
+**Découverte de méthode, à charge d'un lot d'hygiène séparé (non corrigée ici)** :
+le test de repliement `millis()` « évident » (delta `5001` ms) **ne tue pas** le
+mutant « soustraction signée » — signé et non signé coïncident sous 2³¹. Il faut un
+delta **exactement à 2³¹** pour les séparer (`test_native_acct_window` applique
+cette correction). Le relecteur a trouvé **un autre test du dépôt avec le même
+vice** : `test/test_native_dose_block_duration/test_dose_block_duration.cpp:176`
+annonce « franchir 2³² » avec un delta de 12 296 ms, qui ne distingue pas non plus
+signé/non signé sous 2³¹. **Signalé ici comme dette à ouvrir en spec d'hygiène
+séparée — non corrigé dans ce cycle.**
+
+**Une recommandation du gate `pool-chemistry` P2 a été vérifiée et écartée** (voir
+section ci-dessus « Recommandation du gate P2 ÉCARTÉE ») : le gate croyait
+l'ordonnancement nominal modifié entre `closePhDosingSession`/fin de pouls et la
+comptabilité ; `git show HEAD:src/pump_controller.cpp` montre un ordre relatif
+strictement identique avant/après, le décalage de numéros de ligne venant des
++61 lignes ajoutées par ce lot et par `feature-136`. **Aucun déplacement n'a été
+fait en conséquence** — à ne pas « corriger » sur la seule foi du rapport du gate.
+
+---
+
+## Clôture — agent principal, 2026-10-08
+
+### Le point bloquant de la revue : la garde CI protégeait la mauvaise chose
+
+`tools/check_acct_settle_single_point.sh` ne vérifiait que les **appelants** d'`accountPumpVolume()`.
+Le relecteur a nommé le scénario de régression le plus probable, et il est juste :
+
+> quelqu'un réintègre `updateDosingCore()` dans `update()`, retire `_acctSettledThisTick`
+> — **et la garde reste verte**.
+
+Les quatre appels locaux dans les sorties anticipées font justement **paraître le wrapper
+redondant**. Il ne l'est pas : c'est **lui** qui couvre une **cinquième sortie** que quelqu'un
+ajouterait sans y penser.
+
+**Garde étendue** : elle exige désormais les trois lignes du wrapper dans le corps d'`update()`
+(`_acctSettledThisTick = false;` · `updateDosingCore(` · `if (!_acctSettledThisTick)
+settlePumpAccounting(`). **Éprouvée trois fois** :
+
+| Épreuve | Attendu | Obtenu |
+|---|---|---|
+| drapeau retiré du wrapper | refus | **exit 1** |
+| filet de sécurité retiré | refus | **exit 1** |
+| commentaire indenté mentionnant `accountPumpVolume(` | **accepté** | **exit 0** |
+
+La troisième corrige un faux positif relevé en revue — et c'était **exactement le commentaire que
+l'existence de cette garde invite à écrire**.
+
+### Formulation corrigée
+« PLANCHER **NO-OP** » **surévaluait** : `creditManualInjectionFloor` est un `max()` au **majorant
+flow255**. Quand le tick a crédité au débit **calibré** (plus faible), le plancher remonte encore
+`daily`. Surcompte, donc fail-safe — mais **pas neutre**. Réécrit en « rarement mordant ».
+
+### Recommandation du gate P2 écartée — et confirmée écartée par la revue
+Le gate croyait l'ordonnancement nominal modifié. `git show HEAD:` montre un ordre relatif
+**strictement identique** (fermeture de session → fins de pouls → comptabilité) ; le décalage de
+**+61 lignes** vient du code ajouté entre-temps. Le `code-reviewer` l'a **recoupé
+indépendamment**. ⚠️ **Ne pas « corriger » sur la foi du rapport du gate** : ce serait
+*introduire* la régression qu'il croyait voir.
+
+### Dette d'hygiène signalée, non traitée — à ouvrir en lot séparé
+**Le test de repliement `millis()` « évident » ne prouve rien.** Avec un delta de 5 001 ms,
+arithmétique signée et non signée **coïncident** : il faut dépasser **2³¹** pour que l'erreur
+apparaisse. Découvert en écrivant le mutant M3, qui **survivait** au test initial.
+
+⚠️ **Un autre test du dépôt souffre du même vice** :
+`test/test_native_dose_block_duration/test_dose_block_duration.cpp:176` annonce « franchir 2³² »
+avec un delta de **12 296 ms**. Cette assertion ne tue aucun mutant d'arithmétique signée.
+**Chercher s'il y en a d'autres.**
+
+### Doc périmée corrigée au passage
+`docs/BUILD.md` annonçait **« Six jobs »** d'intégration continue — il y en a **huit**. Avec une
+ironie à retenir : la phrase elle-même dit *« le nombre ne se recopie pas d'une revue à l'autre
+(ADR-0073), il se mesure »*, et donnait un chiffre périmé. Corrigé, les deux jobs manquants
+décrits.
+
+### Résultats mesurés
+- `pio run -e esp32dev_core3` : SUCCESS, aucun warning neuf (Flash 50,2 %)
+- `pio test -e native` : **2 115 cas / 2 115**, **61 suites** (+1 : `test_native_acct_window`)
+- Mutation : **5 mutants**, tous tués — M1, M2, M4, M5 conformes ; **M3 n'a été tué qu'après
+  ajout d'un test à 2³¹**
+- `code-reviewer` : **Approved après corrections** · gate `pool-chemistry` **P1 et P2 : GO**
+- Les huit scripts d'hygiène verts
+
+### ⚠️ Ce qui reste — et qui n'est PAS du code
+**Déploiement interdit avant le 2026-10-11 après 20:06**, recommandé le **12/10 au matin** :
+les fenêtres de surveillance de feature-136 et bug-115 doivent être **strictement sérielles**.
+Les deux lots déplacent la quantité délivrée **en sens opposés** et **se masqueraient
+mutuellement**.
+
+**Protocole à exécuter AVANT l'OTA** (condition du gate P2) : relever
+`orp_total_injected_ml`, `orp_starts`, `orp_anom`/`orp_anom_ml`, **et mesurer le restant au
+doseur**. **APRÈS l'OTA** : **« Mettre à jour le niveau »** avec le volume mesuré.
+⚠️ Le bouton « Nouveau bidon » **n'existe plus** : feature-143 (v2.59.0) l'a remplacé par
+« Mettre à jour le niveau », qui fait exactement la même chose — il pose le volume **et** remet
+`*_total_injected_ml`, `*_starts` et les deux compteurs d'anomalie à zéro dans la même requête. Sans cela, la campagne du
+bidon de 5 L **straddle** le changement de signification et devient **non concluante**.
+
+**Surveillance 7 jours**, relevés quotidiens à 23:50. Retour arrière vers v2.60.0 si : limite
+journalière atteinte sur une chimie · consommation ORP > 2 070 mL/j deux jours consécutifs sans
+cause externe · pH corrigé hors 7,20-7,50 plus de 24 h · démarrages/jour > 3 × la médiane.
+Un `anom > 0` appelle une **analyse**, pas un retour arrière automatique — c'est désormais le
+canari d'un chemin inconnu.

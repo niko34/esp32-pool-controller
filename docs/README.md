@@ -134,7 +134,8 @@ docs/
 │   ├── 0087-ce-qu-un-mode-temporaire-a-le-droit-de-faire.md
 │   ├── 0088-diffusion-websocket-ciblee-sur-registre-borne-sans-verrou.md
 │   ├── 0089-ce-qu-un-redemarrage-a-le-droit-doublier.md
-│   └── 0090-detecteur-de-chute-maximum-glissant-auto-rearme.md
+│   ├── 0090-detecteur-de-chute-maximum-glissant-auto-rearme.md
+│   └── 0091-comptabilite-hors-du-corps-decisionnel-dupdate.md
 │
 ├── API.md               ← Référence REST + WebSocket
 ├── MQTT.md              ← Topics MQTT + auto-discovery Home Assistant

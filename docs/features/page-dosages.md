@@ -68,6 +68,18 @@ Remarques :
 - Les volumes sont **stockés côté firmware en mL** ; l'UI les saisit et les affiche en L.
 - Le cumul `ph_total_injected_ml` / `orp_total_injected_ml` est incrémenté par [`pump_controller.cpp`](../../src/pump_controller.cpp) à chaque injection effectivement réalisée. **v2.21.0** ([ADR-0043](../adr/0043-dosage-proportionnel-de-temps-amplitude-calibree.md)) : le volume est calculé sur les **débits mesurés** (pesée) — pouls auto/scheduled : kick 400 ms au débit-255 pesé + plateau au débit d'amplitude pesé (`pulseDeltaVolumeMl`) ; marche manuelle `?duty=N` : **majorant** débit-255, sauf duty == duty calibré. Une pompe **non caractérisée** (aucune pesée saisie) ne dose pas en auto/programmé, donc n'incrémente rien — le badge « Débit non caractérisé — pesée requise » l'explique côté Réglages. Fini le « débit nominal `kPumpMaxFlowMlPerMin = 90` » (constante supprimée, elle créditait de l'acide qui ne sortait pas du bidon).
 
+> ⚠️ **bug-115 (v2.61.0) — changement de signification de « Volume injecté ».**
+> `ph_total_injected_ml` / `orp_total_injected_ml` comptent désormais aussi le
+> volume des marches de l'**assistant de débit** réalisées en mode manuel —
+> jusqu'ici invisible ici, bien que le produit ait réellement quitté le bidon
+> (correctif de la rémanence de comptabilité aux sorties anticipées d'`update()`).
+> Plus fidèle, mais **la jauge descend plus vite à consommation réelle
+> inchangée**, et **aucun relevé de concordance postérieur à v2.61.0 n'est
+> comparable à un relevé antérieur** — toujours noter la version de firmware
+> avec le relevé (voir le tableau ci-dessous). Détail :
+> [docs/MQTT.md](../MQTT.md#️-changement-de-signification-de-ph_total_ml--orp_total_ml-bug-115-v2610)
+> et [docs/subsystems/pump-controller.md](../subsystems/pump-controller.md#correction-de-la-rémanence-bug-115-v2610--point-de-passage-unique).
+
 ## Relevé du biais de comptage — mode d'emploi (feature-110, v2.45.0)
 
 L'appareil **sur-compte** le volume injecté. La concordance jerricane du **06/09/2026** l'a chiffré pour la première fois : **+4,76 %**, soit **~240 mL sur ~5,04 L** réellement injectés. Le sens est **conservateur** (quotas resserrés, alerte de bidon vide en avance), mais **la nature du biais reste inconnue** — et les deux correctifs possibles sont **incompatibles** :
@@ -94,6 +106,7 @@ Avec le **volume seul**, une inconnue pour une équation : les deux modèles son
 | `anom_count` — ticks anormaux | `*_anom` — **`GET /get-config`** ou MQTT `{base}/diagnostic` |
 | `anom_ml` — volume crédité par ces ticks | `*_anom_ml` — même sources |
 | `V_bidon` — volume **physiquement** mesuré (doseur, pesée) | mesure manuelle |
+| version de firmware (depuis bug-115, v2.61.0) | [`src/version.h`](../../src/version.h) / bandeau UI | **indispensable** : `δ` change de valeur à chaque version qui touche la comptabilité, sans que le matériel ait bougé |
 
 Les quatre premiers sont aussi dans le topic MQTT **retenu** `{base}/diagnostic` ([MQTT.md](../MQTT.md#relevé-du-biais-de-comptage-feature-110-v2450)) : ils se relisent **plusieurs jours plus tard**, à froid, et survivent à un redémarrage de l'appareil.
 

@@ -46,10 +46,36 @@ branches, ou étendre la porte de mesure à ces trois états.
 - [ ] Pendant un OTA, en maintenance et pendant l'assistant de débit, les champs de
       composition sont `null` (donc « — » à l'écran), pas des valeurs figées
 - [ ] Aucune régression sur le cas courant fermé par `feature-092`
-- [ ] Aucune ligne du chemin de dosage modifiée
+- [ ] ~~Aucune ligne du chemin de dosage modifiée~~ — **critère CADUC, voir note
+      2026-10-08 ci-dessous**
+
+## ⚠️ Mise à jour du 2026-10-08 — critère « aucune ligne modifiée » devenu caduc
+
+`bug-115` (v2.61.0, même chaîne de sorties anticipées) a changé la **structure**
+d'`update()` : l'ancien corps est renommé `updateDosingCore(now)` et un nouveau
+`update()` l'enveloppe (point de passage unique de la comptabilité pompe, voir
+[ADR-0091](../../docs/adr/0091-comptabilite-hors-du-corps-decisionnel-dupdate.md)).
+Le critère d'acceptation initial de **cette** spec — « aucune ligne du chemin de
+dosage modifiée » — est donc **matériellement impossible à tenir** : toute
+implémentation de `bug-116` touchera forcément des lignes de ce chemin, ne
+serait-ce que pour invalider l'instantané dans `updateDosingCore()` ou dans une des
+sorties anticipées qu'elle renomme.
+
+**Reformulation à faire au moment de la reprise de cette spec** (pas avant — voir
+ci-dessous) : remplacer ce critère par un critère de **non-régression du
+comportement de dosage** (volumes injectés, cadence de décision, budget horaire
+inchangés), et non plus d'absence de modification textuelle.
+
+Arbitrage (agent principal, 2026-10-08) : les deux défauts restent **séparés**
+(avis `pool-chemistry` — `bug-115` touche l'**écriture** des compteurs de sécurité,
+`bug-116` est de la **lecture** seule ; les fusionner rendrait illisible la fenêtre
+de surveillance de `bug-115`). **`bug-116` est repris après la fenêtre de
+surveillance de `bug-115`** (clôture au plus tôt le 2026-10-11, voir le statut de
+`bug-115` dans `specs/features/done/`).
 
 ## Notes pour agent
-Un commentaire au-dessus de `composeDose()` (`src/pump_controller.cpp`) documente déjà
-cette fenêtre **et** le défaut voisin `bug-115`. **Les deux traces doivent rester au
-même endroit** : quiconque touche à `update()` doit trouver les deux avertissements
-côte à côte, sinon il rejouera l'un ou l'autre.
+Un commentaire au-dessus de `composeDose()` (`src/pump_controller.cpp`) documente
+cette fenêtre **et** le défaut voisin `bug-115` — **désormais marqué corrigé** dans
+ce commentaire (v2.61.0). **Les deux traces doivent rester au même endroit** :
+quiconque touche à `update()`/`updateDosingCore()` doit trouver les deux
+avertissements côte à côte, sinon il rejouera l'un ou l'autre.

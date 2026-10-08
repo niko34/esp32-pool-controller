@@ -274,11 +274,18 @@ static bool flowAssistPumpIsPh(int pumpIdx) {
 // index physique, qui attribuait la mesure d'un exemplaire à un numéro de pompe.
 
 // Arrêt ANTICIPÉ d'une marche d'assistant (stop utilisateur, exit, timeout).
-// Condition gate 6 (vérifiée sur le code) : sous suspension flow-assist,
-// PumpController::update() sort AVANT accountPumpVolume() (chemin perte-
-// filtration) → la comptabilité PAR TICK est sautée pendant toute la marche.
+// Condition gate 6 (vérifiée sur le code) — PRÉMISSE CORRIGÉE EN v2.61.0
+// (bug-115) : sous suspension flow-assist, `update()` appelle désormais
+// settlePumpAccounting() (donc accountPumpVolume()) à CHAQUE tour, y compris
+// sur le chemin perte-filtration — la comptabilité PAR TICK n'est plus sautée.
 // Le crédit-plancher à échéance (creditManualInjectionFloor, fin NATURELLE
-// dans updateManualInject) est donc LE mécanisme de crédit, et l'arrêt anticipé
+// dans updateManualInject) devient de ce fait un PLANCHER RAREMENT MORDANT sur
+// ce chemin. ⚠️ Revue bug-115 : « no-op » SURÉVALUAIT. creditManualInjectionFloor
+// est un max() au MAJORANT flow255 — quand le tick a crédité au débit CALIBRÉ
+// (plus faible), le plancher remonte encore `daily`. Surcompte, donc fail-safe,
+// mais pas neutre
+// (le tick a déjà tout crédité) — conservé ici en DÉFENSE EN PROFONDEUR, hors
+// périmètre de bug-115. Historique inchangé : l'arrêt anticipé
 // « sans crédit » du chemin manualInject classique laisserait un volume NUL sur
 // une pompe qui a réellement tourné (violation P4). Adaptation : on coupe la
 // pompe ICI (arrêt immédiat), on RAMÈNE creditMl au majorant PRORATA du temps
@@ -308,12 +315,16 @@ static bool flowAssistStopRun() {
 // feature-075 (P4, anomalie test-engineer) : crédit d'une marche d'ASSISTANT
 // interrompue par la PERTE DE FILTRATION. Hors assistant, l'abandon historique
 // ne crédite pas (« l'intégration réelle fait foi » : accountPumpVolume a déjà
-// compté chaque tick) — comportement STRICTEMENT inchangé. Mais sous suspension
-// flow-assist, la comptabilité par tick est SAUTÉE (PumpController::update()
-// sort par le chemin perte-filtration AVANT accountPumpVolume) : sans crédit
-// ici, le volume réellement pompé (jusqu'à flow255 × 2 min) ne serait JAMAIS
-// inscrit au registre journalier — violation P4 (jamais zéro sur une pompe
-// alimentée). Crédit au MAJORANT prorata (flow255 × temps écoulé), appliqué
+// compté chaque tick) — comportement STRICTEMENT inchangé.
+// PRÉMISSE CORRIGÉE EN v2.61.0 (bug-115) : sous suspension flow-assist, la
+// comptabilité par tick n'est PLUS sautée — `update()` appelle désormais
+// settlePumpAccounting() (donc accountPumpVolume()) y compris sur le chemin
+// perte-filtration. Le crédit prorata ci-dessous devient donc un PLANCHER
+// redondant avec le tick déjà crédité — conservé en DÉFENSE EN PROFONDEUR
+// (hors périmètre de bug-115, cf. creditManualInjectionFloor : `if (daily <
+// floorMl)` ne mord plus que si le tick a crédité au débit calibré, inférieur au
+// majorant — voir la nuance en tête de fichier). Crédit au MAJORANT
+// prorata (flow255 × temps écoulé), appliqué
 // DIRECTEMENT via creditManualInjectionFloor : on est en loopTask
 // (updateManualInject), le seul contexte autorisé — pas besoin du détour
 // « durationMs raccourci » de flowAssistStopRun (réservé aux handlers async).
@@ -339,13 +350,17 @@ static void flowAssistCreditAbortedRun(bool isPh, const ManualInjectState& mi,
 
 // feature-075 (contre-visite gate, P4) : les injections manuelles CLASSIQUES
 // (/ph|orp/inject/start) sont REFUSÉES tant qu'une session d'assistant est
-// active. Motif : sous suspension flow-assist, l'intégration par tick est
-// sautée (update() sort avant accountPumpVolume) — une injection classique sur
-// l'AUTRE chimie, interrompue par perte de filtration, serait créditée 0
-// (flowAssistCreditAbortedRun rejette à juste titre les marches non-assistant).
-// Plutôt que généraliser le crédit prorata à des chemins qui n'en ont pas
-// besoin, on ferme la combinaison. Le test /pumpN/on?duty= n'est PAS concerné
-// (hors injection minutée, pas de crédit plancher). Retourne false + 409 si refus.
+// active.
+// PRÉMISSE CORRIGÉE EN v2.61.0 (bug-115) : l'intégration par tick n'est plus
+// sautée sous suspension flow-assist (update() règle désormais la
+// comptabilité à CHAQUE sortie, cf. settlePumpAccounting()) — une injection
+// classique sur l'AUTRE chimie, interrompue par perte de filtration, ne
+// serait donc plus créditée 0. Le refus 409 ci-dessous N'EST PAS LEVÉ pour
+// autant : hors périmètre de bug-115 (défense en profondeur), il reste la
+// politique voulue — on ne généralise pas le croisement manuel classique /
+// assistant pour un gain devenu marginal. Le test /pumpN/on?duty= n'est pas
+// concerné (hors injection minutée, pas de crédit plancher). Retourne false +
+// 409 si refus.
 static bool flowAssistAllowsManualInjectOrReject(AsyncWebServerRequest* req) {
   if (!sFlowAssist.active) return true;
   req->send(409, "application/json",

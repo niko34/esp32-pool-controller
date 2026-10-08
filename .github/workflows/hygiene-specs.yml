@@ -142,3 +142,24 @@ jobs:
       # Même script en local (`./tools/check_ws_broadcast_targeting.sh`) et en CI.
       - name: Contrôle du ciblage des broadcasts WS
         run: ./tools/check_ws_broadcast_targeting.sh
+
+  # JOB 8 — point de passage unique de la comptabilité pompe (bug-115).
+  # accountPumpVolume() n'était appelée QUE depuis la queue nominale
+  # d'update() : toute sortie anticipée (OTA, maintenance, capteurs non
+  # initialisés, eau absente / stabilisation / assistant de débit) revenait
+  # AVANT elle, laissant _acctPumpOn[]/lastSafetyTimestamp rémanents pendant
+  # toute la fenêtre aveugle. Corrigé par le point de passage unique
+  # settlePumpAccounting(). pump_controller.cpp n'est PAS compilable
+  # nativement (FreeRTOS/Arduino/I2C) : aucun test natif ne peut prouver que
+  # les quatre sorties l'atteignent toutes — ce job vérifie la condition
+  # nécessaire à la place, sur TOUS les commits, comme les jobs qui précèdent.
+  acct-settle-single-point:
+    name: Comptabilité pompe — point de passage unique (bug-115)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # Même script en local (`./tools/check_acct_settle_single_point.sh`) et en CI.
+      - name: Contrôle du point de passage unique
+        run: ./tools/check_acct_settle_single_point.sh

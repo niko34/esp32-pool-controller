@@ -362,7 +362,7 @@ mesure auto-suffisante, sans rien à noter au préalable.
 
 | Clé | Type | Signification |
 |---|---|---|
-| `ph_starts` | entier | **Démarrages de pompe pH crédités** depuis le dernier « Nouveau bidon » — le `N` de `V_compté = V_réel + N·δ`. Incrément **saturant** (jamais de repli à `0`). |
+| `ph_starts` | entier | **Démarrages de pompe pH crédités** depuis la dernière remise à niveau du bidon (action « Mettre à jour le niveau » ; s'appelait « Nouveau bidon » avant la v2.59.0) — le `N` de `V_compté = V_réel + N·δ`. Incrément **saturant** (jamais de repli à `0`). |
 | `ph_total_ml` | float (mL) | Volume compté sur la **même** campagne — le `V`. Même valeur que `ph_total_injected_ml` de [`/get-config`](API.md#get-get-config--write). |
 | `ph_anom` | entier | Parmi ces crédits, nombre de ticks de comptabilité **anormalement longs** (> 5 000 ms, `kAcctDeltaAnomalyMs`). **Hygiène du relevé.** |
 | `ph_anom_ml` | float (mL) | Volume crédité **par** ces ticks anormaux. Sert à **disqualifier** un relevé pollué, jamais à corriger le volume. |
@@ -372,6 +372,25 @@ mesure auto-suffisante, sans rien à noter au préalable.
 sans son indicateur d'hygiène, **ne permet de conclure sur rien** : voir le mode
 d'emploi du relevé sur la [page Produits](features/page-dosages.md#relevé-du-biais-de-comptage--mode-demploi-feature-110-v2450).
 **Aucune correction n'est appliquée** par cette version — ces compteurs mesurent.
+
+#### ⚠️ Changement de signification de `ph_total_ml` / `orp_total_ml` (bug-115, v2.61.0)
+
+`ph_total_ml` / `orp_total_ml` (et `ph_total_injected_ml` / `orp_total_injected_ml`
+côté [`/get-config`](API.md#get-get-config--write)) reçoivent désormais **aussi**
+le volume des **marches de l'assistant de débit** réalisées en mode manuel —
+jusqu'ici invisible pour ce suivi, bien que le produit ait réellement quitté le
+bidon (correctif bug-115 : `update()` comptabilise désormais **chaque** sortie,
+anticipée ou non, via le point de passage unique `settlePumpAccounting()`).
+
+C'est **plus fidèle**, mais deux conséquences pour quiconque lit ce topic :
+- **La jauge de bidon descendra plus vite à consommation réelle inchangée.**
+- **Aucune campagne de concordance postérieure à v2.61.0 n'est comparable à une
+  campagne antérieure** : `N` (démarrages crédités) augmente en même temps que
+  `V` diminue (plus de volume fantôme crédité aux coupures), donc le biais `δ`
+  change de valeur sans que le matériel ait bougé. Tout relevé futur doit
+  **porter la version de firmware**. Voir
+  [docs/subsystems/pump-controller.md](subsystems/pump-controller.md#correction-de-la-rémanence-bug-115-v2610--point-de-passage-unique)
+  et [ADR-0091](adr/0091-comptabilite-hors-du-corps-decisionnel-dupdate.md).
 
 ### `kMqttPublishBufferBytes` porté de 1024 à 1536 o
 

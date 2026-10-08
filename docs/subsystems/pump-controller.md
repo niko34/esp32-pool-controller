@@ -1663,7 +1663,7 @@ Le régime `HoldZero` statue sur le **signal lent** (moyenne glissante de 10 min
 
 Pendant ces trois états, l'instantané n'est **pas rafraîchi** : la carte, `/data`, le WebSocket et MQTT servent la **dernière** composition connue avec des mesures déclarées valides. Fenêtre **bornée et déclenchée par l'opérateur** (aucune n'est spontanée), sans commune mesure avec le défaut initial — d'où la décision de ne pas la corriger dans ce cycle.
 
-> **Pourquoi cette trace est là et pas ailleurs** : c'est la **même** chaîne de sorties anticipées qui produit l'asymétrie de comptabilité relevée sur feature-110 (l'état de comptabilité reste rémanent pendant la fenêtre aveugle, et toute la durée de la coupure est créditée au débit plateau à la reprise). Deux défauts de la même famille, dans la même fonction. Quiconque touche à `update()` doit trouver les **deux** traces au même endroit, sinon il rejouera l'un ou l'autre.
+> **Pourquoi cette trace est là et pas ailleurs** : c'est la **même** chaîne de sorties anticipées que celle visée par **bug-115** (l'état de comptabilité restait rémanent pendant la fenêtre aveugle, et toute la durée de la coupure était créditée au débit plateau à la reprise) — **corrigé en v2.61.0**, voir [Correction de la rémanence de comptabilité](#correction-de-la-rémanence-bug-115-v2610--point-de-passage-unique) plus bas. Le défaut **voisin** décrit ci-dessus (instantané de composition périmé, `bug-116`) reste, lui, **non corrigé**. Même famille, même fonction : quiconque touche à `update()`/`updateDosingCore()` doit trouver les **deux** traces au même endroit, sinon il rejouera l'un ou l'autre.
 
 ### Publication
 
@@ -2238,6 +2238,8 @@ perte fixe.
 
 Remplace `updateSafetyTracking(flow, delta)` par `creditInjectedVolume(isPhPump, volumeMl)` : le volume est calculé en amont, plus jamais dérivé d'un débit de modèle.
 
+**v2.61.0 (bug-115)** : `accountPumpVolume()` n'a plus qu'un seul appelant, `settlePumpAccounting()` — point de passage unique invoqué à **chaque** sortie d'`update()`, anticipée ou non. Détail complet : [Correction de la rémanence de comptabilité](#correction-de-la-rémanence-bug-115-v2610--point-de-passage-unique) plus bas.
+
 ### Comptage des démarrages de pompe (feature-110, v2.45.0)
 
 Six compteurs `ProductConfig` ([`config.h`](../../src/config.h)) mesurent le **dénominateur** du biais de comptage, par produit. **Aucune correction n'est appliquée : cette feature mesure.**
@@ -2265,11 +2267,40 @@ Le volume d'un tick est crédité par **attribution arrière** sur `[lastSafetyT
 
 Calage : `accountPumpVolume()` tourne à la cadence de `loop()` (`kLoopDelayMs` = 10 ms + le travail du tour, quelques dizaines de ms en pratique) — 5 s est **deux ordres de grandeur** au-dessus du jitter normal, et vaut la **moitié** du pouls minimal (`kPulseMinMs` = 10 s) : un tick qui couvre la moitié d'une impulsion entière est une anomalie, pas du bruit.
 
-#### Le défaut PRÉ-EXISTANT que ces compteurs captent
+#### Le défaut CORRIGÉ que ces compteurs captaient (bug-115, v2.61.0)
 
-Les sorties anticipées d'`update()` — eau absente, stabilisation post-calibration, assistant de mesure du débit (`flowAssistSuspend`), capteurs non initialisés ([`pump_controller.cpp:2989`](../../src/pump_controller.cpp:2989) et `:2950`) — coupent les pompes puis **`return` AVANT** l'appel à `accountPumpVolume()`. L'état `_acctPumpOn[chem]` reste donc **rémanent** : à la reprise, le firmware crédite **toute la durée de la coupure** au débit plateau, tandis que le redémarrage physique **n'est pas compté**.
+Les sorties anticipées d'`update()` — eau absente, stabilisation post-calibration, assistant de mesure du débit (`flowAssistSuspend`), capteurs non initialisés, OTA, maintenance — coupaient les pompes puis **`return` AVANT** l'appel à `accountPumpVolume()`. L'état `_acctPumpOn[chem]` restait donc **rémanent** : à la reprise, le firmware créditait **toute la durée de la coupure** au débit plateau, tandis que le redémarrage physique **n'était pas compté**.
 
-Ordre de grandeur : 5 min → ~5,7 mL, 1 h → ~68 mL, 6 h → ~408 mL. Ce défaut n'est **pas introduit** par feature-110 — il est **révélé** par elle, et c'est exactement le cas que `*_anom` / `*_anom_ml` captent (le tick de reprise dépasse les 5 000 ms de plusieurs ordres de grandeur).
+Ordre de grandeur mesuré : 5 min → ~5,7 mL, 1 h → ~68 mL, 6 h → ~408 mL, jusqu'à **950 mL** sur une coupure nocturne longue — soit **20 à 48 %** du plafond journalier vivant (`max_ph_ml_per_day` / `max_orp_ml_per_day` = 2 000 mL). Ce défaut n'était **pas introduit** par feature-110 — il était **révélé** par elle, et c'est exactement le cas que `*_anom` / `*_anom_ml` captaient (le tick de reprise dépassait les 5 000 ms de plusieurs ordres de grandeur).
+
+**Corrigé en v2.61.0** ([bug-115](../../specs/features/done/bug-115-etat-de-comptabilite-remanent-aux-sorties-anticipees.md)) par le point de passage unique — voir [Correction de la rémanence de comptabilité](#correction-de-la-rémanence-bug-115-v2610--point-de-passage-unique) ci-dessous. **`kAcctDeltaAnomalyMs = 5000` et les compteurs `*_anom`/`*_anom_ml` sont conservés tels quels**, mais changent de **rôle** : d'un *détecteur d'un défaut connu* ils deviennent un **canari d'un chemin inconnu**. Après correctif, un `anom` non nul ne signale plus la rémanence de bug-115 mais un chemin de code qu'on n'avait pas prévu (blocage de `loop()`, gel I²C, future sortie anticipée non couverte).
+
+#### Correction de la rémanence (bug-115, v2.61.0) : point de passage unique
+
+`update()` est devenu un **wrapper de quatre lignes** autour de `updateDosingCore(now)` (l'ancienne `update()`, corps **non réindenté**, ses quatre `return` anticipés intacts) :
+
+```cpp
+void PumpControllerClass::update() {
+  unsigned long now = millis();
+  _acctSettledThisTick = false;
+  updateDosingCore(now);
+  if (!_acctSettledThisTick) settlePumpAccounting(now);
+}
+```
+
+Chaque sortie anticipée appelle désormais elle-même `settlePumpAccounting()` — **seul appelant** d'`accountPumpVolume()` — juste après avoir forcé `applyPumpDuty(*, 0)`. Le wrapper est le **filet structurel** : il couvrirait aussi une sortie future qu'un chemin de code oublierait d'appeler — même motif qu'[ADR-0070](../adr/0070-fopen-interne-helper-unique-et-classes-de-contention.md) pour `fopen` : il n'y a plus rien à ne pas oublier.
+
+⚠️ **Deux renversements par rapport à l'intuition initiale de la spec** :
+1. **La spec disait « purger » l'état de comptabilité, le gate `pool-chemistry` l'a INTERDIT.** Un reset aveugle de `_acctPumpOn[]`/`lastSafetyTimestamp` **perdrait le volume réellement injecté** — deux sites le rendent inacceptable : `flowAssistSuspend` laisse tourner le **manuel** (c'est précisément la marche de mesure de l'assistant de débit) et OTA/maintenance coupent **en plein pouls**. Corriger un défaut qui surcompte en créant un défaut qui **sous-compte** aurait été pire : le sous-compte va dans la direction dangereuse (plus de produit réellement injecté sous le même plafond journalier). Le point unique **appelle le comptable**, il ne purge jamais.
+2. **Il y a QUATRE sorties anticipées, pas cinq** : le gate P1 en citait cinq, imprécision interne à la spec — le triplet eau absente / stabilisation / `flowAssistSuspend` partage en réalité **un seul** `return`. Sans conséquence pratique : le wrapper les couvre toutes **par construction**, quel qu'en soit le nombre — c'est justement l'argument qui a fait retenir le point de passage unique plutôt que la purge branche par branche.
+
+La propriété qui rend la rémanence **structurellement impossible** vit dans le module pur [`src/acct_window_logic.h`](../../src/acct_window_logic.h) (`evaluateAcctWindow()`, [ADR-0017](../adr/0017-logique-metier-pure-humble-object-testabilite.md)) : `nextOn = onNow` **toujours**, que l'appel vienne de la queue nominale ou d'une sortie anticipée — une garde n'aurait pas suffi, c'est la forme même de l'affectation qui ferme le défaut. **Bénéfice collatéral** : le dernier tick ON avant une coupure, auparavant perdu, est désormais crédité exactement une fois.
+
+Deux gardes CI (`hygiene-specs.yml`, job « Comptabilité pompe — point de passage unique ») exécutent [`tools/check_acct_settle_single_point.sh`](../../tools/check_acct_settle_single_point.sh) : (1) `accountPumpVolume()` n'a **qu'un** appelant, `settlePumpAccounting()` ; (2) le wrapper d'`update()` conserve ses trois lignes (`_acctSettledThisTick = false`, `updateDosingCore(...)`, `if (!_acctSettledThisTick) settlePumpAccounting(...)`). ⚠️ Le second contrôle a été ajouté **en revue** : sans lui, réintégrer `updateDosingCore()` dans `update()` en retirant `_acctSettledThisTick` laissait la garde **verte** tout en rejouant le défaut en silence — éprouvé trois fois (drapeau retiré, filet retiré, commentaire mentionnant l'appel sans l'appel lui-même).
+
+⚠️ **Discontinuité métrologique** : après ce correctif, `N` (démarrages) **augmente** (les reprises comptent désormais) et `V` (volume) **diminue** (plus de crédit fantôme) — `δ` change de valeur **sans que le matériel ait bougé**. Aucun relevé de concordance postérieur à v2.61.0 n'est comparable aux deux campagnes jerricane de 2026 (+5,11 % sur 86 démarrages le 08/09, +6,25 % sur 356 le 08/10). Voir [ADR-0091](../adr/0091-comptabilite-hors-du-corps-decisionnel-dupdate.md).
+
+Honnêteté sur le périmètre testé : `pump_controller.cpp` n'est pas compilable en `env:native` (FreeRTOS, Arduino, I²C) — aucun test natif ne peut démontrer que les quatre sorties anticipées atteignent bien `settlePumpAccounting()`. Cette garantie est **structurelle** (le wrapper), pas testée unitairement ; c'est la garde CI ci-dessus qui en tient lieu. La suite native [`test/test_native_acct_window/`](../../test/test_native_acct_window/) couvre en revanche exhaustivement le contrat pur d'`evaluateAcctWindow()` et les séquences (coupure 6 h, manuel continu sous `flowAssistSuspend`, enchaînements de dix cycles).
 
 #### Persistance et remise à zéro
 
@@ -2715,6 +2746,9 @@ Hors compteurs journaliers, la **trace de bascule automatique pH** est persisté
 - [`src/constants.h`](../../src/constants.h) — section « RÉGULATION pH — TERME INTÉGRAL » (v2.26.0) : `kPhIntegralAuthorityMlPerMin`, `kPhIntegralTi*`, `kPhKp*`, `kPhKi*`, `kPhIntegralMax*`, `kPhIntegralResetMargin`, `kPhIntegralDecay*`, `kPhIntegralMaxTickDtMs`, `kPhIntegralChargeQuantumMs`, `kPhIntegralFreezeDailyFraction`, `kPhIntegralStaleResetMs`, `kPhIntegralSaturation*` + les 9 `static_assert` ; section « PERSISTANCE NVS de l'intégrale pH » (v2.27.0) : `kPhIntegralResetHoldMs`, `kPhIntegralRestore*`, `kPhIntegralPersist*`, `kPhLoad*`, `kPhEquilibriumLoadMlPerMin`, `kPhIntegralDuty*` + les `static_assert` (vii bis-a) et (x) à (xiv)
 - [`src/config.h`](../../src/config.h) / [`src/config.cpp`](../../src/config.cpp) — transport NVS de l'instantané et de l'anneau (`loadPhIntegralSnapshot`, `savePhIntegralSnapshot`, `loadPhLoadHistory`, `savePhLoadHistory`, `recordPhLoadDay`, `readPhLoadObservation`), `phSustainableFlowFromConfig()` (**source unique** du débit soutenable) et `SafetyLimits::dailyFiltrationMinutes`
 - [`src/pulse_dosing_logic.h`](../../src/pulse_dosing_logic.h), [`src/pulse_dosing_logic.cpp`](../../src/pulse_dosing_logic.cpp) — ordonnanceur d'impulsions pur (gate, plan, tick, volume — v2.21.0 ; accumulateur sous-plancher `planPulseWithCarry` — v2.22.0)
+- [`src/acct_window_logic.h`](../../src/acct_window_logic.h) — **fenêtre de comptabilité pompe, pure** (bug-115, v2.61.0, [ADR-0017](../adr/0017-logique-metier-pure-humble-object-testabilite.md)) : `evaluateAcctWindow()`, `nextOn = onNow` toujours
+- [`test/test_native_acct_window/`](../../test/test_native_acct_window/) — suite native du module ci-dessus (bug-115)
+- [`tools/check_acct_settle_single_point.sh`](../../tools/check_acct_settle_single_point.sh) — garde CI : `accountPumpVolume()` n'a qu'un appelant, et le wrapper d'`update()` conserve ses trois lignes (bug-115, v2.61.0)
 - [`src/constants.h`](../../src/constants.h) — `kPumpPhPin = 25`, `kPumpOrpPin = 33` (PCB v2, voir ADR-0012)
 - [`src/dosing_logic.h`](../../src/dosing_logic.h), [`src/dosing_logic.cpp`](../../src/dosing_logic.cpp) — décision de dosage pure (feature-036) + gardes d'injection manuelle `evaluateManualInject` (feature-006) + répartition scheduled `evaluateScheduledDose` (feature-011)
 - [`src/schedule_logic.h`](../../src/schedule_logic.h), [`src/schedule_logic.cpp`](../../src/schedule_logic.cpp) — `remainingRangeMinutes` (horizon de répartition scheduled, feature-011)
@@ -2726,3 +2760,5 @@ Hors compteurs journaliers, la **trace de bascule automatique pH** est persisté
 - [feature-011](../../specs/features/done/feature-011-repartition-24h-programmee.md) — répartition du volume quotidien scheduled par fenêtres de 15 min
 - [bug-dosage-fantome-duty-non-calibre](../../specs/features/done/bug-dosage-fantome-duty-non-calibre.md) — **spec ouverte** : défaut n°2 (double comptage) livré en v2.20.5 ; défaut n°1 (modèle duty↔débit) livré en **v2.21.0** (proportionnel de temps, [ADR-0043](../adr/0043-dosage-proportionnel-de-temps-amplitude-calibree.md)/[ADR-0044](../adr/0044-budget-horaire-et-temps-min-en-temps-pompe-on.md)) ; défaut n°3 (UI commandé/effectif) = itération 3 restante
 - [page-ph.md](../features/page-ph.md), [page-orp.md](../features/page-orp.md) — UI consommatrices
+- [bug-115](../../specs/features/done/bug-115-etat-de-comptabilite-remanent-aux-sorties-anticipees.md) — rémanence de comptabilité aux sorties anticipées, corrigée en v2.61.0 par le point de passage unique `settlePumpAccounting()`
+- [ADR-0091](../adr/0091-comptabilite-hors-du-corps-decisionnel-dupdate.md) — la comptabilité des volumes est hors du corps décisionnel d'`update()` (bug-115, v2.61.0)

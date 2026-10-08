@@ -14,6 +14,7 @@
 #include "dose_block_duration_logic.h"  // feature-138 : durée du refus courant (PURE)
 #include "temp_mode_logic.h"            // feature-140 : mode ORP EFFECTIF (PURE)
 #include "dosing_window.h"              // feature-136 : survie du budget horaire au reboot
+#include "acct_window_logic.h"          // bug-115 : fenêtre de comptabilité pompe (PURE)
 
 struct PumpDriver {
   int pwmPin;    // Pin PWM Gate MOSFET (IRLZ44N)
@@ -880,7 +881,31 @@ private:
   // kick au débit 255 mesuré + plateau au débit calibré) ; manuel → MAJORANT
   // flow255, sauf duty == calibratedDuty → débit calibré. Jamais zéro sur une
   // pompe alimentée (P4). Met aussi à jour _sessionOnMs/_sessionVolMl.
+  // bug-115 (v2.61.0) : la décision de crédit et la transition d'état
+  // (_acctPumpOn[]/lastSafetyTimestamp) sont désormais rendues par le module
+  // PUR evaluateAcctWindow() (src/acct_window_logic.h) — voir settlePumpAccounting().
   void accountPumpVolume(int chem, int physIdx, unsigned long now, bool manualActive);
+
+  // ===== bug-115 (v2.61.0) : POINT DE PASSAGE UNIQUE de la comptabilité =====
+  // SEUL appelant d'accountPumpVolume(). Auto-suffisant : recalcule phIdx/
+  // orpIdx et *ManualActive depuis mqttCfg / manualMode[] / pumpDuty[],
+  // exactement comme le faisait la queue d'update() avant ce correctif — ce qui
+  // le rend appelable INDIFFÉREMMENT depuis la queue nominale d'updateDosingCore()
+  // ET depuis chacune de ses sorties anticipées (OTA, maintenance, capteurs non
+  // initialisés, eau absente / stabilisation / assistant de débit), toutes
+  // forçant déjà applyPumpDuty(*, 0) avant d'y arriver. Pose
+  // `_acctSettledThisTick = true` : c'est ce qui permet au wrapper update() de
+  // ne PAS rejouer la comptabilité quand updateDosingCore() l'a déjà réglée,
+  // et de la régler lui-même dans le cas contraire (filet de sécurité pour une
+  // sortie anticipée future qui oublierait l'appel). loopTask uniquement, sans
+  // allocation, sans String, sans log (chemin de dosage, ADR-0082).
+  void settlePumpAccounting(unsigned long now);
+
+  // Idempotence du tour courant pour settlePumpAccounting() — voir ci-dessus et
+  // update(). Réarmé à false en tête de CHAQUE tour par update(), jamais par
+  // updateDosingCore() ni par settlePumpAccounting() elle-même. loopTask
+  // uniquement.
+  bool _acctSettledThisTick = false;
 
   // feature-011 : état de la répartition scheduled par fenêtres de 15 min
   // (kScheduledWindowMinutes). windowIdx = fenêtre courante (nowMin/15, -1 =
@@ -901,6 +926,19 @@ private:
   static unsigned long _lastDailySaveMs; // Timestamp dernier flush NVS
   static bool _phWasActive;          // État pH précédent (détection démarrage injection)
   static bool _orpWasActive;         // État ORP précédent
+
+  // bug-115 (v2.61.0) : ex-update(). Renommée, corps NON réindenté — les
+  // quatre `return` anticipés restent tels quels. Enveloppée par le NOUVEAU
+  // update() (public, ci-dessous), qui garantit par construction que
+  // settlePumpAccounting() est appelée même si cette fonction revient AVANT sa
+  // queue nominale (OTA, maintenance, capteurs non initialisés, eau absente /
+  // stabilisation / assistant de débit — QUATRE sorties anticipées distinctes,
+  // le triplet eau/stabilisation/flowAssist partageant un seul `return`).
+  // Chaque sortie anticipée appelle désormais elle-même settlePumpAccounting()
+  // juste après avoir forcé applyPumpDuty(*, 0) (condition bloquante C1 du
+  // gate pool-chemistry : appeler le comptable, ne jamais purger l'état à
+  // l'aveugle). loopTask uniquement.
+  void updateDosingCore(unsigned long now);
 
 public:
   PumpControllerClass();
