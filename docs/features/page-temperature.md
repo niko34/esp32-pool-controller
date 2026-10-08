@@ -47,7 +47,7 @@ Calqué sur `#ph-page-badge` (aucune classe CSS nouvelle) et alimenté par **exa
 
 **Précédence, et pourquoi elle est ainsi** : « sonde absente ou invalide » **prime** sur « figée » (une sonde qui ne mesure plus rien ne peut pas être figée — c'est aussi ce qui retire le badge « figée » si la sonde est débranchée en cours d'épisode), et « **sonde eau non identifiée** » n'est **jamais** confondu avec « **eau figée** » : deux états distincts, dont l'un (l'identification) est actionnable et l'autre non. Détail complet et limites de la condition : [page-dashboard.md](page-dashboard.md#badge-de-la-carte-température-temperature-sensor-badge-v2105-étendu-feature-061-itération-2-puis-feature-068).
 
-⚠️ « Sonde température figée » est **informatif** : ni le dosage, ni la compensation de température du pH, ni le planning automatique de filtration ne changent. L'erreur de pH induite vaut **≈ 0,001** — voir [ADR-0074](../adr/0074-temperature-figee-statu-quo-instrumente.md). Le badge est en `warning` et non en `danger` pour cette raison. Tous les segments sont gatés par `measuresAreValid()` : filtration arrêtée, l'eau immobile dans la canalisation peut légitimement rendre la même valeur pendant une demi-heure.
+⚠️ « Sonde température figée » est **informatif pour le dosage** : ni le dosage, ni la compensation de température du pH ne changent — l'erreur de pH induite vaut **≈ 0,001** ([ADR-0074](../adr/0074-temperature-figee-statu-quo-instrumente.md)). Il **gate en revanche le planning automatique de filtration** (`filtration.cpp:162` et `:405`, bug-142) : tant que le badge est affiché, le planning n'est plus recalculé. Le badge est en `warning` et non en `danger` car l'enjeu chimique est nul. Tous les segments sont gatés par `measuresAreValid()` : filtration arrêtée, l'eau immobile dans la canalisation peut légitimement rendre la même valeur pendant un moment.
 
 ## Carte de calibration (offset 1 point)
 
@@ -105,7 +105,7 @@ Après succès, l'UI met à jour optimiste la valeur affichée, recharge la conf
 - Formule appliquée : `temp_final = temp_raw + clampTempCalOffset(tempCalibrationOffset)` — offset borné à `[−5 ; +5]` °C depuis la v2.47.1 (`kTempCalOffsetMin/Max`).
 - Lectures brutes bornées à `(−55 ; 125)` °C, avec rejet de `85.0` (power-on reset du DS18B20) et de `DEVICE_DISCONNECTED_C`.
 - La température **envoyée à l'EZO pH** (`RT,<tempC>`) passe en plus par une fenêtre `[0 ; 40]` °C et une **cascade de repli** (mesure → dernière valeur plausible ≤ 20 s → 25 °C), journalisée. ⚠️ La borne haute de 40 °C est une borne de **prudence**, **non confirmée par la datasheet Atlas**. Voir [`sensors.md`](../subsystems/sensors.md#cascade-de-résolution-de-rt-bug-114).
-- **Détection « sonde figée »** : 900 lectures valides consécutives dans une bande < 0,03 °C (≈ 30 min). **Aucun effet** sur le dosage ni sur le planning — uniquement l'exposition ([ADR-0074](../adr/0074-temperature-figee-statu-quo-instrumente.md)).
+- **Détection « sonde figée »** : 43 200 lectures valides consécutives dans une bande < 0,03 °C (≈ 24 h, bug-142 — était 900 / 30 min). **Aucun effet sur le dosage** ; **gate en revanche le planning de filtration**, qui n'est plus recalculé tant que le drapeau est posé ([ADR-0074](../adr/0074-temperature-figee-statu-quo-instrumente.md)).
 - Pas de filtre médiane/EMA, pas de compensation profondeur. La calibration reste **1 point par offset** (pas d'EZO, pas de pente).
 
 ## Cas limites
@@ -115,7 +115,7 @@ Après succès, l'UI met à jour optimiste la valeur affichée, recharge la conf
 - **Jamais calibré** : chip gris « Non calibré », bouton « Calibrer la sonde » bien visible.
 - **Annulation de calibration** : retour à l'état idle sans modifier l'offset.
 - **Calibration aberrante** : bornes UI sur `#temp_reference_value` (`min=-10`, `max=50`) **et**, depuis la v2.47.1, **écrêtage firmware de l'offset à ±5 °C** aux quatre points de la chaîne (écriture, chargement NVS, émission de la mesure, émission `RT`) — une NVS déjà polluée par une version antérieure est donc également corrigée au boot, ce qui garantit que `/get-config` expose la valeur **réellement appliquée**.
-- **Sonde figée** : badge « Sonde température figée », valeur **conservée** (plausible, seulement immobile), aucun effet métier.
+- **Sonde figée** : badge « Sonde température figée », valeur **conservée** (plausible, seulement immobile), aucun effet dosage ; le planning de filtration n'est plus recalculé tant que l'épisode dure (bug-142).
 - **Aucun rôle « eau » identifié** : badge « Sonde eau non identifiée » — jamais « eau figée ».
 
 ## Fichiers

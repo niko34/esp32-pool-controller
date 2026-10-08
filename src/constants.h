@@ -2648,13 +2648,58 @@ static_assert(kPhIntegralRestoreMaxStreak >= 1 && kPhIntegralRestoreMaxStreak <=
 constexpr uint16_t kSensorFrozenSamples    = 30;      // 30 lectures valides à 5 s = 2,5 min
 constexpr float    kSensorFrozenEpsilonPh  = 0.0005f; // ½ LSB EZO pH (résolution 0.001 pH)
 constexpr float    kSensorFrozenEpsilonOrp = 0.05f;   // ½ LSB EZO ORP (résolution 0.1 mV)
-// Température : DS18B20 12 bits, LSB = 0.0625 °C → epsilon 0.03 < ½ LSB.
-// Fenêtre longue (900 lectures à 2 s = 30 min) : l'eau d'un bassin varie
-// lentement, mais jamais à 0.0625 °C près sur 30 min avec la sonde immergée.
-// Warning-only : aucun impact dosage (effets réels limités à la compensation
-// EZO pH et au planning auto de filtration).
-constexpr uint16_t kTempFrozenSamples  = 900;   // 900 lectures valides à 2 s = 30 min
-constexpr float    kTempFrozenEpsilonC = 0.03f; // < ½ LSB DS18B20 12 bits (0.0625/2)
+// bug-142 — Température : DS18B20 12 bits, LSB = 0.0625 °C. L'epsilon 0.03 °C
+// est bien < ½ LSB, mais CONTRAIREMENT à pH/ORP ce n'est PAS une garde
+// efficace ici : sous 0.0625, un seul pas de quantification tient dans la
+// bande — 0.03 et 0.001 donneraient RIGOUREUSEMENT le même comportement.
+// kTempFrozenEpsilonC est donc INERTE : ne pas y toucher, le seul levier réel
+// est la fenêtre (kTempFrozenSamples). Le bruit de quantification d'une sonde
+// vivante ne casse le run QUE si la valeur vraie longe une frontière de pas ;
+// loin d'une frontière (cas normal d'une masse d'eau de plusieurs dizaines de
+// m³), le DS18B20 rend une constante parfaite pendant des heures — ce n'est
+// pas une panne.
+//
+// Fenêtre = 24 h (43 200 lectures à 2 s, cf. kTempFrozenSamplePeriodMs
+// ci-dessous) : mesuré le 2026-10-07, la dérive la plus rapide observée est de
+// 0.05 °C/h, soit 1 h 15 pour franchir un pas — un bassin sain peut donc
+// rester sur la même valeur bien plus longtemps que les 30 min d'origine
+// (bug-142, déclenchement quotidien sur sonde saine). Sur 24 h, un bassin
+// extérieur traverse son cycle jour/nuit complet et franchit plusieurs pas :
+// une sonde qui ne bouge pas sur un cycle complet est réellement en panne, il
+// n'y a plus de scénario sain.
+//
+// ⚠️ PLAFOND uint16_t : _runCount (sensor_filter.h) SATURE à 65 535, ce qui
+// plafonne la fenêtre exploitable à ~36 h (64 800 lectures à 2 s). Au-delà, le
+// seuil n'est JAMAIS atteint et le détecteur ne devient pas plus strict : il
+// s'ÉTEINT EN SILENCE. 43 200 passe avec une marge de seulement ×1,5 — ne pas
+// « être prudent » en portant cette valeur à 48 h, cela casserait la
+// détection. Voir les static_assert ci-dessous, qui attrapent ce repli.
+constexpr uint16_t kTempFrozenSamples  = 43200; // 43 200 lectures valides à 2 s ≈ 24 h (bug-142)
+constexpr float    kTempFrozenEpsilonC = 0.03f; // < ½ LSB DS18B20 12 bits (0.0625/2) — INERTE, voir ci-dessus, ne pas modifier
+
+// bug-142 [A6] — Durées dérivées de la cadence réelle d'échantillonnage
+// (_readDs18b20s(), sensors.cpp). La vraie garde n'est PAS une borne haute sur
+// kTempFrozenSamples : un uint16_t qui dépasse 65 535 se replie SILENCIEUSEMENT
+// modulo 2^16 (écrire 86400 pour viser 48 h donnerait 20864, soit 11 h 35 — un
+// simple « < 65535 » laisserait passer ce repli sans broncher, static_assert y
+// compris). La garde réelle est une borne BASSE sur la durée DÉRIVÉE : si elle
+// tombe sous ~20 h, c'est que la constante a été repliée ou mal réglée.
+// La borne haute (36 h, plafond réel du uint16_t _runCount) attrape bien, elle,
+// la bande 64 801-65 535 — vérifié en revue : 65 000 fait échouer la
+// compilation. Elle est donc utile, mais AVEUGLE au-delà de 65 535, où le repli
+// la court-circuite ; c'est la borne basse qui prend le relais.
+constexpr uint32_t kTempFrozenSamplePeriodMs = 2000;  // cadence _readDs18b20s() (TEMP_REQUEST_INTERVAL_MS)
+// Multiplication AVANT division : une cadence non multiple de 1 s ne doit pas
+// être écrasée par la division entière (43 200 x 2 000 = 86 400 000, tient dans uint32_t).
+constexpr uint32_t kTempFrozenWindowSec   = uint32_t(kTempFrozenSamples) * kTempFrozenSamplePeriodMs / 1000;
+constexpr uint16_t kTempFrozenWindowHours = kTempFrozenWindowSec / 3600;
+
+static_assert(kTempFrozenWindowSec >= 20UL * 3600UL,
+              "Fenetre figee T: < 20 h : faux positif quotidien (bug-142) — "
+              "valeur repliee par depassement uint16_t ?");
+static_assert(kTempFrozenSamples <= 64800,
+              "Fenetre figee T: > 36 h : _runCount (uint16_t) sature avant le seuil, "
+              "le detecteur s'eteint en silence");
 
 // ============================================================================
 // FILTRATION CONSTANTS - Paramètres filtration

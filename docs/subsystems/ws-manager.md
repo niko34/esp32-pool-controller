@@ -756,9 +756,9 @@ Les **sept** champs de session (`active`, `pump`, `phase`, `remaining_s`, `purge
 
 | Champ | Type | Description |
 |---|---|---|
-| `tempFrozenAlarm` | bool | `true` quand la sonde DS18B20 « eau » est **figée** : `kTempFrozenSamples` = **900** lectures valides consécutives dans une bande < `kTempFrozenEpsilonC` = **0,03 °C**, soit ≈ **30 min** à 2 s. Reflet direct de `sensors.isTemperatureFrozen()`, **valeur instantanée**. |
+| `tempFrozenAlarm` | bool | `true` quand la sonde DS18B20 « eau » est **figée** : `kTempFrozenSamples` = **43 200** lectures valides consécutives dans une bande < `kTempFrozenEpsilonC` = **0,03 °C**, soit ≈ **24 h** à 2 s (bug-142, v2.56.1 — était 900 / 30 min). Reflet direct de `sensors.isTemperatureFrozen()`, **valeur instantanée**. |
 
-**En parité stricte avec `GET /data`** — aucune exception déclarée dans la sentinelle. Le champ est **purement informatif** : il n'inhibe ni le dosage, ni la compensation `RT`, ni le planning de filtration ([ADR-0074](../adr/0074-temperature-figee-statu-quo-instrumente.md) — l'erreur de pH induite vaut ≈ 0,001).
+**En parité stricte avec `GET /data`** — aucune exception déclarée dans la sentinelle. Le champ est **informatif pour le dosage** : il n'inhibe ni le dosage, ni la compensation `RT` ([ADR-0074](../adr/0074-temperature-figee-statu-quo-instrumente.md) — l'erreur de pH induite vaut ≈ 0,001). Il **gate en revanche le planning de filtration** (`filtration.cpp:162` et `:405`, bug-142) : pas une alarme chimique, mais pas inerte non plus.
 
 **Ce qui N'ENTRE PAS dans cette trame, et pourquoi** : les diagnostics de la cascade de compensation (`ezo_comp_t`, `ezo_comp_stage`) partent sur le topic MQTT **retenu** `<base>/diagnostic`, qui a son propre budget. Ce sont des grandeurs **relues à froid**, plusieurs jours après un épisode ; aucun écran ne les lit en direct, et les mettre ici aurait coûté du budget sur le **seul plafond dur** du projet en ouvrant une question de parité pour rien.
 

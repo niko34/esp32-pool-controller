@@ -841,7 +841,57 @@ Définie dans [`src/sensor_filter.h`](../../src/sensor_filter.h) (logique pure, 
 |---|---|---:|---:|---|
 | `_phFilter` (composé dans `SensorFilter`) | lectures brutes **acceptées** par le filtre pH | `kSensorFrozenSamples` = 30 (≈ 2,5 min à 5 s) | `kSensorFrozenEpsilonPh` = 0.0005 (½ LSB EZO pH, résolution 0.001) | `ready()` = false → **dosage pH bloqué fail-closed** |
 | `_orpFilter` (idem) | lectures brutes acceptées par le filtre ORP | 30 | `kSensorFrozenEpsilonOrp` = 0.05 mV (½ LSB EZO ORP, résolution 0.1) | dosage ORP bloqué fail-closed |
-| `_waterTempFrozen` (dédié, dans `SensorManager`) | lectures DS18B20 **valides** de la sonde « eau » (valeur **brute**, non arrondie au 0.1 °C) | `kTempFrozenSamples` = 900 (≈ 30 min à 2 s) | `kTempFrozenEpsilonC` = 0.03 °C (< ½ LSB DS18B20 12 bits = 0.0625/2) | **warning-only, par DÉCISION** — AUCUN impact dosage/filtration, et il ne doit pas en avoir : l'erreur de pH induite est de **≈ 0,001** ([ADR-0074](../adr/0074-temperature-figee-statu-quo-instrumente.md)). Depuis feature-068, l'état est **exposé** (`/data`, WS, MQTT, badge UI) — exposé n'est pas actionné |
+| `_waterTempFrozen` (dédié, dans `SensorManager`) | lectures DS18B20 **valides** de la sonde « eau » (valeur **brute**, non arrondie au 0.1 °C) | `kTempFrozenSamples` = **43 200** (≈ **24 h** à 2 s, bug-142 — était 900 / 30 min) | `kTempFrozenEpsilonC` = 0.03 °C (< ½ LSB DS18B20 12 bits = 0.0625/2, **inerte** sous ce seuil, voir justification ci-dessous) | **warning-only pour le DOSAGE uniquement** — aucun chemin vers `pump_controller`, erreur de pH induite ≈ 0,001 ([ADR-0074](../adr/0074-temperature-figee-statu-quo-instrumente.md)). ⚠️ Le drapeau **gate néanmoins le planning de filtration** : `filtration.cpp:162` bloque tout recalcul pendant l'épisode, `:405` (`isSampleEligible`) rejette les échantillons de T° (bug-142). Depuis feature-068, l'état est aussi **exposé** (`/data`, WS, MQTT, badge UI) |
+
+### Fenêtre de 24 h — justification physique (bug-142)
+
+Le DS18B20 fonctionne en **12 bits** : son pas de quantification est **0,0625 °C**
+(`g_ds18b20ResolutionBits = 12`). La bande du détecteur température,
+`kTempFrozenEpsilonC = 0,03 °C`, est **plus étroite qu'un pas** — elle ne peut
+donc contenir qu'**une seule valeur possible**. Le détecteur ne dit pas « la
+mesure varie peu », il dit « N lectures sont tombées exactement sur le même
+seizième de degré ».
+
+Mesuré sur l'appareil le 2026-10-07 (journal système + `/get-history?range=24h`) :
+la dérive de température la plus rapide observée est de **0,05 °C/h**, soit
+**1 h 15** pour franchir un seul pas de quantification. La nuit, à l'équilibre
+thermique, la dérive tend vers zéro et le pas peut tenir **indéfiniment**. Une
+fenêtre de 30 min — deux fois et demie plus courte que le temps minimal pour
+franchir un pas au meilleur moment de la journée — déclenchait donc le
+détecteur **tous les jours** sur une sonde parfaitement saine.
+
+**12 h a été envisagé puis écarté sur données** : le 2026-10-07, le bassin est
+resté affiché à 20,5 °C de 08:00 à 13:00 locales, soit **six heures** — une
+fenêtre de 12 h aurait pu être avalée par une nuit calme suivie d'une matinée
+calme. **24 h** est le seul seuil adossé à une garantie physique plutôt qu'à
+une marge choisie à vue : sur un cycle jour/nuit complet, un bassin extérieur
+franchit plusieurs pas de quantification (six le 2026-10-07). Une sonde qui
+rend la même valeur sur 24 h complètes n'a plus de scénario sain — c'est
+réellement une panne.
+
+`kTempFrozenEpsilonC` reste **inerte** sous 0,0625 °C : `0.03` et `0.001`
+produiraient rigoureusement le même comportement, puisqu'un seul pas tient de
+toute façon dans la bande. Le seul levier réel de ce détecteur est la
+**fenêtre** (`kTempFrozenSamples`), jamais l'epsilon.
+
+⚠️ **Plafond `uint16_t`** : `_runCount` (`sensor_filter.h`) sature à
+`UINT16_MAX`, ce qui plafonne la fenêtre exploitable à **~36 h** (64 800
+lectures à 2 s). Au-delà, le seuil n'est **jamais** atteint et le détecteur ne
+devient pas plus strict : il **s'éteint en silence**. `kTempFrozenSamples =
+43 200` ne garde qu'une marge de **×1,5** — écrire `86400` (48 h) pour « être
+prudent » replierait silencieusement la constante modulo 2¹⁶ à **20 864**
+(11 h 35), cassant la détection au lieu de la renforcer. La garde réelle
+n'est donc pas une borne haute mais une borne **basse** sur la durée dérivée :
+`static_assert(kTempFrozenWindowSec >= 20 * 3600)` dans `constants.h` —
+si la durée tombe sous ~20 h, c'est que la constante a été repliée ou mal
+réglée.
+
+**Cas du redémarrage** : `_runCount` repart de zéro à chaque boot. Un appareil
+qui redémarre plus souvent que toutes les 24 h ne détectera **jamais** une
+sonde figée par ce mécanisme. Accepté (aucun effet dosage, et le projet vise
+justement à réduire les redémarrages) — mais c'est une limite réelle, à
+connaître avant de se fier à ce détecteur comme seul filet de sécurité
+matériel.
 
 ### Choix d'epsilon = ½ LSB (validation pool-chemistry)
 
@@ -865,6 +915,12 @@ Un capteur **vivant** bruite d'au moins ±1 LSB (quantification + bruit sonde + 
 #### Exposition de la sonde de température figée — feature-068
 
 Ajoutée **sans changer aucun comportement** ([ADR-0074](../adr/0074-temperature-figee-statu-quo-instrumente.md)) :
+
+> **bug-142 (v2.56.1)** a porté la fenêtre de détection de 30 min à 24 h (voir
+> [la justification physique ci-dessus](#fenêtre-de-24-h--justification-physique-bug-142))
+> sans toucher à ce tableau ni au contrat des champs — seule la **fréquence**
+> de passage à `ON` / `true` change, de quotidienne à quasi nulle sur une
+> sonde saine.
 
 | Canal | Détail |
 |---|---|
@@ -912,7 +968,7 @@ Ajoutée **sans changer aucun comportement** ([ADR-0074](../adr/0074-temperature
 | `kSensorFrozenSamples` | `30` | Lectures acceptées consécutives dans la bande → figé (≈ 2,5 min à 5 s — feature-022) |
 | `kSensorFrozenEpsilonPh` | `0.0005` pH | Bande figé pH = ½ LSB EZO (résolution 0.001) |
 | `kSensorFrozenEpsilonOrp` | `0.05` mV | Bande figé ORP = ½ LSB EZO (résolution 0.1) |
-| `kTempFrozenSamples` / `kTempFrozenEpsilonC` | `900` / `0.03` °C | Figé T° eau (≈ 30 min à 2 s, < ½ LSB DS18B20) — warning-only |
+| `kTempFrozenSamples` / `kTempFrozenEpsilonC` | `43200` / `0.03` °C | Figé T° eau (≈ **24 h** à 2 s, < ½ LSB DS18B20, bug-142 — était `900` / 30 min) — warning-only pour le DOSAGE, gate le planning de filtration |
 | `kPhOffsetMin` / `kPhOffsetMax` | `-0.50` / `+0.50` pH | Bornes de l'offset logiciel pH (feature-067) — validation serveur, refus 400 hors plage |
 | `kSensorTraceBufferSize` | `300` | Taille ring buffer trace signaux (~8,4 Ko RAM depuis feature-067) |
 | `kSensorTraceMaxSamplesPerPage` | `50` | Borne d'une page de `GET /debug/sensor_trace` (~3,5 Ko JSON — v2.10.1) |

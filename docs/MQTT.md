@@ -688,12 +688,12 @@ Publié à `homeassistant/binary_sensor/poolcontroller_ph_filter_stuck/config` (
 
 | Topic | Payload | Condition |
 |-------|---------|-----------|
-| `{base}/temp_sensor_frozen` | `ON` / `OFF` | `ON` quand la sonde DS18B20 « eau » a rendu `kTempFrozenSamples` = **900** lectures **valides** consécutives dans une bande < `kTempFrozenEpsilonC` = **0,03 °C** (≈ **30 min** à 2 s), **et** que la sonde « eau » rend bien une valeur. `OFF` sinon. |
+| `{base}/temp_sensor_frozen` | `ON` / `OFF` | `ON` quand la sonde DS18B20 « eau » a rendu `kTempFrozenSamples` = **43 200** lectures **valides** consécutives dans une bande < `kTempFrozenEpsilonC` = **0,03 °C** (≈ **24 h** à 2 s, bug-142 — était 900 / 30 min), **et** que la sonde « eau » rend bien une valeur. `OFF` sinon. |
 
 - Miroir du champ `tempFrozenAlarm` de [`GET /data`](API.md) et du WebSocket, **avec un décalage volontaire de 60 s à la retombée** (voir ci-dessous).
 - Publication **dédoublonnée** (`safePublishDedup`, slot 28) : émise au changement d'état seulement, première publication forcée après connexion. Retain ⇒ Home Assistant retrouve l'état après un redémarrage du contrôleur ou de HA.
 
-> ⚠️ **Cet état n'inhibe RIEN.** L'erreur de pH induite par une compensation de température figée vaut **≈ 0,001 pH**, soit 2 à 3 ordres de grandeur sous le premier seuil de régulation : le dosage, la compensation `RT` et le planning automatique de filtration sont **inchangés**. Chiffrage et motif : [ADR-0074](adr/0074-temperature-figee-statu-quo-instrumente.md). **Ne pas câbler ce topic comme une condition de sécurité** — c'est un signal de **maintenance** (remplacer le capteur), pas d'urgence.
+> ⚠️ **Cet état n'inhibe aucun DOSAGE.** L'erreur de pH induite par une compensation de température figée vaut **≈ 0,001 pH**, soit 2 à 3 ordres de grandeur sous le premier seuil de régulation : ni le dosage, ni la compensation `RT` ne changent. Chiffrage et motif : [ADR-0074](adr/0074-temperature-figee-statu-quo-instrumente.md). En revanche il **gate le planning automatique de filtration** (bug-142) : `filtration.cpp:162` bloque tout recalcul pendant l'épisode, `:405` rejette les échantillons de T°. **Ne pas câbler ce topic comme une condition de sécurité chimique** — c'est un signal de **maintenance** (remplacer le capteur), pas d'urgence.
 
 **Maintien de 60 s à la publication — et NULLE PART ailleurs** (`kMqttTempFrozenHoldMs`, [`src/mqtt_manager.h`](../src/mqtt_manager.h)). La sortie de l'état figé est **immédiate côté firmware, sans hystérésis** (décision du visa : le drapeau est informatif, un battement ne coûte rien chimiquement, et une hystérésis ajouterait un second seuil à régler). Mais une entité HA qui clignote est inutilisable en automatisation : l'état `ON` est donc **maintenu 60 s** après sa retombée, **uniquement sur ce chemin de publication**. Aucune décision de dosage, aucun champ `/data`, aucune trame WS n'en dépend — les trois voient la valeur **instantanée**.
 

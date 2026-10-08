@@ -2,6 +2,46 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [2.56.1] - 2026-10-07
+
+> **Ce qui change pour vous** : l'avertissement « Sonde température figée »
+> ne se déclenche plus à tort une à deux fois par jour sur une sonde saine.
+> Au-delà du badge, il y a un effet réel que ce correctif supprime : tant que
+> ce faux avertissement était affiché, le planning automatique de filtration
+> n'était plus recalculé.
+
+### Firmware
+- **Capteurs** : la fenêtre de détection « sonde de température eau figée »
+  passe de 900 lectures (30 min) à 43 200 lectures (≈ 24 h,
+  `kTempFrozenSamples`). Mesuré sur l'appareil le 2026-10-07 : la dérive la
+  plus rapide observée (0,05 °C/h) demande 1 h 15 pour franchir un seul pas
+  de quantification du DS18B20 (0,0625 °C) — une fenêtre de 30 min
+  déclenchait l'alarme tous les jours sur une sonde parfaitement saine.
+  Aucun contrat public ne change (`/data`, WebSocket `tempFrozenAlarm`,
+  MQTT `{base}/temp_sensor_frozen`) : seule la fréquence de passage à `ON`
+  change.
+- **Filtration** : corollaire du point précédent — le planning automatique,
+  qui était bloqué pendant chaque faux épisode « figée »
+  (`filtration.cpp:162` et `:405`), se recalcule désormais normalement.
+
+### Documentation
+- `docs/subsystems/sensors.md` : nouveau seuil (43 200 / 24 h) et
+  justification physique complète (quantification DS18B20, dérive mesurée,
+  choix de 24 h plutôt que 12 h, plafond `uint16_t` et garde associée, cas
+  du redémarrage) ; correction de l'affirmation « aucun impact » — le
+  drapeau gate bien le planning de filtration.
+- `docs/MQTT.md`, `docs/API.md`, `docs/features/page-temperature.md`,
+  `docs/features/page-dashboard.md`, `docs/subsystems/ws-manager.md` :
+  propagation du nouveau seuil et correction de la même affirmation.
+- `docs/adr/0074-temperature-figee-statu-quo-instrumente.md` : note de
+  suite datée (bug-142) — la décision warning-only pour le dosage est
+  confirmée, mais « il n'y avait pas de seuil à durcir » et « le drapeau ne
+  déclenche rien » sont infirmés par les faits.
+- `docs/user/src/guide-utilisation.html` : mention de l'avertissement mise
+  à jour (fenêtre 24 h, effet réel sur le planning de filtration).
+
+---
+
 ## [2.56.0] - 2026-10-05
 
 > **Ce qui change pour vous** : le volume quotidien de la Chloration de

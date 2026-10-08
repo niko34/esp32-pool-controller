@@ -133,6 +133,17 @@ Il y a donc **toujours** une valeur envoyée dans `RT`, et l'étage de la cascad
 >
 > **La conclusion de cet ADR est inchangée** : une sonde de température figée reste rendue visible et rien d'autre n'est fait ; le planning de filtration reste, en fait, immunisé contre une sonde figée — par un mécanisme différent et plus robuste. La ligne `isnan(referenceTemp) ⇒ return` du tableau ci-dessus reste, elle, exacte (portée désormais par `resolveReferenceTemp()` / `selectFiltrationRefTemp()`, verdict `NoSample`).
 
+> **Note additive 2026-10-07 (bug-142) — la décision tient, deux affirmations annexes ne tiennent plus**
+>
+> La décision **warning-only pour le DOSAGE** est **confirmée** : c'est précisément parce que `pump_controller` ne dépend d'aucun chemin de ce drapeau que le correctif ci-dessous a pu être livré sans repasser par un arbitrage chimique lourd.
+>
+> Deux phrases de cet ADR sont en revanche **infirmées par les faits**, et il faut le dire plutôt que les laisser contredire silencieusement la suite :
+>
+> 1. **« Il n'y avait pas de seuil à durcir »** (section Alternatives, ci-dessus) — **faux**, avec le recul. Le 2026-10-07, mesure sur l'appareil en production : `kTempFrozenSamples = 900` (30 min) déclenchait le badge **tous les jours** sur une sonde parfaitement saine (dérive mesurée 0,05 °C/h, 1 h 15 pour franchir un seul pas de quantification DS18B20). Le seuil **a bien dû être durci**, porté à 43 200 lectures (24 h, `bug-142`). La preuve de terrain qui l'imposait était simplement absente le 2026-09-07 : ce n'est pas une volte-face sur la décision pH, c'est un fait nouveau, mesuré après coup.
+> 2. **« Le drapeau ne déclenche rien »** — **faux** depuis `bug-126` (note du 2026-09-13 ci-dessus, déjà présente dans ce fichier) et non corrigé ailleurs dans la doc jusqu'à `bug-142` : `isTemperatureFrozen()` **gate le planning de filtration** — `filtration.cpp:162` bloque tout recalcul pendant l'épisode, `filtration.cpp:405` (`isSampleEligible`) rejette les échantillons de température. Le faux positif quotidien de 2026-09-07 à 2026-10-07 a donc **réellement dégradé le planning**, pas seulement affiché un badge superflu. La note du 2026-09-13 qualifiait déjà ce mécanisme d'« immunisation » — ce n'est pas contredit ici, seulement le mot « rien » de la section Alternatives, qui ne tenait pas compte de cette note plus récente.
+>
+> Rien n'est inversé : la régulation pH reste **fail-open** sur ce drapeau, par décision assumée. Doc alignée dans [`docs/subsystems/sensors.md`](../subsystems/sensors.md#exposition-de-la-sonde-de-température-figée--feature-068), [`docs/MQTT.md`](../MQTT.md), [`docs/API.md`](../API.md), [`docs/features/page-temperature.md`](../features/page-temperature.md), [`docs/features/page-dashboard.md`](../features/page-dashboard.md), [`docs/subsystems/ws-manager.md`](../subsystems/ws-manager.md).
+
 ## Références
 
 - Code : [`src/temp_compensation_logic.h`](../../src/temp_compensation_logic.h) (logique pure : clamp, fenêtre, cascade — [ADR-0017](0017-logique-metier-pure-humble-object-testabilite.md)), [`src/sensors.cpp`](../../src/sensors.cpp) (`_resolveEzoCompensationTemp`, clamps 3/4 et 4/4), [`src/constants.h`](../../src/constants.h) (bornes et leurs motifs), [`src/filtration.cpp`](../../src/filtration.cpp) et [`src/schedule_logic.cpp`](../../src/schedule_logic.cpp) (le planning déjà immunisé), [`src/atlas_ezo.cpp`](../../src/atlas_ezo.cpp) (`RT,<t>` — l'interdit), [`src/mqtt_manager.h`](../../src/mqtt_manager.h) (`kMqttTempFrozenHoldMs`)

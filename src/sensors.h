@@ -160,8 +160,9 @@ public:
   bool isPhSensorFrozen() const;
   bool isOrpSensorFrozen() const;
   // true si kTempFrozenSamples lectures DS18B20 valides de la sonde "eau" sont
-  // contenues dans une bande < kTempFrozenEpsilonC. Warning-only : AUCUN impact
-  // dosage (effets réels : compensation EZO pH + planning auto filtration).
+  // contenues dans une bande < kTempFrozenEpsilonC. bug-142 [A8] : « warning-only »
+  // ne vaut QUE pour le dosage — aucun chemin vers pump_controller. Le drapeau
+  // gate néanmoins le planning de filtration (filtration.cpp:162 et :405).
   bool isTemperatureFrozen() const;
 
   // Reset manuel des filtres (appelé après calibration EZO réussie, ou debug).
@@ -407,7 +408,9 @@ private:
 
   // ===== feature-022 Passe 2 : détecteur figé dédié température =====
   // Alimenté par les lectures DS18B20 VALIDES (brutes, NON arrondies) de la
-  // sonde "eau" dans _readDs18b20s(). 900 lectures à 2 s = 30 min.
+  // sonde "eau" dans _readDs18b20s(). bug-142 : 43 200 lectures à 2 s ≈ 24 h
+  // (cycle jour/nuit complet) — était 900 lectures (30 min), faux positif
+  // quotidien sur sonde saine (voir constants.h pour la justification).
   FrozenDetector _waterTempFrozen{kTempFrozenSamples, kTempFrozenEpsilonC};
 
   // Flags edge-triggered pour les logs SENSOR_FROZEN (une seule transition loggée)

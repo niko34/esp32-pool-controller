@@ -298,7 +298,10 @@ void SensorManager::_readDs18b20s() {
   static unsigned long lastTempRead = 0;
 
   const unsigned long TEMP_CONVERSION_MS = (unsigned long)g_ds18b20ConversionMs + 50;
-  const unsigned long TEMP_REQUEST_INTERVAL_MS = 2000;
+  // bug-142 : cadence alignée sur kTempFrozenSamplePeriodMs (constants.h) — le
+  // static_assert qui protège la fenêtre du détecteur figé T° suppose cette
+  // valeur, ne pas les laisser diverger.
+  const unsigned long TEMP_REQUEST_INTERVAL_MS = kTempFrozenSamplePeriodMs;
 
   // 1) Lancer une conversion si aucune n'est en cours et si l'intervalle est passé.
   //    On prend le mutex I²C uniquement le temps de l'envoi (la conversion se fait
@@ -326,8 +329,12 @@ void SensorManager::_readDs18b20s() {
           _sondes[i].lastTempRaw = roundf(measuredTemp * 10.0f) / 10.0f;
           anyValidRead = true;
           // feature-022 : alimente le détecteur figé T° eau avec la valeur BRUTE
-          // (non arrondie au 0.1 °C — l'epsilon 0.03 °C est < ½ LSB DS18B20 0.0625,
-          // le bruit de quantification d'une sonde vivante doit casser le run).
+          // (non arrondie au 0.1 °C). bug-142 : le bruit de quantification ne
+          // casse le run QUE si la valeur vraie longe une frontière de pas
+          // (0.0625 °C) — loin d'une frontière, cas normal d'une masse d'eau de
+          // plusieurs dizaines de m³, le DS18B20 rend une constante parfaite
+          // pendant des heures sans que ce soit une panne. C'est pour ça que la
+          // fenêtre (kTempFrozenSamples), et non l'epsilon, est le vrai levier.
           // Seules les lectures VALIDES alimentent le détecteur (frozen persiste
           // pendant une rafale de lectures invalides — cohérent condition #4).
           if (_sondes[i].role == SondeRole::Water) {
@@ -892,7 +899,11 @@ void SensorManager::_checkStaleAndLog() {
 // Nommage explicite [SENSOR_FROZEN] (pool-chemistry condition #3) : la garde
 // mutualisée FilterNotReady qui bloque le dosage ne dit pas la cause — c'est
 // CE log qui porte le diagnostic. critical pour pH/ORP (dosage inhibé),
-// warning pour la température (aucun impact dosage). Log info à la levée.
+// warning pour la température. Log info à la levée.
+// bug-142 [A8] : « warning-only » ne vaut que pour le DOSAGE — aucun chemin de
+// `pump_controller` ne dépend de isTemperatureFrozen(). Le drapeau n'est pas
+// inerte pour autant : il gate le planning de filtration (filtration.cpp:162
+// bloque tout recalcul, filtration.cpp:405 rejette les échantillons de T°).
 
 void SensorManager::_checkFrozenAndLog() {
   // pH — transition vers figé → critical, levée → info
@@ -923,14 +934,17 @@ void SensorManager::_checkFrozenAndLog() {
     _orpFrozenLogged = false;
   }
 
-  // Température eau — warning-only (aucun impact dosage)
+  // Température eau — warning-only pour le DOSAGE uniquement (aucun chemin
+  // pump_controller) ; le drapeau gate néanmoins le planning de filtration
+  // (filtration.cpp:162 et :405, bug-126/bug-142).
   const bool tempFrozen = _waterTempFrozen.frozen();
   if (tempFrozen && !_tempFrozenLogged) {
-    systemLogger.warning("[SENSOR_FROZEN] Sonde T° eau figée : " +
-                         String(kTempFrozenSamples) + " lectures dans une bande < " +
-                         String(kTempFrozenEpsilonC, 2) + " °C autour de " +
-                         String(getWaterTemperatureRaw(), 1) + " °C" +
-                         " — compensation pH et planning filtration sur valeur figée");
+    systemLogger.warning("[SENSOR_FROZEN] Sonde T° eau figée : même valeur (" +
+                         String(getWaterTemperatureRaw(), 1) + " °C) sur " +
+                         String(kTempFrozenSamples) + " lectures consécutives (~" +
+                         String(kTempFrozenWindowHours) + " h) — vérifier la sonde : "
+                         "connecteur, câble, immersion. Le dosage n'est pas affecté ; "
+                         "le planning de filtration n'est plus recalculé.");
     _tempFrozenLogged = true;
   } else if (!tempFrozen && _tempFrozenLogged) {
     systemLogger.info("[SENSOR_FROZEN] Sonde T° eau à nouveau vivante — détection figée levée");
