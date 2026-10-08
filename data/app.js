@@ -3407,7 +3407,10 @@
 
   function updateProductUI(data) {
     function updateCard(prefix, remainingMl, containerMl, thresholdMl) {
-      const pct = containerMl > 0 ? Math.max(0, Math.min(100, (remainingMl / containerMl) * 100)) : 0;
+      // feature-143 : `containerMl` absent (donnée non servie) ne doit JAMAIS
+      // produire un chiffre inventé — `--` et barre à 0 %, c'est tout.
+      const hasContainer = containerMl != null && containerMl > 0;
+      const pct = hasContainer ? Math.max(0, Math.min(100, (remainingMl / containerMl) * 100)) : 0;
       const bar = $(`#product-${prefix}-bar`);
       const remEl = $(`#product-${prefix}-remaining`);
       const totEl = $(`#product-${prefix}-total`);
@@ -3420,7 +3423,7 @@
         else if (thresholdMl > 0 && remainingMl <= thresholdMl) bar.classList.add('is-low');
       }
       if (remEl) remEl.textContent = (remainingMl / 1000).toFixed(1) + ' L';
-      if (totEl) totEl.textContent = (containerMl / 1000).toFixed(1);
+      if (totEl) totEl.textContent = hasContainer ? (containerMl / 1000).toFixed(1) : '--';
 
       if (status) {
         const isLow = thresholdMl > 0 && remainingMl <= thresholdMl;
@@ -3430,10 +3433,10 @@
     }
 
     if (data.ph_remaining_ml != null) {
-      updateCard('ph', data.ph_remaining_ml, data.ph_container_ml ?? 20000, data.ph_alert_threshold_ml ?? 2000);
+      updateCard('ph', data.ph_remaining_ml, data.ph_container_ml, data.ph_alert_threshold_ml ?? 2000);
     }
     if (data.orp_remaining_ml != null) {
-      updateCard('orp', data.orp_remaining_ml, data.orp_container_ml ?? 20000, data.orp_alert_threshold_ml ?? 2000);
+      updateCard('orp', data.orp_remaining_ml, data.orp_container_ml, data.orp_alert_threshold_ml ?? 2000);
     }
 
     // feature-110 : relevé (V, N). Ces deux clés ne sont PAS dans la trame
@@ -3468,13 +3471,13 @@
 
   function loadProductConfig(cfg) {
     if (!cfg) return;
-    const phCont = $(`#ph_container_l`);
+    // feature-143 : le champ de niveau (`*_level_l`) n'est JAMAIS pré-rempli
+    // depuis `cfg.*_container_ml` — le pré-remplir rechargerait le malentendu
+    // « il y a déjà un nombre, il doit être bon ». Il reste vide, placeholder
+    // seul, à chaque affichage.
     const phAlert = $(`#ph_alert_threshold_l`);
-    const orpCont = $(`#orp_container_l`);
     const orpAlert = $(`#orp_alert_threshold_l`);
-    if (phCont && cfg.ph_container_ml != null) phCont.value = (cfg.ph_container_ml / 1000).toFixed(1);
     if (phAlert && cfg.ph_alert_threshold_ml != null) phAlert.value = (cfg.ph_alert_threshold_ml / 1000).toFixed(1);
-    if (orpCont && cfg.orp_container_ml != null) orpCont.value = (cfg.orp_container_ml / 1000).toFixed(1);
     if (orpAlert && cfg.orp_alert_threshold_ml != null) orpAlert.value = (cfg.orp_alert_threshold_ml / 1000).toFixed(1);
 
     const phToggle = $('#ph_tracking_enabled');
@@ -3508,11 +3511,12 @@
 
   function setupProductScreen() {
     async function saveProduct(prefix) {
-      const contL = parseFloat($(`#${prefix}_container_l`)?.value);
+      // feature-143 : « Enregistrer » ne porte plus que le seuil d'alerte
+      // (et le produit déclaré, géré ailleurs) — le niveau se pose désormais
+      // uniquement via « Mettre à jour le niveau ».
       const alertL = parseFloat($(`#${prefix}_alert_threshold_l`)?.value);
-      if (isNaN(contL) || isNaN(alertL)) { showToast('Valeurs invalides', 'error'); return; }
+      if (isNaN(alertL)) { showToast('Valeurs invalides', 'error'); return; }
       const payload = {
-        [`${prefix}_container_ml`]: contL * 1000,
         [`${prefix}_alert_threshold_ml`]: alertL * 1000
       };
       const ok = await sendConfig(payload);
@@ -3524,24 +3528,35 @@
       }
     }
 
-    // feature-110 : le couple (volume injecté, démarrages pompe) ne sert qu'au
-    // changement de bidon — et c'est ce geste même qui le détruit. La
+    // feature-110 : le couple (volume injecté, démarrages pompe) ne sert qu'à la
+    // mise à jour du niveau — et c'est ce geste même qui le détruit. La
     // confirmation le présente donc à l'instant exact où il va disparaître,
     // sans rien à mémoriser au préalable. Retourne { node, text } ; `text` doit
-    // porter LES DEUX VALEURS EN CLAIR, car c'est le seul contenu affiché par
+    // porter TOUTES LES VALEURS EN CLAIR, car c'est le seul contenu affiché par
     // le repli window.confirm() des navigateurs sans <dialog>.
-    function _buildProductResetSummary(prefix, cfg) {
+    // feature-143 : `levelL` est la nouvelle ligne de tête — le niveau qui va
+    // être posé, affiché AVANT le relevé qu'il efface.
+    function _buildProductResetSummary(prefix, cfg, levelL) {
       const vTxt = fmtInjectedMl(cfg[`${prefix}_total_injected_ml`]);
       const nTxt = fmtPumpStarts(cfg[`${prefix}_starts`]);
       const anomN = Number(cfg[`${prefix}_anom`] ?? 0);
       const anomMl = Number(cfg[`${prefix}_anom_ml`] ?? 0);
+      const levelTxt = Number(levelL).toLocaleString('fr-FR', { minimumFractionDigits: 1, maximumFractionDigits: 1 });
 
       const node = document.createElement('div');
       const lines = [];
 
+      const levelP = document.createElement('p');
+      levelP.style.margin = '0 0 10px';
+      const levelStrong = document.createElement('strong');
+      levelStrong.textContent = `Nouveau niveau : ${levelTxt} L`;
+      levelP.appendChild(levelStrong);
+      node.appendChild(levelP);
+      lines.push(levelStrong.textContent, '');
+
       const intro = document.createElement('p');
       intro.style.margin = '0 0 10px';
-      intro.textContent = "Notez ces deux valeurs avant de continuer : elles servent à vérifier la précision du comptage et seront effacées.";
+      intro.textContent = "Dernière chance de noter ces valeurs : elles seront remises à zéro.";
       node.appendChild(intro);
       lines.push(intro.textContent, '');
 
@@ -3577,18 +3592,20 @@
 
       const foot = document.createElement('p');
       foot.style.margin = '10px 0 0';
-      foot.textContent = "Elles repartiront de zéro.";
+      foot.textContent = "Elles repartiront de zéro avec ce niveau comme point de départ.";
       node.appendChild(foot);
       lines.push('', foot.textContent);
 
       return { node, text: lines.join('\n') };
     }
 
-    async function resetProduct(prefix) {
-      const label = prefix === 'ph' ? 'pH' : 'chlore';
-      // Lu AVANT loadConfig() : une valeur de bidon saisie mais non enregistrée
-      // reste prise en compte par la remise à zéro, comme avant feature-110.
-      const contL = parseFloat($(`#${prefix}_container_l`)?.value) || 20;
+    async function updateLevel(prefix) {
+      const label = prefix === 'ph' ? 'pH' : 'Chlore';
+      const levelL = parseFloat($(`#${prefix}_level_l`)?.value);
+      if (isNaN(levelL) || levelL <= 0) {
+        showToast('Indiquez une quantité valide, supérieure à 0 L.', 'error');
+        return;
+      }
 
       // Config FRAÎCHE obligatoire : window._config peut provenir d'une trame WS
       // « config » PARTIELLE, et les compteurs d'anomalie (*_anom, *_anom_ml) n'y
@@ -3597,37 +3614,37 @@
       try {
         await loadConfig();
       } catch (e) {
-        showToast('Impossible de lire la configuration — réessayez', 'error');
+        showToast('Impossible de lire la configuration avant la mise à jour — réessayez.', 'error');
         return;
       }
 
-      const { node, text } = _buildProductResetSummary(prefix, window._config || {});
+      const { node, text } = _buildProductResetSummary(prefix, window._config || {}, levelL);
       const ok = await confirmDialog({
-        title: `Nouveau bidon ${label}`,
+        title: `Mettre à jour le niveau — ${label}`,
         message: text,
         messageNode: node,
-        confirmLabel: 'Remettre à zéro',
+        confirmLabel: 'Mettre à jour',
         danger: true
       });
       // Action IRRÉVERSIBLE : on ne repart que sur un « oui » explicite.
       if (ok !== true) return;
 
       const saved = await sendConfig({
-        [`${prefix}_container_ml`]: contL * 1000,
+        [`${prefix}_container_ml`]: levelL * 1000,
         [`${prefix}_reset_container`]: true
       });
       if (saved) {
-        showToast(`Bidon ${label} réinitialisé`, 'success');
+        showToast(`Niveau ${prefix === 'ph' ? 'pH' : 'chlore'} mis à jour`, 'success');
         loadConfig().catch(() => {});
       } else {
-        showToast('Erreur lors de la réinitialisation', 'error');
+        showToast('Erreur lors de la mise à jour', 'error');
       }
     }
 
     $('#product-ph-save')?.addEventListener('click', () => saveProduct('ph'));
     $('#product-orp-save')?.addEventListener('click', () => saveProduct('orp'));
-    $('#product-ph-reset')?.addEventListener('click', () => resetProduct('ph'));
-    $('#product-orp-reset')?.addEventListener('click', () => resetProduct('orp'));
+    $('#product-ph-update-level')?.addEventListener('click', () => updateLevel('ph'));
+    $('#product-orp-update-level')?.addEventListener('click', () => updateLevel('orp'));
 
     $('#ph_tracking_enabled')?.addEventListener('change', async (e) => {
       const enabled = e.target.checked;

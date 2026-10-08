@@ -41,7 +41,23 @@ bool AuthManager::secureTokenEquals(const String& candidate) const;
 
 Deux consommateurs :
 1. **Auth HTTP** — `checkTokenAuth()` ([`auth.cpp:126`](../../src/auth.cpp)) sur le header `X-Auth-Token`.
-2. **Auth WebSocket** — `WsManager::_onData()` ([`ws_manager.cpp:114`](../../src/ws_manager.cpp)) via `authManager.secureTokenEquals(token)` sur le message `{"type":"auth","token":"..."}`. Historiquement le WS comparait le token en `!=` (court-circuit) — corrigé en v2.11.2 via l'API publique.
+2. **Auth WebSocket** — `WsManager::_onData()` ([`ws_manager.cpp`](../../src/ws_manager.cpp)) via `authManager.secureTokenEquals(token)` sur le message `{"type":"auth","token":"..."}`. Historiquement le WS comparait le token en `!=` (court-circuit) — corrigé en v2.11.2 via l'API publique.
+
+> ⚠️ Référence `ws_manager.cpp:114` **retirée** (v2.57.0, bug-081) : le fichier a été
+> largement remanié (registre `_authRegistry` + envoi ciblé) et ce numéro de ligne ne pointe
+> plus sur `_onData()`. Au-delà de la comparaison à temps constant ci-dessus, bug-081
+> corrige un défaut **adjacent** : un client WS authentifié n'était **ciblé nulle part** —
+> `textAll()` diffusait à tous les clients connectés dès qu'au moins un était authentifié.
+> Deux conséquences côté `auth` :
+> - **Ciblage** — les trois broadcasts WS passent désormais par
+>   `AsyncWebSocket::text(uint32_t id, AsyncWebSocketSharedBuffer)` sur les ids de
+>   `_authRegistry`, et plus par `textAll()`. Détail : [ws-manager.md](ws-manager.md#bug-081--diffusion-ciblée-sur-registre-au-lieu-de-textall).
+> - **Révocation** — `WsManager::revokeAllAuthenticated()` est appelée depuis **ce** module
+>   (`web_routes_auth.cpp`, `POST /auth/regenerate-token`) et depuis `web_routes_config.cpp`
+>   (bascule `auth_enabled` faux→vrai) : une rotation de token ou une activation de
+>   l'authentification révoque immédiatement tout client WS déjà authentifié avec
+>   l'ancien état, qui doit ré-authentifier. Sans elle, le keepalive WS (30 s) aurait
+>   maintenu indéfiniment une session authentifiée avec un token révoqué.
 
 Le code mort de debug (`maskedReceived` / `maskedExpected`) a été supprimé au passage ; seul le masquage volontaire des 8 premiers caractères pour les logs de génération subsiste (le token n'est **jamais** loggué en clair).
 

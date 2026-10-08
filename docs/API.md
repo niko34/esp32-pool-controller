@@ -297,13 +297,28 @@ curl -u admin:monmotdepasse http://poolcontroller.local/data
     "flow255": [74.0, 74.0]
   },
   "ph_tracking_enabled": true,
+  "ph_container_ml": 5000,
   "ph_remaining_ml": 1500,
   "ph_alert_threshold_ml": 500,
   "orp_tracking_enabled": true,
+  "orp_container_ml": 5000,
   "orp_remaining_ml": 3200,
   "orp_alert_threshold_ml": 1000
 }
 ```
+
+> **`ph_container_ml` / `orp_container_ml` ajoutés à `/data` en v2.59.0 (feature-143).**
+> Ces deux clés existaient déjà dans `GET /get-config` et dans la trame WebSocket
+> `config` — elles manquaient seulement à `/data`. C'était la **4ᵉ récidive** du motif
+> de parité `/data` ↔ trame WS documenté plus haut : la sentinelle de parité
+> (`test/test_native_ws_data_parity/`) les déclarait comme **exception dual-sourcée**
+> légitime (« RÉGLAGE, servi par `/get-config` »), un raisonnement juste sur le papier
+> et **faux en pratique**, parce que l'interface recharge la carte Produits à **chaque**
+> charge `/data` (toutes les 30 s), pas seulement au chargement de la configuration.
+> L'exception a été **retirée** de la sentinelle plutôt que contournée — c'est le
+> mécanisme de détection qui a permis de la repérer, pas un oubli de garde. Voir
+> [docs/subsystems/ws-manager.md](subsystems/ws-manager.md#le-second-axe-de-parité--data--sensor_data-parite-data)
+> et [docs/features/page-dosages.md](features/page-dosages.md).
 
 > **v2.21.0 ([ADR-0043](adr/0043-dosage-proportionnel-de-temps-amplitude-calibree.md)) — état de caractérisation des pompes**, 4 champs ajoutés (par **chimie** — le firmware résout l'affectation `ph_pump`/`orp_pump`) :
 >
@@ -1803,6 +1818,21 @@ Flux temps réel basse latence. L'ESP32 pousse un message JSON à chaque changem
 ```js
 const ws = new WebSocket('ws://poolcontroller.local/ws');
 ```
+
+> ⚠️ **Authentification — aucune trame avant authentification réussie (bug-081, v2.57.0)**.
+> Quand `auth_enabled = true`, la connexion s'ouvre mais **aucun message n'est émis** tant
+> que le client n'a pas envoyé `{"type":"auth","token":"..."}` avec un token valide (comparé
+> à temps constant, voir [auth.md](subsystems/auth.md)) — ni `sensor_data`, ni `config`, ni
+> `log`. Jusqu'en v2.56.x, un client connecté sans s'authentifier recevait quand même toutes
+> les trames dès qu'**un autre** client légitime était connecté (divulgation en lecture :
+> mesures pH/ORP, états de dosage, volumes injectés — voir [CHANGELOG](../CHANGELOG.md) et
+> [ws-manager.md](subsystems/ws-manager.md#bug-081--diffusion-ciblée-sur-registre-au-lieu-de-textall)).
+> **Comportement préservé quand `auth_enabled = false`** : tout client connecté à `/ws` est
+> autorisé d'emblée, comme avant.
+>
+> **Changement observable pour un client en excès** : au-delà de `kWsMaxClients` clients
+> *authentifiés* simultanés, la connexion est **fermée** par le firmware plutôt que servie
+> en silence — voir [ws-manager.md](subsystems/ws-manager.md#bug-081--diffusion-ciblée-sur-registre-au-lieu-de-textall).
 
 **Message d'état courant** (poussé à la connexion puis à chaque changement)
 

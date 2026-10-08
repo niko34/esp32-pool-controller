@@ -13,14 +13,20 @@ Bus de diffusion temps réel vers tous les clients UI connectés. Push **toutes 
 ```cpp
 void begin(AsyncWebServer* server);
 void update();                         // cleanup + push capteurs 5s + warn throttlé pushes sautés
-void broadcastSensorData();            // push immédiat, toutes données
-void broadcastConfig();                // push immédiat, config actuelle
-void broadcastLog(const LogRecord&);   // push un log — CODE MORT, voir ci-dessous (type renommé LogEntry → LogRecord en feature-129)
+bool broadcastSensorData();            // push immédiat, toutes données — cible UNIQUEMENT les clients authentifiés (bug-081)
+bool broadcastConfig();                // push immédiat, config actuelle — idem
+bool broadcastLog(const LogRecord&);   // push un log — CODE MORT, voir ci-dessous (type renommé LogEntry → LogRecord en feature-129)
+void revokeAllAuthenticated();         // bug-081 : révoque tous les clients authentifiés (bascule auth_enabled, rotation de token)
 bool hasClients() const;
 size_t clientCount() const;            // nb clients connectés (diagnostic, v2.8.1)
 uint32_t skippedPushCount() const;     // cumul des pushes sautés : garde heap OU bad_alloc rattrapé (v2.11.1 / v2.14.0)
 uint32_t oversizedFrameCount() const;  // cumul des trames > kWsFrameBufBytes — pushes sautés, JAMAIS tronqués (v2.14.0)
+uint32_t registryFullCount() const;    // bug-081 : cumul des connexions refusées (registre authentifié saturé, kWsMaxClients)
 ```
+
+> **bug-081 (v2.57.0)** : les trois `broadcastXxx()` renvoient désormais `bool` (envoi
+> réussi vers au moins un client) — valeur informative, aucun appelant existant ne
+> l'exploite aujourd'hui. Voir [la section dédiée](#bug-081--diffusion-ciblée-sur-registre-au-lieu-de-textall).
 
 > ⚠️ **Code mort — `broadcastLog()` / `Logger::setLogCallback()`** (constat investigation churn-heap, 2026-07-28, **toujours vrai après feature-129**) : le hook `systemLogger.setLogCallback()` ([`src/logger.h`](../../src/logger.h)) n'a **aucun appelant** depuis son introduction en 2.7.0 (commit `aedd007` — ajouté sans jamais être branché). `broadcastLog()` n'est donc **jamais exécuté** : aucun message `type: "log"` n'est émis, le handler UI correspondant (`data/app.js`) ne reçoit rien, et la page Journal utilise le polling HTTP `/get-logs`. La purge (ou le branchement volontaire avec garde anti-récursion) est **reportée** à un futur cycle — en attendant, `broadcastLog()` porte quand même la garde heap v2.11.1 par cohérence, et son **type de paramètre a été maintenu à jour** (`LogEntry` → `LogRecord`, feature-129) malgré l'absence d'appelant : voir ci-dessous.
 
@@ -133,12 +139,135 @@ Le `out.reserve(kWsSensorJsonReserveBytes = 2048)` de la String de `_buildSensor
 Le WebSocket exige un token valide. Architecture :
 1. Client appelle `GET /auth/token` (HTTP, avec Basic Auth) pour obtenir un token court.
 2. Client ouvre `ws://.../ws?token=<token>` (ou envoie `{"type":"auth","token":"..."}` après connexion).
-3. `_authenticatedClients` (std::set<uint32_t>) garde les client IDs validés.
-4. Les messages des clients non-authentifiés sont ignorés.
+3. `_authRegistry` (`WsClientRegistry<kWsRegistrySlots>`, [`ws_client_registry_logic.h`](../../src/ws_client_registry_logic.h)) garde les client IDs validés.
+4. Les messages des clients non authentifiés sont ignorés.
 
 ⚠️ La vérification du token dans `_onData()` passe par `authManager.secureTokenEquals()` — **comparaison à temps constant**, même exigence que l'auth HTTP (v2.11.2, feature-028 ; jamais de `==` / `!=` direct sur le token, voir [auth.md](auth.md#comparaison-de-token-à-temps-constant-v2112-feature-028)). Token rejeté → log `[WS] Token rejeté` + fermeture de la connexion.
 
+⚠️ **Avant bug-081 (v2.57.0), `_authenticatedClients` (`std::set<uint32_t>`) ne servait
+qu'à décider « au moins un client authentifié existe-t-il ? » (garde de non-vacuité avant
+`textAll()`) — il n'était jamais consulté pour choisir *qui* reçoit la trame. `textAll()`
+diffusait aux clients connectés à `/ws`, authentifiés ou non. Voir la section dédiée
+[bug-081](#bug-081--diffusion-ciblée-sur-registre-au-lieu-de-textall) ci-dessous.**
+
 Voir [`ws_manager.cpp`](../../src/ws_manager.cpp) `_onClientConnect()` et `_onData()`.
+
+## bug-081 — diffusion ciblée sur registre, au lieu de `textAll()`
+
+**Le défaut (jusqu'à la v2.56.1 incluse)** : `WsManager::update()` ne vérifiait que
+« `_authenticatedClients` n'est pas vide » avant d'appeler `_ws->textAll(...)` — qui diffuse
+à **tous** les clients connectés à la socket `/ws`, authentifiés ou non. Un client qui ne
+s'authentifiait jamais recevait donc toutes les trames (`sensor_data`, `config`) dès qu'**un
+autre** client légitime était connecté : mesures pH/ORP, états de dosage, volumes injectés,
+causes de refus — 92 champs en clair. Capturé et documenté par la spec
+[bug-081](../../specs/features/done/bug-081-websocket-diffuse-aux-clients-non-authentifies.md).
+Corrigé en v2.57.0.
+
+### Ciblage par identifiant : `AsyncWebSocket::text(uint32_t id, ...)`
+
+Les trois broadcasts (`broadcastSensorData`, `broadcastConfig`, `broadcastLog`) passent
+désormais par `WsManager::_sendToAuthenticated(buf, len)`, qui :
+1. prend un **snapshot** des ids de `_authRegistry` sur la **pile** de `loopTask` (tableau
+   `uint32_t ids[kWsRegistrySlots]`) ;
+2. construit **un seul** `std::shared_ptr<std::vector<uint8_t>>` pour toute la trame ;
+3. appelle `_ws->text(id, sharedBuffer)` pour chaque id du snapshot.
+
+**Pourquoi `AsyncWebSocket::text(uint32_t id, AsyncWebSocketSharedBuffer)` est sûr depuis
+`loopTask`, là où itérer `getClients()` est un UB** (piège déjà documenté plus haut,
+v2.11.1) : cette surcharge prend le verrou privé du fork `_ws_clients_lock` et résout
+`client(id)` **sous ce verrou**, en rendant `false` si le client a disparu entre le
+snapshot et l'envoi (déconnexion concurrente). Elle n'expose donc **jamais** la liste
+interne à l'appelant — contrairement à une itération manuelle de `getClients()`, qui reste
+interdite.
+
+### Pourquoi le registre `_authRegistry` est SANS verrou applicatif (ne pas « améliorer »)
+
+`_queueMessage` du fork, avec `_closeWhenFull = true` (`setCloseClientOnQueueFull`, posé à
+la connexion, v2.11.1) : file saturée → `lock.unlock(); c->close();` → `AsyncClient::_close()`
+(`_discard_cb` **synchrone**) → `_handleDisconnect` → destructeur du client → événement
+`WS_EVT_DISCONNECT` → notre `_onEvent()` → **notre propre `_authRegistry.erase()`**, le tout
+**dans la même pile d'appel que la boucle d'envoi de `_sendToAuthenticated`, depuis
+`loopTask`**. Le fork y survit parce que son verrou est un `std::recursive_mutex`
+(réentrant) ; un mutex FreeRTOS applicatif à nous (non récursif) s'auto-bloquerait sur ce
+même chemin — interblocage garanti dès la première file saturée pendant un push.
+
+D'où le choix : `_authRegistry` (`WsClientRegistry<N>`, [`ws_client_registry_logic.h`](../../src/ws_client_registry_logic.h))
+n'est qu'un tableau fixe de `std::atomic<uint32_t>` (0 = slot libre), muté uniquement par
+`compare_exchange` (`insert`/`erase`) ou par stores atomiques simples (`clear`). Le snapshot
+pris sur la pile **avant** la boucle d'envoi est une **copie** : une mutation du registre
+pendant l'itération (y compris la ré-entrance ci-dessus) ne la perturbe pas. Interdiction
+absolue de tenir un verrou applicatif pendant cette boucle.
+
+### ⚠️ Profil mémoire : ÉGAL à l'ancien, pas meilleur
+
+`textAll(const char*, len)` **déléguait déjà** à `textAll(makeSharedBuffer(...))` dans le
+fork ESP32Async — donc **un seul** buffer partagé entre tous les clients. Le nouveau code
+(`_sendToAuthenticated`) fait de même : **un seul** `make_shared` par push, envoyé par
+référence à `_ws->text(id, shared)` pour chaque destinataire. **Le profil mémoire de
+bug-081 est donc identique à l'ancien, pas une amélioration.** Ce qui aurait coûté **N**
+copies de ~3,5 Ko (une par client) est la surcharge `AsyncWebSocket::text(id, const char*,
+len)` — qui appelle `makeSharedBuffer` à **chaque** appel — et elle a été **écartée** pour
+cette raison précise en revue. Ne pas documenter ni commenter ce correctif comme un gain
+mémoire : ce serait faux.
+
+### Révocation : `WsManager::revokeAllAuthenticated()`
+
+Appelée depuis deux handlers HTTP (jamais depuis loopTask) :
+- `src/web_routes_config.cpp` — bascule `auth_enabled` **faux→vrai** ;
+- `src/web_routes_auth.cpp` — `POST /auth/regenerate-token`.
+
+Sans cette révocation, un invité auto-inscrit en mode ouvert (`auth_enabled = false`)
+continuait de recevoir les pushes **après** l'activation de l'authentification — bug-081
+rouvert par un autre chemin, puisque le registre ne se vide pas de lui-même à la bascule de
+config. Même raisonnement pour une rotation de token : un client déjà authentifié avec
+l'**ancien** token continuait sinon de recevoir indéfiniment (le keepalive maintient la
+socket vivante).
+
+Mécanique en deux temps, sûre depuis un contexte `async_tcp` :
+1. `revokeAllAuthenticated()` vide `_authRegistry` **immédiatement**, par stores atomiques
+   seuls (`WsClientRegistry::clear()`) — aucune section critique, appelable depuis
+   n'importe quel contexte.
+2. La fermeture effective des sockets (`_ws->closeAll()`) est **différée** : un flag
+   `_pendingRevokeClose` (atomic bool) est posé, consommé au prochain passage de `update()`
+   (`loopTask`). Jamais de `closeAll()` directement depuis le handler HTTP.
+
+### `kWsMaxClients` / `kWsRegistrySlots`
+
+- `kWsMaxClients = 4` ([`constants.h`](../../src/constants.h)) — nomme le littéral `4`
+  auparavant en dur dans `_ws->cleanupClients(4)` (« Max 4 clients WS simultanés pour
+  préserver les sockets lwIP », v2.11.1).
+- `kWsRegistrySlots = kWsMaxClients + 1` — capacité du registre PUR. Le slot de rab absorbe
+  la fenêtre entre l'accept `async_tcp` d'un Nᵉ+1 client **transitoire** et le prochain
+  passage de `cleanupClients()` dans `loopTask` (qui n'a pas encore eu la main) : sans lui,
+  cette fenêtre ferait refuser une authentification légitime en pur cas de bord de
+  capacité. Le tampon de snapshot sur la pile (`_sendToAuthenticated`, `update()`) est
+  dimensionné exactement sur cette constante (`static_assert` bornant `kWsRegistrySlots`
+  entre 2 et 16 — le tampon vit sur la pile de `loopTask`).
+- Un client en excès (registre saturé, `WsRegistryInsert::kFull`) est **fermé**
+  (`client->close()`) plutôt que servi en silence ; chaque refus incrémente
+  `registryFullCount()` et déclenche un WARN throttlé (30 s) dans `update()`.
+
+### Compteur d'époque `_authEpoch` / `_servedEpoch` — remplace `_pendingInitialPush`
+
+L'ancien booléen `_pendingInitialPush` était posé à `true` par **toute** insertion réussie
+dans le registre et remis à `false` au prochain `update()` — une seule insertion entre deux
+tours de `update()` déclenchait bien le push initial, mais rien ne garantissait qu'une
+**seconde** insertion survenue avant que le premier push n'ait eu lieu ne soit pas perdue
+(le booléen écrase, il ne compte pas). Remplacé par deux compteurs atomiques :
+- `_authEpoch` — incrémenté (`fetch_add`, `memory_order_release`) à chaque insertion
+  **réussie** (`kInserted`, jamais `kAlreadyPresent` ni `kFull`) dans `_onClientConnect()` ou
+  `_onData()` ;
+- `_servedEpoch` — lu (`memory_order_acquire`) **avant** le snapshot dans `update()` ;
+  `initialPush = (authEpoch != servedEpoch)`, puis avancé **avant** l'envoi réel (dès que le
+  registre était non vide à cet instant, même si la garde heap ou la saturation font sauter
+  l'émission plus bas — sans quoi une famine mémoire prolongée ferait reconstruire
+  `_buildSensorJson()` à chaque tour de `loop()` au lieu d'attendre le prochain cycle de 5 s).
+
+L'ordre `release`/`acquire` s'apparie : en `relaxed`, l'époque pourrait devenir visible
+**avant** l'écriture du slot du registre — `update()` verrait la nouvelle époque, prendrait
+un snapshot **sans** ce client, puis avancerait `_servedEpoch` : le push initial serait perdu
+pour lui, sans rattrapage possible (l'époque ne redeviendrait jamais différente pour ce
+client tant qu'aucune autre insertion ne survient).
 
 ## Format des messages push
 
@@ -189,11 +318,13 @@ Côté UI : un toast est affiché une seule fois par session si la valeur ∈ {`
 
 ## Cas limites
 
-- **Pas de client connecté** : `broadcastSensorData()` ne fait rien (gain CPU). `hasClients()` court-circuite la construction JSON.
-- **Client déconnecté sans close** : nettoyé par `AsyncWebSocket::cleanupClients()` appelé dans `update()` ; depuis v2.11.1, aussi récolté par saturation de file (fermeture par le fork) ou timeout de PING keepalive.
+- **Pas de client AUTHENTIFIÉ connecté** : `broadcastSensorData()` ne fait rien (gain CPU). Depuis bug-081 (v2.57.0), la garde est `_authRegistry.empty()` — un client connecté mais **non authentifié** n'est **jamais** compté « présent » pour cette garde ni pour aucune des trois broadcasts : il ne reçoit rien, même si `_ws->count() > 0`. `hasClients()` reste basé sur `_ws->count()` (compte **toutes** les connexions, authentifiées ou non — diagnostic uniquement, ne pilote plus aucun envoi).
+- **Client déconnecté sans close** : nettoyé par `AsyncWebSocket::cleanupClients()` appelé dans `update()` ; depuis v2.11.1, aussi récolté par saturation de file (fermeture par le fork) ou timeout de PING keepalive. Dans tous les cas, `WS_EVT_DISCONNECT` retire aussi l'id de `_authRegistry` (`_onEvent`).
+- **Registre authentifié saturé** (`kWsMaxClients` dépassé, bug-081) : la connexion ou l'authentification excédentaire est **fermée** (`client->close()`) plutôt que servie en silence — compteur `registryFullCount()` + WARN throttlé 30 s dans `update()`. Jamais de log depuis le contexte `async_tcp` qui détecte la saturation (pile réduite).
 - **Push pendant write en cours** : `AsyncWebSocket` gère la file d'attente (bornée à 5 trames depuis v2.11.1), pas de blocage du loop.
-- **Heap fragmenté** (plus gros bloc **8 bits** `< kWsPushMinAllocBytes = 6144` depuis v2.33.0, [ADR-0058](../adr/0058-gardes-heap-metrique-8-bits.md)) : pushes **sautés** (garde v2.11.1), compteur `skippedPushCount()` + WARN throttlé 30 s dans `update()` (libellé `maxBloc8=`). Course résiduelle (TOCTOU) : `std::bad_alloc` **rattrapé** autour de `textAll` → push sauté, même compteur, jamais d'`abort()` (v2.14.0).
+- **Heap fragmenté** (plus gros bloc **8 bits** `< kWsPushMinAllocBytes = 6144` depuis v2.33.0, [ADR-0058](../adr/0058-gardes-heap-metrique-8-bits.md)) : pushes **sautés** (garde v2.11.1), compteur `skippedPushCount()` + WARN throttlé 30 s dans `update()` (libellé `maxBloc8=`). Course résiduelle (TOCTOU) : `std::bad_alloc` **rattrapé** autour de l'envoi ciblé (`_sendToAuthenticated`, depuis bug-081 — anciennement `textAll`) → push sauté, même compteur, jamais d'`abort()` (v2.14.0).
 - **Trame plus grande que le buffer statique** (`kWsFrameBufBytes = 3584` depuis v2.21.1, était 3072) : push **sauté** (jamais tronqué), compteur `oversizedFrameCount()` + WARN throttlé dédié dans `update()` — signale qu'il faut agrandir la constante (v2.14.0).
+- **Bascule `auth_enabled` faux→vrai ou rotation de token** : révocation immédiate de tous les clients authentifiés — voir [`revokeAllAuthenticated()`](#révocation--wsmanagerrevokeallauthenticated).
 
 ## Dépendances
 
@@ -207,6 +338,8 @@ Côté UI : un toast est affiché une seule fois par session si la valeur ∈ {`
 ## Fichiers liés
 
 - [`src/ws_manager.h`](../../src/ws_manager.h), [`src/ws_manager.cpp`](../../src/ws_manager.cpp)
+- [`src/ws_client_registry_logic.h`](../../src/ws_client_registry_logic.h) — registre PUR des clients authentifiés (bug-081, module sans Arduino.h/FreeRTOS, ADR-0017), testé par `test/test_native_ws_registry/`
+- [`tools/check_ws_broadcast_targeting.sh`](../../tools/check_ws_broadcast_targeting.sh) — interdit tout `textAll`/`binaryAll`/`printfAll` dans `src/` (bug-081), lancé par `hygiene-specs.yml`
 - [`src/web_server.cpp`](../../src/web_server.cpp) — instanciation du serveur
 - [`src/logger.h:58`](../../src/logger.h) — `setLogCallback()` (**code mort**, jamais branché — cf. section API publique)
 - [`src/constants.h`](../../src/constants.h) — `kWsPushMinAllocBytes` (6144 en 8 bits depuis v2.33.0, était 16384 en brute), `kWsFrameBufBytes` (3584 depuis v2.21.1), `kWsSkipWarnThrottleMs`, `kWsKeepAlivePeriodS` (`kWsSensorJsonReserveBytes` supprimée en v2.14.0)
@@ -851,11 +984,21 @@ Marqueurs commentés, lus tels quels par la sentinelle : `>>> PARITE-DATA:DEBUT`
 | Catégorie | Compte | Règle |
 |---|---:|---|
 | `kWsOnlyLive` — état vivant servi par **aucune** route HTTP | **16** (était 18) | **Dette inventoriée** (antérieure à feature-092), déclarée pour rendre la sentinelle utilisable, pas pour valider le motif. Sous **cliquet** `kWsOnlyLiveCeiling = 16` (abaissé de 18 en v2.55.0, feature-140) : le compte ne peut **jamais augmenter**, seulement baisser quand une clé WS-seule migre vers `/data` — ce qui vient d'arriver pour `filtration_state_source`/`filtration_ext_on`. |
-| `kWsPlusOtherRoute` — clés **dual-sourcées** | **8** | Absentes de `/data` mais servies par une **autre** route HTTP, dont le **nom est obligatoire** et asserté non vide : **7** par `GET /get-config` (`ph_container_ml`, `orp_container_ml`, `lighting_enabled`, `boost_active`, `boost_until`, `install_mode`, `mqtt_connected`) et **1** par `GET /get-logs` (`uptime_ms` — la table de la sentinelle abrège la route en « GET /logs »). Catégorie qui **n'existe pas** sur l'axe config : une règle « aucune clé WS-seule » les signalerait à tort. |
+| `kWsPlusOtherRoute` — clés **dual-sourcées** | **6** (était 8) | Absentes de `/data` mais servies par une **autre** route HTTP, dont le **nom est obligatoire** et asserté non vide : **5** par `GET /get-config` (`lighting_enabled`, `boost_active`, `boost_until`, `install_mode`, `mqtt_connected`) et **1** par `GET /get-logs` (`uptime_ms` — la table de la sentinelle abrège la route en « GET /logs »). Catégorie qui **n'existe pas** sur l'axe config : une règle « aucune clé WS-seule » les signalerait à tort. |
 | `kDataOnly` — clés servies par `/data` seul | **6** (était 4) | `ph_pump_amplitude_duty`, `orp_pump_amplitude_duty` (grandeurs de **calibration**, lues dans des vues de diagnostic) ; **+2 en v2.54.0** (feature-138) : `ph_integral`, `ph_integral_term` — élaguées de la **seule** trame WS pour financer `*DoseBlockedForS` ; **+2 en v2.55.0** (feature-140) : `filtration_state_source`, `filtration_ext_on` — élaguées pour financer `rescue_until`/`rescue_dosing` (même méthode, [ADR-0086](../adr/0086-trame-websocket-sous-ensemble-choisi-de-data.md)). Les quatre restent un contrat externe sur `/data`/MQTT/HA. La 3ᵉ entrée d'origine — l'objet `flow_assist` — a été **retirée** en v2.47.1 : elle est devenue bilatérale (`bug-082`), et c'est la sentinelle qui l'a exigé. |
 | `kFlowAssistDataOnly` — champs **imbriqués** de `flow_assist` servis par `/data` seul | **7** | Second axe, v2.47.1 (`bug-082`) : `active`, `pump`, `phase`, `remaining_s`, `purges_left`, `purge_s`, `measure_s` — champs de **session**, lus à l'ouverture de l'assistant après un `GET /data` **forcé**. Motif écrit obligatoire, **cliquet à 7**, et **`aborted` / `flow255` y sont formellement interdits**. |
 
-Décompte **vérifié par mesure** et non supposé : les **24** clés WS-seules constatées (v2.55.0, était 26) = 16 « état vivant » + 8 dual-sourcées.
+Décompte **vérifié par mesure** et non supposé : les **22** clés WS-seules constatées (v2.59.0, était 24) = 16 « état vivant » + 6 dual-sourcées.
+
+> **`ph_container_ml` / `orp_container_ml` sorties de `kWsPlusOtherRoute` en v2.59.0
+> (feature-143).** Elles n'étaient déclarées dual-sourcées (`GET /get-config`) que
+> parce que `/data` ne les servait pas encore — **4ᵉ récidive** du motif de parité : le
+> raisonnement « c'est un réglage, `/get-config` suffit » ignorait que la page Produits
+> recharge sa carte à **chaque** charge `/data`, pas seulement au chargement de la
+> config. `/data` les sert désormais directement ([`src/web_routes_data.cpp`](../../src/web_routes_data.cpp)) :
+> elles sont captées par la vérification générique (a)-(d) et ne figurent **plus**
+> dans aucune table d'exception. Voir [docs/API.md](../API.md#get-data--write) et
+> [docs/features/page-dosages.md](../features/page-dosages.md).
 
 #### Le second axe **imbriqué** (v2.47.1, `bug-082`)
 

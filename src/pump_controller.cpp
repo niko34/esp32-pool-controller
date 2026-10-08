@@ -239,6 +239,9 @@ void PumpControllerClass::begin() {
   applyRegulationSpeed();
   _phTuningChangeRequested.store(false);
   applyRegulationSpeedNow();
+  // feature-136 : applique le verdict de restauration calculé par
+  // dosingWindow.begin() (main.cpp, appelé AVANT PumpController.begin()).
+  applyRestoredDosingWindow();
   systemLogger.info("Contrôleur de pompes initialisé");
   systemLogger.info("Config pH: cible=" + String(mqttCfg.phTarget, 2) +
     " seuil=" + String(pumpProtection.phStartThreshold, 2) +
@@ -276,6 +279,41 @@ void PumpControllerClass::applyPumpDuty(int index, uint8_t duty) {
   // ledcWriteChannel : adressage par CANAL (ledcWrite, lui, attend un pin).
   // Aucun changement d'échelle — le duty reste sur 0-255.
   ledcWriteChannel(pumps[index].channel, duty);
+}
+
+// =============================================================================
+// feature-136 (gate pool-chemistry, 2026-10-08) — APPLICATION du verdict de
+// restauration calculé par dosingWindow.begin() (main.cpp, APRÈS
+// rtcManager.applyToSystem()). AUCUNE décision ici : tout vit dans
+// dosing_window_logic.h (module pur) / dosing_window.cpp (coquille T1+T2).
+// Appelée UNE SEULE FOIS depuis begin(), AVANT le premier update().
+// =============================================================================
+void PumpControllerClass::applyRestoredDosingWindow() {
+  if (_dosingWindowAppliedAtMs != 0) return;  // idempotence (cf. déclaration, pump_controller.h)
+  const uint32_t nowMs = (uint32_t)millis();
+  _dosingWindowAppliedAtMs = (nowMs != 0) ? nowMs : 1;
+
+  DosingState* states[2] = {&phDosingState, &orpDosingState};
+  for (int ch = 0; ch < 2; ++ch) {
+    const DosingWindowRestoredChannel& r = dosingWindow.restored(ch);
+    DosingState& st = *states[ch];
+    st.usedMs = r.usedMs;
+    st.windowStart = r.windowStart;
+    // `lastTimestamp` = instant de la restauration, PAS l'ancre `windowStart`
+    // (qui peut légitimement porter une valeur "dans le passé" par
+    // sous-débordement non signé, cf. dosing_window_logic.h) : sinon le
+    // PROCHAIN appel de refreshDosingState() calculerait un delta géant
+    // (now_tick1 − windowStart) et créditerait d'un coup des minutes d'usedMs
+    // qui n'ont jamais été réellement pompées.
+    st.lastTimestamp = _dosingWindowAppliedAtMs;
+    st.cyclesToday = (unsigned int)r.cyclesToday;
+    st.cyclesDayStart = r.cyclesDayStart;
+    _mixingEndMs[ch] = r.mixingEndMs;
+    _dosingCycleHistoryIdx[ch] = r.ringIdx % kDosingCycleHistorySize;
+    for (size_t i = 0; i < kDosingCycleHistorySize; ++i) {
+      _dosingCycleHistory[ch][i] = r.ring[i];
+    }
+  }
 }
 
 void PumpControllerClass::refreshDosingState(DosingState& state, unsigned long now, bool pumpOn) {
@@ -1356,7 +1394,10 @@ void PumpControllerClass::tickOrpPhInhibitSurveillance() {
         mqttManager.publishAlert("orp_ph_inhibit", msg);
       }
       // Cause exposée au WS (canDose(1) n'est pas appelé tant que l'inhibition dure).
-      setGuardRefusalCause(1, "pH brut en butée haute (" + String(phRaw, 2) +
+      // Même raison qu'au site jumeau ci-dessous : cause latchée, donc pas de
+      // mesure — la butée, elle, est constante.
+      setGuardRefusalCause(1, "pH brut en butée haute (butée " +
+                              String(kPhCeilingRawHard, 2) +
                               ") — dosage chlore suspendu");
       _orpPhCauseKind = 3;
     } else {
@@ -1378,7 +1419,17 @@ void PumpControllerClass::tickOrpPhInhibitSurveillance() {
         systemLogger.critical("[Dosage ORP] " + msg);
         mqttManager.publishAlert("orp_ph_inhibit", msg);
       }
-      setGuardRefusalCause(1, "pH trop élevé (" + String(ph, 2) +
+      // La cause de refus est LATCHÉE (voir setGuardRefusalCause) : elle n'est
+      // réécrite qu'en cas d'AGGRAVATION, délibérément — réécrire à chaque
+      // mesure faisait battre deux libellés contradictoires, un critical et une
+      // alerte MQTT par oscillation, et chassait le journal de la partition.
+      // Conséquence : toute MESURE inscrite ici se fige et finit par contredire
+      // la carte, qui est vive. Signalé en production le 2026-10-08 (message à
+      // 8.28 pendant que la carte affichait 8.1).
+      // On y met donc le SEUIL, qui est une constante et ne périme jamais — et
+      // qui est de toute façon le chiffre utile : il dit où redescendre. La
+      // mesure vive est déjà affichée sur la carte pH, à côté.
+      setGuardRefusalCause(1, "pH trop élevé (seuil " + String(kPhOrpInhibit, 2) +
                               ") — dosage chlore suspendu");
       _orpPhCauseKind = 0;
     }
@@ -3123,6 +3174,56 @@ void PumpControllerClass::update() {
     saveDailyCounters();
     _dailyCountersDirty = false;
     _lastDailySaveMs = now;
+  }
+
+  // feature-136 (gate pool-chemistry, 2026-10-08) : survie du budget horaire de
+  // dosage (fenêtre glissante, anti-cycling, pause mélange, ring anti-rafale) à
+  // travers un redémarrage. PLACÉ ICI, ADJACENT AU FLUSH DES COMPTEURS
+  // JOURNALIERS CI-DESSUS ET EN AMONT DE TOUTES LES SORTIES ANTICIPÉES (OTA,
+  // mode maintenance, cf. commentaire du bloc précédent) : un redémarrage
+  // pendant l'un ou l'autre ne doit pas perdre le budget en cours. AUCUNE
+  // décision ici — dosing_window_logic.h / dosing_window.cpp en sont seuls
+  // responsables.
+  {
+    DosingWindowSnapshot snap;
+    const bool pumpOnNow[2] = {pumpDuty[0] > 0, pumpDuty[1] > 0};
+    DosingState* dosingWindowStates[2] = {&phDosingState, &orpDosingState};
+    for (int ch = 0; ch < 2; ++ch) {
+      DosingWindowChannelSnapshot& c = snap.ch[ch];
+      c.usedMs = dosingWindowStates[ch]->usedMs;
+      c.windowStart = dosingWindowStates[ch]->windowStart;
+      c.cyclesToday = (uint16_t)dosingWindowStates[ch]->cyclesToday;
+      c.cyclesDayStart = dosingWindowStates[ch]->cyclesDayStart;
+      c.mixingEndMs = _mixingEndMs[ch];
+      c.pumpOnNow = pumpOnNow[ch];
+      c.ring = _dosingCycleHistory[ch];
+      c.ringIdx = (uint32_t)_dosingCycleHistoryIdx[ch];
+    }
+
+    // Hook 1/3 — T2 (RAM RTC) : bon marché, cadencé en interne
+    // (kDosingWindowRtcRefreshMs), appelé à CHAQUE tour sans condition.
+    dosingWindow.refreshRtc(now, snap);
+
+    // Hook 2/3 — détection d'ÉVÉNEMENT (transition pompe-ON ↔ pompe-OFF) :
+    // force une écriture T1 immédiate, en complément de la cadence 30 s.
+    for (int ch = 0; ch < 2; ++ch) {
+      if (pumpOnNow[ch] != _dosingWindowPumpOnPrev[ch]) {
+        _dosingWindowPumpOnPrev[ch] = pumpOnNow[ch];
+        _dosingWindowNvsEventPending = true;
+      }
+    }
+
+    // Hook 3/3 — T1 (NVS) : cadence dédiée 30 s pendant pompe-ON + événement.
+    // `persistNvsIfDue` prend configMutex EN INTERNE (jamais ici) et n'est
+    // appelée QUE depuis loopTask.
+    const bool anyPumpOnNow = pumpOnNow[0] || pumpOnNow[1];
+    if (anyPumpOnNow || _dosingWindowNvsEventPending) {
+      // Ne pas effacer l'événement si l'écriture n'a pas pu être tentée
+      // (horloge invalide, timeout mutex) : retentative au tour suivant.
+      if (dosingWindow.persistNvsIfDue(now, snap, anyPumpOnNow, _dosingWindowNvsEventPending)) {
+        _dosingWindowNvsEventPending = false;
+      }
+    }
   }
 
   // feature-006 : consommer les démarrages de cycle MANUELS demandés depuis les

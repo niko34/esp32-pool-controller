@@ -39,6 +39,7 @@ extern "C" bool esp_psram_check_ptr_addr(const void* p);
 #include "ws_manager.h"
 #include "history.h"
 #include "measure_validity.h"
+#include "dosing_window.h"    // feature-136 : survie du budget horaire de dosage au reboot
 #include "time_to_target.h"  // feature-096 : indicateur temps d'atteinte de cible
 #include "version.h"
 #include "rtc_manager.h"
@@ -393,6 +394,14 @@ void setup() {
   // rtcManager.applyToSystem() (l'heure système doit être valide pour mesurer la
   // coupure), AVANT le premier measureValidity.update() de la loop.
   measureValidity.begin();
+
+  // feature-136 (gate pool-chemistry du 2026-10-08) : résout l'état restauré du
+  // budget horaire de dosage (T2 RAM RTC + T1 NVS, le plus défavorable des deux
+  // retenu) AVANT PumpController.begin(), qui l'applique à DosingState via
+  // applyRestoredDosingWindow(). APRÈS rtcManager.applyToSystem() : la voie T1
+  // (NVS, ancrée sur l'epoch murale) a besoin d'une heure valide pour être
+  // interprétée.
+  dosingWindow.begin();
 
   PumpController.begin();
   // feature-091 : l'arming legacy du timer de stabilisation au boot (mode Powered)

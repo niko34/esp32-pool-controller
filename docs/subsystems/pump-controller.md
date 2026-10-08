@@ -601,6 +601,25 @@ Deux correctifs de revue v2.25.0, tous deux issus de cas observés :
 
 **Libellés honnêtes** : quand la mesure est retombée **dans la bande de relâche** (l'hystérésis peut rester armée après un effacement de latch), le message ne prétend pas « au-dessus de 8,10 » mais « maintenu dans la bande d'hystérésis de la butée 8,10 (relâche à 8,05) ». Et l'offset n'est mis en cause que s'il est réellement **négatif** : à offset ≥ 0 le pH corrigé est au moins égal au brut, l'eau est réellement haute, et accuser l'offset est un contresens (c'est l'accusation que recevait le bassin à offset 0,00).
 
+#### Règle : une cause latchée ne porte jamais une mesure vive (v2.57.1)
+
+**Une cause de refus latchée ne porte jamais une mesure vive — elle porte un seuil, ou rien.**
+
+`setGuardRefusalCause()` est volontairement un **latch** : il n'est réécrit qu'en cas d'**aggravation** de gravité (voir l'anti-rafale ci-dessus), pas à chaque tour. C'est délibéré — réécrire à chaque mesure faisait battre deux libellés contradictoires, avec un `critical` et une alerte MQTT par oscillation, et chassait le journal de la partition `history`. Mais ce choix a une conséquence directe : **toute valeur de mesure inscrite dans ce texte se fige** au moment du déclenchement et ne se rafraîchit plus tant que l'épisode dure, alors que la carte pH, elle, continue d'évoluer en direct.
+
+**Incident du 2026-10-08** : le bandeau affichait *« pH trop élevé (8.28) — dosage chlore suspendu »* pendant que la carte pH affichait **8,1** au même instant — deux valeurs différentes pour la même grandeur, au même écran, toutes deux correctes chacune à leur heure. Correctif : les deux causes de refus de ce bloc (`tickOrpPhInhibitSurveillance()`) remplacent la mesure par le **seuil franchi**, qui est une constante et ne périme jamais — et qui est de toute façon le chiffre utile pour l'utilisateur, puisqu'il dit **où redescendre** :
+
+| Avant (mesure, périmée) | Après (seuil, stable) |
+|---|---|
+| `pH trop élevé (8.28) — dosage chlore suspendu` | `pH trop élevé (seuil 7.60) — dosage chlore suspendu` ([`pump_controller.cpp:1394`](../../src/pump_controller.cpp:1394), `kPhOrpInhibit`) |
+| `pH brut en butée haute (8.14) — dosage chlore suspendu` | `pH brut en butée haute (butée 8.10) — dosage chlore suspendu` ([`pump_controller.cpp:1361`](../../src/pump_controller.cpp:1361), `kPhCeilingRawHard`) |
+
+**Aucun seuil ni aucune décision de dosage n'est modifié** : ce sont deux chaînes de caractères. La mesure en direct reste disponible — c'est la **carte pH** du tableau de bord (champ `ph` de `GET /data` et du message WebSocket `sensor_data`), rafraîchie à chaque tour, jamais latchée.
+
+Les alertes MQTT (`publishAlert("orp_ph_inhibit", …)`, lignes 1351 et 1378) **ne sont pas concernées** : elles portent un message distinct, construit juste au-dessus du latch, contenant la mesure **et** le seuil **et** l'offset, émis à l'instant du franchissement — donc jamais périmé par construction.
+
+**Pour tout futur ajout d'une cause de refus** (`setGuardRefusalCause`) : n'y inscrire une mesure que si le texte est **réécrit à chaque tour** (jamais latché). Si le texte est latché, n'y mettre qu'un seuil — une constante — ou rien.
+
 ### 3. Fail-closed sur pH indisponible (régulation ORP automatique)
 
 En régulation **automatique**, un pH `NaN` (sonde muette, filtre non amorcé) **inhibe aussi** le dosage chlore. Justification : **`canDose(1)` ne consulte JAMAIS le pH** — ce filet est donc l'**unique garde du couplage pH/chlore**. Si la sonde pH est morte alors que l'eau est réellement au-dessus de 7,60, le chlore y est peu actif et l'asservissement ORP courrait à l'aveugle vers un surdosage. Un pH inconnu doit **suspendre** la chloration automatique, pas la laisser courir.
@@ -1766,6 +1785,168 @@ Après chaque injection, le bassin a besoin de temps pour s'homogénéiser avant
 
 > Gate **indépendante** du timer de stabilisation post-calibration (`_stabilizationEndMs`). Les deux sont des `OR` dans `canDose()` : la pompe reste bloquée tant que l'une OU l'autre est active. Écrits/lus uniquement en `loopTask` → pas de mutex (cohérent avec `_stabilizationEndMs`). Pendant la pause, l'intégrale PID est gelée (`freezeIntegral`).
 
+## Survie du budget horaire de dosage au redémarrage (feature-136, v2.58.0)
+
+Jusqu'à la v2.57.x, `DosingState` (`usedMs`, `windowStart`, `cyclesToday`), `_mixingEndMs[2]`
+et le ring anti-rafale (`_dosingCycleHistory[2][20]`) étaient **entièrement en RAM**. Relevé
+sur l'appareil le 2026-10-08 : `ph_limit_minutes = 10` ⇒ **deux redémarrages dans l'heure
+autorisaient jusqu'à 20 minutes d'acide**, seul le plafond journalier (2 000 mL) faisant
+barrage — **la seule garde du projet qui autorisait à tort** plutôt que de refuser à tort.
+Gate `pool-chemistry` du 2026-10-08 : GO sous 12 conditions, repris ci-dessous.
+
+### Deux supports redondants, fusionnés « au plus défavorable »
+
+| | T2 — RAM RTC | T1 — NVS |
+|---|---|---|
+| Stockage | `RTC_NOINIT_ATTR DosingWindowRtcRecord` ([`dosing_window.cpp:24`](../../src/dosing_window.cpp:24)) | namespace **dédié** `pool-dose`, clé `snap` |
+| Survit à | reset logiciel / panic / watchdog | **tout**, y compris coupure secteur |
+| Écoulé mesuré par | compteur **monotone** `esp_rtc_get_time_us()` (RTC_CNTL_TIME, condition C7) — **indépendant de l'horloge murale** | `epochAtWrite` : ancre sur l'heure murale, exige `isTimeValid()` pour être interprétée |
+| S'invalide d'elle-même | non (bruit électrique au power-on peut, par chance, satisfaire le CRC — d'où le filtre `resetIsSoftware()`, [`dosing_window.cpp:39`](../../src/dosing_window.cpp:39), qui exige en plus un motif de reset **logiciel**) | oui, implicitement : sans heure valide, `t1Available = false` |
+
+Le compteur T2 couvre le cas **le plus fréquent** (OTA hebdomadaire, auto-guérison, panic) sans
+dépendre d'une horloge qui n'a peut-être pas resynchronisé ; exiger l'horloge murale seule
+aurait renvoyé ce cas en T3 — une heure de blocage à **chaque** déploiement, chimiquement pire
+que la dette ci-dessous.
+
+**Quand les deux sont disponibles et se contredisent, le verdict retient le plus défavorable
+GRANDEUR PAR GRANDEUR** (`usedMs` max, `cyclesToday` max, reliquat de pause mélange max) —
+**jamais la moyenne, jamais le plus récent**. Voir `dosingWindowResolveChannel()`
+([`dosing_window_logic.h:296`](../../src/dosing_window_logic.h:296)). L'ancre (`windowStart` /
+`cyclesDayStart`) suit systématiquement la source qui a fourni la grandeur retenue : mélanger
+l'ancre d'une source avec la valeur de l'autre produirait une paire incohérente.
+
+### T3 — fail-closed, option (d) : une seule fenêtre, jamais un blocage indéfini
+
+Quand ni T1 ni T2 ne sont exploitables (première mise en service, NVS effacée, RAM RTC
+corrompue par un power-on) : `usedMs` est posé à la limite pour **une seule fenêtre horaire**
+(`kDosingWindowHourMs`), puis retour au nominal dès l'heure suivante.
+
+L'alternative « bloquer jusqu'à horloge valide » a été **examinée et refusée** par le gate, et
+le motif est **chimique, pas ergonomique** : RTC morte + sans réseau = blocage indéfini de
+l'acide. Sous charge basique permanente et avec une régulation P pur (droop structurel), le pH
+sort de la plage 7,20-7,50 et finit par franchir `kPhOrpInhibit` = 7,60 ; la fraction HOCl
+active tombe de ~52 % à pH 7,50 à ~41 % à pH 7,70, et **la boucle ORP compense alors par
+surdosage de chlore** pour tenter de maintenir le potentiel. *« Une protection qui crée un
+surdosage sur l'autre chimie n'est pas une protection. »* Un budget réduit (plutôt que posé à
+la limite d'une seule fenêtre) a aussi été écarté : il aurait une sémantique neuve et
+**autoriserait** un dosage sur un budget antérieur inconnu — l'exposition même que ce lot ferme.
+
+L'option (d) l'emporte sur un simple blocage muet parce que l'état « fenêtre horaire épuisée »
+est **déjà exposé partout** — carte Régulation, `ph_used_ms` en MQTT/WS, libellé de refus — :
+aucun chemin de refus silencieux n'est introduit. Coût assumé : au pire une heure de capacité
+perdue après un démarrage à froid sans horloge, soit ≤ 10 min d'acide différés, rattrapables à
+la fenêtre suivante.
+
+### Le piège des deux péremptions : 1 h (fenêtre) ≠ 24 h (cycles/jour)
+
+Deux horloges distinctes périment deux choses différentes : la **fenêtre horaire** (`usedMs`,
+`kDosingWindowHourMs = 3 600 000 ms`) et le **jour des cycles** (`cyclesToday`,
+`kDosingWindowDayMs = 86 400 000 ms`, condition C3). Les confondre viderait l'anti-cycling **à
+chaque heure** — un redémarrage à n'importe quel moment de la journée remettrait `cyclesToday`
+à zéro toutes les 60 minutes. `dosingWindowRebaseAnchor()` applique donc la **même formule** de
+rebasage mais avec une `periodMs` différente selon la grandeur traitée.
+
+### `cyclesDayStart` est indispensable — le mutant clé de la suite de tests
+
+Sans `cyclesDayStart` persisté, [`pump_controller.cpp:3240`](../../src/pump_controller.cpp:3240)
+(`if (st.cyclesDayStart == 0 || now - st.cyclesDayStart >= 86400000UL) { st.cyclesToday = 0;
+st.cyclesDayStart = now; }`) rencontrerait systématiquement `cyclesDayStart == 0` **au premier
+tick** après redémarrage — un code qui, sans en avoir l'air, **redéfinit secrètement le
+correctif en no-op** : `cyclesToday` repartirait à 0 à chaque reboot comme avant, en laissant
+croire que la garde anti-cycling est rétablie alors qu'elle ne l'est pas. C'est pourquoi
+`cyclesDayStart` fait partie des champs persistés au même titre que `usedMs`, et pourquoi la
+suite native fait d'« omettre `cyclesDayStart` » un mutant **obligatoire** (condition C12).
+
+### La pause de mélange est ARMÉE au restore si l'instantané porte « pompe-ON »
+
+Condition C5 du gate, **trou manquant du plan initial** — ni la spec ni le plan ne l'avaient
+vu. Si l'instantané (T1 ou T2) a été écrit pendant que la pompe était physiquement alimentée,
+le produit **a déjà été injecté**, mais `notifyPhDose()` / `notifyOrpDose()` n'ont jamais pu
+tourner : le reboot a interrompu le cycle avant l'arrêt normal de l'injection, qui est leur seul
+point d'armement (voir [Pause mélange hydraulique](#pause-mélange-hydraulique-feature-025)
+ci-dessus). Sans cet armement explicite au restore, l'appareil redoserait sur une mesure **non
+représentative** du produit déjà présent dans l'eau — un chemin de surdosage à part entière.
+`dosingWindowResolveChannel()` réarme donc la pause **pleinement** (`kPhMixingDelayMs` /
+`kOrpMixingDelayMs`, pas un reliquat calculé) dès que `pumpOnAtWrite` est vrai sur l'une ou
+l'autre source, prioritaire sur tout calcul de reliquat.
+
+### Cadence d'écriture NVS : chiffrée, namespace dédié
+
+T1 écrit dans son **propre** namespace `pool-dose` (pas `pool-daily`), à une cadence **dédiée**
+de 30 s pendant que l'une des deux pompes est alimentée (`kDosingWindowPersistIntervalMs`,
+[`dosing_window.cpp:260`](../../src/dosing_window.cpp:260)), plus une écriture immédiate à
+chaque transition pompe-ON ↔ pompe-OFF (événement, retenté au tour suivant si le mutex ou
+l'horloge ne sont pas disponibles — `_dosingWindowNvsEventPending`,
+[`pump_controller.h:788`](../../src/pump_controller.h:788)).
+
+**≈ 62 000 écritures/an en régime réel ⇒ 271 ans avant les 100 000 cycles d'endurance garantis
+par le wear-levelling NVS (48 ans au plafond physique estimé)** — très en deçà du risque d'usure.
+
+Le flush existant de `saveDailyCounters()` (namespace `pool-daily`, différé 60 s) a été
+**écarté à dessein comme passager** : il aurait couplé un cycle de vie **horaire** (le budget
+de dosage) à une transaction **journalière** partagée par trois autres consommateurs sous
+`configMutex` — toute future modification de l'un des trois aurait risqué de retarder ou de
+bloquer l'écriture de l'autre, sans lien fonctionnel entre eux.
+
+### Occupation de la RAM RTC (`RTC_NOINIT_ATTR`)
+
+L'instantané T2 de ce lot (`DosingWindowRtcRecord`) pèse **220 octets** (le ring seul en
+représente 160 — `uint32_t[2][20]`, le plan initial l'avait chiffré à tort à 80). Cette zone
+mémoire est **partagée** par plusieurs modules du projet, chacun avec sa propre structure
+(`heap_ring`, `oom_guard`, `time_to_target`, `measure_validity`, l'auto-guérison de
+`main.cpp`) ; aucun inventaire consolidé n'existait avant ce lot :
+
+| Consommateur | Structure |
+|---|---|
+| feature-136 (ce lot) | `DosingWindowRtcRecord`, 220 o |
+| `measure_validity` ([measure-validity.md](measure-validity.md)) | `OutageRtcRecord` |
+| `time_to_target` ([time-to-target.md](time-to-target.md)) | `TttRtcRecord` |
+| `heap_ring` / `oom_guard` ([oom-guard.md](oom-guard.md)) | ring de post-mortem + mots de secours |
+| auto-guérison (`main.cpp`) | magic + compteur de reboots + epoch de fenêtre |
+| **Total mesuré au linker** | **1 396 / 7 680 o (18,2 %)** |
+| **Marge restante** | **6 284 o** |
+
+### Nouvelle ligne de journal au démarrage
+
+```
+[Dosage] Budget horaire pH restauré (source : le plus défavorable (T1+T2), coupure=142s) : usedMs=312000/3600000 cyclesToday=4 mélange=180s
+```
+
+Émise une fois par voie (pH, ORP) depuis `DosingWindowManager::begin()`
+([`dosing_window.cpp:207`](../../src/dosing_window.cpp:207)), en `WARNING` si la source retenue
+est `kFailClosed`, en `INFO` sinon. **L'écoulé et son statut (coupure connue vs « écoulé=inconnu
+») y figurent exprès** (condition C11, prescription S2 du gate P2) : sans eux, un repli
+conservateur (C4 : instantané intact mais écoulé incalculable) serait **indiscernable** d'une
+reprise nominale dans le journal — et la dette ci-dessous (C7) ne pourrait **jamais** être levée
+par la seule observation du terrain. Deux mots qui transforment une surveillance en preuve.
+
+### Dette assumée : C7 non prouvée on-target
+
+Le compteur monotone de T2 (`esp_rtc_get_time_us()`) **n'a pas été prouvé, sur matériel réel,
+traverser `esp_restart()`** — seule sa consommation (un `bool unknownElapsed` déjà tranché) est
+couverte par les tests natifs. Le gate a jugé cette dette **acceptable** parce que son mode de
+défaillance est **structurellement conservateur** : un compteur qui reviendrait en arrière
+(`rtcNowUs < writtenUs`) bascule en `unknownElapsed` → repli C4 (fenêtre restaurée
+intégralement, ancre `now`) ; un compteur qui redémarrerait à zéro **sous-estimerait** l'écoulé,
+ce qui ne fait que **retenir** le budget plus longtemps que nécessaire — jamais l'inverse.
+Cette dette est **à retirer par l'observation** : la ligne de journal ci-dessus, en particulier
+le champ « coupure=… », permet de vérifier sur plusieurs redémarrages OTA que l'écoulé rapporté
+est plausible.
+
+### Fichiers
+
+[`src/dosing_window_logic.h`](../../src/dosing_window_logic.h) (module **pur**, ADR-0017 :
+structures `DosingWindowRtcRecord`/`DosingWindowNvsRecord`, rebasage d'ancre, résolution
+T1/T2/T3) · [`src/dosing_window.{h,cpp}`](../../src/dosing_window.h) (coquille : RTC_NOINIT,
+`Preferences`, `esp_reset_reason()`, `esp_rtc_get_time_us()`, journalisation) ·
+`PumpControllerClass::applyRestoredDosingWindow()`
+([`pump_controller.cpp:291`](../../src/pump_controller.cpp:291), appelée une seule fois depuis
+`begin()`) · hooks `refreshRtc()` / `persistNvsIfDue()` dans `update()`
+([`pump_controller.cpp:3176`](../../src/pump_controller.cpp:3176)) · `dosingWindow.begin()`
+appelé depuis `main.cpp` **après** `rtcManager.applyToSystem()` et **avant**
+`PumpController.begin()`. Tests : [`test/test_native_dosing_window/`](../../test/test_native_dosing_window/).
+Voir [ADR-0089](../adr/0089-ce-qu-un-redemarrage-a-le-droit-doublier.md).
+
 ## Stabilisation post-calibration et passage de minuit (v2.34.0)
 
 **Stabilisation par pompe** (feature-021) : `_stabilizationEndMs[2]` — un timer indépendant pour pH (index 0) et ORP (index 1). La cinétique chimique différente justifie une fenêtre par sonde.
@@ -1974,7 +2155,7 @@ Bolus unitaire 4,6 mL = **32 méq** ⇒ **ΔpH < 0,002** même sur 15 m³ ; nég
 
 **`kPulsePeriodMs` reste à 60 s** (décision explicite) : la fraction de temps pompe maximale est inchangée et le refus antérieur de l'utilisateur d'allonger la période (cycle feature-073) reste fondé.
 
-⚠️ **DETTE ASSUMÉE — condition n°1 du gate : le compteur reste FAUX.** En divisant les démarrages par deux à volume **compté** constant, on augmente le volume **réel** délivré sous le même plafond journalier : la limite journalière devient légèrement **moins conservatrice** (quelques dizaines de mL/jour si la perte vaut ~0,5 mL). Cet allongement **atténue** le défaut de comptage, **il ne le corrige pas**. Exigences du gate : **surveiller le plafond journalier sur 3 jours**, et la **mesure de la perte fixe reste due** (M2 : 24 pouls de 5 s contre 12 pouls de 10 s à temps de pompe égal ⇒ `V₁₀ − V₅ = 12 × L`), après quoi le modèle de comptage devra être corrigé — et traité **explicitement comme une hausse de dose**. Voir [feature-078](../../specs/features/todo/feature-078-rendement-des-impulsions-et-lenteur-regulation-ph.md).
+⚠️ **DETTE ASSUMÉE — condition n°1 du gate : le compteur reste FAUX.** En divisant les démarrages par deux à volume **compté** constant, on augmente le volume **réel** délivré sous le même plafond journalier : la limite journalière devient légèrement **moins conservatrice** (quelques dizaines de mL/jour si la perte vaut ~0,5 mL). Cet allongement **atténue** le défaut de comptage, **il ne le corrige pas**. Exigences du gate : **surveiller le plafond journalier sur 3 jours**, et la **mesure de la perte fixe reste due** (M2 : 24 pouls de 5 s contre 12 pouls de 10 s à temps de pompe égal ⇒ `V₁₀ − V₅ = 12 × L`), après quoi le modèle de comptage devra être corrigé — et traité **explicitement comme une hausse de dose**. Voir [feature-078](../../specs/features/done/feature-078-rendement-des-impulsions-et-lenteur-regulation-ph.md).
 
 ### Biais du compteur de volume — MESURÉ le 06/09/2026 : +4,76 %, conservateur
 
@@ -2040,7 +2221,7 @@ involontaire que le sur-comptage constituait.
 (compteur de **démarrages** par pompe — deux inconnues, deux équations ; **préalable**,
 sans quoi chaque concordance future sera aussi peu concluante) — **livré en v2.45.0**,
 voir [Comptage des démarrages de pompe](#comptage-des-démarrages-de-pompe-feature-110-v2450) — puis
-[feature-078](../../specs/features/todo/feature-078-rendement-des-impulsions-et-lenteur-regulation-ph.md)
+[feature-078](../../specs/features/done/feature-078-rendement-des-impulsions-et-lenteur-regulation-ph.md)
 (nature établie, puis correction du modèle — **à traiter explicitement comme une
 hausse de dose**). Le protocole de banc qui trancherait sans attendre est écrit
 dans [`constants.h`](../../src/constants.h) : **24 pouls de 5 s contre 12 de 10 s**,

@@ -1087,8 +1087,16 @@ static void handleSaveConfig(AsyncWebServerRequest* request, uint8_t* data, size
 
   // Configuration d'authentification
   if (!doc["auth_enabled"].isNull()) {
+    bool wasEnabled = authCfg.enabled;
     authCfg.enabled = doc["auth_enabled"];
     authManager.setEnabled(authCfg.enabled);
+    // bug-081, condition bloquante #3 (security-reviewer) : faux→vrai doit
+    // révoquer IMMÉDIATEMENT tout client WS déjà auto-inscrit en mode ouvert —
+    // sans ça, un invité connecté avant l'activation de l'auth continuerait de
+    // recevoir les pushes (keepalive maintient la socket indéfiniment).
+    if (!wasEnabled && authCfg.enabled) {
+      wsManager.revokeAllAuthenticated();
+    }
   }
 
   // Mot de passe admin: ne mettre à jour que si différent de "******"

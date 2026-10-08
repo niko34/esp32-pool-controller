@@ -131,7 +131,9 @@ docs/
 │   ├── 0084-ce-qui-prouve-qu-un-reseau-est-vivant.md
 │   ├── 0085-republication-decouverte-ha-sur-empreinte.md
 │   ├── 0086-trame-websocket-sous-ensemble-choisi-de-data.md
-│   └── 0087-ce-qu-un-mode-temporaire-a-le-droit-de-faire.md
+│   ├── 0087-ce-qu-un-mode-temporaire-a-le-droit-de-faire.md
+│   ├── 0088-diffusion-websocket-ciblee-sur-registre-borne-sans-verrou.md
+│   └── 0089-ce-qu-un-redemarrage-a-le-droit-doublier.md
 │
 ├── API.md               ← Référence REST + WebSocket
 ├── MQTT.md              ← Topics MQTT + auto-discovery Home Assistant

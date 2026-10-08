@@ -5,7 +5,18 @@
 
 ## Rôle
 
-Suivre le volume des bidons de produits chimiques (pH et chlore), alerter quand un bidon approche la fin. Le cumul injecté depuis le dernier « Nouveau bidon » est comparé au volume nominal du bidon pour afficher un volume restant et une barre de progression.
+Suivre le volume des bidons de produits chimiques (pH et chlore), alerter quand un bidon approche la fin. Le cumul injecté depuis la dernière mise à jour du niveau est comparé au **niveau posé** pour afficher un volume restant et une barre de progression.
+
+> **feature-143 (v2.59.0) — contenance ≠ niveau.** Le champ s'appelait « Volume du
+> bidon (L) » et laissait croire qu'on y déclarait la **contenance** du jerrican (sa
+> taille, fixe). Le firmware ne s'en sert jamais ainsi : la valeur est un **niveau de
+> départ**, posée au même instant que la remise à zéro des compteurs. Pour le logiciel,
+> « nouveau bidon » et « appoint sans changer de bidon » sont **la même opération** —
+> *il y a maintenant N litres dedans, recompte à partir de zéro*. Un incident réel
+> (08/10/2026) l'a révélé : un appoint de 2,85 → 5 L saisi via « Enregistrer » a été lu
+> comme une contenance **réduite**, sans remise à zéro du cumul injecté — l'appareil
+> s'est cru à sec alors que le bidon venait d'être rempli. Le champ et l'action ont été
+> fusionnés pour que cet état reste **impossible à produire**, pas seulement détecté.
 
 ## Structure
 
@@ -15,10 +26,10 @@ Deux cartes symétriques, une par produit :
    - Toggle `ph_tracking_enabled` — active / désactive le suivi de ce bidon.
    - Barre de volume (`#product-ph-bar`) + labels « restant / total » (L).
    - **Relevé permanent** (v2.45.0, feature-110) : **Volume injecté** (`#product-ph-injected`, mL) et **Démarrages pompe** (`#product-ph-starts`) — affichés **en continu**, pour que le relevé **existe avant** le jour où il est détruit.
-   - Champ **Volume du bidon (L)** (`#ph_container_l`) — par défaut 20 L.
+   - Champ **Quantité dans le bidon (L)** (`#ph_level_l`, feature-143 — v2.59.0) — **jamais pré-rempli** (placeholder seul), avec le texte d'aide *« Bidon neuf, appoint, ou correction après une mesure au doseur : indiquez ce qu'il contient maintenant. »*
    - Champ **Seuil d'alerte (L)** (`#ph_alert_threshold_l`) — par défaut 2 L.
-   - Bouton **Enregistrer** (met à jour volume / seuil sans toucher au cumul).
-   - Bouton **Nouveau bidon** — **demande confirmation** (v2.45.0) et **présente le relevé** avant de le détruire, puis réinitialise le cumul **et** les compteurs à 0.
+   - Bouton **Mettre à jour le niveau** (`#product-ph-update-level`) — pose le niveau saisi **et** réinitialise le cumul **et** les compteurs à 0, dans la même requête. **Demande confirmation** et **présente le relevé** avant de le détruire.
+   - Bouton **Enregistrer** — ne porte plus **que** le seuil d'alerte (et le produit déclaré, géré ailleurs) ; ne touche plus au niveau depuis la v2.59.0.
 2. **Carte Chlore / ORP** (`#product-orp-card`) — strictement symétrique, toggle `orp_tracking_enabled`.
 
 Le titre de la carte pH s'adapte à `ph_correction_type` (affiche « pH+ (base) » si mode pH+ — [`app.js:1770`](../../data/app.js:1770)).
@@ -27,7 +38,7 @@ Le titre de la carte pH s'adapte à `ph_correction_type` (affiche « pH+ (base) 
 
 **pH**
 - `ph_tracking_enabled` (bool)
-- `ph_container_ml` (float, mL)
+- `ph_container_ml` (float, mL) — **servi par `/data` depuis la v2.59.0** (feature-143), en plus de `GET /get-config` et de la trame WS `config` (inchangés). Voir [docs/API.md](../API.md#suivi-produit--relevé-du-biais-de-comptage-feature-110-v2450).
 - `ph_remaining_ml` (float, mL) — calculé : `container_ml − total_injected_ml` (borné à 0)
 - `ph_alert_threshold_ml` (float, mL)
 - `ph_total_injected_ml` (float, mL) — le **`V`** du relevé
@@ -39,6 +50,10 @@ Le titre de la carte pH s'adapte à `ph_correction_type` (affiche « pH+ (base) 
 
 ⚠️ **Le rendu du relevé ne touche au DOM que si la clé est présente** (`app.js:3257`). `ph_starts` et `ph_total_injected_ml` **ne sont pas** dans la trame `sensor_data` : sans cette garde, chaque trame capteurs effacerait le relevé une seconde après son affichage (récidive du motif « parité `/data` ↔ WebSocket »).
 
+⚠️ **`*_container_ml` absent ⇒ `--`, jamais un nombre inventé** (feature-143, v2.59.0). `updateCard()` n'utilise plus de repli muet `?? 20000` : si la donnée n'est pas servie, la jauge affiche `0 %` et le label « total » affiche `--`. Les trois replis muets vers 20 L qui existaient avant cette version ont été retirés — ils rechargeaient silencieusement le malentendu contenance/niveau au premier chargement.
+
+> **`ph_container_ml` / `orp_container_ml` — 4ᵉ récidive du motif de parité `/data` ↔ WebSocket.** Ces deux clés étaient déclarées comme exception dual-sourcée dans la sentinelle `test/test_native_ws_data_parity/` (« RÉGLAGE, servi par `/get-config` »). Le raisonnement était juste sur le papier et **faux en pratique** : l'interface rafraîchit la carte à **chaque** charge `/data` (toutes les 30 s), pas seulement au chargement de la configuration. L'exception a été retirée en feature-143 : `/data` sert désormais ces deux clés directement, à parité avec la trame WS. **Ce sont les exceptions qui méritent la vigilance, pas la règle** — voir [docs/subsystems/ws-manager.md](../subsystems/ws-manager.md#le-second-axe-de-parité--data--sensor_data-parite-data).
+
 Voir [`config.h:194`](../../src/config.h:194) struct `ProductConfig` et [`ws_manager.cpp:900`](../../src/ws_manager.cpp:900) (trame `config`) / [`ws_manager.cpp:609`](../../src/ws_manager.cpp:609) (trame `sensor_data`) pour la diffusion.
 
 ## Actions
@@ -46,8 +61,8 @@ Voir [`config.h:194`](../../src/config.h:194) struct `ProductConfig` et [`ws_man
 | Action | Endpoint | Auth | Payload |
 |--------|----------|------|---------|
 | Activer / désactiver suivi | `POST /save-config` | CRITICAL | `{ "ph_tracking_enabled": bool }` ou idem `orp_` |
-| Sauvegarder volume & seuil | `POST /save-config` | CRITICAL | `{ "ph_container_ml": N, "ph_alert_threshold_ml": N }` (UI convertit L → mL) |
-| Nouveau bidon (reset cumul) | `POST /save-config` | CRITICAL | `{ "ph_container_ml": N, "ph_reset_container": true }` — reset `phTotalInjectedMl`, `phStartCount`, `phAcctAnomalyCount` et `phAcctAnomalyMl` à 0, **dans le même bloc** ([`web_routes_config.cpp:1110`](../../src/web_routes_config.cpp:1110)) |
+| Enregistrer (seuil d'alerte) | `POST /save-config` | CRITICAL | `{ "ph_alert_threshold_ml": N }` (UI convertit L → mL) — **depuis la v2.59.0, ne porte plus `ph_container_ml`** |
+| Mettre à jour le niveau (feature-143, v2.59.0) | `POST /save-config` | CRITICAL | `{ "ph_container_ml": N, "ph_reset_container": true }` — reset `phTotalInjectedMl`, `phStartCount`, `phAcctAnomalyCount` et `phAcctAnomalyMl` à 0, **dans le même bloc** ([`web_routes_config.cpp:1110`](../../src/web_routes_config.cpp:1110)). Contrat HTTP **inchangé** depuis feature-110 : c'est l'appel frontend (jadis « Nouveau bidon ») qui change de nom et de déclenchement. |
 
 Remarques :
 - Les volumes sont **stockés côté firmware en mL** ; l'UI les saisit et les affiche en L.
@@ -64,11 +79,11 @@ L'appareil **sur-compte** le volume injecté. La concordance jerricane du **06/0
 
 Avec le **volume seul**, une inconnue pour une équation : les deux modèles sont **indiscernables**. Avec le **volume `V` et les démarrages `N`**, ils se départagent. Sous le modèle du déficit fixe, le 06/09 donne `δ = 240 / N`, soit **δ ≈ 0,21 mL/démarrage** aux ordres de grandeur observés.
 
-**Cette version mesure, elle ne corrige rien.** Le correctif appartient à [feature-078](../../specs/features/todo/feature-078-rendement-des-impulsions-et-lenteur-regulation-ph.md).
+**Cette version mesure, elle ne corrige rien.** Le correctif appartient à [feature-078](../../specs/features/done/feature-078-rendement-des-impulsions-et-lenteur-regulation-ph.md).
 
 ### Quoi noter, et quand
 
-**Quand** : au **changement de bidon**, juste avant de cliquer « Nouveau bidon » — le geste est déjà fait, il n'y a **aucune tâche à mémoriser**. La confirmation du bouton **présente le relevé** à l'instant exact où il va être détruit.
+**Quand** : au **changement de bidon ou à tout appoint**, juste avant de cliquer « Mettre à jour le niveau » — le geste est déjà fait, il n'y a **aucune tâche à mémoriser**. La confirmation du bouton **présente le relevé** à l'instant exact où il va être détruit.
 
 **Quoi** — les cinq nombres, **ensemble** :
 
@@ -131,18 +146,21 @@ Le relevé de bidon est le chemin **sans effort humain** — il se déclenche to
 
 Les deux chemins restent valides et se **recoupent** : deux verdicts concordants valent mieux qu'un seul.
 
-### La confirmation du bouton « Nouveau bidon »
+### La confirmation du bouton « Mettre à jour le niveau » (renommé en feature-143, v2.59.0)
 
-Le bouton partait au **premier clic**, sans confirmation, sur une action **irréversible**. Depuis la v2.45.0 (`resetProduct()`, [`app.js`](../../data/app.js)) :
+Le bouton s'appelait « Nouveau bidon » et partait au **premier clic**, sans confirmation, sur une action **irréversible**. Mécanique inchangée depuis la v2.45.0 (`updateLevel()`, anciennement `resetProduct()`, [`app.js`](../../data/app.js)), avec un déclenchement et un contenu enrichis :
 
-1. **`GET /get-config` est rejoué d'abord** — obligatoire : `window._config` peut provenir d'une trame WS `config` **partielle**, où `*_anom` / `*_anom_ml` **ne sont jamais** présents. Sans ce rechargement, le relevé serait **incomplet à l'instant même où il est détruit**. Échec de lecture ⇒ toast d'erreur et **aucune remise à zéro**.
-2. Une **confirmation** (`confirmDialog`, variante `danger`) présente **Volume injecté** et **Démarrages pompe**, avec les mêmes libellés que la carte.
-3. L'**hygiène n'est affichée que si elle est non nulle** — « Relevé peu fiable : *n* démarrages (*x* mL) ont eu lieu hors comptage normal. » Un « 0 » permanent apprendrait à ignorer la zone, et l'avertissement passerait inaperçu le jour où il invalide vraiment le relevé.
-4. Seul un **« oui » explicite** (`ok === true`) déclenche le `POST /save-config`.
+1. Le **niveau saisi** (`#ph_level_l` / `#orp_level_l`) doit être **> 0** — sinon toast d'erreur, aucune requête. Un niveau à 0 n'a pas de sens comme point de départ.
+2. **`GET /get-config` est rejoué d'abord** — obligatoire : `window._config` peut provenir d'une trame WS `config` **partielle**, où `*_anom` / `*_anom_ml` **ne sont jamais** présents. Sans ce rechargement, le relevé serait **incomplet à l'instant même où il est détruit**. Échec de lecture ⇒ toast d'erreur et **aucune remise à zéro**.
+3. Une **confirmation** (`confirmDialog`, variante `danger`) affiche en tête le **nouveau niveau** (`_buildProductResetSummary()`, feature-143), puis **Volume injecté** et **Démarrages pompe**, avec les mêmes libellés que la carte.
+4. L'**hygiène n'est affichée que si elle est non nulle** — « Relevé peu fiable : *n* démarrages (*x* mL) ont eu lieu hors comptage normal. » Un « 0 » permanent apprendrait à ignorer la zone, et l'avertissement passerait inaperçu le jour où il invalide vraiment le relevé.
+5. Seul un **« oui » explicite** (`ok === true`) déclenche le `POST /save-config`.
 
-Le texte de repli (`window.confirm()` des navigateurs sans `<dialog>`) porte **les deux valeurs en clair** : c'est le seul contenu affiché dans ce cas.
+Le texte de repli (`window.confirm()` des navigateurs sans `<dialog>`) porte **toutes les valeurs en clair**, niveau compris : c'est le seul contenu affiché dans ce cas.
 
-Une valeur de bidon **saisie mais non enregistrée** reste prise en compte par la remise à zéro (lue **avant** le rechargement) — comportement inchangé.
+**Le champ de niveau n'est jamais pré-rempli** (`loadProductConfig()`) : à chaque affichage de la page, il est vide, placeholder seul. Le pré-remplir depuis `ph_container_ml` rechargerait exactement le malentendu de l'incident du 08/10 — *« il y a déjà un nombre, il doit être bon »*. Conséquence : contrairement au comportement d'avant la v2.59.0, **il n'existe plus de notion de « valeur saisie mais non enregistrée »** — le champ de niveau n'est lu que par cette action, jamais par « Enregistrer ».
+
+**Invariant D2 de la spec — l'état « niveau < volume déjà injecté » est impossible par construction, pas seulement évité** : il n'existe qu'un seul chemin d'écriture du niveau (cette action), et il porte toujours la remise à zéro du cumul injecté dans la **même** requête `POST /save-config`. Aucune combinaison d'interface ne peut poser un niveau sans réinitialiser `phTotalInjectedMl` en même temps.
 
 ## Règles firmware
 
@@ -166,8 +184,8 @@ Aucune entité HA dédiée aux bidons produits à date. Les cumuls journaliers (
 ## Fichiers
 
 - [`data/index.html:977`](../../data/index.html:977) — structure HTML ; relevé permanent à [`data/index.html:1452`](../../data/index.html:1452) (pH) et [`:1507`](../../data/index.html:1507) (chlore)
-- [`data/app.js:1783`](../../data/app.js:1783) — `setupProductScreen()`, `saveProduct()`, `resetProduct()`, `updateProductUI()`
-- [`data/app.js:3347`](../../data/app.js:3347) — `_buildProductResetSummary()` : contenu de la confirmation « Nouveau bidon »
+- [`data/app.js:1783`](../../data/app.js:1783) — `setupProductScreen()`, `saveProduct()`, `updateLevel()` (feature-143, anciennement `resetProduct()`), `updateProductUI()`
+- [`data/app.js:3347`](../../data/app.js:3347) — `_buildProductResetSummary()` : contenu de la confirmation « Mettre à jour le niveau »
 - [`src/config.h:194`](../../src/config.h:194) — struct `ProductConfig` (dont les 6 compteurs de feature-110)
 - [`src/web_routes_config.cpp:301`](../../src/web_routes_config.cpp:301) — les 6 clés servies par `/get-config` ; reset à [`:1110`](../../src/web_routes_config.cpp:1110) / [`:1131`](../../src/web_routes_config.cpp:1131)
 - [`src/web_routes_data.cpp:87`](../../src/web_routes_data.cpp:87) — champs exposés dans `/data`
@@ -182,4 +200,4 @@ Aucune entité HA dédiée aux bidons produits à date. Les cumuls journaliers (
 - [docs/API.md](../API.md#suivi-produit--relevé-du-biais-de-comptage-feature-110-v2450) — les 6 clés de `/get-config`.
 - [docs/MQTT.md](../MQTT.md#relevé-du-biais-de-comptage-feature-110-v2450) — les 8 clés du topic retenu `{base}/diagnostic`.
 - [docs/subsystems/ws-manager.md](../subsystems/ws-manager.md#feature-110-v2450--compteurs-de-démarrages-de-pompe-ph_starts--orp_starts) — parité WS et les 4 clés HTTP-seules.
-- [feature-078](../../specs/features/todo/feature-078-rendement-des-impulsions-et-lenteur-regulation-ph.md) — la spec qui **corrigera** le biais, une fois sa nature établie.
+- [feature-078](../../specs/features/done/feature-078-rendement-des-impulsions-et-lenteur-regulation-ph.md) — la spec qui **corrigera** le biais, une fois sa nature établie.

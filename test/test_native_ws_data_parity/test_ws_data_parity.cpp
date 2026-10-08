@@ -166,10 +166,11 @@ struct WsPlusRouteKey {
 };
 
 static const WsPlusRouteKey kWsPlusOtherRoute[] = {
-  {"ph_container_ml", "GET /get-config",
-   "Volume du bidon pH : REGLAGE, servi par /get-config vers window._config ; la trame le pousse pour la jauge de niveau qui, elle, bouge a l'usage."},
-  {"orp_container_ml", "GET /get-config",
-   "Volume du bidon ORP : meme partage que la voie pH — reglage cote /get-config, valeur vivante cote trame pour la jauge de niveau."},
+  // ph_container_ml / orp_container_ml : feature-143 (v2.59.0) a servi ces deux
+  // clefs par /data elle-meme (web_routes_data.cpp) — c'etait la 4e recidive du
+  // motif de parite, corrigee en PREMIER dans ce lot. Elles ne sont plus une
+  // exception dual-sourcee : /data et la trame WS les portent desormais TOUTES
+  // LES DEUX, et la paire est captee par la verification generique (a)-(d).
   {"lighting_enabled", "GET /get-config",
    "Etat de l'eclairage : REGLAGE persistant cote /get-config, et etat instantane cote trame (le planificateur peut le basculer sans requete HTTP)."},
   {"boost_active", "GET /get-config",

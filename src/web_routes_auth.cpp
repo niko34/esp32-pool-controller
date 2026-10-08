@@ -3,6 +3,7 @@
 #include "auth.h"
 #include "config.h"
 #include "logger.h"
+#include "ws_manager.h"  // bug-081 : révocation WS à la rotation de token
 #include <ArduinoJson.h>
 #include <WiFi.h>
 
@@ -149,6 +150,13 @@ void setupAuthRoutes(AsyncWebServer* server) {
     authManager.regenerateApiToken();
     authCfg.apiToken = authManager.getApiToken();
     saveMqttConfig();
+
+    // bug-081, condition bloquante #3 (security-reviewer) : une rotation de
+    // jeton ne révoquait rien côté WS — un client authentifié avec l'ANCIEN
+    // token continuait de recevoir les pushes indéfiniment (keepalive). Les
+    // clients WS déjà authentifiés doivent ré-authentifier avec le nouveau
+    // token.
+    wsManager.revokeAllAuthenticated();
 
     JsonDocument doc;
     doc["success"] = true;

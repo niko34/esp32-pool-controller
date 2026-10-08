@@ -1,7 +1,9 @@
 #include <WiFi.h>
 #include <time.h>
 #include <esp_system.h>
-#include <new>  // std::bad_alloc (filet TOCTOU autour de textAll, bug-heap-toctou A1)
+#include <new>  // std::bad_alloc (filet TOCTOU autour de l'envoi, bug-heap-toctou A1)
+#include <memory>  // std::make_shared (bug-081 : UN shared buffer par push, pas un par client)
+#include <vector>
 #include "ws_manager.h"
 #include "web_helpers.h"
 #include "heap_metrics.h"  // heapLargestFreeBlock8Bit — sans log ni alloc (bug-080)
@@ -67,7 +69,17 @@ void WsManager::begin(AsyncWebServer* server) {
 
 void WsManager::update() {
   if (!_ws) return;
-  _ws->cleanupClients(4);  // Max 4 clients WS simultanés pour préserver les sockets lwIP
+
+  // bug-081, condition bloquante #3 : révocation immédiate demandée depuis un
+  // handler HTTP (auth_enabled faux→vrai, rotation de token). Le registre a
+  // DÉJÀ été vidé (stores atomiques, au moment de la demande) ; ne reste ici
+  // que la fermeture effective des sockets, différée jusqu'à loopTask.
+  if (_pendingRevokeClose.exchange(false, std::memory_order_acq_rel)) {
+    _ws->closeAll();
+    systemLogger.info("[WS] Révocation : tous les clients authentifiés déconnectés");
+  }
+
+  _ws->cleanupClients(kWsMaxClients);  // Préserve les sockets lwIP
 
   // Récolte des clients gelés (churn-heap Q1) : déléguée au FORK, pas de boucle
   // manuelle ici. Revue 2.11.1 : itérer getClients() depuis loopTask est un UB —
@@ -116,10 +128,37 @@ void WsManager::update() {
     }
   }
 
-  if (_authenticatedClients.empty()) return;
+  // Warn throttlé des connexions refusées par saturation du registre
+  // authentifié (bug-081). Même patron que les deux blocs ci-dessus — émis
+  // ICI (loopTask), jamais depuis _onClientConnect/_onData (contexte async_tcp).
+  {
+    uint32_t full = _registryFull.load(std::memory_order_relaxed);
+    unsigned long now = millis();
+    if (full > _lastWarnedRegistryFull &&
+        (_lastRegistryFullWarnMs == 0 || now - _lastRegistryFullWarnMs >= kWsSkipWarnThrottleMs)) {
+      systemLogger.warning(String(full - _lastWarnedRegistryFull) +
+          " connexion(s) WS refusée(s) (registre authentifié saturé, kWsMaxClients=" +
+          String((unsigned)kWsMaxClients) + ")");
+      _lastWarnedRegistryFull = full;
+      _lastRegistryFullWarnMs = now;
+    }
+  }
 
-  if (_pendingInitialPush) {
-    _pendingInitialPush = false;
+  if (_authRegistry.empty()) return;
+
+  // bug-081 : l'époque est lue AVANT le snapshot (condition bloquante #4) —
+  // un insert() concurrent entre cette lecture et le snapshot sera simplement
+  // rattrapé au tour de loop() suivant (époque encore différente), jamais perdu.
+  uint32_t authEpoch = _authEpoch.load(std::memory_order_acquire);
+  bool initialPush = (authEpoch != _servedEpoch.load(std::memory_order_relaxed));
+
+  if (initialPush) {
+    // Condition bloquante #4 : avancé AVANT l'envoi, dès que le registre était
+    // non vide à cet instant — même si la garde heap ou la saturation font
+    // sauter l'émission réelle plus bas. Sinon, en famine, update() reconstruit
+    // _buildSensorJson() à CHAQUE tour de loop() au lieu d'attendre le prochain
+    // cycle de 5 s.
+    _servedEpoch.store(authEpoch, std::memory_order_relaxed);
     _pendingConfigBroadcast = false;  // initial push couvre déjà la config
     broadcastSensorData();
     broadcastConfig();
@@ -136,6 +175,15 @@ void WsManager::update() {
     broadcastSensorData();
     _lastSensorPush = millis();
   }
+}
+
+void WsManager::revokeAllAuthenticated() {
+  // Stores atomiques uniquement (WsClientRegistry::clear) : sûr depuis
+  // N'IMPORTE QUEL contexte, y compris un handler HTTP sur async_tcp.
+  _authRegistry.clear();
+  // La fermeture effective des sockets est déférée à update() (loopTask) —
+  // jamais exécutée ici (condition bloquante #3, security-reviewer).
+  _pendingRevokeClose.store(true, std::memory_order_release);
 }
 
 void WsManager::requestConfigBroadcast() {
@@ -158,9 +206,15 @@ uint32_t WsManager::oversizedFrameCount() const {
   return _oversizedFrames.load(std::memory_order_relaxed);
 }
 
-// Garde heap commune des 3 broadcasts (bug-badalloc-ws-broadcast) : textAll() alloue
-// un shared buffer (makeSharedBuffer, fork ESPAsyncWebServer) SANS rattraper
-// std::bad_alloc → abort() (coredump 2026-07-28, payload 1777 o, maxBloc < ~1,8 Ko).
+uint32_t WsManager::registryFullCount() const {
+  return _registryFull.load(std::memory_order_relaxed);
+}
+
+// Garde heap commune des 3 broadcasts (bug-badalloc-ws-broadcast) : l'envoi
+// alloue un shared buffer SANS rattraper std::bad_alloc → abort() (coredump
+// 2026-07-28, payload 1777 o, maxBloc < ~1,8 Ko). Historiquement via textAll()
+// (makeSharedBuffer, fork ESPAsyncWebServer) ; depuis bug-081, via UN SEUL
+// make_shared dans _sendToAuthenticated (même risque de bad_alloc, même filet).
 // Si le plus gros bloc contigu est sous kWsPushMinAllocBytes, on saute le push : l'UI
 // rate un cycle de 5 s (sans coût UX) et le débounce auto-guérison se joue.
 // bug-080 (v2.33.0) : mesure basculée sur heapLargestFreeBlock8Bit() — la métrique
@@ -189,7 +243,7 @@ void WsManager::_onEvent(AsyncWebSocket* ws, AsyncWebSocketClient* client,
     notifyNetworkActivity();  // trafic WS entrant : signal réseau secondaire
     _onData(client, data, len);
   } else if (type == WS_EVT_DISCONNECT) {
-    _authenticatedClients.erase(client->id());
+    _authRegistry.erase(client->id());
   }
 }
 
@@ -209,8 +263,21 @@ void WsManager::_onClientConnect(AsyncWebSocketClient* client, AsyncWebServerReq
 
   if (!authCfg.enabled) {
     // Pas d'auth : client immédiatement autorisé
-    _authenticatedClients.insert(client->id());
-    _pendingInitialPush = true;
+    WsRegistryInsert r = _authRegistry.insert(client->id());
+    if (r == WsRegistryInsert::kFull) {
+      // Registre saturé (kWsMaxClients dépassé) : jamais de log ici (contexte
+      // async_tcp, pile réduite) — le warn throttlé vit dans update().
+      _registryFull.fetch_add(1, std::memory_order_relaxed);
+      client->close();
+    } else if (r == WsRegistryInsert::kInserted) {
+      // release (revue bug-081) : s'apparie avec le load(acquire) d'update().
+      // En relaxed, l'epoque pourrait devenir visible AVANT l'ecriture du slot :
+      // update() verrait la nouvelle epoque, prendrait un snapshot SANS ce
+      // client, puis avancerait _servedEpoch — push initial perdu pour lui.
+      _authEpoch.fetch_add(1, std::memory_order_release);
+    }
+    // kAlreadyPresent : rien à faire (idempotent, ne devrait pas arriver ici —
+    // un id frais ne peut pas déjà être présent).
   }
   // Si auth activée : attendre le message {"type":"auth","token":"..."} dans _onData
 }
@@ -227,54 +294,118 @@ void WsManager::_onData(AsyncWebSocketClient* client, uint8_t* data, size_t len)
     client->close();
     return;
   }
-  _authenticatedClients.insert(client->id());
-  _pendingInitialPush = true;
+  WsRegistryInsert r = _authRegistry.insert(client->id());
+  if (r == WsRegistryInsert::kFull) {
+    // Jamais de log ici (contexte async_tcp) — warn throttlé dans update().
+    _registryFull.fetch_add(1, std::memory_order_relaxed);
+    client->close();
+  } else if (r == WsRegistryInsert::kInserted) {
+    // kAlreadyPresent (condition bloquante #1) : un client qui renvoie
+    // {"type":"auth"} plusieurs fois ne doit PAS redéclencher un push initial
+    // ni consommer un second slot — insert() est idempotent par construction.
+    // release : voir le commentaire du site jumeau dans _onClientConnect.
+    _authEpoch.fetch_add(1, std::memory_order_release);
+  }
+}
+
+// =============================================================================
+// Envoi ciblé aux clients authentifiés (bug-081)
+// =============================================================================
+// Remplace les trois `_ws->textAll(...)` : textAll() diffuse à TOUS les clients
+// de /ws, authentifiés ou non — c'est très exactement le bug. La cible est
+// désormais `_authRegistry`, SEUL juge de qui reçoit une trame.
+//
+// POURQUOI SANS VERROU APPLICATIF (ne pas "améliorer" en ajoutant un mutex) :
+// `_queueMessage` avec `_closeWhenFull = true` (setCloseClientOnQueueFull,
+// posé à la connexion) fait, file saturée : `lock.unlock(); c->close();` →
+// `AsyncClient::_close()` (`_discard_cb` SYNCHRONE) → `_handleDisconnect` →
+// destructeur → `WS_EVT_DISCONNECT` → notre `_onEvent` → `_authRegistry.erase()`,
+// le tout DANS LA MÊME PILE D'APPEL que cette boucle d'envoi (loopTask). Le fork
+// y survit parce que son verrou est un `std::recursive_mutex` (`_ws_clients_lock`,
+// réentrant) ; un mutex FreeRTOS applicatif à nous (non récursif) s'auto-
+// bloquerait sur ce même chemin. Le snapshot pris sur la PILE ci-dessous itère
+// une COPIE : une mutation du registre pendant la boucle ne le perturbe pas.
+// Interdiction absolue de tenir un verrou applicatif pendant cette boucle, et
+// d'y lire/écrire autre chose que des atomiques.
+bool WsManager::_sendToAuthenticated(const char* buf, size_t len) {
+  if (!_ws) return false;
+
+  uint32_t ids[kWsRegistrySlots];
+  size_t n = _authRegistry.snapshot(ids, kWsRegistrySlots);
+  if (n == 0) return false;
+
+  // UN SEUL shared buffer pour tout le push (bug-081). ⚠️ Correction de revue :
+  // `textAll(const char*, len)` n'allouait PAS N buffers — il délègue à
+  // `textAll(makeSharedBuffer(...))`, donc UN buffer partagé entre tous les
+  // clients (AsyncWebSocket.cpp). Le profil mémoire ici est donc ÉGAL à
+  // l'ancien, pas meilleur. Ce qui aurait fait N copies de ~3,5 Ko, c'est la
+  // surcharge `text(id, const char*, len)` — elle appelle makeSharedBuffer à
+  // CHAQUE appel, donc une par destinataire (~3,5 Ko × N sur
+  // un appareil au passif std::bad_alloc). bad_alloc levé par make_shared AVANT
+  // toute mutation de file dans le fork → catch propre = push sauté ENTIER,
+  // compté UNE fois (pas un par client).
+  std::shared_ptr<std::vector<uint8_t>> shared;
+  try {
+    shared = std::make_shared<std::vector<uint8_t>>(
+        reinterpret_cast<const uint8_t*>(buf), reinterpret_cast<const uint8_t*>(buf) + len);
+  } catch (const std::bad_alloc&) {
+    _skippedPushes.fetch_add(1, std::memory_order_relaxed);
+    return false;
+  }
+
+  bool sentAny = false;
+  // Filet TOCTOU (bug-heap-toctou A1) : la garde heap peut être prise de
+  // vitesse (async_tcp consomme le bloc mesuré entre le check et l'alloc
+  // interne du fork, p.ex. sa propre file d'attente). UN SEUL catch autour de
+  // TOUTE la boucle — pas un par client — donc au plus un _skippedPushes++ par
+  // appel de cette fonction, jamais un par client restant.
+  try {
+    for (size_t i = 0; i < n; ++i) {
+      if (_ws->text(ids[i], shared)) sentAny = true;
+    }
+  } catch (const std::bad_alloc&) {
+    _skippedPushes.fetch_add(1, std::memory_order_relaxed);
+    return sentAny;
+  }
+  return sentAny;
 }
 
 // =============================================================================
 // Broadcasts
 // =============================================================================
 
-void WsManager::broadcastSensorData() {
-  if (!_ws || _ws->count() == 0) return;
-  if (!_heapAllowsPush()) return;  // Garde AVANT la construction du JSON (bug-badalloc-ws-broadcast)
+bool WsManager::broadcastSensorData() {
+  if (!_ws || _authRegistry.empty()) return false;
+  if (!_heapAllowsPush()) return false;  // Garde AVANT la construction du JSON (bug-badalloc-ws-broadcast)
   size_t len = _buildSensorJson(sWsFrameBuf, sizeof(sWsFrameBuf));
   if (len == 0) {
     // Trame > buffer statique : push sauté, jamais tronqué (warn throttlé dans update()).
     _oversizedFrames.fetch_add(1, std::memory_order_relaxed);
-    return;
+    return false;
   }
-  // Filet TOCTOU (bug-heap-toctou A1) : la garde heap peut être prise de vitesse
-  // (async_tcp consomme le bloc mesuré entre le check et l'alloc). L'exception
-  // std::bad_alloc part de makeSharedBuffer AVANT toute mutation de file dans le
-  // fork → catch propre = push sauté, compté dans _skippedPushes (warn throttlé
-  // existant d'update(), inchangé).
-  try {
-    _ws->textAll(sWsFrameBuf, len);
-  } catch (const std::bad_alloc&) {
-    _skippedPushes.fetch_add(1, std::memory_order_relaxed);
-  }
+  return _sendToAuthenticated(sWsFrameBuf, len);
 }
 
-void WsManager::broadcastConfig() {
-  if (!_ws || _ws->count() == 0) return;
-  if (!_heapAllowsPush()) return;  // Garde AVANT la construction du JSON (bug-badalloc-ws-broadcast)
+bool WsManager::broadcastConfig() {
+  if (!_ws || _authRegistry.empty()) return false;
+  if (!_heapAllowsPush()) return false;  // Garde AVANT la construction du JSON (bug-badalloc-ws-broadcast)
   size_t len = _buildConfigJson(sWsFrameBuf, sizeof(sWsFrameBuf));
   if (len == 0) {
     _oversizedFrames.fetch_add(1, std::memory_order_relaxed);
-    return;
+    return false;
   }
-  // Filet TOCTOU : voir broadcastSensorData (bad_alloc levé AVANT mutation de file).
-  try {
-    _ws->textAll(sWsFrameBuf, len);
-  } catch (const std::bad_alloc&) {
-    _skippedPushes.fetch_add(1, std::memory_order_relaxed);
-  }
+  return _sendToAuthenticated(sWsFrameBuf, len);
 }
 
-void WsManager::broadcastLog(const LogRecord& entry) {
-  if (!_ws || _ws->count() == 0) return;
-  if (!_heapAllowsPush()) return;  // Garde AVANT la construction du JSON (bug-badalloc-ws-broadcast)
+// bug-081 : CODE MORT (aucun appelant — voir mqtt_manager/logger, rien
+// n'appelle broadcastLog aujourd'hui). Corrigé quand même (3ᵉ `textAll`), mais
+// délibérément PAS câblé : il réutiliserait `sWsFrameBuf`, dont l'invariant
+// « réservé à loopTask » est documenté en tête de ce fichier — un futur
+// câblage depuis un callback logger (potentiellement hors loopTask) devra lui
+// donner un buffer DÉDIÉ.
+bool WsManager::broadcastLog(const LogRecord& entry) {
+  if (!_ws || _authRegistry.empty()) return false;
+  if (!_heapAllowsPush()) return false;  // Garde AVANT la construction du JSON (bug-badalloc-ws-broadcast)
   StaticJson<192> doc;
   doc["type"] = "log";
   JsonObject d = doc["data"].to<JsonObject>();
@@ -293,15 +424,10 @@ void WsManager::broadcastLog(const LogRecord& entry) {
   // sWsFrameBuf : un futur câblage multi-tâche devra utiliser un buffer dédié).
   if (measureJson(doc) + 1 > sizeof(sWsFrameBuf)) {
     _oversizedFrames.fetch_add(1, std::memory_order_relaxed);
-    return;
+    return false;
   }
   size_t len = serializeJson(doc, sWsFrameBuf, sizeof(sWsFrameBuf));
-  // Filet TOCTOU : voir broadcastSensorData (bad_alloc levé AVANT mutation de file).
-  try {
-    _ws->textAll(sWsFrameBuf, len);
-  } catch (const std::bad_alloc&) {
-    _skippedPushes.fetch_add(1, std::memory_order_relaxed);
-  }
+  return _sendToAuthenticated(sWsFrameBuf, len);
 }
 
 // =============================================================================

@@ -3,7 +3,7 @@
 - **Statut** : Accepté — **amende le pouls minimal de 5 s (condition B3) de l'[ADR-0043](0043-dosage-proportionnel-de-temps-amplitude-calibree.md)** ; le reste de l'ADR-0043 (proportionnel de temps, amplitude calibrée, kick, période fixe, aucune interpolation) et la totalité de l'[ADR-0046](0046-accumulateur-demande-sous-pouls-minimal.md) sont **inchangés** — seuls leurs ordres de grandeur chiffrés se déplacent.
 - **Date** : 2026-08-28
 - **Décideurs** : gate `pool-chemistry` (**GO SOUS CONDITIONS**, 28/08/2026), utilisateur, architect
-- **Spec(s) liée(s)** : [feature-078-rendement-des-impulsions-et-lenteur-regulation-ph](../../specs/features/todo/feature-078-rendement-des-impulsions-et-lenteur-regulation-ph.md)
+- **Spec(s) liée(s)** : [feature-078-rendement-des-impulsions-et-lenteur-regulation-ph](../../specs/features/done/feature-078-rendement-des-impulsions-et-lenteur-regulation-ph.md)
 
 ## Contexte
 
@@ -111,7 +111,7 @@ moyenne.
 - **Exigences du gate, dues** : (1) surveiller le plafond journalier sur **3 jours** ;
   (2) la **mesure de la perte fixe** reste due (M2), après quoi le modèle de comptage
   devra être corrigé — voir
-  [feature-078](../../specs/features/todo/feature-078-rendement-des-impulsions-et-lenteur-regulation-ph.md).
+  [feature-078](../../specs/features/done/feature-078-rendement-des-impulsions-et-lenteur-regulation-ph.md).
 - La restitution des très faibles demandes est **plus grossièrement quantifiée** (paquets
   de 4,61 mL au lieu de 2,47 mL) et différée de deux fois plus de périodes.
 - L'amélioration attendue du pH est une **hypothèse en cours de vérification**, pas un
@@ -134,7 +134,7 @@ moyenne.
   [`.cpp`](../../src/pulse_dosing_logic.cpp) (`planPulseWithCarry`, `planPulse`,
   invariance de la moyenne), [`src/pump_controller.cpp`](../../src/pump_controller.cpp)
   (log de tir d'accumulateur, durée reprise de `kPulseMinMs`)
-- Spec : [feature-078](../../specs/features/todo/feature-078-rendement-des-impulsions-et-lenteur-regulation-ph.md)
+- Spec : [feature-078](../../specs/features/done/feature-078-rendement-des-impulsions-et-lenteur-regulation-ph.md)
   (analyse `pool-chemistry` du 28/08, 7 leviers, protocoles de mesure M1 / M2)
 - ADR liés : [ADR-0043](0043-dosage-proportionnel-de-temps-amplitude-calibree.md)
   (pouls minimal amendé — le reste inchangé),

@@ -444,6 +444,25 @@ régulation ne redémarre jamais sur une dose que rien ne demande.</p>
   (plusieurs jours), si.</p>
 </div>
 
+<h3>Un redémarrage ne remet plus la limite horaire de sécurité à zéro non plus</h3>
+
+<p>La mémoire décrite ci-dessus est celle de l'<strong>apprentissage</strong>.
+Une seconde mémoire, distincte, protège contre le sur-dosage&nbsp;: la
+<strong>limite horaire</strong> de dosage (combien de minutes d'injection sont
+autorisées par heure) et le compte des démarrages de la pompe. Jusqu'à cette
+version, un redémarrage les remettait eux aussi à zéro&nbsp;:
+<strong>deux redémarrages survenant dans la même heure pouvaient donc
+autoriser jusqu'au double</strong> de la limite horaire réglée, le temps que
+l'appareil reparte. Cette limite est maintenant conservée au travers d'un
+redémarrage, au même titre que la limite journalière.</p>
+
+<p>⚠️ <strong>Conséquence attendue, pas un dérèglement</strong>&nbsp;: il est
+désormais possible qu'un redémarrage fasse <em>refuser</em> un dosage qui
+aurait été autorisé avant cette mise à jour, simplement parce que le quota de
+l'heure en cours était déjà partiellement consommé avant la coupure. C'est
+précisément l'effet recherché&nbsp;: la limite horaire protège contre un
+sur-dosage, elle ne doit pas s'effacer à chaque redémarrage.</p>
+
 <!-- ══════════════════ 4. Le latch / disjoncteur ══════════════════ -->
 <h2 class="page-break"><span class="num">3</span>Le disjoncteur de la dose de base</h2>
 

@@ -2,6 +2,178 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [2.59.0] - 2026-10-08
+
+> **Ce qui change pour vous** : sur la page Produits, le champ « Volume du
+> bidon (L) » annonçait une **contenance** (la taille du jerrican) mais le
+> logiciel s'en servait comme d'un **niveau de départ** — les deux notions
+> n'ont jamais été la même chose. Un incident réel l'a révélé : un appoint
+> de 2,85 à 5 L **sans changement de bidon**, saisi via « Enregistrer »
+> (le geste que le libellé appelait), a fait croire à l'appareil que le
+> bidon était **à sec** alors qu'il venait d'être rempli. **Un appoint sans
+> changement de bidon ne met plus l'appareil à « vide » par erreur**, et la
+> jauge cesse d'osciller entre un chiffre saisi par erreur et le décompte
+> réel.
+
+### Fonctionnalités
+- **Page Produits** : le champ « Volume du bidon » devient **« Quantité
+  dans le bidon (L) »**, jamais pré-rempli, et l'action unique **« Mettre à
+  jour le niveau »** remplace « Nouveau bidon » — elle pose le niveau **et**
+  remet les compteurs à zéro dans le même geste, que ce soit un bidon neuf,
+  un appoint ou une correction après mesure au doseur. « Enregistrer » ne
+  porte plus que le seuil d'alerte : il n'existe plus qu'un seul chemin
+  d'écriture du niveau, et il entraîne toujours la remise à zéro — l'état
+  incohérent de l'incident devient **impossible à produire**, pas
+  seulement détecté après coup.
+
+### Firmware
+- **API `/data`** : les clés `ph_container_ml` / `orp_container_ml` sont
+  désormais servies par `GET /data`, en plus de `GET /get-config` et de la
+  trame WebSocket `config` (inchangés). C'était la **4ᵉ récidive** du motif
+  de parité `/data` ↔ WebSocket : ces deux clés étaient déclarées comme
+  exception dual-sourcée dans la sentinelle de test, un raisonnement juste
+  sur le papier mais faux en pratique — l'interface rafraîchit la carte
+  Produits à chaque charge `/data`, pas seulement au chargement de la
+  configuration. L'exception a été retirée plutôt que contournée.
+
+### Documentation
+- `docs/features/page-dosages.md` : nouvelle action « Mettre à jour le
+  niveau », explication contenance ≠ niveau, mise à jour de la table des
+  actions et des champs `/data`.
+- `docs/API.md` : `ph_container_ml` / `orp_container_ml` ajoutées à
+  l'exemple `GET /data`, avec le motif de la 4ᵉ récidive de parité.
+- `docs/subsystems/ws-manager.md` : `kWsPlusOtherRoute` passe de 8 à 6
+  entrées (les deux clés migrées vers `/data`) ; total des clés WS-seules
+  de 24 à 22.
+- `docs/user/src/guide-utilisation.html` : chapitre « Les produits »
+  réécrit — appoint et bidon neuf se traitent désormais du même geste.
+- Aucun ADR créé : correction d'un libellé et fusion d'un flux
+  d'interaction existant, pas d'arbitrage entre options structurantes
+  (aucun des 4 critères de déclenchement rempli).
+
+---
+
+## [2.58.0] - 2026-10-08
+
+> **Ce qui change pour vous** : après un redémarrage de l'appareil (mise à
+> jour, coupure secteur, auto-guérison, watchdog), le **budget horaire
+> maximal** de dosage (pH et chlore) et l'**anti-emballement** sont désormais
+> **conservés** — avant cette version, ils repartaient entièrement à zéro, et
+> **deux redémarrages dans la même heure pouvaient autoriser jusqu'à deux
+> fois** la limite horaire configurée (seul le plafond journalier faisait
+> encore barrage). ⚠️ **Conséquence volontaire, pas une régression** : il est
+> désormais possible qu'un redémarrage fasse **refuser** un dosage qui aurait
+> été autorisé avant cette mise à jour — c'est exactement l'objectif du
+> correctif, qui ferme une fenêtre de sur-dosage réelle.
+
+### Firmware
+- **Régulation pH/ORP (feature-136)** : le budget horaire de dosage
+  (`usedMs`), l'anti-cycling (`cyclesToday`), la pause de mélange après
+  injection et le registre anti-rafale survivent désormais à un redémarrage.
+  Deux supports redondants : une copie en RAM préservée au redémarrage (reset
+  logiciel, auto-guérison, watchdog — pas une coupure secteur) et une
+  sauvegarde en mémoire flash ancrée sur l'horloge, écrite toutes les 30 s
+  pendant un dosage. Quand les deux sont disponibles et divergent, c'est
+  toujours la version **la plus restrictive** qui est retenue. Si aucune des
+  deux n'est exploitable (première mise en service, horloge invalide sans
+  réseau), le dosage est traité comme si le budget de l'heure en cours était
+  déjà épuisé, par sécurité — situation qui se résorbe d'elle-même à l'heure
+  suivante.
+- **Régulation pH/ORP (feature-136)** : si l'appareil redémarre pendant
+  qu'une pompe doseuse était en train d'injecter, la pause de mélange après
+  injection est désormais réarmée au redémarrage — sans cela, une mesure
+  prise juste après le reboot aurait pu déclencher une nouvelle injection sur
+  une eau pas encore homogénéisée.
+- **Régulation pH/ORP (feature-136)** : nouvelle ligne de journal au
+  démarrage indiquant, pour le pH et le chlore, le budget horaire restauré,
+  sa source et la durée de coupure estimée.
+
+### Documentation
+- `docs/subsystems/pump-controller.md` : section dédiée à la survie du
+  budget horaire de dosage au redémarrage (les deux supports de persistance,
+  le repli de sécurité, le piège des deux délais de péremption 1 h/24 h, la
+  cadence d'écriture et son coût d'usure chiffré, l'occupation de la RAM
+  préservée au redémarrage).
+- `docs/adr/0089-ce-qu-un-redemarrage-a-le-droit-doublier.md` : nouvel ADR —
+  ce qu'une garde temporelle de sécurité a le droit d'oublier au redémarrage,
+  et pourquoi un blocage indéfini a été refusé au profit d'un repli borné à
+  une heure.
+
+---
+
+## [2.57.1] - 2026-10-08
+
+> **Ce qui change pour vous** : le bandeau d'alerte du tableau de bord pouvait
+> afficher une valeur de pH différente de celle de la carte pH — par exemple
+> « pH trop élevé (8.28) — dosage chlore suspendu » alors que la carte
+> affichait 8,1 au même instant. Les deux chiffres étaient corrects chacun à
+> leur heure, mais celui du bandeau datait du déclenchement de l'alerte et ne
+> se rafraîchissait plus tant que l'alerte restait active, pendant que la
+> carte continuait d'évoluer en direct. Le bandeau affiche désormais le
+> **seuil** (une constante, qui ne se périme jamais) au lieu de la mesure —
+> c'est de toute façon le chiffre utile : il dit où redescendre. La mesure en
+> direct reste sur la carte pH, juste à côté.
+
+### Firmware
+- **Régulation pH/ORP** : les deux causes de refus exposées à l'interface
+  (bandeau « Dosage bloqué ») pour l'inhibition du dosage chlore sur pH élevé
+  affichent désormais le seuil franchi plutôt qu'une mesure figée au moment du
+  déclenchement — « pH trop élevé (seuil 7.60) » et « pH brut en butée haute
+  (butée 8.10) ». Aucun seuil ni aucune décision de dosage ne change : seules
+  les deux chaînes de caractères sont corrigées. Les alertes MQTT
+  `orp_ph_inhibit` (log + Home Assistant), elles, ne sont pas concernées — elles
+  portent un message distinct, construit à l'instant du franchissement, qui
+  contient déjà la mesure et le seuil.
+
+### Documentation
+- `docs/subsystems/pump-controller.md` : règle posée — une cause de refus
+  latchée ne porte jamais une mesure vive, seulement un seuil (ou rien).
+
+---
+
+## [2.57.0] - 2026-10-08
+
+> **Ce qui change pour vous** : correctif de **sécurité**. Avant cette version, un
+> appareil connecté au WebSocket `/ws` **sans s'authentifier** recevait quand
+> même toutes les trames temps réel (mesures pH/ORP, états de dosage, volumes
+> injectés) dès qu'un **autre** appareil, lui, était authentifié et consultait
+> l'interface — c'est-à-dire dès que le propriétaire de la piscine ouvrait
+> l'application. Un client connecté en excès est désormais **fermé** par le
+> firmware plutôt que servi en silence.
+
+### Firmware
+- **Sécurité (bug-081)** : les trois diffusions WebSocket (`sensor_data`,
+  `config`, `log`) ciblent désormais explicitement les clients authentifiés
+  (`AsyncWebSocket::text(id, ...)` sur un registre dédié) au lieu de
+  `textAll()`, qui diffusait à **tous** les clients connectés à `/ws`
+  authentifiés ou non. Le mode sans authentification (`auth_enabled = false`)
+  continue de fonctionner à l'identique.
+- **Sécurité (bug-081)** : révocation immédiate de tous les clients WS
+  authentifiés (`WsManager::revokeAllAuthenticated()`) à la bascule
+  `auth_enabled` faux→vrai et à la rotation du token API
+  (`POST /auth/regenerate-token`) — sans ça, un client déjà connecté restait
+  servi avec un état d'authentification périmé.
+- **WebSocket** : un client en excès au-delà de `kWsMaxClients` (4) est
+  désormais **fermé** (registre authentifié saturé) plutôt que servi en
+  silence ; compteur de diagnostic `registryFullCount()`.
+
+### Documentation
+- `docs/subsystems/ws-manager.md` : section « Authentification » corrigée
+  (décrivait un état faux depuis l'origine du défaut), nouvelle section
+  bug-081 détaillant le ciblage par identifiant, l'absence de verrou
+  applicatif sur le registre (ré-entrance `erase()` depuis la boucle d'envoi),
+  le profil mémoire inchangé et la révocation.
+- `docs/API.md` : WS `/ws` précise qu'aucune trame n'est émise avant
+  authentification réussie.
+- `docs/subsystems/auth.md` : référence de ligne périmée corrigée, ajout du
+  ciblage et de la révocation.
+- `docs/adr/0088-diffusion-websocket-ciblee-sur-registre-borne-sans-verrou.md` :
+  nouvel ADR — le registre des clients WS authentifiés est un tableau borné
+  d'atomiques sans verrou applicatif, parce que sa radiation est appelée
+  ré-entrante depuis la boucle d'envoi elle-même.
+
+---
+
 ## [2.56.1] - 2026-10-07
 
 > **Ce qui change pour vous** : l'avertissement « Sonde température figée »
@@ -3195,7 +3367,7 @@ créneau. Le même conseil vivait à **deux autres endroits** — `docs/API.md` 
 - **Innocuité du paquet unitaire** : 4,6 mL = **32 méq**, soit **ΔpH < 0,002** même sur 15 m³ — négligeable jusqu'à ~5 m³ (réserve du gate : un spa de moins de 2 m³ sortirait de ce raisonnement, hors périmètre de la flotte).
 - **Effets de bord instruits, tous inchangés** : les cycles/jour et l'anti-rafale sont comptés par **séance**, pas par impulsion ; la limite horaire est réévaluée à chaque tick, donc un dépassement reste borné par un tour de boucle et non par 10 s ; la garde de temps minimum d'injection raisonne en **temps pompe-ON cumulé**, donc la durée murale d'une séance ne bouge pas ; la pause mélange s'arme en **fin de séance** seulement.
 - **La période reste à 60 s** (`kPulsePeriodMs`, décision explicite) : la fraction de temps pompe maximale est inchangée, et le refus antérieur de l'utilisateur d'allonger la période reste fondé — l'allonger dégraderait la latence de régulation sans rien gagner sur la moyenne.
-- ⚠️ **Le compteur de volume reste faux** (condition n°1 du gate) : cet allongement **atténue** le défaut, il ne le corrige pas. La **mesure de la perte fixe par démarrage reste due** (24 impulsions de 5 s contre 12 de 10 s, à temps de pompe égal), après quoi le modèle de comptage devra être corrigé — et traité explicitement comme une **hausse de dose**, pas comme un correctif neutre. Suivi : [feature-078](specs/features/todo/feature-078-rendement-des-impulsions-et-lenteur-regulation-ph.md).
+- ⚠️ **Le compteur de volume reste faux** (condition n°1 du gate) : cet allongement **atténue** le défaut, il ne le corrige pas. La **mesure de la perte fixe par démarrage reste due** (24 impulsions de 5 s contre 12 de 10 s, à temps de pompe égal), après quoi le modèle de comptage devra être corrigé — et traité explicitement comme une **hausse de dose**, pas comme un correctif neutre. Suivi : [feature-078](specs/features/done/feature-078-rendement-des-impulsions-et-lenteur-regulation-ph.md).
 - **Message de journal** : `Dosage par accumulation : impulsion minimale de …` affiche désormais **10 s**. Une recherche de journal portant sur « impulsion minimale de 5 s » ne matche plus.
 
 ### Documentation

@@ -3,7 +3,7 @@
 - **Statut** : Accepté — **lève le `Ki = 0` de l'[ADR-0016](0016-regulation-p-temporisee-vs-pid.md), pour le SEUL pH** ; `Ki_ORP = 0` et `Kd = 0` **partout** restent inchangés, la temporisation (pause mélange, zone morte, anti-cycling) et l'anti-windup strict de l'ADR-0016 restent intégralement en vigueur. **La clause « Aucune persistance NVS » est amendée par l'[ADR-0053](0053-persistance-conditionnelle-integrale-ph.md)** (persistance autorisée sous sept garanties cumulatives, la valeur relue n'étant jamais appliquée au démarrage) ; **tout le reste de cet ADR est inchangé**.
 - **Date** : 2026-08-28
 - **Décideurs** : gate `pool-chemistry` (**GO SOUS CONDITIONS C1-C5**, 28/08/2026, + contre-visite sur la correction d'intégration signée), utilisateur (principe de non-biais de la consigne), architect
-- **Spec(s) liée(s)** : [feature-078-rendement-des-impulsions-et-lenteur-regulation-ph](../../specs/features/todo/feature-078-rendement-des-impulsions-et-lenteur-regulation-ph.md) (cause n°1 : « la loi P plafonne la demande »)
+- **Spec(s) liée(s)** : [feature-078-rendement-des-impulsions-et-lenteur-regulation-ph](../../specs/features/done/feature-078-rendement-des-impulsions-et-lenteur-regulation-ph.md) (cause n°1 : « la loi P plafonne la demande »)
 
 ## Contexte
 
@@ -285,7 +285,7 @@ varie), une alerte `ph_integral_saturated`, et un affichage en pied de la carte
   (`computePidPure`, anti-windup préexistant)
 - Tests : [`test/test_native_ph_integral/`](../../test/test_native_ph_integral/) — dont le
   test de droop (un P pur ne converge pas, un PI converge)
-- Spec : [feature-078](../../specs/features/todo/feature-078-rendement-des-impulsions-et-lenteur-regulation-ph.md)
+- Spec : [feature-078](../../specs/features/done/feature-078-rendement-des-impulsions-et-lenteur-regulation-ph.md)
   (cause n°1 : « la loi P plafonne la demande — et ce n'est pas un défaut »)
 - ADR liés : [ADR-0016](0016-regulation-p-temporisee-vs-pid.md) (`Ki = 0` levé sur le pH,
   le reste — `Kd = 0`, temporisation, anti-windup strict — inchangé),

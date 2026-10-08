@@ -398,6 +398,30 @@ constexpr size_t kWsFrameBufBytes = 3584;                 // Taille du buffer st
 // platformio.ini + setCloseClientOnQueueFull — pas de constante applicative.)
 constexpr uint16_t kWsKeepAlivePeriodS = 30;              // 30s - période PING auto (keepAlivePeriod, unité: secondes)
 
+// bug-081 : nombre max de clients WS simultanés — remplace le littéral `4` en
+// dur dans WsManager::update() (_ws->cleanupClients(4)). Même valeur que
+// l'ancien commentaire « Max 4 clients WS simultanés pour préserver les sockets
+// lwIP », désormais nommée.
+constexpr uint16_t kWsMaxClients = 4;
+// Capacité du registre PUR des clients authentifiés (ws_client_registry_logic.h) :
+// kWsMaxClients + 1. Le slot de rab absorbe la fenêtre entre l'accept async_tcp
+// d'un Nᵉ+1 client transitoire et le prochain passage de cleanupClients() dans
+// loopTask (qui n'a pas encore eu la main) — sans lui, cette fenêtre ferait
+// refuser une authentification légitime en pur cas de bord de capacité.
+// Le tampon de snapshot sur la pile (WsManager::_sendToAuthenticated,
+// WsManager::update()) est dimensionné EXACTEMENT sur cette constante.
+constexpr size_t kWsRegistrySlots = kWsMaxClients + 1;
+// ⚠️ Revue bug-081 : l'assertion précédente (`kWsRegistrySlots == kWsMaxClients + 1`)
+// était TAUTOLOGIQUE — elle restituait la ligne au-dessus et ne pouvait pas
+// échouer, tout en donnant une fausse assurance sur le bornage du tampon pile.
+// La contrainte réelle est la taille de ce tampon : il vit sur la pile de
+// loopTask, qu'un relèvement distrait de kWsMaxClients ne doit pas faire
+// déborder. 16 ids = 64 o, plafond large et sans danger.
+static_assert(kWsRegistrySlots >= 2 && kWsRegistrySlots <= 16,
+              "kWsRegistrySlots hors bornes : le tampon de snapshot vit sur la "
+              "pile de loopTask (ws_manager.cpp). Relever kWsMaxClients au-delà "
+              "de 15 exige de revoir ce dimensionnement, pas de forcer l'assert.");
+
 // (kWsSensorJsonReserveBytes supprimé — bug-heap-toctou A2 : les trames WS sont
 // construites dans le buffer statique kWsFrameBufBytes, plus de String par push.)
 
@@ -3142,6 +3166,59 @@ constexpr uint16_t kDosingNoFlowWarnStreak = 5;
 // passage pool-chemistry.
 constexpr unsigned int kCyclesPerDayMin = 10;  // plancher : en dessous, la garde bloque un régime d'entretien sain
 constexpr unsigned int kCyclesPerDayMax = 60;  // plafond : sous la cadence physique ~70/j imposée par la pause mélange
+
+// ============================================================================
+// feature-136 — SURVIE DU BUDGET HORAIRE DE DOSAGE AU REDÉMARRAGE
+// (gate pool-chemistry du 2026-10-08, GO sous 12 conditions)
+// ============================================================================
+// Deux supports redondants (dosing_window.{h,cpp} / dosing_window_logic.h) :
+//   - T2 RAM RTC (RTC_NOINIT_ATTR) : survit à un reset logiciel/panic/WDT,
+//     PAS à une coupure secteur ; écoulé mesuré par esp_rtc_get_time_us()
+//     (condition C7), sans dépendre de l'horloge murale ;
+//   - T1 NVS (namespace dédié `pool-dose`) : ancrée sur l'epoch murale.
+//
+// Périodes des deux péremptions (C3) — DOIVENT rester égales aux littéraux
+// employés par refreshDosingState()/tickDosingCycleDay() (pump_controller.cpp,
+// NON touchées par cette feature) : 3 600 000 ms (fenêtre horaire) et
+// 86 400 000 ms (jour des cycles). Dupliquées ici à dessein (la coquille ne
+// doit RIEN décider que ce module ne puisse tester en natif) ; les
+// static_assert ci-dessous figent la valeur numérique, pas la cohérence avec
+// le code non touché — à revérifier à la main si l'un des deux change un jour.
+constexpr uint32_t kDosingWindowHourMs = 3600000UL;   // = littéral de refreshDosingState()
+constexpr uint32_t kDosingWindowDayMs  = 86400000UL;  // = littéral de tickDosingCycleDay()
+
+// Fenêtre de validité du ring anti-rafale (C6) — doit rester égale au littéral
+// 900000 employé par les appels countRecentDosingCycles(idx, 900000)
+// (pump_controller.cpp, Pass 3.5, inchangés).
+constexpr uint32_t kDosingWindowRingDiscardMs = 900000UL;  // 15 min
+
+// Schémas (condition C9 : rejet sur taille EXACTE — jamais de réinterprétation
+// partielle). Incrémenter à tout changement de la structure persistée.
+constexpr uint32_t kDosingWindowRtcSchema = 1;
+constexpr uint32_t kDosingWindowNvsSchema = 1;
+// Magie des deux instantanés (FNV-1a scellé en plus — la magie n'est qu'un
+// premier filtre bon marché avant le calcul complet de l'empreinte).
+constexpr uint32_t kDosingWindowRtcMagic = 0x444F5357UL;  // "DOSW" (RAM RTC, T2)
+constexpr uint32_t kDosingWindowNvsMagic = 0x444F534EUL;  // "DOSN" (NVS, T1)
+
+// Cadence de rafraîchissement T2 (RAM RTC) — bon marché, patron
+// measure_validity (kOutageRtcRefreshMs).
+constexpr uint32_t kDosingWindowRtcRefreshMs = 1000UL;  // 1 s
+
+// Cadence d'écriture T1 (NVS, annexe chiffrée du plan) — DÉDIÉE, 30 s pendant
+// pompe-ON + événements (démarrage/arrêt de pompe), namespace `pool-dose`.
+// ≈ 62 000 écritures/an en régime réel ⇒ 271 ans avant 100 000 cycles garantis
+// (48 ans au plafond physique estimé) — très en deçà de l'endurance NVS.
+// Le passager de saveDailyCounters() (pool-daily) est écarté à dessein : il
+// coupleraît un cycle de vie HORAIRE à une transaction JOURNALIÈRE partagée
+// par trois autres consommateurs sous configMutex.
+constexpr uint32_t kDosingWindowPersistIntervalMs = 30000UL;  // 30 s
+
+static_assert(kDosingWindowRingDiscardMs < kDosingWindowHourMs,
+              "La fenetre du ring anti-rafale doit rester sous la fenetre horaire");
+static_assert(kDosingWindowPersistIntervalMs < kDosingWindowHourMs,
+              "La cadence d'ecriture NVS doit rester tres sous la fenetre horaire "
+              "(sans quoi le forfait conservateur C5/T1 perdrait son sens)");
 
 // ============================================================================
 // PLAFOND DE SESSION DE DOSAGE pH (v2.26.0 — condition bloquante pool-chemistry)

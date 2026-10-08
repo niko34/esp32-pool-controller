@@ -13,6 +13,7 @@
 #include "ph_session_logic.h"      // feature-094 : porte de session pH (PURE)
 #include "dose_block_duration_logic.h"  // feature-138 : durée du refus courant (PURE)
 #include "temp_mode_logic.h"            // feature-140 : mode ORP EFFECTIF (PURE)
+#include "dosing_window.h"              // feature-136 : survie du budget horaire au reboot
 
 struct PumpDriver {
   int pwmPin;    // Pin PWM Gate MOSFET (IRLZ44N)
@@ -767,6 +768,35 @@ private:
 
   // Compte les cycles dans la fenêtre [now - windowMs, now] pour la pompe.
   int countRecentDosingCycles(int pumpIndex, uint32_t windowMs) const;
+
+  // ===== feature-136 : SURVIE du budget horaire de dosage au redémarrage ======
+  // (gate pool-chemistry du 2026-10-08, GO sous 12 conditions). Toutes les
+  // décisions (péremption, écoulé inconnu, fusion T1/T2, fail-closed T3) vivent
+  // dans dosing_window_logic.h / dosing_window.{h,cpp} — AUCUNE ici. Applique
+  // le verdict calculé par `dosingWindow.begin()` (appelé depuis main.cpp,
+  // APRÈS rtcManager.applyToSystem()) à phDosingState/orpDosingState,
+  // _mixingEndMs et au ring anti-rafale. Appelée UNE SEULE FOIS, depuis
+  // begin(), AVANT le premier update().
+  void applyRestoredDosingWindow();
+
+  // --- 3 membres privés de câblage (la décision vit dans dosingWindow /
+  // dosing_window_logic.h — ici, uniquement de la détection d'événement et de
+  // la traçabilité). loopTask uniquement.
+
+  // État pompe-ON du tour PRÉCÉDENT, par voie — détecte la TRANSITION
+  // (démarrage/arrêt) qui force une écriture T1 immédiate, en complément de la
+  // cadence 30 s (cf. persistNvsIfDue()).
+  bool _dosingWindowPumpOnPrev[2] = {false, false};
+  // Écriture T1 « événement » restée en attente (timeout mutex au tour de la
+  // transition) : retentée au tour suivant plutôt que perdue silencieusement —
+  // la cadence 30 s seule la rattraperait, mais avec jusqu'à 30 s de retard sur
+  // un démarrage/arrêt de pompe, précisément l'instant où l'état bouge le plus.
+  bool _dosingWindowNvsEventPending = false;
+  // millis() de l'application de la restauration par applyRestoredDosingWindow()
+  // (0 = pas encore appliquée). Traçabilité + garde d'idempotence : begin() ne
+  // l'appelle qu'une fois, mais un double appel accidentel deviendrait un no-op
+  // plutôt qu'une ré-ouverture silencieuse de fenêtres déjà consommées.
+  uint32_t _dosingWindowAppliedAtMs = 0;
 
   // Flags de reset demandés depuis des tâches externes (web handlers)
   // Résolus au début de update() pour éviter les races inter-core

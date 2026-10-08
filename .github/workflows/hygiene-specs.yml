@@ -126,3 +126,19 @@ jobs:
       # Même script en local (`./tools/check_memory_discipline.sh`) et en CI.
       - name: Contrôle de la discipline mémoire
         run: ./tools/check_memory_discipline.sh
+
+  # JOB 7 — diffusion WebSocket ciblée (bug-081). Les trois `textAll()` de
+  # src/ws_manager.cpp diffusaient à TOUS les clients de /ws, authentifiés ou
+  # non — la garde ne vérifiait qu'« au moins un client authentifié ». Sans ce
+  # job, un futur `textAll`/`binaryAll`/`printfAll` réintroduirait le même
+  # défaut en silence, comme les jobs précédents le font pour le leur.
+  ws-broadcast-targeting:
+    name: Diffusion WebSocket ciblée (bug-081)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # Même script en local (`./tools/check_ws_broadcast_targeting.sh`) et en CI.
+      - name: Contrôle du ciblage des broadcasts WS
+        run: ./tools/check_ws_broadcast_targeting.sh

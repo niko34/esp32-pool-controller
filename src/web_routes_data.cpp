@@ -668,9 +668,11 @@ static void handleGetData(AsyncWebServerRequest* request) {
 
   doc["ph_tracking_enabled"]  = productCfg.phTrackingEnabled;
   doc["ph_remaining_ml"]      = max(0.0f, productCfg.phContainerVolumeMl  - productCfg.phTotalInjectedMl);
+  doc["ph_container_ml"]      = productCfg.phContainerVolumeMl;
   doc["ph_alert_threshold_ml"]= productCfg.phAlertThresholdMl;
   doc["orp_tracking_enabled"] = productCfg.orpTrackingEnabled;
   doc["orp_remaining_ml"]     = max(0.0f, productCfg.orpContainerVolumeMl - productCfg.orpTotalInjectedMl);
+  doc["orp_container_ml"]     = productCfg.orpContainerVolumeMl;
   doc["orp_alert_threshold_ml"]= productCfg.orpAlertThresholdMl;
 
   // feature-096 (v2.37.0) : TEMPS D'ATTEINTE DE CIBLE — 8 champs servis depuis

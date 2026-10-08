@@ -4,7 +4,7 @@
 
 | Champ | Valeur |
 |---|---|
-| Statut | todo — **levier 2 appliqué en v2.25.3**, **cause n°1 traitée en v2.26.0** (levée de `Ki = 0`) ; **M1 faite** (28/08), **biais de comptage CHIFFRÉ le 06/09** (+4,76 %, plancher) ; reste **M2** (nature du biais), la correction du modèle et la vérification terrain |
+| Statut | **CLOSE le 2026-10-08** — causes n°1 et n°3 traitées ; M2 abandonnée (deux campagnes ne discriminent pas, et l'entrée dominante était une étiquette) ; modèle de comptage **non corrigé**, décision utilisateur. Voir « CLÔTURE » en fin de fichier |
 | Origine | Constat utilisateur du 28/08/2026 : « la correction de pH est très lente, on n'atteint pratiquement jamais la cible sur plusieurs jours » |
 | Priorité | Moyenne — dégrade le service, aucun risque de sécurité |
 | Analyse | `pool-chemistry`, 28/08/2026 (7 leviers examinés) ; **verdict du 06/09/2026** sur la concordance bidon/compteur |
@@ -257,3 +257,77 @@ comme telle.
 - La nature et la valeur de l'offset pH — voir mémoire dédiée : l'offset corrige
   un décalage de **mesure** (courants de fuite), le pH affiché est juste. Un
   offset élevé n'est **pas** un signal de risque.
+
+---
+
+## CLÔTURE — 2026-10-08, décision utilisateur
+
+**Statut : CLOSE.** Les deux causes qui dégradaient réellement le service sont traitées depuis
+longtemps ; ce qui restait — **M2** (nature du biais de comptage), la correction du modèle et sa
+vérification terrain — **perd son objet**.
+
+### Pourquoi M2 ne sera pas exécutée
+
+La deuxième campagne de concordance, qui devait la trancher, a été relevée le **2026-10-08** :
+
+| | Campagne 1 (08/09) | Campagne 2 (08/10) |
+|---|---|---|
+| Injecté **compté** | 6 989,96 mL | 18 221,21 mL |
+| Injecté **réel** | 6 650 mL | 17 150 mL |
+| **Biais** | **+5,11 %** | **+6,25 %** |
+| Démarrages | 86 | 356 |
+| **Biais par démarrage** | **+3,95 mL** | **+3,01 mL** |
+
+**Les deux points ne discriminent pas.** Ni le modèle « perte fixe par démarrage » (−24 % d'écart
+relatif) ni le modèle « erreur de débit » (+22 %) n'est constant. Un modèle mixte les ajusterait
+exactement, mais deux équations à deux inconnues s'ajustent **toujours** exactement : ça ne
+valide rien.
+
+**Et l'entrée dominante est fausse.** La campagne 2 partait de **20 000 mL nominaux** —
+l'utilisateur a confirmé le 2026-10-08 qu'il s'agissait de **l'étiquette, pas d'une mesure**.
+Or il suffirait que le bidon ait contenu 20 185 mL (**+0,9 %**, banal pour un contenant scellé)
+pour que le modèle « pourcentage » redevienne parfaitement constant entre les deux campagnes.
+La conclusion est donc **dominée par l'incertitude de l'étiquette**, pas par la physique.
+
+### Décision : ne pas corriger le modèle de comptage
+
+Arbitrage de l'utilisateur, repris tel quel :
+
+> *« une erreur de 1 litre sur 20 litres, est-ce que ce n'est pas acceptable. L'intention est de
+> donner une tendance de fin de bidon, pas une mesure parfaitement juste. »*
+
+C'est juste, et le **sens du biais** le confirme : l'appareil se croit **plus pauvre** en chlore
+qu'il ne l'est. Il alerte donc **trop tôt, jamais trop tard**. Au seuil de 2 000 mL comptés,
+il reste réellement ~3 L. L'erreur inverse aurait laissé les pompes tourner à vide sans prévenir.
+
+Corriger un débit sur deux points discordants, avec une contenance nominale comme entrée,
+**introduirait plus d'erreur qu'elle n'en retirerait**.
+
+### ⚠️ Ce que le biais coûte AILLEURS — à connaître, pas à corriger
+
+`accountPumpVolume()` (`pump_controller.cpp:2960-2975`) incrémente **avec la même valeur**
+`safetyLimits.daily{Ph,Orp}InjectedMl` **et** `productCfg.{ph,orp}TotalInjectedMl`. Le biais ne
+touche donc pas que la jauge :
+
+- un plafond réglé à **2 000 mL/jour** délivre en réalité **≈ 1 880 mL** ;
+- une cible ORP de **1 500 mL/jour** en délivre **≈ 1 410**.
+
+Toujours le sens prudent — l'appareil injecte **moins** que ce qui est autorisé, jamais plus.
+Mais à retenir : pendant l'épisode d'octobre, tourner « au plafond » signifiait disposer de
+**6 % de marge en moins** que ce que l'écran annonçait.
+
+### Ce qui reste vrai de cette spec (acquis, à ne pas défaire)
+- **Cause n°1** (loi P, `Ki = 0` structurellement incapable de rejoindre la consigne sous charge
+  basique permanente) : **traitée** en v2.26.0.
+- **Levier 2** : appliqué en v2.25.3.
+- **M1** (débit à l'amplitude, 26,0 et 25,5 mL/min à duty 127) : **faite** le 28/08, elle
+  **écarte la cause n°3**.
+
+### Hérité par d'autres specs — ce lot ne les bloque plus
+- Le **volume fantôme épisodique** (400 à 950 mL crédités d'un coup sur une coupure) est un
+  problème d'un **autre ordre** qu'un biais régulier de 6 % : c'est **bug-115**, débloqué le
+  2026-10-08 et traité séparément.
+- Toute campagne de concordance future devra partir d'un volume **MESURÉ AU DOSEUR**, jamais du
+  nominal — c'est la leçon de ce lot — et porter la **version de firmware**, car bug-115 et
+  feature-136 modifient la quantité délivrée : aucun relevé postérieur ne sera comparable à ces
+  deux-là.
