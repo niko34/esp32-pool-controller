@@ -133,7 +133,8 @@ docs/
 │   ├── 0086-trame-websocket-sous-ensemble-choisi-de-data.md
 │   ├── 0087-ce-qu-un-mode-temporaire-a-le-droit-de-faire.md
 │   ├── 0088-diffusion-websocket-ciblee-sur-registre-borne-sans-verrou.md
-│   └── 0089-ce-qu-un-redemarrage-a-le-droit-doublier.md
+│   ├── 0089-ce-qu-un-redemarrage-a-le-droit-doublier.md
+│   └── 0090-detecteur-de-chute-maximum-glissant-auto-rearme.md
 │
 ├── API.md               ← Référence REST + WebSocket
 ├── MQTT.md              ← Topics MQTT + auto-discovery Home Assistant

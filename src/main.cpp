@@ -45,6 +45,7 @@ extern "C" bool esp_psram_check_ptr_addr(const void* p);
 #include "rtc_manager.h"
 #include "self_heal_logic.h"
 #include "net_health_logic.h"
+#include "heap_drop_logic.h"  // détecteur PUR de chute de contiguïté (feature-144, ADR-0017)
 #include "heap_ring.h"
 #include "fs_guard.h"     // bug-100 : drain de l'épisode de famine fichiers (ADR-0070)
 #include "heap_metrics.h"  // mesure 8 bits (mémoire réellement allouable) — trace de calibrage v2.19.0
@@ -1211,11 +1212,9 @@ void handleHeapCorruptionDetected() {
 void checkHeapHealth() {
   // ===== Instrumentation heap (v2.9.1) =====
   // maxBloc est ÉCHANTILLONNÉ à CHAQUE tick (requis pour la décision auto-heal et le
-  // debounce), mais la trace INFO persistée (SANS le gate sensorLogsEnabled) n'est
-  // ÉMISE que toutes les kHeapLogIntervalMs OU lors d'une chute significative
-  // (> kHeapLogDropBytes depuis la dernière émission) → capture la tendance/descente
-  // sans noyer le journal (~1440 lignes/j sinon). Voir la fragmentation : maxBloc
-  // s'effondre pendant que libre reste correct.
+  // debounce). SOURCE UNIQUE, INTOUCHÉE par feature-144 : le détecteur de chute
+  // ci-dessous CONSOMME cet échantillon, il n'en prend pas un second (les
+  // heap_caps_* s'exécutent interruptions coupées — une seule mesure par tick).
   // bug-080 (v2.33.0) : point de mesure UNIQUE basculé sur la métrique 8 bits
   // RÉELLE. Ce même échantillon alimente le WARN+flush, le débounce auto-heal,
   // SelfHealInputs::maxAllocHeap et la cadence adaptative (lastHeapMaxAllocSample).
@@ -1223,24 +1222,43 @@ void checkHeapHealth() {
   // Export de l'échantillon pour la cadence adaptative du timer dans loop()
   // (bug-badalloc-ws-broadcast) — seule ligne ajoutée au bloc déplacé.
   lastHeapMaxAllocSample = maxAllocHeap;
-  // Trace INFO périodique désactivée (2026-07-23, demande utilisateur) : la tendance
-  // heap est suffisamment couverte par les alertes ci-dessous et l'auto-guérison.
-  // Décommenter ce bloc pour ré-instrumenter (émission toutes les kHeapLogIntervalMs
-  // ou sur chute > kHeapLogDropBytes). L'échantillonnage de maxAllocHeap ci-dessus
-  // reste ACTIF : il alimente la décision auto-heal et le flush one-shot.
-  // unsigned long heapNow = millis();
-  // static unsigned long lastHeapLogMs = 0;
-  // static uint32_t lastHeapLogMaxBloc = UINT32_MAX;
-  // bool heapDroppedSignificantly =
-  //     (maxAllocHeap + kHeapLogDropBytes < lastHeapLogMaxBloc);  // baisse > seuil (pas d'underflow)
-  // if (lastHeapLogMs == 0 || (heapNow - lastHeapLogMs >= kHeapLogIntervalMs) ||
-  //     heapDroppedSignificantly) {
-  //   systemLogger.info("Heap: libre=" + String(ESP.getFreeHeap()) +
-  //                     " maxBloc=" + String(maxAllocHeap) +
-  //                     " minLibre=" + String(ESP.getMinFreeHeap()));
-  //   lastHeapLogMs = heapNow;
-  //   lastHeapLogMaxBloc = maxAllocHeap;
-  // }
+
+  // ===== Détecteur de CHUTE de contiguïté (feature-144, v2.60.0) =====
+  // Remet en service le détecteur d'ÉVÉNEMENT éteint le 2026-07-23 avec la
+  // cadence périodique — celle-ci RESTE désactivée (c'est elle, et elle seule,
+  // qui motivait l'extinction : ~288 lignes/j sur un journal persistant de
+  // 8 Ko, Logger::kMaxLogFileBytes). Décision PURE déléguée à heap_drop_logic.h
+  // (ADR-0017, seuil/réarmement/anti-rafale justifiés là-bas) : ce bloc ne fait
+  // que lire des valeurs DÉJÀ mesurées et composer la ligne sur la PILE.
+  // AUCUNE émission périodique, sous AUCUNE forme : en régime normal, zéro
+  // ligne de plus qu'aujourd'hui — une ligne n'apparaît que sur une vraie chute.
+  static HeapDropState sHeapDropState;
+  HeapDropResult dropResult = heapDropEvaluate(
+      sHeapDropState, maxAllocHeap, millis(), kHeapDropFloorBytes,
+      kHeapDropRefShift, kHeapDropMinIntervalMs);
+  if (dropResult.emit) {
+    // libre8 : DERNIER relevé du masque 0x0804 (référence des gardes), déjà
+    // tenu à jour par heapRingSample() (cadence 2 s) — lecture d'un atomique,
+    // AUCUNE mesure de tas supplémentaire (invariant A3). ctx : idem, via
+    // l'accesseur dédié de heap_ring.h — jamais recalculé ici (le bit HTTP est
+    // un delta consommateur, cf. heap_ring.cpp).
+    uint32_t libre8 = heapFloorsRead().masks[kHeapFloorSlotInternal8].lastFree;
+    // ADR-0082 : snprintf sur tampon de PILE, aucune String, y compris quand
+    // rien n'est émis (le snprintf est À L'INTÉRIEUR du `if`). Pire cas
+    // ADR-0073 : 39 littéraux + 4×10 chiffres (%u) + 2 (%02X, uint8_t borné
+    // 0-255) + NUL = 82 ⇒ 96 o, marge 14.
+    // ⚠️ Nom de tampon DISTINCT de `ligne` (réservé à la ligne historique
+    // « Heap 8bits: » plus bas, série de référence — cf.
+    // test_native_heap_floors::test_the_historic_heap_8bits_line_is_untouched,
+    // qui identifie son snprintf par le PREMIER tampon nommé `ligne` du fichier).
+    char ligneChute[96];
+    snprintf(ligneChute, sizeof(ligneChute),
+             "Chute maxBloc8: %u -> %u (-%u) libre8=%u ctx=0x%02X",
+             (unsigned)dropResult.before, (unsigned)dropResult.after,
+             (unsigned)dropResult.dropAmount, (unsigned)libre8,
+             (unsigned)heapRingLastCtx());
+    systemLogger.info(ligneChute);
+  }
 
   // ===== Trace de calibrage des seuils mémoire (v2.19.0) =====
   // bug-metrique-heap-inclut-iram-32bits : ESP.getMaxAllocHeap() compte AUSSI

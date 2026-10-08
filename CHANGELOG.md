@@ -2,6 +2,43 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [2.60.0] - 2026-10-08
+
+> **Ce qui change pour vous** : rien de visible dans l'interface. Une seule
+> ligne de journal nouvelle, conditionnelle et rare, qui permettra de **dater**
+> le prochain épisode de fragmentation mémoire. Le dernier en date (08/10) n'a
+> été découvert que 30 minutes après coup, sans horodatage ni déclencheur
+> identifiable.
+
+### Firmware
+- **Observabilité mémoire** : remise en service du détecteur de **chute** du
+  plus gros bloc contigu 8 bits (`maxBloc8`), éteint depuis le 2026-07-23 en
+  même temps qu'une trace périodique de 5 minutes jugée trop bruyante — les
+  deux partageaient le même déclencheur. Seule la détection d'**événement**
+  revient : aucune cadence périodique, zéro ligne de plus en régime normal.
+  Format : `Chute maxBloc8: <avant> -> <après> (-<N>) libre8=<n>
+  ctx=0x<XX>`. Seuil **relatif** (`max(4096, ref >> 2)`), référence glissante
+  auto-réarmée, anti-rafale de 5 minutes — voir
+  [ADR-0090](docs/adr/0090-detecteur-de-chute-maximum-glissant-auto-rearme.md).
+
+### Documentation
+- `docs/subsystems/system-health.md` : section dédiée au détecteur de chute
+  remis en service (pourquoi il avait été éteint, pourquoi sa remise en
+  service ne ramène pas le bruit, format exact, les trois règles de
+  conception) ; constantes `kHeapLogIntervalMs`/`kHeapLogDropBytes`
+  (supprimées) remplacées dans la table par `kHeapDropMinIntervalMs` /
+  `kHeapDropFloorBytes` / `kHeapDropRefShift`.
+- `docs/subsystems/logger.md` : entrée de la trace `Heap: …` corrigée (site et
+  date faux) et nouvelle entrée pour `Chute maxBloc8: …`.
+- `docs/adr/0090-detecteur-de-chute-maximum-glissant-auto-rearme.md` :
+  nouvel ADR — un détecteur d'événement sur une grandeur en escalier se
+  compare à un maximum glissant auto-réarmé, jamais au relevé précédent ni à
+  un cliquet monotone ; seuil relatif, anti-rafale temporel, et un instrument
+  de tendance ne partage jamais son interrupteur avec un détecteur
+  d'événement.
+
+---
+
 ## [2.59.0] - 2026-10-08
 
 > **Ce qui change pour vous** : sur la page Produits, le champ « Volume du

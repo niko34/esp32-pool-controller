@@ -858,13 +858,14 @@ Ceci couvre le **roaming CPL/mesh sans perte de WiFi** : auparavant, la ré-anno
 | `Échec ré-annonce mDNS` | WARN | `MDNS.begin()` a échoué lors de la ré-annonce |
 | `Ré-annonce mDNS débouncée (IP=x.x.x.x)` | DEBUG | Oscillation d'IP ignorée (IP inchangée ou intervalle < 30 s) |
 
-### Instrumentation du tas (v2.9.1 — trace INFO désactivée en 2.10.2)
+### Instrumentation du tas (v2.9.1 — trace périodique retirée en 2.10.2, détecteur de chute remis en service en 2.60.0)
 
-`checkSystemHealth()` échantillonne le tas à **chaque** tick (60 s) pour l'auto-guérison (échantillonnage toujours actif) :
+`checkHeapHealth()` (`src/main.cpp`) échantillonne le tas à **chaque** tick (60 s en régime sain, 5 s sous `kLowHeapWarnBytes`) pour l'auto-guérison (échantillonnage toujours actif) :
 
 | Message | Niveau | Quand |
 |---|---|---|
-| `Heap: libre=<n> maxBloc=<n> minLibre=<n>` | INFO | **Désactivé depuis 2.10.2** — bloc mis en commentaire dans `checkSystemHealth()` (`main.cpp:782`), ré-activable en le décommentant. Émettait toutes les `kHeapLogIntervalMs` (5 min) ou sur chute de `maxBloc` > `kHeapLogDropBytes` (8 Ko) |
+| `Heap: libre=<n> maxBloc=<n> minLibre=<n>` | INFO | **Retirée depuis 2.10.2** (le bloc d'origine, périodique toutes les 5 min, n'a jamais été décommenté — il a été remplacé, pas réactivé). N'existe plus dans le code. |
+| `Chute maxBloc8: <avant> -> <après> (-<N>) libre8=<n> ctx=0x<XX>` | INFO | **Nouveau, v2.60.0** (feature-144) — émise par `checkHeapHealth()` **uniquement** quand le plus gros bloc 8 bits chute d'au moins un quart de sa référence glissante (plancher 4 Ko), avec anti-rafale de 5 min. Remise en service du *détecteur d'événement* de l'ancienne trace périodique (ci-dessus), sans sa cadence de routine — en régime normal, **zéro ligne de plus**. Détail, format et constantes : [`system-health.md`](system-health.md#détecteur-de-chute-de-contiguïté-remis-en-service-v2600), [ADR-0090](../adr/0090-detecteur-de-chute-maximum-glissant-auto-rearme.md) |
 | `Heap fragmenté sous seuil d'alerte: maxBloc=<n> bytes` | WARN | **Inchangé** — premier franchissement à la baisse de `kLowHeapWarnBytes` (20 Ko), suivi d'un `flushToDisk()` **one-shot** |
 
 Le flush one-shot capture la descente sur disque même si le redémarrage d'auto-guérison n'est jamais atteint ; il est ré-armé quand `maxBloc` repasse au-dessus du seuil. Mécanisme complet (auto-guérison / mode maintenance) : [system-health.md](system-health.md).

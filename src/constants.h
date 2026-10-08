@@ -337,8 +337,32 @@ constexpr uint32_t kRestartMaxAllocHeapBytes = 4096;      // Plus gros bloc 8 bi
 // = kOomReserveBytes — sous ce niveau la réserve nominale du parachute n'est plus
 // allouable (bug-080, v2.33.0 ; anciennement 20 000 o sur la métrique brute).
 constexpr uint32_t kLowHeapWarnBytes = 12288;             // Plus gros bloc 8 bits < seuil → WARN + flush disque one-shot
-constexpr unsigned long kHeapLogIntervalMs = 300000;      // 5min - cadence mini de la trace INFO « Heap: … » (anti-spam journal)
-constexpr uint32_t kHeapLogDropBytes = 8192;              // Émet aussi la trace Heap si maxBloc chute de + de 8 Ko depuis la dernière émission
+
+// Détecteur de CHUTE de contiguïté (feature-144, v2.60.0) — remise en service
+// de l'ancien bloc de main.cpp, commenté depuis le 2026-07-23. Intervalle
+// MINIMUM entre deux traces de chute (anti-rafale) — PLANCHER, et non plus
+// plafond : aucune émission périodique n'existe (c'est elle qui avait motivé
+// l'extinction, ~288 lignes/j). Valeur INCHANGÉE (300000 = 5 min), mais
+// sémantique INVERSÉE par rapport à l'ancienne constante de cadence
+// périodique (retirée avec le bloc qu'elle cadençait) : voir l'historique git
+// pour le commentaire d'origine, qui ne vaut plus.
+constexpr unsigned long kHeapDropMinIntervalMs = 300000;  // 5min - plancher anti-rafale entre deux lignes de chute
+// Seuil de chute = max(kHeapDropFloorBytes, ref >> kHeapDropRefShift) — un quart
+// de la référence (ref >> 2), plancher 4 Ko. kHeapDropFloorBytes reprend
+// l'échelle déjà posée par kRestartMaxAllocHeapBytes (même grandeur, même
+// palier). Mesuré sur 35 boots (feature-144, contre-correction du 2026-10-08,
+// après correction d'un double biais de sondage — fichiers redondants et
+// sauts de démarrage non dédupliqués) : 10 lignes / 273,5 h (~0,88 ligne/j),
+// TOUTES des chutes ≥ 30 %. Un seuil ABSOLU de 8 192 o était rejeté : 18 % à
+// 45 Ko de référence mais 80 % à 10 Ko — aveugle précisément dans la bande où
+// l'auto-guérison approche.
+constexpr uint32_t kHeapDropFloorBytes = 4096;             // = kRestartMaxAllocHeapBytes (plancher absolu du seuil de chute)
+constexpr uint8_t kHeapDropRefShift = 2;                    // Seuil relatif = ref >> 2 (un quart de la référence)
+// Revue feature-144 : `ref >> refShift` est un COMPORTEMENT INDÉFINI pour un
+// décalage >= 32 bits. Inoffensif aujourd'hui (site d'appel unique, constante 2),
+// mais la garde coûte zéro octet et ferme le cas une fois pour toutes.
+static_assert(kHeapDropRefShift < 32,
+              "kHeapDropRefShift >= 32 : le decalage ref >> refShift serait un UB");
 // Cadence PROPRE de la trace de calibrage « Heap 8bits: … » (checkHeapHealth).
 // v2.20.2 : 5 min → 30 min. À 5 min elle coûtait ~2,3 Ko/h sur un journal
 // persistant de 8 Ko et participait à ramener la rétention à ~30 min, ce qui a

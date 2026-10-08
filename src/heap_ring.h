@@ -25,4 +25,14 @@ void heapRingSample();
 // À appeler dans setup() APRÈS systemLogger.begin() et AVANT le WiFi.
 void heapRingDumpIfCrash();
 
+// Dernier masque de contexte (bits kHeapCtx*) composé par heapRingSample(),
+// à ~2 s près (feature-144). Accesseur dédié pour que le détecteur de chute
+// de main.cpp PUISSE lire le contexte SANS recomposer le masque : le bit
+// kHeapCtxHttpBurst est un delta CONSOMMATEUR (sLastHttpGetCount, statique
+// locale de heap_ring.cpp) — un second lecteur volerait le delta et
+// aveuglerait le ring. std::atomic, memory_order_relaxed : lu depuis
+// checkHeapHealth() (loopTask), écrit depuis heapRingSample() (même tâche) —
+// aucune garantie d'ordonnancement requise au-delà de l'atomicité.
+uint8_t heapRingLastCtx();
+
 #endif  // HEAP_RING_H

@@ -1,4 +1,5 @@
 #include <Arduino.h>
+#include <atomic>
 #include <esp_system.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>  // xTaskGetTickCount — même horloge que le chemin d'échec OOM
@@ -33,6 +34,12 @@ RTC_NOINIT_ATTR static uint32_t sHeapRingMagic;
 RTC_NOINIT_ATTR static uint16_t sHeapRingHead;    // Prochaine position d'écriture
 RTC_NOINIT_ATTR static uint16_t sHeapRingFilled;  // Nombre d'entrées valides
 RTC_NOINIT_ATTR static uint8_t  sHeapRingData[kHeapRingEntries * kHeapRingEntryBytes];
+
+// Dernier masque de contexte composé par heapRingSample (feature-144) — RAM
+// normale (pas RTC noinit : purement un miroir du tick courant, inutile de le
+// faire survivre à un reset). Écrit UNE SEULE FOIS, juste après que le masque
+// soit entièrement construit, jamais recalculé ailleurs (cf. heap_ring.h).
+static std::atomic<uint8_t> sHeapRingLastCtx{0};
 
 // Libellé court du motif de reset pour l'en-tête du dump (les cas « crash » utiles).
 static const char* heapRingResetLabel(esp_reset_reason_t reason) {
@@ -117,6 +124,12 @@ void heapRingSample() {
                                    kMqttDiscoveryCtxWindowMs)) {
     ctx |= kHeapCtxMqttDiscovery;
   }
+
+  // Masque figé pour le détecteur de chute (feature-144) — JUSTE APRÈS sa
+  // construction complète, jamais recalculé ailleurs (heap_ring.h : le bit
+  // kHeapCtxHttpBurst est un delta CONSOMMATEUR, un second calcul volerait
+  // sLastHttpGetCount et aveuglerait le ring).
+  sHeapRingLastCtx.store(ctx, std::memory_order_relaxed);
 
   const HeapProbe reference = heapFloorsSample(ctx);
   uint32_t maxAllocBytes = reference.largestBlockBytes;
@@ -213,4 +226,8 @@ void heapRingDumpIfCrash() {
       line[0] = '\0';
     }
   }
+}
+
+uint8_t heapRingLastCtx() {
+  return sHeapRingLastCtx.load(std::memory_order_relaxed);
 }

@@ -67,15 +67,78 @@ Coredump 2026-07-28 (v2.11.0, `bad_alloc` dans un broadcast WS) : le plus gros b
 
 ## Instrumentation du tas (v2.9.1 — trace INFO désactivée en 2.10.2, portée par `checkHeapHealth()` depuis 2.11.1)
 
-À **chaque** tick, `maxAllocHeap = heapLargestFreeBlock8Bit()` (`ESP.getMaxAllocHeap()` jusqu'à la v2.32.x — [ADR-0058](../adr/0058-gardes-heap-metrique-8-bits.md)) est **échantillonné** — cet échantillonnage reste actif : il alimente la décision d'auto-guérison (debounce), le flush one-shot ci-dessous et, depuis v2.11.1, la cadence adaptative du timer.
+À **chaque** tick, `maxAllocHeap = heapLargestFreeBlock8Bit()` (`ESP.getMaxAllocHeap()` jusqu'à la v2.32.x — [ADR-0058](../adr/0058-gardes-heap-metrique-8-bits.md)) est **échantillonné** — cet échantillonnage reste actif : il alimente la décision d'auto-guérison (debounce), le flush one-shot ci-dessous, la cadence adaptative du timer depuis v2.11.1, et depuis v2.60.0 le détecteur de chute ci-dessous.
 
-La trace INFO périodique persistée :
+L'ancienne trace INFO périodique persistée :
 
 ```
 Heap: libre=<getFreeHeap> maxBloc=<getMaxAllocHeap> minLibre=<getMinFreeHeap>
 ```
 
-(émise toutes les `kHeapLogIntervalMs = 5 min`, ou sur chute de `maxBloc` > `kHeapLogDropBytes = 8 Ko` depuis la dernière émission — elle visualisait la fragmentation : `maxBloc` s'effondre alors que `libre` reste correct) est **désactivée depuis la v2.10.2** : le bloc d'émission est **mis en commentaire** dans `checkHeapHealth()` ([`src/main.cpp`](../../src/main.cpp)), pour ne plus consommer le journal avec de la télémétrie de routine (⚠️ le texte d'origine parlait d'un « journal 64 Ko » — corrigé le 2026-09-20 : le journal persistant est plafonné à **8 Ko** avec rotation à 6 Ko, `Logger::kMaxLogFileBytes`, ce qui rend l'argument d'économie *plus* fort, pas moins). Pour ré-instrumenter (diagnostic d'un nouvel épisode de fragmentation), **décommenter le bloc** — le commentaire sur place documente la marche à suivre.
+(émise toutes les 5 min **ou** sur chute depuis la dernière émission — les deux déclencheurs partageaient le même `if`) est **restée désactivée depuis la v2.10.2 : le bloc n'a jamais été décommenté**, il a été **retiré** et remplacé par le détecteur de chute ci-dessous ([ADR-0090](../adr/0090-detecteur-de-chute-maximum-glissant-auto-rearme.md)). `kHeapLogIntervalMs` et `kHeapLogDropBytes`, devenues mortes, ont été **supprimées** de `constants.h` plutôt que laissées mentir.
+
+### Détecteur de chute de contiguïté, remis en service (v2.60.0)
+
+**Pourquoi il avait été éteint.** Le commentaire d'origine était honnête :
+« Trace INFO périodique désactivée (2026-07-23, demande utilisateur) ». Le
+bloc émettait toutes les `kHeapLogIntervalMs` = 5 min, soit ~288 lignes/j sur
+un journal persistant plafonné à 8 Ko (`Logger::kMaxLogFileBytes`) — un bruit
+qui chassait le reste du journal. La demande de silence était légitime.
+
+**Pourquoi la remise en service ne ramène pas ce bruit.** Les deux
+déclencheurs — cadence périodique et détection de chute — vivaient dans le
+**même `if`** : éteindre l'un a éteint l'autre. `feature-144` (v2.60.0) les
+sépare : **la cadence périodique reste désactivée pour de bon**, et **seule
+la détection d'événement est réactivée**, portée par un module pur dédié
+([`src/heap_drop_logic.h`](../../src/heap_drop_logic.h), ADR-0017). La
+tendance reste couverte en continu par la trace « Heap 8bits » ci-dessous
+(`kHeap8LogIntervalMs` = 30 min, **jamais éteinte**) — le gain est donc
+**gratuit en volume de journal** : en régime normal, zéro ligne de plus
+qu'aujourd'hui.
+
+**Format de la ligne** (INFO, émise uniquement sur chute réelle) :
+
+```
+Chute maxBloc8: 45044 -> 26612 (-18432) libre8=56488 ctx=0x03
+```
+
+| Champ | Signification |
+|---|---|
+| `maxBloc8` avant → après | Référence (palier haut glissant) puis valeur courante |
+| `(-N)` | Ampleur de la chute en octets |
+| `libre8` | Mémoire libre réellement allouable au même instant — c'est l'**écart** entre `libre8` (qui ne bouge pas) et `maxBloc8` (qui s'effondre) qui **nomme le phénomène** : fragmentation, pas consommation |
+| `ctx` | Masque de contexte (bits `kHeapCtx*` de [`heap_ring.h`](../../src/heap_ring.h) — clients WS connectés, GET HTTP, dosage en cours, rafale de découverte HA…), lu via `heapRingLastCtx()`. Il **nommerait** le déclencheur que l'incident du 08/10/2026 n'a pas pu nommer faute d'un tel champ à l'époque |
+
+**Les trois règles de conception, et pourquoi** (détail et chiffrage complet :
+[ADR-0090](../adr/0090-detecteur-de-chute-maximum-glissant-auto-rearme.md)) :
+
+- **Seuil relatif** `max(kHeapDropFloorBytes, ref >> kHeapDropRefShift)` —
+  un quart de la référence, plancher 4 Ko (= `kRestartMaxAllocHeapBytes`). Un
+  seuil **absolu** de 8 Ko représente 18 % de la référence à 45 Ko libres mais
+  80 % à 10 Ko : aveugle précisément là où l'auto-guérison approche, et il
+  **manquait** la chute réelle du 13/09 (23 540 → 16 372 o, −30 %). Simulé sur
+  35 boots réels (dédupliqués, segmentés par démarrage) : **10 lignes /
+  273,5 h ≈ 0,88 ligne/jour**, toutes des chutes ≥ 30 %.
+- **Réarmement silencieux** de la référence (`ref = max(ref, courant)` à
+  chaque tick, sans ligne de remontée) — sans lui, la référence est un
+  **cliquet monotone descendant** : le détecteur émet quelques lignes par
+  démarrage puis se tait pour de bon, ratant toute nouvelle chute depuis un
+  palier remonté. La remontée n'est pas perdue : elle réapparaît dans le
+  champ « avant » de la chute suivante.
+- **Anti-rafale temporel** `kHeapDropMinIntervalMs` = 5 min — sous
+  `kLowHeapWarnBytes`, `checkHeapHealth()` passe à une cadence de 5 s
+  (`kHeapCheckFastIntervalMs`), soit 720 lignes/h sans garde sur un journal de
+  8 Ko à rétention ~30 min : il détruirait le post-mortem qu'il sert à
+  produire (précédent : crash du 15/08/2026). ⚠️ Pendant la fenêtre
+  d'anti-rafale, la référence **n'est pas** ré-ancrée : la ligne est
+  **décalée**, jamais **amputée** de son amplitude — elle sera émise au
+  premier instant autorisé avec l'ampleur vraie depuis le palier d'origine.
+
+Module pur et tests : [`src/heap_drop_logic.h`](../../src/heap_drop_logic.h),
+`test/test_native_heap_drop_logic/` (15 cas, dont un rejeu de données réelles
+embarqué) et `test/test_native_heap_telemetry_guard/` (sentinelles de
+structure D4 : absence de `String` sur le chemin d'émission, un seul site
+d'appel, mesure non dupliquée).
 
 **Restent actifs** : au **premier** franchissement à la baisse de `kLowHeapWarnBytes = 12 288 o` (plus gros bloc 8 bits — était 20 000 sur la métrique brute jusqu'à la v2.32.x), un WARN « Heap fragmenté sous seuil d'alerte: maxBloc8=… » est émis **et** un `flushToDisk()` **one-shot** capture la descente sur disque même si le redémarrage n'est jamais atteint. Le déclencheur est **ré-armé** dès que `maxBloc8` repasse au-dessus du seuil ([`src/main.cpp`](../../src/main.cpp)).
 
@@ -87,7 +150,7 @@ L'alerte heap **total** (CRIT « Mémoire faible » + MQTT `low_memory`, seuil `
 
 ## Trace de calibrage des seuils mémoire (v2.19.0)
 
-Trace **INFO persistée**, émise par `checkHeapHealth()` toutes les **`kHeap8LogIntervalMs` = 30 min** (`kHeapLogIntervalMs` = 5 min jusqu'à la v2.20.1 — voir l'encadré ci-dessous). Elle **ne remplace pas** la trace « Heap: … » historique, restée en commentaire depuis la 2.10.2 : elle a une autre finalité. Format depuis la v2.20.2, en octets bruts, sans arrondi :
+Trace **INFO persistée**, émise par `checkHeapHealth()` toutes les **`kHeap8LogIntervalMs` = 30 min** (portait le nom `kHeapLogIntervalMs` = 5 min jusqu'à la v2.20.1 — voir l'encadré ci-dessous ; cette constante est **sans rapport** avec le détecteur de chute de v2.60.0, qui introduit ses propres constantes `kHeapDrop*`, voir [la section dédiée](#détecteur-de-chute-de-contiguïté-remis-en-service-v2600) et [ADR-0090](../adr/0090-detecteur-de-chute-maximum-glissant-auto-rearme.md)). Elle **ne remplace pas** la trace « Heap: … » historique, **retirée** (et non plus simplement commentée) depuis la v2.60.0 : elle avait une autre finalité. Format depuis la v2.20.2, en octets bruts, sans arrondi :
 
 ```
 Heap 8bits: libre8=46088 maxBloc8=4596 minBoot=3060 minFen=3060 ws=1 psram=4174848
@@ -1400,8 +1463,10 @@ Sinon, un `debug(...)` « Ré-annonce mDNS débouncée » trace l'oscillation ig
 | `kHeapIntegrityCheckIntervalMs` | `300000` (5 min) | Cadence du contrôle d'intégrité du tas (v2.18.8, sous les **6** gardes chimiques — 8 avant la v2.36.0) |
 | `kHeapIntegrityWarnDurationUs` | `5000` (5 ms) | Durée au-delà de laquelle un WARN est émis (contrôle conservé) |
 | `kHeapIntegrityMaxDurationUs` | `20000` (20 ms) | Durée au-delà de laquelle le contrôle est **désactivé définitivement** |
-| `kHeap8LogIntervalMs` | `1800000` (30 min) | Cadence de la [trace de calibrage](#trace-de-calibrage-des-seuils-mémoire-v2190) « Heap 8bits: … » — **était `kHeapLogIntervalMs` = 5 min jusqu'en 2.20.1** (rétention du journal ramenée à ~30 min) |
-| `kHeapLogIntervalMs` | `300000` (5 min) | Cadence de l'ancienne trace « Heap: … », restée en commentaire depuis la 2.10.2 |
+| `kHeap8LogIntervalMs` | `1800000` (30 min) | Cadence de la [trace de calibrage](#trace-de-calibrage-des-seuils-mémoire-v2190) « Heap 8bits: … » — **portait le nom `kHeapLogIntervalMs` = 5 min jusqu'en 2.20.1** (rétention du journal ramenée à ~30 min), renommée depuis — sans rapport avec les constantes `kHeapDrop*` ci-dessous |
+| `kHeapDropMinIntervalMs` | `300000` (5 min) | Plancher anti-rafale du [détecteur de chute](#détecteur-de-chute-de-contiguïté-remis-en-service-v2600) (v2.60.0) — deux émissions ne peuvent pas être séparées de moins de 5 min ; l'ancienne `kHeapLogIntervalMs` (cadence PLAFOND de l'ancienne trace périodique, retirée) n'existe plus |
+| `kHeapDropFloorBytes` | `4096` | Plancher absolu du seuil de chute (= `kRestartMaxAllocHeapBytes`) ; l'ancienne `kHeapLogDropBytes = 8192` (seuil absolu fixe) a été retirée, remplacée par un seuil **relatif** |
+| `kHeapDropRefShift` | `2` | Seuil de chute = `ref >> 2` (un quart de la référence), borné par `kHeapDropFloorBytes` |
 
 > ✅ **Depuis la v2.33.0, `kLowHeapWarnBytes` et `kRestartMaxAllocHeapBytes` sont comparées à `heapLargestFreeBlock8Bit()`** avec les valeurs recalibrées ci-dessus ([ADR-0058](../adr/0058-gardes-heap-metrique-8-bits.md)). Jusqu'à la v2.32.x elles lisaient la mesure brute (plancher ~27 636 o) : le seuil de redémarrage n'était matériellement jamais atteignable — le watchdog heap n'avait **jamais déclenché un seul redémarrage** depuis sa création (preuve : PANIC du 29/08 et famine du 02/09, silencieux).
 

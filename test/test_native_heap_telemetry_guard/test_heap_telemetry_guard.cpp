@@ -177,6 +177,50 @@ static char* extractFunctionBody(const char* src, const char* sig) {
   return body;
 }
 
+// Reprises LITTÉRALES de test_native_heap_floors (même idiome, même fichier
+// SOURCE réel analysé) : extraction du format d'un snprintf et de la taille
+// du tampon associé, nécessaires à la sentinelle D4-f (lignes « Heap masq
+// boot/fen: »). Dupliquées ici plutôt que partagées : chaque binaire de test
+// natif est compilé seul (pas de lib commune entre dossiers test_native_*).
+static char* extractSnprintfFormat(const char* src, const char* bufName) {
+  char needle[128];
+  snprintf(needle, sizeof(needle), "snprintf(%s,", bufName);
+  const char* p = strstr(src, needle);
+  if (p == NULL) return NULL;
+  const char* q = strchr(p, '"');
+  if (q == NULL) return NULL;
+  char* out = (char*)malloc(2048);
+  if (out == NULL) return NULL;
+  size_t n = 0;
+  while (q != NULL && *q == '"') {
+    ++q;  // entre dans le littéral
+    while (*q != '\0' && *q != '"') {
+      if (*q == '\\' && q[1] != '\0') {
+        if (n < 2046) out[n++] = *q;
+        ++q;
+      }
+      if (*q == '\0' || *q == '"') break;
+      if (n < 2046) out[n++] = *q;
+      ++q;
+    }
+    if (*q == '"') ++q;
+    // Littéral suivant ? (concaténation implicite)
+    while (*q == ' ' || *q == '\n' || *q == '\r' || *q == '\t') ++q;
+    if (*q != '"') break;
+  }
+  out[n] = '\0';
+  return out;
+}
+
+static int extractBufferSize(const char* src, const char* name) {
+  char needle[128];
+  snprintf(needle, sizeof(needle), "char %s[", name);
+  const char* p = strstr(src, needle);
+  if (p == NULL) return -1;
+  p += strlen(needle);
+  return atoi(p);
+}
+
 // ===========================================================================
 // FEATURE-127 (R1) — octets alloués publiés dans `hf`
 // ===========================================================================
@@ -789,6 +833,173 @@ void test_m29_stale_ready_is_reclaimed_by_both_service_census_and_service_peek(v
 }
 
 // ===========================================================================
+// FEATURE-144 (D4) — sentinelles de structure sur src/main.cpp
+// ===========================================================================
+// ⚠️ check_memory_discipline.sh NE COUVRE PAS main.cpp pour le motif « toute
+// String » (ses motifs stricts ne visent que logger.{h,cpp} et
+// log_arena_logic.{h,cpp}) : son vert ne prouve RIEN ici. Ces sentinelles
+// lisent le texte SOURCE réel (commentaires retirés, bug-114) et vérifient
+// des propriétés structurelles — jamais le comportement runtime (impur, hors
+// périmètre natif).
+
+// D4-a : le bloc d'émission de la chute (`if (dropResult.emit) { ... }`) ne
+// doit contenir NI String, NI concaténation par `+` — ADR-0082, le chemin de
+// journalisation n'alloue pas, y compris sur l'instrument qui mesure la
+// mémoire elle-même.
+void test_d4a_drop_emission_block_has_no_string_allocation(void) {
+  char* src = readProjectCode("src/main.cpp");
+  TEST_ASSERT_NOT_NULL_MESSAGE(src, "src/main.cpp introuvable.");
+  char* body = extractFunctionBody(src, "if (dropResult.emit) {");
+  TEST_ASSERT_NOT_NULL_MESSAGE(
+      body, "Bloc `if (dropResult.emit) { ... }` introuvable dans src/main.cpp — le détecteur "
+            "de chute (feature-144) a disparu ou a été renommé.");
+  TEST_ASSERT_NULL_MESSAGE(strstr(body, "String"),
+                           "MUTANT ADR-0082 : le bloc d'émission de la chute contient `String` "
+                           "— le chemin de journalisation ne doit JAMAIS allouer, y compris "
+                           "quand il émet réellement (ironie à ne pas rater : l'instrument qui "
+                           "mesure la mémoire ne doit pas en consommer).");
+  TEST_ASSERT_NULL_MESSAGE(
+      strstr(body, "\" + "),
+      "MUTANT ADR-0082 (variante) : concaténation de littéraux par `+` détectée dans le bloc "
+      "d'émission — signe d'une construction de String plutôt que d'un snprintf sur tampon de "
+      "pile.");
+  free(body);
+  free(src);
+}
+
+// D4-b : le tampon de pile `char ligneChute[96]` doit exister — ⚠️ NOM
+// DISTINCT de `ligne` à dessein (test_native_heap_floors::
+// test_the_historic_heap_8bits_line_is_untouched identifie la ligne
+// historique « Heap 8bits: » par le PREMIER tampon nommé `ligne` du fichier —
+// un nouveau tampon nommé `ligne` casserait cette sentinelle AUSSI, en plus
+// de celle-ci).
+void test_d4b_stack_buffer_ligneChute_96_exists(void) {
+  char* src = readProjectCode("src/main.cpp");
+  TEST_ASSERT_NOT_NULL(src);
+  TEST_ASSERT_NOT_NULL_MESSAGE(
+      strstr(src, "char ligneChute[96];"),
+      "Tampon de pile `char ligneChute[96]` introuvable — soit il a été renommé (et risque "
+      "d'entrer en collision avec la sentinelle de la ligne historique `ligne`), soit il a été "
+      "retaillé sans mise à jour de ce test.");
+  TEST_ASSERT_EQUAL_INT_MESSAGE(
+      1, countOccurrences(src, "char ligne["),
+      "Exactement UN tampon nommé `ligne` (la série historique « Heap 8bits: ») doit exister — "
+      "`ligneChute`, `ligne2`, `ligne3` ont des noms distincts PAR CONSTRUCTION pour ne jamais "
+      "matcher le motif `char ligne[` de test_native_heap_floors.");
+  free(src);
+}
+
+// D4-c : heapDropEvaluate() appelé EXACTEMENT une fois dans tout le projet —
+// un second site d'appel impliquerait un second HeapDropState caché (double
+// anti-rafale, double comptage) ou un usage hors de checkHeapHealth().
+void test_d4c_heapDropEvaluate_called_exactly_once(void) {
+  char* src = readProjectCode("src/main.cpp");
+  TEST_ASSERT_NOT_NULL(src);
+  const int c = countOccurrences(src, "heapDropEvaluate(");
+  char msg[200];
+  snprintf(msg, sizeof(msg),
+           "heapDropEvaluate( appelée %d fois dans src/main.cpp (attendu EXACTEMENT 1, dans "
+           "checkHeapHealth()).",
+           c);
+  TEST_ASSERT_EQUAL_INT_MESSAGE(1, c, msg);
+  free(src);
+}
+
+// D4-d : heapLargestFreeBlock8Bit() appelé UNE SEULE fois dans
+// checkHeapHealth() (invariant « aucune mesure de tas supplémentaire » — le
+// détecteur de chute CONSOMME l'échantillon déjà pris pour l'auto-guérison,
+// il n'en prend pas un second).
+void test_d4d_heapLargestFreeBlock8Bit_called_once_in_checkHeapHealth(void) {
+  char* src = readProjectCode("src/main.cpp");
+  TEST_ASSERT_NOT_NULL(src);
+  char* body = extractFunctionBody(src, "void checkHeapHealth() {");
+  TEST_ASSERT_NOT_NULL_MESSAGE(body, "checkHeapHealth() introuvable dans src/main.cpp.");
+  const int c = countOccurrences(body, "heapLargestFreeBlock8Bit(");
+  char msg[220];
+  snprintf(msg, sizeof(msg),
+           "heapLargestFreeBlock8Bit() appelée %d fois dans checkHeapHealth() (attendu "
+           "EXACTEMENT 1) — feature-144 ne doit PAS introduire une seconde mesure de tas : le "
+           "détecteur de chute consomme l'échantillon DÉJÀ pris pour l'auto-guérison.",
+           c);
+  TEST_ASSERT_EQUAL_INT_MESSAGE(1, c, msg);
+  free(body);
+  free(src);
+}
+
+// D4-e : le site d'appel utilise la mesure FRAÎCHE (`maxAllocHeap`), jamais
+// la statique sentinelle-prone `lastHeapMaxAllocSample` (initialisée à
+// UINT32_MAX, cf. main.cpp:95) — si elle y entrait, le test natif
+// `test_sentinelle_uint32_max_revele_un_debordement_additif` (suite
+// test_native_heap_drop_logic) documente le débordement additif que cela
+// provoquerait.
+void test_d4e_call_site_uses_fresh_sample_not_the_sentinel_prone_static(void) {
+  char* src = readProjectCode("src/main.cpp");
+  TEST_ASSERT_NOT_NULL(src);
+  char* body = extractFunctionBody(src, "void checkHeapHealth() {");
+  TEST_ASSERT_NOT_NULL(body);
+  const char* call = strstr(body, "heapDropEvaluate(");
+  TEST_ASSERT_NOT_NULL(call);
+  // Les ~40 caractères suivant l'appel portent les deux premiers arguments
+  // (state, courant) — assez pour y chercher le nom du second argument sans
+  // risquer de déborder sur un autre appel plus loin dans le fichier.
+  char window[64];
+  snprintf(window, sizeof(window), "%.*s", 60, call);
+  TEST_ASSERT_NOT_NULL_MESSAGE(
+      strstr(window, "maxAllocHeap"),
+      "MUTANT sentinelle : heapDropEvaluate() doit recevoir `maxAllocHeap` (mesure fraîche de "
+      "ce tick) en second argument.");
+  TEST_ASSERT_NULL_MESSAGE(
+      strstr(window, "lastHeapMaxAllocSample"),
+      "MUTANT sentinelle : heapDropEvaluate() ne doit JAMAIS recevoir `lastHeapMaxAllocSample` "
+      "— cette statique vaut UINT32_MAX avant le premier échantillon (sentinelle "
+      "« pas encore mesuré »), et la feeder directement provoquerait le débordement additif "
+      "documenté par test_sentinelle_uint32_max_revele_un_debordement_additif.");
+  free(body);
+  free(src);
+}
+
+// D4-f : les lignes de référence « Heap 8bits: » (déjà protégée par
+// test_native_heap_floors) ET « Heap masq boot/fen: » (152+ relevés
+// historiques, AUCUNE sentinelle existante avant feature-144) doivent rester
+// INTOUCHÉES mot pour mot — feature-144 ne doit RIEN changer à ces deux
+// lignes voisines.
+void test_d4f_heap_masq_boot_et_fen_lines_untouched(void) {
+  char* src = readProjectCode("src/main.cpp");
+  TEST_ASSERT_NOT_NULL(src);
+
+  // ⚠️ Ces deux formats sont écrits en DEUX littéraux adjacents dans le
+  // source (concaténation implicite du C — cf. main.cpp autour des lignes
+  // 1371-1373 et 1402-1404) : une recherche de sous-chaîne brute sur le texte
+  // SOURCE ne matcherait jamais le format complet (la coupure tombe entre
+  // deux guillemets). `extractSnprintfFormat` reconstruit la forme LOGIQUE en
+  // recollant les littéraux adjacents — seule méthode fiable ici, déjà
+  // établie par test_native_heap_floors pour la ligne historique voisine.
+  const char* attenduBoot =
+      "Heap masq boot: m804=%u/%u c=0x%02X m80C=%u/%u c=0x%02X "
+      "m1804=%u/%u c=0x%02X mPS=%u tem=0x%02X";
+  const char* attenduFen =
+      "Heap masq fen: m804=%u/%u m80C=%u/%u m1804=%u/%u ctxVu=0x%02X "
+      "walk=%u/%uus b804=%u/%u";
+
+  char* fmtBoot = extractSnprintfFormat(src, "ligne2");
+  TEST_ASSERT_NOT_NULL_MESSAGE(fmtBoot, "Format du snprintf de `ligne2` introuvable.");
+  TEST_ASSERT_EQUAL_STRING_MESSAGE(attenduBoot, fmtBoot,
+                                   "`ligne2` (Heap masq boot:) doit rester EXACTEMENT la série "
+                                   "historique.");
+  TEST_ASSERT_EQUAL_INT_MESSAGE(160, extractBufferSize(src, "ligne2"),
+                                "`ligne2` doit rester un char[160].");
+
+  char* fmtFen = extractSnprintfFormat(src, "ligne3");
+  TEST_ASSERT_NOT_NULL_MESSAGE(fmtFen, "Format du snprintf de `ligne3` introuvable.");
+  TEST_ASSERT_EQUAL_STRING_MESSAGE(attenduFen, fmtFen,
+                                   "`ligne3` (Heap masq fen:) doit rester EXACTEMENT la série "
+                                   "historique.");
+  TEST_ASSERT_EQUAL_INT_MESSAGE(176, extractBufferSize(src, "ligne3"),
+                                "`ligne3` doit rester un char[176].");
+  free(src);
+}
+
+// ===========================================================================
 // main
 // ===========================================================================
 
@@ -819,6 +1030,14 @@ int main(int argc, char** argv) {
   RUN_TEST(test_m28a_main_loop_warns_once_when_census_auto_disables);
   RUN_TEST(test_m28b_walk_info_fields_present_and_wired_to_both_success_and_error_paths);
   RUN_TEST(test_m29_stale_ready_is_reclaimed_by_both_service_census_and_service_peek);
+
+  // feature-144 (D4) — sentinelles de structure sur src/main.cpp
+  RUN_TEST(test_d4a_drop_emission_block_has_no_string_allocation);
+  RUN_TEST(test_d4b_stack_buffer_ligneChute_96_exists);
+  RUN_TEST(test_d4c_heapDropEvaluate_called_exactly_once);
+  RUN_TEST(test_d4d_heapLargestFreeBlock8Bit_called_once_in_checkHeapHealth);
+  RUN_TEST(test_d4e_call_site_uses_fresh_sample_not_the_sentinel_prone_static);
+  RUN_TEST(test_d4f_heap_masq_boot_et_fen_lines_untouched);
 
   return UNITY_END();
 }
