@@ -5,8 +5,11 @@
 - **Slug** : identifier-le-second-mecanisme-de-fragmentation
 - **Type** : bug
 - **Statut** : todo
-- **Priorité** : basse
-- **Version cible** : N/A — curiosité, aucune urgence
+- **Priorité** : **normale** — relevée de « basse » le 2026-10-08. Elle était classée
+  « curiosité » faute de matière ; elle a désormais une trace datée, un palier mesuré, trois
+  candidats écartés **expérimentalement**, et un **instrument en place** (feature-144) qui
+  datera la prochaine chute.
+- **Version cible** : N/A — diagnostic
 - **Dernière mise à jour** : 2026-09-18
 - **Spec(s) liée(s)** : `specs/features/done/feature-129-…` · ADR-0081 (recensement + non-livraison de la lecture) · ADR-0082 · `docs/incidents/2026-09-10-recidive-fragmentation-v2500.md`
 
@@ -177,3 +180,74 @@ le choisir à une heure sans dosage en cours.
 - Toute optimisation mémoire par ailleurs (feature-130, 131, 132).
 - Tout correctif : cette spec **diagnostique**. Un correctif ferait l'objet d'une
   spec de suivi, avec ses propres agents.
+
+
+---
+
+## 🔴 FENÊTRE DE MESURE OUVERTE — capture installée le 2026-10-08 à 19:47
+
+### La fenêtre est ouverte MAINTENANT, et elle se referme vers 03:30 locale
+L'appareil a redémarré le **2026-10-08 à 20:06 locale** (déploiement v2.60.0). La spec est
+formelle : *« un recensement pris tardivement ne montrera JAMAIS rien. Il faut redémarrer
+l'appareil et observer les 7,4 premières heures. Ce n'est pas une commodité, c'est une condition
+de la mesure. »*
+
+### ⚡ Le mécanisme est EN TRAIN D'AGIR — mesuré
+| Moment | uptime | `maxBloc8` |
+|---|---|---|
+| au démarrage | 0,01 h | **55 736** |
+| | 1,67 h | **50 816** |
+| | 1,68 h | **46 856** |
+
+**Près de 9 000 octets de contiguïté perdus en moins de deux heures**, alors que le palier
+précédent (26 612) était resté figé toute la journée. C'est exactement le régime transitoire que
+la spec décrit, et c'est la première fois qu'on l'observe depuis son origine.
+
+⚠️ Les deux derniers relevés sont séparés de quelques minutes : **une partie de l'écart pourrait
+venir de mes propres requêtes** (condition X4, effet d'observateur — à 17 s de cadence
+l'instrument est devenu la cause lors d'un épisode antérieur). Relevés manuels **arrêtés** ; la
+série de référence est celle du cron ci-dessous.
+
+### Capture installée et VÉRIFIÉE
+`crontab` : `*/20 * * * * /root/pool-captures/capture-logs.sh`
+- cadence **20 min** — jamais sous 60 s (condition X4) ;
+- `flock -n` partagé avec les passages 04:00 / 05:30 UTC existants : **aucune collision** — le
+  recensement est une machine à instantané **unique**, deux lectures simultanées se détruisent ;
+- capture `census_free_*.json` **ET** `census_used_*.json` + journal + `sysinfo` ;
+- **éprouvée** : exécution manuelle à 19:47, quatre fichiers produits, recensement lisible.
+
+⚠️ **CETTE BANDE FINE EST À RETIRER APRÈS LA FENÊTRE.** Elle n'a d'intérêt qu'au démarrage, et
+laissée en place elle userait le journal de l'appareil pour rien.
+
+### Ce que cette capture donnera — et ce qu'elle NE donnera PAS
+
+**Elle donnera** : la **géométrie** (adresses, tailles, trous), l'**instant** où chaque bloc de
+longue durée se pose, et la marche de **+6 144** (allocation puis libération vers 6,8 h) que la
+spec désigne comme *« le fil le plus prometteur »*.
+
+**Elle ne donnera PAS l'identification** des blocs : lire leur **contenu** exige
+`/debug/heap_peek`, **délibérément absent des binaires de production** (ADR-0081, condition S12,
+gardé par `tools/check_no_peek_flag.sh`).
+
+### ⛔ Le build de diagnostic entre en CONFLIT avec le calendrier en cours
+Déployer un binaire de diagnostic supposerait de **redémarrer l'appareil**, donc :
+1. **fermer la fenêtre actuelle** sans l'avoir exploitée — elle ne rouvrira qu'au redémarrage
+   suivant ;
+2. mettre un binaire **hors production** sur l'appareil pendant 8 h et plus ;
+3. interférer avec la **surveillance de feature-136**, ouverte depuis le 2026-10-08 à 20:06 pour
+   3 jours pleins, et dont le gate `pool-chemistry` exige qu'elle soit **strictement sérielle**
+   avec celle de bug-115.
+
+➜ **Décision à prendre par l'utilisateur**, pas par un agent. La séquence raisonnable :
+exploiter **d'abord** la fenêtre de ce soir avec le binaire de production ; décider **ensuite**,
+sur les données obtenues, si l'identification du contenu vaut un build de diagnostic — et le
+placer **après** les surveillances de feature-136 et bug-115, c'est-à-dire **pas avant le
+2026-10-19**.
+
+### Livrables — état réel
+- [x] Fenêtre identifiée comme **ouverte**, capture installée et éprouvée
+- [ ] Recensements des 8 premières heures — **en cours de collecte**
+- [ ] Attribution de l'allocation de 32 o et de celle de ~6 Ko allouée/libérée
+      ⚠️ **Partiellement hors de portée sans build de diagnostic** (contenu non lisible)
+- [ ] Décision écrite : corriger ou non
+- [ ] Retrait de la bande fine `*/20` du `crontab`
