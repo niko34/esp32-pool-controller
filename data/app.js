@@ -1897,15 +1897,10 @@
   const PH_GAUGE_MARK_LOW = 7.00;   // « Eau agressive »
   const PH_GAUGE_MARK_HIGH = 7.60;  // « Chlore inefficace »
 
-  // Gate pool-chemistry, condition C2 : textes EXACTS, ne JAMAIS reformuler.
-  // Fenêtre réellement visée = _phBounds.targetMin/targetMax (servie par
-  // /get-config, repli identique 7.20/7.50 = kPhTargetMin/kPhTargetMax).
-  function phGaugeStateText(value) {
-    if (typeof value !== "number" || !isFinite(value)) return null;
-    if (value < _phBounds.targetMin) return "Trop bas";
-    if (value > _phBounds.targetMax) return "Trop haut";
-    return "Idéal";
-  }
+  // Chantier simplification (gate pool-chemistry GO) : phGaugeStateText()
+  // (« Trop bas »/« Idéal »/« Trop haut ») a été SUPPRIMÉE — plus aucun
+  // appelant depuis que updatePhGauge() ne les affiche plus. _phBounds reste
+  // utilisé par le dégradé (le vert suit la fenêtre cible réelle).
 
   // feature-147 : ORP — échelle fixe 0-1000 mV (choix du designer, aucune
   // constante firmware à mirer ici). Dégradé ÉVALUATIF mais ASYMÉTRIQUE
@@ -1924,22 +1919,14 @@
     return Math.max(0, Math.min(100, pct));
   }
 
-  // Demi-largeur de la fenêtre « Dans la plage » — CONSTANTE UNIQUE, déjà en
-  // production (badge capteur ORP plus bas). Le dégradé (updateOrpGauge)
-  // réutilise CETTE MÊME constante : gate pool-chemistry condition 2, aucun
-  // seuil neuf, aucune recopie.
+  // Demi-largeur de la bande verte du dégradé — CONSTANTE UNIQUE, déjà en
+  // production (badge capteur ORP plus bas). Chantier simplification (gate
+  // GO) : orpGaugeStateText() (« Sous consigne »/« Dans la plage »/
+  // « Au-dessus ») a été SUPPRIMÉE — plus aucun appelant. Perte actée et non
+  // compensée : l'étendue ± ORP_GAUGE_BAND_MV n'est plus écrite nulle part
+  // (tolérance d'affichage, pas un seuil chimique). La constante elle-même
+  // reste : updateOrpGauge() la réutilise pour poser le dégradé.
   const ORP_GAUGE_BAND_MV = 150;
-
-  // Réutilise le calcul déjà en production (orpTarget ± 150 mV, cf. le badge
-  // capteur ORP plus bas) — AUCUN nouveau seuil introduit par cette jauge.
-  function orpGaugeStateText(value, target) {
-    if (typeof value !== "number" || !isFinite(value)) return null;
-    if (typeof target !== "number" || !isFinite(target)) return null;
-    const low = target - ORP_GAUGE_BAND_MV, high = target + ORP_GAUGE_BAND_MV;
-    if (value < low) return "Sous consigne";
-    if (value > high) return "Au-dessus";
-    return "Dans la plage";
-  }
 
   // Met à jour la jauge pH (curseur + dégradé de zones + légende). Le dégradé
   // utilise _phBounds (live, servi par /get-config) : jamais de magie en dur
@@ -1960,7 +1947,8 @@
       // bord net. Le vert est CENTRÉ sur la fenêtre idéale réelle (pMin-pMax,
       // lue depuis /get-config via _phBounds) : si la consigne change, le
       // vert suit. Arrêts chauds (pWarm1/pWarm2) dérivés de pMin — AUCUN
-      // pourcentage en dur. Texte d'état inchangé (--success/--danger).
+      // pourcentage en dur. (Le texte d'état normal a depuis été retiré —
+      // chantier simplification ci-dessous — seul le dégradé reste ici.)
       const pWarm1 = pMin / 3;
       const pWarm2 = (pMin * 2) / 3;
       track.style.background =
@@ -1977,24 +1965,29 @@
     if (tickHigh && pHigh !== null) tickHigh.style.left = pHigh + "%";
     gaugeEl.classList.toggle("gauge--stale", !measuresOk);
     if (!measuresOk) {
+      // EXCEPTION BLOQUANTE (gate pool-chemistry, chantier simplification) :
+      // ce texte-là SURVIT — en stale, la piste n'est que grisée/désaturée
+      // (.gauge--stale), l'avertissement serait sinon porté par la seule
+      // couleur. Seul le mot d'état du fonctionnement NORMAL disparaît
+      // ci-dessous (même motif que updateTempGauge(), précédent à suivre).
       cursor.hidden = true;
       stateEl.textContent = "Mesures non représentatives";
       stateEl.className = "gauge__legend-state gauge__legend-state--stale";
       return;
     }
+    // Chantier simplification (demande utilisateur, GO gate pool-chemistry) :
+    // « Trop bas »/« Idéal »/« Trop haut » retirés — la valeur chiffrée, la
+    // cible chiffrée et les deux repères verbalisés disent déjà ce que la
+    // couleur montre ; la position du curseur n'est pas une couleur.
+    stateEl.textContent = "";
+    stateEl.className = "gauge__legend-state";
     const pos = phGaugePosition(value);
-    const text = phGaugeStateText(value);
-    if (pos === null || text === null) {
+    if (pos === null) {
       cursor.hidden = true;
-      stateEl.textContent = "—";
-      stateEl.className = "gauge__legend-state";
       return;
     }
     cursor.hidden = false;
     cursor.style.left = pos + "%";
-    const cls = text === "Idéal" ? "gauge__legend-state--success" : "gauge__legend-state--danger";
-    stateEl.textContent = text;
-    stateEl.className = "gauge__legend-state " + cls;
   }
 
   // Met à jour la jauge ORP (curseur mesure + marqueur consigne + légende).
@@ -2041,26 +2034,28 @@
       targetMarker.style.left = tPos + "%";
     }
     if (!measuresOk) {
+      // EXCEPTION BLOQUANTE (gate pool-chemistry, chantier simplification) :
+      // ce texte-là SURVIT — cf. commentaire équivalent dans updatePhGauge().
       cursor.hidden = true;
       stateEl.textContent = "Mesures non représentatives";
       stateEl.className = "gauge__legend-state gauge__legend-state--stale";
       return;
     }
+    // Chantier simplification : « Sous consigne »/« Dans la plage »/
+    // « Au-dessus » retirés (GO gate — « loin de la cible » est déjà dit par
+    // la valeur chiffrée + le marqueur de consigne ; perte actée et non
+    // compensée : l'étendue de la bande verte ± ORP_GAUGE_BAND_MV n'est plus
+    // écrite nulle part, c'est une tolérance d'affichage, pas un seuil
+    // chimique — ne pas ajouter de texte ici pour la réintroduire).
+    stateEl.textContent = "";
+    stateEl.className = "gauge__legend-state";
     const pos = orpGaugePosition(value);
-    const text = orpGaugeStateText(value, target);
-    if (pos === null || text === null) {
+    if (pos === null) {
       cursor.hidden = true;
-      stateEl.textContent = "—";
-      stateEl.className = "gauge__legend-state";
       return;
     }
     cursor.hidden = false;
     cursor.style.left = pos + "%";
-    const cls = text === "Dans la plage" ? "gauge__legend-state--success"
-      : text === "Au-dessus" ? "gauge__legend-state--warn"
-      : "gauge__legend-state--danger";
-    stateEl.textContent = text;
-    stateEl.className = "gauge__legend-state " + cls;
   }
 
   // feature-147 (correctif, parité « ça suit ») : jauge Température — mêmes

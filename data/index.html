@@ -370,7 +370,16 @@
                 </div>
                 <!-- feature-147 : position du pH corrigé (déjà affiché ci-dessus)
                      sur une échelle. Bornes de DESSIN UNIQUEMENT (jamais
-                     légendées) — voir phGaugePosition() dans app.js. -->
+                     légendées) — voir phGaugePosition() dans app.js.
+                     Chantier simplification (gate pool-chemistry GO) : le mot
+                     d'état normal (« Trop bas »/« Idéal »/« Trop haut ») a été
+                     retiré — la valeur chiffrée, la cible chiffrée et les deux
+                     repères ci-dessous disent déjà ce que la couleur montre.
+                     #ph-gauge-state reste dans le DOM et se remplit UNIQUEMENT
+                     en mode .gauge--stale (« Mesures non représentatives ») :
+                     c'est le seul cas où la couleur grisée de la piste ne
+                     porterait pas seule l'information (exception bloquante du
+                     gate) — même motif que #temp-gauge-state. -->
                 <div class="gauge" id="ph-gauge">
                   <div class="gauge__track" id="ph-gauge-track">
                     <!-- Positions posées par updatePhGauge() via phGaugePosition(7.00)/(7.60)
@@ -380,7 +389,7 @@
                     <span class="gauge__cursor" id="ph-gauge-cursor" hidden></span>
                   </div>
                   <div class="gauge__legend">
-                    <span class="gauge__legend-state" id="ph-gauge-state">—</span>
+                    <span class="gauge__legend-state" id="ph-gauge-state"></span>
                     <span class="gauge__legend-marks">Repères : 7,00 eau agressive · 7,60 chlore inefficace</span>
                   </div>
                 </div>
@@ -411,19 +420,24 @@
                      CONDITIONS) — dégradé ÉVALUATIF mais ASYMÉTRIQUE, posé par
                      updateOrpGauge() : rouge en dessous de la consigne (aucun
                      stabilisant n'explique un ORP très bas), vert sur
-                     target ± ORP_GAUGE_BAND_MV (MÊME constante que le texte
-                     d'état, aucun seuil neuf), NEUTRE au-dessus (la chimie est
-                     asymétrique : un ORP élevé n'est pas dangereux dans la
-                     plage affichable). Deux marqueurs (mesure, consigne) +
-                     texte d'état réutilisant le calcul déjà en production
-                     orpTarget ± 150 mV. -->
+                     target ± ORP_GAUGE_BAND_MV, NEUTRE au-dessus (la chimie
+                     est asymétrique : un ORP élevé n'est pas dangereux dans la
+                     plage affichable). Deux marqueurs (mesure, consigne).
+                     Chantier simplification (gate GO) : le mot d'état normal
+                     (« Sous consigne »/« Dans la plage »/« Au-dessus ») a été
+                     retiré — perte actée et non compensée (l'étendue
+                     ± ORP_GAUGE_BAND_MV n'est plus écrite nulle part, c'est
+                     une tolérance d'affichage, pas un seuil chimique).
+                     #orp-gauge-state reste dans le DOM, rempli UNIQUEMENT en
+                     mode .gauge--stale (exception bloquante du gate, même
+                     motif que #ph-gauge-state/#temp-gauge-state). -->
                 <div class="gauge" id="orp-gauge">
                   <div class="gauge__track" id="orp-gauge-track">
                     <span class="gauge__marker" id="orp-gauge-target" hidden aria-hidden="true"></span>
                     <span class="gauge__cursor" id="orp-gauge-cursor" hidden></span>
                   </div>
                   <div class="gauge__legend">
-                    <span class="gauge__legend-state" id="orp-gauge-state">—</span>
+                    <span class="gauge__legend-state" id="orp-gauge-state"></span>
                   </div>
                 </div>
                 <div class="sensor-badge" id="orp-sensor-badge" style="display:none;"></div>

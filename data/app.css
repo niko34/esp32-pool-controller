@@ -2491,10 +2491,12 @@ input.is-computed:disabled {
   font-weight: 700;
   color: var(--text);
 }
-.gauge__legend-state--success { color: var(--success); }
-.gauge__legend-state--warn    { color: var(--warn); }
-.gauge__legend-state--danger  { color: var(--danger); }
-.gauge__legend-state--stale   { color: var(--text-secondary); font-weight: 600; }
+/* Chantier simplification (2026) : --success/--warn/--danger retirées — le
+   mot d'état normal (« Trop bas »/« Idéal »/« Trop haut », « Sous consigne »/
+   « Dans la plage »/« Au-dessus ») a disparu, donc plus aucun texte normal
+   n'utilise ces teintes. --stale SURVIT : seul le texte affiché en mode
+   dégradé (filtration arrêtée / mesure non représentative). */
+.gauge__legend-state--stale { color: var(--text-secondary); font-weight: 600; }
 .gauge__legend-marks {
   font-size: 11px;
 }
