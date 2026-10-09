@@ -3,7 +3,7 @@
 - **Statut** : Accepté
 - **Date** : 2026-10-08
 - **Décideurs** : gate `pool-chemistry` (instruction du 2026-10-08, puis remise en cause de conception demandée par l'utilisateur le même jour, GO sur le retrait), `architect`, `embedded-developer`, `test-engineer` (deux défauts trouvés par rejeu/mutation à l'extraction des modules purs), `code-reviewer` (2ᵉ passage — remesure du latch à la reprise, restriction de l'offre de chloration de secours)
-- **Spec(s) liée(s)** : [feature-139](../../specs/features/doing/feature-139-battement-de-la-porte-de-mesure-au-seuil.md) ; suite distincte : [feature-145](../../specs/features/todo/feature-145-butee-de-plausibilite-sur-l-orp-brut.md) (butée de plausibilité sur l'ORP brut)
+- **Spec(s) liée(s)** : [feature-139](../../specs/features/done/feature-139-battement-de-la-porte-de-mesure-au-seuil.md) ; suite distincte : [feature-145](../../specs/features/todo/feature-145-butee-de-plausibilite-sur-l-orp-brut.md) (butée de plausibilité sur l'ORP brut)
 
 ## Contexte
 
@@ -79,6 +79,6 @@ Sont **conservés** :
 
 - Code : [`src/measure_validity_logic.h`](../../src/measure_validity_logic.h) / [`.cpp`](../../src/measure_validity_logic.cpp) (machine d'état, C2/C3), [`src/dose_available_logic.h`](../../src/dose_available_logic.h) (délai avant dosage, nouveau module pur), [`src/measure_validity.cpp`](../../src/measure_validity.cpp) (coquille, mémoire RTC, journal `[STAB]`), [`src/constants.h`](../../src/constants.h) (bloc `kPurgeFloorMs` / `kWaterStopGraceS` et `static_assert`), [`src/web_routes_data.cpp`](../../src/web_routes_data.cpp), [`src/ws_manager.cpp`](../../src/ws_manager.cpp) (contrat `/data` + WS), [`data/app.js`](../../data/app.js) (`_measuresWaitText()`, `measureStateSegments()`, offre de chloration de secours restreinte)
 - Tests : [`test/test_native_measure_validity/`](../../test/test_native_measure_validity/), [`test/test_native_dose_available/`](../../test/test_native_dose_available/)
-- Spec : [feature-139](../../specs/features/doing/feature-139-battement-de-la-porte-de-mesure-au-seuil.md)
+- Spec : [feature-139](../../specs/features/done/feature-139-battement-de-la-porte-de-mesure-au-seuil.md)
 - Doc : [subsystems/measure-validity.md](../subsystems/measure-validity.md), [subsystems/sensors.md](../subsystems/sensors.md), [API.md](../API.md), [MQTT.md](../MQTT.md), [features/page-ph.md](../features/page-ph.md), [features/page-orp.md](../features/page-orp.md), [features/page-dashboard.md](../features/page-dashboard.md), [features/page-settings.md](../features/page-settings.md)
 - ADR liés : **Supersède** [ADR-0059](0059-purge-adaptative-fenetre-de-medianes.md) (la purge se termine sur la stabilité jugée par une fenêtre de médianes — thèse inversée ici ; ce qui survit : le retrait du réglage utilisateur `stabilization_delay_min`) ; [ADR-0017](0017-logique-metier-pure-humble-object-testabilite.md) (modules purs) ; [ADR-0041](0041-autorite-mesures-non-representatives-et-sortie-de-secours-filtre.md) (porte d'alimentation des filtres, inchangée par ce lot) ; [ADR-0048](0048-seuils-ph-fixes-derives-de-la-plage-de-consigne.md) (butées chimiques pH, désormais seul filet contre une mesure durablement fausse)
