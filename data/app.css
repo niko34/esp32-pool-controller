@@ -39,16 +39,25 @@
   --warning-bg: rgba(255, 193, 7, 0.15);
   --warning-border: rgba(255, 193, 7, 0.35);
 
-  /* feature-147 (correctif) : teintes d'APLAT pour la jauge pH — distinctes de
-     --danger/--success qui sont des couleurs de TEXTE (choisies pour leur
-     ratio de contraste, donc sombres/ternes en aplat sur une barre de 10 px).
-     Deux teintes différentes aux extrémités : « trop bas » (acide, attaque
-     liner/métal) et « trop haut » (chlore inefficace) ne sont PAS le même
-     problème — chaud côté bas, froid côté haut, comme la carte de référence.
-     Texte d'état inchangé (reste sur --success/--danger, déjà validés AA). */
-  --gauge-low: #f97316;   /* chaud — trop bas */
-  --gauge-ok: #22c55e;    /* idéal */
-  --gauge-high: #3b82f6;  /* froid — trop haut */
+  /* feature-147 (correctif) : teintes d'APLAT pour le dégradé CONTINU de la
+     jauge pH — distinctes de --danger/--success qui sont des couleurs de
+     TEXTE (choisies pour leur ratio de contraste, donc sombres/ternes en
+     aplat sur une barre de 10 px). Rouge → orange → jaune → vert → bleu,
+     comme la carte de référence de l'utilisateur : chaud côté bas (acide,
+     attaque liner/métal), froid côté haut (chlore inefficace) — pas le même
+     problème. Texte d'état inchangé (reste sur --success/--danger, déjà
+     validés AA). Position des arrêts dérivée de phGaugePosition() en JS,
+     jamais un pourcentage en dur ici. */
+  --gauge-low: #dc2626;      /* rouge — extrémité basse (acide) */
+  --gauge-low-mid: #f97316;  /* orange — transition */
+  --gauge-low-mid2: #facc15; /* jaune — approche de l'idéal */
+  --gauge-ok: #22c55e;       /* vert — idéal */
+  --gauge-high: #3b82f6;     /* bleu — extrémité haute (chlore inefficace) */
+
+  /* Piste neutre des 3 jauges (pH hors zone du dégradé JS, ORP, Température) :
+     correctif « jauges invisibles » — --panel2 (blanc à 60%) est illisible sur
+     une carte blanche. Gris clair franc + liseré --border existant. */
+  --gauge-track-bg: #d7dbe3;
 
   /* Layout */
   --radius: 12px;
@@ -2392,8 +2401,9 @@ input.is-computed:disabled {
   opacity: .55;
 }
 
-/* feature-147 : jauges pH/ORP — CSS pur, aucune bibliothèque, aucun SVG/canvas.
-   Réutilise uniquement --danger/--warn/--success/--accent/--text/--text-secondary/--panel2. */
+/* feature-147 : jauges pH/ORP/Température — CSS pur, aucune bibliothèque,
+   aucun SVG/canvas. Réutilise --danger/--warn/--success/--accent/--text/
+   --text-secondary/--border, plus --gauge-* dédiées (aplats, cf. :root). */
 .gauge {
   margin: 10px 0 4px;
 }
@@ -2401,7 +2411,13 @@ input.is-computed:disabled {
   position: relative;
   height: 10px;
   border-radius: 999px;
-  background: var(--panel2);
+  box-sizing: border-box;
+  /* Correctif « jauges ORP/Température invisibles » : --panel2 (blanc à 60%)
+     était illisible sur une carte blanche. Gris clair franc + liseré, visible
+     par défaut sur les 3 jauges ; le pH l'écrase par le dégradé JS ci-dessous
+     mais garde le même liseré --border. */
+  background: var(--gauge-track-bg);
+  border: 1px solid var(--border);
   overflow: visible;
 }
 .gauge__cursor {

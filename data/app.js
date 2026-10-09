@@ -1944,16 +1944,19 @@
     const pMin = phGaugePosition(_phBounds.targetMin);
     const pMax = phGaugePosition(_phBounds.targetMax);
     if (pMin !== null && pMax !== null) {
-      // Correctif retour utilisateur : --danger/--success sont des couleurs de
-      // TEXTE (ratio de contraste, sombres) — ternes en aplat sur 10 px.
-      // --gauge-low/--gauge-ok/--gauge-high sont des teintes d'aplat dédiées,
-      // ET distinguent les deux extrémités (chaud = trop bas/acide, froid =
-      // trop haut/chlore inefficace — pas le même problème, cf. carte de
-      // référence). Le texte d'état garde --success/--danger (inchangé).
+      // Correctif retour utilisateur (« pas très joli, dégradé continu comme
+      // la carte de référence ») : rouge → orange → jaune → vert → bleu, SANS
+      // bord net. Le vert est CENTRÉ sur la fenêtre idéale réelle (pMin-pMax,
+      // lue depuis /get-config via _phBounds) : si la consigne change, le
+      // vert suit. Arrêts chauds (pWarm1/pWarm2) dérivés de pMin — AUCUN
+      // pourcentage en dur. Texte d'état inchangé (--success/--danger).
+      const pWarm1 = pMin / 3;
+      const pWarm2 = (pMin * 2) / 3;
       track.style.background =
-        `linear-gradient(to right, var(--gauge-low) 0%, var(--gauge-low) ${pMin}%, ` +
+        `linear-gradient(to right, var(--gauge-low) 0%, ` +
+        `var(--gauge-low-mid) ${pWarm1}%, var(--gauge-low-mid2) ${pWarm2}%, ` +
         `var(--gauge-ok) ${pMin}%, var(--gauge-ok) ${pMax}%, ` +
-        `var(--gauge-high) ${pMax}%, var(--gauge-high) 100%)`;
+        `var(--gauge-high) 100%)`;
     }
     // Revue code-reviewer : positions dérivées de phGaugePosition(), jamais
     // recopiées en % dans le HTML (une valeur, un seul endroit).
