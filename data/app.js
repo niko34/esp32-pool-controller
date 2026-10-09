@@ -6448,7 +6448,11 @@
     // Cause connue et NORMALE (préchauffage, mesure en pause) :
     // ton d'attente, jamais le registre visuel d'une panne.
     if (short) return { cls: 'warn', label: short };
-    if (json?.[prefix + 'FilterReady'] === false) return { cls: 'warn', label: 'Stabilisation…' };
+    // Repli hors taxonomie (code absent/non qualifiant mais FilterReady déjà
+    // à false) : même correctif que les codes 15/19 ci-dessus — même mot
+    // « Stabilisation… » aurait réintroduit le même défaut sur ce chemin plus
+    // rare (pas d'offre d'action ici, ce n'est qu'un chip).
+    if (json?.[prefix + 'FilterReady'] === false) return { cls: 'warn', label: 'Mesures en place' };
     if (st.lastRejectAt && (Date.now() - st.lastRejectAt) < FILTER_REJECT_WINDOW_MS) {
       return { cls: 'warn2', label: 'Pics rejetés' };
     }
@@ -6556,8 +6560,20 @@
     12: { tone: 'normal',  label: 'Limite cycles/jour atteinte — reprise à minuit' },
     13: { tone: 'normal',  label: 'Anti-rafale — patienter avant la prochaine injection' },
     14: { tone: 'normal',  label: 'Anti-rafale (15 min) — patienter avant la prochaine injection' },
-    // Qualification de la garde 3 (lecture filtrée NaN)
-    15: { tone: 'normal',  label: 'Stabilisation du filtre de mesure', chip: 'Stabilisation…', stab: true },
+    // Qualification de la garde 3 (lecture filtrée NaN). Libellé/chip revus
+    // (retour utilisateur « message de stabilisation du filtre ») : durée
+    // DÉTERMINISTE et connue d'avance (kSensorFilterCentralWindow = 13
+    // échantillons × kPhOrpSensorIntervalMs = 5 s ⇒ 65 s, src/constants.h:1417
+    // et :177) — dite en ordre de grandeur, PAS en engagement ferme (une sonde
+    // muette prolonge l'attente), donc AUCUN champ /data ou WS à ajouter, et
+    // surtout AUCUN décompte fabriqué côté client (un rechargement le
+    // remettrait à zéro et mentirait). ⚠️ Volontairement SANS cause annoncée
+    // (« après un redémarrage ») : SensorFilter::rearm() se déclenche aussi à
+    // chaque réouverture de la porte d'eau (reprise de filtration), pas
+    // seulement au boot — l'annoncer comme un redémarrage aurait été faux la
+    // plupart du temps. « Stabilisation » / « filtre » retirés (jargon jugé
+    // peu clair) : plus aucune offre d'action sur ce code (retiré ce matin).
+    15: { tone: 'normal',  label: 'Les mesures se mettent en place — environ une minute', chip: 'Mesures en place', stab: true },
     16: { tone: 'fault',   label: 'Sonde figée — vérifier la sonde', chip: 'Sonde figée' },
     17: { tone: 'fault',   label: 'Plus aucune mesure acceptée — vérifier la sonde', chip: 'Sonde muette' },
     // feature-139 (v2.62.0, lot B) : label/chip ci-dessous = REPLI STATIQUE
@@ -6567,8 +6583,9 @@
     // _renderDosePill, _classifyFilterState) : ne pas reformuler ici sans
     // reformuler là-bas.
     18: { tone: 'normal',  label: 'Reprise automatique à venir', chip: 'Reprise à venir', stab: true },
-    // Qualification de la garde 3b (filtre non prêt)
-    19: { tone: 'normal',  label: 'Stabilisation du filtre de mesure', chip: 'Stabilisation…', stab: true },
+    // Qualification de la garde 3b (filtre non prêt) — même phénomène que le
+    // code 15 sur l'autre voie, même libellé/chip (voir commentaire ci-dessus).
+    19: { tone: 'normal',  label: 'Les mesures se mettent en place — environ une minute', chip: 'Mesures en place', stab: true },
     20: { tone: 'fault',   label: 'Sonde figée — vérifier la sonde', chip: 'Sonde figée' },
     21: { tone: 'fault',   label: 'Plus aucune mesure acceptée — vérifier la sonde', chip: 'Sonde muette' },
     22: { tone: 'normal',  label: 'Reprise automatique à venir', chip: 'Reprise à venir', stab: true },
