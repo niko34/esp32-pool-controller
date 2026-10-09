@@ -878,6 +878,15 @@ canvas:hover {
   .grid--2 {
     grid-template-columns: 1fr;
   }
+
+  /* feature-147 : la grille des 4 boutons de mode filtration reste 2x2 même
+     sous 640px (mobile d'abord — écran consulté au bord du bassin) : un
+     empilement vertical en 4 lignes alourdirait la carte, contraire au
+     principe de ce lot (« allège »). Spécificité (.filtration-modes.grid--2)
+     volontairement supérieure à la règle générique ci-dessus. */
+  .filtration-modes.grid--2 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 /* ========== v2.25.0 — Contrôles numériques pH (consigne + offset) ========== */
@@ -2173,6 +2182,25 @@ input.is-computed:disabled {
   letter-spacing: 0.05em;
 }
 
+/* feature-147 : rappel du MODE dans l'en-tête de la carte Filtration — texte
+   discret (≈ moitié du titre, non capitalisé), pour ne pas rivaliser avec le
+   titre « FILTRATION » ni avec le bouton de mode déjà en évidence
+   (btn--primary + aria-pressed). Classe dédiée, distincte de
+   .card__status-label (revue code-reviewer feature-147). */
+.card__status-mode {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+/* Pause anti-gel (sécurité) : le texte de mode n'est JAMAIS remplacé (le
+   badge d'état affiche déjà « Hors gel ») — seule sa couleur est teintée en
+   renfort visuel, pendant que la pompe est en pause malgré le mode actif.
+   Réutilise --warn, aucune nouvelle couleur. */
+.card__status-mode--warn {
+  color: var(--warn);
+}
+
 .card__status-info .card__status-state {
   margin-top: 0;
 }
@@ -2351,6 +2379,90 @@ input.is-computed:disabled {
   animation: none;
   background: var(--text-secondary);
   opacity: .55;
+}
+
+/* feature-147 : jauges pH/ORP — CSS pur, aucune bibliothèque, aucun SVG/canvas.
+   Réutilise uniquement --danger/--warn/--success/--accent/--text/--text-secondary/--panel2. */
+.gauge {
+  margin: 10px 0 4px;
+}
+.gauge__track {
+  position: relative;
+  height: 10px;
+  border-radius: 999px;
+  background: var(--panel2);
+  overflow: visible;
+}
+.gauge__cursor {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #ffffff;
+  border: 3px solid var(--accent);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+  transform: translate(-50%, -50%);
+  transition: left var(--transition-base);
+}
+.gauge__cursor[hidden] {
+  display: none;
+}
+/* Repères discrets NON COLORÉS (ex. 7,00 / 7,60 côté pH) : jamais une limite,
+   toujours doublés d'un texte dans .gauge__legend-marks (gate pool-chemistry).
+   Revue code-reviewer : le repère 7,60 tombe dans la zone --danger du
+   dégradé — un halo blanc (contour, pas une teinte sémantique) assure la
+   lisibilité sur fond rouge comme sur fond vert, sans donner de valeur
+   propre au repère. */
+.gauge__tick {
+  position: absolute;
+  top: -3px;
+  left: 0;
+  width: 2px;
+  height: 16px;
+  background: var(--text-secondary);
+  opacity: 1;
+  box-shadow: 0 0 0 1.5px rgba(255, 255, 255, 0.95);
+  transform: translateX(-50%);
+}
+/* Marqueur de consigne (ORP) : trait vertical, distinct du curseur de mesure. */
+.gauge__marker {
+  position: absolute;
+  top: -4px;
+  left: 0;
+  width: 2px;
+  height: 18px;
+  background: var(--text);
+  transform: translateX(-50%);
+}
+.gauge__marker[hidden] {
+  display: none;
+}
+.gauge__legend {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.gauge__legend-state {
+  font-weight: 700;
+  color: var(--text);
+}
+.gauge__legend-state--success { color: var(--success); }
+.gauge__legend-state--warn    { color: var(--warn); }
+.gauge__legend-state--danger  { color: var(--danger); }
+.gauge__legend-state--stale   { color: var(--text-secondary); font-weight: 600; }
+.gauge__legend-marks {
+  font-size: 11px;
+}
+/* Filtration arrêtée : mesure non représentative — on grise l'échelle entière,
+   pas seulement le nombre (même principe que les badges capteur existants). */
+.gauge--stale .gauge__track {
+  opacity: 0.35;
+  filter: grayscale(1);
 }
 /* v2.25.1 : PANNE de mesure (sonde figée / plus aucune mesure acceptée). Registre
    visuel volontairement distinct des états transitoires attendus (préchauffage du

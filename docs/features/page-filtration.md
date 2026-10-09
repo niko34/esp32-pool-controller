@@ -31,6 +31,8 @@ mode** (→ Marche / → Arrêt) au lieu de poser un état séparé.
 
 Les autres cartes (graphe, statistiques) peuvent être ajoutées au fil du temps ; se référer à `#view-filtration` pour l'état courant.
 
+> ⚠️ **Hors périmètre de feature-147 (v2.64.0).** Le tableau de bord expose désormais les quatre modes sous forme de **boutons** directement dans la carte Filtration, et le Boost y devient un sous-bloc — voir [docs/features/page-dashboard.md](page-dashboard.md#carte-filtration--quatre-boutons-mode-vs-état-boost-intégré-feature-147-v2640). **Cette page conserve son `<select>` de mode et sa carte « Contrôle manuel » à l'identique** : aucune des deux cartes ci-dessus n'a été modifiée par ce lot.
+
 ## Données consommées (WebSocket `/ws`)
 
 - `install_mode` (`managed` / `powered` / `external`) — pilote la visibilité de la page (feature-056). `filtration_enabled` **retiré**.
@@ -90,7 +92,7 @@ jeton brut survivent. Voir [`docs/MQTT.md`](../MQTT.md) pour l'auto-discovery co
 ## Fichiers
 
 - [`data/index.html:332`](../../data/index.html:332)
-- [`data/app.js`](../../data/app.js) — `saveFiltration()`, `setFiltrationRunMode()` (feature-146, partagée par les boutons Démarrer/Arrêter du tableau de bord et de cette page), `updateFiltrationControls()` (jamais grisés, hint permanent), `updateFiltrationBadges()` (split détail = `pill ok/bad/mid` dans `card__head` ; dashboard = `state-badge--*` inchangé), `getFiltrationState()` qui expose `pillClass` (mapping `warn → mid`)
+- [`data/app.js`](../../data/app.js) — `saveFiltration()`, `setFiltrationRunMode()` (feature-146 ; depuis feature-147/v2.64.0 partagée par les **quatre boutons de mode** du tableau de bord — Auto/Programme/Marche/Arrêt, qui remplacent les anciens Démarrer/Arrêter — et par les boutons Démarrer/Arrêter de **cette page**, inchangés), `updateFiltrationControls()` (jamais grisés, hint permanent), `updateFiltrationBadges()` (split détail = `pill ok/bad/mid` dans `card__head` ; dashboard = `state-badge--*` inchangé, et depuis feature-147 pilote aussi les quatre boutons de mode et le texte « Mode X » du tableau de bord), `getFiltrationState()` qui expose `pillClass` (mapping `warn → mid`)
 - [`src/filtration.h`](../../src/filtration.h), [`src/filtration.cpp`](../../src/filtration.cpp) — logique firmware
 - [`src/web_routes_control.cpp`](../../src/web_routes_control.cpp) — endpoint `/filtration/external-state`
 - [`src/web_routes_config.cpp`](../../src/web_routes_config.cpp) — persistance config, validation du mode (`/save-config`)

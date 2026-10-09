@@ -291,10 +291,10 @@ petit engrenage qui mène directement à sa page de détail.</p>
   <figcaption class="capture-legende">Le tableau de bord&nbsp;: l'état du bassin en un coup d'œil.</figcaption>
 </figure>
 
-<p><strong>Ce que vous voyez</strong> — six cartes&nbsp;: Filtration,
-Éclairage, pH, Chlore (ORP), Température et <strong>Modes
-temporaires</strong> (cette dernière regroupe depuis la version&nbsp;2.55 le
-Mode Boost et la Chloration de secours — voir plus bas). Les cartes de
+<p><strong>Ce que vous voyez</strong> — cinq cartes&nbsp;: Filtration,
+Éclairage, pH, Chlore (ORP) et Température. Depuis la version&nbsp;2.64, le
+Mode Boost n'a plus de carte à lui&nbsp;: il vit dans une section de la
+carte Filtration (voir plus bas). Les cartes de
 mesure affichent la valeur courante, la cible, et un mini-graphique de la
 <strong>journée en cours</strong> (depuis minuit — les courbes sont donc
 courtes le matin, c'est normal). Sous chaque valeur, un petit badge résume
@@ -382,9 +382,54 @@ exemple filtration à l'arrêt —, la valeur affiche
 préfère avouer qu'il ne sait pas plutôt que d'afficher une valeur
 douteuse.</p>
 
-<p><strong>Ce que vous pouvez faire</strong> — démarrer ou arrêter la
-filtration, allumer ou éteindre l'éclairage, et activer l'un des deux
-<strong>modes temporaires</strong>, <strong>indépendamment l'un de
+<h4>La carte Filtration&nbsp;: quatre boutons, deux informations</h4>
+
+<p>Depuis la version&nbsp;2.64, la carte Filtration propose
+<strong>quatre boutons</strong> — Auto, Programme, Marche, Arrêt — à la
+place d'une ligne de texte&nbsp;: cliquez sur celui que vous voulez, il
+reste en évidence. <strong>Aucun bouton n'est grisé</strong>&nbsp;: même en
+Arrêt, vous pouvez toujours cliquer «&nbsp;Auto&nbsp;» pour en sortir.</p>
+
+<p>Juste au-dessus des boutons, <strong>deux informations distinctes</strong>
+apparaissent&nbsp;: le <strong>mode</strong> demandé («&nbsp;Mode
+Auto&nbsp;», etc.) et l'<strong>état</strong> réel de la pompe
+(«&nbsp;En marche&nbsp;» / «&nbsp;Arrêtée&nbsp;», ou «&nbsp;Hors
+gel&nbsp;» en orange pendant une pause anti-gel). Les deux peuvent
+afficher des choses différentes sans que ce soit une panne&nbsp;: en mode
+Auto, <strong>hors créneau programmé</strong>, le mode affiche «&nbsp;Mode
+Auto&nbsp;» et l'état affiche «&nbsp;Arrêtée&nbsp;» — c'est exactement ce
+qui est censé se passer, la pompe attend simplement son prochain créneau.
+Ce n'est qu'en combinant les deux informations que vous savez à la fois ce
+qui a été demandé et ce qui se passe réellement.</p>
+
+<h4>Les jauges pH et chlore</h4>
+
+<p>Sous la valeur de pH et de chlore, une <strong>barre de position</strong>
+s'ajoute désormais au graphique (elle ne le remplace pas)&nbsp;: un repère
+indique en un coup d'œil où se situe la mesure actuelle.</p>
+
+<ul>
+  <li>Pour le <strong>pH</strong>, la barre est divisée en trois&nbsp;:
+  «&nbsp;Trop bas&nbsp;», «&nbsp;Idéal&nbsp;» et «&nbsp;Trop haut&nbsp;» —
+  les bornes de la zone «&nbsp;Idéal&nbsp;» suivent votre consigne si vous
+  la changez dans les réglages. Deux petits traits, sans couleur, rappellent
+  aussi deux repères utiles&nbsp;: 7,00 (en dessous, l'eau devient agressive)
+  et 7,60 (au-delà, le chlore devient inefficace).</li>
+  <li>Pour le <strong>chlore (ORP)</strong>, la barre ne porte
+  <strong>aucune zone colorée</strong> — volontairement&nbsp;: un ORP
+  «&nbsp;correct&nbsp;» n'existe pas dans l'absolu, il dépend du
+  stabilisant, du pH et de la température de votre eau. Seuls deux repères
+  apparaissent&nbsp;: votre mesure et votre consigne, avec un texte
+  («&nbsp;Sous consigne&nbsp;», «&nbsp;Dans la plage&nbsp;»,
+  «&nbsp;Au-dessus&nbsp;»).</li>
+</ul>
+
+<p>Filtration à l'arrêt, les deux barres se grisent&nbsp;: la mesure n'est
+plus représentative (voir plus haut).</p>
+
+<p><strong>Ce que vous pouvez faire</strong> — choisir le mode de
+filtration (ci-dessus), allumer ou éteindre l'éclairage, et activer l'un des
+deux <strong>modes temporaires</strong>, <strong>indépendamment l'un de
 l'autre</strong>&nbsp;: ils peuvent fonctionner en même temps.</p>
 
 <ul>
@@ -409,24 +454,25 @@ l'autre</strong>&nbsp;: ils peuvent fonctionner en même temps.</p>
   est bloqué&nbsp;».</li>
 </ul>
 
-<p>Depuis la version&nbsp;2.55.1, la carte «&nbsp;Modes temporaires&nbsp;»
-n'a plus de bouton «&nbsp;Activer&nbsp;» pour la chloration de secours&nbsp;:
+<p>Depuis la version&nbsp;2.55.1, le Mode Boost (section de la carte
+Filtration depuis la version&nbsp;2.64, auparavant une carte à part) n'a
+plus de bouton «&nbsp;Activer&nbsp;» pour la chloration de secours&nbsp;:
 l'activation se fait depuis le bandeau «&nbsp;Dosage bloqué&nbsp;»
 (chapitre&nbsp;4) au moment précis où elle est pertinente, ou via
 l'interrupteur Home Assistant / MQTT.</p>
 
-<p><strong>Depuis la version&nbsp;2.55.2</strong>, la carte ne montre plus
-<strong>aucune trace</strong> de la chloration de secours&nbsp;: au repos
-comme pendant son activité, elle ne contient que le Mode Boost. Quand le
-mode est actif, son état, son échéance et son bouton
+<p><strong>Depuis la version&nbsp;2.55.2</strong>, cette section ne montre
+plus <strong>aucune trace</strong> de la chloration de secours&nbsp;: au
+repos comme pendant son activité, elle ne contient que le Mode Boost. Quand
+le mode est actif, son état, son échéance et son bouton
 «&nbsp;Arrêter&nbsp;» apparaissent dans un <strong>bandeau dédié</strong> en
 haut de page, au-dessus de la grille de cartes — comme la bannière qui
 signale des mesures non représentatives. Ce bandeau ne peut être ni masqué
 ni replié&nbsp;: un dosage à l'aveugle en cours reste visible tant qu'il
 dure.</p>
 
-<p>Si les deux modes sont activés en même temps&nbsp;: la carte «&nbsp;Modes
-temporaires&nbsp;» affiche l'effet <strong>réellement</strong> obtenu (par
+<p>Si les deux modes sont activés en même temps&nbsp;: le Mode Boost
+affiche l'effet <strong>réellement</strong> obtenu (par
 exemple «&nbsp;Filtration prolongée + chloration de secours&nbsp;»). C'est
 volontaire&nbsp;: en Chloration de secours, le Boost ne relève plus la cible
 de chlore (il n'y a plus de cible à relever, le dosage ne regarde plus

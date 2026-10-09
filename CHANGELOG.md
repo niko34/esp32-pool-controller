@@ -50,6 +50,38 @@
   `select.select_option` avec un ancien libellé français — celles qui
   publient le jeton brut sur MQTT ne sont pas affectées.
 
+### Fonctionnalités
+- **Interface — plus aucune action proposée pendant une attente qui se résout
+  seule** : au redémarrage, l'écran proposait « Ouvrir l'injection manuelle »
+  puis « Activer la chloration de secours » pendant la minute d'attente de
+  reprise de circulation. Ces offres ne s'affichent plus que sur les **vraies
+  anomalies de mesure** (état du filtre indéterminé), pas sur les attentes
+  transitoires qui annoncent déjà leur cause et leur fin. Le texte qui les
+  accompagnait (« rien ne dit quand elle reviendra… pannes de sonde qui
+  durent ») était d'ailleurs **faux** dans ces cas-là. Le message d'attente et
+  son compte à rebours, eux, restent affichés. ⚠️ L'injection manuelle demeure
+  **pleinement accessible** par sa section dédiée : c'est un raccourci qui
+  disparaît, pas un recours.
+- **Tableau de bord (feature-147)** : la carte Filtration adopte **quatre
+  boutons** (Auto · Programme · Marche · Arrêt) à la place de la ligne
+  « Mode » et des boutons Démarrer/Arrêter — devenus redondants depuis que
+  le mode est la seule autorité (ci-dessus). Aucun bouton n'est jamais grisé :
+  en Arrêt, « Auto » est la sortie. L'en-tête affiche désormais **à la fois**
+  le mode demandé et l'état réel de la pompe (« Mode Auto » + « Arrêtée » en
+  Auto hors créneau, par exemple — ce n'est pas une anomalie). Le **Mode
+  Boost** n'a plus de carte séparée : il devient une section de la carte
+  Filtration, à l'identique (ligne d'effet et indisponibilité en mode Arrêt
+  conservées).
+- **Jauges de position pH / ORP (feature-147)** : les cartes pH et ORP
+  affichent en plus du mini-graphique une barre de position de la mesure
+  courante. Le pH a trois zones (Trop bas / Idéal / Trop haut, bornes lues de
+  la configuration) et deux repères non colorés (7,00 eau agressive,
+  7,60 chlore inefficace). L'ORP n'a **aucune zone nommée** — un ORP
+  « correct » dépend du stabilisant, du pH et de la température, et n'existe
+  pas dans l'absolu — seulement la mesure et la consigne. Filtration arrêtée :
+  la jauge grise, pas de position suggérant une mesure fiable. Firmware non
+  modifié, aucun champ `/data`/WebSocket ajouté.
+
 ### Documentation
 - Nouvel [ADR-0093](docs/adr/0093-le-mode-de-filtration-est-la-seule-autorite.md)
   (« Le mode de filtration est la seule autorité ») — remplace
@@ -63,6 +95,15 @@
 - `docs/user/src/guide-utilisation.html` : les quatre modes de filtration
   décrits en langage simple (capture d'écran de la page Filtration à refaire
   avant la prochaine génération de PDF).
+- **feature-147** : `docs/features/page-dashboard.md` (refonte des trois
+  cartes : Filtration à quatre boutons + Boost intégré, jauges pH/ORP),
+  `docs/features/page-filtration.md` (note de non-régression — page de
+  détail intacte), `docs/user/src/guide-utilisation.html` (quatre boutons,
+  lecture des jauges, pourquoi mode et état peuvent différer). Aucun ADR :
+  refonte de surface sans décision structurante (zones de jauge actées par
+  le gate `pool-chemistry`, pas une architecture qui contraint le reste du
+  système). Captures d'écran à refaire : tableau de bord (changé en
+  profondeur).
 
 ---
 

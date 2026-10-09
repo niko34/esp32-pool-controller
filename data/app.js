@@ -2366,6 +2366,147 @@
     _phBounds = next;
   }
 
+  // ---------- feature-147 : jauges pH / ORP (représentation graphique) ----------
+  // Gate pool-chemistry, condition C1 : l'échelle trace UNIQUEMENT le pH
+  // CORRIGÉ (`data.ph`, déjà affiché en compact-value) — jamais un mélange
+  // brut/corrigé. Bornes de DESSIN uniquement (jamais légendées comme seuils) :
+  // miroir de kPhFloorRawHard/kPhCeilingRawHard (src/constants.h ~1648/1669).
+  // Non servies par /get-config (purement graphiques) : hors budget trame.
+  const PH_GAUGE_DRAW_MIN = 6.20;
+  const PH_GAUGE_DRAW_MAX = 8.10;
+
+  // Fonction pure : valeur pH corrigée → pourcentage [0,100], ou null si
+  // absente/NaN (⇒ curseur masqué, jamais de position fausse).
+  function phGaugePosition(value) {
+    if (typeof value !== "number" || !isFinite(value)) return null;
+    const pct = (value - PH_GAUGE_DRAW_MIN) / (PH_GAUGE_DRAW_MAX - PH_GAUGE_DRAW_MIN) * 100;
+    return Math.max(0, Math.min(100, pct));
+  }
+
+  // Repères discrets NON COLORÉS (gate C2) — UNE SEULE source : ces deux
+  // constantes, jamais recopiées en %. Miroir de kPhLowWarn/kPhOrpInhibit
+  // (src/constants.h). updatePhGauge() les pose via phGaugePosition().
+  const PH_GAUGE_MARK_LOW = 7.00;   // « Eau agressive »
+  const PH_GAUGE_MARK_HIGH = 7.60;  // « Chlore inefficace »
+
+  // Gate pool-chemistry, condition C2 : textes EXACTS, ne JAMAIS reformuler.
+  // Fenêtre réellement visée = _phBounds.targetMin/targetMax (servie par
+  // /get-config, repli identique 7.20/7.50 = kPhTargetMin/kPhTargetMax).
+  function phGaugeStateText(value) {
+    if (typeof value !== "number" || !isFinite(value)) return null;
+    if (value < _phBounds.targetMin) return "Trop bas";
+    if (value > _phBounds.targetMax) return "Trop haut";
+    return "Idéal";
+  }
+
+  // feature-147 : ORP — échelle fixe 0-1000 mV (choix du designer, aucune
+  // constante firmware à mirer ici). AUCUNE zone nommée/colorée (gate : un ORP
+  // « correct » n'existe pas dans l'absolu, cf. stabilisant/pH/température).
+  const ORP_GAUGE_MIN = 0;
+  const ORP_GAUGE_MAX = 1000;
+
+  function orpGaugePosition(value) {
+    if (typeof value !== "number" || !isFinite(value)) return null;
+    const pct = (value - ORP_GAUGE_MIN) / (ORP_GAUGE_MAX - ORP_GAUGE_MIN) * 100;
+    return Math.max(0, Math.min(100, pct));
+  }
+
+  // Réutilise le calcul déjà en production (orpTarget ± 150 mV, cf. le badge
+  // capteur ORP plus bas) — AUCUN nouveau seuil introduit par cette jauge.
+  function orpGaugeStateText(value, target) {
+    if (typeof value !== "number" || !isFinite(value)) return null;
+    if (typeof target !== "number" || !isFinite(target)) return null;
+    const low = target - 150, high = target + 150;
+    if (value < low) return "Sous consigne";
+    if (value > high) return "Au-dessus";
+    return "Dans la plage";
+  }
+
+  // Met à jour la jauge pH (curseur + dégradé de zones + légende). Le dégradé
+  // utilise _phBounds (live, servi par /get-config) : jamais de magie en dur
+  // pour la frontière Idéal/Trop haut-bas.
+  function updatePhGauge(value, measuresOk) {
+    const gaugeEl = $("#ph-gauge");
+    const track = $("#ph-gauge-track");
+    const cursor = $("#ph-gauge-cursor");
+    const stateEl = $("#ph-gauge-state");
+    const tickLow = $("#ph-gauge-tick-low");
+    const tickHigh = $("#ph-gauge-tick-high");
+    if (!gaugeEl || !track || !cursor || !stateEl) return;
+    const pMin = phGaugePosition(_phBounds.targetMin);
+    const pMax = phGaugePosition(_phBounds.targetMax);
+    if (pMin !== null && pMax !== null) {
+      track.style.background =
+        `linear-gradient(to right, var(--danger) 0%, var(--danger) ${pMin}%, ` +
+        `var(--success) ${pMin}%, var(--success) ${pMax}%, ` +
+        `var(--danger) ${pMax}%, var(--danger) 100%)`;
+    }
+    // Revue code-reviewer : positions dérivées de phGaugePosition(), jamais
+    // recopiées en % dans le HTML (une valeur, un seul endroit).
+    const pLow = phGaugePosition(PH_GAUGE_MARK_LOW);
+    if (tickLow && pLow !== null) tickLow.style.left = pLow + "%";
+    const pHigh = phGaugePosition(PH_GAUGE_MARK_HIGH);
+    if (tickHigh && pHigh !== null) tickHigh.style.left = pHigh + "%";
+    gaugeEl.classList.toggle("gauge--stale", !measuresOk);
+    if (!measuresOk) {
+      cursor.hidden = true;
+      stateEl.textContent = "Mesures non représentatives";
+      stateEl.className = "gauge__legend-state gauge__legend-state--stale";
+      return;
+    }
+    const pos = phGaugePosition(value);
+    const text = phGaugeStateText(value);
+    if (pos === null || text === null) {
+      cursor.hidden = true;
+      stateEl.textContent = "—";
+      stateEl.className = "gauge__legend-state";
+      return;
+    }
+    cursor.hidden = false;
+    cursor.style.left = pos + "%";
+    const cls = text === "Idéal" ? "gauge__legend-state--success" : "gauge__legend-state--danger";
+    stateEl.textContent = text;
+    stateEl.className = "gauge__legend-state " + cls;
+  }
+
+  // Met à jour la jauge ORP (curseur mesure + marqueur consigne + légende).
+  function updateOrpGauge(value, target, measuresOk) {
+    const gaugeEl = $("#orp-gauge");
+    const cursor = $("#orp-gauge-cursor");
+    const targetMarker = $("#orp-gauge-target");
+    const stateEl = $("#orp-gauge-state");
+    if (!gaugeEl || !cursor || !targetMarker || !stateEl) return;
+    gaugeEl.classList.toggle("gauge--stale", !measuresOk);
+    const tPos = orpGaugePosition(target);
+    if (tPos === null) {
+      targetMarker.hidden = true;
+    } else {
+      targetMarker.hidden = false;
+      targetMarker.style.left = tPos + "%";
+    }
+    if (!measuresOk) {
+      cursor.hidden = true;
+      stateEl.textContent = "Mesures non représentatives";
+      stateEl.className = "gauge__legend-state gauge__legend-state--stale";
+      return;
+    }
+    const pos = orpGaugePosition(value);
+    const text = orpGaugeStateText(value, target);
+    if (pos === null || text === null) {
+      cursor.hidden = true;
+      stateEl.textContent = "—";
+      stateEl.className = "gauge__legend-state";
+      return;
+    }
+    cursor.hidden = false;
+    cursor.style.left = pos + "%";
+    const cls = text === "Dans la plage" ? "gauge__legend-state--success"
+      : text === "Au-dessus" ? "gauge__legend-state--warn"
+      : "gauge__legend-state--danger";
+    stateEl.textContent = text;
+    stateEl.className = "gauge__legend-state " + cls;
+  }
+
   // Positions du contrôle segmenté de consigne, calculées depuis les bornes.
   // Le nombre de positions est borné (garde-fou : un pas aberrant servi par un
   // firmware corrompu ne doit pas fabriquer des milliers de boutons).
@@ -3790,36 +3931,74 @@
   }
 
   function updateFiltrationBadges() {
-    const state = getFiltrationState(window._config || {}, latestSensorData || {});
-    // Dashboard : conserve la classe legacy .state-badge--*
+    const config = window._config || {};
+    const state = getFiltrationState(config, latestSensorData || {});
+    const modeLabels = { auto: 'Auto', manual: 'Programme', force: 'Marche', off: 'Arrêt' };
+
+    // Revue coordinateur 2026-10-09 : le mode dit ce qui est DEMANDÉ, l'état
+    // dit ce que la pompe FAIT — les deux divergent légitimement (ex. Auto
+    // hors créneau = mode Auto + pompe arrêtée, fonctionnement normal). Le
+    // badge d'état (id/classes INCHANGÉS) est restauré dans l'en-tête, à côté
+    // du texte de mode — les 4 boutons ne remplacent que les anciens
+    // Démarrer/Arrêter, pas cette information.
     const dashBadge = $("#detail-filtration-status");
     if (dashBadge) {
       dashBadge.textContent = state.text;
       dashBadge.className = 'state-badge ' + state.class;
     }
-    // Card "Contrôle manuel" : badge .pill placé dans .card__head
+    // Texte de MODE, toujours "Mode X" (jamais remplacé par l'état : le badge
+    // ci-dessus porte déjà "Hors gel"). L'exception --warn est conservée en
+    // renfort visuel sur ce texte pendant la pause anti-gel, sans dupliquer le
+    // mot "Hors gel" une seconde fois.
+    const dashLabel = $("#detail-filtration-mode");
+    if (dashLabel) {
+      dashLabel.textContent = 'Mode ' + (modeLabels[config.filtration_mode] || 'Auto');
+      dashLabel.classList.toggle('card__status-mode--warn', state.frost);
+    }
+    // Card "Contrôle manuel" (page Filtration, hors périmètre feature-147) :
+    // badge .pill placé dans .card__head — INCHANGÉ, mis à jour depuis le
+    // MÊME `state` que le badge du tableau de bord ci-dessus (synchronisés).
     const headBadge = $("#filtration-current-status");
     if (headBadge) {
       headBadge.textContent = state.text;
       headBadge.className = 'pill ' + state.pillClass;
     }
+    updateFiltrationModeButtons(config.filtration_mode);
+  }
+
+  // feature-147 : grille 2x2 de la carte Filtration (tableau de bord). Bouton
+  // actif = btn--primary + aria-pressed="true" ; aucun bouton jamais
+  // désactivé (en Arrêt, "Auto" est la sortie — feature-146).
+  function updateFiltrationModeButtons(mode) {
+    const activeMode = mode || 'auto';
+    ['auto', 'manual', 'force', 'off'].forEach((m) => {
+      const btn = $(`#filtration-mode-btn-${m}`);
+      if (!btn) return;
+      const active = m === activeMode;
+      btn.classList.toggle('btn--primary', active);
+      btn.classList.toggle('btn--ghost', !active);
+      btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+    });
   }
 
   function getFiltrationState(config, data) {
     const isRunning = filtrationRunningOverride !== null ? filtrationRunningOverride : (data && data.filtration_running);
     const temp = data && data.temperature;
 
-    if (!config) return { text: 'Chargement...', class: 'state-badge--off', pillClass: '' };
+    if (!config) return { text: 'Chargement...', class: 'state-badge--off', pillClass: '', frost: false };
 
-    // Température hors gel
+    // Température hors gel — `frost` est l'ÉTAT testé par les appelants (pas
+    // le texte affiché, revue code-reviewer : un libellé reformulé un jour ne
+    // doit pas casser silencieusement la logique qui en dépend).
     if (temp != null && temp < 5.0 && isRunning) {
-      return { text: 'Hors gel', class: 'state-badge--warn', pillClass: 'mid' };
+      return { text: 'Hors gel', class: 'state-badge--warn', pillClass: 'mid', frost: true };
     }
 
     return {
       text: isRunning ? 'En marche' : 'Arrêtée',
       class: isRunning ? 'state-badge--ok' : 'state-badge--off',
-      pillClass: isRunning ? 'ok' : 'bad'
+      pillClass: isRunning ? 'ok' : 'bad',
+      frost: false
     };
   }
 
@@ -4434,6 +4613,10 @@
 
     updateDosingStatus("ph",  !!data.ph_dosing,  dedupDosingReason(getDosingStopReason(data, config, "ph"), data));
 
+    // feature-147 : jauge pH — trace le pH CORRIGÉ (data.ph, déjà affiché
+    // ci-dessus en compact-value), jamais une valeur brute (gate C1).
+    updatePhGauge((data.ph != null && !isNaN(data.ph)) ? data.ph : NaN, measuresOk);
+
     // === ORP COMPACT ===
     const compactOrp = $("#compact-orp");
     if (compactOrp) {
@@ -4447,6 +4630,12 @@
     }
 
     updateDosingStatus("orp", !!data.orp_dosing, dedupDosingReason(getDosingStopReason(data, config, "orp"), data));
+
+    // feature-147 : jauge ORP — mesure + consigne, aucune zone colorée/nommée
+    // (gate : un ORP « correct » n'existe pas dans l'absolu).
+    updateOrpGauge((data.orp != null && !isNaN(data.orp)) ? data.orp : NaN,
+                   (typeof config.orp_target === "number") ? config.orp_target : NaN,
+                   measuresOk);
 
     // === ÉCLAIRAGE ===
     if (data.lighting_enabled != null) updateLightingStatus(data.lighting_enabled);
@@ -6057,17 +6246,8 @@
     try { updateMeasuresPurgeDisplay(latestSensorData); } catch (e) { console.error('[purge] rendu:', e); }
 
     // === FILTRATION ===
-    const detailFiltrationMode = $("#detail-filtration-mode");
-    if (detailFiltrationMode) {
-      const modes = {
-        auto: 'Auto',
-        manual: 'Programme',
-        force: 'Marche',
-        off: 'Arrêt'
-      };
-      detailFiltrationMode.textContent = modes[config.filtration_mode] || 'Auto';
-    }
-
+    // feature-147 : le texte de mode ("Mode Auto"/.../"Hors gel") est géré par
+    // updateFiltrationBadges() ci-dessous (un seul calcul, header de carte).
     const detailFiltrationSchedule = $("#detail-filtration-schedule");
     if (detailFiltrationSchedule) {
       const start = config.filtration_start || '08:00';
@@ -6125,13 +6305,24 @@
   // chemin sert désormais les DEUX paires de boutons.
   async function setFiltrationRunMode(mode) {
     const payload = { filtration_mode: mode };
+    // feature-147 : la grille 2x2 appelle désormais ce chemin pour les 4 modes
+    // (auto/manual compris, plus seulement force/off). Textes force/off
+    // INCHANGÉS (non-régression page Filtration) ; auto/manual ajoutés.
+    const modeLabels = { auto: 'Auto', manual: 'Programme', force: 'Marche', off: 'Arrêt' };
+    const label = modeLabels[mode] || mode;
     try {
       const result = await sendConfig(payload);
       if (!result) {
-        showToast(mode === "force" ? "Erreur lors du démarrage" : "Erreur lors de l'arrêt", "error");
+        const errorMsg = mode === "force" ? "Erreur lors du démarrage"
+          : mode === "off" ? "Erreur lors de l'arrêt"
+          : `Erreur lors du passage en mode ${label}`;
+        showToast(errorMsg, "error");
         return false;
       }
-      filtrationRunningOverride = (mode === "force");
+      // feature-147 : prédiction partagée avec bindFiltrationManualSave() —
+      // correcte pour les 4 modes (force/off inclus), contrairement à l'ancien
+      // `mode === "force"` qui ignorait auto/manual.
+      filtrationRunningOverride = predictFiltrationRunning(Object.assign({}, window._config, payload));
       if (window._config) window._config.filtration_mode = mode;
       const modeSelect = $("#filtration_mode");
       if (modeSelect) modeSelect.value = mode;
@@ -6139,7 +6330,10 @@
       updateFiltrationBadges();
       updateDetailSections();
       updateStatusCards();
-      showToast(mode === "force" ? "Filtration démarrée" : "Filtration arrêtée", "success");
+      const successMsg = mode === "force" ? "Filtration démarrée"
+        : mode === "off" ? "Filtration arrêtée"
+        : `Mode ${label} activé`;
+      showToast(successMsg, "success");
       loadConfig();
       setTimeout(() => loadSensorData({ force: true, source: "filtration-mode" }), 500);
       return true;
@@ -6151,17 +6345,12 @@
   }
 
   function bindDetailActions() {
-    // Boutons filtration
-    const startBtn = $("#detail-filtration-start");
-    const stopBtn = $("#detail-filtration-stop");
-
-    if (startBtn) {
-      startBtn.addEventListener('click', () => setFiltrationRunMode("force"));
-    }
-
-    if (stopBtn) {
-      stopBtn.addEventListener('click', () => setFiltrationRunMode("off"));
-    }
+    // feature-147 : 4 boutons de mode (grille 2x2) remplacent Démarrer/Arrêter
+    // — même chemin setFiltrationRunMode() existant, aucun second chemin.
+    ['auto', 'manual', 'force', 'off'].forEach((m) => {
+      const btn = $(`#filtration-mode-btn-${m}`);
+      if (btn) btn.addEventListener('click', () => setFiltrationRunMode(m));
+    });
 
     // Boutons éclairage
     const lightOnBtn = $("#detail-lighting-on");

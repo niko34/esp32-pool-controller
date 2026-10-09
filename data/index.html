@@ -231,52 +231,50 @@
                 </div>
                 <div class="card__status-info">
                   <div class="card__status-label">Filtration</div>
+                  <!-- Badge d'ÉTAT réel de la pompe (ce qu'elle FAIT) — restauré
+                       à l'identique (id/classes inchangés) suite à la revue
+                       coordinateur du 2026-10-09 : le mode seul ne distingue
+                       pas « Auto hors créneau » (normal, pompe arrêtée) d'une
+                       panne. Mis à jour par updateFiltrationBadges(), en même
+                       temps que #filtration-current-status (page détail). -->
                   <div class="card__status-state">
                     <span class="state-badge state-badge--ok" id="detail-filtration-status">En marche</span>
                   </div>
+                  <!-- Texte de MODE (ce qui est DEMANDÉ) — distinct de l'état
+                       ci-dessus. Rappel discret (revue code-reviewer) : classe
+                       dédiée .card__status-mode, pas .card__status-label — ce
+                       texte ne doit pas rivaliser visuellement avec le titre
+                       ni avec le bouton de mode déjà en évidence
+                       (btn--primary + aria-pressed). -->
+                  <div class="card__status-mode" id="detail-filtration-mode">Mode Auto</div>
                 </div>
                 <a href="#/filtration" class="card__settings-btn" aria-label="Configurer la filtration"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></a>
               </div>
               <div class="card__body">
-                <div class="detail-row">
-                  <div class="detail-label">Mode</div>
-                  <div class="detail-value" id="detail-filtration-mode">Auto</div>
+                <!-- feature-147 : quatre boutons de mode remplacent la ligne
+                     « Mode » + les boutons Démarrer/Arrêter. Même chemin
+                     setFiltrationRunMode() existant (aucun second chemin).
+                     Aucun bouton n'est jamais désactivé : en Arrêt, « Auto »
+                     est la sortie. -->
+                <div class="grid grid--2 filtration-modes" role="group" aria-label="Mode de filtration" id="detail-filtration-modes">
+                  <button type="button" class="btn btn--ghost" id="filtration-mode-btn-auto" data-mode="auto" aria-pressed="false">Auto</button>
+                  <button type="button" class="btn btn--ghost" id="filtration-mode-btn-manual" data-mode="manual" aria-pressed="false">Programme</button>
+                  <button type="button" class="btn btn--ghost" id="filtration-mode-btn-force" data-mode="force" aria-pressed="false">Marche</button>
+                  <button type="button" class="btn btn--ghost" id="filtration-mode-btn-off" data-mode="off" aria-pressed="false">Arrêt</button>
                 </div>
                 <div class="detail-row">
                   <div class="detail-label">Horaires</div>
                   <div class="detail-value" id="detail-filtration-schedule">08:00 - 20:00</div>
                 </div>
-                <div class="detail-actions">
-                  <button class="btn btn--primary" id="detail-filtration-start">Démarrer</button>
-                  <button class="btn btn--danger" id="detail-filtration-stop">Arrêter</button>
-                </div>
-              </div>
-            </div>
 
-            <!-- Carte Modes temporaires (feature-053/feature-140). v2.55.4 :
-                 ne contient QUE le Boost — l'état, l'activation et toute
-                 mention de la Chloration de secours ont déménagé (bandeau
-                 dédié #rescue-active-banner quand active, offre d'activation
-                 uniquement depuis #dose-block-banner, suggestion Boost
-                 intégrée aux variantes A/B de ce même bandeau). La ligne
-                 d'effet honnête de feature-055 (#detail-boost-effect,
-                 ci-dessous) reste INCHANGÉE et décrit le Boost seul. Aucune
-                 variable CSS nouvelle : réutilise --border,
-                 card__status-header, card__body, state-badge, detail-row,
-                 callout. -->
-            <div class="card card--status" id="dashboard-temp-modes-card">
-              <div class="card__status-header">
-                <div class="card__status-icon card__status-icon--transparent">
-                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <circle cx="12" cy="12" r="10"/>
-                    <polyline points="12 6 12 12 16 14"/>
-                  </svg>
-                </div>
-                <div class="card__status-info">
-                  <div class="card__status-label">Modes temporaires</div>
-                </div>
-              </div>
-              <div class="card__body">
+                <!-- feature-147 : Boost déménagé depuis la carte séparée
+                     #dashboard-temp-modes-card (supprimée) — simple option de
+                     la carte Filtration désormais. Séparateur réutilisant la
+                     classe .temp-mode__sep (déjà définie dans app.css pour ce
+                     même besoin, mais jusqu'ici sans aucun appel dans le
+                     HTML — revue code-reviewer : ne pas prétendre qu'elle
+                     était déjà utilisée ailleurs). -->
+                <hr class="temp-mode__sep">
 
                 <!-- Sous-bloc Boost (feature-053) — markup et ids INCHANGÉS,
                      simplement remonté comme sous-bloc (non-régression stricte). -->
@@ -370,6 +368,22 @@
                   <div class="compact-target">Cible: <span id="compact-ph-target">7.2</span></div>
                   <div class="dosing-status" id="ph-dosing-status"></div>
                 </div>
+                <!-- feature-147 : position du pH corrigé (déjà affiché ci-dessus)
+                     sur une échelle. Bornes de DESSIN UNIQUEMENT (jamais
+                     légendées) — voir phGaugePosition() dans app.js. -->
+                <div class="gauge" id="ph-gauge">
+                  <div class="gauge__track" id="ph-gauge-track">
+                    <!-- Positions posées par updatePhGauge() via phGaugePosition(7.00)/(7.60)
+                         — jamais recopiées en dur (revue code-reviewer : une valeur, un seul endroit). -->
+                    <span class="gauge__tick" id="ph-gauge-tick-low" aria-hidden="true"></span>
+                    <span class="gauge__tick" id="ph-gauge-tick-high" aria-hidden="true"></span>
+                    <span class="gauge__cursor" id="ph-gauge-cursor" hidden></span>
+                  </div>
+                  <div class="gauge__legend">
+                    <span class="gauge__legend-state" id="ph-gauge-state">—</span>
+                    <span class="gauge__legend-marks">Repères : 7,00 eau agressive · 7,60 chlore inefficace</span>
+                  </div>
+                </div>
                 <div class="sensor-badge" id="ph-sensor-badge" style="display:none;"></div>
                 <div class="calibration-alert" id="ph-calibration-alert" style="display:none;">
                   <span class="calibration-alert__text">Calibration requise</span>
@@ -405,6 +419,19 @@
                   <div class="compact-value" id="compact-orp">--<span class="compact-unit">mV</span></div>
                   <div class="compact-target">Cible: <span id="compact-orp-target">650</span> mV</div>
                   <div class="dosing-status" id="orp-dosing-status"></div>
+                </div>
+                <!-- feature-147 : gate pool-chemistry — AUCUNE zone nommée/colorée
+                     (un ORP « correct » n'existe pas dans l'absolu). Deux
+                     marqueurs (mesure, consigne) + texte d'état réutilisant le
+                     calcul déjà en production orpTarget ± 150 mV. -->
+                <div class="gauge" id="orp-gauge">
+                  <div class="gauge__track" id="orp-gauge-track">
+                    <span class="gauge__marker" id="orp-gauge-target" hidden aria-hidden="true"></span>
+                    <span class="gauge__cursor" id="orp-gauge-cursor" hidden></span>
+                  </div>
+                  <div class="gauge__legend">
+                    <span class="gauge__legend-state" id="orp-gauge-state">—</span>
+                  </div>
                 </div>
                 <div class="sensor-badge" id="orp-sensor-badge" style="display:none;"></div>
                 <div class="calibration-alert" id="orp-calibration-alert" style="display:none;">

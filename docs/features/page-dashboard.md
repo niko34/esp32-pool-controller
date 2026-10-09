@@ -9,20 +9,71 @@ Vue d'ensemble de la piscine en temps réel. C'est la page que l'utilisateur voi
 
 ## Structure
 
-La page est une **grille de six cartes** (classe `grid--status-cards`) :
+La page est une **grille de cinq cartes** (classe `grid--status-cards`) — **était six** jusqu'à la v2.63.x : la carte « Modes temporaires » séparée a été **supprimée** en feature-147/v2.64.0, son unique contenu (le Boost) devenant un sous-bloc de la carte Filtration (voir [Carte Filtration — quatre boutons, mode vs état, Boost intégré](#carte-filtration--quatre-boutons-mode-vs-état-boost-intégré-feature-147-v2640)) :
 
-1. **Carte Filtration** (`#dashboard-filtration-card`) — état, mode, horaires, boutons Démarrer / Arrêter. Un lien engrenage amène vers `/filtration`.
+1. **Carte Filtration** (`#dashboard-filtration-card`) — en-tête : badge d'**état réel** de la pompe (`#detail-filtration-status`, « En marche » / « Arrêtée », ou « Hors gel » en ambre) et texte de **mode demandé** (`#detail-filtration-mode`, « Mode Auto » etc.) ; corps : **quatre boutons de mode** (Auto · Programme · Marche · Arrêt, feature-147, remplacent l'ancienne ligne « Mode » + les boutons Démarrer/Arrêter), horaires, et un sous-bloc **Boost** (feature-053) — voir section dédiée ci-dessous. Un lien engrenage amène vers `/filtration`.
 2. **Carte Éclairage** (`#dashboard-lighting-card`) — état, mode (programmation on/off), horaires, boutons Allumer / Éteindre. Lien vers `/lighting`.
-3. **Carte pH** (`#dashboard-ph-card`) — valeur pH courante, cible, badge dosage actif, mini-graphique + légende « Lissé (régulation) » / interrupteur « Brut » (v2.38.0). Bandeau « Calibration requise » si la sonde n'a jamais été calibrée. Lien vers `/ph`.
-4. **Carte ORP** (`#dashboard-orp-card`) — valeur ORP courante (mV), cible, badge dosage actif, mini-graphique + même légende (v2.38.0). Bandeau calibration. Lien vers `/orp`.
+3. **Carte pH** (`#dashboard-ph-card`) — valeur pH courante, cible, badge dosage actif, mini-graphique + légende « Lissé (régulation) » / interrupteur « Brut » (v2.38.0), **jauge de position** (feature-147, v2.64.0 — voir [section dédiée](#jauges-de-position-ph--orp-feature-147-v2640)). Bandeau « Calibration requise » si la sonde n'a jamais été calibrée. Lien vers `/ph`.
+4. **Carte ORP** (`#dashboard-orp-card`) — valeur ORP courante (mV), cible, badge dosage actif, mini-graphique + même légende (v2.38.0), **jauge de position** (feature-147, v2.64.0 — voir section dédiée). Bandeau calibration. Lien vers `/orp`.
 5. **Carte Température** (`#dashboard-temperature-card`) — valeur courante en °C, badge `#temperature-sensor-badge` (« Capteur indisponible » v2.10.5 + segments d'état mesure feature-061 itération 2), mini-graphique. Lien vers `/temperature`.
-6. **Carte Modes temporaires** (`#dashboard-temp-modes-card`, feature-140, v2.55.0 — regroupe l'ex-carte Boost) — un seul sous-bloc visible depuis la v2.55.2, `#temp-mode-boost` (Mode Boost, feature-053, markup inchangé) ; la Chloration de secours n'y a plus de représentation (état/contrôle déplacés vers le [bandeau dédié](#bandeau--chloration-de-secours-active-rescue-active-banner-feature-140-v2552) en tête de page), voir [Carte Modes temporaires](#carte-modes-temporaires-feature-140).
 
 Chaque mini-graphique est rendu par **uPlot** (usine `createMiniLineChart`, feature-043 — remplace Chart.js) dans un conteneur dédié, alimenté par l'historique de la **journée en cours** (depuis minuit local — v2.18.9, était une fenêtre glissante de 24 h en v2.18.4 et 3 jours avant ; points bruts + moyennes horaires selon l'ancienneté — voir [Plage « journée en cours »](#plage-des-mini-graphiques--journée-en-cours-v2189)). La coloration de la courbe est **conditionnelle par segment** (vert dans la tolérance, interpolation continue vers le rouge au-delà, gris si donnée absente — `getMiniChartRGB`, app.js).
 
 **Responsive / mobile (v2.18.3)** : la hauteur des graphiques uPlot (mini-charts ~88 px, écrans détail 220 px) est posée en **styles inline** par uPlot et resynchronisée par le `ResizeObserver` partagé (`observeChart`, app.js) — debounce 100 ms, `setSize` uniquement si les dimensions sont > 0 et ont réellement changé, re-synchronisation initiale au premier passage (couvre un conteneur aux dimensions provisoires au moment de la création), rotation portrait/paysage incluse. ⚠️ **Ne jamais dimensionner un `canvas` uPlot en CSS** : une règle morte héritée de Chart.js (`canvas { height: 240px !important }` sous 980 px, `data/app.css`) étirait puis écrêtait les graphiques sur iPhone — supprimée en v2.18.3 (un commentaire de garde marque l'emplacement dans `app.css`).
 
 Un **chip `Calibration nécessaire`** (`#calib-chip`) s'affiche en haut de page si pH **ou** ORP est flagué non calibré.
+
+## Carte Filtration — quatre boutons, mode vs état, Boost intégré (feature-147, v2.64.0)
+
+Refonte de surface (`ux-ui-designer`, zéro logique de régulation touchée) reprenant quatre idées d'une carte Home Assistant jugée plus lisible par l'utilisateur. Remplace la ligne « Mode » + libellé et les boutons Démarrer / Arrêter — redondants depuis feature-146, ces derniers ne faisaient déjà que changer de mode.
+
+- **Quatre boutons de mode** (`#filtration-mode-btn-auto` / `-manual` / `-force` / `-off`, grille 2×2 `.filtration-modes`, reste 2×2 même sous 640 px — écran consulté au bord du bassin), libellés **Auto · Programme · Marche · Arrêt** (feature-146). Le bouton actif reçoit `btn--primary` + `aria-pressed="true"` (`updateFiltrationModeButtons()`, app.js) ; les autres restent `btn--ghost`. **Aucun bouton n'est jamais désactivé** : en Arrêt, cliquer « Auto » est précisément la sortie du mode. Les quatre passent par `setFiltrationRunMode()` existant (`POST /save-config {filtration_mode}`) — **aucun second chemin créé** ; `bindDetailActions()` attache les quatre écouteurs là où il n'y en avait que deux (Démarrer/Arrêter, désormais supprimés du tableau de bord).
+- **En-tête : le mode ET l'état, et pourquoi les deux coexistent.** Le texte de mode (`#detail-filtration-mode`, « Mode Auto » / « Mode Programme » / « Mode Marche » / « Mode Arrêt », exception visuelle « Hors gel » en ambre — classe `.card__status-label--warn` — pendant la pause anti-gel) dit ce qui est **demandé** ; le badge d'état (`#detail-filtration-status`, **inchangé depuis feature-001**, « En marche » / « Arrêtée ») dit ce que la pompe **fait réellement**. ⚠️ **En mode Auto hors créneau, le mode affiche « Mode Auto » et l'état affiche « Arrêtée » — ce n'est PAS une anomalie** : c'est l'information qui évite de croire à une panne. Les deux sont mis à jour ensemble par `updateFiltrationBadges()`, à partir du **même** calcul `getFiltrationState()` que le badge `.pill` de la page `/filtration` (`#filtration-current-status`) — les deux badges restent synchronisés.
+- **Boost en sous-bloc, plus de carte séparée.** La carte `#dashboard-temp-modes-card` (feature-140) est **supprimée** ; son unique contenu, le sous-bloc `#temp-mode-boost`, devient une section de la carte Filtration (séparateur `<hr class="temp-mode__sep">`, classe déjà existante). **Markup, ids et comportement du Boost strictement inchangés** — la ligne d'effet honnête (`#detail-boost-effect`, feature-055) et l'indisponibilité du bouton Activer en mode Arrêt (`startBtn.disabled = filtrationOff`, feature-146) sont **conservées à l'identique**, seul l'emplacement a bougé. Détail complet : [Carte Modes temporaires (feature-140)](#carte-modes-temporaires-feature-140) ci-dessous (section historique conservée pour le reste de son contenu — Chloration de secours, bandeau dédié — inchangé par ce lot).
+
+**Fichiers** : `data/index.html` (grille des 4 boutons + en-tête) · `data/app.js` : `updateFiltrationModeButtons()`, `updateFiltrationBadges()` (étendu pour piloter aussi les boutons et le texte de mode), `bindDetailActions()`, `setFiltrationRunMode()` (prédiction `filtrationRunningOverride` corrigée au passage : `predictFiltrationRunning()` remplace un test `mode === "force"` qui ignorait auto/manual) · `data/app.css` : `.filtration-modes`, `.card__status-label--warn`.
+
+## Jauges de position pH / ORP (feature-147, v2.64.0)
+
+Les cartes pH et ORP gagnent une **jauge de position** horizontale (`.gauge`, CSS pur — aucun SVG, canvas ni bibliothèque), qui **s'ajoute** au mini-graphique temporel existant, elle ne le remplace pas (arbitrage `ux-ui-designer` : une jauge dit « où j'en suis », le graphique dit « d'où je viens »).
+
+### pH (`#ph-gauge`)
+
+- Trace exclusivement le pH **corrigé** (`data.ph`, la même valeur déjà affichée en gros dans la carte) — **jamais** une valeur brute, ni un mélange des deux (`phGaugePosition()`, app.js, condition C1 du gate `pool-chemistry`).
+- Échelle de **dessin** fixe `6,20 – 8,10` (constantes `PH_GAUGE_DRAW_MIN`/`MAX`, app.js), miroir des bornes matérielles `kPhFloorRawHard` / `kPhCeilingRawHard` ([`constants.h:1648`](../../src/constants.h:1648) / [`:1669`](../../src/constants.h:1669)) — purement un cadrage visuel, **non servie par `/get-config`**, hors budget de trame.
+- **Trois zones colorées**, bornes **lues depuis la configuration réelle** (`_phBounds.targetMin` / `targetMax`, déjà servies par `/get-config` — repli 7,20/7,50 = `kPhTargetMin`/`kPhTargetMax`) : elles **suivent la fenêtre cible** si l'utilisateur la change dans les réglages, aucune valeur dupliquée côté client.
+
+  | Zone | Condition | Texte d'état |
+  |---|---|---|
+  | Trop bas | pH < cible min (7,20 par défaut) | « Trop bas » |
+  | Idéal | cible min ≤ pH ≤ cible max (7,20–7,50 par défaut) | « Idéal » |
+  | Trop haut | pH > cible max (7,50 par défaut) | « Trop haut » |
+
+- **Deux repères non colorés et fixes** (`.gauge__tick`, jamais une limite — toujours doublés d'un texte en légende, condition du gate) : **7,00 « eau agressive »** et **7,60 « chlore inefficace »**.
+
+  ⚠️ **Décision du gate `pool-chemistry`, à ne pas rouvrir sans repasser par lui.** La maquette initiale (reprise telle quelle de la carte Home Assistant qui a inspiré ce lot) proposait trois zones nommées « Acide / Neutre / Basique ». **Réfutée** : la neutralité de l'eau est **7,00 pile**, pas une plage ; et 7,60 n'est **pas** une frontière d'acido-basicité mais le seuil où **le chlore cesse d'être efficace** (pKa de l'acide hypochloreux ≈ 7,5, voir [pump-controller.md](../subsystems/pump-controller.md)). Nommer une zone « Neutre » jusqu'à 7,60 aurait rassuré l'utilisateur à 7,55 — juste sous le seuil d'inhibition du dosage ORP sur pH haut (`kPhOrpInhibit`). Les mots retenus disent **quoi penser** (agressive / inefficace), jamais une catégorie.
+
+### ORP (`#orp-gauge`)
+
+- Échelle fixe **0 – 1000 mV** (`ORP_GAUGE_MIN`/`MAX`, app.js) — choix du designer, **aucune constante firmware mirée** ici.
+- **Aucune zone nommée ni colorée.** Deux marqueurs seulement : la **mesure** (curseur rond, `#orp-gauge-cursor`) et la **consigne** (trait vertical, `#orp-gauge-target`, position dérivée de `config.orp_target`).
+- **Texte d'état**, calcul **réutilisé à l'identique** de celui du badge capteur ORP déjà en production (consigne ± 150 mV — **aucun nouveau seuil introduit**, `orpGaugeStateText()`) :
+
+  | Condition | Texte |
+  |---|---|
+  | mesure < consigne − 150 mV | « Sous consigne » |
+  | consigne − 150 ≤ mesure ≤ consigne + 150 | « Dans la plage » |
+  | mesure > consigne + 150 mV | « Au-dessus » |
+
+- ⚠️ **Pourquoi aucune zone n'est nommée, contrairement au pH** : un ORP « correct » n'existe **pas dans l'absolu** — il dépend du stabilisant (acide cyanurique), du pH et de la température de l'eau. Des bandes fixes inventeraient une vérité universelle fausse. Un relevé réel de **108 mV pour une consigne de 530 mV** (2026-10-09) reste lisible sur cette échelle sans qu'aucune bande ne prétende le qualifier — cas limite explicitement couvert, pas un accident de conception.
+
+### Dégradation propre
+
+- **Mesure absente / `NaN`** : `phGaugePosition()` / `orpGaugePosition()` retournent `null` → curseur masqué (`hidden`), texte d'état « — », jamais de position fausse ni de « barre fantôme ».
+- **Hors échelle** (ex. pH corrigé < 6,20 ou > 8,10, cas rare) : le curseur se **borne visuellement** aux extrémités (`Math.max(0, Math.min(100, pct))`) — **la valeur numérique affichée au-dessus de la jauge reste exacte**, seule la position visuelle est clampée.
+- **Filtration arrêtée / mesures non représentatives** (`measuresOk`, même garde `measuresAreValid()` que les badges existants) : la jauge entière passe en `.gauge--stale` (grisée, `grayscale(1)`), le texte d'état devient « Mesures non représentatives » — jamais une position qui suggérerait une mesure fiable.
+
+**Fichiers** : `data/index.html` (markup `.gauge` dans `#dashboard-ph-card` / `#dashboard-orp-card`) · `data/app.js` : `phGaugePosition()`, `phGaugeStateText()`, `orpGaugePosition()`, `orpGaugeStateText()`, `updatePhGauge()`, `updateOrpGauge()` (appelées depuis le flux `/data` + WS existant — **aucun nouveau champ**, mesure et consigne déjà publiés) · `data/app.css` : classes `.gauge*` (nouvelles, réutilisent uniquement les variables existantes `--danger`/`--success`/`--warn`/`--accent`/`--text`/`--text-secondary`/`--panel2`).
 
 ## Bannière « Régulation à l'arrêt » (v2.20.3)
 
@@ -347,16 +398,20 @@ La carte Filtration lit :
 La carte Éclairage lit :
 - `lighting_enabled`, `lighting_schedule_enabled`, `lighting_start`, `lighting_end`
 
-La carte Modes temporaires lit :
+Le sous-bloc Boost (carte Filtration depuis feature-147, v2.64.0) lit :
 - `boost_active` (bool), `boost_until` (epoch d'expiration) — voir [Carte Modes temporaires](#carte-modes-temporaires-feature-140)
 - `boost_filtration_extended`, `boost_chlorine_boosted` (bool, feature-055) — leviers réellement actifs du Boost, pilotent sa ligne « Effet »
+
+Le bandeau dédié de Chloration de secours (hors carte, en tête de page) lit :
 - `rescue_until` (epoch, `0` si inactif), `rescue_dosing` (bool, verdict dérivé « dose réellement maintenant »), `rescue_lift` (0-3, raison de fin récente) — Chloration de secours (feature-140)
 
 Les mini-graphiques consomment `GET /get-history?range=24h` au chargement, puis se rafraîchissent par **polling HTTP incrémental toutes les 5 minutes** (`GET /get-history?range=24h&since=<dernier timestamp>`, ajout des nouveaux points en fin de série, avec insertion de la coupure > 90 min le cas échéant) — pas via WebSocket (`loadMiniChartData`, app.js). Depuis la **v2.18.9**, la réponse est **filtrée à minuit local** côté navigateur (seule la journée en cours est tracée) et un **changement de jour civil force un rechargement complet** au lieu de l'incrément — voir [Plage « journée en cours »](#plage-des-mini-graphiques--journée-en-cours-v2189). Le paramètre `range=24h` est conservé tel quel : le contrat HTTP est inchangé. Depuis la **v2.38.0**, la réponse porte en plus `phFiltered` / `orpFiltered` (mesure lissée, `null` au-delà de ~8 h) — voir [Mini-graphiques pH / ORP](#mini-graphiques-ph--orp--la-courbe-suit-le-nombre-affiché-feature-095-v2380).
 
 ## Carte Modes temporaires (feature-140)
 
-La carte **Modes temporaires** (`#dashboard-temp-modes-card`, v2.55.0 — remplace l'ex-carte Boost, même emplacement dans la grille) ne contient, depuis la **v2.55.3**, que le sous-bloc `#temp-mode-boost` (Mode Boost, feature-053, **markup et ids inchangés**) — et rien d'autre. L'état et le contrôle de la **Chloration de secours** (`#temp-mode-rescue`, introduit v2.55.0, masqué conditionnellement v2.55.1) avaient déjà été **retirés de la carte** en v2.55.2, déplacés vers un [bandeau dédié en tête de page](#bandeau--chloration-de-secours-active-rescue-active-banner-feature-140-v2552). La **ligne d'effet combiné** (`#temp-modes-effect`) et la **suggestion Boost** (`#temp-modes-suggest-boost`) qui restaient dans la carte sont à leur tour **retirées du DOM en v2.55.3** — voir [Ligne d'effet combiné, retirée en v2.55.3](#ligne-deffet-combiné-b2-feature-140--retirée-en-v2553) pour le détail et la raison de ce retrait (l'information gagne à être **scindée**, pas supprimée). La non-exclusivité Boost / secours reste réelle côté firmware — en Programmée (NVS ou via la Chloration de secours), le Boost perd sa surchloration mais conserve sa **prolongation de filtration**, utile précisément pour faire circuler une eau chargée en matière organique — mais ne fait plus l'objet d'un affichage combiné : chaque effet est désormais dit **à côté de l'objet qu'il décrit** (le Boost dans la carte, le secours dans son bandeau). Voir [ADR-0087](../adr/0087-ce-qu-un-mode-temporaire-a-le-droit-de-faire.md) pour la décision structurante derrière cette non-exclusivité et le couple mode effectif / mode publié qui la rend honnête.
+⚠️ **Depuis la v2.64.0 (feature-147), ce n'est plus une carte.** La carte `#dashboard-temp-modes-card` décrite ci-dessous est **supprimée** ; son unique contenu, le sous-bloc `#temp-mode-boost`, vit désormais dans la carte **Filtration** (`#dashboard-filtration-card`) — voir [Carte Filtration — quatre boutons, mode vs état, Boost intégré](#carte-filtration--quatre-boutons-mode-vs-état-boost-intégré-feature-147-v2640). **Markup, ids et comportement du Boost strictement inchangés**, seul l'emplacement a bougé : le reste de cette section (narration historique de la Chloration de secours, retirée de la carte puis du bandeau dédié) **reste exact** et n'est pas affecté par ce déménagement.
+
+La carte **Modes temporaires** (`#dashboard-temp-modes-card`, v2.55.0 — remplace l'ex-carte Boost, même emplacement dans la grille) ne contenait, depuis la **v2.55.3** et jusqu'à sa suppression en v2.64.0, que le sous-bloc `#temp-mode-boost` (Mode Boost, feature-053, **markup et ids inchangés**) — et rien d'autre. L'état et le contrôle de la **Chloration de secours** (`#temp-mode-rescue`, introduit v2.55.0, masqué conditionnellement v2.55.1) avaient déjà été **retirés de la carte** en v2.55.2, déplacés vers un [bandeau dédié en tête de page](#bandeau--chloration-de-secours-active-rescue-active-banner-feature-140-v2552). La **ligne d'effet combiné** (`#temp-modes-effect`) et la **suggestion Boost** (`#temp-modes-suggest-boost`) qui restaient dans la carte sont à leur tour **retirées du DOM en v2.55.3** — voir [Ligne d'effet combiné, retirée en v2.55.3](#ligne-deffet-combiné-b2-feature-140--retirée-en-v2553) pour le détail et la raison de ce retrait (l'information gagne à être **scindée**, pas supprimée). La non-exclusivité Boost / secours reste réelle côté firmware — en Programmée (NVS ou via la Chloration de secours), le Boost perd sa surchloration mais conserve sa **prolongation de filtration**, utile précisément pour faire circuler une eau chargée en matière organique — mais ne fait plus l'objet d'un affichage combiné : chaque effet est désormais dit **à côté de l'objet qu'il décrit** (le Boost dans la carte, le secours dans son bandeau). Voir [ADR-0087](../adr/0087-ce-qu-un-mode-temporaire-a-le-droit-de-faire.md) pour la décision structurante derrière cette non-exclusivité et le couple mode effectif / mode publié qui la rend honnête.
 
 ### Sous-bloc Boost (feature-053)
 
@@ -485,8 +540,7 @@ Le volume journalier de la Chloration de secours n'est plus la constante `kRescu
 
 | Bouton | Endpoint HTTP |
 |--------|--------------|
-| `#detail-filtration-start` | `POST /save-config` `{filtration_mode: "force"}` — change le MODE (Marche), feature-146 |
-| `#detail-filtration-stop` | `POST /save-config` `{filtration_mode: "off"}` — change le MODE (Arrêt), feature-146 |
+| `#filtration-mode-btn-auto` / `-manual` / `-force` / `-off` | `POST /save-config` `{filtration_mode: "auto"\|"manual"\|"force"\|"off"}` — grille 2×2, **remplace** les anciens `#detail-filtration-start`/`#detail-filtration-stop` (feature-147, v2.64.0 ; ceux-ci ne pilotaient que Marche/Arrêt, feature-146) |
 | `#detail-lighting-on` | `POST /lighting/on` |
 | `#detail-lighting-off` | `POST /lighting/off` |
 | Boost — Activer | `POST /boost/start` (toast rappel baignade) |
@@ -512,9 +566,9 @@ Le détail complet du cumul journalier (barre de progression, mL consommés / qu
 ## Fichiers
 
 - [`data/index.html:162`](../../data/index.html:162) — structure HTML du dashboard
-- [`data/app.js`](../../data/app.js) — `latestSensorData`, `updateFiltrationBadges()`, `composeSensorBadge()`, `dailyCumulSegment()`, `getDosingStopReason()`, `updateDosingStatus()` + `dosingAnchor` (v2.21.1), rendu uPlot (`createMiniLineChart`), préférences d'interface `uiPrefGet()` / `uiPrefSet()` + `bindMiniRawToggles()` / `refreshMiniLegendAbsence()` (v2.38.0)
+- [`data/app.js`](../../data/app.js) — `latestSensorData`, `updateFiltrationBadges()`, `composeSensorBadge()`, `dailyCumulSegment()`, `getDosingStopReason()`, `updateDosingStatus()` + `dosingAnchor` (v2.21.1), rendu uPlot (`createMiniLineChart`), préférences d'interface `uiPrefGet()` / `uiPrefSet()` + `bindMiniRawToggles()` / `refreshMiniLegendAbsence()` (v2.38.0) ; `updateFiltrationModeButtons()`, `phGaugePosition()`/`phGaugeStateText()`, `orpGaugePosition()`/`orpGaugeStateText()`, `updatePhGauge()`, `updateOrpGauge()` (feature-147, v2.64.0)
 - [`data/uPlot.iife.min.js`](../../data/uPlot.iife.min.js), [`data/uPlot.min.css`](../../data/uPlot.min.css) — bibliothèque uPlot 1.6.32 (voir [BUILD.md](../BUILD.md#bibliothèque-de-graphiques-uplot-frontend))
-- [`data/app.css`](../../data/app.css) — classes `.card--status`, `.compact-value`, `.dosing-status`, `.sensor-badge`, `.mini-legend*` (v2.38.0 — pastilles **neutres** à dessein : les traits sont colorés **par la valeur**, une pastille colorée mentirait sur la couleur réelle) ; `.rescue-active-banner`, `.rescue-active-banner--info` / `--warning` (v2.55.2, pas de variante `--critical`/`--fault` — voir [Bandeau « Chloration de secours active »](#bandeau--chloration-de-secours-active-rescue-active-banner-feature-140-v2552))
+- [`data/app.css`](../../data/app.css) — classes `.card--status`, `.compact-value`, `.dosing-status`, `.sensor-badge`, `.mini-legend*` (v2.38.0 — pastilles **neutres** à dessein : les traits sont colorés **par la valeur**, une pastille colorée mentirait sur la couleur réelle) ; `.rescue-active-banner`, `.rescue-active-banner--info` / `--warning` (v2.55.2, pas de variante `--critical`/`--fault` — voir [Bandeau « Chloration de secours active »](#bandeau--chloration-de-secours-active-rescue-active-banner-feature-140-v2552)) ; `.filtration-modes`, `.card__status-label--warn`, `.gauge*` (feature-147, v2.64.0)
 - [`src/ws_manager.cpp`](../../src/ws_manager.cpp) — `broadcastSensorData()` pousse les champs consommés ici
 - [`src/web_routes_data.cpp`](../../src/web_routes_data.cpp) — `GET /data`, `GET /get-history`
 
@@ -530,3 +584,4 @@ Le détail complet du cumul journalier (barre de progression, mL consommés / qu
 - `bug-dosage-fantome-duty-non-calibre` (itération 3) — statut dosage des cartes pH/ORP distinguant « commandé » (session) de « effectif » (pompe alimentée pendant un pouls) : 6 priorités d'affichage, compte à rebours de la prochaine impulsion ancré localement, dot animé/statique (v2.21.1, [ADR-0045](../adr/0045-etat-impulsion-expose-en-calendrier.md), voir [section dédiée](#statut-dosage-des-cartes-phorp--commandé-vs-effectif-v2211))
 - `feature-095-historiser-la-mesure-filtree` — la **mesure lissée** (celle de la régulation) devient la courbe principale des mini-graphiques pH/ORP, le brut passe en courbe secondaire avec interrupteur mémorisé, frontière visuelle à ~8 h ; les graphiques d'historique des écrans détail restent **bruts** (v2.38.0, [ADR-0064](../adr/0064-la-courbe-suit-le-nombre-affiche.md), voir [section dédiée](#mini-graphiques-ph--orp--la-courbe-suit-le-nombre-affiché-feature-095-v2380))
 - `bug-points-futurs-et-ux-courbes` — tooltip toujours daté (`jj/mm hh:mm`) et typé (mesure / moyenne horaire / moyenne journalière), mini-graphiques sur 24 h (était 3 j — plage resserrée à la journée en cours en v2.18.9), coupure de courbe > 90 min entre deux points (arrêts de filtration visibles, incrémental inclus) et jour calendaire manquant sur les écrans détail (v2.18.4, voir [section dédiée](#tooltip-datétypé-et-coupures-de-courbe-v2184-bug-points-futurs-et-ux-courbes)) ; côté firmware : garde anti-futur de l'historique ([history.md](../subsystems/history.md#garde-anti-futur--purge-des-points-futurs-v2184-bug-points-futurs-et-ux-courbes))
+- `feature-147-widgets-du-tableau-de-bord-lire-avant-de-chercher` — carte Filtration : quatre boutons de mode remplacent la ligne « Mode » + Démarrer/Arrêter, en-tête distingue mode demandé et état réel de la pompe, Boost devient un sous-bloc de la carte (carte `#dashboard-temp-modes-card` supprimée) ; cartes pH/ORP : jauge de position s'ajoutant au mini-graphique, zones nommées pour le pH (bornes lues de la config, repères 7,00/7,60 non colorés), aucune zone nommée pour l'ORP — décision du gate `pool-chemistry` (v2.64.0, voir [section Carte Filtration](#carte-filtration--quatre-boutons-mode-vs-état-boost-intégré-feature-147-v2640) et [section Jauges](#jauges-de-position-ph--orp-feature-147-v2640))
