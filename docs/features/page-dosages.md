@@ -1,6 +1,14 @@
 # Page Produits — `/dosages`
 
-- **Fichier UI** : [`data/index.html:977`](../../data/index.html:977) (section `#view-dosages`)
+> ⚠️ **Écart de nommage signalé, non corrigé** : le menu de navigation affiche
+> « Produits » (`.nav__label`, [`data/index.html:134`](../../data/index.html:134))
+> et c'est le nom retenu par ce fichier, mais la route, l'`id` de section et le
+> nom de ce fichier portent tous le nom historique `dosages`
+> (`#/dosages`, `#view-dosages`, `page-dosages.md`). Signalé par `doc-writer`
+> le 2026-10-09 à la demande de l'utilisateur — non corrigé ici, la décision de
+> renommer route/id/fichier appartient à l'utilisateur.
+
+- **Fichier UI** : [`data/index.html:1553`](../../data/index.html:1553) (section `#view-dosages`)
 - **URL** : `http://poolcontroller.local/#/dosages`
 
 ## Rôle
@@ -25,12 +33,13 @@ Deux cartes symétriques, une par produit :
 1. **Carte pH** (`#product-ph-card`)
    - Toggle `ph_tracking_enabled` — active / désactive le suivi de ce bidon.
    - Barre de volume (`#product-ph-bar`) + labels « restant / total » (L).
-   - **Relevé permanent** (v2.45.0, feature-110) : **Volume injecté** (`#product-ph-injected`, mL) et **Démarrages pompe** (`#product-ph-starts`) — affichés **en continu**, pour que le relevé **existe avant** le jour où il est détruit.
-   - Champ **Quantité dans le bidon (L)** (`#ph_level_l`, feature-143 — v2.59.0) — **jamais pré-rempli** (placeholder seul), avec le texte d'aide *« Bidon neuf, appoint, ou correction après une mesure au doseur : indiquez ce qu'il contient maintenant. »*
-   - Champ **Seuil d'alerte (L)** (`#ph_alert_threshold_l`) — par défaut 2 L.
-   - Bouton **Mettre à jour le niveau** (`#product-ph-update-level`) — pose le niveau saisi **et** réinitialise le cumul **et** les compteurs à 0, dans la même requête. **Demande confirmation** et **présente le relevé** avant de le détruire.
-   - Bouton **Enregistrer** — ne porte plus **que** le seuil d'alerte (et le produit déclaré, géré ailleurs) ; ne touche plus au niveau depuis la v2.59.0.
+   - **Relevé permanent** (v2.45.0, feature-110) : **Volume injecté** (`#product-ph-injected`, mL) et **Démarrages pompe** (`#product-ph-starts`) — affichés **en continu**, pour que le relevé **existe avant** le jour où il est détruit. Refonte ergonomique (2026-10-09, chantier de simplification) : les deux nombres passent d'une liste `<dl>` sur deux lignes à une phrase sur une seule ligne (« *N* injectés · *N* démarrages ») — **toujours affichés**, aucun contenu masqué. Seuls les mots « injectés » / « démarrages » passent en gris (`.muted`) ; les **valeurs** (`#product-ph-injected` / `#product-ph-starts`) restent en contraste plein — c'est le relevé qui compte, pas le libellé.
+   - Champ **Quantité dans le bidon (L)** (`#ph_level_l`, feature-143 — v2.59.0) — **jamais pré-rempli** (placeholder seul), avec le texte d'aide *« Bidon neuf, appoint ou correction : indiquez ce qu'il contient maintenant. »* Depuis le 2026-10-09, le champ et le bouton **Mettre à jour le niveau** sont sur la **même ligne** (classe `.field__row`), champ rétréci à **110 px** — gain d'ergonomie pur, aucun changement de comportement.
+   - Champ **Seuil d'alerte (L)** (`#ph_alert_threshold_l`) — par défaut 2 L. **Depuis le 2026-10-09, s'enregistre automatiquement** au `change` du champ (perte de focus / validation clavier / flèches du spinner) : `POST /save-config` est déclenché par l'écouteur du champ, **avec un anti-rafale de 600 ms** (`debounceSaveProduct()`) — sans lui, chaque clic sur les flèches ↑↓ du champ numérique déclencherait un envoi et une écriture flash distincts. Lui aussi passe en `.field__row`, **rétréci à 110 px comme le champ de niveau** — les deux champs de la carte sont désormais symétriques (demande utilisateur : « les champs », au pluriel). Retour visuel : la classe `.field.is-valid` est posée sur le conteneur `.field` pendant 2 s, affichant le texte « Enregistré » (`.field__success`, motif déjà utilisé ailleurs dans l'UI) avec `role="status"` — annoncé aux lecteurs d'écran, sans interrompre le focus. Échec de validation (valeur non numérique) : `.field.is-error`, toast « Valeur invalide » (singulier, un seul champ est en cause). ⚠️ **Écart assumé au motif du projet** : la convention `bindAutosave()` exclut explicitement les champs numériques (« pas d'auto-save, bouton Sauvegarder uniquement ») ; ce n'est donc **pas** une mise en cohérence avec un motif existant, mais une exception délibérée — justifiée par le fait qu'un seuil d'alerte n'a aucune conséquence immédiate (contrairement à une consigne de régulation).
+   - Bouton **Mettre à jour le niveau** (`#product-ph-update-level`) — pose le niveau saisi **et** réinitialise le cumul **et** les compteurs à 0, dans la même requête. **Demande confirmation** et **présente le relevé** avant de le détruire. **Inchangé** par la refonte du 2026-10-09 : reste le **seul** bouton de la carte, reste irréversible, reste confirmé.
 2. **Carte Chlore / ORP** (`#product-orp-card`) — strictement symétrique, toggle `orp_tracking_enabled`.
+
+> **Refonte ergonomique du 2026-10-09 (chantier de simplification progressive de l'interface, sans spec numérotée)** — le bouton **« Enregistrer » disparaît** des deux cartes. Ce n'est pas qu'une simplification visuelle : c'est la **correction structurelle** de l'incident à l'origine de feature-143 (08/10/2026, ci-dessus) — un utilisateur avait saisi un niveau puis cliqué sur « Enregistrer » en pensant déclencher la mise à jour du niveau, sans effet puisque ce bouton ne portait que le seuil depuis la v2.59.0. Tant qu'il restait **deux boutons** sur la carte, cette confusion pouvait se reproduire quel que soit le texte d'aide. Il n'en reste plus **qu'un seul** : « Mettre à jour le niveau » — la confusion devient **impossible par construction**, pas seulement moins probable. Contrat HTTP et comportement du niveau **strictement inchangés** ; seul le seuil d'alerte change de mécanique de sauvegarde (ci-dessus). ⚠️ Pas de spec ni d'ID de feature pour ce lot (suite des commits `d86a9a5`/`b5d9a34`/`d5f8…`/`0d1411d` du même jour) — voir la note sur le code ci-dessous.
 
 Le titre de la carte pH s'adapte à `ph_correction_type` (affiche « pH+ (base) » si mode pH+ — [`app.js:1770`](../../data/app.js:1770)).
 
@@ -61,7 +70,7 @@ Voir [`config.h:194`](../../src/config.h:194) struct `ProductConfig` et [`ws_man
 | Action | Endpoint | Auth | Payload |
 |--------|----------|------|---------|
 | Activer / désactiver suivi | `POST /save-config` | CRITICAL | `{ "ph_tracking_enabled": bool }` ou idem `orp_` |
-| Enregistrer (seuil d'alerte) | `POST /save-config` | CRITICAL | `{ "ph_alert_threshold_ml": N }` (UI convertit L → mL) — **depuis la v2.59.0, ne porte plus `ph_container_ml`** |
+| Seuil d'alerte — autosave (2026-10-09, plus de bouton « Enregistrer ») | `POST /save-config` | CRITICAL | `{ "ph_alert_threshold_ml": N }` (UI convertit L → mL) — déclenché par l'évènement `change` du champ `#ph_alert_threshold_l` / `#orp_alert_threshold_l` ; **depuis la v2.59.0, ne porte plus `ph_container_ml`**, contrat HTTP inchangé par le passage à l'autosave |
 | Mettre à jour le niveau (feature-143, v2.59.0) | `POST /save-config` | CRITICAL | `{ "ph_container_ml": N, "ph_reset_container": true }` — reset `phTotalInjectedMl`, `phStartCount`, `phAcctAnomalyCount` et `phAcctAnomalyMl` à 0, **dans le même bloc** ([`web_routes_config.cpp:1110`](../../src/web_routes_config.cpp:1110)). Contrat HTTP **inchangé** depuis feature-110 : c'est l'appel frontend (jadis « Nouveau bidon ») qui change de nom et de déclenchement. |
 
 Remarques :
@@ -196,9 +205,10 @@ Aucune entité HA dédiée aux bidons produits à date. Les cumuls journaliers (
 
 ## Fichiers
 
-- [`data/index.html:977`](../../data/index.html:977) — structure HTML ; relevé permanent à [`data/index.html:1452`](../../data/index.html:1452) (pH) et [`:1507`](../../data/index.html:1507) (chlore)
-- [`data/app.js:1783`](../../data/app.js:1783) — `setupProductScreen()`, `saveProduct()`, `updateLevel()` (feature-143, anciennement `resetProduct()`), `updateProductUI()`
-- [`data/app.js:3347`](../../data/app.js:3347) — `_buildProductResetSummary()` : contenu de la confirmation « Mettre à jour le niveau »
+- [`data/index.html:1553`](../../data/index.html:1553) — structure HTML ; relevé permanent à [`data/index.html:1584`](../../data/index.html:1584) (pH) et [`:1630`](../../data/index.html:1630) (chlore)
+- [`data/app.js:3343`](../../data/app.js:3343) — `setupProductScreen()`, `saveProduct()`, `updateLevel()` (feature-143, anciennement `resetProduct()`), `updateProductUI()`
+- [`data/app.js:3399`](../../data/app.js:3399) — `_buildProductResetSummary()` : contenu de la confirmation « Mettre à jour le niveau »
+
 - [`src/config.h:194`](../../src/config.h:194) — struct `ProductConfig` (dont les 6 compteurs de feature-110)
 - [`src/web_routes_config.cpp:301`](../../src/web_routes_config.cpp:301) — les 6 clés servies par `/get-config` ; reset à [`:1110`](../../src/web_routes_config.cpp:1110) / [`:1131`](../../src/web_routes_config.cpp:1131)
 - [`src/web_routes_data.cpp:87`](../../src/web_routes_data.cpp:87) — champs exposés dans `/data`

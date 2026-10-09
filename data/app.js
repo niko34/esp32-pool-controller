@@ -3341,22 +3341,51 @@
   }
 
   function setupProductScreen() {
+    // Chantier simplification 2026-10-09 : le bouton « Enregistrer » disparaît
+    // au profit d'un autosave au `change` du champ. C'est un ÉCART ASSUMÉ au
+    // motif du projet (bindAutosave(), app.js ~L.11068, exclut explicitement
+    // les champs numériques : « pas d'auto-save, bouton Sauvegarder
+    // uniquement ») — pas une mise en cohérence avec lui. L'écart est justifié
+    // ici par la nature du réglage : un seuil d'alerte n'a aucune conséquence
+    // immédiate (contrairement à une consigne de régulation), le risque d'un
+    // envoi non désiré est donc négligeable. Retour visuel porté par le champ
+    // (.field.is-valid / .field__success), pas par un toast.
     async function saveProduct(prefix) {
-      // feature-143 : « Enregistrer » ne porte plus que le seuil d'alerte
-      // (et le produit déclaré, géré ailleurs) — le niveau se pose désormais
-      // uniquement via « Mettre à jour le niveau ».
-      const alertL = parseFloat($(`#${prefix}_alert_threshold_l`)?.value);
-      if (isNaN(alertL)) { showToast('Valeurs invalides', 'error'); return; }
+      const input = $(`#${prefix}_alert_threshold_l`);
+      const fieldEl = input?.closest('.field');
+      const alertL = parseFloat(input?.value);
+      if (isNaN(alertL)) {
+        showToast('Valeur invalide', 'error');
+        if (fieldEl) { fieldEl.classList.remove('is-valid'); fieldEl.classList.add('is-error'); }
+        return;
+      }
       const payload = {
         [`${prefix}_alert_threshold_ml`]: alertL * 1000
       };
       const ok = await sendConfig(payload);
       if (ok) {
-        showToast('Sauvegardé', 'success');
+        if (fieldEl) {
+          fieldEl.classList.remove('is-error');
+          fieldEl.classList.add('is-valid');
+          clearTimeout(fieldEl._successTimer);
+          fieldEl._successTimer = setTimeout(() => fieldEl.classList.remove('is-valid'), 2000);
+        }
         loadConfig().catch(() => {});
       } else {
+        if (fieldEl) { fieldEl.classList.remove('is-valid'); fieldEl.classList.add('is-error'); }
         showToast('Erreur lors de la sauvegarde', 'error');
       }
+    }
+
+    // Rafale d'écritures flash évitée : un input[type=number] émet un `change`
+    // PAR PAS quand on utilise les flèches ↑↓ ou le spinner tactile — sans
+    // debounce, chaque clic déclencherait un POST /save-config et une écriture
+    // flash. 600 ms : l'utilisateur a le temps d'enchaîner plusieurs clics
+    // avant le premier envoi.
+    const _productSaveTimers = {};
+    function debounceSaveProduct(prefix) {
+      clearTimeout(_productSaveTimers[prefix]);
+      _productSaveTimers[prefix] = setTimeout(() => saveProduct(prefix), 600);
     }
 
     // feature-110 : le couple (volume injecté, démarrages pompe) ne sert qu'à la
@@ -3472,8 +3501,8 @@
       }
     }
 
-    $('#product-ph-save')?.addEventListener('click', () => saveProduct('ph'));
-    $('#product-orp-save')?.addEventListener('click', () => saveProduct('orp'));
+    $('#ph_alert_threshold_l')?.addEventListener('change', () => debounceSaveProduct('ph'));
+    $('#orp_alert_threshold_l')?.addEventListener('change', () => debounceSaveProduct('orp'));
     $('#product-ph-update-level')?.addEventListener('click', () => updateLevel('ph'));
     $('#product-orp-update-level')?.addEventListener('click', () => updateLevel('orp'));
 

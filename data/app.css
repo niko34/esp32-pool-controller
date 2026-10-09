@@ -3082,6 +3082,32 @@ input.is-computed:disabled {
   }
 }
 
+/* Chantier simplification 2026-10-09 : carte Produits — refonte ergonomique
+   (champ + bouton sur une ligne, espacement par gap plutôt que margin-top en
+   ligne). Calqué sur .card--detail .card__body (display flex column + gap)
+   ci-dessus. */
+.product-card .card__body {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.product-card .field {
+  margin-bottom: 0; /* le gap du card__body fait déjà l'espacement */
+}
+
+.field__row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.field__row .form-control {
+  width: 110px; /* 90px était trop serré : padding + flèches du spinner numérique */
+  flex: 0 0 auto;
+}
+
 /* ========== SECTIONS DÉTAILLÉES ========== */
 .grid--details {
   grid-template-columns: repeat(2, 1fr);

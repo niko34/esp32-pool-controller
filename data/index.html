@@ -1581,39 +1581,27 @@
                    RELEVÉ à noter au changement de bidon — il départage un biais de
                    comptage multiplicatif d'une perte fixe par démarrage. Affiché ici en
                    permanence pour qu'il existe avant le jour où il est détruit. -->
-              <dl class="kv kv--compact" style="margin-top:12px;">
-                <div class="kv__row">
-                  <dt class="kv__k">Volume injecté</dt>
-                  <dd class="kv__v" id="product-ph-injected">--</dd>
-                </div>
-                <div class="kv__row">
-                  <dt class="kv__k">Démarrages pompe</dt>
-                  <dd class="kv__v" id="product-ph-starts">--</dd>
-                </div>
-              </dl>
+              <p class="small"><span id="product-ph-injected">--</span> <span class="muted">injectés</span> ·
+                <span id="product-ph-starts">--</span> <span class="muted">démarrages</span></p>
 
               <!-- Niveau du bidon (feature-143) -->
-              <div class="field" style="margin-top:12px;">
+              <div class="field">
                 <label class="field__label" for="ph_level_l">Quantité dans le bidon (L)</label>
-                <input type="number" class="form-control" id="ph_level_l" min="0" max="1000" step="0.1"
-                       inputmode="decimal" aria-describedby="ph_level_hint" placeholder="ex. 5,0">
-                <p class="field__hint" id="ph_level_hint">Bidon neuf, appoint, ou correction après une
-                  mesure au doseur : indiquez ce qu'il contient maintenant.</p>
-              </div>
-              <div class="detail-actions" style="margin-top:8px;">
-                <button class="btn btn--outline" type="button" id="product-ph-update-level">Mettre à jour le niveau</button>
+                <div class="field__row">
+                  <input type="number" class="form-control" id="ph_level_l" min="0" max="1000" step="0.1"
+                         inputmode="decimal" aria-describedby="ph_level_hint" placeholder="ex. 5,0">
+                  <button class="btn btn--outline" type="button" id="product-ph-update-level">Mettre à jour le niveau</button>
+                </div>
+                <p class="field__hint" id="ph_level_hint">Bidon neuf, appoint ou correction : indiquez ce qu'il contient maintenant.</p>
               </div>
 
-              <!-- Paramètres -->
-              <div class="form-grid" style="margin-top:20px;">
-                <div class="form-group">
-                  <label class="form-label" for="ph_alert_threshold_l">Seuil d'alerte (L)</label>
+              <!-- Paramètres (chantier simplification 2026-10-09 : autosave au change, plus de bouton) -->
+              <div class="field">
+                <label class="field__label" for="ph_alert_threshold_l">Seuil d'alerte (L)</label>
+                <div class="field__row">
                   <input type="number" class="form-control" id="ph_alert_threshold_l" min="0" max="1000" step="0.5" value="2">
                 </div>
-              </div>
-
-              <div class="detail-actions" style="margin-top:12px;">
-                <button class="btn btn--primary" id="product-ph-save">Enregistrer</button>
+                <p class="field__success" role="status">Enregistré</p>
               </div>
             </div>
           </div>
@@ -1643,39 +1631,27 @@
                    RELEVÉ à noter au changement de bidon — il départage un biais de
                    comptage multiplicatif d'une perte fixe par démarrage. Affiché ici en
                    permanence pour qu'il existe avant le jour où il est détruit. -->
-              <dl class="kv kv--compact" style="margin-top:12px;">
-                <div class="kv__row">
-                  <dt class="kv__k">Volume injecté</dt>
-                  <dd class="kv__v" id="product-orp-injected">--</dd>
-                </div>
-                <div class="kv__row">
-                  <dt class="kv__k">Démarrages pompe</dt>
-                  <dd class="kv__v" id="product-orp-starts">--</dd>
-                </div>
-              </dl>
+              <p class="small"><span id="product-orp-injected">--</span> <span class="muted">injectés</span> ·
+                <span id="product-orp-starts">--</span> <span class="muted">démarrages</span></p>
 
               <!-- Niveau du bidon (feature-143) -->
-              <div class="field" style="margin-top:12px;">
+              <div class="field">
                 <label class="field__label" for="orp_level_l">Quantité dans le bidon (L)</label>
-                <input type="number" class="form-control" id="orp_level_l" min="0" max="1000" step="0.1"
-                       inputmode="decimal" aria-describedby="orp_level_hint" placeholder="ex. 5,0">
-                <p class="field__hint" id="orp_level_hint">Bidon neuf, appoint, ou correction après une
-                  mesure au doseur : indiquez ce qu'il contient maintenant.</p>
-              </div>
-              <div class="detail-actions" style="margin-top:8px;">
-                <button class="btn btn--outline" type="button" id="product-orp-update-level">Mettre à jour le niveau</button>
+                <div class="field__row">
+                  <input type="number" class="form-control" id="orp_level_l" min="0" max="1000" step="0.1"
+                         inputmode="decimal" aria-describedby="orp_level_hint" placeholder="ex. 5,0">
+                  <button class="btn btn--outline" type="button" id="product-orp-update-level">Mettre à jour le niveau</button>
+                </div>
+                <p class="field__hint" id="orp_level_hint">Bidon neuf, appoint ou correction : indiquez ce qu'il contient maintenant.</p>
               </div>
 
-              <!-- Paramètres -->
-              <div class="form-grid" style="margin-top:20px;">
-                <div class="form-group">
-                  <label class="form-label" for="orp_alert_threshold_l">Seuil d'alerte (L)</label>
+              <!-- Paramètres (chantier simplification 2026-10-09 : autosave au change, plus de bouton) -->
+              <div class="field">
+                <label class="field__label" for="orp_alert_threshold_l">Seuil d'alerte (L)</label>
+                <div class="field__row">
                   <input type="number" class="form-control" id="orp_alert_threshold_l" min="0" max="1000" step="0.5" value="2">
                 </div>
-              </div>
-
-              <div class="detail-actions" style="margin-top:12px;">
-                <button class="btn btn--primary" id="product-orp-save">Enregistrer</button>
+                <p class="field__success" role="status">Enregistré</p>
               </div>
             </div>
           </div>
