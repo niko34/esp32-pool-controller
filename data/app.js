@@ -2023,8 +2023,13 @@
         track.style.background =
           `linear-gradient(to right, var(--gauge-low) 0%, ` +
           `var(--gauge-low-mid) ${pLowMid}%, var(--gauge-ok) ${pLow}%, ` +
-          `var(--gauge-ok) ${pHigh}%, var(--gauge-track-bg) ${pHigh}%, ` +
-          `var(--gauge-track-bg) 100%)`;
+          `var(--gauge-ok) ${pHigh}%, var(--gauge-track-bg) 100%)`;
+        // Au-dessus de la consigne : FONDU progressif du vert vers la piste
+        // neutre, et non une cassure nette. L'arrêt était posé DEUX FOIS à
+        // ${pHigh}% (vert puis gris), ce qui créait une frontière franche
+        // visible — signalée par l'utilisateur. Le verdict du gate
+        // pool-chemistry est respecté à l'identique : AUCUNE couleur d'alerte
+        // au-dessus de la consigne, seulement un retour au neutre.
       }
     }
     gaugeEl.classList.toggle("gauge--stale", !measuresOk);
