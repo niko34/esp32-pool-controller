@@ -1908,8 +1908,13 @@
   }
 
   // feature-147 : ORP — échelle fixe 0-1000 mV (choix du designer, aucune
-  // constante firmware à mirer ici). AUCUNE zone nommée/colorée (gate : un ORP
-  // « correct » n'existe pas dans l'absolu, cf. stabilisant/pH/température).
+  // constante firmware à mirer ici). Dégradé ÉVALUATIF mais ASYMÉTRIQUE
+  // (verdict gate pool-chemistry, 2e passage) : le rouge est relatif à LA
+  // CONSIGNE (comme le vert du pH), jamais une bande fixe en mV — un ORP
+  // « correct » n'existe pas dans l'absolu, mais « loin de votre cible » est
+  // vrai par construction. Aucune couleur au-dessus de la consigne (neutre) :
+  // la chimie est asymétrique, un ORP élevé n'est pas dangereux dans la plage
+  // affichable. Voir updateOrpGauge().
   const ORP_GAUGE_MIN = 0;
   const ORP_GAUGE_MAX = 1000;
 
@@ -1919,12 +1924,18 @@
     return Math.max(0, Math.min(100, pct));
   }
 
+  // Demi-largeur de la fenêtre « Dans la plage » — CONSTANTE UNIQUE, déjà en
+  // production (badge capteur ORP plus bas). Le dégradé (updateOrpGauge)
+  // réutilise CETTE MÊME constante : gate pool-chemistry condition 2, aucun
+  // seuil neuf, aucune recopie.
+  const ORP_GAUGE_BAND_MV = 150;
+
   // Réutilise le calcul déjà en production (orpTarget ± 150 mV, cf. le badge
   // capteur ORP plus bas) — AUCUN nouveau seuil introduit par cette jauge.
   function orpGaugeStateText(value, target) {
     if (typeof value !== "number" || !isFinite(value)) return null;
     if (typeof target !== "number" || !isFinite(target)) return null;
-    const low = target - 150, high = target + 150;
+    const low = target - ORP_GAUGE_BAND_MV, high = target + ORP_GAUGE_BAND_MV;
     if (value < low) return "Sous consigne";
     if (value > high) return "Au-dessus";
     return "Dans la plage";
@@ -1989,10 +2000,33 @@
   // Met à jour la jauge ORP (curseur mesure + marqueur consigne + légende).
   function updateOrpGauge(value, target, measuresOk) {
     const gaugeEl = $("#orp-gauge");
+    const track = $("#orp-gauge-track");
     const cursor = $("#orp-gauge-cursor");
     const targetMarker = $("#orp-gauge-target");
     const stateEl = $("#orp-gauge-state");
     if (!gaugeEl || !cursor || !targetMarker || !stateEl) return;
+    // Gate pool-chemistry GO SOUS CONDITIONS : dégradé ÉVALUATIF comme le pH,
+    // mais ASYMÉTRIQUE — la chimie l'est. Rouge en s'éloignant SOUS la
+    // consigne (aucun stabilisant n'explique un ORP très bas) ; vert sur
+    // target ± ORP_GAUGE_BAND_MV (MÊME constante que le texte d'état,
+    // condition 2) ; NEUTRE au-dessus (préféré au gate) — rien en chimie ne
+    // rend un ORP élevé dangereux dans la plage affichable, la régulation
+    // cesse simplement de doser. Positions dérivées de orpGaugePosition() à
+    // chaque rendu (condition 1) : si la consigne change, le dégradé suit.
+    if (track) {
+      const pLow = (typeof target === "number" && isFinite(target))
+        ? orpGaugePosition(target - ORP_GAUGE_BAND_MV) : null;
+      const pHigh = (typeof target === "number" && isFinite(target))
+        ? orpGaugePosition(target + ORP_GAUGE_BAND_MV) : null;
+      if (pLow !== null && pHigh !== null) {
+        const pLowMid = pLow / 2;
+        track.style.background =
+          `linear-gradient(to right, var(--gauge-low) 0%, ` +
+          `var(--gauge-low-mid) ${pLowMid}%, var(--gauge-ok) ${pLow}%, ` +
+          `var(--gauge-ok) ${pHigh}%, var(--gauge-track-bg) ${pHigh}%, ` +
+          `var(--gauge-track-bg) 100%)`;
+      }
+    }
     gaugeEl.classList.toggle("gauge--stale", !measuresOk);
     const tPos = orpGaugePosition(target);
     if (tPos === null) {
@@ -2030,11 +2064,21 @@
   // (src/constants.h:2762) — bornes de DESSIN uniquement, jamais légendées
   // comme un seuil de panne. Un seul repère à 4°C = kFiltrationRefTempMinC
   // (src/constants.h:2761, hivernage : plus de planning auto en dessous).
-  // AUCUNE zone colorée/nommée (comme l'ORP) : pas de « température idéale »
-  // dans l'absolu, c'est une préférence de confort, pas une grandeur chimique.
   const TEMP_GAUGE_MIN = 0;
   const TEMP_GAUGE_MAX = 40;
   const TEMP_GAUGE_MARK_LOW = 4;
+
+  // Dégradé DESCRIPTIF (demande utilisateur) — convention du thermomètre,
+  // froid→chaud, AUCUN jugement de valeur : contrairement au pH (dégradé
+  // ÉVALUATIF, le vert suit la fenêtre cible), aucune température d'eau n'est
+  // « idéale » dans l'absolu — c'est une préférence de confort. D'où l'absence
+  // de vert ici, et des variables CSS dédiées (--gauge-temp-*), distinctes de
+  // celles du pH pour ne pas laisser croire à la même grammaire de couleur.
+  // Pivots de teinte (°C) en TEMP_GAUGE_HUE_* : repères visuels du dégradé,
+  // PAS des seuils — n'importe quel couple aurait convenu, celui-ci centre la
+  // transition sur la plage de confort usuelle d'une piscine.
+  const TEMP_GAUGE_HUE_COOL = 15;
+  const TEMP_GAUGE_HUE_WARM = 25;
 
   function tempGaugePosition(value) {
     if (typeof value !== "number" || !isFinite(value)) return null;
@@ -2048,10 +2092,20 @@
   // hypothèse.
   function updateTempGauge(value, measuresOk) {
     const gaugeEl = $("#temp-gauge");
+    const track = $("#temp-gauge-track");
     const cursor = $("#temp-gauge-cursor");
     const tickLow = $("#temp-gauge-tick-low");
     const stateEl = $("#temp-gauge-state");
     if (!gaugeEl || !cursor || !tickLow) return;
+    // Arrêts dérivés de tempGaugePosition() — AUCUN pourcentage en dur.
+    const pCool = tempGaugePosition(TEMP_GAUGE_HUE_COOL);
+    const pWarm = tempGaugePosition(TEMP_GAUGE_HUE_WARM);
+    if (track && pCool !== null && pWarm !== null) {
+      track.style.background =
+        `linear-gradient(to right, var(--gauge-temp-cold) 0%, ` +
+        `var(--gauge-temp-cool) ${pCool}%, var(--gauge-temp-warm) ${pWarm}%, ` +
+        `var(--gauge-temp-hot) 100%)`;
+    }
     const pLow = tempGaugePosition(TEMP_GAUGE_MARK_LOW);
     if (pLow !== null) tickLow.style.left = pLow + "%";
     gaugeEl.classList.toggle("gauge--stale", !measuresOk);

@@ -54,10 +54,21 @@
   --gauge-ok: #22c55e;       /* vert — idéal */
   --gauge-high: #3b82f6;     /* bleu — extrémité haute (chlore inefficace) */
 
-  /* Piste neutre des 3 jauges (pH hors zone du dégradé JS, ORP, Température) :
+  /* Piste neutre des jauges (ORP, et pH/Température hors zone du dégradé JS) :
      correctif « jauges invisibles » — --panel2 (blanc à 60%) est illisible sur
      une carte blanche. Gris clair franc + liseré --border existant. */
   --gauge-track-bg: #d7dbe3;
+
+  /* feature-147 (demande utilisateur) : dégradé DESCRIPTIF de la jauge
+     Température — convention du thermomètre (froid→chaud), AUCUN jugement de
+     valeur, donc AUCUN vert (qui dirait « idéal », ce qui n'existe pas pour
+     une température d'eau dans l'absolu). Teintes distinctes des --gauge-low/
+     -ok/-high du pH (évaluatives) pour ne pas laisser croire aux deux jauges
+     la même grammaire de couleur. */
+  --gauge-temp-cold: #2563eb;  /* bleu profond — froid */
+  --gauge-temp-cool: #38bdf8;  /* bleu ciel — transition froide */
+  --gauge-temp-warm: #fb923c;  /* orange — transition chaude */
+  --gauge-temp-hot: #dc2626;   /* rouge — chaud */
 
   /* Layout */
   --radius: 12px;

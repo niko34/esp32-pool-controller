@@ -407,10 +407,16 @@
                   <div class="compact-target">Cible: <span id="compact-orp-target">650</span> mV</div>
                   <div class="dosing-status" id="orp-dosing-status"></div>
                 </div>
-                <!-- feature-147 : gate pool-chemistry — AUCUNE zone nommée/colorée
-                     (un ORP « correct » n'existe pas dans l'absolu). Deux
-                     marqueurs (mesure, consigne) + texte d'état réutilisant le
-                     calcul déjà en production orpTarget ± 150 mV. -->
+                <!-- feature-147 : gate pool-chemistry (2e passage, GO SOUS
+                     CONDITIONS) — dégradé ÉVALUATIF mais ASYMÉTRIQUE, posé par
+                     updateOrpGauge() : rouge en dessous de la consigne (aucun
+                     stabilisant n'explique un ORP très bas), vert sur
+                     target ± ORP_GAUGE_BAND_MV (MÊME constante que le texte
+                     d'état, aucun seuil neuf), NEUTRE au-dessus (la chimie est
+                     asymétrique : un ORP élevé n'est pas dangereux dans la
+                     plage affichable). Deux marqueurs (mesure, consigne) +
+                     texte d'état réutilisant le calcul déjà en production
+                     orpTarget ± 150 mV. -->
                 <div class="gauge" id="orp-gauge">
                   <div class="gauge__track" id="orp-gauge-track">
                     <span class="gauge__marker" id="orp-gauge-target" hidden aria-hidden="true"></span>
@@ -442,17 +448,21 @@
                   <div class="compact-value" id="compact-temperature">--<span class="compact-unit">°C</span></div>
                   <div class="compact-target">Mesure actuelle</div>
                 </div>
-                <!-- feature-147 (correctif, parité « ça suit ») : jauge de
-                     position, même composant que pH/ORP. Échelle 0-40°C :
+                <!-- feature-147 (correctif, parité « ça suit » puis demande
+                     « un dégradé pour la température ») : jauge de position,
+                     même composant que pH/ORP. Échelle 0-40°C :
                      kFiltrationRefTempMaxC = 40 (src/constants.h:2762) est la
                      borne au-delà de laquelle le firmware considère une PANNE
                      DE SONDE — jamais légendée comme telle (bornes de DESSIN
                      uniquement). Un seul repère, à 4°C = kFiltrationRefTempMinC
                      (src/constants.h:2761) : sous ce seuil, le planning auto
-                     s'arrête (hivernage). AUCUNE zone colorée/nommée : une
-                     température d'eau « correcte » n'existe pas dans l'absolu
-                     (confort, pas physique/chimie) — seuls le curseur et le
-                     repère portent l'information, comme l'ORP. -->
+                     s'arrête (hivernage). Dégradé DESCRIPTIF (convention du
+                     thermomètre, froid→chaud, posé par updateTempGauge()) —
+                     AUCUNE zone NOMMÉE : une température d'eau « correcte »
+                     n'existe pas dans l'absolu (confort, pas physique/chimie),
+                     d'où l'absence de vert. À la différence du pH (dégradé
+                     ÉVALUATIF), ce dégradé n'affirme rien, il illustre une
+                     grandeur physique. -->
                 <div class="gauge" id="temp-gauge">
                   <div class="gauge__track" id="temp-gauge-track">
                     <span class="gauge__tick" id="temp-gauge-tick-low" aria-hidden="true"></span>
