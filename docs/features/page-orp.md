@@ -32,22 +32,15 @@ Sous le bouton « Calibrer la sonde » du bloc Statistiques, un badge (`role="st
 |---|---|---|
 | `water_present === false` (arrêt franc) | `Filtration arrêtée` | `info` (bleu — état normal, attendre) |
 | `water_present === false` + `filtration_state_stale` | `Signal filtration périmé` | `warning` (ambré — anomalie du signal externe) |
-| `water_present === true` + `measures_valid === false` | **v2.34.0** : `Stabilisation depuis N min` — ou `Re-stabilisation depuis N min` si `measures_purge_count ≥ 1` (`depuis < 1 min` sous 60 s ; `Stabilisation en cours` si le champ manque). Avant : `Stabilisation : ~N min` | `info` (bleu) |
+| `water_present === true` + `measures_valid === false` | **v2.62.0** : `Reprise automatique dans N min` (`measures_dose_available_in_s`) — `Reprise automatique imminente` sous ~1 min, repli `Mesure en pause, reprise automatique à venir` si le champ manque (firmware < 2.62.0). Avant : `Stabilisation depuis N min` / `Re-stabilisation depuis N min` (v2.34.0), `Stabilisation : ~N min` (avant) | `info` (bleu) |
 
-> **v2.34.0 (feature-091)** : la purge des mesures se termine sur leur **stabilité** et non plus au bout d'un délai réglé — le badge affiche donc le temps **écoulé** (`measures_stab_elapsed_s`), jamais un restant. Le **plafond de 90 min atteint sans stabilité** n'apparaît **pas** dans ce badge (il ouvre la porte) : il est signalé par le bandeau ci-dessous.
+> **v2.34.0 à v2.61.x (feature-091, historique)** : la purge des mesures se terminait sur leur **stabilité** et non plus au bout d'un délai réglé. Le **plafond de 90 min atteint sans stabilité** n'apparaissait **pas** dans ce badge (il ouvrait la porte) : il était signalé par un bandeau dédié, **retiré en v2.62.0** (section ci-dessous). **v2.62.0 (feature-139)** : le badge affiche désormais le délai **restant** avant reprise (`measures_dose_available_in_s`), déterministe — il n'y a plus d'« écoulé » à afficher puisqu'il n'y a plus de stabilité à attendre.
 
 Pendant ces états, la **valeur ORP « actuelle » affiche `--`** (le badge explique pourquoi) et les points ne sont **plus historisés** (trous dans le graphique). Les lectures live de la **calibration** (`#cal-orp-readout`) et de la ligne brute `#orp-filter-sub` ne sont **pas** gatées. Détails et rétrocompat : [page-dashboard.md](page-dashboard.md#mesures-phorp-non-représentatives--filtration-arrêtée--stabilisation-feature-061-v2130) ; côté firmware : [measure-validity.md](../subsystems/measure-validity.md).
 
-## Bandeau « Stabilisation des mesures non atteinte » (`#measures_purge_timeout_banner_orp`, feature-091, v2.34.0)
+## ~~Bandeau « Stabilisation des mesures non atteinte »~~ — RETIRÉ (feature-139, v2.62.0)
 
-`callout--warn`, `role="status" aria-live="polite"`, placé **entre le bloc de dosage quotidien et la carte Régulation ORP** ([`data/index.html`](../../data/index.html)). **Miroir strict** du bandeau de la page pH : même condition, même texte, même fonction de rendu (`updateMeasuresPurgeDisplay`, [`data/app.js`](../../data/app.js)) — l'anomalie porte sur les **deux** voies de mesure, elle doit être visible depuis la page consultée.
-
-> **Stabilisation des mesures non atteinte**
-> Après 90 min de circulation, le pH ou l'ORP brut varie encore. Vérifier les sondes et la chambre de mesure (bulles, encrassement). L'injection a repris sous la surveillance des gardes habituelles.
-
-- **Affiché** si `measures_purge_last_end === 2` ; **masqué** sinon, et masqué aussi quand le champ est absent (firmware < 2.34.0).
-- **Warning, pas critique** : le plafond ouvre la porte de validité, le dosage reprend sous les gardes habituelles. Le bandeau reste visible tant que le motif vaut `2`.
-- Détail du rendu et contexte firmware : [page-ph.md](page-ph.md#bandeau--stabilisation-des-mesures-non-atteinte--measures_purge_timeout_banner-feature-091-v2340), [measure-validity.md](../subsystems/measure-validity.md), alerte MQTT [`measures_purge_timeout`](../MQTT.md#alertes).
+Présent de la v2.34.0 à la v2.61.x (`#measures_purge_timeout_banner_orp`), miroir strict du bandeau de la page pH. **Retiré pour la même raison** : le mécanisme qu'il signalait (purge « adaptative » sur stabilité des bruts) est démonté, pas assoupli ([ADR-0092](../adr/0092-retrait-analyse-stabilite-porte-mesures.md), supersède l'[ADR-0059](../adr/0059-purge-adaptative-fenetre-de-medianes.md)). Le motif qu'il affichait (`measures_purge_last_end === 2`) n'est plus jamais émis. Détail : [page-ph.md](page-ph.md#bandeau--stabilisation-des-mesures-non-atteinte--retiré-feature-139-v2620), [measure-validity.md](../subsystems/measure-validity.md). L'alerte MQTT `measures_purge_timeout` est retirée en conséquence ([MQTT.md](../MQTT.md#alertes)).
 
 ## Atteinte de la cible (feature-096, v2.37.0)
 
@@ -232,7 +225,7 @@ La carte `#orp-card-calibration` présente un **stepper** (`<ol class="calibrati
 **Config** : `orp_target`, `max_orp_ml_per_day` (= `max_chlorine_ml_per_day`)
 **Injection manuelle** : `orp_inject_remaining_s`
 **Stabilisation** : `stabilization_remaining_s`
-**Validité mesure (feature-061, v2.13.0 ; purge adaptative feature-091, v2.34.0)** : `water_present`, `measures_valid`, `measures_stab_elapsed_s`, `measures_purge_count`, `measures_purge_last_duration_s`, `measures_purge_last_end`, `filtration_state_stale` — badge `#orp-page-badge` + valeur `--` quand la mesure n'est pas représentative (voir [Badge d'état mesure](#badge-détat-mesure-orp-page-badge-feature-061-v2130)), bandeau `#measures_purge_timeout_banner_orp` sur `measures_purge_last_end === 2`. Servis **à l'identique** par `GET /data`. ⚠️ `measures_stab_remaining_s` **n'existe plus** depuis la v2.34.0.
+**Validité mesure (feature-061, v2.13.0 ; retrait de l'analyse de stabilité feature-139, v2.62.0)** : `water_present`, `measures_valid`, `measures_stab_elapsed_s`, `measures_purge_last_duration_s`, `measures_purge_last_end`, `measures_dose_available_in_s`, `filtration_state_stale` — badge `#orp-page-badge` + valeur `--` quand la mesure n'est pas représentative (voir [Badge d'état mesure](#badge-détat-mesure-orp-page-badge-feature-061-v2130)). Servis **à l'identique** par `GET /data`. ⚠️ `measures_stab_remaining_s` **n'existe plus** depuis la v2.34.0 ; `measures_purge_count` **n'existe plus** depuis la v2.62.0 ; le bandeau `#measures_purge_timeout_banner_orp` est **retiré** depuis la v2.62.0.
 
 > Champs **supprimés** depuis feature-021 : `orp_raw`, `orp_voltage_mv`, `orp_calibration_offset`, `orp_calibration_slope`, `orp_calibration_reference`, `orp_calibration_temp`, `orp_calibration_date` (calibration mémorisée dans le module EZO, pas en NVS ESP32). Le champ `orp_cal_valid` est conservé en miroir pour rétrocompat HA (`true` ssi `orpCalPoints >= 1`).
 

@@ -663,13 +663,27 @@ void SensorManager::_updateFilterGates(uint32_t nowMs) {
   _phFilter.setContext(waterPresent, measuresValid, nowMs);
   _orpFilter.setContext(waterPresent, measuresValid, nowMs);
 
+  // feature-139 (M1, code-reviewer 2e passage) : rafraîchit le snapshot
+  // cross-contexte du plancher de gel JUSTE APRÈS setContext() — section
+  // critique minimale (deux champs), jamais de mutex bloquant ici (loopTask).
+  {
+    bool armed = false;
+    uint32_t untilMs = 0;
+    _phFilter.gateFloorSnapshot(armed, untilMs);
+    portENTER_CRITICAL(&_filterGateMux);
+    _filterGateArmedCache = armed;
+    _filterGateUntilMsCache = untilMs;
+    portEXIT_CRITICAL(&_filterGateMux);
+  }
+
   // Les deux filtres partagent le même contexte → une seule paire de logs.
   const bool nowClosed = _phFilter.gateClosed();
   if (nowClosed && !phWasClosed) {
+    // feature-139 (v2.62.0) : plus de re-purge (mécanisme retiré) — un seul
+    // motif possible tant que l'eau est présente : la purge de reprise.
     systemLogger.info(
         "Filtres pH/ORP : alimentation GELÉE — mesures non représentatives (" +
-        String(waterPresent ? (mv.purgeCount > 0 ? "re-purge en cours" : "purge en cours")
-                            : "circulation arrêtée") +
+        String(waterPresent ? "purge en cours" : "circulation arrêtée") +
         ") — dosage auto bloqué tant que la porte est fermée");
   } else if (!nowClosed && phWasClosed) {
     systemLogger.info(
@@ -683,6 +697,22 @@ void SensorManager::_updateFilterGates(uint32_t nowMs) {
   // l'attribue pas à tort à la sortie de secours sur rejets.
   _phFilter.rearmedSinceLastPoll();
   _orpFilter.rearmedSinceLastPoll();
+}
+
+// feature-139 (v2.62.0, B1 ; M1 code-reviewer 2e passage) : lit le snapshot
+// SOUS LE MÊME SPINLOCK que l'écriture (_updateFilterGates() ci-dessus), puis
+// calcule le reste avec le `nowMs` LIVE fourni par l'appelant — correct dans
+// n'importe quel contexte, sans la staleness d'un reste précalculé en loopTask.
+uint32_t SensorManager::getFilterGateRemainingMs(uint32_t nowMs) const {
+  bool armed;
+  uint32_t untilMs;
+  portENTER_CRITICAL(&_filterGateMux);
+  armed = _filterGateArmedCache;
+  untilMs = _filterGateUntilMsCache;
+  portEXIT_CRITICAL(&_filterGateMux);
+  if (!armed) return 0;
+  const int32_t diff = (int32_t)(untilMs - nowMs);
+  return diff > 0 ? (uint32_t)diff : 0;
 }
 
 // =============================================================================

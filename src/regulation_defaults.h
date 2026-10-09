@@ -67,8 +67,9 @@ inline PoolSize poolSizeFromString(const char* s) {
 // =============================================================================
 // Une COLONNE = les 7 réglages de tuning d'une taille de bassin.
 // feature-091 (v2.34.0) : stabilizationDelayMin RETIRÉ — la purge des mesures
-// est pilotée par la STABILITÉ (kPurgeFloorMs/kPurgeCapMs, constants.h), le
-// délai n'est plus un réglage utilisateur (champ NVS stab_delay conservé, inerte).
+// attend un PLANCHER fixe (kPurgeFloorMs, constants.h ; l'analyse de
+// stabilité a été retirée par feature-139, v2.62.0), le délai n'est plus un
+// réglage utilisateur (champ NVS stab_delay conservé, inerte).
 struct RegulationDefaults {
   int phInjectionLimitMin;      // Max min d'injection pH par fenêtre d'1 h
   int orpInjectionLimitMin;     // Max min d'injection ORP par fenêtre d'1 h

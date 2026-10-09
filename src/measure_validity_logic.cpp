@@ -1,6 +1,7 @@
 // =============================================================================
 // measure_validity_logic — Validité des mesures pH/ORP PURE
-// (feature-061, réécrite par la feature-091 v2.34.0 : purge ADAPTATIVE)
+// (feature-061, réécrite par la feature-091 v2.34.0 : purge ADAPTATIVE ;
+// RETRAIT de l'analyse de stabilité par la feature-139, v2.62.0)
 // =============================================================================
 // Voir measure_validity_logic.h pour les règles et invariants. Compile en
 // natif (pio test -e native) ET sur cible — aucune dépendance Arduino.
@@ -29,64 +30,80 @@ void openGate(MeasureValidityState& st, uint32_t nowMs, PurgeEnd why) {
 void measureValidityTick(MeasureValidityState& st, const MeasureValidityInputs& in) {
   st.event = MeasureValidityEvent::kNone;
 
-  // Règle 1 : eau absente → porte fermée, rien ne court.
+  // Règle 1 : eau absente → porte fermée, rien ne court. Datation de l'arrêt
+  // (C2, feature-139) : au front descendant on arme waterStopMs ; à chaque
+  // tick suivant pendant l'absence, on LATCH stopGraceExceeded dès que la
+  // grâce est dépassée — ce latch est monotone (ne redescend jamais tant que
+  // l'eau reste absente), ce qui rend le repliement de millis() inoffensif.
   if (!in.waterPresent) {
+    if (st.waterPresent) {
+      // front DESCENDANT : nouvel arrêt, nouvelle datation.
+      st.waterStopMs = in.nowMs;
+      st.haveWaterStop = true;
+      st.stopGraceExceeded = false;
+    }
+    // FRONTIÈRE : `>=`, pas `>` — à durée == graceMs PILE, l'arrêt est déjà jugé
+    // LONG (sens prudent, fail-closed). DOIT rester aligné MOT POUR MOT avec
+    // evaluateOutageContinuity() (section C3 plus bas, measure_validity_logic.h) :
+    // sinon un même arrêt de durée exactement graceS donnerait un verdict
+    // différent selon qu'un reboot s'est intercalé ou non — exactement ce que
+    // l'arbitrage 1 (feature-139) interdit.
+    if (st.haveWaterStop && !st.stopGraceExceeded &&
+        (uint32_t)(in.nowMs - st.waterStopMs) >= in.graceMs) {
+      st.stopGraceExceeded = true;
+    }
     if (st.waterPresent || st.valid || st.purging) {
       st.event = MeasureValidityEvent::kWaterDrop;
     }
     st.waterPresent = false;
     st.valid = false;
     st.purging = false;
-    st.recloseArmed = false;
     st.waivedCycle = false;
-    st.repurgeCount = 0;
     return;
   }
 
-  // Règle 2 : front montant → nouvelle purge (ou dispense immédiate, C3).
+  // Règle 2 : front montant → nouvelle purge (ou dispense immédiate si
+  // l'arrêt qui vient de se terminer était datable ET court — C2/C3).
   if (!st.waterPresent) {
     st.waterPresent = true;
     st.waterRiseMs = in.nowMs;
     st.purgeStartMs = in.nowMs;
-    st.repurgeCount = 0;
-    st.recloseArmed = true;
     st.waivedCycle = false;
     st.purging = true;
     st.valid = false;
     st.event = MeasureValidityEvent::kPurgeStarted;
-    if (in.purgeWaived) {
+    // BLOQUANT 2 (code-reviewer, 2e passage) : `stopGraceExceeded` n'est
+    // REMESURÉ qu'en règle 1 (eau absente) — entre `begin()` (qui le fige au
+    // boot sur un `outageS` daté AVANT le setup Wi-Fi/NTP/FS) et ce premier
+    // `update()`, des dizaines de secondes peuvent s'écouler SANS qu'aucun
+    // tick « eau absente » ne passe dessus (l'eau est déjà présente au tout
+    // premier tick). Un arrêt de 175 s suivi de 30 s de démarrage serait donc
+    // dispensé à tort si on ne faisait confiance qu'au latch. On REMESURE donc
+    // ICI AUSSI, en plus du latch (jamais à sa place : le latch reste ce qui
+    // rend un arrêt de plus de 49,7 j inoffensif face au repliement de
+    // millis() — la remesure seule, sans latch, ne le garantirait pas).
+    // Frontière `<` stricte, alignée avec evaluateOutageContinuity() (C3).
+    const bool skip = st.haveWaterStop && !st.stopGraceExceeded &&
+                      (uint32_t)(in.nowMs - st.waterStopMs) < in.graceMs;
+    if (skip) {
       st.waivedCycle = true;
       openGate(st, in.nowMs, PurgeEnd::kWaived);  // durée 0, porte ouverte
     }
     return;
   }
 
-  // Règle 3 : purge en cours → plancher + stabilité, ou plafond.
+  // Règle 3 : purge en cours → ouverture dès que le plancher est écoulé.
+  // Plus de condition d'étendue, plus de re-fermeture, plus de plafond
+  // (feature-139, v2.62.0).
   if (st.purging) {
     const uint32_t elapsed = in.nowMs - st.purgeStartMs;  // wrap-safe
-    if (elapsed >= in.floorMs && in.stable) {
-      openGate(st, in.nowMs,
-               st.repurgeCount > 0 ? PurgeEnd::kRepurge : PurgeEnd::kStability);
-      return;
+    if (elapsed >= in.floorMs) {
+      openGate(st, in.nowMs, PurgeEnd::kStability);
     }
-    if (elapsed >= in.capMs) {
-      // C2 : ouverture fail-safe ; la re-fermeture est désarmée jusqu'au
-      // prochain front montant (sinon boucle fermer/ouvrir sur une sonde bruyante).
-      st.recloseArmed = false;
-      openGate(st, in.nowMs, PurgeEnd::kCap);
-      return;
-    }
-    return;  // purge continue
+    return;
   }
 
-  // Règle 4 : porte ouverte → surveillance de re-fermeture (C1).
-  if (st.valid && st.recloseArmed && in.unstable) {
-    st.valid = false;
-    st.purging = true;
-    st.purgeStartMs = in.nowMs;
-    if (st.repurgeCount < 255) st.repurgeCount++;
-    st.event = MeasureValidityEvent::kReclosed;
-  }
+  // Porte déjà ouverte : rien à faire tant que l'eau reste présente.
 }
 
 uint32_t measureValidityElapsedS(const MeasureValidityState& st, uint32_t nowMs) {
@@ -104,16 +121,14 @@ bool measureValidityCirculationSettled(const MeasureValidityState& st, uint32_t 
 const char* purgeEndLabel(PurgeEnd e) {
   switch (e) {
     case PurgeEnd::kStability: return "stabilité";
-    case PurgeEnd::kCap:       return "plafond";
     case PurgeEnd::kWaived:    return "dispensée";
-    case PurgeEnd::kRepurge:   return "re-purge";
     case PurgeEnd::kNone:
     default:                   return "aucune";
   }
 }
 
 // =============================================================================
-// C3 — continuité à travers une coupure courte
+// C3 — continuité à travers un redémarrage
 // =============================================================================
 
 uint32_t outageFnv1a(const void* data, uint32_t len) {
@@ -170,24 +185,22 @@ OutageContinuityVerdict evaluateOutageContinuity(const OutageContinuityInputs& i
   }
   v.outageS = in.epochNow - r.liveEpoch;
 
-  // L'eau devait être présente juste avant la coupure.
+  // L'eau devait être présente juste avant la coupure (sinon rien n'est en
+  // train de « s'arrêter » : pas d'arrêt à porter à travers le reboot).
   if (r.waterPresent != 1) {
     v.deny = OutageDeny::kNoWater;
     return v;
   }
 
-  // Coupure courte uniquement.
-  if (v.outageS > in.shortOutageS) {
+  // Coupure courte uniquement. FRONTIÈRE (doit rester alignée MOT POUR MOT
+  // avec le latch de measureValidityTick(), règle 1, measure_validity_logic.h) :
+  // à durée == graceS PILE, ce N'EST PAS un arrêt court (fail-closed, sens
+  // prudent) — `>=` et non `>`. Un même arrêt doit donner le MÊME verdict
+  // qu'il ait traversé un reboot ou non (arbitrage 1, feature-139) ; les deux
+  // comparaisons ont déjà divergé une fois sur cette frontière, ne les
+  // redésynchronise pas.
+  if (v.outageS >= in.graceS) {
     v.deny = OutageDeny::kTooLong;
-    return v;
-  }
-
-  // Au plus une dispense par intervalle (une boucle de reboots ne doit pas
-  // enchaîner les dispenses : la 2e purge est complète).
-  if (r.lastWaiverEpoch != 0 &&
-      (in.epochNow < r.lastWaiverEpoch ||
-       in.epochNow - r.lastWaiverEpoch < in.waiverMinIntervalS)) {
-    v.deny = OutageDeny::kRateLimited;
     return v;
   }
 
@@ -203,7 +216,6 @@ const char* outageDenyLabel(OutageDeny d) {
     case OutageDeny::kResetKind:   return "reset matériel (coupure secteur possible)";
     case OutageDeny::kClock:       return "heure invalide ou incohérente";
     case OutageDeny::kTooLong:     return "coupure trop longue";
-    case OutageDeny::kRateLimited: return "dispense déjà accordée il y a moins d'une heure";
     default:                       return "inconnue";
   }
 }

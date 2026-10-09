@@ -251,6 +251,39 @@ static void handleGetData(AsyncWebServerRequest* request) {
   // le budget CONTRAIGNANT de cet ajout est celui de la trame WS
   // (kWsFrameBufBytes), décompté dans src/ws_manager.cpp : marge portée de 55
   // à 39 o.
+  //
+  // feature-139 (v2.62.0) : retrait de `measures_purge_count` (mécanisme de
+  // re-purge supprimé côté firmware, champ STRUCTURELLEMENT constant à 0 — le
+  // conserver figé aurait publié une forme stable qui ment). `measures_
+  // purge_last_end` reste mais son domaine est RÉDUIT à {0,1,3} (2 et 4
+  // retirés, numérotation NON réattribuée). Octet SÉRIALISÉ au pire cas retiré :
+  //   "measures_purge_count":255, = 27 o.
+  // Charge pire cas : 3093 − 27 = 3066 o, SOUS le gabarit 3200 (marge 134 o,
+  // elle était de 107 o) → aucun bump. Rappel : ce chemin n'a aucun plafond
+  // dur ; le budget CONTRAIGNANT reste celui de la trame WS
+  // (kWsFrameBufBytes), décompté dans src/ws_manager.cpp : marge portée de 39
+  // à 66 o.
+  //
+  // feature-139 (v2.62.0, B1 gate pool-chemistry 2e passage) : +1 champ
+  // `measures_dose_available_in_s` — SEUL ENDROIT DE VÉRITÉ pour le délai
+  // avant dosage (remplace un calcul CLIENT faux d'un facteur 10, qui ne
+  // regardait que la purge et ignorait le plancher de gel du filtre capteur ;
+  // contrat net NEUTRE, puisque `measures_purge_count` a été retiré juste
+  // au-dessus). MÉTHODE DE CHIFFRAGE (ADR-0073) : borne STRUCTURELLE, pas la
+  // valeur observée (600) — kPurgeFloorMs est assertée dans [5;30] min
+  // (constants.h), soit jusqu'à 1800 s, 4 chiffres :
+  //   "measures_dose_available_in_s":1800, → 1+28+1+1+4+1 = 36 o.
+  // Charge pire cas : 3066 (décompte ci-dessus) + 36 = 3102 o, SOUS le
+  // gabarit 3200 (marge 98 o). Rappel : ce chemin n'a aucun plafond dur ; le
+  // budget CONTRAIGNANT est celui de la trame WS (kWsFrameBufBytes),
+  // décompté dans src/ws_manager.cpp : marge portée de 66 à 30 o — ÉTROITE,
+  // tout nouvel ajout à cette trame exige désormais un retrait compensatoire
+  // OU un relèvement de kWsFrameBufBytes (décision d'ADR, pas de routine).
+  //
+  // BLOQUANT 1 (code-reviewer, 2e passage) : le champ est OMIS (filtration à
+  // l'arrêt, délai indéterminé) plutôt que mis à 0 ou `null` — l'OMISSION ne
+  // peut que RÉDUIRE la taille réelle, jamais l'augmenter : le pire cas
+  // ci-dessus (champ PRÉSENT, valeur 1800) reste le bon majorant, inchangé.
   StaticJson<3200> doc;
 
   // feature-025 : la "valeur courante" (champs ph/orp) reflète la valeur FILTRÉE
@@ -359,8 +392,30 @@ static void handleGetData(AsyncWebServerRequest* request) {
     // calibration des pompes) : ici purge de la chambre de mesure.
     doc["measures_stab_elapsed_s"] = mv.stabElapsedS;
     doc["measures_purge_last_duration_s"] = mv.lastPurgeDurationS;
-    doc["measures_purge_last_end"] = mv.lastPurgeEnd;  // 0 aucune/1 stabilité/2 plafond/3 dispensée/4 re-purge
-    doc["measures_purge_count"] = mv.purgeCount;
+    // Domaine RÉDUIT à {0 aucune / 1 stabilité / 3 dispensée} depuis v2.62.0 —
+    // les valeurs 2 (plafond) et 4 (re-purge) ne sont plus jamais émises, mais
+    // RESTENT RÉSERVÉES (non réattribuées) : un consommateur externe qui
+    // testait `=== 2` cesse simplement de matcher, sans faux-positif.
+    doc["measures_purge_last_end"] = mv.lastPurgeEnd;
+    // feature-139 (v2.62.0) : `measures_purge_count` RETIRÉ (mécanisme de
+    // re-purge supprimé — MeasureValiditySnapshot n'a plus de purgeCount).
+    // C'eût été le seul champ STRUCTURELLEMENT constant à 0 : le conserver
+    // figé aurait publié une forme stable qui ment. Seul consommateur du
+    // dépôt (app.js) utilisait déjà `|| 0`, dégradation propre garantie.
+    // feature-139 (v2.62.0, B1 gate pool-chemistry 2e passage) : secondes
+    // restantes avant que le dosage automatique redevienne possible —
+    // max(reste plancher de purge, reste plancher de gel du filtre capteur),
+    // SEUL ENDROIT DE VÉRITÉ (PumpControllerClass::getDoseAvailableInS()).
+    // 0 si déjà disponible. ⚠️ BLOQUANT 1 (code-reviewer, 2e passage) :
+    // filtration À L'ARRÊT ⇒ AUCUN des deux planchers ne court, le délai est
+    // INDÉTERMINÉ (getDoseAvailableInS() renvoie UINT32_MAX, jamais sérialisé
+    // tel quel) — le champ est alors OMIS, pas mis à 0 ni à `null` : une
+    // absence de clé est discernable d'une valeur 0 pour le client, un
+    // nombre-sentinelle ne l'aurait pas été à moindre coût d'octets.
+    const unsigned long doseAvailableS = PumpController.getDoseAvailableInS();
+    if (doseAvailableS != UINT32_MAX) {
+      doc["measures_dose_available_in_s"] = doseAvailableS;
+    }
   }
   // feature-140 : filtration_state_source et filtration_ext_on MIGRENT depuis
   // la trame WS (ADR-0086, aucun consommateur dans data/) vers /data-SEUL —

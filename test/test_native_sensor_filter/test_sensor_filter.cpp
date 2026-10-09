@@ -1163,6 +1163,51 @@ void test_gate_floor_applies_with_zero_stabilization_delay(void) {
 }
 
 // =============================================================================
+// feature-139 (v2.62.0, B1 gate pool-chemistry 2e passage) — gateFloorRemainingMs()
+// =============================================================================
+// Nouvel accesseur LECTURE SEULE consommé par PumpControllerClass::
+// getDoseAvailableInS() (dose_available_logic.h) pour l'affichage du délai
+// avant dosage. Aucune décision nouvelle : juste la vérité de ce que
+// setContext() a déjà armé/désarmé en interne.
+void test_gate_floor_remaining_ms_tracks_armement_et_expire(void) {
+  SensorFilter f(phCfgRearm());
+  const uint32_t t = 1000;
+
+  // Jamais armé (avant tout front montant) : toujours 0.
+  TEST_ASSERT_EQUAL_UINT32(0, f.gateFloorRemainingMs(t));
+
+  // Front montant d'eau : plancher armé PLEIN (kSensorFilterGateFloorMs).
+  f.setContext(true, true, t);
+  TEST_ASSERT_EQUAL_UINT32(kSensorFilterGateFloorMs, f.gateFloorRemainingMs(t));
+
+  // Décroît linéairement, jamais négatif ; 0 pile à l'échéance et au-delà.
+  TEST_ASSERT_EQUAL_UINT32(kSensorFilterGateFloorMs - 1000, f.gateFloorRemainingMs(t + 1000));
+  TEST_ASSERT_EQUAL_UINT32(1, f.gateFloorRemainingMs(t + kSensorFilterGateFloorMs - 1));
+  TEST_ASSERT_EQUAL_UINT32(0, f.gateFloorRemainingMs(t + kSensorFilterGateFloorMs));
+  TEST_ASSERT_EQUAL_UINT32(0, f.gateFloorRemainingMs(t + kSensorFilterGateFloorMs + 60000));
+
+  // Indépendant de measuresValid : un cycle DISPENSÉ (measuresValid déjà vrai
+  // dès le front montant) arme quand même le plancher PLEIN — c'est
+  // exactement le mécanisme à l'origine du défaut d'affichage corrigé par ce
+  // lot (dose_available_logic.h).
+  SensorFilter g(phCfgRearm());
+  const uint32_t t2 = 5000;
+  g.setContext(true, true, t2);  // measuresValid déjà vrai (dispense), armé quand même
+  TEST_ASSERT_EQUAL_UINT32(kSensorFilterGateFloorMs, g.gateFloorRemainingMs(t2));
+}
+
+// Repliement de millis() : _gateFloorUntilMs wrappe, la soustraction signée
+// (int32_t)(_gateFloorUntilMs - nowMs) reste correcte de part et d'autre.
+void test_gate_floor_remaining_ms_wrap_safe(void) {
+  SensorFilter f(phCfgRearm());
+  const uint32_t t = UINT32_MAX - 1000UL;
+  f.setContext(true, true, t);  // _gateFloorUntilMs = t + floor, wrappe
+  TEST_ASSERT_EQUAL_UINT32(kSensorFilterGateFloorMs, f.gateFloorRemainingMs(t));
+  TEST_ASSERT_EQUAL_UINT32(kSensorFilterGateFloorMs - 500UL, f.gateFloorRemainingMs(t + 500UL));  // après le wrap
+  TEST_ASSERT_EQUAL_UINT32(0, f.gateFloorRemainingMs(t + kSensorFilterGateFloorMs));
+}
+
+// =============================================================================
 // Arbitrages tranchés par le gate pool-chemistry (v2.20.3)
 // =============================================================================
 // Ces tests étaient des tests de CARACTÉRISATION : ils verrouillaient le
@@ -2113,6 +2158,8 @@ int main(int, char **) {
   RUN_TEST(test_second_rearm_within_cooldown_denied);                  // T8c
   RUN_TEST(test_rearm_denied_out_of_admissible_band);                  // T8d
   RUN_TEST(test_gate_floor_applies_with_zero_stabilization_delay);     // T9
+  RUN_TEST(test_gate_floor_remaining_ms_tracks_armement_et_expire);
+  RUN_TEST(test_gate_floor_remaining_ms_wrap_safe);
   RUN_TEST(test_rearm_disabled_with_legacy_config);
   // Arbitrages tranchés par le gate pool-chemistry (v2.20.3).
   RUN_TEST(test_rearm_resets_rejected_count_and_publishes_previous);    // (a)

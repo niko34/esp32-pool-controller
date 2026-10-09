@@ -249,7 +249,7 @@ Cet encodage est l'application canonique de l'[ADR-0072](../adr/0072-absence-de-
 |---|---|---|
 | `0x01` | `kTttFlagTargetChanged` | consigne **configurée** modifiée dans la journée |
 | `0x02` | `kTttFlagBoost` | boost ORP actif dans la journée |
-| `0x04` | `kTttFlagUnsettled` | purge de mesure terminée au **plafond** (feature-091) |
+| `0x04` | `kTttFlagUnsettled` | purge de mesure terminée au **plafond** (feature-091). ⚠️ **Dormant depuis la v2.62.0** (feature-139) : le plafond de purge (`PurgeEnd::kCap`) a été retiré — ce bit n'est **plus jamais posé**. Conservé **inchangé** pour ne pas renuméroter le champ de bits ni réinterpréter les journées déjà archivées qui le portent (contrat NVS figé, voir intro de section) ; le retrait éventuel du bit est du ressort du contrat public, hors périmètre de la feature-139 |
 | `0x08` | `kTttFlagPowerCycle` | reprise après coupure secteur |
 | `0x10` | `kTttFlagOperatorOff` | **régulation non automatique** — journée à exclure des moyennes |
 | `0x20` | `kTttFlagCounterReset` | **compteur de filtration en recul** — la durée archivée n'est **pas une mesure** (v2.47.0, bug-106) |

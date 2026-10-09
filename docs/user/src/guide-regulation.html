@@ -620,13 +620,12 @@ court au plus long.</p>
   <tr><td class="duree">3 à 5 minutes</td>
       <td>Stabilisation après une calibration de sonde — le temps que la
       lecture se pose.</td></tr>
-  <tr><td class="duree">10 à 90 minutes</td>
-      <td>Purge à la reprise de la circulation, le temps que l'eau devant les
-      sondes redevienne représentative du bassin. <strong>Durée non
-      fixe</strong>&nbsp;: elle se termine quand la mesure cesse de bouger —
-      10&nbsp;minutes au minimum, 90 au maximum (au-delà, l'appareil rouvre
-      la régulation <em>et le signale</em>). Après un redémarrage de moins de
-      dix secondes, la purge est dispensée.</td></tr>
+  <tr><td class="duree">10 minutes</td>
+      <td>Attente à la reprise de la circulation, le temps que l'eau devant
+      les sondes redevienne représentative du bassin&nbsp;: une durée
+      <strong>fixe</strong>, pas une analyse de la mesure. Après un arrêt
+      d'eau de moins de trois minutes (petit nettoyage, coupure brève),
+      l'attente est sautée et la mesure repart immédiatement.</td></tr>
   <tr><td class="duree">10 minutes</td>
       <td>Fenêtre de la moyenne sur laquelle l'appareil décide d'ouvrir ou de
       fermer une session de dosage pH — assez large pour ignorer l'agitation
@@ -765,16 +764,21 @@ l'information.</p>
 
 <h3>Les journées «&nbsp;non comparables&nbsp;»</h3>
 
-<p>Six circonstances rendent une journée inutilisable pour comparer des
+<p>Plusieurs circonstances rendent une journée inutilisable pour comparer des
 versions&nbsp;: la <strong>consigne a été modifiée</strong> en cours de
-journée, un <strong>boost chlore</strong> était actif, la
-<strong>stabilisation des mesures n'a jamais été atteinte</strong>, une
+journée, un <strong>boost chlore</strong> était actif, une
 <strong>coupure de courant</strong> a interrompu la journée, la
 <strong>régulation n'était pas en automatique</strong> (mode manuel, mode
 maintenance, assistant de mesure du débit), ou le <strong>compteur de temps
 de filtration a été remis à zéro</strong> (restauration d'usine,
 restauration d'une sauvegarde de réglages). Une petite note sous la rangée
 énumère celles qui sont réellement présentes.</p>
+
+<p><em>Une ancienne circonstance («&nbsp;stabilisation des mesures non
+atteinte&nbsp;», liée au plafond de 90&nbsp;minutes du tableau précédent) ne
+peut plus se produire depuis que l'attente est devenue une durée fixe
+— elle reste possible sur des journées enregistrées avant ce
+changement.</em></p>
 
 <div class="box">
   <p class="box-title">Pourquoi un tiret plutôt qu'un zéro</p>

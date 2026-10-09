@@ -12,6 +12,7 @@
 #include "ph_offset.h"         // v2.25.0 : applyPhOffset() — pH corrigé des gardes
 #include "ph_actuator_limit_logic.h"  // feature-086 : phActuatorUndersized() (pure)
 #include "utf8_clamp.h"         // feature-129 (phase A) : ex-clampReasonUtf8, module pur partagé
+#include "dose_available_logic.h"  // feature-139 (B1, extraction test-engineer) : formule pure
 #include <esp_task_wdt.h>
 #include <string.h>  // strlcpy / strnlen / memcpy — tampon de cause de refus (R2)
 #include <time.h>
@@ -506,6 +507,35 @@ unsigned long PumpControllerClass::getMixingRemainingS(int pumpIndex) const {
   uint32_t now = (uint32_t)millis();
   int32_t rem = (int32_t)(_mixingEndMs[pumpIndex] - now);
   return rem > 0 ? (unsigned long)rem / 1000UL : 0;
+}
+
+// feature-139 (v2.62.0, B1 gate pool-chemistry 2e passage) : voir le
+// commentaire de déclaration (pump_controller.h) pour la formule et son
+// motif. Bug corrigé par ce calcul : l'ancien ne regardait QUE le reste de la
+// purge et annonçait jusqu'à 10 min sur un arrêt d'eau COURT (dispensé, purge
+// déjà ouverte) alors que le plancher de gel du filtre capteur (60 s,
+// sensor_filter.cpp) était la contrainte réellement dominante — soit un
+// facteur 10 d'erreur d'affichage.
+//
+// Coquille MINCE : la décision pure (extraction test-engineer, même lot) vit
+// dans dose_available_logic.h (ADR-0017), testée en natif. Second défaut
+// trouvé à cette extraction (cf. commentaire du module pur) : `mv.measuresValid`
+// doit être transmis pour clamper le reste de purge à 0 une fois la porte déjà
+// ouverte (dispensée ou non) — sans quoi le même facteur 10 revenait sur tout
+// cycle dispensé, et la valeur restait figée à 10 min en régime permanent.
+// TROISIÈME défaut (code-reviewer, 2e passage) : `mv.waterPresent` doit AUSSI
+// être transmis — filtration à l'arrêt, aucun des deux planchers ne court,
+// l'ancien calcul retombait sur 600 s FIGÉ toute la nuit. Le retour peut donc
+// valoir UINT32_MAX (délai INDÉTERMINÉ) : voir dose_available_logic.h.
+// ⚠️ Appelée aussi depuis async_tcp (/data, WebSocket) : ne lire ICI que des
+// accesseurs explicitement sûrs hors loopTask (snapshot measureValidity,
+// sensors.getFilterGateRemainingMs() — cf. leurs commentaires respectifs).
+unsigned long PumpControllerClass::getDoseAvailableInS() const {
+  const MeasureValiditySnapshot mv = measureValidity.getSnapshot();
+  const uint32_t nowMs = (uint32_t)millis();
+  const uint32_t filterRemainMs = sensors.getFilterGateRemainingMs(nowMs);
+  return computeDoseAvailableInS(mv.waterPresent, mv.measuresValid, mv.stabElapsedS,
+                                 kPurgeFloorMs, filterRemainMs);
 }
 
 unsigned long PumpControllerClass::getStabilizationRemainingS() const {
@@ -1580,9 +1610,27 @@ bool PumpControllerClass::canDose(int pumpIndex) {
     case DoseRefusal::ReadingNaNStale:
       cause = "mesure filtrée indisponible : plus aucune mesure acceptée";
       break;
-    case DoseRefusal::ReadingNaNGateClosed:
-      cause = "mesure filtrée indisponible : mesures non représentatives";
+    case DoseRefusal::ReadingNaNGateClosed: {
+      // feature-139 (v2.62.0) : libellé rendu DÉTERMINISTE (condition
+      // pool-chemistry) — ne parle plus d'instabilité, annonce la fin de
+      // l'attente. N2 (gate pool-chemistry, 2e passage) : mot « purge » banni
+      // côté utilisateur (vocabulaire jugé incompréhensible).
+      // M3 (code-reviewer, 2e passage, ADR-0082) : canDose() tourne à chaque
+      // update() (chemin PÉRIODIQUE) — composition SANS String(unsigned long)
+      // ni `+` enchaînés : un seul snprintf dans un tampon de PILE, puis UNE
+      // SEULE construction de `cause` (même coût que les autres cases du
+      // switch, pas un de plus).
+      // Invariant structurel : ce case n'est atteint que si in.waterPresent
+      // (DoseRefusal::FiltrationOff, garde 2, court-circuite evaluateDose()
+      // sinon — dosing_logic.cpp) ⇒ getDoseAvailableInS() != UINT32_MAX ici.
+      char buf[112];
+      snprintf(buf, sizeof(buf),
+               "mesure filtrée indisponible : eau neuve pas encore arrivée aux "
+               "sondes, dosage disponible dans %lu min",
+               (getDoseAvailableInS() + 59UL) / 60UL);
+      cause = buf;
       break;
+    }
     case DoseRefusal::FilterWarmup:
       cause = "filtre capteur en cours de remplissage (stabilisation)";
       break;
@@ -1592,9 +1640,15 @@ bool PumpControllerClass::canDose(int pumpIndex) {
     case DoseRefusal::FilterStale:
       cause = "plus aucune mesure acceptée par le filtre (sonde muette)";
       break;
-    case DoseRefusal::FilterGateClosed:
-      cause = "mesures non représentatives (purge / circulation à l'arrêt)";
+    case DoseRefusal::FilterGateClosed: {
+      // feature-139 (v2.62.0) : idem ReadingNaNGateClosed ci-dessus (N2, M3).
+      char buf[96];
+      snprintf(buf, sizeof(buf),
+               "eau neuve pas encore arrivée aux sondes, dosage disponible dans %lu min",
+               (getDoseAvailableInS() + 59UL) / 60UL);
+      cause = buf;
       break;
+    }
     case DoseRefusal::FilterUnstable:
       cause = "capteur instable (rejets consécutifs)";
       break;

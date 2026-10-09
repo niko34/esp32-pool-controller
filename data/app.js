@@ -2986,8 +2986,8 @@
     if ($("#max_cycles_per_day")) $("#max_cycles_per_day").value = typeof cfg.max_cycles_per_day === "number" ? cfg.max_cycles_per_day : 48;
     // feature-056 : mode d'installation (remplace regulation_mode + filtration_enabled)
     applyInstallMode(cfg.install_mode || "managed");
-    // feature-091 : plus de champ « délai avant injection » — la purge est
-    // adaptative (plancher/plafond firmware) ; la ligne « Dernière purge » est
+    // feature-091 : plus de champ « délai avant injection » — l'attente après
+    // un arrêt d'eau est fixe (firmware) ; la ligne « Dernière pause » est
     // nourrie par latestSensorData (updateMeasuresPurgeDisplay), pas par la config.
     // feature-090 : réinjection des champs absents d'une config partielle
     // (pool_size, regulation_defaults_by_size, regulation_speed) + sélecteur de
@@ -3172,11 +3172,16 @@
   // feature-061 : segments d'état mesure partagés dashboard / pages pH-ORP.
   // Recalculés à chaque push WS, AUCUN tick JS seconde. `sensor` réservé pour
   // d'éventuels textes différenciés.
-  // feature-091 : la purge est ADAPTATIVE (fin sur stabilité des bruts, plancher
-  // 10 min / plafond 90 min firmware) — il n'y a plus de durée connue à l'avance,
-  // donc plus de compte à rebours : le firmware pousse la durée ÉCOULÉE
-  // (measures_stab_elapsed_s) et le nombre de re-purges du cycle d'eau courant
-  // (measures_purge_count). Firmware ancien (champs absents) → texte neutre.
+  // feature-139 (v2.62.0, correctif code-reviewer 2026-10-08, D7) : le texte
+  // appuyé sur la durée ÉCOULÉE (« Stabilisation depuis N min ») a été retiré
+  // — il ne décrit plus rien (plus d'analyse de stabilité dans cet appareil)
+  // et c'est exactement le vocabulaire que l'utilisateur a dit ne plus
+  // comprendre. Remplacé par `_measuresWaitText(data)` : MÊME source que le
+  // bandeau de blocage / la pastille / le chip filtre (codes 18/22), pour
+  // qu'un seul endroit du code puisse se tromper sur ce délai, pas quatre.
+  // `water_present === true` est garanti dans cette branche (cf. condition
+  // ci-dessous) : la sous-branche « filtration arrêtée » de
+  // _measuresWaitText() ne peut pas s'y déclencher, aucune contradiction.
   function measureStateSegments(sensor, data) {
     if (!data) return []; // boot : pas de faux positif avant le 1er message WS
     if (data.water_present === false) {
@@ -3187,20 +3192,15 @@
     }
     if (data.water_present === true && data.measures_valid === false) {
       // Le plafond 90 min (motif 2) OUVRE la porte (measures_valid passe à true) :
-      // il n'a donc jamais sa place ici — il est porté par les bandeaux
-      // #measures_purge_timeout_banner[_orp] (updateMeasuresPurgeDisplay). Revue
-      // v2.34.0 : une branche « non atteinte » testée ici ne se déclenchait qu'à
-      // la purge SUIVANTE, tant que le motif 2 restait mémorisé — texte faux.
-      const elapsed = data.measures_stab_elapsed_s;
-      if (typeof elapsed !== 'number' || !isFinite(elapsed)) {
-        return [{ priority: 1, variant: 'info', text: 'Stabilisation en cours' }];
-      }
-      const rePurge = (data.measures_purge_count || 0) >= 1;
-      const verb = rePurge ? 'Re-stabilisation' : 'Stabilisation';
-      const text = elapsed < 60
-        ? `${verb} depuis < 1 min`
-        : `${verb} depuis ${Math.floor(elapsed / 60)} min`;
-      return [{ priority: 1, variant: 'info', text }];
+      // il n'a donc jamais sa place ici. Revue v2.34.0 : une branche « non
+      // atteinte » testée ici ne se déclenchait qu'à la purge SUIVANTE, tant
+      // que le motif 2 restait mémorisé — texte faux.
+      // feature-139 (v2.62.0) : le motif 2 n'est plus JAMAIS émis par le
+      // firmware (code réservé, non réattribué) — cette branche reste
+      // défensive mais ne se déclenche plus en pratique. Le bandeau dédié
+      // #measures_purge_timeout_banner[_orp] a été retiré (alerte MQTT
+      // measures_purge_timeout supprimée côté firmware).
+      return [{ priority: 1, variant: 'info', text: _measuresWaitText(data) }];
     }
     return [];
   }
@@ -3965,7 +3965,7 @@
     if (limitMin > 0 && usedMs >= limitMin * 60000) return "Limite de durée atteinte";
 
     // v2.25.1 : PORTE DE VALIDITÉ FERMÉE — traitée AVANT la cause de refus
-    // firmware. Le badge capteur affiche déjà « Stabilisation depuis X min »
+    // firmware. Le badge capteur affiche déjà le texte de _measuresWaitText()
     // (measureStateSegments, measures_valid === false) ; descendre jusqu'au motif
     // de refus juxtaposait deux messages contradictoires sur la même carte.
     // On ne se taît QUE pour la famille « stabilisation des mesures » : une panne
@@ -5293,6 +5293,10 @@
     // quand il n'y en a pas — les libellés des codes 2 et 10-14 sont déjà
     // assez courts pour une pastille.
     let short = (entry && (entry.pill || entry.chip)) || info.label || "";
+    // feature-139 (v2.62.0, lot B) : codes 18/22 — `info.label` porte déjà le
+    // texte DÉTERMINISTE (_measuresWaitText), il doit primer sur `entry.chip`
+    // (repli statique hors-ligne de la table).
+    if (info.code === 18 || info.code === 22) short = info.label;
     if (info.code === DOSE_BLOCK_CODE_GUARD) {
       // Sentinelle 250 : cause de GARDE, message porteur de valeurs runtime →
       // trop long pour une pastille (le modal filtre garde le texte complet).
@@ -5564,7 +5568,10 @@
   const TTT_FLAG_LABELS = [
     [0x01, "consigne modifiée"],
     [0x02, "boost chlore"],
-    [0x04, "stabilisation non atteinte"],
+    // feature-139 (v2.62.0, balayage de vocabulaire du 2026-10-08) : ne plus
+    // dire « stabilisation » — ce bit décrit un jour où la mesure a été
+    // indisponible (attente post-coupure d'eau), vocabulaire SIMPLE.
+    [0x04, "mesure indisponible"],
     [0x08, "reprise après coupure"],
     [0x10, "régulation non automatique"],
     // bug-106 : le compteur de filtration a RECULÉ pendant la tenue du jour
@@ -5952,26 +5959,37 @@
     if (changed || (_kpiDays === null && !_kpiFailed)) fetchKpiHistory();
   }
 
-  // feature-091 : purge adaptative — rendu de la ligne « Dernière purge »
-  // (Réglages > Régulation) et des bandeaux « Stabilisation des mesures non
-  // atteinte » (pages pH et ORP). Champs servis à l'IDENTIQUE sur /data et WS :
-  //   measures_purge_last_duration_s → durée de la dernière purge (s) ;
-  //   measures_purge_last_end        → motif de fin : 0 aucune, 1 stabilité,
-  //                                    2 plafond (90 min), 3 dispensée
-  //                                    (coupure ≤ 10 s), 4 relancée (re-purge).
+  // feature-091 : rendu de la ligne « Dernière pause » (Réglages > Régulation)
+  // — l'arrêt d'injection qui suit un arrêt d'eau, le temps que l'eau neuve
+  // arrive jusqu'aux sondes (même texte d'aide que le bloc ci-dessus dans
+  // index.html). Champs firmware servis à l'IDENTIQUE sur /data et WS (noms
+  // INCHANGÉS, contrat public) :
+  //   measures_purge_last_duration_s → durée de la dernière pause (s) ;
+  //   measures_purge_last_end        → motif de fin : 0 aucune, 1 normale,
+  //                                    3 dispensée (arrêt d'eau STRICTEMENT
+  //                                    < kWaterStopGraceS = 180 s / 3 min,
+  //                                    borne STRICTE : à 180 s pile, PAS de
+  //                                    dispense — ne pas recopier l'ancien
+  //                                    seuil kShortOutageS = 10 s, supprimé).
   // Sentinelle de présence : measures_purge_last_end numérique. Absent
-  // (firmware antérieur) → « — » et bandeaux masqués, rien d'inventé.
-  // L'alerte firmware measures_purge_timeout ne transite que par MQTT : côté
-  // web, le motif 2 EST le signal. Le bandeau reste visible tant que le motif
-  // vaut 2, y compris si une re-purge rouvre le badge capteur.
+  // (firmware antérieur) → « — », rien d'inventé.
+  // feature-139 (v2.62.0, correctif code-reviewer du 2026-10-08) : vocabulaire
+  // VISIBLE purgé de « purge »/« stabilité »/« dispensée » (seul le NOM du
+  // champ firmware conserve ces mots, jamais affichés tels quels). Motifs 2
+  // (plafond 90 min) et 4 (relancée) RETIRÉS de l'émission firmware — le
+  // mécanisme de re-purge et l'analyse de stabilité ont disparu, et l'alerte
+  // MQTT measures_purge_timeout qu'ils signalaient aussi n'existe plus. Les
+  // bandeaux #measures_purge_timeout_banner[_orp] sont retirés du DOM pour la
+  // même raison. Les `case` 2/4 ci-dessous restent en lecture DÉFENSIVE (un
+  // firmware ancien ou un rollback peut encore les émettre) : texte NEUTRE et
+  // COURT, qui ne prétend décrire ni un mécanisme vivant ni un jargon interne
+  // (« motif hérité » a été jugé incompréhensible, correctif du 2026-10-08).
   function updateMeasuresPurgeDisplay(data) {
     data = data || {};
     const lastEl = $("#measures_purge_last");
-    const banners = [$("#measures_purge_timeout_banner"), $("#measures_purge_timeout_banner_orp")];
     const end = data.measures_purge_last_end;
     if (typeof end !== "number" || !isFinite(end)) {
       if (lastEl) { lastEl.textContent = "—"; lastEl.style.color = ""; }
-      banners.forEach((b) => { if (b) b.hidden = true; });
       return;
     }
     const dur = data.measures_purge_last_duration_s;
@@ -5979,17 +5997,16 @@
     const minTxt = (min === null) ? "—" : `${min} min`;
     let txt = "—";
     switch (end) {
-      case 1: txt = `${minTxt} — stabilité atteinte`; break;
-      case 2: txt = `${minTxt} — plafond atteint, mesures non stabilisées`; break;
-      case 3: txt = "dispensée — coupure brève (≤ 10 s)"; break;
-      case 4: txt = `${minTxt} — relancée, la mesure a bougé`; break;
+      case 1: txt = `${minTxt} — terminée normalement`; break;
+      case 2: txt = `${minTxt} — terminée`; break;
+      case 3: txt = "pas d'attente — coupure d'eau de moins de 3 minutes"; break;
+      case 4: txt = `${minTxt} — terminée`; break;
       default: txt = "—";
     }
     if (lastEl) {
       lastEl.textContent = txt;
       lastEl.style.color = (end === 2) ? "var(--warn)" : "";
     }
-    banners.forEach((b) => { if (b) b.hidden = (end !== 2); });
   }
 
   // ========== SECTIONS DÉTAILLÉES ==========
@@ -6016,8 +6033,8 @@
     // jamais masquer les rubriques suivantes en silence.
     try { updateTimeToTargetDisplay(); } catch (e) { console.error('[ttt] rendu:', e); }
 
-    // feature-091 : durée/motif de la dernière purge + bandeaux plafond — même
-    // source (latestSensorData : /data ET WS), même précaution try/catch.
+    // feature-091 : durée/motif de la dernière pause — même source
+    // (latestSensorData : /data ET WS), même précaution try/catch.
     try { updateMeasuresPurgeDisplay(latestSensorData); } catch (e) { console.error('[purge] rendu:', e); }
 
     // === FILTRATION ===
@@ -6581,8 +6598,14 @@
     // v2.25.1 : le CODE de refus discrimine PANNE (sonde figée / muette) et état
     // transitoire (préchauffage, porte de validité fermée). Il passe avant le
     // test « brut invalide », qui condamnait l'EZO sans savoir pourquoi.
-    const entry = DOSE_BLOCK_CODES[_doseBlockInfo(json, prefix).code];
-    const short = entry && entry.chip;   // undefined si code absent / non qualifiant
+    const blockInfo = _doseBlockInfo(json, prefix);
+    const entry = DOSE_BLOCK_CODES[blockInfo.code];
+    // feature-139 (v2.62.0, lot B) : codes 18/22 — `blockInfo.label` porte le
+    // texte DÉTERMINISTE (_measuresWaitText), prioritaire sur `entry.chip`
+    // (repli statique hors-ligne de la table).
+    const short = (blockInfo.code === 18 || blockInfo.code === 22)
+      ? blockInfo.label
+      : (entry && entry.chip);   // undefined si code absent / non qualifiant
     if (short && entry.tone === 'fault') return { cls: 'bad', label: short };
     // Remonté avant le test « brut invalide », qui le masquait (une sonde
     // instable finit souvent par rendre une lecture nulle).
@@ -6594,7 +6617,7 @@
       return recent ? { cls: 'warn', label: 'Lecture EZO manquante' }
                     : { cls: 'unknown', label: 'EZO indisponible' };
     }
-    // Cause connue et NORMALE (préchauffage, mesures non représentatives) :
+    // Cause connue et NORMALE (préchauffage, mesure en pause) :
     // ton d'attente, jamais le registre visuel d'une panne.
     if (short) return { cls: 'warn', label: short };
     if (json?.[prefix + 'FilterReady'] === false) return { cls: 'warn', label: 'Stabilisation…' };
@@ -6636,6 +6659,59 @@
   // stab : cause appartenant à la famille « stabilisation des mesures », déjà
   //        annoncée par le badge capteur (cf. measureStateSegments) — sert à ne
   //        pas afficher deux messages concurrents côte à côte.
+  //
+  // feature-139 (v2.62.0, lot B puis correctif gate du 2026-10-08) : les codes
+  // 18 (ReadingNaNGateClosed) et 22 (FilterGateClosed) — l'ATTENTE avant la
+  // première mesure jugée fiable après une coupure d'eau/filtration — passent
+  // d'un libellé STATIQUE qui ne parlait que d'instabilité à un texte
+  // DÉTERMINISTE qui ANNONCE SA FIN.
+  // ⚠️ Correctif gate (2e passage, 2026-10-08) : un PREMIER calcul côté client
+  // (`600 − measures_stab_elapsed_s`, mirroir local de kPurgeFloorMs) MENTAIT
+  // d'un facteur 10 sur le cas le plus fréquent de ce lot — un cycle DISPENSÉ
+  // (coupure courte) a `elapsed` figé à 0, mais la porte rouvre en 60 s, car
+  // c'est un AUTRE plancher qui domine alors (gel du filtre de mesure), pas
+  // celui de la purge. Le firmware est le SEUL à connaître le max des deux
+  // plafonds : il expose désormais `measures_dose_available_in_s` (secondes,
+  // parité /data ↔ WS), et ce texte ne calcule plus rien — il LIT ce champ.
+  // AUCUNE constante de plancher n'est dupliquée ici : c'est exactement cette
+  // duplication qui a produit le défaut corrigé ci-dessus.
+  // Vocabulaire SIMPLE à dessein (retour utilisateur : « stabilisation » /
+  // « purge » / « représentativité » jugés incompréhensibles) : on dit ce qui
+  // se passe et quand ça finit, jamais plus.
+  // ⚠️ Correctif code-reviewer (3e occurrence du même défaut dans ce lot,
+  // 2026-10-08) : filtration ARRÊTÉE ⇒ le code 22 (FilterGateClosed) reste
+  // émis EN PERMANENCE, et `measures_dose_available_in_s` ne peut PLUS être un
+  // nombre fixe (il n'y a pas de date de reprise tant que rien ne circule) :
+  // le firmware OMET désormais ce champ dans ce cas précis (pas de sentinelle
+  // numérique — la marge WS ne le permet pas). TROIS cas à distinguer, pas
+  // deux : champ présent > 0, champ présent === 0, champ ABSENT. Le cas
+  // « absent » lui-même se sépare en DEUX causes selon `water_present` :
+  //   - `water_present === false` (champ fiable depuis feature-061, bien
+  //     antérieur à `measures_dose_available_in_s`) ⇒ c'est la filtration
+  //     arrêtée qui explique l'omission, délai réellement inconnu ;
+  //   - toute autre valeur (true / absent) ⇒ l'omission ne peut venir que d'un
+  //     firmware antérieur à ce champ (filtration par ailleurs active ou
+  //     indéterminée) : repli générique, jamais de calcul inventé.
+  // Ce texte NE CONTREDIT PAS le reste de l'écran : measureStateSegments()
+  // et getDosingStopReason() affichent déjà « Filtration arrêtée » avec
+  // PRIORITÉ sur toute cause de dosage quand water_present === false — ce
+  // texte n'apparaît donc que là où ces deux-là ne s'affichent pas (pastille,
+  // chip filtre, bandeau de blocage), sans jamais se contredire.
+  function _measuresWaitText(json) {
+    const remainingS = json && json.measures_dose_available_in_s;
+    if (typeof remainingS === 'number' && isFinite(remainingS) && remainingS >= 0) {
+      if (remainingS <= 0) return 'Reprise automatique imminente';
+      const remainingMin = Math.max(1, Math.ceil(remainingS / 60));
+      return `Reprise automatique dans ${remainingMin} min`;
+    }
+    if (json && json.water_present === false) {
+      return 'Reprise à la remise en route de la filtration';
+    }
+    // Firmware antérieur à ce champ (filtration par ailleurs active ou
+    // indéterminée) : repli statique correct, jamais de calcul sur une
+    // valeur invalide.
+    return 'Mesure en pause, reprise automatique à venir';
+  }
   const DOSE_BLOCK_CODE_GUARD = 250;
   const DOSE_BLOCK_CODES = {
     1:  { tone: 'fault',   label: 'Watchdog inactif — dosage suspendu' },
@@ -6656,12 +6732,18 @@
     15: { tone: 'normal',  label: 'Stabilisation du filtre de mesure', chip: 'Stabilisation…', stab: true },
     16: { tone: 'fault',   label: 'Sonde figée — vérifier la sonde', chip: 'Sonde figée' },
     17: { tone: 'fault',   label: 'Plus aucune mesure acceptée — vérifier la sonde', chip: 'Sonde muette' },
-    18: { tone: 'normal',  label: 'Mesures non représentatives (stabilisation)', chip: 'Mesures non représentatives', stab: true },
+    // feature-139 (v2.62.0, lot B) : label/chip ci-dessous = REPLI STATIQUE
+    // seulement (firmware antérieur à measures_stab_elapsed_s, ou appel qui
+    // n'aurait pas accès à `json`) — l'affichage normal passe par
+    // _measuresWaitText(json), voir les 3 points d'appel (_doseBlockInfo,
+    // _renderDosePill, _classifyFilterState) : ne pas reformuler ici sans
+    // reformuler là-bas.
+    18: { tone: 'normal',  label: 'Reprise automatique à venir', chip: 'Reprise à venir', stab: true },
     // Qualification de la garde 3b (filtre non prêt)
     19: { tone: 'normal',  label: 'Stabilisation du filtre de mesure', chip: 'Stabilisation…', stab: true },
     20: { tone: 'fault',   label: 'Sonde figée — vérifier la sonde', chip: 'Sonde figée' },
     21: { tone: 'fault',   label: 'Plus aucune mesure acceptée — vérifier la sonde', chip: 'Sonde muette' },
-    22: { tone: 'normal',  label: 'Mesures non représentatives (stabilisation)', chip: 'Mesures non représentatives', stab: true },
+    22: { tone: 'normal',  label: 'Reprise automatique à venir', chip: 'Reprise à venir', stab: true },
     // feature-092 — sentinelle 250 (cause de GARDE) : le message firmware porte
     // des valeurs runtime (seuils, mesure) et reste cité tel quel par le modal
     // filtre ; la pastille des cartes « Débit d'injection » a besoin d'un
@@ -6712,6 +6794,13 @@
       const g = DOSE_BLOCK_CODES[code];
       const guardTone = (prefix === 'orp' && g && g.toneOrp) ? g.toneOrp : 'fault';
       return { code, label: text || 'Sécurité pH/ORP active', tone: guardTone };
+    }
+    // feature-139 (v2.62.0, lot B) : codes 18/22 — libellé DÉTERMINISTE calculé
+    // depuis measures_stab_elapsed_s (cf. _measuresWaitText ci-dessus), jamais
+    // le texte statique de la table (devenu simple repli hors-ligne).
+    if (code === 18 || code === 22) {
+      const e = DOSE_BLOCK_CODES[code];
+      return { code, label: _measuresWaitText(json), tone: e ? e.tone : 'normal' };
     }
     const e = DOSE_BLOCK_CODES[code];
     if (e) return { code, label: e.label, tone: e.tone };
@@ -6782,7 +6871,7 @@
     location.hash = isOrp ? '#/orp' : '#/ph';
   }
 
-  function _renderDoseBlockRow(container, { label, tone, durationText, shortcutPrefix, rescueActive }) {
+  function _renderDoseBlockRow(container, { label, tone, durationText, shortcutPrefix, shortcutCode, rescueActive }) {
     container.innerHTML = '';
     container.classList.remove(
       'dose-block-banner__row--normal', 'dose-block-banner__row--fault', 'dose-block-banner__row--unknown'
@@ -6824,9 +6913,20 @@
     // (rescueActive), l'offre L7 et son bouton DISPARAISSENT — proposer
     // d'armer ce qui tourne déjà est l'incohérence que le gate a fermée. Le
     // texte de la ligne et le bouton « Ouvrir l'injection manuelle » restent
-    // inchangés : la mesure EST toujours non représentative, c'est le cas
-    // nominal.
-    if (shortcutPrefix === 'orp' && !rescueActive) {
+    // inchangés.
+    // ⚠️ Correctif gate pool-chemistry (2e passage, 2026-10-08, feature-139) :
+    // codes 18/22 RETIRÉS de l'offre de secours (hint L7 ET bouton) — ce
+    // RENVERSE la décision initiale de changement minimal. Motif chimique :
+    // l'attente « mesure non représentative » que ces deux codes couvrent est
+    // désormais BORNÉE (≤ 10 min) ET ANNONCÉE à l'écran (texte déterministe,
+    // cf. _measuresWaitText) ; proposer un volume fixe de chlore pendant cette
+    // attente inviterait au surdosage manuel pour rien. Le secours reste
+    // trouvable sur les vraies pannes de mesure (3, 4, 15, 19).
+    // ⚠️ `DOSE_BLOCK_SHORTCUT_CODES` (raccourci d'injection MANUELLE,
+    // bouton « Ouvrir l'injection manuelle » plus bas) N'EST PAS concernée :
+    // le gate distingue explicitement les deux usages, seule l'offre de
+    // SECOURS est restreinte ici.
+    if (shortcutPrefix === 'orp' && !rescueActive && ![18, 22].includes(shortcutCode)) {
       const cfg = window._config || {};
       const isManual = (cfg.orp_regulation_mode || 'automatic') === 'manual';
       const rescueHint = document.createElement('p');
@@ -6836,8 +6936,11 @@
         rescueHint.textContent = "Chloration de secours indisponible : la régulation du chlore est en mode Manuel. Repassez en Automatique ou Programmée pour l'utiliser.";
         container.appendChild(rescueHint);
       } else {
-        // L7 — libellé IMPOSÉ par le gate pool-chemistry, repris MOT À MOT.
-        rescueHint.textContent = "Dosage du chlore bloqué : mesures non représentatives. Vous pouvez activer la chloration de secours pour continuer à injecter un volume fixe.";
+        // L7 — libellé IMPOSÉ par le gate pool-chemistry (2e passage,
+        // 2026-10-08, feature-139), repris MOT À MOT. Remplace le texte
+        // antérieur (feature-140) : ne s'affiche plus que pour les vraies
+        // pannes de mesure (codes 3, 4, 15, 19 — jamais 18/22, exclus ci-dessus).
+        rescueHint.textContent = "Le chlore n'est plus dosé : l'appareil n'a plus de mesure fiable, et rien ne dit quand elle reviendra. La chloration de secours injecte un volume fixe, sans tenir compte de la mesure — à réserver aux pannes de sonde qui durent.";
         container.appendChild(rescueHint);
 
         const rescueBtn = document.createElement('button');
@@ -6928,10 +7031,14 @@
     // INDÉPENDANTE ⇒ deux lignes, SANS EXCEPTION : fusionner là masquerait un
     // second problème réel, ce qui serait pire que la redondance.
     //
-    // ⚠️ Libellé IMPOSÉ MOT À MOT par le gate pool-chemistry (feature-140,
-    // 2026-10-06), opposable au même titre que L1-L9 : ne JAMAIS le
-    // reformuler, abréger ou tronquer, et ne JAMAIS élargir la condition de
-    // fusion ci-dessus sans un nouveau passage du gate.
+    // ⚠️ Libellé IMPOSÉ MOT À MOT par le gate pool-chemistry (2e passage,
+    // 2026-10-08, feature-139), opposable au même titre que L1-L9 : ne JAMAIS
+    // le reformuler, abréger ou tronquer, et ne JAMAIS élargir la condition de
+    // fusion ci-dessus sans un nouveau passage du gate. Remplace le texte
+    // antérieur (feature-140, 2026-10-06) : le premier annonçait la fin de
+    // façon vague (« dès que... ») ; `ph.label` porte désormais le texte
+    // déterministe (_measuresWaitText, « Reprise automatique dans N min »),
+    // la fin n'est donc annoncée QU'UNE fois, pas deux.
     if (ph && orp && orp.code === DOSE_BLOCK_CODE_GUARD && DOSE_BLOCK_SHORTCUT_CODES.includes(ph.code)) {
       const durations = [ph.durationS, orp.durationS].filter((v) => v != null);
       // « bloqué depuis » = la PLUS ANCIENNE des deux durées : la ligne décrit
@@ -6942,15 +7049,17 @@
       const durationS = durations.length ? Math.max(...durations) : null;
       _renderDoseBlockRow(rowPh, {
         // %s = ph.label, repris TEL QUEL depuis DOSE_BLOCK_CODES (non reformulé).
-        label: `${ph.label} — dosage pH et dosage chlore suspendus tous les deux. Reprise automatique dès que les mesures sont de nouveau représentatives.`,
+        label: `${ph.label} — dosage du pH et du chlore en pause tous les deux, le temps que l'eau neuve arrive jusqu'aux sondes.`,
         tone: 'normal', // jamais fault — cohérent avec toneOrp (code 250, voie ORP)
         durationText: _doseBlockDurationText(durationS),
         // Le chaînage feature-140 reste attaché à la ligne fusionnée : la
         // ligne ORP absorbée ne doit PAS faire disparaître le bouton
-        // « Activer la chloration de secours » ni le libellé L7. La liste
+        // « Activer la chloration de secours » ni le libellé L7 — sauf
+        // exclusion codes 18/22 (ci-dessus, _renderDoseBlockRow). La liste
         // blanche DOSE_BLOCK_SHORTCUT_CODES est de toute façon satisfaite par
         // construction (condition de fusion ci-dessus porte déjà sur ph.code).
         shortcutPrefix: canShortcut(ph) ? 'orp' : null,
+        shortcutCode: canShortcut(ph) ? ph.code : null,
         rescueActive,
       });
       rowOrp.hidden = true;
@@ -6969,6 +7078,7 @@
         durationText: _doseBlockDurationText(durationS),
         // C4 : ligne fusionnée → raccourci par défaut sur l'ORP uniquement.
         shortcutPrefix: canShortcut(ph) ? 'orp' : null,
+        shortcutCode: canShortcut(ph) ? ph.code : null,
         rescueActive,
       });
       rowOrp.hidden = true;
@@ -6992,6 +7102,7 @@
         label: orp.label, tone: orp.tone,
         durationText: _doseBlockDurationText(orp.durationS),
         shortcutPrefix: canShortcut(orp) ? 'orp' : null,
+        shortcutCode: canShortcut(orp) ? orp.code : null,
         rescueActive,
       });
     } else {

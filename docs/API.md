@@ -264,7 +264,7 @@ curl -u admin:monmotdepasse http://poolcontroller.local/data
   "measures_stab_elapsed_s": 0,
   "measures_purge_last_duration_s": 2820,
   "measures_purge_last_end": 1,
-  "measures_purge_count": 0,
+  "measures_dose_available_in_s": 0,
   "ph_dosing": false,
   "orp_dosing": false,
   "ph_pump_flow_uncharacterized": false,
@@ -394,12 +394,23 @@ curl -u admin:monmotdepasse http://poolcontroller.local/data
 > |-------|------|-------------|
 > | `measures_stab_elapsed_s` | uint32 | Secondes **écoulées** dans la purge courante ; `0` hors purge. Nom toujours **distinct** de `stabilization_remaining_s` (sas post-calibration des pompes). |
 > | `measures_purge_last_duration_s` | uint32 | Durée de la **dernière purge terminée** (s) ; `0` si aucune depuis le boot ou si elle a été dispensée. |
-> | `measures_purge_last_end` | uint8 | Motif de fin : `0` aucune, `1` stabilité, `2` **plafond atteint** (mesures non stabilisées → alerte MQTT `measures_purge_timeout`), `3` dispensée (coupure ≤ 10 s), `4` re-purge terminée. Valeurs figées (`enum class PurgeEnd`, [`src/measure_validity.h`](../src/measure_validity.h)). |
+> | `measures_purge_last_end` | uint8 | Motif de fin : `0` aucune, `1` stabilité, `3` dispensée (arrêt d'eau court). ⚠️ **Depuis la v2.62.0** (feature-139, voir amendement plus bas) : `2` (plafond, qui déclenchait l'alerte MQTT `measures_purge_timeout` — **retirée**) et `4` (re-purge) ne sont **plus jamais émis** — valeurs réservées, non réattribuées. Valeurs figées (`enum class PurgeEnd`, [`src/measure_validity.h`](../src/measure_validity.h)). |
 > | `measures_purge_count` | uint8 | Nombre de **re-purges** du cycle d'eau courant (refermeture sur mesure redevenue instable) ; remis à zéro à l'arrêt de la circulation. |
 >
 > ⚠️ Le motif `2` **ouvre** la porte (`measures_valid` repasse à `true`) : c'est un fail-safe de disponibilité de la régulation, pas un blocage — les gardes pH/ORP habituelles restent seules en vigueur. Un client ne doit donc **pas** en déduire « mesures invalides », mais « mesures à surveiller ».
 >
 > Rétrocompat : un client antérieur qui lit `measures_stab_remaining_s` ne le trouve plus (clé absente) — il doit traiter l'absence comme « pas de compte à rebours disponible ». Buffer `/data` **inchangé** (gabarit documentaire 2304 o : +97 o net au pire cas ; ce chemin n'a de toute façon aucun plafond dur, `sendJsonResponse` dimensionne la `String` à la demande). Détail : [`docs/subsystems/measure-validity.md`](subsystems/measure-validity.md).
+>
+> **feature-139 (v2.62.0) — retrait de l'analyse de stabilité** ([ADR-0092](adr/0092-retrait-analyse-stabilite-porte-mesures.md), supersède l'[ADR-0059](adr/0059-purge-adaptative-fenetre-de-medianes.md)) : la purge ne juge plus la **stabilité** de la mesure (fenêtre de 10 statistiques de bloc, seuils 0,15 pH / 15 mV), seulement le **temps** écoulé depuis l'arrêt d'eau — motif établi par le gate `pool-chemistry` : ce détecteur n'était qu'un filtre de transitoire, structurellement aveugle à une mesure durablement fausse, et ses seuils n'avaient jamais été calés que sur un seul bassin. Conséquences sur ce bloc de champs :
+>
+> | Champ | Changement |
+> |-------|------------|
+> | `measures_purge_count` | **Retiré.** Le mécanisme de re-purge (refermeture C1) n'existe plus — ce champ serait devenu structurellement constant à 0. |
+> | `measures_purge_last_end` | **Domaine réduit à `{0, 1, 3}`.** `2` (plafond) et `4` (re-purge) ne sont **plus jamais émis** — valeurs **réservées, non réattribuées** : un consommateur qui testait `=== 2` cesse de matcher, sans faux-positif. |
+> | `measures_stab_elapsed_s`, `measures_purge_last_duration_s` | **Inchangés.** |
+> | `measures_dose_available_in_s` | **Nouveau.** uint32, secondes avant que le dosage automatique redevienne possible (max du reste de plancher de purge et du reste de plancher de gel du filtre capteur — remplace un calcul **côté client** faux d'un facteur 10). **0** si déjà disponible. ⚠️ Ce nombre promet uniquement la **fin de l'attente d'eau neuve** — jamais « dosage garanti » : plafonds horaire/journalier, anti-rafale, pause de mélange, présence d'eau et watchdog restent en dehors. Le champ est **omis** quand la filtration est à l'arrêt (délai alors inconnu). Détail : [`docs/subsystems/measure-validity.md`](subsystems/measure-validity.md#délai-avant-dosage-annoncé-à-lutilisateur-dose_available_logic-feature-139). |
+>
+> L'alerte MQTT `measures_purge_timeout` est **retirée** (voir [MQTT.md](MQTT.md#alertes)) — plus aucune émission possible, le motif `2` ne se produisant plus.
 >
 > **feature-067 (v2.20.0) — sémantique brut / corrigé des valeurs pH.** Aucun champ n'est ajouté ni renommé dans `/data`, mais la **valeur** de trois d'entre eux intègre désormais l'offset logiciel `ph_offset` :
 >

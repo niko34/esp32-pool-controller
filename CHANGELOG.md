@@ -2,6 +2,84 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [2.62.0] - 2026-10-08
+
+> **Ce qui change pour vous** : la correction de l'eau (pH, chlore) reprend
+> **quelques minutes** après un arrêt de filtration de courte durée, au lieu de
+> vingt, et ne s'interrompt plus en cours de journée sans raison visible. Les
+> messages affichés annoncent désormais **quand** le dosage reprend (« Reprise
+> automatique dans N min ») plutôt que de dire seulement qu'il est suspendu.
+> La chloration de secours n'est plus proposée pendant cette attente ordinaire
+> (elle reste proposée sur les vraies pannes de sonde).
+
+### Firmware
+- **Régulation (feature-139)** : retrait de l'analyse de stabilité des
+  mesures pH/ORP qui conditionnait la fin de la purge de reprise d'eau depuis
+  la v2.34.0 (fenêtre glissante de 10 statistiques de bloc, seuils 0,15 pH /
+  15 mV, re-fermeture, plafond de 90 min). Motif établi par le gate
+  `pool-chemistry` du 2026-10-08 : ce mécanisme était un détecteur
+  d'**étendue**, donc structurellement aveugle à une mesure *durablement*
+  fausse (qui ne bouge pas) — ce n'était pas une couche de sécurité, c'était
+  un filtre de transitoire dont le seul coût réel était du temps de
+  régulation perdu. Sur une demi-journée mesurée le 08/10, le battement de ce
+  mécanisme a coûté ~75 min de blocage côté pH et ~20 min côté ORP, dont 65 %
+  sans aucun arrêt de filtration à l'origine.
+  - **Ce qui reste** : un plancher **fixe** de 10 min (`kPurgeFloorMs`,
+    physique de renouvellement d'eau en conduite, universel), sauté si
+    l'arrêt d'eau qui précède a duré **moins de 3 min** (`kWaterStopGraceS`,
+    nouvelle constante, justification physique et non statistique).
+  - **Ce qui disparaît** : le détecteur de stabilité (`purge_stability_logic`,
+    supprimé), la re-fermeture, le plafond de 90 min et son alerte.
+  - **Un seul chemin de dispense** : qu'un arrêt d'eau court ait traversé un
+    redémarrage ou non, c'est désormais toujours la même comparaison de durée
+    qui décide — avant, deux chemins cohabitaient et pouvaient se contredire
+    (une dispense accordée après un arrêt de 8 s pouvait être annulée de fait
+    par le démarrage de filtration suivant).
+  - Les plafonds horaire/journalier de dosage, l'anti-rafale, la pause de
+    mélange, la présence d'eau, le watchdog et les butées chimiques pH ne
+    sont **pas** touchés — ils portent désormais tout le risque résiduel.
+- **MQTT** : l'alerte `measures_purge_timeout` est **retirée**, plus jamais
+  émise. Aucune entité d'auto-discovery Home Assistant n'y était associée.
+- **API `/data` + WebSocket** : `measures_purge_count` est **retiré** (le
+  mécanisme de re-purge n'existe plus) ; le domaine de `measures_purge_last_end`
+  est réduit à `{0, 1, 3}` (les valeurs `2` et `4` sont réservées, non
+  réattribuées) ; nouveau champ `measures_dose_available_in_s` — secondes
+  avant que le dosage automatique redevienne possible, seul endroit de vérité
+  pour ce délai (remplace un calcul côté client faux d'un facteur 10).
+
+### Fonctionnalités
+- **Interface** : les badges « Stabilisation depuis N min » / « Re-stabilisation
+  depuis N min » et les bandeaux « Stabilisation des mesures non atteinte »
+  (pages pH et ORP) sont remplacés par un texte unique, déterministe :
+  « Reprise automatique dans N min ». Vocabulaire simplifié à la demande de
+  l'utilisateur (« stabilisation », « purge », « représentativité » jugés
+  incompréhensibles).
+- **Chloration de secours** : n'est plus proposée pour l'attente ordinaire
+  après un arrêt d'eau (désormais bornée et annoncée à l'écran) ; reste
+  proposée sur les vraies pannes de capteur (mesure figée, filtre non prêt,
+  fenêtre de lissage en remplissage).
+
+### Documentation
+- `docs/subsystems/measure-validity.md` : réécriture de la section décrivant
+  le mécanisme de purge (retrait de l'analyse de stabilité, nouveau délai
+  avant dosage `dose_available_logic`).
+- `docs/subsystems/sensors.md`, `docs/subsystems/regulation-vue-d-ensemble.md`,
+  `docs/subsystems/pump-controller.md`, `docs/subsystems/ws-manager.md`,
+  `docs/subsystems/time-to-target.md` : mise à jour des mentions du mécanisme
+  retiré.
+- `docs/API.md`, `docs/MQTT.md`, `docs/UPDATE_GUIDE.md` : documentation du
+  retrait de `measures_purge_count` et de l'alerte `measures_purge_timeout`,
+  et du nouveau champ `measures_dose_available_in_s`.
+- `docs/features/page-ph.md`, `docs/features/page-orp.md`,
+  `docs/features/page-dashboard.md`, `docs/features/page-settings.md` :
+  retrait des bandeaux de plafond, nouveau texte des badges, restriction de
+  l'offre de chloration de secours.
+- [ADR-0092](docs/adr/0092-retrait-analyse-stabilite-porte-mesures.md) :
+  nouvel ADR — retrait de l'analyse de stabilité de la porte de validité des
+  mesures. Supersède l'[ADR-0059](docs/adr/0059-purge-adaptative-fenetre-de-medianes.md).
+
+---
+
 ## [2.61.0] - 2026-10-08
 
 > **Ce qui change pour vous** : les volumes de produit rapportés par l'appareil

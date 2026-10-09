@@ -190,6 +190,19 @@ public:
   bool isPhFilterLatched() const { return _phFilter.unstableLatched(); }
   bool isOrpFilterLatched() const { return _orpFilter.unstableLatched(); }
 
+  // feature-139 (v2.62.0, B1 ; M1 code-reviewer 2e passage) : millisecondes
+  // restantes avant la fin du plancher de gel de la porte d'alimentation (0 si
+  // non armé ou déjà écoulé). Appelable depuis N'IMPORTE QUEL contexte (lue
+  // depuis async_tcp via PumpControllerClass::getDoseAvailableInS()) : lit un
+  // SNAPSHOT (armed, untilMs) mis en cache sous spinlock par _updateFilterGates()
+  // (loopTask), puis calcule le reste avec le `nowMs` LIVE de l'appelant — donc
+  // SANS la staleness d'un reste précalculé (correction M1 : l'ancienne version
+  // lisait directement _phFilter sans synchronisation, paire potentiellement
+  // incohérente avec l'écriture loopTask). _phFilter et _orpFilter reçoivent le
+  // MÊME contexte au même tick (mêmes waterPresent/measuresValid/nowMs) : leur
+  // plancher de gel est donc IDENTIQUE — on met le pH en cache par convention.
+  uint32_t getFilterGateRemainingMs(uint32_t nowMs) const;
+
   // ===== v2.20.3 (C1) : alarme « filtre non prêt durablement » =====
   // true quand le filtre est resté NON PRÊT pendant plus de
   // kSensorFilterNotReadyAlarmMs alors que la filtration tournait ET que les
@@ -405,6 +418,16 @@ private:
       kSensorFilterMaxAgeMs, kOrpFilterMaxDispersion,
       kSensorFrozenSamples, kSensorFrozenEpsilonOrp,
       kOrpFilterRearmCoherence, kOrpFilterRearmMin, kOrpFilterRearmMax}};
+
+  // feature-139 (M1, code-reviewer 2e passage) : snapshot (armed, untilMs) du
+  // plancher de gel du filtre pH, rafraîchi SOUS SPINLOCK par
+  // _updateFilterGates() (loopTask uniquement) et lu SOUS LE MÊME SPINLOCK par
+  // getFilterGateRemainingMs() (n'importe quel contexte) — même idiome que
+  // measureValidity (_mux/_cache, measure_validity.h) et filtration
+  // (getExternalState()), pas un nouveau mécanisme.
+  mutable portMUX_TYPE _filterGateMux = portMUX_INITIALIZER_UNLOCKED;
+  bool _filterGateArmedCache = false;
+  uint32_t _filterGateUntilMsCache = 0;
 
   // ===== feature-022 Passe 2 : détecteur figé dédié température =====
   // Alimenté par les lectures DS18B20 VALIDES (brutes, NON arrondies) de la

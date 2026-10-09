@@ -67,7 +67,7 @@
 // =============================================================================
 
 // État porté par l'appelant (statique locale dans checkHeapHealth(), comme
-// PurgeStabilityState / HeapDropState sœurs du même style ADR-0017).
+// MeasureValidityState / HeapDropState sœurs du même style ADR-0017).
 struct HeapDropState {
   uint32_t ref = 0;          // Référence (palier haut courant)
   uint32_t lastEmitMs = 0;   // millis() de la dernière émission (ou de l'ancrage initial)

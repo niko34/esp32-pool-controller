@@ -1,6 +1,6 @@
 # ADR-0059 — La purge des mesures se termine sur la STABILITÉ, jugée par une fenêtre de 10 médianes : le rinçage est un fond en V, pas une rampe — et le réglage utilisateur disparaît
 
-- **Statut** : Accepté
+- **Statut** : Superseded by [ADR-0092](0092-retrait-analyse-stabilite-porte-mesures.md) — l'analyse de stabilité (critère, re-fermeture C1, plafond C2) est retirée en v2.62.0 ; ce qui survit : le retrait du réglage utilisateur `stabilization_delay_min` (§5 ci-dessous)
 - **Date** : 2026-09-04
 - **Décideurs** : gate `pool-chemistry` (**GO SOUS CONDITIONS C1-C6** le 04/09 17:15, **deux ré-arbitrages** de la fenêtre les 18:40 et 19:10, **GO final option (a)** à 20:50 avec les conditions 6-11), `architect`, `test-engineer` (rejeux du CSV terrain — c'est lui qui a invalidé les deux premières fenêtres), `code-reviewer` (Approved 21:15), utilisateur (retrait du réglage)
 - **Spec(s) liée(s)** : [feature-091](../../specs/features/done/feature-091-purge-adaptative-stabilisation.md) ; suite ouverte : [feature-097](../../specs/features/done/feature-097-seuil-de-stabilite-sur-donnees-terrain.md) ; journal d'arbitrage : `specs/plan-2026-09-regulation-et-robustesse.md` §6
@@ -272,8 +272,9 @@ Voie ORP, même chemin de code : max 11,5 → 8,7 mV — gain obtenu sans touche
 
 ## Références
 
-- Code : [`src/purge_stability_logic.h`](../../src/purge_stability_logic.h) /
-  [`.cpp`](../../src/purge_stability_logic.cpp) (détecteur pur),
+- Code : `src/purge_stability_logic.h` / `.cpp` (détecteur pur — **supprimé en v2.62.0**,
+  feature-139, [ADR-0092](0092-retrait-analyse-stabilite-porte-mesures.md) ; lien retiré, la
+  cible n'existe plus),
   [`src/measure_validity_logic.h`](../../src/measure_validity_logic.h) (machine d'état,
   dispense C3), [`src/measure_validity.cpp`](../../src/measure_validity.cpp) (coquille,
   mémoire RTC, journal `[STAB]`, alerte MQTT),
@@ -282,9 +283,10 @@ Voie ORP, même chemin de code : max 11,5 → 8,7 mV — gain obtenu sans touche
   [`src/pump_controller.cpp`](../../src/pump_controller.cpp) (C4),
   [`src/web_routes_config.cpp:850`](../../src/web_routes_config.cpp) (clé POST obsolète
   acceptée sans effet), [`src/regulation_defaults.h`](../../src/regulation_defaults.h)
-- Tests : [`test/test_native_purge_stability/`](../../test/test_native_purge_stability/)
-  (25 cas : rejeux 02/09 et 04/09, bruités et non bruités, dérives lentes, ORP en pente,
-  démonstration de W = 8 à tort),
+- Tests : `test/test_native_purge_stability/` (25 cas : rejeux 02/09 et 04/09, bruités et non
+  bruités, dérives lentes, ORP en pente, démonstration de W = 8 à tort) — **suite supprimée en
+  v2.62.0** (feature-139, [ADR-0092](0092-retrait-analyse-stabilite-porte-mesures.md)) ; lien
+  retiré, la cible n'existe plus,
   [`test/test_native_measure_validity/`](../../test/test_native_measure_validity/)
   (plancher, deux refermetures puis plafond). Mutation W 10 → 8 tuée par 6 tests ;
   « plancher < fenêtre » tué par `static_assert`.

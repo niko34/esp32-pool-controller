@@ -73,23 +73,23 @@ Sélecteur segmenté `#pool_size` en **première position** du panneau ([`data/i
 - `ph_daily_limit` / `orp_daily_limit` (mL) — mapping : `max_ph_ml_per_day` / `max_chlorine_ml_per_day` ([`config.h:141`](../../src/config.h:141) `SafetyLimits`).
 - `max_cycles_per_day` (feature-060, v2.12.0) — champ **« Cycles de dosage max / jour (par pompe) »** (`#max_cycles_per_day`, [`data/index.html:1573`](../../data/index.html:1573)) : garde anti-emballement (garde 9 anti-cycling), borne le nombre de démarrages de dosage par pompe et par jour. Défaut **24** (était 48 — abaissé en v2.20.5 ; ⚠️ la valeur étant persistée en NVS, un appareil **déjà provisionné garde son 48** et doit être réglé à la main dans ce champ), saisie **10–60** (`min`/`max` HTML + pré-clamp JS indicatifs — le **serveur clampe systématiquement** dans [10, 60] et journalise un warn, voir [`docs/API.md`](../API.md)). Aide contextuelle sous la grille : « garde anti-emballement — borne le nombre de démarrages de dosage par pompe et par jour (10-60). Le volume reste plafonné par les limites journalière et horaire. » Détails et fondement chimique : [`pump-controller.md`](../subsystems/pump-controller.md#limite-de-cyclesjour-configurable-garde-9-feature-060-v2120).
 
-#### Ligne « Dernière purge » — le délai avant injection n'est plus un réglage (feature-091, v2.34.0)
+#### Ligne « Dernière purge » — le délai avant injection n'est plus un réglage (feature-091, v2.34.0 ; remanié feature-139, v2.62.0)
 
-Le champ **« Délai avant injection »** (`stabilization_delay_min`) a été **retiré du panneau**. La suspension d'injection à la reprise de la filtration ne se règle plus : elle dure le temps que les mesures pH et ORP **se stabilisent**, entre un plancher de **10 min** et un plafond de **90 min** (constantes firmware, [ADR-0059](../adr/0059-purge-adaptative-fenetre-de-medianes.md)).
+Le champ **« Délai avant injection »** (`stabilization_delay_min`) a été **retiré du panneau** depuis la v2.34.0 et n'est pas revenu. **Depuis la v2.62.0** ([ADR-0092](../adr/0092-retrait-analyse-stabilite-porte-mesures.md), supersède l'[ADR-0059](../adr/0059-purge-adaptative-fenetre-de-medianes.md)), la suspension d'injection à la reprise de la filtration n'attend plus que les mesures « se stabilisent » (mécanisme retiré, jugé aveugle à une mesure durablement fausse) : elle dure un plancher **fixe** de 10 min, sauté si l'arrêt d'eau qui précède a duré moins de 3 min.
 
 À sa place, une ligne **lecture seule** sous la grille des limites ([`data/index.html`](../../data/index.html) `#measures_purge_last`) :
 
 | `measures_purge_last_end` | Texte affiché |
 |---|---|
-| `1` stabilité | `N min — stabilité atteinte` |
-| `2` plafond | `N min — plafond atteint, mesures non stabilisées` (valeur colorée en `var(--warn)`) |
-| `3` dispensée | `dispensée — coupure brève (≤ 10 s)` |
-| `4` re-purge | `N min — relancée, la mesure a bougé` |
+| `1` fin normale (= plancher atteint) | `N min — terminée normalement` |
+| `3` pas d'attente (arrêt d'eau court) | `pas d'attente — coupure d'eau de moins de 3 minutes` |
 | `0` / champ absent (firmware < 2.34.0) | `—`, sans couleur |
+
+⚠️ **Motifs retirés depuis la v2.62.0** : `2` (plafond, coloré `var(--warn)`) et `4` (re-purge) ne sont **plus jamais émis** par le firmware (le plancher fixe n'a ni plafond ni re-fermeture) — leur `case` reste dans `updateMeasuresPurgeDisplay()` ([`data/app.js`](../../data/app.js)) par lecture défensive (firmware ancien, rollback), mais ne devrait plus jamais se déclencher en usage normal.
 
 - **Rendu** : `updateMeasuresPurgeDisplay(latestSensorData)` ([`data/app.js`](../../data/app.js)), appelé depuis `updateDetailSections()` sous `try/catch` — nourri par `latestSensorData`, donc par `/data` **et** par le push WS (mêmes clés des deux côtés), **jamais** par `/get-config`. La sentinelle de présence est `measures_purge_last_end` **numérique** : rien n'est inventé face à un firmware ancien.
 - **Durée** : `measures_purge_last_duration_s` arrondie à la minute (`Math.round(dur / 60)`), `—` si absente.
-- **Texte d'aide** sous la ligne : « Au redémarrage de la filtration, l'injection est suspendue tant que les mesures pH et ORP ne sont pas stables (10 min minimum, 90 min maximum). Aucune durée à régler. »
+- **Texte d'aide** sous la ligne : rappelle que l'injection est suspendue au redémarrage de la filtration le temps d'un plancher fixe de 10 min, sauté si l'arrêt d'eau qui précède a duré moins de 3 min. Aucune durée à régler.
 - **Compatibilité** : `/save-config` accepte encore la clé `stabilization_delay_min` **sans effet** — un onglet resté ouvert sur l'ancienne version n'échoue pas ; le frontend embarqué, lui, ne l'envoie plus ([`docs/API.md`](../API.md#post-save-config--critical)).
 
 Le **dialogue de restauration** et le **dialogue de changement de taille de bassin** listent donc **7 réglages** au lieu de 8 (le « délai de stabilisation » y a disparu, comme dans l'objet `regulation_defaults` du firmware).

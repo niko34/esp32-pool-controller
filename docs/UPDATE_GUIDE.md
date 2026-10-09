@@ -365,7 +365,25 @@ détruirait le slot OTA de secours.
 
 ---
 
+### L'attente après un arrêt d'eau ne juge plus la stabilité de la mesure — depuis v2.62.0 (2026-10-08)
+
+**Aucune action requise.** Pas de changement de partition ni de format de configuration.
+
+Depuis la v2.34.0, la purge de reprise d'eau se terminait quand les mesures pH/ORP **cessaient de bouger** (plancher 10 min, plafond 90 min). Ce mécanisme est **retiré** ([ADR-0092](adr/0092-retrait-analyse-stabilite-porte-mesures.md)) : l'appareil juge désormais le **temps**, pas la variation de la mesure.
+
+- **Au redémarrage de la filtration**, l'injection reprend après un plancher **fixe** de 10 minutes — sauf si l'arrêt d'eau qui précède a duré **moins de 3 minutes** (nettoyage rapide, petite coupure), auquel cas l'injection reprend **immédiatement**.
+- **Ce qui disparaît** : la re-fermeture en cours de route si la mesure recommençait à bouger, et le plafond de 90 minutes avec son alerte. Avant ce correctif, une mesure qui continuait de fluctuer légèrement pouvait refermer la porte pour 20 minutes **sans aucun arrêt de filtration à l'origine** — mesuré à **65 % du temps de blocage** d'une demi-journée observée le 08/10/2026.
+- **Ce qui ne change pas** : les butées de sécurité pH (brute et corrigée), les limites journalière et horaire, l'inhibition du chlore sur pH haut, la pause de mélange.
+- **Le bandeau « Stabilisation des mesures non atteinte »** des pages pH et ORP, et l'alerte MQTT `measures_purge_timeout` qui l'accompagnait, **disparaissent** — ce cas ne peut plus se produire. Voir [MQTT.md](MQTT.md#alertes) pour l'impact sur une automation Home Assistant existante.
+- **Les messages affichés annoncent désormais quand l'injection reprend** (« Reprise automatique dans N min ») plutôt que depuis quand elle est suspendue — et la chloration de secours n'est plus proposée pendant cette attente ordinaire (elle reste proposée sur les vraies pannes de sonde).
+
+Détail des décisions : [ADR-0092](adr/0092-retrait-analyse-stabilite-porte-mesures.md) (retrait de l'analyse de stabilité, supersède l'[ADR-0059](adr/0059-purge-adaptative-fenetre-de-medianes.md) ci-dessous).
+
+---
+
 ### La régulation attend que l'eau soit rincée, et un redémarrage ne coûte plus l'apprentissage — depuis v2.34.0 (2026-09-04)
+
+> ⚠️ **Section historique, partiellement obsolète depuis la v2.62.0 ci-dessus.** Le mécanisme de « stabilité » décrit ici (plancher 10 min / plafond 90 min sur la variation de la mesure) a été **retiré**. Le bandeau « Stabilisation des mesures non atteinte » et l'alerte `measures_purge_timeout` mentionnés plus bas **ne se produisent plus**. Conservé pour mémoire du changement v2.34.0 (le plancher de 10 min et le principe « redémarrage ne coûte pas l'apprentissage » restent valables).
 
 **Aucune action requise.** Pas de changement de partition ni de format de configuration. **Un seul effet de bord, une seule fois** : voir l'encadré ci-dessous.
 
@@ -384,9 +402,19 @@ Il n'apparaît plus dans **Paramètres → Régulation** ni dans l'assistant de 
 | Ce qui s'affiche | Ce que ça veut dire |
 |---|---|
 | `12 min — stabilité atteinte` | cas nominal |
-| `dispensée — coupure brève (≤ 10 s)` | l'appareil a redémarré tout seul en moins de 10 s, l'eau n'a pas stagné |
+| `dispensée — coupure brève (≤ 10 s)` | *(historique v2.34.0, voir double correction ci-dessous)* l'appareil a redémarré tout seul en moins de 10 s, l'eau n'a pas stagné |
 | `8 min — relancée, la mesure a bougé` | la mesure est redevenue instable après ouverture, une nouvelle purge a été faite |
 | `90 min — plafond atteint, mesures non stabilisées` | ⚠️ la mesure n'a jamais cessé de bouger — voir ci-dessous |
+
+> ⚠️ **Double correction depuis la v2.62.0** (ce tableau décrit l'état v2.34.0, conservé pour
+> mémoire) : (1) le seuil de 10 s n'est plus d'actualité — il vaut désormais **180 s (3 min)**
+> (`kWaterStopGraceS`) ; (2) la dispense ne dépend plus d'un **redémarrage** : un simple arrêt
+> d'eau court en marche continue (filtration jamais coupée) dispense aussi, via le même chemin
+> de décision. Voir la section « [L'attente après un arrêt d'eau ne juge plus la stabilité de
+> la mesure](#lattente-après-un-arrêt-deau-ne-juge-plus-la-stabilité-de-la-mesure--depuis-v2620-2026-10-08) »
+> plus haut pour le comportement actuel. Les lignes `90 min — plafond atteint` et
+> `relancée, la mesure a bougé` de ce tableau **ne peuvent plus se produire** depuis la v2.62.0
+> (motifs retirés, réservés).
 
 #### Ce qu'il faut observer le premier matin
 
@@ -396,11 +424,16 @@ Il n'apparaît plus dans **Paramètres → Régulation** ni dans l'assistant de 
 
 #### Si le bandeau « Stabilisation des mesures non atteinte » s'affiche
 
-Il apparaît sur les pages **pH** et **ORP** quand la purge a atteint son plafond de 90 minutes sans que la mesure se stabilise. **La régulation a repris** (l'appareil ne reste jamais bloqué en silence), mais sous surveillance :
+> ⚠️ **Ce bandeau, son déclencheur (plafond de 90 minutes) et l'alerte MQTT qu'il citait sont
+> retirés depuis la v2.62.0** — ce sous-chapitre ne peut plus se produire (voir la section
+> « L'attente après un arrêt d'eau ne juge plus la stabilité de la mesure » en tête de ce
+> fichier). Conservé pour mémoire du comportement v2.34.0 uniquement.
+
+Il apparaissait sur les pages **pH** et **ORP** quand la purge atteignait son plafond de 90 minutes sans que la mesure se stabilise. **La régulation reprenait** (l'appareil ne restait jamais bloqué en silence), mais sous surveillance :
 
 - vérifier la **chambre de mesure** : bulles d'air, débit insuffisant, encrassement ;
 - vérifier les **sondes** : ancienneté, calibration ;
-- une alerte MQTT `measures_purge_timeout` est publiée en parallèle (utile pour une automation Home Assistant).
+- une alerte MQTT `measures_purge_timeout` était publiée en parallèle (utile pour une automation Home Assistant).
 
 > Un bandeau isolé après une longue coupure n'a rien d'alarmant. **Répété plusieurs matins de suite, il signale un vrai problème d'hydraulique ou de sonde.**
 

@@ -2995,171 +2995,97 @@ constexpr float kOrpMaxError          = 200.0f;  // Erreur ORP maximale (mV)
 //   - ORP : équilibre Pt/Ag ≈ 3 min (cinétique plus rapide que pH)
 // feature-091 (v2.34.0) : le réglage `stabilizationDelayMin` est RETIRÉ de ces
 // armings — il ne reste que les usages post-calibration EZO et le double quota
-// de minuit (durée pH). La purge de reprise d'eau est désormais pilotée par la
-// STABILITÉ des mesures (kPurge*, ci-dessous), pas par une minuterie fixe.
+// de minuit (durée pH). La purge de reprise d'eau est désormais pilotée par un
+// PLANCHER fixe (kPurgeFloorMs, ci-dessous), pas par un réglage utilisateur.
 constexpr unsigned long kStabilizationDurationPhMs  = 300000UL;  // 5 min — pH post-cal
 constexpr unsigned long kStabilizationDurationOrpMs = 180000UL;  // 3 min — ORP post-cal
 
 // =============================================================================
-// feature-091 (v2.34.0) — PURGE ADAPTATIVE PAR STABILITÉ DES MESURES
+// feature-091 (v2.34.0) — PURGE DE REPRISE D'EAU
+// RETRAIT DE L'ANALYSE DE STABILITÉ : feature-139 (v2.62.0), gate
+// pool-chemistry du 2026-10-08 — specs/features/done/feature-139-*.md
 // =============================================================================
 // À chaque reprise d'eau (filtration qui démarre), les sondes lisent d'abord
-// l'eau STAGNANTE de la canalisation, puis un transitoire de mélange. La porte
-// de validité des mesures (measure_validity.*) reste FERMÉE tant que les bruts
-// pH/ORP n'ont pas cessé de bouger — plutôt qu'un délai fixe réglé à la main
-// (l'ancien stabilizationDelayMin : trop court on dose sur du transitoire, trop
-// long on perd du temps de régulation chaque matin).
+// l'eau STAGNANTE de la canalisation. L'ancienne purge ADAPTATIVE (feature-091)
+// attendait en plus que les bruts pH/ORP soient STABLES (fenêtre glissante,
+// re-fermeture, plafond fail-safe) : ce mécanisme a été RETIRÉ. Motif établi
+// par le gate pool-chemistry : c'est un détecteur d'ÉTENDUE, structurellement
+// AVEUGLE à une mesure durablement fausse (qui ne bouge pas, donc ne produit
+// aucune étendue) — ce n'est pas une couche de sécurité, c'est un filtre de
+// transitoire dont les seuils (0,15 pH / 15 mV) n'avaient été calés qu'une
+// fois, sur un seul bassin, avec 1,5× de marge. Une heure de dosage entièrement
+// faux ne coûte que 0,07 pH (pire cas universel) — contre un DOUBLEMENT de
+// l'écart résiduel mesuré pour 52 % de temps porte fermée (régulation P pure).
 //
-// Détecteur : une statistique PAR MINUTE de chaque brut (12 lectures EZO à
-// 5 s), sur une fenêtre glissante de kPurgeWindowMin minutes ; « stable » =
-// fenêtre pleine ET étendue (max−min des statistiques de bloc) ≤ seuil sur les
-// DEUX voies. Seuils = bruit de mesure observé sur le bassin de référence
-// (dispersion pH brut ~0,36 sur les LECTURES, ~0,10-0,15 sur les statistiques
-// de bloc) : 0,15 pH / 15 mV.
+// Il ne reste qu'un PLANCHER fixe : de la physique de renouvellement d'eau en
+// conduite, valable sur toute installation (voir kPurgeFloorMs ci-dessous).
 //
-// ESTIMATEUR DE BLOC (feature-097, v2.54+, amendement daté ADR-0059 §1.2) :
-// MOYENNE INTERQUARTILE, plus la médiane d'origine. Mesure terrain du 20/09 :
-// le pH brut de ce bassin est anti-corrélé, presque à deux niveaux
-// (autocorrélation lag 1 = −0,440) — sur un tel signal la médiane n'est pas
-// une moyenne robuste, c'est un INTERRUPTEUR qui bascule sur le niveau
-// momentanément majoritaire. Voir purge_stability_logic.h pour le détail et le
-// bloc réel mesuré. Aucun seuil ci-dessous n'a changé ; seul l'estimateur qui
-// les alimente a changé. Planchers de bruit mesurés avec le nouvel
-// estimateur : voir kPurgeNoiseFloorPh / kPurgeNoiseFloorOrp ci-dessous.
-//
-// FENÊTRE = 10 min (double arbitrage pool-chemistry du 04/09 après rejeux
-// natifs) : W médianes couvrent W−1 intervalles, la pente minimale détectable
-// d'une RAMPE est seuil/(W−1) moins le bruit de la médiane (±0,03). Mais le
-// rinçage est un FOND EN V (descente −0,047 puis remontée +0,043 pH/min le
-// 04/09) : le fond occupe une demi-fenêtre de chaque côté et la pente
-// détectable devient seuil/((W−1)/2). Avec W = 4 la porte s'ouvrait à t+7-8 à
-// pH ≈ 5,6 (l'incident à supprimer) ; avec W = 8 le rejeu sans bruit ouvrait
-// encore à t+13 à pH 5,71 (étendue 0,145 — 5 millièmes sous le seuil) puis
-// refermait à t+17 (0,303 — 3 millièmes au-dessus) : pas une marge. Avec
-// W = 10 : 4,5 × 0,045 = 0,20 > 0,15 sur le V, 9 × 0,045 = 0,40 ≫ 0,15 sur la
-// rampe, re-fermeture C1 dès 0,033 pH/min ; le rejeu ouvre à t+46-53 sur le
-// plateau (pH 6,88). Limite connue : une dérive lente de sonde (≤ 0,017
-// pH/min) est jugée stable — la régulation suit la filtrée, gardes
-// butée/plancher actives. L'ORP (1,5 mV/min au rinçage → 13,5 mV < 15) est un
-// critère SECONDAIRE : il ne détecte pas seul une remontée ≤ 1,6 mV/min.
-// 10 = capacité de l'anneau (kPurgeStabilityMaxWindowMin) : aller au-delà
-// exige d'agrandir le module pur.
-constexpr uint8_t  kPurgeWindowMin        = 10;       // fenêtre de médianes (min)
-constexpr uint8_t  kPurgeSamplesPerMin    = 12;       // lectures EZO par minute (5 s)
-constexpr float    kPurgeStablePhRange    = 0.15f;    // étendue max pH brut (fenêtre)
-constexpr float    kPurgeStableOrpRange   = 15.0f;    // étendue max ORP brut (mV)
-// PLANCHER : la porte ne s'ouvre jamais avant 10 min d'eau présente, même si la
-// fenêtre est déjà stable (une canalisation courte peut paraître stable alors
-// que l'eau de la conduite n'a pas encore été renouvelée). ≥ fenêtre — donc
-// coût d'une coupure longue ≈ 10 min + amorçage des filtres (~65 s), contre
-// 15 min de minuteur fixe avant 2.34 ; la coupure ≤ 10 s (dispense, ci-dessous)
-// reste à zéro.
-constexpr uint32_t kPurgeFloorMs          = 600000UL; // 10 min
-// PLAFOND (C2 pool-chemistry) : fail-safe si la stabilité n'arrive jamais (sonde
-// bruyante, injection en cours en amont…) — la porte s'ouvre quand même à 90 min
-// avec ALERTE `measures_purge_timeout` ; la surveillance de re-fermeture est
-// alors DÉSARMÉE jusqu'à la prochaine reprise d'eau (sinon boucle fermer/ouvrir).
-constexpr uint32_t kPurgeCapMs            = 5400000UL; // 90 min
-// RE-FERMETURE (C1 pool-chemistry) : après une ouverture par stabilité ou par
-// dispense, si l'étendue de la fenêtre dépasse 2× le seuil d'ouverture, la porte
-// se referme (re-purge) jusqu'à un nouveau plancher + stabilité. Hystérésis
-// ×2 : un simple retour au bruit d'ouverture ne referme pas.
-constexpr float    kPurgeRecloseRangePh   = 0.30f;    // = 2 × kPurgeStablePhRange
-constexpr float    kPurgeRecloseRangeOrp  = 30.0f;    // = 2 × kPurgeStableOrpRange
-// PLANCHERS DE BRUIT (feature-097, v2.54+) — étendue max mesurée d'une fenêtre
-// de 10 statistiques de bloc (moyenne interquartile) sur eau ÉTABLIE, trace du
-// 2026-09-20 (`test/fixtures/f097_purge_noise_20260920.csv`, 25 min, 300
-// échantillons) : pH 0,089 max, ORP 8,7 mV max — arrondis au-dessus. Compile
-// time UNIQUEMENT (static_assert plus bas) : jamais lues à l'exécution, elles
-// ne pilotent aucun seuil en direct — un plancher lu au runtime serait mesuré
-// PENDANT la purge, donc gonflé par le transitoire lui-même (piste écartée,
-// voir spec feature-097 §Options évaluées).
-// ⚠️ Une seule trace, porte ouverte, mesurée le 20/09 ; marge retenue
-// (kPurgeStablePhRange / kPurgeNoiseFloorPh = 0,15 / 0,10) : 1,5× SEULEMENT.
-constexpr float    kPurgeNoiseFloorPh                = 0.10f;   // pH, plancher de bruit mesuré
-constexpr float    kPurgeNoiseFloorOrp               = 10.0f;   // mV, idem
-// Dérive de sonde MINIMALE qui DOIT ENCORE être détectée par la re-fermeture
-// (C1) — l'assert plus bas garantit qu'une dérive AU MOINS aussi rapide que
-// celle-ci referme la porte (kPurgeRecloseRangePh <= cette dérive × span de la
-// fenêtre). Sert de base à cet invariant reliant kPurgeRecloseRangePh au span
-// réel de la fenêtre, plutôt qu'à une simple égalité ×2 aveugle au nombre
-// d'intervalles.
-constexpr float    kPurgeMinDetectedDriftPhPerMin    = 0.035f;  // pH/min
-// COUPURE COURTE (C3 pool-chemistry) : un redémarrage LOGICIEL (OTA, panic,
-// watchdog) de ≤ 10 s alors que l'eau était présente ne renouvelle pas l'eau de
-// la conduite — la purge est DISPENSÉE. Mémoire RTC (survit au reset, pas à la
-// coupure secteur), heure valide obligatoire, au plus UNE dispense par heure.
-constexpr uint32_t kShortOutageS             = 10;    // durée max d'une coupure « courte »
-constexpr uint32_t kOutageWaiverMinIntervalS = 3600;  // 1 dispense max par heure
+// Le seul paramètre qui demeure : à partir de quelle durée d'ARRÊT D'EAU ce
+// plancher doit-il s'appliquer (voir kWaterStopGraceS ci-dessous) — un arrêt
+// court (nettoyage rapide du bassin) laisse l'eau de la conduite en place,
+// attendre de nouveau le plancher serait punitif sans raison physique.
+constexpr uint32_t kPurgeFloorMs = 600000UL; // 10 min — INCHANGÉ par feature-139 (verdict A5)
 
-// feature-097 : bug latent corrigé — la version précédente comparait
-// kPurgeFloorMs à kPurgeWindowMin * 60000UL, ce qui suppose en silence
-// « 1 bloc = 1 minute murale ». La durée réelle d'un bloc dépend de
-// kPurgeSamplesPerMin ET de la cadence de lecture ; l'écrire en durée réelle
-// rend le calcul robuste si l'un des deux change un jour. Vaut 600 000 ms
-// aujourd'hui des deux côtés : l'égalité est satisfaite, rien ne bouge.
-static_assert(kPurgeFloorMs >= (uint64_t)kPurgeWindowMin * kPurgeSamplesPerMin *
-                                    kPhOrpSensorIntervalMs,
-              "Plancher de purge plus court que la fenetre de stabilite : "
-              "la porte s'ouvrirait sur une fenetre incomplete");
-static_assert(kPurgeFloorMs < kPurgeCapMs,
-              "Plancher de purge au-dela du plafond");
-static_assert(kPurgeCapMs >= 3600000UL,
-              "Plafond de purge < 60 min : un transitoire lent declencherait "
-              "l'alerte a tort");
+// GRÂCE D'ARRÊT D'EAU COURT (kWaterStopGraceS, ex-kShortOutageS — RENOMMÉ
+// feature-139 : la constante ne décrit plus une dispense liée à un reboot,
+// mais le seuil de durée d'arrêt d'eau STRICTEMENT en-deçà duquel le plancher
+// de reprise est sauté (à durée == kWaterStopGraceS PILE, c'est déjà un arrêt
+// LONG — frontière `>=` alignée dans measure_validity_logic.{h,cpp}),
+// QUE L'APPAREIL AIT REDÉMARRÉ OU NON — un seul chemin de dispense,
+// arbitrage pool-chemistry : la cohabitation de deux chemins est exactement ce
+// qui produisait le défaut observé au journal du 2026-10-08 — dispense
+// accordée à 20:06:11 pour une coupure de 8 s, puis ANNULÉE DE FAIT par le
+// démarrage filtration de 20:06:16 (hors du chemin de dispense d'alors) ⇒
+// 20 min de porte fermée après un arrêt de 10 s).
+//
+// VALEUR ET JUSTIFICATION (gate pool-chemistry, 2026-10-08, ADR-0073) :
+//   - renouvellement au droit des sondes majoré à 71 s (60 m de DN50 = 118 L
+//     à 6 m³/h) ;
+//   - en 180 s d'eau immobile, ΔpH ≈ 0 (pas d'échange CO₂ en conduite fermée)
+//     et ΔORP ≪ 1 mV (décroissance chlore ≤ 0,5 mg/L/h ⇒ ≤ 0,025 mg/L, soit
+//     ≤ 1 % de la teneur libre, pour une réponse de ~30 mV/décade) ;
+//   - marge ≥ 3 à 5× avant le premier effet mesurable (dizaines de minutes).
+constexpr uint32_t kWaterStopGraceS = 180;  // 3 min
+
 // bug-126 — le seuil de représentativité (kFiltrationMinRepresentativeSamples,
 // constants.h plus haut) doit rester atteignable même sur le cycle auto le
 // PLUS COURT : computeAutoWindow clampe la durée à >= 1,0 h
 // (schedule_logic.cpp), et la purge (kPurgeFloorMs) en consomme le début.
 // Purge déduite, il reste 50 min en plage sur ce cycle-là : si le seuil n'y
 // tenait pas, le planning se figerait indéfiniment aux températures basses
-// (jamais assez d'échantillons post-purge pour produire un pending).
-// Comparaison tout en MILLISECONDES (revue P2, corrections mineures) : la
-// version précédente divisait kFiltrationTempSampleIntervalMs par 60000UL
-// AVANT de multiplier — division entière qui vaut 1 pour tout intervalle dans
-// [60 s, 120 s[, donc muette si ce réglage passait un jour à 90 s.
+// (jamais assez d'échantillons post-purge pour produire un pending). Comparaison
+// tout en MILLISECONDES : ne dépend que de kPurgeFloorMs, inchangé par
+// feature-139 — assert conservé MOT POUR MOT.
 static_assert((uint64_t)kFiltrationMinRepresentativeSamples * kFiltrationTempSampleIntervalMs
                 <= 3600000ULL - kPurgeFloorMs,
   "Seuil de representativite inatteignable sur le cycle auto le plus court.");
-static_assert(kPurgeRecloseRangePh == 2.0f * kPurgeStablePhRange &&
-                  kPurgeRecloseRangeOrp == 2.0f * kPurgeStableOrpRange,
-              "Hysteresis de re-fermeture != 2 x seuil d'ouverture (C1)");
-// feature-097 : l'égalité ×2 ci-dessus ne dit rien du SPAN réel de la fenêtre
-// (W-1 intervalles) — elle ne garantit la détection de dérive « par
-// coïncidence » qu'à W = 10 fixé. On lui adjoint l'invariant explicite : la
-// dérive minimale qui DOIT ENCORE être détectée (kPurgeMinDetectedDriftPhPerMin),
-// une fois convertie en étendue sur la durée réelle couverte par W-1
-// intervalles, doit rester AU-DESSUS du seuil de re-fermeture — sinon une
-// dérive à cette vitesse ne le franchirait jamais. Vaut
-// 0,035 * 9 * 12 * 5000 / 60000 = 0,315 ; seuil 0,30 ⇒ 0,30 <= 0,315 ✓
-// aujourd'hui (0,035 pH/min EST détectée, cf. test F5 / condition C4).
-static_assert(kPurgeRecloseRangePh <=
-                  kPurgeMinDetectedDriftPhPerMin *
-                      (float)(kPurgeWindowMin - 1) * (float)kPurgeSamplesPerMin *
-                      (float)kPhOrpSensorIntervalMs / 60000.0f,
-              "Reclose pH au-dela de la derive minimale qui doit rester "
-              "detectee sur le span reel de la fenetre (C1) : la geometrie a "
-              "change sans que l'hysteresis ait ete revalidee");
-static_assert(kPurgeStablePhRange > 0.0f && kPurgeStableOrpRange > 0.0f,
-              "Seuil de stabilite nul : la porte ne s'ouvrirait qu'au plafond");
-// feature-097 : l'assert qui aurait rendu visible dès le 2026-09-04 que le
-// seuil d'ouverture était en-dessous du plancher de bruit mesuré (ce n'était
-// PAS le cas — cf. spec feature-097 §Verdict — mais rien ne le garantissait).
-static_assert(kPurgeStablePhRange > kPurgeNoiseFloorPh,
-              "Seuil de stabilite pH sous le plancher de bruit mesure : la "
-              "porte n'ouvrirait jamais avant le plafond");
-static_assert(kPurgeStableOrpRange > kPurgeNoiseFloorOrp,
-              "Seuil de stabilite ORP sous le plancher de bruit mesure : la "
-              "porte n'ouvrirait jamais avant le plafond");
-static_assert(kPurgeWindowMin >= 2 && kPurgeWindowMin <= 10,
-              "Fenetre de stabilite hors de [2 ; 10] min");
-static_assert(kPurgeSamplesPerMin >= 3 && kPurgeSamplesPerMin <= 60,
-              "Nombre de lectures par minute hors de [3 ; 60]");
-static_assert(kShortOutageS > 0 && kShortOutageS <= 30,
-              "Coupure courte hors de ]0 ; 30] s : au-dela l'eau de la conduite "
-              "peut avoir ete renouvelee sans que la purge le voie");
-static_assert(kOutageWaiverMinIntervalS >= 600,
-              "Intervalle minimal entre deux dispenses < 10 min");
+
+// Invariant PHYSIQUE (feature-139, remplace l'ancien assert liant le plancher
+// à une fenêtre de stabilité disparue) : le plancher doit rester dans un ordre
+// de grandeur plausible de renouvellement d'eau en conduite — ni instantané
+// (une canalisation n'est jamais purgée en quelques secondes), ni si long qu'il
+// dégraderait la régulation chaque reprise de filtration.
+static_assert(kPurgeFloorMs >= 300000UL && kPurgeFloorMs <= 1800000UL,
+              "Plancher de purge hors de [5 ; 30] min");
+
+// RELATION structurelle (architect, feature-139) : la grâce d'arrêt court doit
+// rester STRICTEMENT sous le plancher de reprise — sinon un arrêt jugé « court »
+// court-circuiterait l'intégralité de ce que le plancher est censé garantir
+// (l'attente deviendrait inatteignable pour le cas même qu'elle protège).
+static_assert(kWaterStopGraceS > 0 &&
+                  (uint64_t)kWaterStopGraceS * 1000ULL < kPurgeFloorMs,
+              "Grace d'arret court >= attente de reprise : l'attente deviendrait "
+              "inatteignable (tout arret court-circuite ce qu'il est cense declencher)");
+// BORNE CHIMIQUE (pool-chemistry, feature-139 ; corrigé 2e passage N1 — le
+// seuil cité ici ne doit PAS référencer kPurgeStableOrpRange, constante
+// SUPPRIMÉE par ce lot : « assert qui s'appuie sur un chiffre disparu »)
+// au-delà de 5 min, le calcul de décroissance du chlore ne borne plus le ΔORP
+// à une fraction de mV (≪ 1 mV sur 180 s, justification physique ci-dessus) —
+// la marge ≥ 3 à 5× cesse de tenir.
+static_assert(kWaterStopGraceS <= 300,
+              "Grace d'arret court > 5 min : la decroissance du chlore ne "
+              "reste plus bornee a une fraction de mV (justification physique "
+              "non revalidee au-dela)");
 
 // Anti-rafale dosage chimique (pool-chemistry feature-021, Pass 3.5).
 // Limite le nombre de DÉMARRAGES de cycle de dosage par fenêtre glissante

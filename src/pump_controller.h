@@ -1129,6 +1129,23 @@ public:
   // Secondes restantes de pause mélange par pompe ([0]=pH, [1]=ORP) — observabilité UI.
   unsigned long getMixingRemainingS(int pumpIndex) const;
 
+  // feature-139 (v2.62.0, B1 gate pool-chemistry 2e passage) : SEUL ENDROIT DE
+  // VÉRITÉ pour « dans combien de secondes le dosage automatique redevient
+  // possible » après une porte fermée pour cause de purge de reprise et/ou de
+  // plancher de gel du filtre capteur. Formule = max(reste du plancher de
+  // purge, reste du plancher de gel du filtre) : sur un arrêt d'eau COURT
+  // (dispensé), la purge est déjà ouverte mais le plancher de gel du filtre
+  // (60 s) domine ; sur une purge COMPLÈTE (10 min), le plancher de gel
+  // (armé au même front montant, mais 10x plus court) est depuis longtemps
+  // écoulé quand la purge s'ouvre, c'est alors elle qui domine. 0 si le
+  // dosage est déjà possible. Réutilisé par canDose() (libellés de refus
+  // ReadingNaNGateClosed/FilterGateClosed) ET par /data + WebSocket (parité).
+  // ⚠️ Retourne UINT32_MAX (délai INDÉTERMINÉ, filtration à l'arrêt) quand
+  // AUCUN des deux planchers ne court — ne JAMAIS sérialiser cette valeur
+  // telle quelle : voir dose_available_logic.h. Les points d'exposition JSON
+  // OMETTENT le champ dans ce cas (jamais une valeur 0 ni un `null`).
+  unsigned long getDoseAvailableInS() const;
+
   // ===== feature-025 : raison de blocage dosage exposée au WS + /data =====
   // Chaîne vide si dosage autorisé, sinon la dernière cause de refus EN COURS
   // (garde de sécurité pH/ORP ou canDose() — cf. _refusalCauseFromGuard).

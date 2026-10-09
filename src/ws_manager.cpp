@@ -780,6 +780,38 @@ size_t WsManager::_buildSensorJson(char* buf, size_t cap) const {
   // (elle était de 55 o avant ce complément). Tout nouveau champ de cette
   // trame exige désormais un retrait compensatoire OU un relèvement de
   // kWsFrameBufBytes (décision d'ADR, pas de routine).
+  //
+  // feature-139 (v2.62.0) : retrait de `measures_purge_count` (mécanisme de
+  // re-purge supprimé, cf. ADR). Octet SÉRIALISÉ au pire cas retiré :
+  //   "measures_purge_count":255, → 1+20+1+1+3+1 = 27 o.
+  // Pire cas de trame : 3545 − 27 = 3518 o, SOUS le gabarit documentaire 3584
+  // (aucun bump) et SOUS kWsFrameBufBytes = 3584 o.
+  //
+  // MARGE RÉSIDUELLE SOUS LE SEUL PLAFOND DUR, sWsFrameBuf : 3584 − 3518 = 66 o
+  // (elle était de 39 o avant ce retrait). Tout nouveau champ de cette trame
+  // exige toujours un retrait compensatoire OU un relèvement de
+  // kWsFrameBufBytes (décision d'ADR, pas de routine).
+  //
+  // feature-139 (v2.62.0, B1 gate pool-chemistry 2e passage) : +1 champ
+  // `measures_dose_available_in_s` (voir web_routes_data.cpp pour le motif —
+  // remplace un calcul client faux d'un facteur 10 ; contrat net NEUTRE,
+  // financé par le retrait de `measures_purge_count` juste au-dessus). MÉTHODE
+  // DE CHIFFRAGE (ADR-0073) : borne STRUCTURELLE — kPurgeFloorMs est assertée
+  // dans [5;30] min (constants.h), soit jusqu'à 1800 s, 4 chiffres, PAS la
+  // valeur observée (600) :
+  //   "measures_dose_available_in_s":1800, → 1+28+1+1+4+1 = 36 o.
+  // Pire cas de trame : 3518 (décompte ci-dessus) + 36 = 3554 o, SOUS
+  // kWsFrameBufBytes = 3584 o (aucun bump).
+  //
+  // MARGE RÉSIDUELLE SOUS LE SEUL PLAFOND DUR, sWsFrameBuf : 3584 − 3554 = 30 o
+  // (elle était de 66 o avant cet ajout). ⚠️ MARGE DÉSORMAIS TRÈS ÉTROITE :
+  // tout nouveau champ de cette trame exige un retrait compensatoire OU un
+  // relèvement de kWsFrameBufBytes (décision d'ADR, pas de routine).
+  //
+  // BLOQUANT 1 (code-reviewer, 2e passage) : le champ est OMIS (filtration à
+  // l'arrêt, délai indéterminé) plutôt que mis à 0 ou `null` — l'OMISSION ne
+  // peut que RÉDUIRE la taille de trame réelle, jamais l'augmenter : le pire
+  // cas ci-dessus (champ PRÉSENT, valeur 1800) reste le bon majorant, inchangé.
   StaticJson<3584> doc;
   doc["type"] = "sensor_data";
   JsonObject d = doc["data"].to<JsonObject>();
@@ -1100,8 +1132,29 @@ size_t WsManager::_buildSensorJson(char* buf, size_t cap) const {
     d["measures_valid"] = mv.measuresValid;
     d["measures_stab_elapsed_s"] = mv.stabElapsedS;
     d["measures_purge_last_duration_s"] = mv.lastPurgeDurationS;
+    // Domaine RÉDUIT à {0 aucune / 1 stabilité / 3 dispensée} depuis v2.62.0 —
+    // les valeurs 2 (plafond) et 4 (re-purge) ne sont plus jamais émises, mais
+    // RESTENT RÉSERVÉES (non réattribuées) : un consommateur externe qui
+    // testait `=== 2` cesse simplement de matcher, sans faux-positif.
     d["measures_purge_last_end"] = mv.lastPurgeEnd;
-    d["measures_purge_count"] = mv.purgeCount;
+    // feature-139 (v2.62.0) : `measures_purge_count` RETIRÉ (mécanisme de
+    // re-purge supprimé côté firmware — MeasureValiditySnapshot n'a plus de
+    // purgeCount). C'eût été le seul champ STRUCTURELLEMENT constant à 0 :
+    // le conserver figé aurait publié une forme stable qui ment. Seul
+    // consommateur du dépôt (app.js) utilisait déjà `|| 0`, dégradation
+    // propre garantie. Voir web_routes_data.cpp (même passage, parité /data).
+    // feature-139 (v2.62.0, B1 gate pool-chemistry 2e passage) : secondes
+    // restantes avant que le dosage automatique redevienne possible —
+    // max(reste plancher de purge, reste plancher de gel du filtre capteur),
+    // SEUL ENDROIT DE VÉRITÉ (PumpControllerClass::getDoseAvailableInS()).
+    // 0 si déjà disponible. PARITÉ /data obligatoire (voir web_routes_data.cpp,
+    // même passage). ⚠️ BLOQUANT 1 (code-reviewer, 2e passage) : filtration À
+    // L'ARRÊT ⇒ délai INDÉTERMINÉ (UINT32_MAX, jamais sérialisé) ⇒ champ OMIS
+    // des DEUX côtés dans les MÊMES conditions — PAS de 0, PAS de `null`.
+    const unsigned long doseAvailableS = PumpController.getDoseAvailableInS();
+    if (doseAvailableS != UINT32_MAX) {
+      d["measures_dose_available_in_s"] = doseAvailableS;
+    }
   }
 
   // feature-096 (v2.37.0) : TEMPS D'ATTEINTE DE CIBLE — 8 champs servis depuis

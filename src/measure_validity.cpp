@@ -1,6 +1,7 @@
 // =============================================================================
 // measure_validity — Coquille impure de la validité des mesures pH/ORP
-// (feature-061 ; purge ADAPTATIVE par la feature-091, v2.34.0)
+// (feature-061 ; purge ADAPTATIVE par la feature-091, v2.34.0 ; RETRAIT de
+// l'analyse de stabilité par la feature-139, v2.62.0)
 // — voir measure_validity.h
 // =============================================================================
 
@@ -13,8 +14,6 @@
 #include "constants.h"
 #include "filtration.h"
 #include "logger.h"
-#include "mqtt_manager.h"  // publishAlert (plafond de purge)
-#include "sensors.h"       // bruts EZO pour le détecteur de stabilité
 
 MeasureValidityManager measureValidity;
 
@@ -25,38 +24,8 @@ namespace {
 // fail-closed). Même patron que heap_ring.cpp / oom_guard.cpp.
 RTC_NOINIT_ATTR OutageRtcRecord sOutageRtc;
 
-// Paramètres du détecteur de stabilité — depuis constants.h (une seule source).
-constexpr PurgeStabilityParams kStabParams = {
-    kPurgeSamplesPerMin, kPurgeWindowMin,
-    kPurgeStablePhRange, kPurgeStableOrpRange,
-    kPurgeRecloseRangePh, kPurgeRecloseRangeOrp,
-};
-
 // Cadence de rafraîchissement de l'heure vive en RAM RTC.
 constexpr uint32_t kOutageRtcRefreshMs = 1000UL;
-
-// Formatage NaN-safe : une mesure absente se lit "n/a", jamais "nan"/"0.00".
-String fmtOrNa(float v, unsigned int decimals) {
-  return isnan(v) ? String("n/a") : String(v, decimals);
-}
-
-// Plage min→max d'une voie du détecteur (journal de fin de purge).
-String rangeOrNa(const PurgeChannelState& ch, unsigned int decimals) {
-  const float lo = purgeChannelRawMin(ch);
-  const float hi = purgeChannelRawMax(ch);
-  if (isnan(lo) || isnan(hi)) return String("n/a");
-  return String(lo, decimals) + "→" + String(hi, decimals);
-}
-
-// feature-097 : étendue (max−min) des STATISTIQUES DE BLOC d'une voie au
-// moment du verdict — la grandeur exacte jugée par purgeStabilityEvaluate(),
-// distincte du rawMin→rawMax ci-dessus (qui porte sur les lectures brutes
-// depuis le reset). Nécessaire pour re-calibrer les planchers de bruit
-// (kPurgeNoiseFloorPh/Orp) sans nouvelle capture manuelle de trace 5 s.
-String blockRangeOrNa(const PurgeChannelState& ch, unsigned int decimals) {
-  const float r = purgeChannelRange(ch);
-  return isnan(r) ? String("n/a") : String(r, decimals);
-}
 
 OutageResetKind resetKindFromEsp(esp_reset_reason_t r) {
   switch (r) {
@@ -94,26 +63,26 @@ void MeasureValidityManager::begin() {
   in.reset = resetKindFromEsp(esp_reset_reason());
   in.timeValid = timeValid;
   in.epochNow = epochNow;
-  in.shortOutageS = kShortOutageS;
-  in.waiverMinIntervalS = kOutageWaiverMinIntervalS;
+  in.graceS = kWaterStopGraceS;
   const OutageContinuityVerdict v = evaluateOutageContinuity(in);
 
-  _waiverPending = v.waive;
-  _bootOutageS = v.outageS;
-
-  // Ré-initialisation de la mémoire si elle n'était pas intacte (power-on) ;
-  // sinon on conserve lastWaiverEpoch (limite « une dispense par heure »).
+  // Ré-initialisation de la mémoire si elle n'était pas intacte (power-on).
   if (!outageRecordIntact(before)) {
     memset(&sOutageRtc, 0, sizeof(sOutageRtc));
-  }
-  if (v.waive && timeValid) {
-    sOutageRtc.lastWaiverEpoch = epochNow;
   }
   sOutageRtc.waterPresent = 0;  // sera rafraîchi au premier update()
   outageRecordSeal(sOutageRtc);
 
+  // ARBITRAGE 1 (feature-139) : UN SEUL CHEMIN DE DISPENSE. La mémoire RTC ne
+  // fait que PORTER l'horodatage de l'arrêt à travers le reboot, dans le
+  // référentiel millis() post-boot (soustraction non signée, wrap-safe) — la
+  // décision « court ou non » est ensuite prise par measureValidityTick(),
+  // exactement comme pour un arrêt sans reboot.
   if (v.waive) {
-    systemLogger.info("[STAB] Coupure " + String(v.outageS) +
+    _state.haveWaterStop = true;
+    _state.stopGraceExceeded = false;
+    _state.waterStopMs = (uint32_t)millis() - (v.outageS * 1000UL);
+    systemLogger.info("[STAB] Arrêt d'eau " + String(v.outageS) +
                       " s (reset logiciel, eau présente avant) → purge de reprise DISPENSÉE");
   } else if (v.deny == OutageDeny::kMemory) {
     // Cas nominal du démarrage à froid : pas d'alarme, simple trace.
@@ -122,7 +91,7 @@ void MeasureValidityManager::begin() {
     const String dur = (v.outageS > 0 || v.deny == OutageDeny::kTooLong)
                            ? String(v.outageS) + " s"
                            : String("de durée inconnue");
-    systemLogger.info("[STAB] Coupure " + dur + " (" + String(outageDenyLabel(v.deny)) +
+    systemLogger.info("[STAB] Arrêt d'eau " + dur + " (" + String(outageDenyLabel(v.deny)) +
                       ") → purge complète à la reprise d'eau");
   }
 }
@@ -137,53 +106,28 @@ void MeasureValidityManager::update() {
   const bool water = wp.waterPresent;
   const uint32_t now = (uint32_t)millis();
 
-  // 1) Détecteur de stabilité : une lecture des BRUTS à la cadence EZO tant que
-  //    l'eau est présente (purge en cours OU surveillance de re-fermeture).
-  if (water && (now - _lastSampleMs) >= (uint32_t)kPhOrpSensorIntervalMs) {
-    _lastSampleMs = now;
-    purgeStabilityAddSample(_stab, kStabParams, sensors.getPhRaw(), sensors.getOrpRaw());
-  }
-  const PurgeStabilityVerdict sv = purgeStabilityEvaluate(_stab, kStabParams);
+  // Capture AVANT tick (feature-139, C5) : pour journaliser, à la reprise,
+  // combien de temps l'eau a réellement été absente — dispense ou non.
+  const bool wasPresent = _state.waterPresent;
+  const uint32_t prevWaterStopMs = _state.waterStopMs;
+  const bool prevHaveWaterStop = _state.haveWaterStop;
 
-  // 2) Machine d'état pure. La dispense n'est présentée qu'au PREMIER tick
-  //    (eau déjà présente au boot ⇒ front montant vu à ce tick) : un front
-  //    ultérieur purge normalement.
+  // Machine d'état pure.
   MeasureValidityInputs in;
   in.waterPresent = water;
   in.nowMs = now;
-  in.stable = sv.stable;
-  in.unstable = sv.unstable;
-  in.purgeWaived = _waiverPending;
   in.floorMs = kPurgeFloorMs;
-  in.capMs = kPurgeCapMs;
+  in.graceMs = kWaterStopGraceS * 1000UL;
   measureValidityTick(_state, in);
-  _waiverPending = false;
 
-  // 3) Journal des transitions + remise à zéro du détecteur à chaque début de
-  //    purge (chaque purge est jugée sur ses propres minutes).
+  // Journal des transitions.
   switch (_state.event) {
     case MeasureValidityEvent::kPurgeStarted:
-      purgeStabilityReset(_stab);
       systemLogger.info("[STAB] Reprise de circulation — purge des mesures pH/ORP "
-                        "(plancher " + String(kPurgeFloorMs / 60000UL) +
-                        " min, fin sur stabilité, plafond " +
-                        String(kPurgeCapMs / 60000UL) + " min) ; bruts : pH=" +
-                        fmtOrNa(sensors.getPhRaw(), 3) + " ORP=" +
-                        fmtOrNa(sensors.getOrpRaw(), 1) + " mV (eau stagnante)");
-      break;
-    case MeasureValidityEvent::kReclosed:
-      // C1 : les bruts ont bougé de plus de 2× le seuil après l'ouverture.
-      systemLogger.warning("[STAB] Re-purge n°" + String(_state.repurgeCount) +
-                           " — mesures redevenues instables après ouverture (étendue pH " +
-                           fmtOrNa(sv.phRange, 3) + " / ORP " + fmtOrNa(sv.orpRange, 1) +
-                           " mV) : porte refermée jusqu'à nouvelle stabilité");
-      purgeStabilityReset(_stab);
+                        "(plancher " + String(kPurgeFloorMs / 60000UL) + " min)");
       break;
     case MeasureValidityEvent::kOpened:
       logPurgeEnd(now);
-      // Le détecteur repart à vide : la surveillance de re-fermeture ne juge
-      // que des minutes postérieures à l'ouverture.
-      purgeStabilityReset(_stab);
       break;
     case MeasureValidityEvent::kWaterDrop:
     case MeasureValidityEvent::kNone:
@@ -191,13 +135,22 @@ void MeasureValidityManager::update() {
       break;
   }
 
-  // 4) Mémoire RTC de continuité (C3) : heure vive + eau présente, ~1 s.
+  // feature-139 (arbitrage 3, C5) : la grandeur qui manquait pour réviser
+  // kWaterStopGraceS sur des données réelles. Journalisée à CHAQUE reprise
+  // d'eau datable, dispense ou non.
+  if (!wasPresent && water && prevHaveWaterStop) {
+    const uint32_t stopS = (now - prevWaterStopMs) / 1000UL;
+    systemLogger.info("[STAB] Reprise après arrêt de " + String(stopS) + " s — attente " +
+                      (_state.waivedCycle ? "dispensée" : "complète"));
+  }
+
+  // Mémoire RTC de continuité (C3) : heure vive + eau présente, ~1 s.
   if ((now - _lastRtcRefreshMs) >= kOutageRtcRefreshMs) {
     _lastRtcRefreshMs = now;
     refreshRtcRecord(water);
   }
 
-  // 5) Publication du verdict — section critique MINIMALE (copie de struct).
+  // Publication du verdict — section critique MINIMALE (copie de struct).
   MeasureValiditySnapshot snap;
   snap.waterPresent = water;
   snap.measuresValid = _state.valid;
@@ -205,55 +158,37 @@ void MeasureValidityManager::update() {
   snap.stabElapsedS = measureValidityElapsedS(_state, now);
   snap.lastPurgeDurationS = _state.lastPurgeDurationS;
   snap.lastPurgeEnd = static_cast<uint8_t>(_state.lastPurgeEnd);
-  snap.purgeCount = _state.repurgeCount;
   portENTER_CRITICAL(&_mux);
   _cache = snap;
   portEXIT_CRITICAL(&_mux);
 }
 
-// Journal « [STAB] » de fin de purge : durée, min/max des bruts, motif. Au
-// plafond (C2) : alerte MQTT `measures_purge_timeout` + warning.
+// Journal « [STAB] » de fin de purge : durée et motif.
 void MeasureValidityManager::logPurgeEnd(uint32_t /*nowMs*/) {
   const uint32_t dur = _state.lastPurgeDurationS;
   const String durStr = String(dur / 60UL) + " min " + String(dur % 60UL) + " s";
-  // feature-097 : le journal portait déjà le rawMin→rawMax (bruts depuis le
-  // reset) ; il gagne ici l'étendue des BLOCS au moment du verdict — c'est
-  // elle que compare purgeStabilityEvaluate() aux seuils kPurge*StableRange,
-  // pas le rawMin→rawMax (cf. avertissement de lecture dans la spec
-  // feature-097 §A). Cette fonction est appelée AVANT purgeStabilityReset() :
-  // _stab porte encore l'état de la purge qui vient de se terminer.
-  const String ranges = "pH brut " + rangeOrNa(_stab.ph, 3) + " (blocs " +
-                        blockRangeOrNa(_stab.ph, 3) + ") ; ORP brut " +
-                        rangeOrNa(_stab.orp, 1) + " mV (blocs " +
-                        blockRangeOrNa(_stab.orp, 1) + " mV)";
 
   switch (_state.lastPurgeEnd) {
     case PurgeEnd::kWaived:
-      systemLogger.info("[STAB] Purge dispensée (coupure " + String(_bootOutageS) +
-                        " s) — mesures pH/ORP représentatives immédiatement");
-      break;
-    case PurgeEnd::kCap: {
-      const String msg = "Purge des mesures ouverte au PLAFOND (" + durStr +
-                         ") sans stabilité (" + ranges +
-                         ") — sonde bruyante ou transitoire long ; régulation reprise, à surveiller";
-      systemLogger.warning("[STAB] " + msg);
-      mqttManager.publishAlert("measures_purge_timeout", msg);
-      break;
-    }
-    case PurgeEnd::kRepurge:
-      systemLogger.info("[STAB] Fin de re-purge n°" + String(_state.repurgeCount) +
-                        " (" + durStr + ", " + ranges + ") — mesures de nouveau représentatives");
+      // B2 (gate pool-chemistry, 2e passage) : _bootOutageS n'était posé qu'au
+      // boot (begin()) et était donc FAUX pour toute dispense survenant en
+      // cours de marche (arrêt d'eau court sans reboot) — il affichait
+      // contradictoirement "arrêt 0 s" juste à côté du log "[STAB] Reprise
+      // après arrêt de N s" (ci-dessous, update()) qui porte la durée MESURÉE.
+      // Pas de nombre ici plutôt qu'un nombre faux : la durée exacte est
+      // journalisée juste après par le log "[STAB] Reprise après arrêt de N s"
+      // (même tick, update() ci-dessous).
+      systemLogger.info("[STAB] Purge dispensée — mesures pH/ORP représentatives immédiatement");
       break;
     case PurgeEnd::kStability:
     default:
-      systemLogger.info("[STAB] Fin de purge par stabilité (" + durStr + ", " + ranges +
-                        ") — mesures pH/ORP représentatives");
+      systemLogger.info("[STAB] Fin de purge (" + durStr + ") — mesures pH/ORP représentatives");
       break;
   }
 }
 
 // Rafraîchit l'enregistrement RTC (heure vive, eau présente) — UNIQUEMENT si
-// l'heure système est valide : une heure fausse rendrait la durée de coupure
+// l'heure système est valide : une heure fausse rendrait la durée d'arrêt
 // incalculable au prochain boot (et donc la dispense refusée, fail-closed).
 void MeasureValidityManager::refreshRtcRecord(bool water) {
   uint32_t epochNow = 0;

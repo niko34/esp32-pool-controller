@@ -1957,7 +1957,7 @@ Voir [ADR-0089](../adr/0089-ce-qu-un-redemarrage-a-le-droit-doublier.md).
 | Calibration EZO ORP réussie | `armStabilizationTimer(1)` | `kStabilizationDurationOrpMs` = **3 min** |
 | Passage de minuit — mitigation du risque de double quota (`tickDailyRollover`, chemin horloge valide **et** chemin de repli `millis()` 24 h) | `armStabilizationTimer()` (les 2 pompes) | 5 min pH / 3 min ORP |
 
-> ⚠️ **Changement v2.34.0 (feature-091)** — deux sites d'arming ont été **RETIRÉS** : le **démarrage de la filtration** en mode `managed` ([`filtration.cpp`](../../src/filtration.cpp)) et le **boot** en mode `powered` ([`main.cpp`](../../src/main.cpp)). Le sas de reprise d'eau est désormais porté **entièrement** par la purge adaptative de [`measure_validity`](measure-validity.md) (plancher 10 min, fin sur stabilité des mesures, plafond 90 min — [ADR-0059](../adr/0059-purge-adaptative-fenetre-de-medianes.md)) : deux temporisations concurrentes sur le même événement n'avaient plus de sens, et celle-ci était aveugle à l'état réel de l'eau.
+> ⚠️ **Changement v2.34.0 (feature-091)** — deux sites d'arming ont été **RETIRÉS** : le **démarrage de la filtration** en mode `managed` ([`filtration.cpp`](../../src/filtration.cpp)) et le **boot** en mode `powered` ([`main.cpp`](../../src/main.cpp)). Le sas de reprise d'eau est désormais porté **entièrement** par [`measure_validity`](measure-validity.md) : deux temporisations concurrentes sur le même événement n'avaient plus de sens, et celle-ci était aveugle à l'état réel de l'eau. **v2.62.0 (feature-139)** : ce sas n'est plus une purge adaptative sur stabilité des mesures — c'est un plancher fixe de 10 min, sauté si l'arrêt d'eau a duré moins de 3 min ([ADR-0092](../adr/0092-retrait-analyse-stabilite-porte-mesures.md), supersède l'[ADR-0059](../adr/0059-purge-adaptative-fenetre-de-medianes.md)).
 >
 > Corollaire : la surcharge `armStabilizationTimer()` (sans index) n'utilise **plus** `mqttCfg.stabilizationDelayMin` — retiré comme réglage utilisateur ([API.md](../API.md#get-get-config--write)) — mais les **mêmes constantes post-calibration** que la version indexée. Son seul appelant restant est le passage de minuit.
 
@@ -1970,8 +1970,8 @@ Voir [ADR-0089](../adr/0089-ce-qu-un-redemarrage-a-le-droit-doublier.md).
 Les deux temporisations ci-dessus jouent à des moments **différents** et sont deux gates **indépendantes** (`OR`) de `canDose()`. Vue d'ensemble pour la régulation `automatic` (exemple ORP, mode d'installation `managed`) :
 
 ```
-T0            Filtration démarre        → purge des mesures (measure_validity : plancher 10 min,
-                                           fin sur stabilité, plafond 90 min)                        [dosage bloqué]
+T0            Filtration démarre        → attente des mesures (measure_validity : plancher 10 min
+                                           fixe, sauté si l'arrêt d'eau a duré < 3 min)              [dosage bloqué]
 T0 + ~10 min  Porte de validité ouverte → si |erreur| > seuil de démarrage (orpStartThreshold, 15 mV),
               (ou plus tard)               une injection démarre
   injection   dure ≥ minInjectionTimeMs (30 s) et continue tant que |erreur| > seuil d'arrêt (2 mV) ;
@@ -1982,7 +1982,7 @@ T + 20 min    Pause mélange terminée    → nouvelle mesure → réinjection s
 ```
 
 Points clés :
-- **Purge des mesures** (v2.34.0) = sas de reprise d'eau, armé à **chaque** front montant de circulation. Sa durée n'est plus connue à l'avance : elle dépend de l'extinction du transitoire de rinçage. Voir [measure-validity.md](measure-validity.md).
+- **Attente des mesures** (v2.34.0, remaniée v2.62.0) = sas de reprise d'eau, armé à **chaque** front montant de circulation. Depuis la v2.62.0, c'est un plancher **fixe** de 10 min (plus de verdict de stabilité) : il peut être réduit à 0 si l'arrêt d'eau qui précède a duré moins de 3 min (`kWaterStopGraceS`). Voir [measure-validity.md](measure-validity.md).
 - **Stabilisation** = sas **ponctuel** des pompes, rejoué uniquement sur un événement d'armement — depuis la v2.34.0 : **calibration EZO** ou **passage de minuit** seulement. Ne se répète pas tant que la filtration tourne.
 - **Pause mélange** = sas **récurrent**, armé à l'arrêt de **chaque** injection ; il rythme la régulation.
 - **Cadence résultante** : la régulation ORP est plafonnée à **~1 injection / 20 min** (pH : ~1 / 15 min). C'est délibéré — la réponse de la sonde ORP et l'homogénéisation du chlore sont lentes ; réinjecter avant serait un surdosage.

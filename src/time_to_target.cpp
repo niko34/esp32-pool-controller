@@ -252,7 +252,11 @@ void TimeToTargetManager::tick() {
   // grandeur de décision n'EXISTE pas — on transmet NAN, jamais une valeur non
   // représentative (C3 : absence, pas « dans la bande »).
   const bool usable = mv.measuresValid && running;
-  const bool unsettled = (mv.lastPurgeEnd == (uint8_t)PurgeEnd::kCap);
+  // feature-139 (v2.62.0) : le plafond de purge (PurgeEnd::kCap) a été retiré
+  // — ce motif n'est plus jamais émis, ce bit ne sera donc plus jamais levé.
+  // Champ/bit conservés pour ne pas changer le format des flags exposés (le
+  // retrait éventuel du bit est du ressort du contrat public, web-ui-developer).
+  const bool unsettled = false;
 
   // Bit 4 — DÉBRANCHEMENT PAR L'OPÉRATEUR, commun aux deux voies : mode
   // maintenance (qui pose lui-même l'inhibition de dosage) et assistant de

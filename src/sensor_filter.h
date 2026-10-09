@@ -199,6 +199,36 @@ public:
   // true si la porte est fermée : addSample() sort en tête (aucune alimentation).
   bool gateClosed() const;
 
+  // feature-139 (v2.62.0, B1 gate pool-chemistry 2e passage) : millisecondes
+  // restantes avant la fin du PLANCHER DE GEL (kSensorFilterGateFloorMs) armé
+  // au dernier front montant d'eau — 0 si non armé ou déjà écoulé. LECTURE
+  // SEULE, aucune décision nouvelle : le calcul et l'armement du plancher
+  // restent entièrement dans setContext() ci-dessus. Sert à corriger
+  // l'AFFICHAGE du délai avant dosage (l'ancien calcul ignorait ce second
+  // plancher et annonçait jusqu'à 10x le délai réel après un arrêt d'eau
+  // court) — le mécanisme lui-même, jugé bénin, n'est pas modifié.
+  uint32_t gateFloorRemainingMs(uint32_t nowMs) const {
+    if (!_gateFloorArmed) return 0;
+    const int32_t diff = (int32_t)(_gateFloorUntilMs - nowMs);
+    return diff > 0 ? (uint32_t)diff : 0;
+  }
+
+  // feature-139 (M1, code-reviewer) : snapshot BRUT des deux champs du
+  // plancher de gel, à copier par l'appelant SOUS SON PROPRE VERROU avant de
+  // les combiner — cette classe reste pure/loopTask-only par conception (cf.
+  // en-tête de fichier) et n'a donc PAS de mutex interne. Un appelant qui lit
+  // armed/untilMs par DEUX accès séparés (ou via gateFloorRemainingMs()
+  // directement) depuis un AUTRE contexte que loopTask pendant que
+  // setContext() les écrit s'expose à une paire incohérente (armé avec
+  // l'échéance d'un front différent). gateFloorRemainingMs() ci-dessus reste
+  // correct et testé pour un usage loopTask-only ; ce snapshot est le point
+  // d'entrée pour un usage cross-contexte (cf. SensorManager::
+  // getFilterGateRemainingMs()).
+  void gateFloorSnapshot(bool& armed, uint32_t& untilMs) const {
+    armed = _gateFloorArmed;
+    untilMs = _gateFloorUntilMs;
+  }
+
   // Consomme le drapeau « un ré-amorçage a eu lieu depuis le dernier appel ».
   // Destiné à la journalisation edge-triggered par la coquille (module pur : ni
   // logger ni String ici, ADR-0017 — même pattern que le latch EMI).

@@ -1,77 +1,62 @@
 # Subsystem — `measure_validity`
 
-- **Fichiers** : [`src/measure_validity.h`](../../src/measure_validity.h), [`src/measure_validity.cpp`](../../src/measure_validity.cpp) (coquille impure) + [`src/measure_validity_logic.h`](../../src/measure_validity_logic.h), [`src/measure_validity_logic.cpp`](../../src/measure_validity_logic.cpp) (machine d'état pure) + [`src/purge_stability_logic.h`](../../src/purge_stability_logic.h), [`src/purge_stability_logic.cpp`](../../src/purge_stability_logic.cpp) (détecteur de stabilité pur)
+- **Fichiers** : [`src/measure_validity.h`](../../src/measure_validity.h), [`src/measure_validity.cpp`](../../src/measure_validity.cpp) (coquille impure) + [`src/measure_validity_logic.h`](../../src/measure_validity_logic.h), [`src/measure_validity_logic.cpp`](../../src/measure_validity_logic.cpp) (machine d'état pure) + [`src/dose_available_logic.h`](../../src/dose_available_logic.h) (délai avant dosage, pur)
 - **Singleton** : `extern MeasureValidityManager measureValidity;`
-- **Introduit par** : feature-061 (v2.13.0) ; étendu à la température en itération 2 (v2.13.0) ; porte d'alimentation des filtres en v2.20.3 ; **purge adaptative par la feature-091 (v2.34.0)** — [ADR-0059](../adr/0059-purge-adaptative-fenetre-de-medianes.md) ; **estimateur de bloc remplacé par la moyenne interquartile en feature-097 (v2.54+)** — [amendement 2026-09-20 de l'ADR-0059](../adr/0059-purge-adaptative-fenetre-de-medianes.md#amendement-2026-09-20--lestimateur-de-bloc-devient-la-moyenne-interquartile-feature-097-v254)
+- **Introduit par** : feature-061 (v2.13.0) ; étendu à la température en itération 2 (v2.13.0) ; porte d'alimentation des filtres en v2.20.3 ; purge adaptative par la feature-091 (v2.34.0) — [ADR-0059](../adr/0059-purge-adaptative-fenetre-de-medianes.md) (**Superseded by ADR-0092**) ; estimateur de bloc remplacé par la moyenne interquartile en feature-097 (v2.54+) ; **analyse de stabilité RETIRÉE par la feature-139 (v2.62.0)** — [ADR-0092](../adr/0092-retrait-analyse-stabilite-porte-mesures.md)
 
 ## Rôle
 
-Décide si les mesures **pH/ORP/température sont représentatives de l'eau du bassin**. Les sondes sont montées dans le circuit de filtration : filtration arrêtée = eau stagnante autour des sondes → la valeur dérive localement et ne reflète plus le bassin. À la reprise de la circulation, une **purge** est appliquée avant de redéclarer les mesures valides : l'eau stagnante de la chambre de mesure doit être chassée, **puis le transitoire de rinçage doit s'éteindre**.
+Décide si les mesures **pH/ORP/température sont représentatives de l'eau du bassin**. Les sondes sont montées dans le circuit de filtration : filtration arrêtée = eau stagnante autour des sondes → la valeur dérive localement et ne reflète plus le bassin. À la reprise de la circulation, une **attente** est appliquée avant de redéclarer les mesures valides : l'eau stagnante de la chambre de mesure doit être chassée par de l'eau fraîche du bassin.
 
-Depuis la v2.34.0, la purge **n'est plus une minuterie** (`stabilizationDelayMin`, réglage utilisateur retiré) : elle se termine quand les **bruts pH et ORP sont stables**, encadrée par un **plancher de 10 min** et un **plafond de 90 min**. Motif : le rinçage du matin dessine un « V » de ~45-50 min (relevés des 02/09 et 04/09/2026 : pH brut 6,78 → 5,97 → 7,3) et la minuterie fixe, même portée à 15 min, ouvrait la porte **au fond du V** — d'où trois alertes pH à tort et une intégrale pH remise à zéro chaque matin.
+### ⚠️ Retrait de l'analyse de stabilité (feature-139, v2.62.0)
 
-Le verdict est consommé par :
-- **`history.recordDataPoint()`** — point 5 min : pH/ORP/température forcés à `NaN` si invalide ; voir [history.md](history.md) ;
-- **WS `sensor_data` + `GET /data`** — champs `water_present` / `measures_valid` / `measures_stab_elapsed_s` / `measures_purge_last_duration_s` / `measures_purge_last_end` / `measures_purge_count` (parité obligatoire) ;
-- **`pump_controller`** — `measuresValid()` gate l'intégrale, le feedforward et les alertes système pH/ORP ; `isCirculationSettled()` gate la branche **Programmée** (C4) ;
-- **`sensor_filter`** — porte d'alimentation des filtres pH/ORP (`setContext`), et depuis la v2.34.0 `ready()` est **faux porte fermée** (C6) — voir [sensors.md](sensors.md#porte-dalimentation-du-filtre-v2203).
+De la v2.34.0 à la v2.61.x, cette attente se terminait sur un **verdict de stabilité** : les bruts pH/ORP devaient cesser de bouger (fenêtre glissante de 10 statistiques de bloc, seuils 0,15 pH / 15 mV), avec une **re-fermeture** (C1) si la mesure recommençait à bouger et un **plafond** fail-safe de 90 min. Ce mécanisme a été **retiré**, motif établi par le gate `pool-chemistry` du 2026-10-08 ([ADR-0092](../adr/0092-retrait-analyse-stabilite-porte-mesures.md)) :
 
-**La chaîne de mesure interne ne change PAS** : les sondes continuent d'être lues et publiées (champs live `ph`/`orp`/`phRaw`/…). MQTT : seul ajout, l'alerte `measures_purge_timeout` (voir [MQTT.md](../MQTT.md)). Mode Auto de la filtration : inchangé (lit `sensors.getTemperature()` en direct).
+- c'est un détecteur d'**étendue** — il ne se ferme que pendant que la mesure *bouge*. Une mesure **durablement fausse** (une sonde qui lit faux de façon stable) ne produit aucune étendue et le traverse sans être vue : il est structurellement aveugle au cas même qui motivait sa conservation ;
+- ses seuils n'avaient été calés qu'une fois, sur un seul bassin, avec une marge mesurée de 1,5× seulement — non universels par construction ;
+- chiffrage : une heure de dosage entièrement faux coûte **0,07 pH** (pire cas universel), contre un **doublement de l'écart résiduel** mesuré pour 52 % de temps porte fermée sur une régulation P pure.
+
+**Ce qui reste** : un **plancher fixe** de 10 min (`kPurgeFloorMs`, physique de renouvellement d'eau en conduite, universel), les **butées chimiques** du pH (instantanées, insensibles au bruit), et les **plafonds horaire/journalier** de dosage — c'est désormais sur ces derniers que repose tout le risque résiduel qu'un mécanisme de stabilité aurait pu couvrir.
+
+Le seul paramètre qui demeure est la durée d'**arrêt d'eau** en-deçà de laquelle ce plancher est sauté (`kWaterStopGraceS`, voir plus bas) : un arrêt court (nettoyage rapide du bassin) laisse l'eau de la conduite en place, attendre de nouveau 10 min serait punitif sans raison physique.
+
+**La chaîne de mesure interne ne change PAS** : les sondes continuent d'être lues et publiées (champs live `ph`/`orp`/`phRaw`/…). Mode Auto de la filtration : inchangé (lit `sensors.getTemperature()` en direct).
 
 ## Architecture (Humble Object, [ADR-0017](../adr/0017-logique-metier-pure-humble-object-testabilite.md))
 
 | Module | Rôle | Testé en natif |
 |---|---|---|
-| `purge_stability_logic` (pur) | Statistique de bloc par minute (moyenne interquartile depuis feature-097), fenêtre glissante, verdict `stable` / `unstable` | `test/test_native_purge_stability/` (32 tests, mesuré le 2026-09-20 par `grep -c "^void test_"` : rejeux 02/09 et 04/09, dérives lentes, ORP en pente, démonstration W = 8 à tort, plus 7 tests feature-097 sur le bloc alterné réel, le rejeu plateau 16/16, le point de rupture et la re-fermeture) |
-| `measure_validity_logic` (pur) | Machine d'état porte/purge (`measureValidityTick`), circulation établie (C4), décision de dispense après coupure courte (C3, `evaluateOutageContinuity`) | `test/test_native_measure_validity/` |
-| `measure_validity` (coquille) | Collecte : `resolveWaterPresence()`, `millis()`, bruts EZO, `esp_reset_reason()`, mémoire RTC ; journal ; alerte MQTT ; cache sous spinlock | — |
-
-### Détecteur de stabilité (`purge_stability_logic`)
-
-Par voie (pH brut, ORP brut — **sans** offset pH, [ADR-0039](../adr/0039-offset-ph-applique-en-sortie-des-accesseurs.md)) :
-
-1. les lectures EZO (cadence `kPhOrpSensorIntervalMs` = 5 s) sont accumulées dans un tampon de minute ; une « minute » est définie en **nombre de lectures valides** (`kPurgeSamplesPerMin` = 12, NaN ignorés), pas en temps mural ;
-2. à chaque minute pleine, la **moyenne interquartile** (`purgeStabilityBlockStat()`, feature-097 — on écarte `trim = max(1, n/4)` valeurs de chaque extrémité triée et on moyenne le reste ; anciennement la médiane) est poussée dans un anneau de `kPurgeWindowMin` = 10 statistiques de bloc ;
-3. **`stable`** = anneau plein **ET** étendue (max − min des 10 statistiques de bloc) ≤ `kPurgeStablePhRange` 0,15 pH **ET** ≤ `kPurgeStableOrpRange` 15 mV ;
-4. **`unstable`** (refermeture C1) = étendue > `kPurgeRecloseRangePh` 0,30 pH ou > `kPurgeRecloseRangeOrp` 30 mV (= 2 × seuil, verrouillé par `static_assert`).
-
-Agrégation des deux voies (`purgeStabilityEvaluate`) : une voie **jamais lue** est ignorée ; une voie lue mais dont l'anneau n'est **pas plein** bloque l'ouverture sans provoquer de refermeture ; aucune voie lue ⇒ ni stable ni instable (attente du plafond). Le verdict porte aussi `phRange` / `orpRange` pour le journal.
-
-**Pourquoi W = 10** : le rinçage est un V (descente ≈ −0,047 pH/min, remontée ≈ +0,043 pH/min le 04/09). Le fond du V occupe une demi-fenêtre de chaque côté, donc la pente détectable vaut **seuil / ((W − 1) / 2)** : 0,10 pH/min à W = 4 (aveugle au V, ouverture à t+7 à pH 5,6), 0,043 à W = 8 (ouverture à t+13 à pH 5,71, 5 millièmes sous le seuil, puis refermeture à t+17), **0,033 à W = 10** (ouverture sur le plateau, pH 6,88, à t+47 sans bruit / t+46-62 avec bruit). 10 est la capacité de l'anneau (`kPurgeStabilityMaxWindowMin`). Ce paramètre-là — la géométrie de la fenêtre — n'a **pas** changé en feature-097. Détail : [ADR-0059](../adr/0059-purge-adaptative-fenetre-de-medianes.md).
-
-**Pourquoi la moyenne interquartile et pas la médiane** (feature-097, mesure du 2026-09-20) : le pH brut de ce bassin est un signal anti-corrélé, presque à deux niveaux (autocorrélation lag 1 = −0,440 — voir [sensors.md](sensors.md#signal-ph-brut--anti-corrélation-et-mode-commun-feature-097)). Sur un tel signal, la médiane bascule sur le niveau momentanément majoritaire au lieu de le moyenner : c'est cet artefact, et non une excursion réelle de l'eau, qui produisait 3 fenêtres sur 16 en échec sur la trace terrain. La moyenne interquartile (écarter `trim = max(1, n/4)` valeurs de chaque extrémité) absorbe l'alternance au lieu de trancher dessus : 16/16 fenêtres ouvrent au plancher sur la même trace, contre 13/16 avant. Détail chiffré et alternatives écartées : [amendement 2026-09-20 de l'ADR-0059](../adr/0059-purge-adaptative-fenetre-de-medianes.md#amendement-2026-09-20--lestimateur-de-bloc-devient-la-moyenne-interquartile-feature-097-v254).
+| ~~`purge_stability_logic`~~ (pur) | **SUPPRIMÉ en v2.62.0** (feature-139) — statistique de bloc, fenêtre glissante, verdict stable/instable. Historique : amendement 2026-09-20 de l'[ADR-0059](../adr/0059-purge-adaptative-fenetre-de-medianes.md) (superseded). | ~~`test/test_native_purge_stability/`~~ (supprimé) |
+| `measure_validity_logic` (pur) | Machine d'état porte/attente (`measureValidityTick`), datation de l'arrêt d'eau courant (C2), circulation établie (C4), décision de dispense à travers un redémarrage (C3, `evaluateOutageContinuity`) | `test/test_native_measure_validity/` |
+| `dose_available_logic` (pur, feature-139) | Délai avant dosage automatique annoncé à l'utilisateur — max du reste de plancher de purge et du reste de plancher de gel du filtre capteur (`computeDoseAvailableInS`) | `test/test_native_dose_available/` |
+| `measure_validity` (coquille) | Collecte : `resolveWaterPresence()`, `millis()`, bruts EZO, `esp_reset_reason()`, mémoire RTC ; journal ; cache sous spinlock | — |
 
 ### Machine d'état (`measureValidityTick`, une transition par tick, priorité décroissante)
 
 | # | Condition | Effet | Événement |
 |---|---|---|---|
-| 1 | Eau absente | porte **fermée**, pas de purge ; au front descendant : `recloseArmed`, `waivedCycle`, `repurgeCount` remis à zéro | `kWaterDrop` |
-| 2 | Front montant d'eau | purge démarre (`purgeStartMs = waterRiseMs = now`, `recloseArmed = true`). Si une **dispense** est présentée (`purgeWaived`, C3) : porte **ouverte** immédiatement, motif `kWaived`, durée 0, `waivedCycle = true` | `kPurgeStarted` |
-| 3 | Purge en cours | **ouverture** si `écoulé ≥ kPurgeFloorMs` (10 min) **et** `stable` → motif `kStability` (ou `kRepurge` si `repurgeCount > 0`) ; sinon **ouverture** si `écoulé ≥ kPurgeCapMs` (90 min) → motif `kCap`, **et `recloseArmed = false`** (C2 : plus de refermeture jusqu'au prochain front d'eau) | `kOpened` |
-| 4 | Porte ouverte, `recloseArmed`, `unstable` | **refermeture** (C1) : nouvelle purge (`purgeStartMs = now`), `repurgeCount++` (saturé 255), `valid = false` | `kReclosed` |
+| 1 | Eau absente | porte **fermée**, pas de purge. Datation de l'arrêt (C2, feature-139) : au front descendant, `waterStopMs = ce tick` ; à chaque tick suivant, si l'arrêt **atteint ou dépasse** `graceMs`, LATCH `stopGraceExceeded` (monotone — ne redescend jamais tant que l'eau reste absente, rend le repliement de `millis()` inoffensif) | `kWaterDrop` |
+| 2 | Front montant d'eau | **purge** démarre (`purgeStartMs = waterRiseMs = now`). Si l'arrêt qui vient de se terminer était **datable ET court** (`haveWaterStop && !stopGraceExceeded`) : porte **ouverte** immédiatement, motif `kWaived`, durée 0, `waivedCycle = true` | `kPurgeStarted` |
+| 3 | Purge en cours | **ouverture** si `écoulé ≥ floorMs` (10 min), motif `kStability`. Plus de condition d'étendue, plus de re-fermeture, plus de plafond (feature-139) | `kOpened` |
 
-Toutes les soustractions de temps sont non signées (repliement de `millis()` sûr). La dispense n'est honorée qu'au front montant du tick où elle est présentée : la coquille ne la présente qu'au **premier tick après le boot**.
+Toutes les soustractions de temps sont non signées (repliement de `millis()` sûr). La frontière de grâce est **`>=`, pas `>`** : à durée == `kWaterStopGraceS` **pile**, c'est déjà un arrêt **long** (sens prudent, fail-closed) — et cette frontière **doit** rester alignée entre `measureValidityTick()` (C2, en millisecondes) et `evaluateOutageContinuity()` (C3, en secondes), sous peine de faire diverger le verdict selon qu'un redémarrage s'est intercalé ou non (défaut réellement trouvé et corrigé pendant ce lot, voir plus bas).
 
-**Important** : le plafond **ouvre** la porte (fail-safe côté disponibilité de la régulation, les gardes pH/ORP habituelles restent actives) — il ne la laisse pas fermée. Un plafond atteint est donc signalé par une **alerte** (journal WARNING + MQTT `measures_purge_timeout` + bannières UI), pas par le badge « Stabilisation ».
+**Un seul chemin de dispense** (arbitrage `pool-chemistry`, feature-139) : que l'arrêt d'eau ait traversé un redémarrage ou non, c'est **toujours** la même comparaison « durée d'absence < `kWaterStopGraceS` » qui décide. La mémoire RTC de la coquille (C3) ne fait que **porter** `waterStopMs` à travers un reboot dans le référentiel `millis()` post-boot — ce n'est pas une branche de décision séparée. Avant ce lot, deux chemins cohabitaient (un quota « une dispense par heure » côté redémarrage, une re-fermeture indépendante côté marche continue) : c'est exactement cette cohabitation qui produisait le défaut observé au journal du 2026-10-08 (dispense accordée pour une coupure de 8 s, puis annulée de fait par le démarrage filtration suivant, hors du chemin de dispense d'alors — 20 min de porte fermée après un arrêt de 10 s).
+
+⚠️ **Défaut trouvé et corrigé en revue (code-reviewer, 2ᵉ passage)** : le latch `stopGraceExceeded` n'est **remesuré** qu'en règle 1 (eau absente). Entre `begin()` — qui le fige au boot sur un `outageS` daté **avant** le setup Wi-Fi/NTP/FS — et le tout premier `update()`, des dizaines de secondes peuvent s'écouler **sans qu'aucun tick « eau absente » ne passe dessus** (l'eau est déjà présente au tout premier tick vu par la machine d'état). Un arrêt de 175 s suivi de 30 s de démarrage aurait donc été dispensé à tort en ne faisant confiance qu'au latch. Corrigé en **remesurant aussi** au front montant (règle 2), en plus du latch — jamais à sa place : le latch reste ce qui rend un arrêt de plus de 49,7 jours inoffensif face au repliement de `millis()`, la remesure seule ne le garantirait pas.
 
 ### Constantes (`src/constants.h`)
 
 | Constante | Valeur | Rôle |
 |---|---|---|
-| `kPurgeWindowMin` | 10 | Fenêtre de statistiques de bloc (min) — `static_assert` ∈ [2 ; 10] |
-| `kPurgeSamplesPerMin` | 12 | Lectures EZO par minute (5 s) — `static_assert` ∈ [3 ; 60] |
-| `kPurgeStablePhRange` / `kPurgeStableOrpRange` | 0,15 pH / 15 mV | Étendue max sur la fenêtre pour « stable » |
-| `kPurgeRecloseRangePh` / `kPurgeRecloseRangeOrp` | 0,30 pH / 30 mV | Seuil de refermeture C1 (= 2 × stable, `static_assert`) |
-| `kPurgeFloorMs` | 600 000 (10 min) | Plancher — `static_assert` ≥ durée réelle de `kPurgeWindowMin` blocs (corrigé feature-097 : dépendait implicitement de `kPurgeSamplesPerMin` sans le dire) |
-| `kPurgeCapMs` | 5 400 000 (90 min) | Plafond — `static_assert` ≥ 1 h et > plancher |
-| `kPurgeNoiseFloorPh` / `kPurgeNoiseFloorOrp` (feature-097, v2.54+) | 0,10 pH / 10,0 mV | Plancher de bruit **mesuré** (étendue max d'une fenêtre de statistiques de bloc sur eau établie, trace du 2026-09-20) — compile-time uniquement, jamais lu à l'exécution ; `static_assert` `kPurgeStable*Range > kPurgeNoiseFloor*` |
-| `kPurgeMinDetectedDriftPhPerMin` (feature-097, v2.54+) | 0,035 pH/min | Dérive minimale que la re-fermeture (C1) doit encore détecter — relie l'hystérésis ×2 au span réel de la fenêtre (`static_assert`), plutôt qu'à une simple égalité aveugle au nombre d'intervalles |
-| `kShortOutageS` | 10 s | Durée max d'une coupure « courte » (dispense C3) — `static_assert` ≤ 30 |
-| `kOutageWaiverMinIntervalS` | 3 600 s | Au plus une dispense par heure — `static_assert` ≥ 600 |
+| `kPurgeFloorMs` | 600 000 (10 min) | Plancher d'attente — **inchangé** par feature-139 (verdict A5 du gate : physique de renouvellement d'eau en conduite, universel). `static_assert` : reste dans [5 ; 30] min |
+| `kWaterStopGraceS` (ex-`kShortOutageS`, **renommé** feature-139) | 180 (3 min) | Durée d'arrêt d'eau strictement en-deçà de laquelle le plancher de reprise est **sauté**, que l'appareil ait redémarré ou non. Justification **physique**, pas statistique (gate `pool-chemistry`, 2026-10-08, ADR-0073) : renouvellement au droit des sondes majoré à 71 s (60 m de DN50 = 118 L à 6 m³/h) ; en 180 s d'eau immobile ΔpH ≈ 0 (pas d'échange CO₂ en conduite fermée) et ΔORP ≪ 1 mV (décroissance chlore ≤ 0,5 mg/L/h) ; marge ≥ 3 à 5× avant le premier effet mesurable. `static_assert` : > 0, strictement < `kPurgeFloorMs` (sinon un arrêt « court » court-circuiterait tout ce que le plancher protège), ≤ 5 min (au-delà, le calcul de décroissance du chlore ne borne plus le ΔORP à une fraction de mV) |
 
-### Dispense de purge après coupure courte (C3)
+**Constantes retirées par feature-139** (plus dans `constants.h`) : `kPurgeStablePhRange` / `kPurgeStableOrpRange` (seuil de stabilité), `kPurgeRecloseRangePh` / `kPurgeRecloseRangeOrp` (seuil de re-fermeture C1), `kPurgeCapMs` (plafond 90 min), `kPurgeNoiseFloorPh` / `kPurgeNoiseFloorOrp` (plancher de bruit mesuré), `kPurgeMinDetectedDriftPhPerMin`, `kPurgeWindowMin`, `kPurgeSamplesPerMin` (fenêtre et cadence du détecteur de stabilité), `kOutageWaiverMinIntervalS` (quota « une dispense par heure » — devenu inutile : le critère de durée explicite suffit, le risque résiduel d'un détecteur d'eau qui bat est désormais borné par les plafonds horaire/journalier de dosage, pas par une garde ici).
 
-Un reboot logiciel de quelques secondes pendant une filtration active ne vide pas la conduite : re-purger 10 min serait du temps de régulation perdu. La coquille maintient en **RAM RTC** (`RTC_NOINIT_ATTR OutageRtcRecord`, 20 o, magic `"PURG"`, FNV-1a — survit à un reset logiciel/panic/watchdog, **pas** à une coupure secteur) un enregistrement `{heure vive, eau présente, dernière dispense}` rafraîchi ~1 s (`kOutageRtcRefreshMs`) **seulement si l'heure système est valide**.
+### Dispense de purge après arrêt d'eau court (C3)
+
+Un arrêt d'eau court (nettoyage rapide du bassin, redémarrage logiciel de quelques secondes) ne renouvelle pas l'eau de la conduite : attendre de nouveau 10 min serait du temps de régulation perdu. La coquille maintient en **RAM RTC** (`RTC_NOINIT_ATTR OutageRtcRecord`, 16 o, magic `"PURG"`, FNV-1a — survit à un reset logiciel/panic/watchdog, **pas** à une coupure secteur) un enregistrement `{heure vive, eau présente}` rafraîchi ~1 s (`kOutageRtcRefreshMs`), **seulement si l'heure système est valide**.
 
 `begin()` (appelé **après** `rtcManager.applyToSystem()`, **avant** le premier `update()`) évalue `evaluateOutageContinuity()` dans cet ordre, **fail-closed** :
 
@@ -80,16 +65,47 @@ Un reboot logiciel de quelques secondes pendant une filtration active ne vide pa
 | 1 | mémoire RTC absente ou corrompue (`kMemory`) | `mémoire RTC absente ou corrompue` |
 | 2 | motif de reset hors liste blanche SW / PANIC / INT_WDT / TASK_WDT (`kResetKind`) | `reset matériel (coupure secteur possible)` |
 | 3 | heure invalide au boot, ou antérieure à l'heure vive (`kClock`) | `heure invalide ou incohérente` |
-| 4 | coupure > `kShortOutageS` (`kTooLong`) | `coupure trop longue` |
+| 4 | coupure **≥** `kWaterStopGraceS` (`kTooLong`, frontière alignée sur le latch de `measureValidityTick`) | `coupure trop longue` |
 | 5 | eau absente avant la coupure (`kNoWater`) | `eau absente avant la coupure` |
-| 6 | dispense accordée il y a < `kOutageWaiverMinIntervalS` (`kRateLimited`) | `dispense déjà accordée il y a moins d'une heure` |
-| — | accordée (`kNone`) | `accordée` |
+| — | accordée (`kNone`) | — |
 
-Si accordée, `lastWaiverEpoch` est horodaté et la dispense est présentée au premier tick : la porte s'ouvre motif `kWaived` (durée 0), et `isCirculationSettled()` est vrai pour tout le cycle d'eau. Les filtres pH/ORP repartent quand même de zéro (ré-amorçage ~65 s).
+⚠️ **Le quota « une dispense par heure » a été retiré** (feature-139) : avec un critère de durée explicite, il ne bloquait plus que le cas légitime (deux arrêts d'entretien dans la même heure).
+
+Si accordée, la coquille pré-sème `waterStopMs`/`haveWaterStop` du module pur dans le référentiel `millis()` post-boot : la **même** comparaison « durée < `kWaterStopGraceS` » s'applique ensuite, qu'il y ait eu reboot ou non — ce n'est **pas** une branche de décision séparée (arbitrage `pool-chemistry`). La porte s'ouvre au premier tick, motif `kWaived` (durée 0), et `isCirculationSettled()` est vrai pour tout le cycle d'eau. Les filtres pH/ORP repartent quand même de zéro (ré-amorçage ~65 s).
 
 ### Circulation établie (C4) — `isCirculationSettled()`
 
-`measureValidityCirculationSettled()` : eau absente → `false` ; cycle dispensé → `true` ; sinon `now − waterRiseMs ≥ kPurgeFloorMs`. C'est la condition d'autorisation de la branche **Programmée** (aveugle aux mesures) : le produit injecté doit être emporté au bassin par une conduite dont l'eau a été renouvelée. Elle **ne dit rien** de la validité des mesures.
+`measureValidityCirculationSettled()` : eau absente → `false` ; cycle dispensé → `true` ; sinon `now − waterRiseMs ≥ kPurgeFloorMs`. C'est la condition d'autorisation de la branche **Programmée** (aveugle aux mesures) : le produit injecté doit être emporté au bassin par une conduite dont l'eau a été renouvelée. Elle **ne dit rien** de la validité des mesures. Inchangée par feature-139.
+
+## Délai avant dosage annoncé à l'utilisateur (`dose_available_logic`, feature-139)
+
+`PumpControllerClass::getDoseAvailableInS()` (coquille mince, `pump_controller.cpp`) expose, en secondes, **le délai avant que le dosage automatique redevienne possible** — c'est le **seul endroit de vérité** pour cette grandeur, consommé par `/data`, le WebSocket et les textes de l'UI (remplace un calcul **côté client** qui ne regardait que le reste de purge et ignorait le plancher de gel du filtre capteur, faux d'un facteur 10 sur le cas le plus fréquent : un cycle **dispensé**).
+
+```cpp
+// src/dose_available_logic.h
+uint32_t computeDoseAvailableInS(bool measuresValid, uint32_t stabElapsedS,
+                                  uint32_t floorMs, uint32_t filterRemainingMs);
+```
+
+Deux plancher **indépendants** peuvent dominer le délai :
+- le reste du **plancher de purge** de `measure_validity` (`kPurgeFloorMs`, 10 min) — pertinent **uniquement** tant que la porte n'est pas encore ouverte (`measuresValid == false`) ;
+- le reste du **plancher de gel du filtre** capteur (`kSensorFilterGateFloorMs`, 60 s, `sensor_filter.{h,cpp}`) — armé **inconditionnellement** à chaque front montant d'eau, y compris quand `measure_validity` dispense sa propre purge. C'est pourquoi les deux planchers sont indépendants : l'un peut déjà être satisfait (cycle dispensé) pendant que l'autre reste actif.
+
+Le délai annoncé est le **max** des deux restes, jamais négatif (arithmétique non signée avec clamp explicite). **0** si le dosage est déjà possible.
+
+⚠️ **Deux défauts trouvés par le test au moment de l'extraction** (même lot, gate `pool-chemistry` 2ᵉ passage) :
+1. la première version ne passait **pas** `measuresValid` à la formule — elle calculait `floorS − stabElapsedS` sans jamais regarder si `measure_validity` avait déjà ouvert sa porte. Or `measureValidityElapsedS()` renvoie **toujours** 0 dès que la porte est ouverte (dispensée ou par plancher) : le terme de purge valait donc `floorS` complet (10 min) **en permanence**, y compris sur un cycle dispensé — recréant exactement le défaut d'affichage d'un facteur 10 que ce lot corrigeait. Corrigé en clampant le terme de purge à 0 dès que `measuresValid` est vrai ;
+2. une **asymétrie d'une seconde** entre le chemin de dispense « en marche » (C2, millisecondes) et le chemin « à travers un redémarrage » (C3, secondes, arrondi) faisait diverger le verdict selon qu'un reboot s'était intercalé à l'instant pile de la frontière — corrigée, et épinglée par un test qui asserte l'**égalité** des deux chemins, pas seulement leurs valeurs.
+
+### Contrat `/data` + WebSocket — `measures_dose_available_in_s`
+
+| Champ | Type | Sémantique |
+|---|---|---|
+| `measures_dose_available_in_s` | uint32 (secondes) | Délai avant que le dosage automatique redevienne possible. **0** si déjà disponible. |
+
+⚠️ **Deux mises en garde, imposées par le gate `pool-chemistry`** :
+1. Ce nombre promet **uniquement** la fin de l'attente d'eau neuve (planchers de purge et de gel du filtre). Il **ne promet pas** qu'un dosage aura lieu : plafonds horaire et journalier, anti-rafale, pause de mélange, stabilisation post-calibration, présence d'eau et watchdog restent **en dehors** de ce calcul. Vocabulaire imposé : « fin de l'attente d'eau neuve », jamais « dosage garanti ».
+2. Le champ est **omis** quand la filtration est à l'arrêt (le délai est alors **inconnu** : rien ne dit quand l'eau reviendra). Il n'est significatif que lorsque l'eau circule. Le client distingue alors deux causes d'absence : `water_present === false` (filtration arrêtée, délai réellement inconnu) vs. champ absent avec `water_present` vrai ou absent (firmware antérieur à ce champ) — voir [`data/app.js`](../../data/app.js) `_measuresWaitText()`.
 
 ## API publique
 
@@ -109,75 +125,71 @@ struct MeasureValiditySnapshot {
   bool circulationSettled;       // C4
   uint32_t stabElapsedS;         // secondes écoulées dans la purge courante (0 hors purge)
   uint32_t lastPurgeDurationS;   // durée de la dernière purge terminée (s)
-  uint8_t lastPurgeEnd;          // PurgeEnd : 0 aucune / 1 stabilité / 2 plafond / 3 dispensée / 4 re-purge
-  uint8_t purgeCount;            // re-purges du cycle d'eau courant (C1)
+  uint8_t lastPurgeEnd;          // PurgeEnd : 0 aucune / 1 stabilité / 3 dispensée (2 et 4 RETIRÉS v2.62, réservés)
+  // purgeCount SUPPRIMÉ en v2.62.0 (feature-139) : le mécanisme de re-purge n'existe plus.
 };
 ```
 
 ## Concurrence
 
-Le cache est lu depuis **deux contextes** : `loopTask` (history, push WS, pump_controller) et `async_tcp` (`GET /data`) → snapshot sous spinlock `portMUX` (section critique minimale, **jamais de mutex bloquant en contexte async**). Les consommateurs lisent le **cache**, jamais `filtration.resolveWaterPresence()` directement ; l'état interne (`_state`, `_stab`, mémoire RTC) appartient à `loopTask` seule.
+Le cache est lu depuis **deux contextes** : `loopTask` (history, push WS, pump_controller) et `async_tcp` (`GET /data`) → snapshot sous spinlock `portMUX` (section critique minimale, **jamais de mutex bloquant en contexte async**). Les consommateurs lisent le **cache**, jamais `filtration.resolveWaterPresence()` directement ; l'état interne (`_state`, mémoire RTC) appartient à `loopTask` seule.
 
 ## Contrat des champs (WS `sensor_data` + `GET /data`, parité obligatoire)
 
 | Champ | Type | Sémantique |
 |-------|------|------------|
 | `water_present` | bool | Présence d'eau résolue (source unique feature-056). |
-| `measures_valid` | bool | `true` = mesures pH/ORP/température représentatives (porte ouverte). `false` = eau absente **ou** purge / re-purge en cours. `false` au boot tant qu'`update()` n'a pas tourné. |
-| `measures_stab_elapsed_s` | uint | Secondes **écoulées** dans la purge courante ; `0` hors purge. Remplace l'ancien `measures_stab_remaining_s` (il n'y a plus de fin prévisible). |
+| `measures_valid` | bool | `true` = mesures pH/ORP/température représentatives (porte ouverte). `false` = eau absente **ou** attente en cours. `false` au boot tant qu'`update()` n'a pas tourné. |
+| `measures_stab_elapsed_s` | uint | Secondes **écoulées** dans la purge courante ; `0` hors purge. |
 | `measures_purge_last_duration_s` | uint | Durée de la **dernière purge terminée** (s). `0` si aucune depuis le boot ou si dispensée. |
-| `measures_purge_last_end` | uint8 | Motif de fin de la dernière purge : `0` aucune, `1` stabilité, `2` **plafond** (alerte), `3` dispensée (coupure ≤ 10 s), `4` re-purge terminée par stabilité. Valeurs figées (`enum PurgeEnd`). |
-| `measures_purge_count` | uint8 | Nombre de **re-purges** (refermetures C1) du cycle d'eau courant ; remis à zéro au front descendant d'eau. |
-
-⚠️ Ne pas confondre avec `ph_stab_remaining_s` / `orp_stab_remaining_s` (sas post-calibration des **pompes**, inchangé — [pump-controller.md](pump-controller.md)).
+| `measures_purge_last_end` | uint8 | Motif de fin de la dernière purge : `0` aucune, `1` stabilité (= plancher atteint), `3` dispensée (arrêt d'eau court). **Domaine réduit depuis v2.62.0** : `2` (plafond) et `4` (re-purge) sont **retirés, plus jamais émis** — valeurs **réservées, non réattribuées** : un consommateur externe qui testait `=== 2` cesse simplement de matcher, sans faux-positif. |
+| ~~`measures_purge_count`~~ | — | **Retiré en v2.62.0** (feature-139) : le mécanisme de re-purge a disparu, ce champ serait devenu structurellement constant à 0 — le conserver aurait publié une forme stable qui ment. |
+| `measures_dose_available_in_s` | uint32 | **Nouveau en v2.62.0** — voir section dédiée ci-dessus. |
 
 ## Consommateurs du verdict
 
 | Consommateur | Usage |
 |---|---|
 | `history` | exclusion des points pH/ORP/température du point 5 min |
-| UI (WS + `/data`) | badges « Filtration arrêtée » / « Stabilisation depuis N min » / « Re-stabilisation depuis N min » ; ligne « Dernière purge » (Réglages) ; bannières plafond (pages pH et ORP) |
-| `pump_controller` | `measuresValid()` : intégrale pH, feedforward, alertes système pH/ORP ; `isCirculationSettled()` : branche Programmée (C4) |
+| UI (WS + `/data`) | textes déterministes « Reprise automatique dans N min » (remplace les anciens badges « Stabilisation depuis N min » / « Re-stabilisation depuis N min », vocabulaire jugé incompréhensible par l'utilisateur) ; ligne « Dernière purge » (Réglages) |
+| `pump_controller` | `measuresValid()` : intégrale pH, feedforward, alertes système pH/ORP ; `isCirculationSettled()` : branche Programmée (C4) ; `getDoseAvailableInS()` : délai annoncé |
 | `sensor_filter` (v2.20.3, C6 v2.34.0) | porte d'alimentation des filtres pH/ORP ; `ready()` faux porte fermée |
 
 ### La porte d'alimentation des filtres (v2.20.3, durcie en v2.34.0)
 
 Jusqu'en v2.20.2, le verdict suspendait l'**injection** mais pas l'**ingestion** : les filtres pH/ORP avalaient les mesures de stagnation, leur médiane acquérait autorité et rejetait ensuite les mesures représentatives (incident du 2026-08-16). `SensorManager::_updateFilterGates()` lit le **cache** et le transmet via `SensorFilter::setContext(waterPresent, measuresValid, nowMs)` avant `addSample()`. Porte fermée ⇒ l'échantillon n'entre nulle part ; réouverture ⇒ ré-amorçage.
 
-**C6 (v2.34.0)** : `SensorFilter::ready()` retourne aussi **faux tant que la porte est fermée**. Avant, une **refermeture** (C1) laissait `ready()` vrai jusqu'à 20 s (âge du dernier échantillon) : P, I, feedforward et gardes d'alerte pouvaient consommer une dernière mesure de rinçage. Le plancher de gel de 60 s (`kSensorFilterGateFloorMs`) appliqué par le filtre après tout front montant est conservé et indépendant. Décision : [ADR-0041](../adr/0041-autorite-mesures-non-representatives-et-sortie-de-secours-filtre.md).
+**C6 (v2.34.0)** : `SensorFilter::ready()` retourne aussi **faux tant que la porte est fermée**. Le plancher de gel de 60 s (`kSensorFilterGateFloorMs`) appliqué par le filtre après tout front montant est conservé et indépendant — c'est lui qui alimente le second terme de `computeDoseAvailableInS()`. Décision : [ADR-0041](../adr/0041-autorite-mesures-non-representatives-et-sortie-de-secours-filtre.md).
 
 ## Comportement au boot
 
-Eau présente au premier `update()` → front montant vu au boot → **purge complète** (plancher 10 min + stabilité), **sauf** dispense C3 (coupure ≤ 10 s, cf. ci-dessus). Le sas de stabilisation des **pompes** (`armStabilizationTimer`, 5 min pH / 3 min ORP) n'est **plus** armé au boot ni au démarrage de la filtration : il ne couvre que la post-calibration EZO et le double quota de minuit ([pump-controller.md](pump-controller.md#stabilisation-post-calibration-et-passage-de-minuit-v2340)).
+Eau présente au premier `update()` → front montant vu au boot → **attente complète** (plancher 10 min), **sauf** dispense C3 (arrêt d'eau court, cf. ci-dessus). Le sas de stabilisation des **pompes** (`armStabilizationTimer`, 5 min pH / 3 min ORP) n'est **pas** armé au boot ni au démarrage de la filtration : il ne couvre que la post-calibration EZO et le double quota de minuit ([pump-controller.md](pump-controller.md#stabilisation-post-calibration-et-passage-de-minuit-v2340)).
 
 ## Logs (préfixe `[STAB]`)
 
 | Événement | Niveau | Message (forme) |
 |---|---|---|
-| Boot, dispense accordée | INFO | `[STAB] Coupure N s (reset logiciel, eau présente avant) → purge de reprise DISPENSÉE` |
+| Boot, dispense accordée | INFO | `[STAB] Arrêt d'eau N s (reset logiciel, eau présente avant) → purge de reprise DISPENSÉE` |
 | Boot, mémoire RTC absente | INFO | `[STAB] Démarrage à froid (mémoire RTC absente) → purge complète à la reprise d'eau` |
-| Boot, dispense refusée | INFO | `[STAB] Coupure <N s \| de durée inconnue> (<motif>) → purge complète à la reprise d'eau` |
-| Front montant d'eau | INFO | `[STAB] Reprise de circulation — purge des mesures pH/ORP (plancher 10 min, fin sur stabilité, plafond 90 min) ; bruts : pH=6.957 ORP=556.0 mV (eau stagnante)` |
-| Fin de purge par stabilité | INFO | `[STAB] Fin de purge par stabilité (X min Y s, pH brut a→b (blocs c) ; ORP brut a→b mV (blocs c mV)) — mesures pH/ORP représentatives` |
-| Fin de purge au plafond | **WARNING** | `[STAB] Purge des mesures ouverte au PLAFOND (X min Y s) sans stabilité (pH brut a→b (blocs c) ; ORP brut a→b mV (blocs c mV)) — sonde bruyante ou transitoire long ; régulation reprise, à surveiller` + `mqttManager.publishAlert("measures_purge_timeout", msg)` |
-| Purge dispensée | INFO | `[STAB] Purge dispensée (coupure N s) — mesures pH/ORP représentatives immédiatement` |
-| Refermeture C1 | **WARNING** | `[STAB] Re-purge n°N — mesures redevenues instables après ouverture (étendue pH … / ORP … mV) : porte refermée jusqu'à nouvelle stabilité` |
-| Fin de re-purge | INFO | `[STAB] Fin de re-purge n°N (X min Y s, pH brut a→b (blocs c) ; ORP brut a→b mV (blocs c mV)) — mesures de nouveau représentatives` |
+| Boot, dispense refusée | INFO | `[STAB] Arrêt d'eau <N s \| de durée inconnue> (<motif>) → purge complète à la reprise d'eau` |
+| Front montant d'eau | INFO | `[STAB] Reprise de circulation — purge des mesures pH/ORP (plancher 10 min)` |
+| Fin de purge (plancher atteint) | INFO | `[STAB] Fin de purge (X min Y s) — mesures pH/ORP représentatives` |
+| Purge dispensée | INFO | `[STAB] Purge dispensée — mesures pH/ORP représentatives immédiatement` |
+| Reprise après arrêt daté (C5, feature-139) | INFO | `[STAB] Reprise après arrêt de N s — attente <dispensée \| complète>` — journalisé à **chaque** reprise d'eau datable, dispense ou non ; c'est la grandeur qui a permis de calibrer `kWaterStopGraceS` sur des données réelles |
 
-`a→b` = bruts min → max observés pendant la purge (`rangeOrNa`) ; une mesure absente s'écrit `n/a`, jamais `nan` ni `0.00`. **`blocs c` (feature-097, v2.54+)** = étendue (max − min) des **statistiques de bloc** au moment du verdict (`purgeChannelRange()`) — c'est cette grandeur, distincte du `a→b` brut, que compare `purgeStabilityEvaluate()` aux seuils `kPurge*StableRange` / `kPurge*RecloseRange`. ⚠️ Les deux valeurs peuvent sembler contradictoires (ex. « 16 min déclarées stables » pendant que le brut balaie 1,5 unité) : elles ne parlent pas de la même grandeur, voir [feature-097 §A](../../specs/features/done/feature-097-seuil-de-stabilite-sur-donnees-terrain.md). Une retombée d'eau pendant la purge n'émet rien côté `[STAB]` (le gel des filtres est journalisé par `sensors`, voir [sensors.md](sensors.md)).
+⚠️ **Retirés en v2.62.0** (plus aucun code ne les émet) : le `WARNING` de plafond atteint, l'alerte MQTT `measures_purge_timeout`, et le `WARNING` de refermeture C1 / fin de re-purge.
 
-## Limites connues (assumées, GO `pool-chemistry` option (a), fail-closed)
+## Limites connues
 
-- Une **dérive lente ≤ 0,017 pH/min** est jugée stable (0,15 pH sur 9 min d'écart entre statistiques de bloc extrêmes). Inchangé par feature-097 : sur une rampe linéaire, médiane et moyenne interquartile renvoient la même valeur centrale — seul le bruit change, pas la sensibilité à une dérive monotone.
-- L'**ORP seul** ne détecte pas une pente ≤ 1,6 mV/min (voie secondaire : seuil 15 mV ≈ 13,5 mV de bruit).
-- **(historique, corrigé par feature-097)** Sur du bruit **synthétique** ±0,18 pH (LCG à graine fixe, pas une mesure terrain), l'étendue de 10 médianes ≈ 0,16 ≈ seuil : ouverture au plancher dans 12 graines sur 21, queue possible jusqu'à t+29. La trace **réelle** capturée le 2026-09-20 (`test/fixtures/f097_purge_noise_20260920.csv`, 25 min, eau établie) donne une image différente : avec l'ancien estimateur (médiane), **13 fenêtres sur 16 (81 %)** ouvraient déjà — le seuil n'était pas sous le plancher de bruit, contrairement à l'estimation. Ce qui échouait, c'étaient des **bascules de médiane** sur un signal pH bimodal (autocorrélation lag 1 = −0,440, voir [sensors.md](sensors.md#signal-ph-brut--anti-corrélation-et-mode-commun-feature-097)), pas un seuil trop serré. **Corrigé** : l'estimateur de bloc est devenu la **moyenne interquartile** — 16/16 fenêtres ouvrent désormais au plancher sur la même trace, aucun seuil n'a changé. Détail : [amendement 2026-09-20 de l'ADR-0059](../adr/0059-purge-adaptative-fenetre-de-medianes.md#amendement-2026-09-20--lestimateur-de-bloc-devient-la-moyenne-interquartile-feature-097-v254), [feature-097](../../specs/features/done/feature-097-seuil-de-stabilite-sur-donnees-terrain.md).
-- Coût nominal : ≈ 10 min + 65 s de ré-amorçage des filtres après une longue coupure (contre 15 min de minuterie avant), mais ~47 min un matin de rinçage réel — c'est le prix d'une ouverture **sur le plateau** au lieu du fond du V.
-- **Point de rupture de l'estimateur de bloc en recul, feature-097** : la moyenne interquartile tolère moins de lectures aberrantes qu'une médiane avant de dériver significativement (25 % d'un bloc, contre 50 % pour la médiane — 3 lectures aberrantes sur 12 encore amorties, 4 sur 12 décrochent). Arbitrage explicite `pool-chemistry`, en échange de la disparition des bascules d'interrupteur sur le signal bimodal réel. Détail : amendement ADR-0059 ci-dessus.
+- **Un arrêt d'eau de durée inconnue (coupure secteur) vaut toujours un arrêt long** (fail-closed) : la mémoire RTC ne survit pas à une coupure secteur, donc une coupure de 30 s traversant une coupure secteur coûte une attente complète de 10 min — assumé, c'est la même doctrine que l'ADR-0059 d'origine.
+- **Il n'existe plus aucun filet qui détecte une mesure pH/ORP durablement fausse mais stable**, en dehors des butées chimiques pH et des plafonds de dosage. C'est un choix assumé par le gate `pool-chemistry` (voir [ADR-0092](../adr/0092-retrait-analyse-stabilite-porte-mesures.md)) : l'ancien mécanisme ne couvrait de toute façon pas ce cas (détecteur d'étendue). La voie **ORP** reste, en plus, sans aucune butée de plausibilité sur la mesure **brute** — manque préexistant, documenté comme suite distincte : [feature-145](../../specs/features/todo/feature-145-butee-de-plausibilite-sur-l-orp-brut.md).
+- **La frontière de grâce (`kWaterStopGraceS`) est stricte** : à durée == 180 s pile, aucune dispense. Un arrêt de 179 s et un arrêt de 181 s produisent des comportements radicalement différents (0 vs 10 min d'attente) — c'est voulu (fail-closed), pas un artefact d'arrondi.
 
 ## Cas limites
 
 - **`millis() == 0` au front montant** : géré par la machine d'état (temps non signés).
-- **Deux refermetures puis plafond** : figé par test natif (`test_native_measure_validity`) — après le plafond, plus aucune refermeture jusqu'au prochain front d'eau.
+- **Repliement de `millis()` pendant un arrêt d'eau très long** : couvert par le latch `stopGraceExceeded`, qui une fois posé ne redescend jamais tant que l'eau reste absente (sans lui, un arrêt > 49,7 jours repasserait pour « court »).
+- **Un reboot pile à la frontière de grâce** : les deux chemins de dispense (C2 en marche, C3 à travers un reboot) doivent rendre le **même** verdict — assertée par un test dédié (pas seulement les valeurs, l'égalité des deux chemins).
 - **Repli HTTP `/data`** : ne porte pas `filtration_state_stale` (asymétrie préexistante) — l'UI dégrade « Signal filtration périmé » en « Filtration arrêtée » ; voir [API.md](../API.md#get-data--write).
 
 ## Fichiers liés
@@ -185,9 +197,9 @@ Eau présente au premier `update()` → front montant vu au boot → **purge com
 - [`src/main.cpp`](../../src/main.cpp) — `measureValidity.begin()` après `rtcManager.applyToSystem()`, `update()` dans la loop **avant** `history.update()`
 - [`src/history.cpp`](../../src/history.cpp) — exclusion pH/ORP/température du point 5 min
 - [`src/sensor_filter.cpp`](../../src/sensor_filter.cpp) — `setContext()`, `ready()` (C6)
-- [`src/pump_controller.cpp`](../../src/pump_controller.cpp) — `measuresValid()` (intégrale, FF, alertes), `isCirculationSettled()` (branche Programmée pH et ORP)
-- [`src/ws_manager.cpp`](../../src/ws_manager.cpp), [`src/web_routes_data.cpp`](../../src/web_routes_data.cpp) — publication des 5 champs
-- [`src/mqtt_manager.cpp`](../../src/mqtt_manager.cpp) — `publishAlert("measures_purge_timeout", …)`
-- [`test/test_native_purge_stability/`](../../test/test_native_purge_stability/), [`test/test_native_measure_validity/`](../../test/test_native_measure_validity/)
+- [`src/pump_controller.cpp`](../../src/pump_controller.cpp) — `measuresValid()` (intégrale, FF, alertes), `isCirculationSettled()` (branche Programmée pH et ORP), `getDoseAvailableInS()` (coquille de `dose_available_logic.h`)
+- [`src/dose_available_logic.h`](../../src/dose_available_logic.h) — délai avant dosage, module pur (feature-139)
+- [`src/ws_manager.cpp`](../../src/ws_manager.cpp), [`src/web_routes_data.cpp`](../../src/web_routes_data.cpp) — publication des champs
+- [`test/test_native_measure_validity/`](../../test/test_native_measure_validity/), [`test/test_native_dose_available/`](../../test/test_native_dose_available/)
 - [filtration.md](filtration.md) — `resolveWaterPresence()`, source unique ([ADR-0026](../adr/0026-mode-installation.md))
-- [ADR-0059](../adr/0059-purge-adaptative-fenetre-de-medianes.md) — purge adaptative, retrait du réglage utilisateur
+- [ADR-0059](../adr/0059-purge-adaptative-fenetre-de-medianes.md) — purge adaptative d'origine, **superseded by** [ADR-0092](../adr/0092-retrait-analyse-stabilite-porte-mesures.md) — retrait de l'analyse de stabilité

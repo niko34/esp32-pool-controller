@@ -790,19 +790,11 @@
             </div>
           </div>
 
-          <!-- feature-091 : purge adaptative — la stabilisation des mesures n'a
-               pas été atteinte au plafond (measures_purge_last_end === 2).
-               Warning, pas critique : l'injection a repris sous les gardes
-               habituelles. Texte statique, seul `hidden` est piloté par
-               updateMeasuresPurgeDisplay(). Reste visible si une re-purge
-               rouvre le badge capteur. Doublon sur la page ORP (suffixe _orp). -->
-          <div class="callout callout--warn" id="measures_purge_timeout_banner"
-               role="status" aria-live="polite" hidden>
-            <strong>Stabilisation des mesures non atteinte</strong><br>
-            <span>Après 90 min de circulation, le pH ou l'ORP brut varie encore.
-              Vérifier les sondes et la chambre de mesure (bulles, encrassement).
-              L'injection a repris sous la surveillance des gardes habituelles.</span>
-          </div>
+          <!-- feature-091 : bandeau « Stabilisation des mesures non atteinte »
+               (plafond 90 min, measures_purge_last_end === 2) RETIRÉ en
+               feature-139 (v2.62.0) : l'alerte firmware measures_purge_timeout
+               qu'il reflétait n'existe plus, et le motif 2 n'est plus jamais
+               émis (code réservé, non réattribué). -->
 
           <!-- feature-092 : carte « Débit d'injection pH » — l'équation de la
                régulation sur une seule surface : contribution de la dose de base
@@ -1278,15 +1270,8 @@
           </div>
 
           <!-- feature-091 : miroir ORP du bandeau #measures_purge_timeout_banner
-               (page pH) — même condition, même texte, piloté par
-               updateMeasuresPurgeDisplay(). -->
-          <div class="callout callout--warn" id="measures_purge_timeout_banner_orp"
-               role="status" aria-live="polite" hidden>
-            <strong>Stabilisation des mesures non atteinte</strong><br>
-            <span>Après 90 min de circulation, le pH ou l'ORP brut varie encore.
-              Vérifier les sondes et la chambre de mesure (bulles, encrassement).
-              L'injection a repris sous la surveillance des gardes habituelles.</span>
-          </div>
+               (page pH), RETIRÉ en feature-139 (v2.62.0) — voir commentaire
+               miroir sur la page pH. -->
 
           <!-- feature-092 : carte « Débit d'injection ORP » — miroir réduit de la
                carte pH. Le chlore est régulé en P PUR (ni feedforward, ni rattrapage
@@ -2049,16 +2034,18 @@ action:
                   </div>
 
                   <!-- feature-091 : le réglage « délai avant injection » (stabilization_delay_min)
-                       a disparu — la purge se termine sur la STABILITÉ des mesures
-                       (plancher 10 min, plafond 90 min, constantes firmware). À sa place :
-                       la durée mesurée de la dernière purge et son motif de fin
-                       (measures_purge_last_duration_s / measures_purge_last_end),
-                       rendus par updateMeasuresPurgeDisplay(). -->
+                       a disparu — remplacé par une attente FIXE après un arrêt d'eau, sans
+                       analyse de stabilité ni plafond variable (retirés en feature-139,
+                       v2.62.0/correctifs gate du 2026-10-08). La durée et le motif de fin de la
+                       dernière pause (champs measures_purge_last_duration_s /
+                       measures_purge_last_end, noms firmware inchangés) sont rendus en
+                       vocabulaire SIMPLE, sans « purge » ni « stabilité », par
+                       updateMeasuresPurgeDisplay() — correctif code-reviewer, 2026-10-08. -->
                   <div class="kv kv--compact" style="margin-top: 16px;">
-                    <div class="kv__row"><span class="kv__k">Dernière purge</span><span class="kv__v" id="measures_purge_last">—</span></div>
+                    <div class="kv__row"><span class="kv__k">Dernière pause</span><span class="kv__v" id="measures_purge_last">—</span></div>
                   </div>
                   <div class="muted small" style="margin-top: 8px;">
-                    Au redémarrage de la filtration, l'injection est suspendue tant que les mesures pH et ORP ne sont pas stables (10 min minimum, 90 min maximum). Aucune durée à régler.
+                    Après un arrêt d'eau de plus de 3 minutes, l'injection reste suspendue 10 minutes, le temps que l'eau neuve arrive jusqu'aux sondes. Aucune durée à régler.
                   </div>
 
                   <div class="detail-actions" style="margin-top: 16px;">
