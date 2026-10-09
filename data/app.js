@@ -6924,19 +6924,17 @@
     // d'armer ce qui tourne déjà est l'incohérence que le gate a fermée. Le
     // texte de la ligne et le bouton « Ouvrir l'injection manuelle » restent
     // inchangés.
-    // ⚠️ Correctif gate pool-chemistry (2e passage, 2026-10-08, feature-139) :
-    // codes 18/22 RETIRÉS de l'offre de secours (hint L7 ET bouton) — ce
-    // RENVERSE la décision initiale de changement minimal. Motif chimique :
-    // l'attente « mesure non représentative » que ces deux codes couvrent est
-    // désormais BORNÉE (≤ 10 min) ET ANNONCÉE à l'écran (texte déterministe,
-    // cf. _measuresWaitText) ; proposer un volume fixe de chlore pendant cette
-    // attente inviterait au surdosage manuel pour rien. Le secours reste
-    // trouvable sur les vraies pannes de mesure (3, 4, 15, 19).
-    // ⚠️ `DOSE_BLOCK_SHORTCUT_CODES` (raccourci d'injection MANUELLE,
-    // bouton « Ouvrir l'injection manuelle » plus bas) N'EST PAS concernée :
-    // le gate distingue explicitement les deux usages, seule l'offre de
-    // SECOURS est restreinte ici.
-    if (shortcutPrefix === 'orp' && !rescueActive && ![18, 22].includes(shortcutCode)) {
+    // ⚠️ Correctif gate pool-chemistry (3e passage, 2026-10-09, feature-146) :
+    // pendant une attente COURTE et AUTO-RÉSOLUTIVE (transitoires 15/18/19/22 —
+    // fenêtre de lissage en remplissage ou attente de circulation), l'appareil
+    // ne doit RIEN proposer : ni raccourci d'injection manuelle, ni chloration
+    // de secours. Il annonce la cause et la durée, point. Les DEUX offres sont
+    // donc restreintes aux seuls états INDÉTERMINÉS, sans fin annoncée (3
+    // ReadingNaN, 4 FilterNotReady) — `shortcutPrefix`/`shortcutCode` ne sont
+    // désormais produits que pour ces deux codes (canShortcut, plus bas, filtre
+    // sur DOSE_BLOCK_SHORTCUT_CODES = [3, 4]) : aucune exclusion locale à
+    // empiler ici, la restriction est faite UNE fois, à la source.
+    if (shortcutPrefix === 'orp' && !rescueActive) {
       const cfg = window._config || {};
       const isManual = (cfg.orp_regulation_mode || 'automatic') === 'manual';
       const rescueHint = document.createElement('p');
@@ -6996,28 +6994,42 @@
       return;
     }
 
-    // LISTE BLANCHE des causes ouvrant le raccourci (2e passage pool-chemistry,
-    // 2026-10-04). Une simple exclusion de « filtration arrêtée » ne suffisait
-    // PAS : le dialogue annonce « la mesure est déclarée non représentative »,
-    // or les codes 8-14 sont des LIMITES (mélange, journalière, horaire,
-    // cycles, anti-rafale) et le code 7 une stabilisation post-calibration.
-    // Sur ces causes le dialogue aurait MENTI, et surtout l'injection manuelle
-    // est soumise AUX MÊMES gardes (evaluateManualInject, gardes 3 et 5 à 9) :
-    // le raccourci aurait mené à un refus — en poussant à relever la limite,
-    // exactement le travers que la condition C6 visait.
-    // Ne restent que les causes de DÉFIANCE ENVERS LA MESURE, où l'injection
-    // manuelle est l'échappatoire voulue (feature-006) :
-    //   3  ReadingNaN            lecture filtrée NaN, état indéterminé
-    //   4  FilterNotReady        filtre non prêt, état indéterminé
-    //   15 ReadingNaNWarmup      fenêtre de lissage en remplissage
-    //   18 ReadingNaNGateClosed  mesures non représentatives (purge)
-    //   19 FilterWarmup          fenêtre de lissage en remplissage
-    //   22 FilterGateClosed      mesures non représentatives (purge)
+    // LISTE DES CODES « ATTENTE DE MESURE » — 3e passage pool-chemistry,
+    // 2026-10-09, feature-146. Les SIX codes ci-dessous partagent la même
+    // cause générique (mesure pH/ORP non exploitable), mais se répartissent en
+    // DEUX familles bien distinctes du point de vue de l'utilisateur :
+    //   - 3  ReadingNaN            état INDÉTERMINÉ, sans fin annoncée
+    //   - 4  FilterNotReady        état INDÉTERMINÉ, sans fin annoncée
+    //   - 15 ReadingNaNWarmup      TRANSITOIRE, borné et annoncé à l'écran
+    //   - 18 ReadingNaNGateClosed  TRANSITOIRE, borné et annoncé à l'écran
+    //   - 19 FilterWarmup         TRANSITOIRE, borné et annoncé à l'écran
+    //   - 22 FilterGateClosed     TRANSITOIRE, borné et annoncé à l'écran
+    // Cette liste à SIX codes ne sert plus qu'à la FUSION pH→ORP (plus bas) :
+    // c'est elle qui détermine si la conséquence ORP (code 250) partage la
+    // cause racine pH. Elle ne doit JAMAIS déterminer un raccourci ou une
+    // offre de secours — un transitoire court et auto-résolutif ne doit RIEN
+    // proposer, cf. DOSE_BLOCK_SHORTCUT_CODES ci-dessous.
+    // ⚠️ Toute addition à cette liste exige un passage du gate pool-chemistry.
+    const DOSE_BLOCK_MEASURE_WAIT_CODES = [3, 4, 15, 18, 19, 22];
+
+    // LISTE BLANCHE des causes ouvrant une OFFRE (raccourci d'injection
+    // manuelle ET chloration de secours, gate pool-chemistry 3e passage,
+    // 2026-10-09, feature-146 — incident de production : un bandeau proposait
+    // encore ces deux offres sur un transitoire de 24 s qui s'est résolu seul).
+    // RESTREINTE aux deux seuls états INDÉTERMINÉS, sans fin annoncée — les
+    // transitoires (15, 18, 19, 22) sont retirés des DEUX offres : proposer un
+    // geste sur une attente qui se termine seule n'aide personne, et le texte
+    // L7 (« rien ne dit quand elle reviendra ») y serait un mensonge.
+    // L'injection manuelle reste pleinement ATTEIGNABLE sur ces codes — par
+    // #ph-inject-section / #orp-inject-section directement, sans raccourci —
+    // on retire un raccourci, pas un recours.
+    //   3  ReadingNaN       lecture filtrée NaN, état indéterminé
+    //   4  FilterNotReady   filtre non prêt, état indéterminé
     // Les PANNES (16, 17, 20, 21) sont déjà écartées par le ton `fault`, et un
     // code inconnu l'est par la liste blanche elle-même — on ne peut alors pas
     // exclure « filtration arrêtée ».
     // ⚠️ Toute addition à cette liste exige un passage du gate pool-chemistry.
-    const DOSE_BLOCK_SHORTCUT_CODES = [3, 4, 15, 18, 19, 22];
+    const DOSE_BLOCK_SHORTCUT_CODES = [3, 4];
     // NB : le code 5 (capteur instable) est volontairement ABSENT — il porte
     // le ton `fault`, donc la condition de ton l'écarte déjà. L'inscrire ici
     // ferait croire qu'il est offert alors qu'il est inatteignable.
@@ -7035,11 +7047,13 @@
     //
     // CONDITION DE FUSION, non négociable, codée EXPLICITEMENT (pas par
     // approximation sur les textes) : orp.code === DOSE_BLOCK_CODE_GUARD (250)
-    // ET ph.code ∈ DOSE_BLOCK_SHORTCUT_CODES ({3,4,15,18,19,22}). Toute AUTRE
-    // valeur côté ORP (quota journalier, inhibition sur pH haut en régulation
-    // stable, pompe non caractérisée, filtre ORP instable…) est une cause
-    // INDÉPENDANTE ⇒ deux lignes, SANS EXCEPTION : fusionner là masquerait un
-    // second problème réel, ce qui serait pire que la redondance.
+    // ET ph.code ∈ DOSE_BLOCK_MEASURE_WAIT_CODES ({3,4,15,18,19,22} — les SIX
+    // codes d'attente de mesure, pas la liste restreinte du raccourci/secours
+    // ci-dessus). Toute AUTRE valeur côté ORP (quota journalier, inhibition sur
+    // pH haut en régulation stable, pompe non caractérisée, filtre ORP
+    // instable…) est une cause INDÉPENDANTE ⇒ deux lignes, SANS EXCEPTION :
+    // fusionner là masquerait un second problème réel, ce qui serait pire que
+    // la redondance.
     //
     // ⚠️ Libellé IMPOSÉ MOT À MOT par le gate pool-chemistry (2e passage,
     // 2026-10-08, feature-139), opposable au même titre que L1-L9 : ne JAMAIS
@@ -7049,7 +7063,7 @@
     // façon vague (« dès que... ») ; `ph.label` porte désormais le texte
     // déterministe (_measuresWaitText, « Reprise automatique dans N min »),
     // la fin n'est donc annoncée QU'UNE fois, pas deux.
-    if (ph && orp && orp.code === DOSE_BLOCK_CODE_GUARD && DOSE_BLOCK_SHORTCUT_CODES.includes(ph.code)) {
+    if (ph && orp && orp.code === DOSE_BLOCK_CODE_GUARD && DOSE_BLOCK_MEASURE_WAIT_CODES.includes(ph.code)) {
       const durations = [ph.durationS, orp.durationS].filter((v) => v != null);
       // « bloqué depuis » = la PLUS ANCIENNE des deux durées : la ligne décrit
       // la cause RACINE (pH), afficher l'âge de la conséquence (ORP, souvent
@@ -7062,12 +7076,15 @@
         label: `${ph.label} — dosage du pH et du chlore en pause tous les deux, le temps que l'eau neuve arrive jusqu'aux sondes.`,
         tone: 'normal', // jamais fault — cohérent avec toneOrp (code 250, voie ORP)
         durationText: _doseBlockDurationText(durationS),
-        // Le chaînage feature-140 reste attaché à la ligne fusionnée : la
-        // ligne ORP absorbée ne doit PAS faire disparaître le bouton
-        // « Activer la chloration de secours » ni le libellé L7 — sauf
-        // exclusion codes 18/22 (ci-dessus, _renderDoseBlockRow). La liste
-        // blanche DOSE_BLOCK_SHORTCUT_CODES est de toute façon satisfaite par
-        // construction (condition de fusion ci-dessus porte déjà sur ph.code).
+        // Le chaînage feature-140 reste attaché à la ligne fusionnée. Mais
+        // depuis le 3e passage (feature-146), DOSE_BLOCK_SHORTCUT_CODES ([3,4])
+        // est plus ÉTROITE que DOSE_BLOCK_MEASURE_WAIT_CODES (fusion, 6 codes) :
+        // canShortcut(ph) ne vaut `true` QUE pour 3/4 (indéterminé, sans fin
+        // annoncée) — sur 15/18/19/22 (transitoires bornés et annoncés),
+        // shortcutPrefix/shortcutCode ressortent `null` et ni le bouton
+        // « Ouvrir l'injection manuelle » ni l'offre de secours (L7/bouton,
+        // _renderDoseBlockRow) ne s'affichent. Voulu : rien à proposer sur une
+        // attente qui se résout seule.
         shortcutPrefix: canShortcut(ph) ? 'orp' : null,
         shortcutCode: canShortcut(ph) ? ph.code : null,
         rescueActive,
