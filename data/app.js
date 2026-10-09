@@ -748,7 +748,9 @@
     } catch (e) { /* stockage indisponible : la préférence ne survit pas au rechargement */ }
   }
 
-  // Mini charts pour les cartes pH et ORP du dashboard
+  // Fabrique générique de mini-graphiques (couleur selon l'écart à la cible) —
+  // ne sert plus que la carte Température du tableau de bord depuis feature-147
+  // (pH/ORP retirés : décision utilisateur, remplacés par les jauges).
   function getMiniChartRGB(value, target, tolerance) {
     if (value == null || isNaN(value)) return [156, 163, 175];
     const dev = Math.abs(value - target) - tolerance;
@@ -1072,7 +1074,8 @@
 
     // Marqueurs de dosage (bug-098) : dessinés au ras du bas de l'aire de tracé,
     // sur un tableau STRICTEMENT parallèle aux labels. st.dose vide (carte
-    // Température) → rien n'est tracé : un seul chemin de code pour les 3 cartes.
+    // Température, seule carte mini-chart restante depuis feature-147) → rien
+    // n'est tracé : fabrique générique, sans chemin spécifique par carte.
     const dosingMarksPlugin = () => ({
       hooks: {
         draw: (u) => {
@@ -1287,17 +1290,13 @@
       const data = await resp.json();
       if (!data.history) return;
 
-      // Tableaux parallèles partagés par les 3 mini-charts (mêmes points sources) ;
-      // updateMiniChart/appendMiniChart copient pour que chaque graphe reste indépendant
+      // feature-147 (correctif) : pH et ORP retirés des mini-graphiques du
+      // tableau de bord — décision utilisateur après déploiement (« avec cet
+      // affichage, le graphique n'est plus utile »), les jauges de la carte
+      // suffisent désormais. Seule la Température reste (hors périmètre de ce
+      // retrait, non concernée par le motif ci-dessus).
       const labels = [], ts = [], gran = [];
-      const phValues = [], orpValues = [], tempValues = [];
-      // Mesures lissées (feature-095) : historisées uniquement sur les points 5 min
-      // (~8 h) — au-delà (moyennes horaires/journalières) et avant la 2.38, null.
-      // Tableaux STRICTEMENT parallèles aux précédents, coupures comprises.
-      const phSmoothed = [], orpSmoothed = [];
-      // bug-098 : masques de dosage (0x01 pH, 0x02 ORP, 0x04 voie inconnue),
-      // tableau parallèle aux labels — coupures comprises.
-      const dose = [];
+      const tempValues = [];
       let maxTs = since;
       // Coupure de courbe : sur le chemin incrémental, le « point précédent » du
       // premier nouveau point est le dernier point déjà affiché — un arrêt entre
@@ -1312,46 +1311,26 @@
         // Espacement > 90 min avec le point précédent → entrée null (uPlot lève le crayon)
         if (prevTs != null && point.timestamp - prevTs > CHART_GAP_SECONDS) {
           labels.push(''); ts.push(null); gran.push(null);
-          phValues.push(null); orpValues.push(null); tempValues.push(null);
-          phSmoothed.push(null); orpSmoothed.push(null);
-          dose.push(0);
+          tempValues.push(null);
         }
         prevTs = point.timestamp;
-        // feature-061 : pH/ORP/température null (filtration arrêtée) → pousser null,
+        // feature-061 : température null (filtration arrêtée) → pousser null,
         // pas filtrer : uPlot lève le crayon sur null (trou visible), y compris sur
-        // le chemin incrémental appendMiniChart. Température incluse en itération 2.
+        // le chemin incrémental appendMiniChart.
         labels.push(miniChartPointLabel(point.timestamp));
         ts.push(point.timestamp);
         gran.push(point.granularity ?? 0);
-        // pH affiché à 2 décimales sur les mini-graphiques : à 1 décimale, la
-        // quantification (0,10) dépasse l'amplitude utile du signal lissé (0,05)
-        phValues.push((point.ph != null && !isNaN(point.ph)) ? Math.round(point.ph * 100) / 100 : null);
-        orpValues.push((point.orp != null && !isNaN(point.orp)) ? Math.round(point.orp) : null);
         tempValues.push((point.temperature != null && !isNaN(point.temperature))
           ? Math.round(point.temperature * 10) / 10 : null);
-        phSmoothed.push((point.phFiltered != null && !isNaN(point.phFiltered))
-          ? Math.round(point.phFiltered * 100) / 100 : null);
-        orpSmoothed.push((point.orpFiltered != null && !isNaN(point.orpFiltered))
-          ? Math.round(point.orpFiltered) : null);
-        // Un firmware antérieur envoie encore un booléen : il se lit « voie
-        // indéterminée », jamais « pH » (cf. dosingMaskFromApi).
-        dose.push(dosingMaskFromApi(point.dosing));
       });
 
-      const phTarget = window._config?.ph_target ?? 7.2;
-      const orpTarget = window._config?.orp_target ?? 700;
       if (since === 0) {
         // Chargement initial : remplace toutes les données
-        updateMiniChart(phMiniChart, labels, phSmoothed, phValues, ts, gran, phTarget, 0.2, dose);
-        updateMiniChart(orpMiniChart, labels, orpSmoothed, orpValues, ts, gran, orpTarget, 50, dose);
         updateMiniChart(tempMiniChart, labels, tempValues, null, ts, gran, 26, 8);
       } else {
         // Mise à jour incrémentale : ajoute les nouveaux points
-        appendMiniChart(phMiniChart, labels, phSmoothed, phValues, ts, gran, phTarget, 0.2, dose);
-        appendMiniChart(orpMiniChart, labels, orpSmoothed, orpValues, ts, gran, orpTarget, 50, dose);
         appendMiniChart(tempMiniChart, labels, tempValues, null, ts, gran, 26, 8);
       }
-      refreshMiniLegendAbsence();
 
       if (maxTs > lastMiniChartTimestamp) lastMiniChartTimestamp = maxTs;
     } catch (e) {
@@ -1403,7 +1382,7 @@
 
   function updateMiniChart(chart, labels, values, rawValues, ts, gran, target, tolerance, dose) {
     if (!chart) return;
-    // slice() : labels/ts/gran sont partagés entre les 3 mini-charts — chaque
+    // slice() : labels/ts/gran proviennent d'un tableau source partagé — le
     // graphe doit posséder sa propre copie (appendMiniChart mute st.* par push)
     chart.st.labels = labels.slice();
     chart.st.values = values;
@@ -1415,67 +1394,12 @@
     chart.render();
   }
 
-  // Interrupteurs « Brut » des mini-graphiques pH et ORP (feature-095) :
-  // 2 préférences INDÉPENDANTES, défaut visible, aucun rechargement réseau au clic
-  // (les valeurs brutes sont déjà en mémoire dans chart.st.raw).
-  const MINI_RAW_TOGGLES = [
-    { toggleId: 'ph-mini-raw-toggle', legendId: 'ph-mini-legend-smoothed', prefKey: 'poolctl.ui.showRaw.ph', chart: () => phMiniChart },
-    { toggleId: 'orp-mini-raw-toggle', legendId: 'orp-mini-legend-smoothed', prefKey: 'poolctl.ui.showRaw.orp', chart: () => orpMiniChart }
-  ];
-
-  function applyMiniRawVisibility(chart, visible) {
-    if (!chart) return;
-    chart.st.showRaw = visible;
-    applyMiniChartFallbackScale(chart, chart.getTarget(), chart.getTolerance());
-    chart.render();
-  }
-
-  function bindMiniRawToggles() {
-    MINI_RAW_TOGGLES.forEach(cfg => {
-      const btn = document.getElementById(cfg.toggleId);
-      if (!btn) return;
-      // Clé absente ou stockage illisible → « 1 » (visible)
-      let visible = uiPrefGet(cfg.prefKey, '1') !== '0';
-      btn.setAttribute('aria-checked', visible ? 'true' : 'false');
-      applyMiniRawVisibility(cfg.chart(), visible);
-      btn.addEventListener('click', () => {
-        visible = !visible;
-        btn.setAttribute('aria-checked', visible ? 'true' : 'false');
-        uiPrefSet(cfg.prefKey, visible ? '1' : '0');
-        applyMiniRawVisibility(cfg.chart(), visible);
-      });
-    });
-  }
-
-  // Aucune mesure lissée sur la fenêtre (première heure après mise à jour, ou
-  // journée entièrement antérieure à la 2.38) : la légende le dit au lieu de
-  // laisser croire à une courbe manquante
-  function refreshMiniLegendAbsence() {
-    MINI_RAW_TOGGLES.forEach(cfg => {
-      const el = document.getElementById(cfg.legendId);
-      const chart = cfg.chart();
-      if (!el || !chart) return;
-      const absent = !hasFiniteValue(chart.st.values);
-      el.classList.toggle('is-absent', absent);
-      // REVUE (mineur n°4) : l'opacité seule ne dit rien à un lecteur d'écran,
-      // ni à quelqu'un qui ne perçoit pas la nuance. On nomme donc l'absence.
-      // Cas concret : la première heure après une mise à jour, aucun point n'a
-      // encore de mesure lissée — la carte redevient identique à avant, et sans
-      // ce texte rien n'expliquerait pourquoi la courbe principale a disparu.
-      const suffixe = el.querySelector('.mini-legend__absent');
-      if (absent && !suffixe) {
-        const s = document.createElement('span');
-        s.className = 'mini-legend__absent';
-        s.textContent = ' (aucune sur la période)';
-        el.appendChild(s);
-      } else if (!absent && suffixe) {
-        suffixe.remove();
-      }
-      el.setAttribute('title', absent
-        ? 'Aucune mesure lissée sur la période affichée'
-        : 'Mesure lissée : la valeur utilisée par la régulation');
-    });
-  }
+  // feature-147 (correctif) : les interrupteurs « Brut » pH/ORP et la légende
+  // d'absence de mesure lissée (MINI_RAW_TOGGLES, applyMiniRawVisibility,
+  // bindMiniRawToggles, refreshMiniLegendAbsence) sont retirés — ils ne
+  // servaient QUE les mini-graphiques pH/ORP du tableau de bord, supprimés
+  // (décision utilisateur, « avec cet affichage, le graphique n'est plus
+  // utile »). La Température n'a jamais eu ce mécanisme (une seule série).
 
   // Usine des graphiques détail (Température / pH / ORP)
   // referenceLines : { max, min, zoneColor, lineColor } → lignes + zones hors
@@ -1950,7 +1874,7 @@
   }
 
   let tempChart, phChart, orpChart;
-  let phMiniChart = null, orpMiniChart = null, tempMiniChart = null;
+  let tempMiniChart = null;
   let currentHistoryRange = 'all';
 
   // ---------- State ----------
@@ -2436,10 +2360,16 @@
     const pMin = phGaugePosition(_phBounds.targetMin);
     const pMax = phGaugePosition(_phBounds.targetMax);
     if (pMin !== null && pMax !== null) {
+      // Correctif retour utilisateur : --danger/--success sont des couleurs de
+      // TEXTE (ratio de contraste, sombres) — ternes en aplat sur 10 px.
+      // --gauge-low/--gauge-ok/--gauge-high sont des teintes d'aplat dédiées,
+      // ET distinguent les deux extrémités (chaud = trop bas/acide, froid =
+      // trop haut/chlore inefficace — pas le même problème, cf. carte de
+      // référence). Le texte d'état garde --success/--danger (inchangé).
       track.style.background =
-        `linear-gradient(to right, var(--danger) 0%, var(--danger) ${pMin}%, ` +
-        `var(--success) ${pMin}%, var(--success) ${pMax}%, ` +
-        `var(--danger) ${pMax}%, var(--danger) 100%)`;
+        `linear-gradient(to right, var(--gauge-low) 0%, var(--gauge-low) ${pMin}%, ` +
+        `var(--gauge-ok) ${pMin}%, var(--gauge-ok) ${pMax}%, ` +
+        `var(--gauge-high) ${pMax}%, var(--gauge-high) 100%)`;
     }
     // Revue code-reviewer : positions dérivées de phGaugePosition(), jamais
     // recopiées en % dans le HTML (une valeur, un seul endroit).
@@ -12035,29 +11965,14 @@
     setNetStatus("mid", "Connexion…");
     initWebSocket();
 
-    // Create mini charts for dashboard cards
-    phMiniChart = createMiniLineChart(
-      'ph-mini-chart',
-      () => window._config?.ph_target ?? 7.2,
-      () => 0.2,
-      v => v.toFixed(2), // 2 décimales : le lissé bouge de 0,05, pas de 0,10
-      { smoothed: 'lissé', raw: 'brut' }
-    );
-    orpMiniChart = createMiniLineChart(
-      'orp-mini-chart',
-      () => window._config?.orp_target ?? 700,
-      () => 50,
-      v => Math.round(v) + ' mV',
-      { smoothed: 'lissé', raw: 'brut' }
-    );
+    // Create mini chart for dashboard card — feature-147 (correctif) : pH et
+    // ORP retirés (décision utilisateur, les jauges suffisent désormais).
     tempMiniChart = createMiniLineChart(
       'temp-mini-chart',
       () => 26,
       () => 8,
       v => v.toFixed(1) + ' °C'
     );
-    // Interrupteurs « Brut » (pH / ORP) : état restauré avant le 1er chargement
-    bindMiniRawToggles();
 
     // Load historical data to populate charts
     const historyPerf = debugStart("loadHistoricalData");
