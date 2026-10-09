@@ -2902,23 +2902,32 @@
 
   // ========== BADGES CAPTEURS ==========
 
-  // Règle de composition du badge multi-états (feature-012 N2).
-  // Chaque état candidat est décrit par { priority, variant, text } :
-  //   priority 0 = capteur indisponible (danger) — feature-022 (valeur null/NaN)
-  //   priority 1 = hors plage (danger)
-  //   priority 2 = limite journalière atteinte
-  //   priority 3 = cumul journalier ≥ 75 %
-  //   priority 4 = stock faible
-  // - MAXIMUM 2 segments affichés, séparés par « · » : au-delà de 2 candidats,
-  //   on garde les 2 plus prioritaires (priority la plus faible d'abord).
-  // - Variant du badge : hiérarchie danger > warning > info (feature-061 :
-  //   'info' = état normal informatif, filtration arrêtée / stabilisation).
+  // Règle de composition du badge multi-états (feature-012 N2, revue chantier
+  // simplification — retour utilisateur : « les messages contextuels sont en
+  // bas, jamais en haut. La couleur du badge dépendra du niveau d'alerte »).
+  // Chaque état candidat est décrit par { priority, variant, text }.
+  // ⚠️ PLUS DE PLAFOND sur ce qui compte : couper à 2 segments était un choix
+  // de densité, pas de sécurité — masquer une alerte quand plusieurs choses
+  // vont mal en même temps est exactement le défaut qu'on traque.
+  //   - TOUS les segments 'danger'/'warning' s'affichent, empilés, jamais coupés.
+  //   - Un SEUL segment 'info' (neutre), le plus prioritaire, UNIQUEMENT si
+  //     aucun danger/warning n'existe pour ce capteur.
+  //   - Rien à signaler ⇒ badge masqué (comme avant).
   function composeSensorBadge(candidates) {
-    if (!candidates.length) return { variant: null, text: '' };
-    const kept = [...candidates].sort((a, b) => a.priority - b.priority).slice(0, 2);
+    const bySeverity = (a, b) => a.priority - b.priority;
+    // Revue code-reviewer : condition EXPLICITE (pas `!== 'info'`) — un
+    // `variant` absent ne doit jamais compter comme alerte par accident.
+    const alerts = candidates.filter(s => s.variant === 'danger' || s.variant === 'warning').sort(bySeverity);
+    const neutrals = candidates.filter(s => s.variant === 'info').sort(bySeverity);
+    const kept = alerts.length ? alerts : neutrals.slice(0, 1);
+    if (!kept.length) return { variant: null, segments: [] };
     const variant = kept.some(s => s.variant === 'danger') ? 'danger'
       : kept.some(s => s.variant === 'warning') ? 'warning' : 'info';
-    return { variant, text: kept.map(s => s.text).join(' · ') };
+    // `quiet` (revue code-reviewer, accessibilité) : le décompte d'injection
+    // se réécrit à la seconde (dosingCountdownSegment) — s'il est annoncé par
+    // le aria-live du badge à cette cadence, c'est une ré-annonce hostile à
+    // chaque tick. setBadge() l'exclut de la région active via aria-hidden.
+    return { variant, segments: kept.map(s => ({ text: s.text, quiet: !!s.quiet })) };
   }
 
   // feature-061 : validité des mesures pH/ORP côté firmware (filtration arrêtée
@@ -2981,99 +2990,159 @@
     return { priority: 3, variant: 'warning', text: `Cumul ${pct} %` };
   }
 
+  // Texte « Trop bas/élevé » — factorisé (pH et ORP ne diffèrent que par la
+  // tolérance, l'arrondi et l'unité).
+  function outOfRangeText(value, target, tol, round, unit) {
+    if (value == null || isNaN(value)) return null;
+    const v = round(value), lo = round(target - tol), hi = round(target + tol);
+    if (v < lo) return `Trop bas (${v}${unit})`;
+    if (v > hi) return `Trop élevé (${v}${unit})`;
+    return null;
+  }
+
+  // Revue code-reviewer (facteur commun pH/ORP — les deux blocs d'appel
+  // étaient un quasi copier-coller d'une trentaine de lignes) : limites
+  // (journalière/durée/horaire/cycles), règle de COMBINAISON (limite atteinte
+  // ET mesure hors plage sur le MÊME capteur ⇒ danger — sinon warning), et le
+  // reste de la classification firmware DOSE_BLOCK_CODES non encore sourcé
+  // ailleurs.
+  function dosingLimitSegments(sensor, rangeText) {
+    const data = latestSensorData || {};
+    const segs = [];
+
+    const dailyLimit = !!data[`${sensor}_limit_reached`];
+    const block = _doseBlockInfo(data, sensor);
+    const hourlyLimit = block.code === 11;
+    const cyclesLimit = block.code === 12;
+    // Revue code-reviewer : un calcul client « durationLimit » (config
+    // `*_limit_minutes` + `*_used_ms`) a existé ici — RETIRÉ, pas neutralisé.
+    // Vérifié côté firmware (src/dosing_logic.cpp:173 :
+    // `in.hourlyLimitMs > 0 && in.usedMs >= in.hourlyLimitMs`) : c'est
+    // EXACTEMENT le même test que le code 11 (hourlyLimit ci-dessus), déjà
+    // servi des DEUX côtés /data et WS. Le garder aurait affiché DEUX
+    // segments pour UN seul fait (« Limite de durée atteinte » ET « Limite
+    // horaire atteinte ») — le doublon que DOSE_BLOCK_CODE_ALREADY_SOURCED
+    // existe pour interdire. Bénéfice en prime : plus de lecture de
+    // `*_used_ms`, le champ non parié /data↔WS qui motivait le correctif
+    // précédent — le contournement disparaît avec sa cause.
+    const anyLimit = dailyLimit || hourlyLimit || cyclesLimit;
+    const alertVariant = (rangeText && anyLimit) ? 'danger' : 'warning';
+
+    if (rangeText) segs.push({ priority: 1, variant: alertVariant, text: rangeText });
+    // Source unique pour chaque fait de limite — un seul endroit le pousse.
+    [[dailyLimit, 'Limite journalière atteinte'],
+     [hourlyLimit, DOSE_BLOCK_CODES[11].label], [cyclesLimit, DOSE_BLOCK_CODES[12].label]]
+      .forEach(([on, text]) => { if (on) segs.push({ priority: 2, variant: alertVariant, text }); });
+
+    // Reste de la classification firmware (DOSE_BLOCK_CODES), faits non
+    // encore sourcés ailleurs (DOSE_BLOCK_CODE_ALREADY_SOURCED) : watchdog,
+    // capteur instable, calibration insuffisante, stabilisation post-cal,
+    // mélange en cours, régulation non automatique, anti-rafale, sonde
+    // figée/muette, sécurité pH/ORP active…
+    if (block.label && !DOSE_BLOCK_CODE_ALREADY_SOURCED.has(block.code)) {
+      const v = doseBlockVariant(block.tone, block.code);
+      segs.push({ priority: (v === 'danger') ? 0.5 : 1.5, variant: v, text: block.label });
+    }
+    return segs;
+  }
+
+  // Facteur commun pH/ORP (revue code-reviewer) : assemble TOUS les segments
+  // d'un capteur — mesure d'état, capteur indisponible, limites/combinaison
+  // (dosingLimitSegments), cumul/stock, décomptes. `dailyMlKey`/`maxMlKey`/
+  // `remKey`/`thrKey` : seuls les NOMS DE CHAMP diffèrent entre pH et ORP (et
+  // ne suivent pas tous le même gabarit, ex. max_chlorine_ml_per_day) — d'où
+  // ces paramètres plutôt qu'un simple préfixe `${sensor}_`.
+  function buildSensorSegments(sensor, target, tol, round, unit, dailyMlKey, maxMlKey, remKey, thrKey) {
+    const segs = measureStateSegments(sensor, latestSensorData);
+    const v = latestSensorData?.[sensor];
+    const ok = latestSensorData !== null && measuresAreValid(latestSensorData);
+    if (ok && (v == null || isNaN(v))) {
+      segs.push({ priority: 0, variant: 'danger', text: 'Capteur indisponible' });
+    }
+    segs.push(...dosingLimitSegments(sensor, ok ? outOfRangeText(v, target, tol, round, unit) : null));
+    const cumul = dailyCumulSegment(latestSensorData?.[dailyMlKey], window._config?.[maxMlKey] ?? 0,
+      latestSensorData?.[`${sensor}_limit_reached`] === true);
+    if (cumul) segs.push(cumul);
+    const rem = latestSensorData?.[remKey], thr = latestSensorData?.[thrKey];
+    if (rem != null && thr != null && rem <= thr && thr > 0) {
+      segs.push({ priority: 4, variant: 'warning', text: `Stock faible (${(rem / 1000).toFixed(1)} L)` });
+    }
+    // Décompte d'injection — relocalisé tel quel (segment neutre, faible
+    // priorité). Décompte stabilisation/pause mélange — RESTAURÉ tel quel
+    // (coordinateur) : pas de libellé figé, un décompte ne se déduit de rien.
+    const countdown = dosingCountdownSegment(sensor);
+    const stabOrMix = dosingStabOrMixSegment(sensor);
+    _dosingCountdownShown[sensor] = !!(countdown?.live || stabOrMix?.live);
+    if (countdown) segs.push(countdown);
+    if (stabOrMix) segs.push(stabOrMix);
+    return segs;
+  }
+
   function updateSensorBadges() {
-    function setBadge(id, variant, text) {
+    // Chantier simplification : rendu en LISTE de <span> (un par segment),
+    // plus une seule chaîne jointe par « · » (illisible à 320 px dès deux
+    // textes longs). `.sensor-badge--stacked` (empilement vertical) actif
+    // seulement à partir de 2 segments.
+    // Revue code-reviewer :
+    // [SÉCURITÉ] `segments[].text` peut porter le texte BRUT du firmware
+    // (_doseBlockInfo() renvoie json.*DoseBlockedReason tel quel quand le
+    // code est absent, ou le code-garde 250) — `textContent` uniquement,
+    // JAMAIS `innerHTML` (même garantie que l'ancien `el.textContent = stopReason`).
+    // [ACCESSIBILITÉ] Mise à jour INCRÉMENTALE des <span> existants, pas de
+    // clear+rebuild : le décompte d'injection réécrit SON span à la seconde
+    // (aria-hidden, cf. `quiet`) — reconstruire tout le sous-arbre à chaque
+    // tick réannoncerait le badge ENTIER via aria-live, quiet ou pas.
+    function setBadge(id, variant, segments) {
       const el = $(`#${id}`);
       if (!el) return;
-      if (!variant) {
+      if (!variant || !segments || !segments.length) {
         el.style.display = 'none';
         el.className = 'sensor-badge';
         el.innerHTML = '';
         return;
       }
-      el.className = `sensor-badge sensor-badge--${variant}`;
-      el.innerHTML = `<span>${text}</span>`;
+      el.className = `sensor-badge sensor-badge--${variant}` +
+        (segments.length > 1 ? ' sensor-badge--stacked' : '');
+      const kids = el.children;
+      segments.forEach((seg, i) => {
+        const span = kids[i] || el.appendChild(document.createElement('span'));
+        if (span.textContent !== seg.text) span.textContent = seg.text;
+        if (seg.quiet) span.setAttribute('aria-hidden', 'true');
+        else span.removeAttribute('aria-hidden');
+      });
+      while (el.children.length > segments.length) el.lastChild.remove();
       el.style.display = '';
     }
 
     // feature-061 : mesures invalides (filtration arrêtée / stabilisation) —
-    // gate les segments « Capteur indisponible » et « hors plage » (on ne peut
-    // pas juger une sonde ni une valeur quand l'eau ne circule pas).
+    // gate les segments température « Capteur indisponible »/« figée » plus
+    // bas (ph/orp : même gate, désormais interne à buildSensorSegments()).
     const measuresOk = measuresAreValid(latestSensorData);
 
-    // Badge pH — liste de candidats, composés par composeSensorBadge()
-    const phSegments = [];
-    phSegments.push(...measureStateSegments('ph', latestSensorData));
-    // feature-022 : capteur indisponible (valeur null ou NaN). Le test
-    // latestSensorData !== null évite le faux positif au boot : updateSensorBadges
-    // est appelé depuis loadConfig avant le 1er message WS.
-    if (latestSensorData !== null && measuresOk && (latestSensorData.ph == null || isNaN(latestSensorData.ph))) {
-      phSegments.push({ priority: 0, variant: 'danger', text: 'Capteur indisponible' });
-    }
-    if (measuresOk && latestSensorData?.ph != null && !isNaN(latestSensorData.ph)) {
-      const ph = latestSensorData.ph;
-      const phTarget = window._config?.ph_target ?? 7.2;
-      const phLow = +(phTarget - 0.2).toFixed(1);
-      const phHigh = +(phTarget + 0.2).toFixed(1);
-      if (ph < phLow || ph > phHigh) {
-        phSegments.push({ priority: 1, variant: 'danger',
-          text: ph < phLow ? `Trop bas (${ph.toFixed(1)})` : `Trop élevé (${ph.toFixed(1)})` });
-      }
-    }
-    if (latestSensorData?.ph_limit_reached) {
-      phSegments.push({ priority: 2, variant: 'warning', text: 'Limite journalière atteinte' });
-    }
-    { const cumul = dailyCumulSegment(
-        latestSensorData?.ph_daily_ml,
-        window._config?.max_ph_ml_per_day ?? 0,
-        latestSensorData?.ph_limit_reached === true);
-      if (cumul) phSegments.push(cumul);
-    }
-    { const rem = latestSensorData?.ph_remaining_ml;
-      const thr = latestSensorData?.ph_alert_threshold_ml;
-      if (rem != null && thr != null && rem <= thr && thr > 0) {
-        phSegments.push({ priority: 4, variant: 'warning',
-          text: `Stock faible (${(rem / 1000).toFixed(1)} L)` });
-      }
-    }
+    // Badge pH — assemblé par buildSensorSegments() (factorisé avec ORP)
+    const phSegments = buildSensorSegments('ph', window._config?.ph_target ?? 7.2, 0.2, v => +v.toFixed(1), '',
+      'ph_daily_ml', 'max_ph_ml_per_day', 'ph_remaining_ml', 'ph_alert_threshold_ml');
     const phBadge = composeSensorBadge(phSegments);
-    setBadge('ph-sensor-badge', phBadge.variant, phBadge.text);
+    setBadge('ph-sensor-badge', phBadge.variant, phBadge.segments);
 
-    // Badge ORP — mêmes règles de composition
-    const orpSegments = [];
-    orpSegments.push(...measureStateSegments('orp', latestSensorData));
-    // feature-022 : capteur indisponible (cf. commentaire du bloc pH ci-dessus)
-    if (latestSensorData !== null && measuresOk && (latestSensorData.orp == null || isNaN(latestSensorData.orp))) {
-      orpSegments.push({ priority: 0, variant: 'danger', text: 'Capteur indisponible' });
-    }
-    if (measuresOk && latestSensorData?.orp != null && !isNaN(latestSensorData.orp)) {
-      const orp = Math.round(latestSensorData.orp);
-      const orpTarget = window._config?.orp_target ?? 650;
-      const orpLow = Math.round(orpTarget - 150);
-      const orpHigh = Math.round(orpTarget + 150);
-      if (orp < orpLow || orp > orpHigh) {
-        orpSegments.push({ priority: 1, variant: 'danger',
-          text: orp < orpLow ? `Trop bas (${orp} mV)` : `Trop élevé (${orp} mV)` });
-      }
-    }
-    if (latestSensorData?.orp_limit_reached) {
-      orpSegments.push({ priority: 2, variant: 'warning', text: 'Limite journalière atteinte' });
-    }
-    { const cumul = dailyCumulSegment(
-        latestSensorData?.orp_daily_ml,
-        window._config?.max_chlorine_ml_per_day ?? 0,
-        latestSensorData?.orp_limit_reached === true);
-      if (cumul) orpSegments.push(cumul);
-    }
-    { const rem = latestSensorData?.orp_remaining_ml;
-      const thr = latestSensorData?.orp_alert_threshold_ml;
-      if (rem != null && thr != null && rem <= thr && thr > 0) {
-        orpSegments.push({ priority: 4, variant: 'warning',
-          text: `Stock faible (${(rem / 1000).toFixed(1)} L)` });
-      }
-    }
+    // Badge ORP — même assemblage. Règle de combinaison : cf. commentaire de
+    // dosingLimitSegments() — c'est elle qui romprait le silence de la dérive
+    // ORP en cours (510-540 mV stable jusqu'au 28/09, puis décroissance
+    // monotone jusqu'à 74 mV, minimum −46 : jamais « Capteur indisponible »,
+    // un « Trop bas » orange pendant dix jours sans cette règle).
+    const orpSegments = buildSensorSegments('orp', window._config?.orp_target ?? 650, 150, Math.round, ' mV',
+      'orp_daily_ml', 'max_chlorine_ml_per_day', 'orp_remaining_ml', 'orp_alert_threshold_ml');
     const orpBadge = composeSensorBadge(orpSegments);
-    setBadge('orp-sensor-badge', orpBadge.variant, orpBadge.text);
+    setBadge('orp-sensor-badge', orpBadge.variant, orpBadge.segments);
+
+    // Démarrage/arrêt du ticker 1 s — une seule fois par rendu, après les deux
+    // capteurs (plusieurs décomptes indépendants peuvent être « live » à la fois).
+    if (_dosingCountdownShown.ph || _dosingCountdownShown.orp) {
+      if (!dosingTickTimer) dosingTickTimer = setInterval(_dosingTick, 1000);
+    } else if (dosingTickTimer) {
+      clearInterval(dosingTickTimer);
+      dosingTickTimer = null;
+    }
 
     // Badge Température — capteur indisponible (bug-ui-valeurs-figees) + segments
     // d'état mesure (feature-061 it. 2), calqué sur les blocs pH/ORP ci-dessus
@@ -3134,19 +3203,19 @@
       tempSegments.push({ priority: 1, variant: 'warning', text: 'Sonde température figée' });
     }
     const tempBadge = composeSensorBadge(tempSegments);
-    setBadge('temperature-sensor-badge', tempBadge.variant, tempBadge.text);
+    setBadge('temperature-sensor-badge', tempBadge.variant, tempBadge.segments);
     // Page Température : MÊME composition que la carte du tableau de bord. Les
     // segments de dosage/stock n'existent pas pour la température, il n'y a donc
     // rien à retirer (contrairement aux pages pH/ORP, qui n'affichent que les
     // segments d'état mesure).
-    setBadge('temperature-page-badge', tempBadge.variant, tempBadge.text);
+    setBadge('temperature-page-badge', tempBadge.variant, tempBadge.segments);
 
     // feature-061 : badges des pages pH/ORP — alimentés par les SEULS segments
     // d'état mesure (pas les segments dosage/stock, déjà portés ailleurs sur la page).
     const phPageBadge = composeSensorBadge(measureStateSegments('ph', latestSensorData));
-    setBadge('ph-page-badge', phPageBadge.variant, phPageBadge.text);
+    setBadge('ph-page-badge', phPageBadge.variant, phPageBadge.segments);
     const orpPageBadge = composeSensorBadge(measureStateSegments('orp', latestSensorData));
-    setBadge('orp-page-badge', orpPageBadge.variant, orpPageBadge.text);
+    setBadge('orp-page-badge', orpPageBadge.variant, orpPageBadge.segments);
   }
 
   // ========== ÉCRAN PRODUITS ==========
@@ -3622,17 +3691,35 @@
     };
   }
 
-  // bug-dosage-fantome it.3 : le widget distingue « session active » (commandé)
-  // de « pompe alimentée » (pouls effectif). Décomptes recalculés depuis
-  // dosingAnchor (valeur ancrée + horloge locale), JAMAIS extrapolés au-delà de
-  // la fin de période : à l'échéance sans nouvelle donnée → ellipsis, jamais de
-  // bascule optimiste vers « Injection en cours », jamais 0 s ni négatif.
-  // UN SEUL setInterval 1 s partagé pH+ORP (pattern injectInterval), actif
-  // uniquement quand un état à décompte est affiché.
+  // Chantier de simplification (règle utilisateur : « les messages
+  // contextuels sont en bas, jamais en haut. La couleur du badge dépendra du
+  // niveau d'alerte ») — le widget séparé #<sensor>-dosing-status DISPARAÎT.
+  // getDosingStopReason() et dedupDosingReason() sont SUPPRIMÉES : tous les
+  // motifs qu'elles portaient migrent dans phSegments/orpSegments
+  // (updateSensorBadges()), via measureStateSegments() (déjà en place),
+  // les flags *_limit_reached (déjà en place) et la classification générique
+  // DOSE_BLOCK_CODES (doseBlockVariant(), DOSE_BLOCK_CODE_ALREADY_SOURCED —
+  // cf. définitions près de DOSE_BLOCK_CODES). Un seul emplacement, une seule
+  // source par fait.
+  // ⚠️ Simplification assumée en cours de route : les décomptes dynamiques
+  // "Stabilisation : M min S s" / "Pause mélange : M min S s" (calculés ici
+  // auparavant) sont remplacés par les libellés STATIQUES déjà portés par
+  // DOSE_BLOCK_CODES (codes 7/8 : « Stabilisation post-calibration » /
+  // « Mélange en cours ») — même fait, sans le compte à rebours à la seconde.
+  // Seul LE décompte de l'INJECTION (ci-dessous, bug-dosage-fantome) est
+  // explicitement préservé tel quel par la demande.
+  //
+  // bug-dosage-fantome it.3 : le segment distingue « session active »
+  // (commandé) de « pompe alimentée » (pouls effectif). Décomptes recalculés
+  // depuis dosingAnchor (valeur ancrée + horloge locale), JAMAIS extrapolés
+  // au-delà de la fin de période : à l'échéance sans nouvelle donnée →
+  // ellipsis, jamais de bascule optimiste vers « Injection en cours », jamais
+  // 0 s ni négatif. UN SEUL setInterval 1 s partagé pH+ORP, actif uniquement
+  // quand un décompte est affiché — relance désormais updateSensorBadges()
+  // en entier (le segment vit dans le badge, plus dans un widget à part).
   let dosingTickTimer = null;
-  const _dosingStatusArgs = { ph: null, orp: null };   // derniers args (re-rendu par le ticker)
   const _dosingCountdownShown = { ph: false, orp: false };
-  const DOSING_NBSP = " ";  // espace insécable avant l'unité (« 42 s »)
+  const DOSING_NBSP = " ";  // espace insécable avant l'unité (« 42 s »)
 
   const fmtDosingCountdown = (s) => {
     if (s >= 60) {
@@ -3643,29 +3730,18 @@
   };
 
   function _dosingTick() {
-    ["ph", "orp"].forEach((s) => {
-      const a = _dosingStatusArgs[s];
-      if (a) updateDosingStatus(s, a.isActive, a.stopReason);
-    });
+    updateSensorBadges();
   }
 
-  function updateDosingStatus(sensor, isActive, stopReason) {
-    const el = $(`#${sensor}-dosing-status`);
-    if (!el) return;
-    _dosingStatusArgs[sensor] = { isActive, stopReason };
-
+  // Segment NEUTRE de faible priorité (demande explicite : « ne supprime pas
+  // le décompte du dosage, relocalise-le ») — même cascade de priorités que
+  // l'ancien widget, simplement rendue comme candidat de composeSensorBadge()
+  // au lieu d'un <div> à part.
+  function dosingCountdownSegment(sensor) {
     const data = latestSensorData || {};
     const anchor = dosingAnchor;
     const elapsedMs = anchor ? Math.max(0, Date.now() - anchor.atMs) : 0;
-    const DOT = '<span class="dosing-status__dot" aria-hidden="true"></span>';
-    let countdownShown = false;
-
-    // Applique texte + classes en retirant les classes d'état inutilisées.
-    const show = (html, stateCls) => {
-      el.innerHTML = html;
-      el.classList.add("is-visible");
-      ["is-active", "is-waiting", "is-fault"].forEach((c) => el.classList.toggle(c, c === stateCls));
-    };
+    let text = null, countdownShown = false;
 
     // Priorité 1 : injection MANUELLE minutée (valeur ancrée à la réception).
     const manualBase = anchor ? anchor[sensor].manualS : (data[`${sensor}_inject_remaining_s`] ?? 0);
@@ -3673,7 +3749,7 @@
     const session = data[`${sensor}_pulse_session`];
     const periodMs = data.pulse_period_ms;
     if (manualBase > 0 && manualS > 0) {
-      show(DOT + "Injection manuelle : " + fmtDosingCountdown(manualS), "is-active");
+      text = "Injection manuelle : " + fmtDosingCountdown(manualS);
       countdownShown = true;
     } else if (session === true && Number.isFinite(periodMs) && periodMs > 0) {
       // Priorités 2-4 : session d'impulsions (dosage en proportionnel de temps).
@@ -3683,121 +3759,61 @@
       const endS = Math.ceil((periodMs - phaseMs) / 1000);  // jamais 0 tant que phase < période
       if (pulseMs > 0 && phaseMs < pulseMs) {
         // Priorité 2 : pouls en cours — la pompe est réellement alimentée.
-        // Ticker maintenu ACTIF (revue it.3) : quand la phase ancrée atteint
-        // pulseMs, la bascule RESTRICTIVE vers « Prochaine impulsion » se fait
-        // localement, sans attendre la trame suivante. Le sens inverse
-        // (attente → injection) reste interdit sans donnée serveur.
-        show(DOT + "Injection en cours", "is-active");
+        text = "Injection en cours";
         countdownShown = true;
       } else if (pulseMs > 0) {
         // Priorité 3 : repos entre deux pouls — décompte jusqu'à la fin de période.
-        show(DOT + (endS > 0 ? "Prochaine impulsion : " + fmtDosingCountdown(endS)
-                             : "Prochaine impulsion…"), "is-waiting");
+        text = endS > 0 ? "Prochaine impulsion : " + fmtDosingCountdown(endS) : "Prochaine impulsion…";
         countdownShown = endS > 0;
       } else {
         // Priorité 4 : deadband — période sans pouls planifié (demande < pouls min).
-        show(DOT + (endS > 0 ? "Dosage en attente : " + fmtDosingCountdown(endS)
-                             : "Dosage en attente…"), "is-waiting");
+        text = endS > 0 ? "Dosage en attente : " + fmtDosingCountdown(endS) : "Dosage en attente…";
         countdownShown = endS > 0;
       }
-    } else if (session === undefined && isActive) {
+    } else if (session === undefined && data[`${sensor}_dosing`]) {
       // Rétrocompat firmware sans champs pulse_* : comportement historique.
-      show(DOT + "Injection en cours", "is-active");
-    } else if (stopReason) {
-      // Priorité 5 : motif d'arrêt (getDosingStopReason + dedupDosingReason).
-      el.textContent = stopReason;
-      el.classList.add("is-visible");
-      el.classList.remove("is-active", "is-waiting");
-      // v2.25.1 : ton d'alerte SI ET SEULEMENT SI le texte affiché est bien le
-      // libellé d'une PANNE de mesure (sonde figée / muette). Les états
-      // transitoires attendus (préchauffage, porte de validité fermée, quotas)
-      // gardent le ton neutre — c'est toute la distinction que ce correctif pose.
-      const b = _doseBlockInfo(data, sensor);
-      el.classList.toggle("is-fault", b.tone === "fault" && stopReason === b.label);
-    } else {
-      // Priorité 6 : rien à afficher.
-      el.textContent = "";
-      el.classList.remove("is-visible", "is-active", "is-waiting", "is-fault");
+      text = "Injection en cours";
     }
 
-    _dosingCountdownShown[sensor] = countdownShown;
-    if (_dosingCountdownShown.ph || _dosingCountdownShown.orp) {
-      if (!dosingTickTimer) dosingTickTimer = setInterval(_dosingTick, 1000);
-    } else if (dosingTickTimer) {
-      clearInterval(dosingTickTimer);
-      dosingTickTimer = null;
-    }
+    // quiet: countdownShown — SEUL le texte qui change réellement à la
+    // seconde (revue code-reviewer) doit être exclu de l'annonce aria-live
+    // (setBadge) ; un `quiet: true` inconditionnel rendrait aussi muets les
+    // états qui NE tickent pas (« Prochaine impulsion… », « Injection en
+    // cours » en rétrocompat sans pulse_*), au pire cas seuls à l'écran.
+    return text ? { priority: 9, variant: 'info', text, live: countdownShown, quiet: countdownShown } : null;
   }
 
-  function getDosingStopReason(data, config, sensor) {
-    const enabled = sensor === "ph" ? config.ph_enabled : config.orp_enabled;
-    if (!enabled) return "Régulation désactivée";
 
-    // feature-012 N3 : stabilisation PAR POMPE (champs feature-006) — une
-    // calibration ORP ne doit pas afficher « Stabilisation » sur la carte pH,
-    // et inversement. Fallback sur le champ global (max des 2) pour compat
-    // avec un firmware plus ancien qui ne pousserait pas les champs par pompe.
+  // RESTAURÉ sur décision du coordinateur (le lot précédent l'avait remplacé
+  // par les libellés statiques DOSE_BLOCK_CODES[7]/[8] — refusé). Décompte à
+  // la seconde, PAS un libellé figé : c'est précisément le défaut corrigé ce
+  // matin sur les codes 15/19 (« un message sans fin annoncée ne vaut rien »),
+  // et la demande la plus constante de l'utilisateur. Segment NEUTRE de
+  // faible priorité (ux-ui-designer : « relocalisé tel quel, pas supprimé,
+  // pas tranché pour un futur chantier »). Texte et calcul INCHANGÉS depuis
+  // l'ancien getDosingStopReason().
+  // live:false sur les 3 retours — fidèle à l'ancien comportement : ce
+  // décompte n'a JAMAIS été ancré sur l'horloge locale (pas de dosingAnchor
+  // ici, à la différence de l'injection) ; il affiche la dernière valeur
+  // serveur, rafraîchie au prochain /data ou push WS, pas à la seconde.
+  function dosingStabOrMixSegment(sensor) {
+    const data = latestSensorData || {};
+    const fmt = (label, secs) => {
+      const m = Math.floor(secs / 60), s = secs % 60;
+      return (m > 0 ? `${label} : ${m} min ${String(s).padStart(2, '0')} s` : `${label} : ${s} s`);
+    };
+    // feature-012 N3 : stabilisation PAR POMPE — fallback sur le champ global
+    // (firmware antérieur sans champs par pompe).
     const remainS = data[`${sensor}_stab_remaining_s`] ?? (data.stabilization_remaining_s || 0);
-    if (remainS > 0) {
-      const m = Math.floor(remainS / 60);
-      const s = remainS % 60;
-      return m > 0 ? `Stabilisation : ${m} min ${String(s).padStart(2, '0')} s` : `Stabilisation : ${s} s`;
-    }
-
-    // Pause mélange hydraulique post-injection (feature-025) : rendue visible sur le
-    // widget (v2.19.1). Compte à rebours via *_mix_remaining_s ; repli sur le booléen
-    // *MixingDelayActive (firmware plus ancien, sans temps restant).
+    if (remainS > 0) return { priority: 0.8, variant: 'info', text: fmt('Stabilisation', remainS), live: false };
+    // Pause mélange hydraulique post-injection (feature-025) ; repli sur le
+    // booléen *MixingDelayActive (firmware plus ancien, sans temps restant).
     const mixS = data[`${sensor}_mix_remaining_s`] || 0;
-    if (mixS > 0) {
-      const m = Math.floor(mixS / 60);
-      const s = mixS % 60;
-      return m > 0 ? `Pause mélange : ${m} min ${String(s).padStart(2, '0')} s` : `Pause mélange : ${s} s`;
+    if (mixS > 0) return { priority: 0.8, variant: 'info', text: fmt('Pause mélange', mixS), live: false };
+    if (data[`${sensor}MixingDelayActive`] === true) {
+      return { priority: 0.8, variant: 'info', text: 'Pause mélange en cours', live: false };
     }
-    if (data[`${sensor}MixingDelayActive`] === true) return "Pause mélange en cours";
-
-    // feature-056 : présence d'eau = source UNIQUE (résolue par le mode d'installation).
-    // Fallback sur filtration_running si le firmware ne pousse pas encore water_present.
-    const waterPresent = (data.water_present !== undefined) ? data.water_present : data.filtration_running;
-    if (waterPresent === false) {
-      return data.filtration_state_stale ? "Signal filtration périmé" : "Filtration arrêtée";
-    }
-
-    if (sensor === "ph"  && data.ph_limit_reached)  return "Limite journalière atteinte";
-    if (sensor === "orp" && data.orp_limit_reached)  return "Limite journalière atteinte";
-
-    const usedMs    = sensor === "ph" ? (data.ph_used_ms  || 0) : (data.orp_used_ms  || 0);
-    const limitMin  = sensor === "ph" ? (config.ph_limit_minutes || 0) : (config.orp_limit_minutes || 0);
-    if (limitMin > 0 && usedMs >= limitMin * 60000) return "Limite de durée atteinte";
-
-    // v2.25.1 : PORTE DE VALIDITÉ FERMÉE — traitée AVANT la cause de refus
-    // firmware. Le badge capteur affiche déjà le texte de _measuresWaitText()
-    // (measureStateSegments, measures_valid === false) ; descendre jusqu'au motif
-    // de refus juxtaposait deux messages contradictoires sur la même carte.
-    // On ne se taît QUE pour la famille « stabilisation des mesures » : une panne
-    // (sonde figée / muette) ou tout autre motif reste dit, badge ou pas.
-    const block = _doseBlockInfo(data, sensor);
-    const blockEntry = DOSE_BLOCK_CODES[block.code];
-    if (data.measures_valid === false && blockEntry && blockEntry.stab) return "";
-
-    // v2.8.5 : remonter la cause de refus firmware non couverte ci-dessus
-    // (anti-cycling cycles/jour, anti-rafale…). Vide en cas 2 « valeur OK »
-    // (canDose ne refuse pas → code 0/null) → statut reste vide.
-    if (block.label) return block.label;
-
-    return "";  // Pas de refus firmware : valeur dans l'hystérésis (rien à doser)
-  }
-
-  // feature-061 : dé-duplication — quand le badge capteur affiche déjà
-  // « Filtration arrêtée » / « Signal filtration périmé » (water_present === false,
-  // segment garanti visible car priorité 1), masquer le motif équivalent du
-  // dosing-status : le badge fait foi. Les autres motifs restent inchangés.
-  // Fallback firmware ancien (water_present absent) : pas de badge → on garde le motif.
-  function dedupDosingReason(reason, data) {
-    if (data && data.water_present === false
-        && (reason === "Filtration arrêtée" || reason === "Signal filtration périmé")) {
-      return "";
-    }
-    return reason;
+    return null;
   }
 
   // feature-053 : carte Boost du tableau de bord. Consomme boost_active/boost_until
@@ -4231,8 +4247,6 @@
       compactPhTarget.textContent = config.ph_target.toFixed(1);
     }
 
-    updateDosingStatus("ph",  !!data.ph_dosing,  dedupDosingReason(getDosingStopReason(data, config, "ph"), data));
-
     // feature-147 : jauge pH — trace le pH CORRIGÉ (data.ph, déjà affiché
     // ci-dessus en compact-value), jamais une valeur brute (gate C1).
     updatePhGauge((data.ph != null && !isNaN(data.ph)) ? data.ph : NaN, measuresOk);
@@ -4248,8 +4262,6 @@
     if (compactOrpTarget && config.orp_target != null) {
       compactOrpTarget.textContent = Math.round(config.orp_target);
     }
-
-    updateDosingStatus("orp", !!data.orp_dosing, dedupDosingReason(getDosingStopReason(data, config, "orp"), data));
 
     // feature-147 : jauge ORP — mesure + consigne, aucune zone colorée/nommée
     // (gate : un ORP « correct » n'existe pas dans l'absolu).
@@ -6520,10 +6532,12 @@
   //     firmware antérieur à ce champ (filtration par ailleurs active ou
   //     indéterminée) : repli générique, jamais de calcul inventé.
   // Ce texte NE CONTREDIT PAS le reste de l'écran : measureStateSegments()
-  // et getDosingStopReason() affichent déjà « Filtration arrêtée » avec
-  // PRIORITÉ sur toute cause de dosage quand water_present === false — ce
-  // texte n'apparaît donc que là où ces deux-là ne s'affichent pas (pastille,
-  // chip filtre, bandeau de blocage), sans jamais se contredire.
+  // affiche déjà « Filtration arrêtée » avec PRIORITÉ sur toute cause de
+  // dosage quand water_present === false (chantier simplification : c'est
+  // désormais la SEULE source de ce texte, le badge capteur ayant absorbé
+  // l'ancien widget dosing-status) — ce texte n'apparaît donc que là où ce
+  // segment ne s'affiche pas (pastille, chip filtre, bandeau de blocage),
+  // sans jamais se contredire.
   function _measuresWaitText(json) {
     const remainingS = json && json.measures_dose_available_in_s;
     if (typeof remainingS === 'number' && isFinite(remainingS) && remainingS >= 0) {
@@ -6601,6 +6615,45 @@
       pillOrp: 'pH trop haut, chlore peu actif', toneOrp: 'normal',
     },
   };
+
+  // Chantier simplification — correspondance (tone, code) → variante du badge
+  // capteur, CÔTÉ JS UNIQUEMENT. Ne touche PAS à DOSE_BLOCK_CODES ci-dessus
+  // (sert aussi au chip filtre et à la pill « Débit d'injection »). Verdict du
+  // gate pool-chemistry, après arbitrage :
+  //   - fault/unknown → danger (le capteur ou la mesure est en cause) ;
+  //   - 13/14 (anti-rafale) → info, TOUJOURS, même si tone='normal' générique :
+  //     « c'est le métronome de la boucle, il se déclenche plusieurs fois par
+  //     heure sur un appareil sain ; les passer orange viderait l'orange de
+  //     son sens » — refusé explicitement par le gate ;
+  //   - reste du tone 'normal' → info (marche attendue).
+  // Revue code-reviewer : la branche 10/11/12 → warning a été RETIRÉE — morte
+  // (ces 3 codes sont dans DOSE_BLOCK_CODE_ALREADY_SOURCED, jamais passés
+  // ici ; 11/12 sont traités explicitement, en combinaison, dans
+  // dosingLimitSegments()).
+  function doseBlockVariant(tone, code) {
+    if (tone === 'fault' || tone === 'unknown') return 'danger';
+    if (code === 13 || code === 14) return 'info';
+    return (tone === 'warning') ? 'warning' : 'info';
+  }
+
+  // Faits déjà sourcés ailleurs par un chemin dédié — SOURCE UNIQUE, on ne les
+  // repousse pas une seconde fois depuis la classification générique
+  // DOSE_BLOCK_CODES (sous peine de dupliquer le même fait avec un texte
+  // différent, le défaut qu'on a passé la journée à corriger) :
+  //   2  Filtration arrêtée        → measureStateSegments() (water_present)
+  //   3  Mesure indisponible (cause indéterminée) → subsumé par « Capteur
+  //      indisponible » (valeur ph/orp null), même fait pour l'utilisateur
+  //   4  idem, variante « filtre non prêt »
+  //   7  Stabilisation post-calibration → dosingStabOrMixSegment() : décompte
+  //      à la seconde RESTAURÉ (refus coordinateur du libellé statique figé —
+  //      exactement le défaut corrigé ce matin sur les codes 15/19, et la
+  //      demande la plus constante de l'utilisateur : dire combien de temps).
+  //   8  Mélange en cours           → idem, « Pause mélange : M min S s ».
+  //   10 Limite journalière        → flag *_limit_reached (updateSensorBadges)
+  //   11 Limite horaire            → traité explicitement (règle de combinaison)
+  //   12 Limite cycles/jour        → idem
+  //   15,18,19,22 (famille « stab ») → measureStateSegments() (measures_valid)
+  const DOSE_BLOCK_CODE_ALREADY_SOURCED = new Set([2, 3, 4, 7, 8, 10, 11, 12, 15, 18, 19, 22]);
 
   // Traduit le couple (code, texte) servi pour `prefix` en { code, label, tone }.
   // SÉMANTIQUE STRICTE des états du champ code (clé absente ≠ null ≠ 0) :

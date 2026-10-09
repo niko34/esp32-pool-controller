@@ -2372,45 +2372,6 @@ input.is-computed:disabled {
   text-overflow: ellipsis;
 }
 
-/* Statut injection dans les cartes compactes */
-.dosing-status {
-  display: none;
-  align-items: center;
-  justify-content: center;
-  gap: 5px;
-  font-size: 13px;
-  color: var(--text-secondary);
-  min-height: 16px;
-  text-align: center;
-}
-.dosing-status.is-visible {
-  display: flex;
-}
-.dosing-status__dot {
-  flex-shrink: 0;
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: #4caf50;
-  animation: pulse-dot 1.2s ease-in-out infinite;
-}
-@keyframes pulse-dot {
-  0%, 100% { opacity: 1; transform: scale(1); }
-  50%       { opacity: 0.4; transform: scale(0.7); }
-}
-.dosing-status.is-active {
-  color: #4caf50;
-  font-weight: 600;
-}
-/* bug-dosage-fantome it.3 : état d'attente (prochaine impulsion / deadband) — dot statique */
-.dosing-status.is-waiting {
-  color: var(--text-secondary);
-}
-.dosing-status.is-waiting .dosing-status__dot {
-  animation: none;
-  background: var(--text-secondary);
-  opacity: .55;
-}
 
 /* feature-147 : jauges pH/ORP/Température — CSS pur, aucune bibliothèque,
    aucun SVG/canvas. Réutilise --danger/--warn/--success/--accent/--text/
@@ -2506,16 +2467,6 @@ input.is-computed:disabled {
   opacity: 0.35;
   filter: grayscale(1);
 }
-/* v2.25.1 : PANNE de mesure (sonde figée / plus aucune mesure acceptée). Registre
-   visuel volontairement distinct des états transitoires attendus (préchauffage du
-   filtre, porte de validité fermée), qui restent en ton neutre : c'est l'objet du
-   correctif — ne plus présenter une panne matérielle comme un état normal. */
-.dosing-status.is-fault {
-  color: var(--danger);
-  font-weight: 600;
-}
-
-
 .calibration-alert {
   width: 100%;
   margin-top: 12px;
@@ -2582,6 +2533,20 @@ input.is-computed:disabled {
   background: var(--accent-light);
   border-color: rgba(37, 99, 235, 0.3);
   color: #1e40af; /* ratio ~7.7:1 sur fond bleu clair — AA ✓ */
+}
+/* Chantier simplification : TOUS les segments rouges/orange s'empilent, jamais
+   coupés (plus de .slice(0,2)) — la jointure par « · » devient illisible à
+   320 px dès deux textes longs. Actif seulement à partir de 2 segments.
+   Revue code-reviewer : renommé --stacked (modificateur, cohérent avec
+   --danger/--warning/--info voisins — --list laissait croire à un élément). */
+.sensor-badge--stacked {
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: flex-start;
+  gap: 4px;
+}
+.sensor-badge--stacked > span {
+  display: block;
 }
 .sensor-badge__link {
   font-size: 12px;

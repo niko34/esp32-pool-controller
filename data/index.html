@@ -366,7 +366,6 @@
                 <div class="card__status-compact">
                   <div class="compact-value" id="compact-ph">--</div>
                   <div class="compact-target">Cible: <span id="compact-ph-target">7.2</span></div>
-                  <div class="dosing-status" id="ph-dosing-status"></div>
                 </div>
                 <!-- feature-147 : position du pH corrigé (déjà affiché ci-dessus)
                      sur une échelle. Bornes de DESSIN UNIQUEMENT (jamais
@@ -393,7 +392,7 @@
                     <span class="gauge__legend-marks">Repères : 7,00 eau agressive · 7,60 chlore inefficace</span>
                   </div>
                 </div>
-                <div class="sensor-badge" id="ph-sensor-badge" style="display:none;"></div>
+                <div class="sensor-badge" id="ph-sensor-badge" style="display:none;" role="status" aria-live="polite"></div>
                 <div class="calibration-alert" id="ph-calibration-alert" style="display:none;">
                   <span class="calibration-alert__text">Calibration requise</span>
                   <a href="#/ph" class="calibration-alert__btn">Configurer</a>
@@ -414,7 +413,6 @@
                 <div class="card__status-compact">
                   <div class="compact-value" id="compact-orp">--<span class="compact-unit">mV</span></div>
                   <div class="compact-target">Cible: <span id="compact-orp-target">650</span> mV</div>
-                  <div class="dosing-status" id="orp-dosing-status"></div>
                 </div>
                 <!-- feature-147 : gate pool-chemistry (2e passage, GO SOUS
                      CONDITIONS) — dégradé ÉVALUATIF mais ASYMÉTRIQUE, posé par
@@ -440,7 +438,7 @@
                     <span class="gauge__legend-state" id="orp-gauge-state"></span>
                   </div>
                 </div>
-                <div class="sensor-badge" id="orp-sensor-badge" style="display:none;"></div>
+                <div class="sensor-badge" id="orp-sensor-badge" style="display:none;" role="status" aria-live="polite"></div>
                 <div class="calibration-alert" id="orp-calibration-alert" style="display:none;">
                   <span class="calibration-alert__text">Calibration requise</span>
                   <a href="#/orp" class="calibration-alert__btn">Configurer</a>
@@ -487,7 +485,7 @@
                     <span class="gauge__legend-marks">Repère : 4 °C hivernage</span>
                   </div>
                 </div>
-                <div class="sensor-badge" id="temperature-sensor-badge" style="display:none;"></div>
+                <div class="sensor-badge" id="temperature-sensor-badge" style="display:none;" role="status" aria-live="polite"></div>
               </div>
             </div>
           </div>
