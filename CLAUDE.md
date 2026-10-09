@@ -167,11 +167,38 @@ Ces règles sont **non négociables** — même si l'utilisateur demande de les 
 | `architect` | Conçoit l'implémentation, produit le plan | Après analyse de spec, avant codage |
 | `embedded-developer` | Firmware C++ ESP32 / Arduino / FreeRTOS | Toute modif dans `src/` hors UI web |
 | `web-ui-developer` | Frontend JS/HTML/CSS + routes HTTP + WS + MQTT + HA | Toute modif dans `data/` ou `src/web_*`, `ws_manager.*`, `mqtt_manager.*` |
+| `ux-ui-designer` | Ergonomie et mise en page du frontend (`data/`) | **AVANT** `web-ui-developer` dès qu'une surface UI est créée, refondue, ou **qu'un écran reçoit son 3ᵉ ajout successif** (voir la règle d'accumulation ci-dessous) |
 | `pool-chemistry` | Sécurité chimique, PID pH/ORP, limites de dosage | OBLIGATOIRE pour toute modif de `pump_controller.*`, régulation, calibration capteurs pH/ORP |
 | `test-engineer` | Tests unitaires, mocks, tests d'intégration | Après implémentation, avant revue |
 | `debugger` | Analyse logs/crash dumps, reproduction de bugs | Dès qu'un bug est rapporté ou crash ESP32 |
 | `code-reviewer` | Revue critique sécurité/qualité/concurrence | Avant tout commit |
 | `doc-writer` | README, `docs/`, CHANGELOG, commentaires | Quand le comportement visible change |
+
+### ⚠️ La règle d'ACCUMULATION (`ux-ui-designer`)
+
+**Constat du 2026-10-09, à l'origine de cette règle.** La page Produits est devenue illisible
+— écran très haut, deux boutons par produit dont la distinction a fait trébucher l'utilisateur,
+champs pleine largeur pour saisir quatre chiffres. Enquête faite : **aucune de ces décisions
+n'était mauvaise.** `ux-ui-designer` avait même été coché dans les specs concernées. Deux
+causes :
+
+1. **Il ne figurait pas dans ce tableau** — sa seule mention vivait dans
+   `specs/features/_template.md`, sous forme de case conditionnelle. Une session qui lit
+   CLAUDE.md ignorait son existence. **Corrigé : il y est désormais.**
+2. **Son mandat était à chaque fois limité à l'ajout du jour** (« refonte de vocabulaire et
+   d'interaction » pour feature-143). Personne ne lui a jamais demandé : *à quoi ressemble
+   cette page DANS SON ENSEMBLE ?*
+
+**La règle qui en découle** : aucun ajout ne rend un écran trop chargé à lui seul. C'est leur
+SOMME que personne ne regarde.
+
+⇒ **Dès qu'un écran reçoit son 3ᵉ ajout successif** (champ, bouton, carte, ligne d'état),
+`ux-ui-designer` est invoqué **sur l'ÉCRAN ENTIER**, pas sur l'ajout. Son brief doit dire
+explicitement : *évalue la page complète, propose ce qui doit DISPARAÎTRE*.
+⇒ Le compteur se lit dans l'historique git du fichier concerné, ou dans la doc
+`docs/features/page-*.md` si elle liste les évolutions.
+⇒ En cas de doute, invoquer : une étude d'ergonomie coûte une passe d'agent, une page dégradée
+coûte une refonte.
 
 ## Quand utiliser l'orchestrateur vs travailler directement
 

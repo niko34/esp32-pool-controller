@@ -34,7 +34,11 @@ Les sections marquées (optionnelle) peuvent être supprimées si non pertinente
 - [x] spec-reader
 - [x] architect
 - [ ] pool-chemistry — **obligatoire si** dosage / régulation / calibration touchés
-- [ ] ux-ui-designer — **obligatoire si** nouvelle surface UI / refonte visuelle / arbitrage entre plusieurs mises en page
+- [ ] ux-ui-designer — **obligatoire si** nouvelle surface UI / refonte visuelle / arbitrage
+      entre plusieurs mises en page / **3ᵉ ajout successif sur le même écran** (règle
+      d'accumulation, cf. CLAUDE.md). ⚠️ Dans ce dernier cas son mandat porte sur
+      **l'ÉCRAN ENTIER**, pas sur l'ajout du jour — c'est l'erreur qui a dégradé la page
+      Produits : trois interventions correctes, aucune vue d'ensemble.
 - [ ] embedded-developer
 - [ ] web-ui-developer
 - [x] test-engineer
