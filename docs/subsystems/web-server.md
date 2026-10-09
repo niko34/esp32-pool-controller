@@ -35,7 +35,7 @@ Les routes sont réparties par domaine fonctionnel dans des fichiers séparés :
 |---------|---------|----------------------|
 | [`web_routes_data.cpp`](../../src/web_routes_data.cpp) | Lecture de données | `/data`, `/get-history`, `/history/clear`, `/history/import` |
 | [`web_routes_config.cpp`](../../src/web_routes_config.cpp) | Config | `/save-config`, `/get-config`, `/reboot`, `/factory-reset` |
-| [`web_routes_control.cpp`](../../src/web_routes_control.cpp) | Actions | `/filtration/on/off`, `/lighting/on/off`, `/ph/inject/*`, `/orp/inject/*`, `/pump[12]/on/off` |
+| [`web_routes_control.cpp`](../../src/web_routes_control.cpp) | Actions | `/filtration/external-state`, `/lighting/on/off`, `/ph/inject/*`, `/orp/inject/*`, `/pump[12]/on/off` (démarrer/arrêter la filtration passe par `/save-config` `filtration_mode` depuis feature-146, v2.63.0 — pas de route `/filtration/on`/`/off` dédiée) |
 | [`web_routes_calibration.cpp`](../../src/web_routes_calibration.cpp) | Calibration pH | `/calibrate_ph_neutral`, `/calibrate_ph_acid`, `/clear_ph_calibration` |
 | [`web_routes_ota.cpp`](../../src/web_routes_ota.cpp) | OTA | `/update`, `/check-update`, `/download-update` |
 | [`web_routes_auth.cpp`](../../src/) | Authentification | `/auth/login`, `/auth/token`, `/auth/change-password`, etc. |

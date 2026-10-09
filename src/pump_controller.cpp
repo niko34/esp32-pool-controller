@@ -2193,8 +2193,9 @@ float PumpControllerClass::getPhDailyMaxMl() const {
   if (isnan(sustainable)) return NAN;
   // Minutes PROGRAMMÉES du planning de filtration (pas les minutes effectives :
   // le maximum annoncé est celui de la journée telle que planifiée — modes
-  // `auto` et `manual`, alignés sur decideFiltrationRun). −1 = mode `off`/
-  // `force` ou plage invalide ⇒ indisponible.
+  // Auto et Programme, alignés sur decideFiltrationRun ; Marche = 1440, la
+  // pompe tourne en permanence). −1 = mode Arrêt ou plage invalide ⇒
+  // indisponible (feature-146).
   const int scheduledMin = filtration.scheduledMinutesToday();
   if (scheduledMin < 0) return NAN;
   return sustainable * (float)scheduledMin;
@@ -3179,6 +3180,32 @@ void PumpControllerClass::update() {
   _acctSettledThisTick = false;
   updateDosingCore(now);
   if (!_acctSettledThisTick) settlePumpAccounting(now);
+}
+
+// feature-146 : horizon de répartition du dosage programmé (minutes restant
+// avant la fin du créneau de filtration, bornées à minuit). Partagé par les
+// branches ph ET orp scheduled ci-dessous (évite de tripler la même
+// condition). Hors mode Managed : journée entière (eau 24/7 en Powered,
+// horizon plein en External — borné par la garde présence d'eau). En mode
+// Managed, mode Marche : le créneau start/end ne décide PLUS RIEN (la pompe
+// tourne en permanence) — même horizon "journée entière" que les modes non
+// gérés, repris du patron existant (pas de branche nouvelle), sinon le
+// dosage réparti resterait borné par un créneau fantôme pendant que
+// scheduledMinutesToday() (gate #4) annonce 1440 minutes à l'affichage.
+// Auto/Programme/Arrêt : créneau de BASE (ADR-0093 — le créneau EFFECTIF du
+// Boost ne sert qu'à decideFiltrationRun, jamais au dosage réparti ; statu
+// quo fail-closed voulu, sans régression : un Boost nocturne continue de
+// REFUSER le dosage réparti hors du créneau programmé).
+static int filtrationDosingHorizonMinutes(int nowMin) {
+  if (mqttCfg.installMode != InstallMode::ManagedFiltration) {
+    return 1440 - nowMin;
+  }
+  if (parseFiltrationModeFrom(filtrationCfg.mode) == FiltrationMode::Marche) {
+    return 1440 - nowMin;
+  }
+  return remainingRangeMinutes(nowMin,
+      timeStringToMinutes(filtrationCfg.start.c_str()),
+      timeStringToMinutes(filtrationCfg.end.c_str()));
 }
 
 // bug-115 (v2.61.0) : ex-update(). Renommée updateDosingCore(), corps NON
@@ -4327,17 +4354,8 @@ void PumpControllerClass::updateDosingCore(unsigned long now) {
         }
 
         if (nowMin >= 0) {
-          // Horizon de répartition : minutes restantes de la plage de filtration
-          // (bornées à minuit), ou fin de journée hors mode Managed (eau 24/7 en
-          // Powered ; horizon plein en External, borné par la garde présence d'eau).
-          int horizonMinutes;
-          if (mqttCfg.installMode != InstallMode::ManagedFiltration) {
-            horizonMinutes = 1440 - nowMin;
-          } else {
-            horizonMinutes = remainingRangeMinutes(nowMin,
-                timeStringToMinutes(filtrationCfg.start.c_str()),
-                timeStringToMinutes(filtrationCfg.end.c_str()));
-          }
+          // Horizon de répartition (feature-146) : voir filtrationDosingHorizonMinutes.
+          int horizonMinutes = filtrationDosingHorizonMinutes(nowMin);
 
           ScheduledDoseInputs sin;
           sin.nowMin = nowMin;
@@ -4812,17 +4830,8 @@ void PumpControllerClass::updateDosingCore(unsigned long now) {
         }
 
         if (nowMin >= 0) {
-          // Horizon de répartition : minutes restantes de la plage de filtration
-          // (bornées à minuit), ou fin de journée hors mode Managed (eau 24/7 en
-          // Powered ; horizon plein en External, borné par la garde présence d'eau).
-          int horizonMinutes;
-          if (mqttCfg.installMode != InstallMode::ManagedFiltration) {
-            horizonMinutes = 1440 - nowMin;
-          } else {
-            horizonMinutes = remainingRangeMinutes(nowMin,
-                timeStringToMinutes(filtrationCfg.start.c_str()),
-                timeStringToMinutes(filtrationCfg.end.c_str()));
-          }
+          // Horizon de répartition (feature-146) : voir filtrationDosingHorizonMinutes.
+          int horizonMinutes = filtrationDosingHorizonMinutes(nowMin);
 
           ScheduledDoseInputs sin;
           sin.nowMin = nowMin;

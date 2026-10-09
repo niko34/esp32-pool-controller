@@ -9,8 +9,6 @@ struct FiltrationRuntime {
   bool running = false;
   unsigned long startedAtMs = 0;
   unsigned long lastStoppedAtMs = 0;   // Horodatage du dernier arrêt (0 = jamais arrêtée)
-  unsigned long forceOnStartMs = 0;    // Quand forceOn a été activé (0 = inactif)
-  unsigned long forceOffStartMs = 0;   // Quand forceOff a été activé (0 = inactif)
 };
 
 // bug-126 — planning calculé à l'ARRÊT d'un cycle, promu au passage de minuit.
@@ -71,7 +69,7 @@ private:
   // RÉ-AUTORISE l'amorçage (RAM) : voir le commentaire de PendingSchedule.
   bool                 _haveRepresentativeMeasure = false;
   char                 _lastPromotedDay[9] = {};           // idempotence (une promotion/jour)
-  // Throttle du journal "promotion différée" : sans lui, un forceOn manuel à
+  // Throttle du journal "promotion différée" : sans lui, un mode Marche à
   // cheval sur minuit journaliserait à CHAQUE tour de loop tant que la pompe
   // tourne (des heures). Même convention que kMutexTimeoutWarnThrottleMs.
   unsigned long        _lastPendingDeferredLogMs = 0;
@@ -82,6 +80,15 @@ private:
   // d'update() où MQTT est connecté ; le systemLogger.critical(), lui, part
   // bien dès le boot.
   bool                 _scheduleRepairAlertPending = false;
+  // feature-146 : migration "force" → Marche détectée au boot (begin()),
+  // AVANT mqttManager.begin() — même contrainte que _scheduleRepairAlertPending
+  // ci-dessus (outQueue pas encore créée). Publiée au premier tour d'update()
+  // où MQTT est connecté.
+  bool                 _forceModeMigrationAlertPending = false;
+  // feature-146 (condition #3 du gate) : throttle du `critical` sur mode
+  // inconnu rencontré en tête d'update() — même convention que les autres
+  // throttles de ce fichier.
+  unsigned long        _lastUnknownModeLogMs = 0;
 
   void sampleCycleTemperature(uint32_t nowMs, bool haveTime, int nowMin, int startMin, int endMin);
   void writePendingSchedule(bool haveTime);         // à l'ARRÊT — n'écrit JAMAIS filtrationCfg
@@ -120,17 +127,18 @@ public:
   // manuelle, monitor injection). Fail-closed strict.
   WaterPresence resolveWaterPresence() const;
 
-  // feature-086 : durée PROGRAMMÉE de filtration du jour, en minutes (plage
-  // [start, end) de filtrationCfg, passage minuit géré). LECTURE SEULE, aucune
-  // décision de dosage n'en dépend : sert au maximum journalier délivrable
-  // affiché (getPhDailyMaxMl). Modes `auto` ET `manual` — même prédicat que
-  // decideFiltrationRun (schedule_logic.cpp) : les deux suivent la plage
-  // start/end, `manual` = horaires fixés par l'utilisateur. −1 = indisponible :
-  // mode `off`/`force` (hors planning) ou plage invalide (start == end, heure
-  // illisible). Capacité ANNONCÉE fondée sur le planning : forceOn/boost hors
-  // plage n'y entrent pas. Appelable depuis un handler web async (lit
-  // filtrationCfg.mode/start/end — course bénigne d'un tour de loop, patron
-  // des getters existants).
+  // feature-086 (révisé feature-146) : durée PROGRAMMÉE de filtration du jour,
+  // en minutes. LECTURE SEULE, aucune décision de dosage n'en dépend : sert au
+  // maximum journalier délivrable affiché (getPhDailyMaxMl). Auto et Programme
+  // suivent la plage [start, end) de filtrationCfg (passage minuit géré),
+  // même prédicat que decideFiltrationRun (schedule_logic.cpp). Marche = 1440
+  // (la pompe tourne en permanence tant que l'utilisateur ne change pas de
+  // mode) — AFFICHAGE SEUL, ne borne aucun dosage (gate #4 : l'horizon de
+  // dosage réparti suit la même règle, cf. pump_controller.cpp
+  // filtrationDosingHorizonMinutes). −1 = indisponible : mode Arrêt (hors
+  // planning) ou plage invalide (start == end, heure illisible). Appelable
+  // depuis un handler web async (lit filtrationCfg.mode/start/end — course
+  // bénigne d'un tour de loop, patron des getters existants).
   int scheduledMinutesToday() const;
 
   void computeAutoSchedule();

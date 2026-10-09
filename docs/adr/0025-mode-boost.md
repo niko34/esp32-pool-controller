@@ -1,6 +1,6 @@
 # ADR-0025 — Mode Boost : surcouche temporaire « valeurs effectives » + relèvement borné de la limite chlore
 
-- **Statut** : Accepté
+- **Statut** : Superseded by ADR-0093
 - **Date** : 2026-07-06
 - **Décideurs** : Nicolas Philippe (architect), pool-chemistry (GO pré + post)
 - **Spec(s) liée(s)** : feature-053 (mode-boost)

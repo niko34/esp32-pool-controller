@@ -22,13 +22,17 @@ Convention : `[ ]` à cocher, **gras** = message de log attendu (au mot près).
 - [ ] 2 sondes DS18B20 identifiées (eau + circuit) si applicable.
 - [ ] Débrancher brièvement une sonde EZO → chip « EZO indisponible » ; rebrancher → retour normal.
 
-## 2. Filtration (horaire)
-- [ ] **Plage simple** (ex. 08:00–18:00) : filtration ON dans la plage, OFF hors plage.
+## 2. Filtration (quatre modes — feature-146, v2.63.0)
+> Le mode affiché est la seule autorité ([ADR-0093](adr/0093-le-mode-de-filtration-est-la-seule-autorite.md)). L'ancien « ordre direct » (forceOn/forceOff, minuteur 4 h) est supprimé — ne plus chercher ces logs.
+- [ ] **Plage simple en mode Auto** (ex. 08:00–18:00) : filtration ON dans la plage, OFF hors plage.
 - [ ] **Plage à cheval sur minuit** (ex. 22:00–06:00) : ON la nuit, OFF le jour. *(cas le plus piégeux — vérifie `isMinutesInRange` start>end)*
-- [ ] **forceOn** pendant une plage OFF → filtration ON ; **forceOff** pendant une plage ON → OFF.
-- [ ] Timeout des forçages : laisser un forçage actif > 4 h → log **« ForceOn expiré (timeout 4h) »** / retour mode normal.
+- [ ] **Mode Marche** (sélecteur « Marche » ou bouton Démarrer) : filtration ON **immédiatement**, y compris hors de toute plage horaire, y compris en mode d'installation `managed` avec un créneau Auto/Programme à l'arrêt. Redémarrer le contrôleur sans changer de mode → toujours ON (pas d'expiration).
+- [ ] **Mode Arrêt** (sélecteur « Arrêt » ou bouton Arrêter) : filtration OFF **immédiatement**, y compris en pleine plage Auto/Programme. Redémarrer le contrôleur sans changer de mode → toujours OFF (pas d'expiration).
+- [ ] **Changement de mode par les TROIS voies donne le même résultat** (correctif du défaut de production du 2026-10-09) : passer en Auto/Marche/Arrêt depuis la page web, depuis `{base}/filtration_mode/set` (MQTT), et depuis Home Assistant (select « Mode Filtration ») → même effet immédiat, pas de délai perceptible.
 - [ ] **Mode auto** : changer la température de référence → la plage se recalcule (durée ≈ temp/2, bornée 1 h–24 h), log **« Planning auto: …°C → HH:MM-HH:MM »**.
-- [ ] Désactiver la filtration → relais OFF, carte dashboard filtration masquée.
+- [ ] **Libellés HA** : le select « Mode Filtration » affiche **Auto / Programme / Marche / Arrêt** (plus « Programmation / Manuel / Désactivé »).
+- [ ] Mettre `filtration_mode = "force"` en NVS puis redémarrer (ou simuler une mise à jour depuis un firmware antérieur) → log **« Mode 'force' au démarrage : filtration désormais ACTIVE (mode Marche) »** et alerte MQTT `filtration_mode_force_migrated` à la première connexion.
+- [ ] Passer en mode Arrêt → relais OFF, carte dashboard filtration affiche « Arrêt ».
 
 ## 3. Dosage pH / ORP automatique (sécurité — prioritaire)
 > Cible pH > pH mesuré (pour pH+) ou < (pour pH-) ; filtration active.

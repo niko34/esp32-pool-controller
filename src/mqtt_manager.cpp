@@ -1652,8 +1652,10 @@ void MqttManager::drainCommandQueue() {
 
     switch (cmd.type) {
       case InboundCmdType::FiltrationMode: {
+        // feature-146 : validation via parseFiltrationMode (UNIQUE site de
+        // correspondance jeton -> sens) — plus de liste de littéraux ici.
         payloadStr.toLowerCase();
-        if (payloadStr == "auto" || payloadStr == "manual" || payloadStr == "force" || payloadStr == "off") {
+        if (parseFiltrationMode(payloadStr.c_str()) != FiltrationMode::Inconnu) {
           // feature-027 : timeout → commande abandonnée (rien modifié avant le take),
           // resync HA sur l'état réel via publishFiltrationState().
           if (xSemaphoreTakeRecursive(configMutex, pdMS_TO_TICKS(kConfigMutexTimeoutMs)) != pdTRUE) {
@@ -1665,19 +1667,35 @@ void MqttManager::drainCommandQueue() {
           if (filtrationCfg.mode != payloadStr) {
             filtrationCfg.mode = payloadStr;
             filtration.ensureTimesValid();
-            if (filtrationCfg.mode == "auto") {
-              filtration.computeAutoSchedule();
-            }
+            filtration.computeAutoSchedule();  // no-op si le mode n'est pas Auto
             saveMqttConfig();
             systemLogger.info("Mode filtration changé: " + payloadStr);
           }
           xSemaphoreGiveRecursive(configMutex);
+          // feature-146 : correctif du défaut de production du 2026-10-09 — le
+          // changement de mode doit s'appliquer IMMÉDIATEMENT par TOUTES les
+          // voies (web, MQTT, HA). /save-config appelle filtration.update() dès
+          // que filtrationConfigChanged ; ce chemin MQTT ne le faisait pas,
+          // d'où l'asymétrie qui a laissé la pompe arrêtée malgré "mode: auto".
+          filtration.update();
           publishFiltrationState();
         }
         break;
       }
       case InboundCmdType::FiltrationOnOff: {
+        // feature-146 : le switch HA (unique_id/topics/payloads INCHANGÉS,
+        // ADR-0085) pilote désormais le MODE — plus un "ordre direct" séparé
+        // avec minuteur de 4h. ON → Marche (jeton historique "force") ;
+        // OFF → Arrêt (jeton "off").
         payloadStr.toUpperCase();
+        const char* newMode = nullptr;
+        if (payloadStr == "ON") newMode = "force";
+        else if (payloadStr == "OFF") newMode = "off";
+        if (newMode == nullptr) {
+          systemLogger.warning("Commande filtration ON/OFF invalide (MQTT): " + payloadStr);
+          publishFiltrationState();
+          break;
+        }
         // feature-027 : timeout → commande abandonnée (rien modifié avant le take),
         // resync HA sur l'état réel du relais.
         if (xSemaphoreTakeRecursive(configMutex, pdMS_TO_TICKS(kConfigMutexTimeoutMs)) != pdTRUE) {
@@ -1686,17 +1704,15 @@ void MqttManager::drainCommandQueue() {
           publishFiltrationState();
           break;
         }
-        if (payloadStr == "ON") {
-          filtrationCfg.forceOn = true;
-          filtrationCfg.forceOff = false;
-          systemLogger.info("Filtration forcée ON (MQTT)");
-        } else if (payloadStr == "OFF") {
-          filtrationCfg.forceOn = false;
-          filtrationCfg.forceOff = true;
-          systemLogger.info("Filtration forcée OFF (MQTT)");
+        if (filtrationCfg.mode != newMode) {
+          filtrationCfg.mode = newMode;
+          filtration.ensureTimesValid();
+          saveMqttConfig();
+          systemLogger.info(String("Mode filtration changé (switch MQTT): ") + newMode);
         }
         xSemaphoreGiveRecursive(configMutex);
-        // Pas de publish ici : filtration.update() va publier après changement réel du relais.
+        filtration.update();  // applique IMMÉDIATEMENT (même correctif que FiltrationMode)
+        publishFiltrationState();
         break;
       }
       case InboundCmdType::Lighting: {
@@ -1956,10 +1972,11 @@ void MqttManager::drainCommandQueue() {
       case InboundCmdType::FiltrationStart:
       case InboundCmdType::FiltrationEnd: {
         // feature-051 : heure de filtration (HH:MM). Validation via timeStringToMinutes
-        // (-1 = format invalide). Écrit sous configMutex, efface les overrides manuels
-        // (comme /save-config quand le planning change), applique via filtration.update(),
-        // persiste, republie. En mode auto les heures seront recalculées par la
-        // température au prochain update() → l'état republié reflète la valeur réelle.
+        // (-1 = format invalide). Écrit sous configMutex, applique via
+        // filtration.update(), persiste, republie. En mode auto les heures
+        // seront recalculées par la température au prochain update() →
+        // l'état republié reflète la valeur réelle. feature-146 : l'ancien
+        // effacement de forceOn/forceOff a disparu avec l'« ordre direct ».
         const bool isStart = (cmd.type == InboundCmdType::FiltrationStart);
         const char* label = isStart ? "début" : "fin";
         if (timeStringToMinutes(payloadStr.c_str()) < 0) {
@@ -1976,8 +1993,6 @@ void MqttManager::drainCommandQueue() {
         String& target = isStart ? filtrationCfg.start : filtrationCfg.end;
         if (target != payloadStr) {
           target = payloadStr;
-          filtrationCfg.forceOn = false;   // le planning reprend effet immédiatement
-          filtrationCfg.forceOff = false;
           saveMqttConfig();
           systemLogger.info(String("Heure filtration ") + label + " changée (MQTT): " + payloadStr);
         }
@@ -2341,21 +2356,25 @@ void MqttManager::publishDiscovery(DiscoveryReason reason) {
   doc["state_topic"] = topics.filtrationModeState;
   doc["command_topic"] = topics.filtrationModeCommand;
   doc["icon"] = "mdi:water-pump";
-  // bug-ha-filtration-mode-labels : libellés français dans HA, protocole MQTT
-  // inchangé sur le fil. value_template traduit l'état brut publié → libellé ;
-  // command_template retraduit le libellé choisi → valeur brute envoyée au /set
-  // (le handler drainCommandQueue continue de recevoir auto/manual/force/off).
-  // Sémantique : manual = « Programmation » (créneau à heures fixées), force =
-  // « Manuel » (contrôle ON/OFF sans planning) — d'où la levée d'ambiguïté.
+  // feature-146 : libellés alignés sur l'interface web (Auto/Programme/Marche/
+  // Arrêt) — protocole MQTT INCHANGÉ sur le fil (auto/manual/force/off, zéro
+  // migration NVS, drainCommandQueue continue de recevoir les mêmes jetons).
+  // bug-ha-filtration-mode-labels avait introduit « Manuel » pour force et
+  // « Désactivé » pour off : EXACTEMENT le libellé piège de l'incident du
+  // 2026-10-09 (« Manuel » désignait le mode qui ARRÊTAIT la pompe). Corrigé.
+  // ⚠️ Rupture assumée : une automatisation HA qui appelle select.select_option
+  // avec un ANCIEN libellé (« Programmation », « Manuel », « Désactivé ») cesse
+  // de fonctionner — celles qui publient le jeton brut (auto/manual/force/off)
+  // sur le topic MQTT survivent.
   JsonArray options = doc["options"].to<JsonArray>();
   options.add("Auto");
-  options.add("Programmation");
-  options.add("Manuel");
-  options.add("Désactivé");
+  options.add("Programme");
+  options.add("Marche");
+  options.add("Arrêt");
   doc["value_template"] =
-    "{{ {'auto':'Auto','manual':'Programmation','force':'Manuel','off':'Désactivé'}.get(value, value) }}";
+    "{{ {'auto':'Auto','manual':'Programme','force':'Marche','off':'Arrêt'}.get(value, value) }}";
   doc["command_template"] =
-    "{{ {'Auto':'auto','Programmation':'manual','Manuel':'force','Désactivé':'off'}[value] }}";
+    "{{ {'Auto':'auto','Programme':'manual','Marche':'force','Arrêt':'off'}[value] }}";
   makeDevice(doc["device"].to<JsonObject>());
   publishConfig(topic);  // publishConfig fait doc.clear() → pas de fuite vers les blocs suivants
 

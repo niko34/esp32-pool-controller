@@ -68,6 +68,42 @@ struct ScheduleWindow {
   int endMin;
 };
 
+// =============================================================================
+// feature-146 — quatre modes de filtration, jetons CONSERVÉS sur le fil
+// =============================================================================
+// Quatre modes, chacun faisant exactement ce que son nom annonce (Auto calcule
+// et ajuste le créneau depuis la température ; Programme applique le créneau
+// saisi et ne le recalcule JAMAIS ; Marche et Arrêt durent jusqu'au prochain
+// changement de mode, sans minuteur). `Inconnu` est un fail-safe de décision,
+// pas un mode choisissable.
+enum class FiltrationMode : uint8_t { Auto, Programme, Marche, Arret, Inconnu };
+
+// UNIQUE endroit où la correspondance jeton -> sens est écrite. Jetons
+// CONSERVÉS tels quels (zéro migration NVS) : "manual" est le nom historique
+// de Programme, "force" celui de Marche — `PendingSchedule::basisMode`
+// (filtration.h, char[8]) ne survivrait pas à un renommage en "programme" (9
+// caractères, troncature silencieuse). `token` DOIT arriver en minuscules
+// (la coquille applique toLowerCase() avant, comme pour l'ancien
+// decideFiltrationRun). Partout ailleurs dans le code métier, c'est la SEULE
+// comparaison de chaîne sur un littéral de mode qui doit subsister.
+FiltrationMode parseFiltrationMode(const char* token);
+
+// Créneau EFFECTIF, distinct du créneau de BASE par construction (TYPE
+// différent : pas de conversion implicite vers ScheduleWindow). Ne sert QU'à
+// decideFiltrationRun() — tout autre consommateur (échantillonnage de
+// température, planning annoncé, horizon de dosage réparti) reste sur le
+// créneau de BASE (ADR-0093).
+struct RunWindow {
+  ScheduleWindow w;
+};
+
+// `boostActive` est le Mode Boost (feature-053), désormais un simple
+// MODIFICATEUR du créneau Auto/Programme/Marche — plus une priorité à part
+// dans la décision. `nowMin -> 1440` (et non 0) : le Boost expire au passage
+// de minuit (tickBoostExpiry, config.cpp) ; end=0 produirait le cas dégénéré
+// start==end à 00:00 pile, où isMinutesInRange renverrait false.
+RunWindow effectiveRunWindow(ScheduleWindow base, bool boostActive, int nowMin);
+
 // Calcule le créneau de filtration auto selon la température.
 // Reproduit EXACTEMENT le calcul de FiltrationManager::computeAutoSchedule :
 //   - tempC < 0 → ramené à 0
@@ -81,19 +117,20 @@ struct ScheduleWindow {
 ScheduleWindow computeAutoWindow(float tempC, float pivotHour);
 
 // Décision marche/arrêt de filtration (extrait pur de la décision de update()).
-// Reproduit EXACTEMENT, avec le Mode Boost (feature-053) en priorité MAXIMALE :
-//   - boostForce → true (turnover maximal pendant le Boost, chemin DÉDIÉ
-//     indépendant du forceOn utilisateur et de son timeout)
-//   - sinon forceOn → true
-//   - sinon forceOff → false
-//   - sinon (mode=="manual" || mode=="auto") →
-//       haveTime ? isMinutesInRange(nowMin, startMin, endMin) : currentlyRunning
-//   - sinon → false
-// CONDITION pool-chemistry : quand haveTime=false sans forçage, renvoie
-// currentlyRunning tel quel (pas de faux start/stop pendant OTA / perte RTC).
-// `mode` doit arriver en minuscules (la coquille applique toLowerCase avant).
-bool decideFiltrationRun(bool boostForce, const char* mode, bool forceOn, bool forceOff,
-                         bool haveTime, int nowMin, int startMin, int endMin,
+// feature-146 — quatre modes, chacun fait EXACTEMENT ce que son nom annonce :
+//   - Auto, Programme → haveTime ? isMinutesInRange(nowMin, startMin, endMin)
+//                                 : currentlyRunning
+//   - Marche          → true  (dure jusqu'au prochain changement de mode)
+//   - Arrêt           → false (idem)
+//   - Inconnu         → currentlyRunning (fail-safe de décision)
+// `boostForce`/`forceOn`/`forceOff` ont DISPARU de cette décision : le Mode
+// Boost (feature-053) n'est plus une priorité à part — il MODIFIE le créneau
+// (voir effectiveRunWindow ci-dessus), résolu par l'appelant AVANT l'appel.
+// L'« ordre direct » (forceOn/forceOff, son minuteur de 4h) est SUPPRIMÉ.
+// CONDITION pool-chemistry : quand haveTime=false, renvoie currentlyRunning
+// tel quel (pas de faux start/stop pendant un OTA ou une perte RTC).
+// Switch EXHAUSTIF, SANS `default` : un mode non traité ne compile pas.
+bool decideFiltrationRun(FiltrationMode mode, bool haveTime, int nowMin, int startMin, int endMin,
                          bool currentlyRunning);
 
 // Décision marche/arrêt de l'éclairage (extrait pur de la décision de

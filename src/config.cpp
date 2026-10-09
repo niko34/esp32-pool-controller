@@ -34,6 +34,21 @@ bool productConfigDirty = false;
 BoostState boostState;
 RescueState rescueState;
 
+// feature-146 (revue code-reviewer) : voir le commentaire de la déclaration
+// (config.h). Buffer de pile, AUCUNE String allouée.
+FiltrationMode parseFiltrationModeFrom(const String& raw) {
+  char buf[8];
+  const char* src = raw.c_str();
+  size_t i = 0;
+  for (; i < sizeof(buf) - 1 && src[i] != '\0'; i++) {
+    char c = src[i];
+    if (c >= 'A' && c <= 'Z') c = char(c - 'A' + 'a');
+    buf[i] = c;
+  }
+  buf[i] = '\0';
+  return parseFiltrationMode(buf);
+}
+
 // Mutex pour protection concurrence
 SemaphoreHandle_t configMutex = nullptr;
 SemaphoreHandle_t i2cMutex = nullptr;
@@ -1198,6 +1213,18 @@ void startBoost() {
   // ne peut être calculée → refus (fail-closed).
   if (now < kMinValidEpoch) {
     systemLogger.warning("[Boost] Activation refusée : heure non synchronisée (expiration minuit indéterminable)");
+    return;
+  }
+  // feature-146 : le Boost modifie le créneau de filtration (surchloration
+  // dont la filtration forcée n'est que le SUPPORT) — un mode Arrêt n'a pas
+  // de circulation, donc pas de dosage possible. Autorisé dans tous les
+  // autres modes (Auto, Programme, Marche). Entonnoir unique (HTTP, MQTT, UI).
+  // (revue code-reviewer) Gardé par installMode == ManagedFiltration : en
+  // Powered/External (feature-056) le mode de filtration est INERTE — un
+  // "off" résiduel ne doit pas interdire le Boost alors que l'eau circule 24/7.
+  if (mqttCfg.installMode == InstallMode::ManagedFiltration &&
+      parseFiltrationModeFrom(filtrationCfg.mode) == FiltrationMode::Arret) {
+    systemLogger.warning("[Boost] Activation refusée : filtration à l'arrêt (mode Arrêt)");
     return;
   }
   // Calcul du prochain minuit local (l'environnement TZ est appliqué par applyTimezoneEnv).

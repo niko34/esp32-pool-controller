@@ -767,6 +767,18 @@ void setupControlRoutes(AsyncWebServer* server) {
   // startBoost REFUSE si l'heure n'est pas synchronisée → on renvoie alors 409.
   server->on("/boost/start", HTTP_POST, [](AsyncWebServerRequest *req) {
     REQUIRE_AUTH(req, RouteProtection::WRITE);
+    // feature-146 (revue code-reviewer) : startBoost() a désormais DEUX causes
+    // de refus (heure non synchronisée, mode Arrêt) mais ne distingue pas
+    // laquelle à l'appelant. On teste la cause mode AVANT l'appel pour renvoyer
+    // le motif réel — sinon un refus "mode Arrêt" renvoyait le message
+    // "horloge non synchronisée", mensonger. Même condition que startBoost()
+    // (config.cpp) : ManagedFiltration uniquement, le mode est INERTE ailleurs.
+    if (mqttCfg.installMode == InstallMode::ManagedFiltration &&
+        parseFiltrationModeFrom(filtrationCfg.mode) == FiltrationMode::Arret) {
+      req->send(409, "application/json",
+                "{\"error\":\"filtration_stopped\",\"message\":\"Boost impossible : filtration à l'arrêt (mode Arrêt).\"}");
+      return;
+    }
     startBoost();
     if (!boostState.active) {
       // Refus fail-closed : heure non synchronisée (expiration minuit indéterminable).

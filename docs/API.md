@@ -2045,7 +2045,7 @@ Ajoutés par l'**exposition de la limite d'actionneur pH** ([ADR-0056](adr/0056-
 | Champ | Type | Description |
 |-------|------|-------------|
 | `ph_sustainable_ml_per_min` | float \| null | Débit moyen **soutenable** de la voie pH (mL/min, **2 décimales**) = débit d'amplitude calibré × limite horaire configurée. `null` si la pompe n'est pas caractérisée ou la valeur non calculable — l'UI affiche l'indisponibilité, rien n'est inventé. |
-| `ph_daily_max_ml` | int \| null | Maximum journalier **délivrable** (mL/j, entier) = soutenable × minutes **programmées** de filtration du jour. `null` si le soutenable est indisponible **ou** si le planning ne fait pas foi (mode `off`/`force`, plage invalide). |
+| `ph_daily_max_ml` | int \| null | Maximum journalier **délivrable** (mL/j, entier) = soutenable × minutes **programmées** de filtration du jour. Modes Auto/Programme (`auto`/`manual`) : minutes de la plage `start`/`end`. Mode Marche (`force`, **feature-146, v2.63.0**) : 1440 (la pompe tourne en permanence). `null` si le soutenable est indisponible **ou** si le planning ne fait pas foi (mode Arrêt `off`, plage invalide). |
 | `ph_limited_by_hourly_budget` | bool | La régulation pH est **bornée par la limite horaire en ce moment** : verdict de saturation C5 (épisode ouvert, hystérésis firmware sur la **demande**) **ET** mesure pH valide. La conjonction évite de servir un verdict **figé** sur panne de sonde — « borné par la limite » reste distinct de « bidon vide » et de « panne de sonde ». |
 | `ph_undersized` | bool | **Sous-dimensionnement suspecté** de l'actionneur : ≥ 3 journées calendaires **consécutives exploitables** délivrées à ≥ 80 % du maximum délivrable **ET** anomalie C5 encore ouverte **ET** mesure pH valide (même garde que le champ précédent). Information de **diagnostic d'installation**, pas une anomalie de fonctionnement. |
 
@@ -2327,7 +2327,12 @@ curl -u admin:monmotdepasse -X POST \
 
 ### POST /boost/start — WRITE
 
-Active le **Mode Boost** (feature-053, v2.18.0) : surchloration temporaire du jour, auto-expirant au prochain minuit local. Tant qu'il est actif : filtration forcée en marche + cible ORP effective relevée (`min(orp_target + 60, 850)` mV) + limite journalière chlore effective relevée (`min(max_chlorine_ml_per_day × 1,5, 1000)` mL). **L'effet chlore ne s'applique qu'en mode de régulation ORP `automatic`** ; en Manuel / Programmé, seule la filtration s'étend. Aucun autre garde-fou n'est relâché. Voir [ADR-0025](adr/0025-mode-boost.md).
+Active le **Mode Boost** (feature-053, v2.18.0) : surchloration temporaire du jour, auto-expirant au prochain minuit local. Tant qu'il est actif : créneau de filtration étendu jusqu'à minuit + cible ORP effective relevée (`min(orp_target + 60, 850)` mV) + limite journalière chlore effective relevée (`min(max_chlorine_ml_per_day × 1,5, 1000)` mL). **L'effet chlore ne s'applique qu'en mode de régulation ORP `automatic`** ; en Manuel / Programmé, seule la filtration s'étend. Aucun autre garde-fou n'est relâché. Voir [ADR-0093](adr/0093-le-mode-de-filtration-est-la-seule-autorite.md) (remplace [ADR-0025](adr/0025-mode-boost.md)).
+
+⚠️ **Disponible dans tous les modes de filtration SAUF Arrêt** (feature-146, v2.63.0) : le Boost
+surchlore une eau qui doit circuler, et le mode Arrêt ne consulte de toute façon pas le créneau.
+Passer en mode Arrêt pendant que le Boost est actif **l'annule** (`stopBoost()`, pas une mise en
+veille) — journalisé en `warning`, état republié.
 
 ```bash
 curl -u admin:monmotdepasse -X POST http://poolcontroller.local/boost/start
@@ -2343,16 +2348,24 @@ Champs additifs v2.18.1 (feature-054) — indiquent quels leviers du Boost s'app
 
 | Champ | Type | Description |
 |-------|------|-------------|
-| `filtration_extended` | boolean | `true` si la filtration est gérée par PoolController (`filtration_enabled`) → le Boost prolonge effectivement la filtration. `false` si filtration non gérée (levier inerte : le forçage Boost n'est jamais atteint). |
+| `filtration_extended` | boolean | `true` si la filtration est gérée par PoolController (`install_mode == "managed"`) → le Boost étend effectivement le créneau. `false` si filtration non gérée (levier inerte : le créneau n'est jamais consulté). |
 | `chlorine_boosted` | boolean | `true` si `orp_regulation_mode == "automatic"` → le Boost relève effectivement la cible/limite chlore. `false` en Manuel / Programmé (levier inerte : le chlore n'est pas relevé). |
 
-Quand un levier est inerte, `startBoost()` logue en plus un `warning` (couvre l'activation HTTP **et** MQTT/HA — voir [pump-controller.md §Mode Boost](subsystems/pump-controller.md#mode-boost-feature-053)). L'activation n'est jamais bloquée (on informe, on n'empêche pas).
+Quand un levier est inerte, `startBoost()` logue en plus un `warning` (couvre l'activation HTTP **et** MQTT/HA — voir [pump-controller.md §Mode Boost](subsystems/pump-controller.md#mode-boost-feature-053)). L'activation n'est jamais bloquée par un levier inerte (on informe, on n'empêche pas) — à la différence du refus **mode Arrêt** ci-dessous, qui lui bloque.
 
-**Erreur 409** — heure non synchronisée : sans horloge valide, l'expiration à minuit ne peut être calculée, l'activation est refusée (pas de boost « sans fin »).
+**Erreur 409** — deux causes possibles, distinguées dans le corps (feature-146, v2.63.0) :
 
-```json
-{ "error": "time_not_synced", "message": "Heure non synchronisée — Boost indisponible." }
-```
+- heure non synchronisée : sans horloge valide, l'expiration à minuit ne peut être calculée, l'activation est refusée (pas de boost « sans fin »)
+
+  ```json
+  { "error": "time_not_synced", "message": "Heure non synchronisée — Boost indisponible." }
+  ```
+
+- mode de filtration **Arrêt** : pas de circulation, pas de surchloration possible
+
+  ```json
+  { "error": "filtration_stopped", "message": "Boost impossible : filtration à l'arrêt (mode Arrêt)." }
+  ```
 
 ---
 

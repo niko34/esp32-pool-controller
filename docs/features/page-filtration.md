@@ -5,20 +5,29 @@
 
 ## Rôle
 
-Configurer et piloter la pompe de filtration. Trois modes coexistent :
+Configurer et piloter la pompe de filtration. **Le mode affiché est la seule autorité**
+(feature-146, v2.63.0, [ADR-0093](../adr/0093-le-mode-de-filtration-est-la-seule-autorite.md)) :
+quatre modes, chacun faisant exactement ce que son nom annonce.
 
-- **Automatique** — horaires calculés à partir de la température de l'eau (algorithme autour du pivot `kFiltrationPivotHour = 13h`, voir [`constants.h:78`](../../src/constants.h:78)).
-- **Manuel** — l'utilisateur règle un horaire fixe `start` / `end`.
-- **Off** — la filtration est désactivée.
+| Mode (sélecteur) | Jeton protocole | Comportement |
+|---|---|---|
+| **Auto** | `auto` | horaires calculés à partir de la température de l'eau (algorithme autour du pivot `kFiltrationPivotHour = 13h`, voir [`constants.h:78`](../../src/constants.h:78)), ajustés quand elle change |
+| **Programme** | `manual` | l'utilisateur règle un horaire fixe `start` / `end`, jamais recalculé |
+| **Marche** | `force` | la pompe tourne — **sans expiration**, jusqu'au prochain changement de mode |
+| **Arrêt** | `off` | la pompe est arrêtée — **sans expiration**, jusqu'au prochain changement de mode |
 
-Un **forçage temporaire** (ON ou OFF) permet de déroger à la planification sans modifier la config ; il est perdu au redémarrage.
+⚠️ **L'ancien « forçage temporaire » (ON/OFF, minuteur de 4 h) est SUPPRIMÉ.** Il permettait de
+déroger à la planification sans modifier le mode affiché ; c'est précisément ce qui causait le
+défaut du 2026-10-09 (un changement de mode sans effet tant qu'un forçage MQTT restait actif).
+Les boutons **Démarrer** / **Arrêter** de la carte « Contrôle manuel » **changent désormais le
+mode** (→ Marche / → Arrêt) au lieu de poser un état séparé.
 
 ## Structure
 
 > ⚠️ **Visibilité conditionnée au mode d'installation** (feature-056, v2.19.0). La page n'est pleinement active qu'en mode d'installation **`managed`** (PoolController pilote la filtration). En **`powered`** (alimenté par le circuit de filtration) et **`external`** (filtration tierce signalée), la programmation et le contrôle du relais sont **masqués** : le PoolController ne pilote pas le relais, une note « filtration non pilotée par le PoolController » est affichée. Le mode se règle dans Paramètres → Installation (voir [page-settings.md](page-settings.md#installation-panel-install-feature-056) et [ADR-0026](../adr/0026-mode-installation.md)). L'ancien toggle « Gérer la filtration » (`#filtration_enabled`) est **supprimé** (fusionné dans `install_mode`).
 
-- **Carte Contrôle manuel** (`#filtration-manual-card`) — boutons Démarrer / Arrêter. Le **badge d'état (Marche / Arrêt)** est placé à droite du titre dans le `card__head` (frère direct du `<h2>`, classes `pill ok` ou `pill bad`) — voir feature-001. La ligne « État actuel » du body, devenue redondante, a été supprimée. Masquée hors mode `managed`.
-- **Carte Configuration** — sélecteur de mode, heure de début, heure de fin, bouton Sauvegarder. Masquée hors mode `managed`.
+- **Carte Contrôle manuel** (`#filtration-manual-card`) — boutons **Démarrer** / **Arrêter**, qui **changent le mode** (→ Marche / → Arrêt, feature-146) — **jamais grisés** : en mode Arrêt, « Démarrer » est précisément la sortie du mode. Le **badge d'état (Marche / Arrêt)** est placé à droite du titre dans le `card__head` (frère direct du `<h2>`, classes `pill ok` ou `pill bad`) — voir feature-001. La ligne « État actuel » du body, devenue redondante, a été supprimée. Masquée hors mode d'installation `managed`.
+- **Carte Configuration** — sélecteur de mode (Auto / Programme / Marche / Arrêt), heure de début, heure de fin, bouton Sauvegarder. Le bandeau d'aide (`#filtration_mode_hint`) décrit désormais les **quatre modes en permanence** (il ne se masque plus selon le mode sélectionné). Masquée hors mode d'installation `managed`.
 
 Les autres cartes (graphe, statistiques) peuvent être ajoutées au fil du temps ; se référer à `#view-filtration` pour l'état courant.
 
@@ -28,23 +37,31 @@ Les autres cartes (graphe, statistiques) peuvent être ajoutées au fil du temps
 - `filtration_running` (bool — relais fermé, pertinent en `managed`)
 - `filtration_mode` (`auto` / `manual` / `force` / `off`)
 - `filtration_start`, `filtration_end` (strings `HH:MM`)
-- `filtration_force_on`, `filtration_force_off` (bool — forçage temporaire)
+
+⚠️ **`filtration_force_on` / `filtration_force_off` sont SUPPRIMÉS** (feature-146, v2.63.0) avec
+l'ordre direct qu'ils portaient — plus aucun champ WS de forçage temporaire.
 
 ## Actions
 
 | Action | Endpoint | Auth |
 |--------|----------|------|
-| Démarrer manuellement | `POST /filtration/on` | WRITE |
-| Arrêter manuellement | `POST /filtration/off` | WRITE |
-| Sauvegarder mode/horaires | `POST /save-config` (champs `filtration_mode`, `filtration_start`, `filtration_end` — `filtration_enabled` retiré, feature-056) | CRITICAL |
+| Démarrer manuellement (= passer en mode Marche) | `POST /save-config` `{filtration_mode: "force"}` | CRITICAL |
+| Arrêter manuellement (= passer en mode Arrêt) | `POST /save-config` `{filtration_mode: "off"}` | CRITICAL |
+| Sauvegarder mode/horaires | `POST /save-config` (champs `filtration_mode`, `filtration_start`, `filtration_end` — `filtration_enabled` retiré, feature-056 ; `filtration_mode` validé serveur par `parseFiltrationMode()`, un jeton inconnu est refusé, feature-146) | CRITICAL |
 
-La fonction `saveFiltration()` côté JS sauvegarde uniquement les champs filtration, indépendamment des autres saves (autosave dédié).
+⚠️ **Il n'existe plus de route `/filtration/on` / `/filtration/off` dédiée** (feature-146) : les
+boutons Démarrer/Arrêter passent par `/save-config`, comme tout changement de mode.
+
+La fonction `saveFiltration()` côté JS sauvegarde uniquement les champs filtration, indépendamment des autres saves (autosave dédié). Les boutons Démarrer/Arrêter du tableau de bord **et** de cette page partagent désormais le même chemin, `setFiltrationRunMode()` (`data/app.js`).
 
 ## Règles firmware
 
-- Mode `auto` (bug-126, [ADR-0079](../adr/0079-planning-filtration-fige-a-l-arret-promu-a-minuit.md)) : l'horaire affiché **ne bouge plus en cours de journée**. Il est calculé à partir de la **moyenne** de température du cycle précédent (échantillons post-purge et en plage), figé dans un planning en attente **à l'arrêt** du cycle, et appliqué **à minuit seulement** — jamais pendant que la pompe tourne. `computeAutoSchedule()` ([`filtration.cpp`](../../src/filtration.cpp)) ne reste appelée que pour la mise en service (bascule vers le mode `auto`), pas en cours de marche.
-- Mode `manual` : l'horaire est respecté tel qu'entré par l'utilisateur.
-- Mode `off` : le relais est forcé à LOW en permanence.
+**Le mode affiché est la seule autorité** (feature-146, v2.63.0, [ADR-0093](../adr/0093-le-mode-de-filtration-est-la-seule-autorite.md)) — l'ancien « ordre direct » (forçage ON/OFF, minuteur de 4 h) qui pouvait rendre un changement de mode sans effet est supprimé.
+
+- Mode **Auto** (bug-126, [ADR-0079](../adr/0079-planning-filtration-fige-a-l-arret-promu-a-minuit.md)) : l'horaire affiché **ne bouge plus en cours de journée**. Il est calculé à partir de la **moyenne** de température du cycle précédent (échantillons post-purge et en plage **de base**), figé dans un planning en attente **à l'arrêt** du cycle, et appliqué **à minuit seulement** — jamais pendant que la pompe tourne. `computeAutoSchedule()` ([`filtration.cpp`](../../src/filtration.cpp)) ne reste appelée que pour la mise en service (bascule vers le mode Auto), pas en cours de marche.
+- Mode **Programme** (jeton `manual`) : l'horaire est respecté tel qu'entré par l'utilisateur, jamais recalculé.
+- Mode **Marche** (jeton `force`) : le relais est fermé en permanence, sans dépendre d'un créneau — jusqu'au prochain changement de mode, sans expiration.
+- Mode **Arrêt** (jeton `off`) : le relais est forcé à LOW en permanence, jusqu'au prochain changement de mode, sans expiration. Le Mode Boost s'y **efface** (pas de surchloration possible sans circulation).
 - **Relais piloté uniquement en mode d'installation `managed`** (feature-056) : en `powered` / `external`, `filtration.update()` retourne de façon anticipée, aucune commande relais, timer de stabilisation au démarrage filtration non armé.
 - Interaction régulation : voir [page pH](page-ph.md), [page ORP](page-orp.md) et [ADR-0002](../adr/0002-mode-programmee-volume-quotidien.md). En mode `managed`, le démarrage de la filtration arme le timer de stabilisation (voir `armStabilizationTimer()` dans [`pump_controller.h:112`](../../src/pump_controller.h:112)).
 
@@ -52,30 +69,36 @@ La fonction `saveFiltration()` côté JS sauvegarde uniquement les champs filtra
 
 | Entité HA | Topic état | Topic commande |
 |-----------|------------|----------------|
-| `switch.*_filtration_switch` | `{base}/filtration_state` (`ON`/`OFF`) | `{base}/filtration/set` |
+| `switch.*_filtration_switch` | `{base}/filtration_state` (`ON`/`OFF`) | `{base}/filtration/set` — pilote désormais le **mode** (ON → Marche, OFF → Arrêt), plus un ordre direct séparé (feature-146) |
 | `select.*_filtration_mode` | `{base}/filtration_mode` (`auto`/`manual`/`force`/`off`) | `{base}/filtration_mode/set` |
 | `binary_sensor.*_filtration` | `{base}/filtration_state` | — |
 
-Voir [`docs/MQTT.md`](../MQTT.md) pour l'auto-discovery complet.
+⚠️ **Libellés du select HA changés en feature-146** (v2.63.0) : `Auto` / `Programme` / `Marche` /
+`Arrêt` (étaient `Auto` / `Programmation` / `Manuel` / `Désactivé`). Le **protocole MQTT sur le
+fil reste inchangé** (`auto`/`manual`/`force`/`off`). Rupture assumée pour une automatisation HA
+qui appellerait `select.select_option` avec un ancien libellé français ; celles qui publient le
+jeton brut survivent. Voir [`docs/MQTT.md`](../MQTT.md) pour l'auto-discovery complet.
 
 ## Cas limites
 
 - **WebSocket déconnecté** : les valeurs affichent `--:--` ; les boutons Démarrer/Arrêter restent cliquables et produisent une erreur si l'API HTTP est aussi injoignable.
 - **OTA en cours** : le contrôleur n'accepte plus de changements d'état, `PumpController.setOtaInProgress(true)` stoppe également les pompes doseuses ([`pump_controller.cpp`](../../src/pump_controller.cpp)).
 - **Horaire de fin avant le début** : la logique `isMinutesInRange()` gère les plages qui franchissent minuit ([`filtration.cpp`](../../src/filtration.cpp)).
-- **Horaire affiché en mode `auto`** : ne change qu'à minuit, jamais en cours de journée, y compris pendant un cycle de filtration (bug-126, [ADR-0079](../adr/0079-planning-filtration-fige-a-l-arret-promu-a-minuit.md)). Le planning en attente n'est **pas** exposé sur cette page (spec de suivi à venir).
+- **Horaire affiché en mode Auto** : ne change qu'à minuit, jamais en cours de journée, y compris pendant un cycle de filtration (bug-126, [ADR-0079](../adr/0079-planning-filtration-fige-a-l-arret-promu-a-minuit.md)). Le planning en attente n'est **pas** exposé sur cette page (spec de suivi à venir).
+- **Marche et Arrêt n'expirent plus et survivent à un redémarrage** (feature-146) — à la différence de l'ancien forçage temporaire (4 h, perdu au reboot). Un mode laissé par inadvertance (Marche en hivernage, Arrêt après une maintenance) le reste jusqu'au prochain changement explicite.
 
 ## Fichiers
 
 - [`data/index.html:332`](../../data/index.html:332)
-- [`data/app.js`](../../data/app.js) — `saveFiltration()`, `updateFiltrationBadges()` (split détail = `pill ok/bad/mid` dans `card__head` ; dashboard = `state-badge--*` inchangé), `getFiltrationState()` qui expose `pillClass` (mapping `warn → mid`)
+- [`data/app.js`](../../data/app.js) — `saveFiltration()`, `setFiltrationRunMode()` (feature-146, partagée par les boutons Démarrer/Arrêter du tableau de bord et de cette page), `updateFiltrationControls()` (jamais grisés, hint permanent), `updateFiltrationBadges()` (split détail = `pill ok/bad/mid` dans `card__head` ; dashboard = `state-badge--*` inchangé), `getFiltrationState()` qui expose `pillClass` (mapping `warn → mid`)
 - [`src/filtration.h`](../../src/filtration.h), [`src/filtration.cpp`](../../src/filtration.cpp) — logique firmware
-- [`src/web_routes_control.cpp`](../../src/web_routes_control.cpp) — endpoints `/filtration/*`
-- [`src/web_routes_config.cpp`](../../src/web_routes_config.cpp) — persistance config
+- [`src/web_routes_control.cpp`](../../src/web_routes_control.cpp) — endpoint `/filtration/external-state`
+- [`src/web_routes_config.cpp`](../../src/web_routes_config.cpp) — persistance config, validation du mode (`/save-config`)
 - [`src/mqtt_manager.cpp`](../../src/mqtt_manager.cpp) — `publishFiltrationState()`
 
 ## Documentation liée
 
 - [docs/subsystems/filtration.md](../subsystems/filtration.md) — règles de comportement et interaction filtration ↔ régulation.
 - [docs/subsystems/pump-controller.md](../subsystems/pump-controller.md) — gardes (`canDose()` requiert la présence d'eau `resolveWaterPresence()`).
+- [ADR-0093](../adr/0093-le-mode-de-filtration-est-la-seule-autorite.md) — le mode de filtration est la seule autorité (feature-146).
 - [ADR-0026](../adr/0026-mode-installation.md) — mode d'installation (3 archétypes de câblage) + résolution de la présence d'eau.

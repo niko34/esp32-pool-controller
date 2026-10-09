@@ -812,6 +812,23 @@ size_t WsManager::_buildSensorJson(char* buf, size_t cap) const {
   // l'arrêt, délai indéterminé) plutôt que mis à 0 ou `null` — l'OMISSION ne
   // peut que RÉDUIRE la taille de trame réelle, jamais l'augmenter : le pire
   // cas ci-dessus (champ PRÉSENT, valeur 1800) reste le bon majorant, inchangé.
+  //
+  // feature-146 (v2.63.0) : retrait de `filtration_force_on` et
+  // `filtration_force_off` — l'« ordre direct » et son minuteur de 4 h sont
+  // SUPPRIMÉS, le mode de filtration devient la seule autorité (ADR-0093).
+  // Octets SÉRIALISÉS au pire cas retirés, RECOMPTÉS caractère par caractère
+  // (ADR-0073, pas repris d'un rapport) :
+  //   "filtration_force_on":false,  → 1+19+1+1+5+1 = 28 o
+  //   "filtration_force_off":false, → 1+20+1+1+5+1 = 29 o
+  //   Total retiré : 57 o.
+  // Pire cas de trame : 3554 (décompte ci-dessus) − 57 = 3497 o, SOUS
+  // kWsFrameBufBytes = 3584 o (aucun bump).
+  //
+  // MARGE RÉSIDUELLE SOUS LE SEUL PLAFOND DUR, sWsFrameBuf : 3584 − 3497 = 87 o
+  // (elle était de 30 o avant ce retrait — la marge « très étroite » signalée
+  // juste au-dessus est donc DESSERRÉE par ce lot). Tout nouveau champ de cette
+  // trame exige toujours un retrait compensatoire OU un relèvement de
+  // kWsFrameBufBytes (décision d'ADR, pas de routine).
   StaticJson<3584> doc;
   doc["type"] = "sensor_data";
   JsonObject d = doc["data"].to<JsonObject>();
@@ -930,8 +947,6 @@ size_t WsManager::_buildSensorJson(char* buf, size_t cap) const {
   else                        d["phSlopeAgeMs"] = slopeAge;
 
   d["filtration_running"]  = filtration.isRunning();
-  d["filtration_force_on"] = filtrationCfg.forceOn;
-  d["filtration_force_off"] = filtrationCfg.forceOff;
   d["ph_dosing"]           = PumpController.isPhDosing();
   d["orp_dosing"]         = PumpController.isOrpDosing();
   // Itération 3 (bug-dosage-fantome, défaut n°3) : calendrier d'impulsion —

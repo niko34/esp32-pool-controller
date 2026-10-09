@@ -26,6 +26,7 @@
 #include <stdlib.h>  // malloc/free (sentinelles de source, bug-126)
 #include "schedule_logic.h"
 #include "constants.h"  // kFiltrationRefTempMinC/MaxC/MinRepresentativeSamples (bug-126) — self-contained, pas d'Arduino.h
+#include "dosing_logic.h"  // effectiveOrpTargetPure/effectiveMaxChlorinePure (feature-146/E7 cond2') — self-contained
 
 void setUp(void) {}
 void tearDown(void) {}
@@ -217,64 +218,166 @@ void test_auto_window_temp_50_capped_24h(void) {
 }
 
 // -----------------------------------------------------------------------------
-// AC5/AC1 — decideFiltrationRun
+// feature-146 — decideFiltrationRun : quatre modes, MATRICE COMPLÈTE.
+// `boostForce`/`forceOn`/`forceOff` ont DISPARU de la signature (ADR-0093) :
+// le Boost ne décide plus rien, il MODIFIE le créneau en amont (voir
+// effectiveRunWindow ci-dessous), résolu par l'appelant AVANT l'appel.
+// 4 modes × (dans créneau / hors créneau) × (heure connue / inconnue) ×
+// (état courant true/false) — matrice, pas échantillon.
 // -----------------------------------------------------------------------------
-void test_decide_force_on_has_priority(void) {
-  // forceOn=true l'emporte sur tout, même forceOff=true
-  TEST_ASSERT_TRUE(decideFiltrationRun(false, "auto", true, true, true, 720, 480, 1080, false));
-  TEST_ASSERT_TRUE(decideFiltrationRun(false, "off", true, false, false, 0, -1, -1, false));
+void test_decide_filtration_run_full_matrix(void) {
+  // Créneau de BASE [480, 1080) = 08:00-18:00.
+  const int baseStart = 480, baseEnd = 1080;
+  const int inScheduleMin = 720;    // 12:00, DANS le créneau
+  const int outScheduleMin = 1200;  // 20:00, HORS du créneau
+
+  struct ModeCase { FiltrationMode mode; const char* name; };
+  static const ModeCase kModes[4] = {
+    {FiltrationMode::Auto,      "Auto"},
+    {FiltrationMode::Programme, "Programme"},
+    {FiltrationMode::Marche,    "Marche"},
+    {FiltrationMode::Arret,     "Arret"},
+  };
+
+  for (int m = 0; m < 4; m++) {
+    for (int inSched = 0; inSched <= 1; inSched++) {
+      const int nowMin = inSched ? inScheduleMin : outScheduleMin;
+      for (int haveTimeInt = 0; haveTimeInt <= 1; haveTimeInt++) {
+        const bool haveTime = haveTimeInt != 0;
+        for (int curInt = 0; curInt <= 1; curInt++) {
+          const bool currentlyRunning = curInt != 0;
+          bool expected;
+          switch (kModes[m].mode) {
+            case FiltrationMode::Auto:
+            case FiltrationMode::Programme:
+              expected = haveTime ? (inSched != 0) : currentlyRunning;
+              break;
+            case FiltrationMode::Marche:
+              expected = true;
+              break;
+            case FiltrationMode::Arret:
+              expected = false;
+              break;
+            default:
+              expected = currentlyRunning;
+              break;
+          }
+          const bool actual = decideFiltrationRun(kModes[m].mode, haveTime, nowMin,
+                                                   baseStart, baseEnd, currentlyRunning);
+          char msg[160];
+          snprintf(msg, sizeof(msg),
+                   "mode=%s inSchedule=%d haveTime=%d currentlyRunning=%d",
+                   kModes[m].name, inSched, haveTimeInt, curInt);
+          TEST_ASSERT_EQUAL_INT_MESSAGE(expected, actual, msg);
+        }
+      }
+    }
+  }
 }
 
-void test_decide_force_off_without_force_on(void) {
-  TEST_ASSERT_FALSE(decideFiltrationRun(false, "auto", false, true, true, 720, 480, 1080, true));
-}
-
-void test_decide_auto_follows_range_when_have_time(void) {
-  // dans la plage → marche ; hors plage → arrêt
-  TEST_ASSERT_TRUE(decideFiltrationRun(false, "auto", false, false, true, 720, 480, 1080, false));
-  TEST_ASSERT_FALSE(decideFiltrationRun(false, "auto", false, false, true, 1200, 480, 1080, true));
-}
-
-void test_decide_manual_follows_range_when_have_time(void) {
-  TEST_ASSERT_TRUE(decideFiltrationRun(false, "manual", false, false, true, 720, 480, 1080, false));
-  TEST_ASSERT_FALSE(decideFiltrationRun(false, "manual", false, false, true, 1200, 480, 1080, true));
-}
-
-void test_decide_no_time_keeps_current_state(void) {
-  // haveTime=false sans forçage → renvoie currentlyRunning tel quel
-  TEST_ASSERT_TRUE(decideFiltrationRun(false, "auto", false, false, false, 720, 480, 1080, true));
-  TEST_ASSERT_FALSE(decideFiltrationRun(false, "auto", false, false, false, 720, 480, 1080, false));
-}
-
-void test_decide_off_or_unknown_mode_is_false(void) {
-  TEST_ASSERT_FALSE(decideFiltrationRun(false, "off", false, false, true, 720, 480, 1080, true));
-  TEST_ASSERT_FALSE(decideFiltrationRun(false, "bogus", false, false, true, 720, 480, 1080, true));
+// Mode Inconnu : fail-safe de DÉCISION, pas un mode choisissable. Indépendant
+// du créneau et de l'heure — renvoie TOUJOURS currentlyRunning tel quel
+// (ensureTimesValid() ramène normalement tout jeton inconnu à Auto en amont ;
+// ce cas protège une course entre lecture et coercition).
+void test_decide_filtration_run_inconnu_always_keeps_current_state(void) {
+  TEST_ASSERT_TRUE(decideFiltrationRun(FiltrationMode::Inconnu, true, 720, 480, 1080, true));
+  TEST_ASSERT_FALSE(decideFiltrationRun(FiltrationMode::Inconnu, true, 720, 480, 1080, false));
+  TEST_ASSERT_TRUE(decideFiltrationRun(FiltrationMode::Inconnu, false, 720, 480, 1080, true));
+  TEST_ASSERT_FALSE(decideFiltrationRun(FiltrationMode::Inconnu, false, 1200, -1, -1, false));
 }
 
 // -----------------------------------------------------------------------------
-// feature-053 — decideFiltrationRun : boostForce en priorité MAXIMALE.
-// boostForce=true → toujours true, quels que soient forceOff/mode/horaire/RTC
-// (turnover maximal pendant le Boost, prioritaire sur forceOff).
+// feature-146/ADR-0093 — parseFiltrationMode : UNIQUE site de correspondance
+// jeton -> sens. Jetons CONSERVÉS tels quels (zéro migration NVS).
 // -----------------------------------------------------------------------------
+void test_parse_filtration_mode_tokens(void) {
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(FiltrationMode::Auto), static_cast<int>(parseFiltrationMode("auto")));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(FiltrationMode::Programme), static_cast<int>(parseFiltrationMode("manual")));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(FiltrationMode::Marche), static_cast<int>(parseFiltrationMode("force")));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(FiltrationMode::Arret), static_cast<int>(parseFiltrationMode("off")));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(FiltrationMode::Inconnu), static_cast<int>(parseFiltrationMode("bogus")));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(FiltrationMode::Inconnu), static_cast<int>(parseFiltrationMode(nullptr)));
+}
+
+// -----------------------------------------------------------------------------
+// ADR-0093 — effectiveRunWindow : le Boost (feature-053) MODIFIE le créneau,
+// il ne décide plus rien. Type RunWindow DISTINCT de ScheduleWindow — la
+// garantie de non-confusion est du ressort du COMPILATEUR (voir rapport
+// test-engineer, E4 : passer un RunWindow où un ScheduleWindow est attendu ne
+// compile pas).
+// -----------------------------------------------------------------------------
+void test_effective_run_window_boost_inactive_returns_base_unchanged(void) {
+  ScheduleWindow base{480, 1080};
+  RunWindow rw = effectiveRunWindow(base, /*boostActive=*/false, /*nowMin=*/720);
+  TEST_ASSERT_EQUAL_INT(480, rw.w.startMin);
+  TEST_ASSERT_EQUAL_INT(1080, rw.w.endMin);
+}
+
+void test_effective_run_window_boost_active_widens_to_next_midnight(void) {
+  ScheduleWindow base{480, 1080};
+  RunWindow rw = effectiveRunWindow(base, /*boostActive=*/true, /*nowMin=*/1200);
+  TEST_ASSERT_EQUAL_INT(1200, rw.w.startMin);
+  TEST_ASSERT_EQUAL_INT(1440, rw.w.endMin);
+}
+
+// PIÈGE DE MINUIT : nowMin=0 (00:00 pile). endMin DOIT être 1440, PAS 0 —
+// sinon start==end dégénère à 00:00 pile, et isMinutesInRange renverrait
+// false (plage "invalide" côté filtration), ce qui annulerait le Boost pile
+// à l'instant où il doit couvrir toute la journée suivante.
+void test_effective_run_window_midnight_trap_end_is_1440_not_0(void) {
+  ScheduleWindow base{480, 1080};
+  RunWindow rw = effectiveRunWindow(base, /*boostActive=*/true, /*nowMin=*/0);
+  TEST_ASSERT_EQUAL_INT(0, rw.w.startMin);
+  TEST_ASSERT_EQUAL_INT_MESSAGE(1440, rw.w.endMin,
+      "endMin doit etre 1440 (piege de minuit) : avec 0 degenere, start==end==0 "
+      "rendrait la fenetre INVALIDE.");
+  // Preuve END-TO-END : avec cette fenêtre, le mode Auto doit décider MARCHE
+  // à 00:00 pile (c'est tout le sens du Boost à cet instant).
+  TEST_ASSERT_TRUE_MESSAGE(
+      decideFiltrationRun(FiltrationMode::Auto, true, 0, rw.w.startMin, rw.w.endMin, false),
+      "A 00:00 pile avec Boost actif, la decision doit etre MARCHE.");
+  // Le piège lui-même, démontré : start==end==0 (ce qu'endMin=0 produirait)
+  // rend la fenêtre invalide (false) — c'est exactement pourquoi 1440 est exact.
+  TEST_ASSERT_FALSE_MESSAGE(
+      decideFiltrationRun(FiltrationMode::Auto, true, 0, 0, 0, false),
+      "Demonstration du piege : start==end==0 doit rendre la fenetre invalide.");
+}
+
+// feature-053 — rewrite SANS forceOff (le paramètre a disparu, ADR-0093) :
+// le Boost, désormais simple MODIFICATEUR de créneau, fait toujours démarrer
+// la filtration même quand le mode (Auto) serait hors de son créneau de BASE.
+// C'est le successeur direct de l'ancien "boostForce bat forceOff".
 void test_F053_boost_force_beats_force_off(void) {
-  // forceOff=true + hors plage + mode off → boostForce l'emporte quand même.
-  TEST_ASSERT_TRUE(decideFiltrationRun(true, "off", false, true, true, 1200, 480, 1080, false));
+  ScheduleWindow base{480, 1080};
+  const int nowMin = 1200;  // hors créneau de base
+  RunWindow rw = effectiveRunWindow(base, /*boostActive=*/true, nowMin);
+  TEST_ASSERT_TRUE(decideFiltrationRun(FiltrationMode::Auto, true, nowMin,
+                                       rw.w.startMin, rw.w.endMin, false));
 }
 
-void test_F053_boost_force_beats_everything(void) {
-  // Toutes combinaisons défavorables : mode inconnu, pas d'heure, hors plage,
-  // forceOff, currentlyRunning=false → boostForce force la marche.
-  TEST_ASSERT_TRUE(decideFiltrationRun(true, "bogus", false, true, false, 0, -1, -1, false));
-  TEST_ASSERT_TRUE(decideFiltrationRun(true, "auto", false, true, true, 1200, 480, 1080, false));
-  TEST_ASSERT_TRUE(decideFiltrationRun(true, "manual", true, true, false, 720, -1, -1, false));
-}
+// Boost combiné à CHAQUE mode (E1) : fenêtre ÉLARGIE passée à
+// decideFiltrationRun pour les quatre modes. Marche/Arrêt ignorent le créneau
+// (effectif ou non) par construction — le Boost y est donc SANS AUCUN effet
+// sur la décision pure (cohérent avec l'amendement 2 : le Boost est refusé
+// côté appelant en mode Arrêt ; ici on prouve qu'il serait de toute façon
+// inoffensif sur decideFiltrationRun lui-même).
+void test_decide_filtration_run_boost_widened_window_combined_with_each_mode(void) {
+  const int nowMin = 1200;  // 20:00, HORS du créneau de base [480, 1080)
+  ScheduleWindow base{480, 1080};
+  RunWindow rw = effectiveRunWindow(base, /*boostActive=*/true, nowMin);
 
-void test_F053_boost_force_false_no_regression(void) {
-  // boostForce=false → comportement strictement identique à avant feature-053.
-  // Dans la plage auto → marche ; hors plage → arrêt ; forceOff → arrêt.
-  TEST_ASSERT_TRUE(decideFiltrationRun(false, "auto", false, false, true, 720, 480, 1080, false));
-  TEST_ASSERT_FALSE(decideFiltrationRun(false, "auto", false, false, true, 1200, 480, 1080, true));
-  TEST_ASSERT_FALSE(decideFiltrationRun(false, "auto", false, true, true, 720, 480, 1080, true));
+  TEST_ASSERT_TRUE_MESSAGE(
+      decideFiltrationRun(FiltrationMode::Auto, true, nowMin, rw.w.startMin, rw.w.endMin, false),
+      "Boost + Auto, hors creneau de base : la fenetre elargie doit faire demarrer.");
+  TEST_ASSERT_TRUE_MESSAGE(
+      decideFiltrationRun(FiltrationMode::Programme, true, nowMin, rw.w.startMin, rw.w.endMin, false),
+      "Boost + Programme, hors creneau de base : la fenetre elargie doit faire demarrer.");
+  TEST_ASSERT_TRUE_MESSAGE(
+      decideFiltrationRun(FiltrationMode::Marche, true, nowMin, rw.w.startMin, rw.w.endMin, false),
+      "Marche tourne deja sans le Boost : aucun changement.");
+  TEST_ASSERT_FALSE_MESSAGE(
+      decideFiltrationRun(FiltrationMode::Arret, true, nowMin, rw.w.startMin, rw.w.endMin, true),
+      "Arret ignore tout creneau (effectif ou non) : le Boost n'y a AUCUN effet sur la decision.");
 }
 
 // -----------------------------------------------------------------------------
@@ -348,23 +451,26 @@ void test_sample_eligible_truth_table_all_eight_combinations(void) {
   }
 }
 
-// M1 — preuve de la condition C2 nommément : un forceOn nocturne (22:00-02:00)
-// produit des échantillons hors-plage. Même avec la purge réglée et la sonde
-// vivante, AUCUN des 240 échantillons ne doit être retenu — la garde
+// M1 — preuve de la condition C2 nommément : un mode Marche nocturne
+// (22:00-02:00, ex-"forceOn" — nom actualisé feature-146, le FOND ne change
+// PAS : la garde `inSchedule` est fondée sur la PLAGE, pas sur un drapeau de
+// forçage) produit des échantillons hors-plage. Même avec la purge réglée et
+// la sonde vivante, AUCUN des 240 échantillons ne doit être retenu — la garde
 // `inSchedule` doit, à elle seule, fermer tout le lot.
-void test_C2_force_on_nocturnal_samples_all_rejected_by_in_schedule_guard(void) {
+void test_C2_marche_nocturnal_samples_all_rejected_by_in_schedule_guard(void) {
   CycleTempAccumulator acc;
   resetCycleTempAccumulator(acc);
   for (int minute = 0; minute < 240; minute++) {
-    // circulationSettled=true, inSchedule=false (forceOn hors plage 07:36-18:24
-    // par ex.), temperatureFrozen=false : SEULE la garde de plage doit rejeter.
+    // circulationSettled=true, inSchedule=false (mode Marche hors plage de
+    // base 07:36-18:24 par ex.), temperatureFrozen=false : SEULE la garde de
+    // plage doit rejeter.
     bool eligible = isSampleEligible(/*circulationSettled=*/true, /*inSchedule=*/false,
                                      /*temperatureFrozen=*/false);
     accumulateCycleTemp(acc, 18.0f + (float)(minute % 5) * 0.1f, eligible);
   }
   TEST_ASSERT_EQUAL_UINT16_MESSAGE(0, acc.count,
-      "Un forceOn nocturne ne doit jamais nourrir la moyenne (C2) : si ce test "
-      "passe alors que la garde inSchedule a saute, la preuve de C2 est perdue.");
+      "Un mode Marche nocturne ne doit jamais nourrir la moyenne (C2) : si ce "
+      "test passe alors que la garde inSchedule a saute, la preuve de C2 est perdue.");
 }
 
 // M2 — un échantillon pris avant kPurgeFloorMs (eau stagnante) doit être rejeté
@@ -978,6 +1084,222 @@ void test_C1_pump_controller_untouched_by_bug126_horizon_shortcut(void) {
 }
 
 // =============================================================================
+// feature-146/E7 — conditions du gate pool-chemistry, épinglées par un test.
+// Logique PURE déjà couverte au-dessus (decideFiltrationRun, effectiveRunWindow,
+// effectiveOrpTargetPure/effectiveMaxChlorinePure) ; ce qui suit vérifie le
+// CÂBLAGE de la coquille (filtration.cpp / pump_controller.cpp), patron des
+// sentinelles de source déjà en usage dans ce fichier (bug-126, ci-dessus).
+//
+// ⚠️ LIMITE GÉNÉRALE DE CE QUI SUIT (relevée par code-reviewer) : une
+// sentinelle `strstr`/`countOccurrences` est une preuve de TEXTE, pas de
+// COMPORTEMENT — elle tourne SANS exécuter une seule ligne de filtration.cpp
+// / pump_controller.cpp (non compilables en natif : Arduino, sensors,
+// measureValidity, mqttManager). Chaque test ci-dessous précise, dans son
+// commentaire, ce qu'il NE prouve PAS. Quand une preuve de comportement était
+// possible sur la logique PURE (cas #2' : effectiveOrpTargetPure /
+// effectiveMaxChlorinePure), elle a été ajoutée EN PLUS de la sentinelle, pas
+// à sa place.
+// =============================================================================
+
+// Condition #1 [BLOQUANTE] : SOURCE UNIQUE `relayShouldBeOn = state.running`.
+// Le terme retiré (`&& (filtrationCfg.mode != "off")`) ne doit JAMAIS revenir —
+// il lisait le mode BRUT alors que la décision lit le mode minusculisé, et
+// relisait la config APRÈS la décision (course réelle avec les callbacks
+// web/MQTT du même tour de loop).
+//
+// CE QUE CE TEST NE PROUVE PAS : il ne prouve pas que le relais physique suit
+// réellement `state.running` à l'exécution (aucun code n'est exécuté). Il est
+// renforcé au-delà d'un simple `strstr` global : il vérifie qu'AUCUNE
+// réaffectation de `relayShouldBeOn` n'apparaît textuellement entre sa
+// déclaration et son premier usage (`if (relayShouldBeOn != relayState)`) —
+// ce qui aurait laissé passer un `&&` ajouté sur la ligne suivante (objection
+// code-reviewer). Un mutant qui modifierait `state.running` lui-même avant la
+// ligne de déclaration, ou qui renommerait les deux variables de concert,
+// resterait indétectable par ce texte seul.
+void test_E7_cond1_relay_follows_state_running_as_single_source(void) {
+  char* code = readProjectCode("src/filtration.cpp");
+  TEST_ASSERT_NOT_NULL_MESSAGE(code, "src/filtration.cpp INTROUVABLE.");
+  char* body = extractFunctionBody(code, "void FiltrationManager::update()");
+  TEST_ASSERT_NOT_NULL_MESSAGE(body, "FiltrationManager::update() introuvable : sentinelle aveugle.");
+
+  const char* decl = strstr(body, "bool relayShouldBeOn = state.running;");
+  TEST_ASSERT_NOT_NULL_MESSAGE(decl,
+      "relayShouldBeOn doit etre assigne UNIQUEMENT depuis state.running "
+      "(source unique, condition #1 BLOQUANTE).");
+  const char* afterDecl = decl + strlen("bool relayShouldBeOn = state.running;");
+  const char* use = strstr(afterDecl, "if (relayShouldBeOn != relayState)");
+  TEST_ASSERT_NOT_NULL_MESSAGE(use, "Usage de relayShouldBeOn introuvable apres sa declaration.");
+
+  const size_t gapLen = (size_t)(use - afterDecl);
+  char* gap = (char*)malloc(gapLen + 1);
+  memcpy(gap, afterDecl, gapLen);
+  gap[gapLen] = '\0';
+  TEST_ASSERT_EQUAL_INT_MESSAGE(0, countOccurrences(gap, "relayShouldBeOn"),
+      "relayShouldBeOn est TOUCHE entre sa declaration et son usage : une "
+      "deuxieme source (ex. '&& (...)' ajoute apres coup) romprait la source "
+      "unique (condition #1 BLOQUANTE) sans qu'un strstr global ne le voie.");
+  free(gap);
+
+  TEST_ASSERT_EQUAL_INT_MESSAGE(0,
+      countOccurrences(code, "filtrationCfg.mode != \"off\""),
+      "Le terme retire (mode BRUT, releu APRES la decision) est de retour : "
+      "la course relais/decision (condition #1 BLOQUANTE) rouvre.");
+  free(body);
+  free(code);
+}
+
+// Condition #2' [BLOQUANTE] : quitter vers le mode Arrêt EFFACE le Boost
+// (stopBoost()), ne se contente pas de l'ignorer — sinon un retour ultérieur
+// avant expiration relèverait la consigne ORP et le plafond chlore TOUT SEUL
+// (dosing_logic.cpp lit isBoostActive() DIRECTEMENT, hors de cette décision
+// filtration).
+//
+// MIXTE, volontairement : la partie « stopBoost() est bien appelé au passage
+// en Arrêt » reste une SENTINELLE (ne prouve pas que l'appel est atteint à
+// l'exécution, ni qu'il est bien conditionné par le mode Arrêt et pas un
+// autre). La partie qui suit, elle, est une VRAIE preuve de COMPORTEMENT sur
+// la logique PURE (dosing_logic.cpp, compilée en natif) : une fois le Boost
+// effacé (boostActive=false), la cible ORP et le plafond chlore redeviennent
+// NOMINAUX — c'est la conséquence CHIMIQUE de l'effacement, exécutée pour de
+// vrai, pas lue dans le texte.
+void test_E7_cond2prime_leaving_to_arret_clears_boost_not_ignores_it(void) {
+  char* code = readProjectCode("src/filtration.cpp");
+  TEST_ASSERT_NOT_NULL_MESSAGE(code, "src/filtration.cpp INTROUVABLE.");
+  TEST_ASSERT_TRUE_MESSAGE(
+      countOccurrences(code, "stopBoost();") >= 1,
+      "stopBoost() doit etre appele au passage en mode Arret (effacement, pas ignorance).");
+  free(code);
+
+  TEST_ASSERT_EQUAL_FLOAT_MESSAGE(700.0f,
+      effectiveOrpTargetPure(700.0f, /*boostActive=*/false, /*orpModeAutomatic=*/true, 60.0f, 850.0f),
+      "Boost efface (boostActive=false) : la cible ORP doit redevenir NOMINALE.");
+  TEST_ASSERT_EQUAL_FLOAT_MESSAGE(500.0f,
+      effectiveMaxChlorinePure(500.0f, /*boostActive=*/false, /*orpModeAutomatic=*/true, 1.5f, 1000.0f),
+      "Boost efface (boostActive=false) : le plafond chlore doit redevenir NOMINAL.");
+}
+
+// Condition #4/#8 (amendée) : en Marche, `scheduledMinutesToday()` (affichage,
+// filtration.cpp) et `filtrationDosingHorizonMinutes()` (horizon de dosage
+// réparti, pump_controller.cpp) doivent s'ACCORDER — le patron "1440" est
+// RÉUTILISÉ (pump_controller.cpp:4335, modes non-Managed), pas dupliqué sous
+// un chiffre différent.
+//
+// CE QUE CE TEST NE PROUVE PAS : scheduledMinutesToday() et
+// filtrationDosingHorizonMinutes() ne sont pas des fonctions PURES (méthode
+// de classe + static liée à filtrationCfg/mqttCfg globaux) — aucune des deux
+// n'est exécutée ici. Un mutant qui renverrait la bonne valeur par un chemin
+// de code différent (ex. une constante dupliquée ailleurs dans le fichier qui
+// matcherait quand même le texte recherché) ne serait pas détecté. Seule une
+// extraction en logique pure (hors périmètre de ce lot, ADR-0017) permettrait
+// une preuve de comportement ici.
+void test_E7_cond4_cond8_marche_horizon_and_scheduled_minutes_agree(void) {
+  char* fcode = readProjectCode("src/filtration.cpp");
+  TEST_ASSERT_NOT_NULL_MESSAGE(fcode, "src/filtration.cpp INTROUVABLE.");
+  char* scheduledBody = extractFunctionBody(fcode, "int FiltrationManager::scheduledMinutesToday() const");
+  TEST_ASSERT_NOT_NULL_MESSAGE(scheduledBody, "scheduledMinutesToday() introuvable : sentinelle aveugle.");
+  TEST_ASSERT_TRUE_MESSAGE(
+      strstr(scheduledBody, "FiltrationMode::Marche) return 1440;") != NULL,
+      "scheduledMinutesToday() doit annoncer 1440 en mode Marche.");
+  free(scheduledBody);
+  free(fcode);
+
+  char* pcode = readProjectCode("src/pump_controller.cpp");
+  TEST_ASSERT_NOT_NULL_MESSAGE(pcode, "src/pump_controller.cpp INTROUVABLE.");
+  char* horizonBody = extractFunctionBody(pcode, "static int filtrationDosingHorizonMinutes(int nowMin)");
+  TEST_ASSERT_NOT_NULL_MESSAGE(horizonBody, "filtrationDosingHorizonMinutes() introuvable : sentinelle aveugle.");
+  TEST_ASSERT_TRUE_MESSAGE(
+      countOccurrences(horizonBody, "FiltrationMode::Marche") >= 1,
+      "filtrationDosingHorizonMinutes() doit traiter le mode Marche explicitement.");
+  TEST_ASSERT_TRUE_MESSAGE(
+      countOccurrences(horizonBody, "1440 - nowMin") >= 1,
+      "filtrationDosingHorizonMinutes() doit renvoyer 1440 - nowMin (meme patron "
+      "que scheduledMinutesToday()==1440 - accord condition #4/#8).");
+  free(horizonBody);
+  free(pcode);
+}
+
+// Condition #5 : begin() calcule l'état initial du relais via
+// decideFiltrationRun(bootMode, ...) — c'est ce qui rend le mode Marche
+// ATTEIGNABLE dès le tout premier tour (avant ce lot, "force" tombait dans le
+// `return false` par défaut : jamais de relais énergisé au boot). La garde de
+// purge au boot avec eau déjà présente est déjà prouvée en pure logique par
+// test_native_measure_validity (CAS 6, fail-closed).
+//
+// CE QUE CE TEST NE PROUVE PAS : que begin() aboutit RÉELLEMENT à un relais
+// énergisé et à une purge correctement armée au premier tick — seulement que
+// le bon paramètre (`bootMode`) est passé en texte au bon appel. La preuve de
+// comportement de la décision elle-même est ailleurs (matrice E1, logique
+// pure) ; ce test épingle seulement que ce chemin de boot est CÂBLÉ pour
+// l'atteindre.
+void test_E7_cond5_boot_initial_relay_state_reachable_in_marche(void) {
+  char* code = readProjectCode("src/filtration.cpp");
+  TEST_ASSERT_NOT_NULL_MESSAGE(code, "src/filtration.cpp INTROUVABLE.");
+  char* body = extractFunctionBody(code, "void FiltrationManager::begin()");
+  TEST_ASSERT_NOT_NULL_MESSAGE(body, "FiltrationManager::begin() introuvable : sentinelle aveugle.");
+  TEST_ASSERT_TRUE_MESSAGE(
+      countOccurrences(body, "decideFiltrationRun(bootMode") >= 1,
+      "begin() doit calculer l'etat initial via decideFiltrationRun(bootMode, ...) "
+      "- c'est ce qui rend le mode Marche ATTEIGNABLE au tout premier tour "
+      "(condition #5).");
+  free(body);
+  free(code);
+}
+
+// Condition #6 : migration "force" -> Marche doit alerter (warning log +
+// alerte MQTT différée), la pompe passant d'ARRÊTÉE à TOURNANTE au boot.
+//
+// CE QUE CE TEST NE PROUVE PAS : que l'alerte est réellement publiée sur MQTT
+// ni que le log critique part au bon moment — seulement que le drapeau
+// `_forceModeMigrationAlertPending` existe encore dans le fichier. Un mutant
+// qui le déclarerait sans jamais le positionner à `true` au bon endroit ne
+// serait pas détecté par ce seul compte d'occurrences.
+void test_E7_cond6_force_to_marche_migration_warns(void) {
+  char* code = readProjectCode("src/filtration.cpp");
+  TEST_ASSERT_NOT_NULL_MESSAGE(code, "src/filtration.cpp INTROUVABLE.");
+  TEST_ASSERT_TRUE_MESSAGE(
+      countOccurrences(code, "_forceModeMigrationAlertPending") >= 1,
+      "La migration force->Marche doit armer une alerte differee (condition #6).");
+  free(code);
+}
+
+// feature-146/E5 (mutation m1) — Programme ne recalcule JAMAIS le créneau :
+// c'est la DÉFINITION même qui le distingue d'Auto dans decideFiltrationRun
+// (les deux y suivent pourtant la même plage). La garde de
+// computeAutoSchedule() doit exclure STRICTEMENT tout mode != Auto — si
+// Programme devenait identique à Auto ici, le créneau saisi par
+// l'utilisateur serait écrasé par le calcul automatique (régression visible,
+// silencieuse).
+//
+// SENTINELLE DE SOURCE, pas une preuve de comportement : computeAutoSchedule()
+// dépend de sensors/measureValidity (Arduino), non compilable en natif — il
+// n'existe PAS de version pure à exécuter ici. Le motif recherché ("!=
+// FiltrationMode::Auto) return;") est volontairement découplé du NOM de
+// l'helper de parsing (parseFiltrationMode / parseFiltrationModeFrom, ADR
+// indifférent) pour ne pas casser sur un simple renommage — mais il reste un
+// strstr : il ne prouve ni que la garde s'exécute AVANT tout effet de bord
+// (seule la POSITION dans le corps est vérifiée, pas l'ordre d'exécution
+// réel), ni qu'un contournement logiquement équivalent mais textuellement
+// différent (ex. `if (mode == FiltrationMode::Auto) { ...} return;`) serait
+// détecté. Seule l'exécution réelle sur cible (ou un test d'intégration)
+// prouverait le comportement.
+void test_E5_m1_compute_auto_schedule_guard_excludes_programme(void) {
+  char* code = readProjectCode("src/filtration.cpp");
+  TEST_ASSERT_NOT_NULL_MESSAGE(code, "src/filtration.cpp INTROUVABLE.");
+  char* body = extractFunctionBody(code, "void FiltrationManager::computeAutoSchedule()");
+  TEST_ASSERT_NOT_NULL_MESSAGE(body, "computeAutoSchedule() introuvable : sentinelle aveugle.");
+  const char* guard = strstr(body, "!= FiltrationMode::Auto) return;");
+  TEST_ASSERT_NOT_NULL_MESSAGE(guard,
+      "computeAutoSchedule() doit sortir pour TOUT mode != Auto : Programme ne "
+      "recalcule JAMAIS (mutation m1 : Programme devenu identique a Auto).");
+  const size_t offset = (size_t)(guard - body);
+  TEST_ASSERT_TRUE_MESSAGE(offset < 200,
+      "La garde de mode doit etre EN TETE de computeAutoSchedule() (avant tout "
+      "calcul), pas ajoutee plus loin dans la fonction.");
+  free(body);
+  free(code);
+}
+
+// =============================================================================
 // bug-126 — SECONDE PASSE (revue pool-chemistry + code-reviewer, 8 correctifs)
 // =============================================================================
 // RefTempVerdict::TooCold (P2-A), garde anti-écrasement M4, garde haveTime M3,
@@ -1169,8 +1491,16 @@ void test_M24_non_auto_mode_writes_nothing(void) {
   char* body = extractFunctionBody(code, "void FiltrationManager::writePendingSchedule(bool haveTime)");
   TEST_ASSERT_NOT_NULL_MESSAGE(body, "writePendingSchedule(bool) INTROUVABLE (M24).");
 
-  const char* modeGuard = strstr(body,
-      "if (!filtrationCfg.mode.equalsIgnoreCase(\"auto\")) return;");
+  // feature-146 : la garde est désormais exprimée via FiltrationMode (jeton
+  // CONSERVÉ, ADR-0093) plutôt que par comparaison de chaîne directe. Motif
+  // découplé du NOM de l'helper de parsing (parseFiltrationMode vs
+  // parseFiltrationModeFrom, consolidation code-reviewer) : seule la FORME de
+  // la garde ("!= FiltrationMode::Auto) return;") est vérifiée. SENTINELLE DE
+  // SOURCE, pas une preuve de comportement — voir le commentaire de
+  // test_E5_m1_compute_auto_schedule_guard_excludes_programme pour les
+  // limites (un strstr ne prouve ni l'ordre d'exécution réel, ni l'absence
+  // d'un contournement logiquement équivalent mais textuellement différent).
+  const char* modeGuard = strstr(body, "!= FiltrationMode::Auto) return;");
   TEST_ASSERT_NOT_NULL_MESSAGE(modeGuard,
       "Garde de mode auto introuvable EN TETE de writePendingSchedule (M24).");
 
@@ -1636,18 +1966,17 @@ int main(int /*argc*/, char** /*argv*/) {
   RUN_TEST(test_auto_window_temp_48_full_day_with_wrap);
   RUN_TEST(test_auto_window_temp_50_capped_24h);
 
-  // AC5/AC1
-  RUN_TEST(test_decide_force_on_has_priority);
-  RUN_TEST(test_decide_force_off_without_force_on);
-  RUN_TEST(test_decide_auto_follows_range_when_have_time);
-  RUN_TEST(test_decide_manual_follows_range_when_have_time);
-  RUN_TEST(test_decide_no_time_keeps_current_state);
-  RUN_TEST(test_decide_off_or_unknown_mode_is_false);
+  // feature-146 — decideFiltrationRun : matrice complète des 4 modes
+  RUN_TEST(test_decide_filtration_run_full_matrix);
+  RUN_TEST(test_decide_filtration_run_inconnu_always_keeps_current_state);
+  RUN_TEST(test_parse_filtration_mode_tokens);
 
-  // feature-053 — decideFiltrationRun boostForce (priorité maximale)
+  // ADR-0093 — effectiveRunWindow (Boost = modificateur de créneau)
+  RUN_TEST(test_effective_run_window_boost_inactive_returns_base_unchanged);
+  RUN_TEST(test_effective_run_window_boost_active_widens_to_next_midnight);
+  RUN_TEST(test_effective_run_window_midnight_trap_end_is_1440_not_0);
   RUN_TEST(test_F053_boost_force_beats_force_off);
-  RUN_TEST(test_F053_boost_force_beats_everything);
-  RUN_TEST(test_F053_boost_force_false_no_regression);
+  RUN_TEST(test_decide_filtration_run_boost_widened_window_combined_with_each_mode);
 
   // feature-040 AC1/AC4 — decideLightingOn
   RUN_TEST(test_lighting_manual_override_returns_enabled_flag);
@@ -1658,7 +1987,7 @@ int main(int /*argc*/, char** /*argv*/) {
   // bug-126 — CycleTempAccumulator / isSampleEligible / accumulateCycleTemp (C2/C9)
   RUN_TEST(test_reset_cycle_temp_accumulator_is_nan_and_zero);
   RUN_TEST(test_sample_eligible_truth_table_all_eight_combinations);
-  RUN_TEST(test_C2_force_on_nocturnal_samples_all_rejected_by_in_schedule_guard);
+  RUN_TEST(test_C2_marche_nocturnal_samples_all_rejected_by_in_schedule_guard);
   RUN_TEST(test_C2_sample_before_purge_settled_is_rejected);
   RUN_TEST(test_C2_frozen_probe_sample_is_rejected);
   RUN_TEST(test_accumulate_rejects_non_finite_even_when_eligible);
@@ -1699,6 +2028,14 @@ int main(int /*argc*/, char** /*argv*/) {
   RUN_TEST(test_filtration_cpp_no_config_write_between_rising_and_falling_edge);
   RUN_TEST(test_M15_pump_running_defers_promotion_never_discards_pending);
   RUN_TEST(test_C1_pump_controller_untouched_by_bug126_horizon_shortcut);
+
+  // feature-146/E7 — conditions du gate pool-chemistry, épinglées
+  RUN_TEST(test_E7_cond1_relay_follows_state_running_as_single_source);
+  RUN_TEST(test_E7_cond2prime_leaving_to_arret_clears_boost_not_ignores_it);
+  RUN_TEST(test_E7_cond4_cond8_marche_horizon_and_scheduled_minutes_agree);
+  RUN_TEST(test_E7_cond5_boot_initial_relay_state_reachable_in_marche);
+  RUN_TEST(test_E7_cond6_force_to_marche_migration_warns);
+  RUN_TEST(test_E5_m1_compute_auto_schedule_guard_excludes_programme);
 
   // bug-126 — seconde passe (revue) : TooCold (M18-M21)
   RUN_TEST(test_M18_M19_mean_below_min_is_toocold_not_implausible);

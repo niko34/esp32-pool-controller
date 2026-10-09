@@ -2168,15 +2168,18 @@
 
     // La carte Contrôle manuel est toujours visible
     if (manualCard) manualCard.style.display = "";
-    // Boutons désactivés uniquement en mode "Désactivé"
-    const buttonsDisabled = (mode === "off");
-    if (startBtn) startBtn.disabled = buttonsDisabled;
-    if (stopBtn) stopBtn.disabled = buttonsDisabled;
+    // feature-146 : Démarrer/Arrêter changent désormais le MODE — en mode
+    // Arrêt, « Démarrer » est précisément la sortie du mode : plus jamais grisés.
+    if (startBtn) startBtn.disabled = false;
+    if (stopBtn) stopBtn.disabled = false;
+
+    // feature-146 : le hint décrit les quatre modes en permanence (plus de
+    // masquage conditionnel — il n'est plus spécifique au mode Auto).
+    if (modeHint) modeHint.style.display = "";
 
     if (mode === "manual") {
-      // Programmation : horaires éditables
+      // Programme : horaires éditables
       if (scheduleFields) scheduleFields.style.display = "";
-      if (modeHint) modeHint.style.display = "none";
       start.disabled = false;
       end.disabled = false;
       start.classList.remove("is-computed");
@@ -2184,15 +2187,13 @@
     } else if (mode === "auto") {
       // Auto : horaires calculés (lecture seule)
       if (scheduleFields) scheduleFields.style.display = "";
-      if (modeHint) modeHint.style.display = "";
       start.disabled = true;
       end.disabled = true;
       start.classList.add("is-computed");
       end.classList.add("is-computed");
     } else {
-      // Manuel ou Désactivé : pas d'horaires
+      // Marche ou Arrêt : pas d'horaires
       if (scheduleFields) scheduleFields.style.display = "none";
-      if (modeHint) modeHint.style.display = "none";
       start.disabled = true;
       end.disabled = true;
     }
@@ -3762,6 +3763,9 @@
     if (im && im !== "managed") return false;
     const mode = (cfg.filtration_mode || '').toLowerCase();
     if (mode === 'off') return false;
+    // feature-146 : mode Marche — la pompe tourne tant que l'utilisateur ne
+    // change pas de mode, sans dépendre du créneau.
+    if (mode === 'force') return true;
     if (mode === 'manual' || mode === 'auto') {
       const now = new Date();
       const nowMin = now.getHours() * 60 + now.getMinutes();
@@ -3776,7 +3780,9 @@
       const startMin = parseTime(cfg.filtration_start);
       const endMin = parseTime(cfg.filtration_end);
       if (startMin === -1 || endMin === -1) return false;
-      if (startMin === endMin) return true;
+      // Parité avec isMinutesInRange(equalMeansAlways=false) côté firmware
+      // (src/schedule_logic.cpp) : start==end signifie « jamais », pas « toujours ».
+      if (startMin === endMin) return false;
       if (startMin < endMin) return nowMin >= startMin && nowMin < endMin;
       return nowMin >= startMin || nowMin < endMin;
     }
@@ -4011,6 +4017,14 @@
     const effectRow = $("#detail-boost-effect-row");
     const effectEl = $("#detail-boost-effect");
     const hintEl = $("#detail-boost-hint");
+    // feature-146 : le Boost surchlore l'eau qui circule — impossible en mode
+    // Arrêt (seul mode exclu ; Auto/Programme/Marche l'autorisent tous).
+    // Miroir client de config.cpp:startBoost() (revue code-reviewer) : en
+    // Powered/External (feature-056) le mode de filtration est INERTE — l'eau
+    // circule en permanence hors du contrôle du PoolController, un "off"
+    // résiduel ne doit donc pas griser le Boost à tort.
+    const installMode = cfg.install_mode || 'managed';
+    const filtrationOff = installMode === 'managed' && (cfg.filtration_mode || '').toLowerCase() === 'off';
     // feature-055 : leviers réellement actifs (défaut true si champ absent, rétrocompat).
     // Champs toujours émis par le WS, valides même Boost inactif → hint prospectif honnête.
     const filtExt = data.boost_filtration_extended !== false;
@@ -4046,14 +4060,19 @@
       // Hint prospectif : décrit ce que fera réellement l'activation selon la config courante.
       if (hintEl) {
         let hintText;
-        if (filtExt && chlorBoost)       hintText = "À l'activation : filtration prolongée + cible ORP relevée jusqu'à minuit.";
+        if (filtrationOff) {
+          hintText = "Indisponible en mode Arrêt : sans circulation, la surchloration ne peut pas se répartir dans le bassin.";
+        } else if (filtExt && chlorBoost)       hintText = "À l'activation : filtration prolongée + cible ORP relevée jusqu'à minuit.";
         else if (!filtExt && chlorBoost) hintText = "À l'activation : cible ORP relevée jusqu'à minuit (filtration non gérée par le contrôleur).";
         else if (filtExt && !chlorBoost) hintText = "À l'activation : filtration prolongée jusqu'à minuit (régulation ORP non automatique, chlore non relevé).";
         else                             hintText = "À l'activation : aucun effet (filtration non gérée par le contrôleur et régulation ORP non automatique).";
         hintEl.textContent = hintText;
         hintEl.style.display = "";
       }
-      if (startBtn) startBtn.style.display = "";
+      if (startBtn) {
+        startBtn.style.display = "";
+        startBtn.disabled = filtrationOff;
+      }
       if (stopBtn) stopBtn.style.display = "none";
     }
   }
@@ -6042,9 +6061,9 @@
     if (detailFiltrationMode) {
       const modes = {
         auto: 'Auto',
-        manual: 'Programmation',
-        force: 'Manuel',
-        off: 'Désactivé'
+        manual: 'Programme',
+        force: 'Marche',
+        off: 'Arrêt'
       };
       detailFiltrationMode.textContent = modes[config.filtration_mode] || 'Auto';
     }
@@ -6065,12 +6084,8 @@
     // feature-011 : débit moyen calculé en mode Programmée (push WS)
     updateScheduledFlowDisplay();
 
-    // Boutons Démarrer/Arrêter du tableau de bord : grisés en mode Désactivé
-    const isOff = (config.filtration_mode || '').toLowerCase() === 'off';
-    const detailStartBtn = $("#detail-filtration-start");
-    const detailStopBtn = $("#detail-filtration-stop");
-    if (detailStartBtn) detailStartBtn.disabled = isOff;
-    if (detailStopBtn) detailStopBtn.disabled = isOff;
+    // feature-146 : Démarrer/Arrêter changent désormais le MODE — en mode
+    // Arrêt, « Démarrer » est précisément la sortie du mode : plus jamais grisés.
 
     // === ÉCLAIRAGE ===
     // lighting_enabled vient exclusivement des push sensor_data (état réel du relais)
@@ -6104,53 +6119,48 @@
     }
   }
 
+  // feature-146 : les boutons Démarrer/Arrêter (tableau de bord ET réglages)
+  // ne font plus qu'une chose — changer le MODE de filtration (Marche/Arrêt).
+  // Les champs filtration_force_on/_off ont disparu du firmware ; un seul
+  // chemin sert désormais les DEUX paires de boutons.
+  async function setFiltrationRunMode(mode) {
+    const payload = { filtration_mode: mode };
+    try {
+      const result = await sendConfig(payload);
+      if (!result) {
+        showToast(mode === "force" ? "Erreur lors du démarrage" : "Erreur lors de l'arrêt", "error");
+        return false;
+      }
+      filtrationRunningOverride = (mode === "force");
+      if (window._config) window._config.filtration_mode = mode;
+      const modeSelect = $("#filtration_mode");
+      if (modeSelect) modeSelect.value = mode;
+      updateFiltrationControls();
+      updateFiltrationBadges();
+      updateDetailSections();
+      updateStatusCards();
+      showToast(mode === "force" ? "Filtration démarrée" : "Filtration arrêtée", "success");
+      loadConfig();
+      setTimeout(() => loadSensorData({ force: true, source: "filtration-mode" }), 500);
+      return true;
+    } catch (e) {
+      console.error('Erreur changement de mode filtration:', e);
+      showToast("Erreur de connexion", "error");
+      return false;
+    }
+  }
+
   function bindDetailActions() {
     // Boutons filtration
     const startBtn = $("#detail-filtration-start");
     const stopBtn = $("#detail-filtration-stop");
 
     if (startBtn) {
-      startBtn.addEventListener('click', async () => {
-        const payload = { filtration_force_on: true, filtration_force_off: false };
-        try {
-          const result = await sendConfig(payload);
-          if (result) {
-            filtrationRunningOverride = true;
-            updateDetailSections();
-            updateStatusCards();
-            showToast("Filtration démarrée", "success");
-            loadConfig();
-            setTimeout(() => loadSensorData({ force: true, source: "filtration-save" }), 500);
-          } else {
-            showToast("Erreur lors du démarrage", "error");
-          }
-        } catch (e) {
-          console.error('Erreur démarrage filtration:', e);
-          showToast("Erreur de connexion", "error");
-        }
-      });
+      startBtn.addEventListener('click', () => setFiltrationRunMode("force"));
     }
 
     if (stopBtn) {
-      stopBtn.addEventListener('click', async () => {
-        const payload = { filtration_force_on: false, filtration_force_off: true };
-        try {
-          const result = await sendConfig(payload);
-          if (result) {
-            filtrationRunningOverride = false;
-            updateDetailSections();
-            updateStatusCards();
-            showToast("Filtration arrêtée", "success");
-            loadConfig();
-            setTimeout(() => loadSensorData({ force: true, source: "filtration-save" }), 500);
-          } else {
-            showToast("Erreur lors de l'arrêt", "error");
-          }
-        } catch (e) {
-          console.error('Erreur arrêt filtration:', e);
-          showToast("Erreur de connexion", "error");
-        }
-      });
+      stopBtn.addEventListener('click', () => setFiltrationRunMode("off"));
     }
 
     // Boutons éclairage
@@ -12002,58 +12012,18 @@
   }
 
   // ========== FILTRATION MANUAL CONTROL ==========
+  // feature-146 : mêmes boutons que le tableau de bord (#detail-filtration-*),
+  // même chemin partagé setFiltrationRunMode() — changer le mode, rien d'autre.
   function setupFiltrationManualControl() {
     const startBtn = $("#filtration-manual-start");
     const stopBtn = $("#filtration-manual-stop");
 
-    // Start filtration: force ON sans modifier la programmation
     if (startBtn) {
-      startBtn.addEventListener("click", async () => {
-        const payload = { filtration_force_on: true, filtration_force_off: false };
-        try {
-          const result = await sendConfig(payload);
-          if (result) {
-            filtrationRunningOverride = true;
-            updateFiltrationControls();
-            updateFiltrationBadges();
-            showToast("Filtration démarrée", "success");
-            setTimeout(() => {
-              loadSensorData({ force: true, source: "filtration-start" });
-              loadConfig().catch(() => {});
-            }, 1000);
-          } else {
-            showToast("Erreur lors du démarrage", "error");
-          }
-        } catch (error) {
-          console.error("Error starting filtration:", error);
-          showToast("Erreur de connexion", "error");
-        }
-      });
+      startBtn.addEventListener("click", () => setFiltrationRunMode("force"));
     }
 
-    // Stop filtration: force OFF (overrides schedule)
     if (stopBtn) {
-      stopBtn.addEventListener("click", async () => {
-        const payload = { filtration_force_on: false, filtration_force_off: true };
-        try {
-          const result = await sendConfig(payload);
-          if (result) {
-            filtrationRunningOverride = false;
-            updateFiltrationControls();
-            updateFiltrationBadges();
-            showToast("Filtration arrêtée", "success");
-            setTimeout(() => {
-              loadSensorData({ force: true, source: "filtration-stop" });
-              loadConfig().catch(() => {});
-            }, 1000);
-          } else {
-            showToast("Erreur lors de l'arrêt", "error");
-          }
-        } catch (error) {
-          console.error("Error stopping filtration:", error);
-          showToast("Erreur de connexion", "error");
-        }
-      });
+      stopBtn.addEventListener("click", () => setFiltrationRunMode("off"));
     }
 
     // Initial status update

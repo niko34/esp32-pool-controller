@@ -60,6 +60,23 @@ int remainingRangeMinutes(int nowMin, int startMin, int endMin) {
   return endMin - nowMin;
 }
 
+FiltrationMode parseFiltrationMode(const char* token) {
+  if (token == nullptr) return FiltrationMode::Inconnu;
+  // UNIQUE site de correspondance jeton -> sens (voir schedule_logic.h).
+  if (strcmp(token, "auto") == 0)   return FiltrationMode::Auto;
+  if (strcmp(token, "manual") == 0) return FiltrationMode::Programme;
+  if (strcmp(token, "force") == 0)  return FiltrationMode::Marche;
+  if (strcmp(token, "off") == 0)    return FiltrationMode::Arret;
+  return FiltrationMode::Inconnu;
+}
+
+RunWindow effectiveRunWindow(ScheduleWindow base, bool boostActive, int nowMin) {
+  if (!boostActive) return RunWindow{base};
+  // Boost actif : créneau élargi jusqu'au prochain minuit (expiration exacte
+  // du Boost, cf. tickBoostExpiry). 1440, pas 0 : évite start==end à 00:00.
+  return RunWindow{ScheduleWindow{nowMin, 1440}};
+}
+
 ScheduleWindow computeAutoWindow(float tempC, float pivotHour) {
   if (tempC < 0) tempC = 0;
   float durationHours = tempC / 2.0f;
@@ -87,28 +104,32 @@ ScheduleWindow computeAutoWindow(float tempC, float pivotHour) {
   return { toMinutes(startHour), toMinutes(endHour) };
 }
 
-bool decideFiltrationRun(bool boostForce, const char* mode, bool forceOn, bool forceOff,
-                         bool haveTime, int nowMin, int startMin, int endMin,
+bool decideFiltrationRun(FiltrationMode mode, bool haveTime, int nowMin, int startMin, int endMin,
                          bool currentlyRunning) {
-  // feature-053 : le Mode Boost force la filtration en marche (turnover maximal),
-  // priorité MAXIMALE avant forceOn/forceOff/horaire.
-  if (boostForce) {
-    return true;
-  }
-  if (forceOn) {
-    return true;
-  } else if (forceOff) {
-    return false;
-  } else if (strcmp(mode, "manual") == 0 || strcmp(mode, "auto") == 0) {
-    if (haveTime) {
-      return isMinutesInRange(nowMin, startMin, endMin);
-    } else {
+  // feature-146 : quatre modes, chacun fait EXACTEMENT ce que son nom annonce.
+  // `startMin`/`endMin` sont déjà le créneau EFFECTIF (base, ou élargi par le
+  // Boost via effectiveRunWindow — résolu par l'appelant, schedule_logic.h).
+  // Switch EXHAUSTIF, SANS `default` : un mode non traité ne compile pas
+  // (-Wswitch), au lieu de tomber silencieusement dans un `return` par
+  // défaut — exactement le défaut qui a rendu "force" invisible avant ce lot.
+  switch (mode) {
+    case FiltrationMode::Auto:
+    case FiltrationMode::Programme:
       // Heure indisponible : on conserve l'état courant pour éviter un faux
       // start/stop pendant un OTA ou une perte RTC (condition pool-chemistry).
+      return haveTime ? isMinutesInRange(nowMin, startMin, endMin) : currentlyRunning;
+    case FiltrationMode::Marche:
+      return true;
+    case FiltrationMode::Arret:
+      return false;
+    case FiltrationMode::Inconnu:
+      // Fail-safe : état courant conservé plutôt qu'un start/stop sur un
+      // jeton non reconnu. ensureTimesValid() ramène normalement tout jeton
+      // inconnu à Auto en tête d'update() — ce cas protège une course entre
+      // lecture et coercition.
       return currentlyRunning;
-    }
   }
-  return false;
+  return currentlyRunning;  // inatteignable (switch exhaustif ci-dessus)
 }
 
 bool decideLightingOn(bool manualOverride, bool enabledFlag, bool scheduleEnabled,

@@ -9,6 +9,7 @@
 #include "ph_persist_logic.h"  // feature-084 : PhIntegralSnapshot (logique PURE)
 #include "regulation_defaults.h"  // feature-088 : valeurs d'usine de régulation (source UNIQUE)
 #include "time_to_target_logic.h"  // feature-096 : TttHistory (logique PURE)
+#include "schedule_logic.h"  // feature-146 : FiltrationMode (parseFiltrationModeFrom)
 
 // ==== Configuration des canaux PWM pompes ====
 // MOSFET IRLZ44N - PWM sur Gate, pins définis dans constants.h (PCB v2)
@@ -157,12 +158,25 @@ struct MqttConfig {
 struct FiltrationConfig {
   // feature-056 : le champ `enabled` a été absorbé par mqttCfg.installMode
   // (relais piloté ssi installMode == ManagedFiltration).
-  String mode = "auto"; // auto, manual, off
+  // feature-146 : quatre modes, jetons CONSERVÉS sur le fil (zéro migration
+  // NVS) — "auto", "manual" (= Programme), "force" (= Marche), "off" (=
+  // Arrêt). Correspondance UNIQUE dans parseFiltrationMode() (schedule_logic).
+  // L'« ordre direct » (forceOn/forceOff, minuteur de 4h) est SUPPRIMÉ : Marche
+  // et Arrêt durent jusqu'au prochain changement de mode, sans minuteur.
+  String mode = "auto";
   String start = "08:00";
   String end = "20:00";
-  bool forceOn = false;  // Forçage ON temporaire (non persisté, remis à false au redémarrage)
-  bool forceOff = false; // Forçage OFF temporaire (non persisté, remis à false au redémarrage)
 };
+
+// feature-146 (revue code-reviewer) : SITE UNIQUE de lecture d'un mode de
+// filtration depuis une String — remplace le triplet recopié à 9 sites
+// (`String tmp = s; tmp.toLowerCase(); parseFiltrationMode(tmp.c_str())`), qui
+// allouait une String neuve à CHAQUE tour sur le chemin de filtration.update()
+// (ADR-0082 : pas d'allocation périodique neuve). SANS allocation : buffer de
+// pile borné au plus long jeton reconnu ("manual", 6+NUL=7 ; marge à 8, comme
+// `PendingSchedule::basisMode`) — un jeton plus long est tronqué puis ne
+// correspond à rien de connu, donc résout en `Inconnu` (fail-safe, sans crash).
+FiltrationMode parseFiltrationModeFrom(const String& raw);
 
 struct LightingConfig {
   bool featureEnabled = true;          // Fonction éclairage activée/désactivée (masque l'UI)

@@ -967,25 +967,24 @@ static void handleSaveConfig(AsyncWebServerRequest* request, uint8_t* data, size
   bool filtrationConfigChanged = false;
   // feature-056 : filtration_enabled retiré (absorbé par install_mode).
   String prevFiltrationMode = filtrationCfg.mode;
-  bool scheduleChanged = false;
-  if (!doc["filtration_mode"].isNull()) { filtrationCfg.mode = doc["filtration_mode"].as<String>(); scheduleChanged = true; filtrationConfigChanged = true; }
-  if (!doc["filtration_start"].isNull()) { filtrationCfg.start = doc["filtration_start"].as<String>(); scheduleChanged = true; filtrationConfigChanged = true; }
-  if (!doc["filtration_end"].isNull()) { filtrationCfg.end = doc["filtration_end"].as<String>(); scheduleChanged = true; filtrationConfigChanged = true; }
-  // Quand le mode ou les horaires changent, effacer les overrides manuels pour que le planning prenne effet immédiatement
-  if (scheduleChanged && doc["filtration_force_on"].isNull() && doc["filtration_force_off"].isNull()) {
-    filtrationCfg.forceOn = false;
-    filtrationCfg.forceOff = false;
+  // feature-146 : validation SERVEUR du mode — absente avant ce lot. Un jeton
+  // non reconnu par parseFiltrationMode() (UNIQUE site de correspondance) est
+  // REFUSÉ (mode inchangé, warning), sans code HTTP d'erreur nouveau — le
+  // reste de /save-config continue de s'appliquer. (revue code-reviewer #6) :
+  // stocke le jeton CANONIQUE minuscule, comme le fait déjà le chemin MQTT —
+  // supprime à la racine toute divergence de casse entre les lectures.
+  if (!doc["filtration_mode"].isNull()) {
+    String newMode = doc["filtration_mode"].as<String>();
+    newMode.toLowerCase();
+    if (parseFiltrationModeFrom(newMode) != FiltrationMode::Inconnu) {
+      filtrationCfg.mode = newMode;
+      filtrationConfigChanged = true;
+    } else {
+      systemLogger.warning("[Filtration] Mode invalide ignoré (HTTP /save-config): " + newMode);
+    }
   }
-  if (!doc["filtration_force_on"].isNull()) {
-    filtrationCfg.forceOn = doc["filtration_force_on"].as<bool>();
-    if (filtrationCfg.forceOn) filtrationCfg.forceOff = false;
-    filtrationConfigChanged = true;
-  }
-  if (!doc["filtration_force_off"].isNull()) {
-    filtrationCfg.forceOff = doc["filtration_force_off"].as<bool>();
-    if (filtrationCfg.forceOff) filtrationCfg.forceOn = false;
-    filtrationConfigChanged = true;
-  }
+  if (!doc["filtration_start"].isNull()) { filtrationCfg.start = doc["filtration_start"].as<String>(); filtrationConfigChanged = true; }
+  if (!doc["filtration_end"].isNull()) { filtrationCfg.end = doc["filtration_end"].as<String>(); filtrationConfigChanged = true; }
   if (!doc["max_ph_ml_per_day"].isNull()) safetyLimits.maxPhMlPerDay = doc["max_ph_ml_per_day"];
   if (!doc["max_chlorine_ml_per_day"].isNull()) safetyLimits.maxChlorineMlPerDay = doc["max_chlorine_ml_per_day"];
   if (!doc["lighting_feature_enabled"].isNull()) lightingCfg.featureEnabled = doc["lighting_feature_enabled"];
@@ -1136,8 +1135,8 @@ static void handleSaveConfig(AsyncWebServerRequest* request, uint8_t* data, size
   // (transition depuis un autre mode). Si le mode était déjà "auto", on ne
   // recalcule pas pour ne pas écraser les horaires que l'utilisateur vient
   // d'enregistrer. Le recalcul périodique se fait dans filtration.update().
-  bool modeChangedToAuto = filtrationCfg.mode.equalsIgnoreCase("auto") &&
-                           !prevFiltrationMode.equalsIgnoreCase("auto");
+  bool modeChangedToAuto = parseFiltrationModeFrom(filtrationCfg.mode) == FiltrationMode::Auto &&
+                           parseFiltrationModeFrom(prevFiltrationMode) != FiltrationMode::Auto;
   if (modeChangedToAuto) {
     filtration.computeAutoSchedule();
   }

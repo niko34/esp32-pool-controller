@@ -2,6 +2,70 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [2.63.0] - 2026-10-09
+
+> **Ce qui change pour vous** : changer le mode de filtration **s'applique
+> immédiatement**, quelle que soit la voie utilisée (page web, Home Assistant,
+> MQTT) — un défaut constaté en production le 2026-10-09 faisait qu'un
+> changement de mode restait parfois sans effet. Les boutons **Démarrer** /
+> **Arrêter** changent désormais directement le mode (**Marche** / **Arrêt**) :
+> il n'y a plus de retour automatique au bout de 4 h, ils durent jusqu'à ce que
+> vous changiez de mode vous-même — y compris après un redémarrage de
+> l'appareil. ⚠️ Pensez-y en hivernage ou en maintenance : un appareil laissé
+> en **Arrêt** le reste tant que vous ne changez pas le mode. Dans Home
+> Assistant, le choix **« Manuel »**, qui arrêtait la pompe par erreur, devient
+> **« Marche »** et la fait tourner — c'est la correction du défaut.
+
+### Firmware
+- **Régulation / filtration (feature-146)** : retrait de l'« ordre direct »
+  de filtration (`forceOn`/`forceOff`, minuteur de 4 h) qui coexistait avec le
+  mode affiché et pouvait rendre un changement de mode sans effet (défaut de
+  production du 2026-10-09 : un passage en mode Auto, dans le créneau, sans
+  démarrage de la pompe). **Le mode affiché devient la seule autorité**
+  ([ADR-0093](docs/adr/0093-le-mode-de-filtration-est-la-seule-autorite.md)) :
+  quatre modes désormais traités explicitement (Auto, Programme, Marche,
+  Arrêt), jetons protocole **inchangés** sur le fil (`auto`/`manual`/`force`/`off`,
+  zéro migration NVS). Marche et Arrêt durent jusqu'au prochain changement de
+  mode, **sans expiration** — y compris après un redémarrage.
+- **Mode Boost (feature-053, feature-146)** : le Boost **modifie le créneau**
+  de filtration (étendu jusqu'à minuit) au lieu de le décider par un chemin
+  dédié. Disponible dans tous les modes de filtration **sauf Arrêt** (pas de
+  circulation, pas de surchloration possible) ; passer en mode Arrêt pendant
+  un Boost actif l'annule. Aucun plafond de dosage n'est desserré par cette
+  évolution (validé `pool-chemistry`).
+- **Sécurité (feature-146)** : correction d'un défaut préexistant où la
+  combinaison Boost actif + mode Arrêt pouvait faire annoncer une présence
+  d'eau au dosage alors que le relais de filtration restait réellement ouvert
+  (deux sources de vérité divergentes). Le relais a désormais une source
+  unique.
+- **Migration de configuration** : un appareil qui redémarre avec le mode
+  historique `force` (anciennement arrêté par erreur, voir ci-dessus) passe
+  désormais en mode **Marche** (pompe tournante) — alerte MQTT
+  `filtration_mode_force_migrated` au premier démarrage concerné.
+- **MQTT / Home Assistant** : libellés du select « Mode Filtration » changés
+  en **Auto / Programme / Marche / Arrêt** (étaient Auto / Programmation /
+  Manuel / Désactivé) ; le switch `{base}/filtration/set` pilote désormais le
+  mode (ON → Marche, OFF → Arrêt) au lieu d'un ordre direct séparé. **Rupture
+  assumée** pour une automatisation Home Assistant qui appellerait
+  `select.select_option` avec un ancien libellé français — celles qui
+  publient le jeton brut sur MQTT ne sont pas affectées.
+
+### Documentation
+- Nouvel [ADR-0093](docs/adr/0093-le-mode-de-filtration-est-la-seule-autorite.md)
+  (« Le mode de filtration est la seule autorité ») — remplace
+  [ADR-0025](docs/adr/0025-mode-boost.md) (Mode Boost), dont le statut passe à
+  « Superseded by ADR-0093 ».
+- `docs/subsystems/filtration.md`, `docs/subsystems/pump-controller.md`,
+  `docs/subsystems/ws-manager.md`, `docs/features/page-filtration.md`,
+  `docs/API.md`, `docs/MQTT.md`, `docs/test-on-target.md` : mis à jour pour
+  les quatre modes, le retrait de l'ordre direct et le Boost en modificateur
+  de créneau.
+- `docs/user/src/guide-utilisation.html` : les quatre modes de filtration
+  décrits en langage simple (capture d'écran de la page Filtration à refaire
+  avant la prochaine génération de PDF).
+
+---
+
 ## [2.62.0] - 2026-10-08
 
 > **Ce qui change pour vous** : la correction de l'eau (pH, chlore) reprend

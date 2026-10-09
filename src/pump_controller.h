@@ -1307,10 +1307,10 @@ public:
   float getPhSustainableMlPerMin() const;
 
   // Maximum journalier DÉLIVRABLE (mL) = soutenable × minutes PROGRAMMÉES de
-  // filtration (scheduledMinutesToday, modes `auto` et `manual` — les deux
-  // suivent la plage start/end, cf. decideFiltrationRun). NAN si le soutenable
-  // est indisponible ou si le planning ne fait pas foi (mode `off`, plage
-  // invalide) — jamais de maximum inventé.
+  // filtration (scheduledMinutesToday, modes Auto et Programme — suivent la
+  // plage start/end, cf. decideFiltrationRun ; Marche = 1440). NAN si le
+  // soutenable est indisponible ou si le planning ne fait pas foi (mode
+  // Arrêt, plage invalide) — jamais de maximum inventé (feature-146).
   float getPhDailyMaxMl() const;
 
   // La régulation pH est-elle BORNÉE par la limite horaire EN CE MOMENT ?

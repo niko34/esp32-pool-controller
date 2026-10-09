@@ -43,28 +43,37 @@ void FiltrationManager::begin() {
   pinMode(kFiltrationRelayPin, OUTPUT);
   ensureTimesValid();
 
+  // feature-146 : migration "force" → Marche. Avant ce lot, ce jeton tombait
+  // dans le `return false` par défaut de l'ancien decideFiltrationRun (pompe
+  // ARRÊTÉE, un bug) ; il désigne désormais le mode Marche (pompe TOURNANTE)
+  // — changement de comportement réel au boot, à signaler. outQueue n'existe
+  // pas encore ici (avant mqttManager.begin()) : l'alerte MQTT est différée,
+  // publiée au premier tour d'update() où MQTT est connecté (même patron que
+  // _scheduleRepairAlertPending ci-dessous).
+  FiltrationMode bootMode = parseFiltrationModeFrom(filtrationCfg.mode);
+  if (bootMode == FiltrationMode::Marche) {
+    systemLogger.warning("[Filtration] Mode 'force' au démarrage : filtration désormais ACTIVE (mode Marche)");
+    _forceModeMigrationAlertPending = true;
+  }
+
   // Calculer et appliquer l'état initial du relais immédiatement.
   // Pré-requis satisfaits dans main.cpp : config et heure RTC chargées avant cet appel.
   // Cela évite une coupure prolongée de la pompe de filtration au reboot :
   // sans ce calcul, le relais resterait LOW pendant tout le setup (WiFi inclus, jusqu'à ~18s)
   // avant que filtration.update() dans loop() ne le remette dans son état correct.
   // feature-056 : le relais n'est piloté que dans le mode ManagedFiltration.
+  // feature-146 : la décision du boot délègue à decideFiltrationRun (logique
+  // PURE, ADR-0017) — le cas "force" qui laissait la pompe arrêtée est
+  // désormais inatteignable. Créneau de BASE (le Boost n'est jamais considéré
+  // au tout premier tour : hors périmètre de ce lot, comportement inchangé).
   bool initialState = false;
   if (mqttCfg.installMode == InstallMode::ManagedFiltration) {
-    String mode = filtrationCfg.mode;
-    mode.toLowerCase();
-    if (mode != "off") {
-      if (filtrationCfg.forceOn) {
-        initialState = true;
-      } else if (!filtrationCfg.forceOff && (mode == "manual" || mode == "auto")) {
-        int nowMinutes = 0;
-        if (getCurrentMinutesOfDay(nowMinutes)) {
-          int startMin = timeStringToMinutes(filtrationCfg.start);
-          int endMin = timeStringToMinutes(filtrationCfg.end);
-          initialState = isMinutesInRange(nowMinutes, startMin, endMin);
-        }
-      }
-    }
+    int nowMinutes = 0;
+    bool haveTime = getCurrentMinutesOfDay(nowMinutes);
+    int startMin = timeStringToMinutes(filtrationCfg.start);
+    int endMin = timeStringToMinutes(filtrationCfg.end);
+    initialState = decideFiltrationRun(bootMode, haveTime, nowMinutes, startMin, endMin,
+                                        /*currentlyRunning=*/false);
   }
 
   digitalWrite(kFiltrationRelayPin, initialState ? HIGH : LOW);
@@ -79,14 +88,17 @@ void FiltrationManager::begin() {
 }
 
 void FiltrationManager::ensureTimesValid() {
-  String modeLower = filtrationCfg.mode;
-  modeLower.toLowerCase();
-  if (modeLower != "auto" && modeLower != "manual" && modeLower != "off" && modeLower != "force") {
+  // feature-146 (revue code-reviewer) : parseFiltrationModeFrom (config.h),
+  // SANS allocation — remplace l'ex-`String modeLower` recopiée.
+  FiltrationMode mode = parseFiltrationModeFrom(filtrationCfg.mode);
+  if (mode == FiltrationMode::Inconnu) {
+    // feature-146 (condition #3 du gate) : cesse d'être silencieux — un jeton
+    // non reconnu (config corrompue, client legacy) est désormais journalisé.
+    systemLogger.warning("[Filtration] Mode inconnu (\"" + filtrationCfg.mode + "\") — repli sur Auto");
     filtrationCfg.mode = "auto";
-    // Corrections mineures (revue P2) : `modeLower` ne doit pas rester périmée
-    // sur cette branche — le check C7 plus bas la réutilise telle quelle
-    // (évite une 2e allocation String par tour de update()).
-    modeLower = "auto";
+    // Corrections mineures (revue P2) : `mode` ne doit pas rester périmé sur
+    // cette branche — le check C7 plus bas le réutilise tel quel.
+    mode = FiltrationMode::Auto;
   }
 
   auto normalize = [](String value, const char* fallback) {
@@ -108,7 +120,7 @@ void FiltrationManager::ensureTimesValid() {
   // manual une plage nulle peut être VOULUE par l'utilisateur, on ne la
   // touche pas. Auto-limitant : une fois repliée sur 08:00-20:00, la
   // condition est fausse au tour suivant — aucune boucle de réparation.
-  if (modeLower == "auto" && filtrationCfg.start == filtrationCfg.end) {
+  if (mode == FiltrationMode::Auto && filtrationCfg.start == filtrationCfg.end) {
     filtrationCfg.start = "08:00";
     filtrationCfg.end = "20:00";
     // Le critical part immédiatement, y compris au boot (systemLogger est
@@ -129,7 +141,7 @@ void FiltrationManager::ensureTimesValid() {
 // chemin emprunté pendant la marche : celui-là accumule dans
 // sampleCycleTemperature() et fige dans writePendingSchedule() à l'arrêt.
 void FiltrationManager::computeAutoSchedule() {
-  if (!filtrationCfg.mode.equalsIgnoreCase("auto")) return;
+  if (parseFiltrationModeFrom(filtrationCfg.mode) != FiltrationMode::Auto) return;
 
   // La garde de circulation évite de figer un planning sur l'eau stagnante
   // des tuyauteries dès le premier appel après un changement de mode.
@@ -212,27 +224,33 @@ bool FiltrationManager::isMinutesInRange(int now, int start, int end) {
   return ::isMinutesInRange(now, start, end);
 }
 
-// feature-086 : durée PROGRAMMÉE de filtration du jour (minutes), −1 = indisponible.
-// Le prédicat de mode est ALIGNÉ sur decideFiltrationRun (schedule_logic.cpp :
-// `strcmp(mode, "manual") == 0 || strcmp(mode, "auto") == 0`) : dans ce projet,
-// les modes `auto` ET `manual` suivent tous deux la plage start/end — `manual`
-// signifie « horaires fixés par l'utilisateur », pas « sans planning ». Toute
-// évolution de decideFiltrationRun doit être répercutée ici, sinon le maximum
-// journalier annoncé divergerait silencieusement de la filtration réelle.
-// `off`/`force` (hors planning) et plage invalide → −1 : rien n'est inventé.
-// NUANCE ASSUMÉE : forceOn/forceOff/boost peuvent faire tourner la filtration
-// HORS plage ; le maximum journalier reste une capacité ANNONCÉE fondée sur le
-// planning (capacité stable), pas un décompte des minutes réelles.
+// feature-086 (révisé feature-146) : durée PROGRAMMÉE de filtration du jour
+// (minutes), −1 = indisponible. Auto et Programme suivent tous deux la plage
+// start/end (même prédicat que decideFiltrationRun, schedule_logic.cpp) —
+// Programme signifie « horaires fixés par l'utilisateur », pas « sans
+// planning ». Marche = 1440 (gate #4) : AFFICHAGE SEUL, la pompe tourne en
+// permanence tant que l'utilisateur ne change pas de mode — ne borne AUCUN
+// dosage (l'horizon de dosage réparti suit la même règle indépendamment, cf.
+// pump_controller.cpp filtrationDosingHorizonMinutes). Arrêt (hors planning)
+// et plage invalide → −1 : rien n'est inventé.
 // Le calcul délègue au parseur PUR ::timeStringToMinutes (schedule_logic) — la
 // méthode privée homonyme n'est pas const, on appelle la fonction libre.
 // La plage [start, end) est un intervalle fermé à gauche, ouvert à droite,
 // même sémantique qu'isMinutesInRange (schedule_logic.cpp) — sa durée est
 // exactement end − start (modulo minuit).
 int FiltrationManager::scheduledMinutesToday() const {
-  // Comparaison EXACTE (strcmp), comme decideFiltrationRun : un mode « Auto »
-  // avec majuscule n'y suit pas le planning, il ne doit pas en annoncer un ici.
-  const char* mode = filtrationCfg.mode.c_str();
-  if (strcmp(mode, "auto") != 0 && strcmp(mode, "manual") != 0) return -1;
+  // feature-146, gate pool-chemistry (2e passage) : le mode est minusculisé
+  // AVANT d'être interprété, via parseFiltrationModeFrom (SANS allocation),
+  // exactement comme begin() et update(). Le commentaire précédent affirmait
+  // l'inverse « comparaison EXACTE, cf. decideFiltrationRun » : c'était FAUX,
+  // cette fonction recevant déjà la forme minuscule ailleurs. L'écart faisait
+  // qu'un jeton « Force » rendait -1 ici et 1440-nowMin dans
+  // filtrationDosingHorizonMinutes() le temps qu'ensureTimesValid() le
+  // coerce. DEUX lectures du même état avec DEUX conventions : c'est
+  // précisément la classe de défaut que ce lot supprime.
+  const FiltrationMode mode = parseFiltrationModeFrom(filtrationCfg.mode);
+  if (mode == FiltrationMode::Marche) return 1440;
+  if (mode != FiltrationMode::Auto && mode != FiltrationMode::Programme) return -1;
   const int startMin = ::timeStringToMinutes(filtrationCfg.start.c_str());
   const int endMin = ::timeStringToMinutes(filtrationCfg.end.c_str());
   // Plage illisible ou invalide (start == end = plage nulle côté filtration,
@@ -251,6 +269,14 @@ void FiltrationManager::update() {
     mqttManager.publishAlert("filtration_schedule_invalid", "Plage auto nulle : repli 08:00-20:00");
     _scheduleRepairAlertPending = false;
   }
+  // feature-146 (condition #6 du gate) : migration "force" → Marche détectée
+  // au boot (begin()) — alerte différée, même raison que ci-dessus (outQueue
+  // pas encore créée à begin()).
+  if (_forceModeMigrationAlertPending && mqttManager.isConnected()) {
+    mqttManager.publishAlert("filtration_mode_force_migrated",
+        "Mode 'force' : filtration désormais ACTIVE (mode Marche), et non plus arrêtée");
+    _forceModeMigrationAlertPending = false;
+  }
 
   // feature-056 : le relais filtration n'est piloté QUE dans le mode
   // « PoolController pilote la filtration » (ManagedFiltration). Dans les modes
@@ -259,11 +285,11 @@ void FiltrationManager::update() {
   // warning throttlé. Le timer de stabilisation lié à la filtration est de facto
   // désactivé (le bloc d'arming ci-dessous n'est jamais atteint).
   if (mqttCfg.installMode != InstallMode::ManagedFiltration) {
-    if (filtrationCfg.forceOn || filtrationCfg.forceOff || isBoostActive(time(nullptr))) {
+    if (isBoostActive(time(nullptr))) {
       static unsigned long sLastForceWarnMs = 0;
       unsigned long nowMs = millis();
       if (sLastForceWarnMs == 0 || nowMs - sLastForceWarnMs >= kMutexTimeoutWarnThrottleMs) {
-        systemLogger.warning("[Filtration] Forçage ignoré : relais non piloté dans ce mode d'installation");
+        systemLogger.warning("[Filtration] Boost ignoré : relais non piloté dans ce mode d'installation");
         sLastForceWarnMs = nowMs;
       }
     }
@@ -279,31 +305,6 @@ void FiltrationManager::update() {
     return;
   }
 
-  // Expiration des forcages après 4 heures (sécurité si l'utilisateur oublie de désactiver)
-  constexpr unsigned long kForceTimeoutMs = 4UL * 3600000UL;
-
-  if (filtrationCfg.forceOn) {
-    if (state.forceOnStartMs == 0) state.forceOnStartMs = millis();
-    if (millis() - state.forceOnStartMs >= kForceTimeoutMs) {
-      filtrationCfg.forceOn = false;
-      state.forceOnStartMs = 0;
-      systemLogger.warning("ForceOn expiré (timeout 4h), retour au mode normal");
-    }
-  } else {
-    state.forceOnStartMs = 0;
-  }
-
-  if (filtrationCfg.forceOff) {
-    if (state.forceOffStartMs == 0) state.forceOffStartMs = millis();
-    if (millis() - state.forceOffStartMs >= kForceTimeoutMs) {
-      filtrationCfg.forceOff = false;
-      state.forceOffStartMs = 0;
-      systemLogger.warning("ForceOff expiré (timeout 4h), retour au mode normal");
-    }
-  } else {
-    state.forceOffStartMs = 0;
-  }
-
   ensureTimesValid();
   int nowMinutes = 0;
   bool haveTime = getCurrentMinutesOfDay(nowMinutes);
@@ -313,19 +314,53 @@ void FiltrationManager::update() {
   // tour entier doit lire UN SEUL planning (le promu, s'il y en a un).
   promotePendingScheduleIfDue(haveTime);
 
-  String mode = filtrationCfg.mode;
-  mode.toLowerCase();
+  FiltrationMode mode = parseFiltrationModeFrom(filtrationCfg.mode);
+  if (mode == FiltrationMode::Inconnu) {
+    // feature-146 (condition #3 du gate) : ensureTimesValid() ci-dessus vient
+    // de ramener tout jeton inconnu à Auto — l'atteindre ICI est anormal
+    // (course entre lecture et coercition, config corrompue entre-temps).
+    // `critical` (pas `warning`) ET throttlé : un signal fort, mais pas un
+    // déni de service du journal si la course se répète chaque tour.
+    unsigned long nowMs = millis();
+    if (_lastUnknownModeLogMs == 0 || nowMs - _lastUnknownModeLogMs >= kMutexTimeoutWarnThrottleMs) {
+      systemLogger.critical("[Filtration] Mode inconnu (\"" + filtrationCfg.mode + "\") après coercition — état courant conservé");
+      _lastUnknownModeLogMs = nowMs;
+    }
+  }
 
   int startMin = timeStringToMinutes(filtrationCfg.start);
   int endMin = timeStringToMinutes(filtrationCfg.end);
 
-  // Décision marche/arrêt (logique pure). `mode` est déjà en minuscules.
-  // feature-053 : le Mode Boost force la filtration (turnover maximal) via un
-  // chemin DÉDIÉ, prioritaire et indépendant du forceOn/kForceTimeoutMs.
-  bool boostForce = isBoostActive(time(nullptr));
-  bool runTarget = decideFiltrationRun(boostForce, mode.c_str(), filtrationCfg.forceOn,
-                                       filtrationCfg.forceOff, haveTime,
-                                       nowMinutes, startMin, endMin,
+  // feature-146 (2′, gate pool-chemistry) : passer en mode Arrêt EFFACE le
+  // Boost en cours (pas seulement « ignoré ») — sinon un retour ultérieur en
+  // mode Marche/Auto/Programme réélargirait le créneau et relèverait la
+  // consigne ORP/le plafond chlore tout seul (isBoostActive() est lu
+  // DIRECTEMENT par dosing_logic.cpp, hors de cette décision filtration).
+  time_t nowEpoch = time(nullptr);
+  if (isBoostActive(nowEpoch) && mode == FiltrationMode::Arret) {
+    stopBoost();
+    // (revue code-reviewer #4) : sans ce publish, le topic retenu HA reste à
+    // ON après l'annulation — le WebSocket resynchronise (requestConfigBroadcast
+    // ailleurs), HA non, tant que personne ne rappelle boost/set.
+    mqttManager.publishBoostState();
+    systemLogger.warning("[Filtration] Boost annulé : passage en mode Arrêt");
+  }
+  bool boostActive = isBoostActive(nowEpoch);
+
+  // Créneau EFFECTIF (Boost = nowMin..minuit) : ne sert QU'À la décision qui
+  // suit. Tous les autres consommateurs (échantillonnage de température,
+  // planning annoncé, horizon de dosage réparti) restent sur le créneau de
+  // BASE ci-dessus (ADR-0093) — `rw` n'est utilisé nulle part ailleurs.
+  RunWindow rw = effectiveRunWindow(ScheduleWindow{startMin, endMin}, boostActive, nowMinutes);
+
+  // Décision marche/arrêt (logique pure, ADR-0017). feature-146 : le Mode
+  // Boost n'est plus une priorité à part dans la décision — il MODIFIE le
+  // créneau (rw ci-dessus), consulté par TOUS les modes indifféremment (sans
+  // effet pratique hors Auto/Programme : Marche ignore le créneau, et le
+  // Boost ne peut pas être actif en mode Arrêt, cf. startBoost()/l'annulation
+  // ci-dessus).
+  bool runTarget = decideFiltrationRun(mode, haveTime, nowMinutes,
+                                       rw.w.startMin, rw.w.endMin,
                                        state.running);
 
   bool wasRunning = state.running;
@@ -371,7 +406,13 @@ void FiltrationManager::update() {
     state.running = runTarget;
   }
 
-  bool relayShouldBeOn = state.running && (filtrationCfg.mode != "off");
+  // feature-146 (condition #1 BLOQUANTE du gate) : SOURCE UNIQUE. L'ancien
+  // terme `&& (filtrationCfg.mode != "off")` lisait le mode BRUT alors que la
+  // décision ci-dessus lit le mode MINUSCULISÉ, et relisait filtrationCfg
+  // APRÈS la décision — une course réelle avec les callbacks web/MQTT du même
+  // tour de loop. `state.running` est déjà le résultat de decideFiltrationRun
+  // (mode Arrêt y renvoie false) : le second terme était redondant ET faux.
+  bool relayShouldBeOn = state.running;
   if (relayShouldBeOn != relayState) {
     digitalWrite(kFiltrationRelayPin, relayShouldBeOn ? HIGH : LOW);
     relayState = relayShouldBeOn;
@@ -399,7 +440,9 @@ void FiltrationManager::sampleCycleTemperature(uint32_t nowMs, bool haveTime, in
   _lastTempSampleMs = nowMs;
 
   // C2 : les TROIS conditions sont cumulatives (voir schedule_logic.h) — purge
-  // (eau renouvelée), en plage (ferme un forceOn nocturne), sonde vivante.
+  // (eau renouvelée), en plage de BASE (ferme un mode Marche nocturne, qui ne
+  // doit pas polluer la moyenne — ADR-0093 : jamais le créneau élargi par le
+  // Boost ici), sonde vivante.
   bool inSchedule = haveTime && isMinutesInRange(nowMin, startMin, endMin);
   bool eligible = isSampleEligible(measureValidity.isCirculationSettled(), inSchedule,
                                     sensors.isTemperatureFrozen());
@@ -434,7 +477,7 @@ void FiltrationManager::writePendingSchedule(bool haveTime) {
   // (NotAuto) — bruit de journal pur, et une raison d'armer
   // _haveRepresentativeMeasure à tort (le drapeau ne doit suivre que des
   // mesures faites EN mode auto).
-  if (!filtrationCfg.mode.equalsIgnoreCase("auto")) return;
+  if (parseFiltrationModeFrom(filtrationCfg.mode) != FiltrationMode::Auto) return;
 
   // M3 (revue) : `computedOnDate` vient de time()/localtime_r plus bas. Sans
   // heure valide on obtiendrait "19700101" ; shouldRolloverByDate lirait ça
@@ -487,8 +530,8 @@ void FiltrationManager::writePendingSchedule(bool haveTime) {
       // drapeau resterait `false` indéfiniment, bootstrapAllowed resterait
       // `true`, et le premier cycle produisant une fenêtre DIFFÉRENTE
       // pourrait le faire sur un seul échantillon (cycle tronqué à 12 min par
-      // un forceOff) — le critère d'acceptation « un cycle écourté ne pilote
-      // pas le lendemain » tombait.
+      // un passage en mode Arrêt) — le critère d'acceptation « un cycle
+      // écourté ne pilote pas le lendemain » tombait.
       _haveRepresentativeMeasure = true;
 
       ScheduleWindow w = computeAutoWindow(t, kFiltrationPivotHour);
@@ -582,7 +625,7 @@ void FiltrationManager::promotePendingScheduleIfDue(bool haveTime) {
   bool basisUnchanged = (filtrationCfg.start == _pending.basisStart) &&
                         (filtrationCfg.end == _pending.basisEnd) &&
                         (filtrationCfg.mode == _pending.basisMode);
-  bool modeIsAuto = filtrationCfg.mode.equalsIgnoreCase("auto");
+  bool modeIsAuto = parseFiltrationModeFrom(filtrationCfg.mode) == FiltrationMode::Auto;
 
   PromotionVerdict verdict = decideSchedulePromotion(_pending.valid, newDay, alreadyPromotedToday,
                                                      basisUnchanged, modeIsAuto, state.running);
@@ -635,7 +678,7 @@ void FiltrationManager::promotePendingScheduleIfDue(bool haveTime) {
     case PromotionVerdict::PumpRunning: {
       // Différée, JAMAIS sautée : sans ce throttle, le journal recevrait
       // cette ligne à chaque tour de loop tant que la pompe tourne (heures,
-      // scénario forceOn manuel à cheval sur minuit).
+      // scénario mode Marche à cheval sur minuit).
       unsigned long nowMs = millis();
       if (_lastPendingDeferredLogMs == 0 ||
           nowMs - _lastPendingDeferredLogMs >= kMutexTimeoutWarnThrottleMs) {

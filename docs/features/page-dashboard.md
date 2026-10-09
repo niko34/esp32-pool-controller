@@ -485,8 +485,8 @@ Le volume journalier de la Chloration de secours n'est plus la constante `kRescu
 
 | Bouton | Endpoint HTTP |
 |--------|--------------|
-| `#detail-filtration-start` | `POST /filtration/on` (ou équivalent) |
-| `#detail-filtration-stop` | `POST /filtration/off` |
+| `#detail-filtration-start` | `POST /save-config` `{filtration_mode: "force"}` — change le MODE (Marche), feature-146 |
+| `#detail-filtration-stop` | `POST /save-config` `{filtration_mode: "off"}` — change le MODE (Arrêt), feature-146 |
 | `#detail-lighting-on` | `POST /lighting/on` |
 | `#detail-lighting-off` | `POST /lighting/off` |
 | Boost — Activer | `POST /boost/start` (toast rappel baignade) |

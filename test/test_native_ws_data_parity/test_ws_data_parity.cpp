@@ -140,10 +140,6 @@ static const WsOnlyKey kWsOnlyLive[] = {
    "Detail de composition du boost en cours, mis a jour par la reponse de commande (app.js l.5312 ecrit directement dans latestSensorData) : aucune route HTTP ne le sert."},
   {"boost_chlorine_boosted",
    "Detail de composition du boost en cours (volet chlore), meme mecanique d'ecriture directe par la reponse de commande : aucune route HTTP ne le sert."},
-  {"filtration_force_on",
-   "Echo de la commande de forcage marche : ECRIT par le client (POST /set-config) et jamais relu — aucune route HTTP ne le renvoie, la trame sert de confirmation d'etat."},
-  {"filtration_force_off",
-   "Echo de la commande de forcage arret : ecrit par le client (POST /set-config) et jamais relu, meme mecanique que filtration_force_on."},
 };
 static const size_t kWsOnlyLiveCount = sizeof(kWsOnlyLive) / sizeof(kWsOnlyLive[0]);
 
@@ -151,8 +147,11 @@ static const size_t kWsOnlyLiveCount = sizeof(kWsOnlyLive) / sizeof(kWsOnlyLive[
 // ne doit JAMAIS augmenter — une clé neuve de la trame va dans /data. Abaissé
 // 18 → 16 le 2026-10-05 (feature-140) : `filtration_state_source` et
 // `filtration_ext_on` ont migré vers kDataOnly (ADR-0086, financement du
-// budget WS) — la dette inventoriée se réduit, le plafond la suit.
-static const size_t kWsOnlyLiveCeiling = 16;
+// budget WS) — la dette inventoriée se réduit, le plafond la suit. Abaissé
+// 16 → 14 le 2026-10-09 (feature-146) : `filtration_force_on`/`filtration_force_off`
+// ont disparu du firmware avec l'ordre direct — il n'y a plus d'écho WS à
+// déclarer, l'exception est retirée plutôt que neutralisée.
+static const size_t kWsOnlyLiveCeiling = 14;
 
 // ---------------------------------------------------------------------------
 // CATÉGORIE 2 — clés DUAL-SOURCÉES : absentes de /data, mais servies par une

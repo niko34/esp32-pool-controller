@@ -6,7 +6,28 @@
 
 ## Rôle
 
-Pilote le relais de la pompe de filtration. Trois modes de **planification** coexistent : `auto` (horaire calculé selon température de l'eau), `manual` (horaire fixe), `off` (arrêt permanent). Un **forçage temporaire** (`force_on` / `force_off`) permet de déroger à la planification sans modifier la config ; il est perdu au redémarrage.
+Pilote le relais de la pompe de filtration. **Le mode affiché est la seule autorité** qui
+décide si la pompe tourne (feature-146, [ADR-0093](../adr/0093-le-mode-de-filtration-est-la-seule-autorite.md)) :
+
+| Mode | Jeton protocole (inchangé) | Comportement |
+|---|---|---|
+| **Auto** | `auto` | créneau calculé depuis la température de l'eau, recalculé quand elle change (planning figé à l'arrêt du cycle, promu à minuit — voir plus bas) |
+| **Programme** | `manual` | créneau fixé par l'utilisateur, **jamais** recalculé |
+| **Marche** | `force` | la pompe tourne — **sans expiration**, jusqu'au prochain changement de mode |
+| **Arrêt** | `off` | la pompe est arrêtée — **sans expiration**, jusqu'au prochain changement de mode |
+
+Les jetons sur le fil (NVS/MQTT/HTTP) sont **conservés tels quels** (zéro migration) : la
+correspondance jeton → sens vit **exclusivement** dans `parseFiltrationMode()`
+([`src/schedule_logic.h`](../../src/schedule_logic.h)/`.cpp`) — c'est le seul endroit du code
+métier qui compare un littéral de mode.
+
+⚠️ **L'« ordre direct » (`forceOn`/`forceOff`, minuteur 4 h) est SUPPRIMÉ** (feature-146,
+v2.63.0). Avant ce lot, un second système de décision, évalué **avant** le mode dans
+`decideFiltrationRun()`, pouvait rendre un changement de mode sans effet (le mode `auto` ne
+pouvait rien démarrer tant qu'un `forceOff` MQTT restait actif — défaut de production du
+2026-10-09, racine de ce lot). Les champs `FiltrationConfig::forceOn/forceOff` et
+`FiltrationRuntime::forceOnStartMs/forceOffStartMs` n'existent plus. Les boutons **Démarrer** /
+**Arrêter** de l'interface changent désormais le **mode** (→ Marche / → Arrêt), rien d'autre.
 
 > ⚠️ **Le pilotage du relais est conditionné au mode d'installation** (feature-056, [ADR-0026](../adr/0026-mode-installation.md)). Le relais n'est piloté **que** si `mqttCfg.installMode == InstallMode::ManagedFiltration` (`managed`). En `powered` (contrôleur alimenté par le circuit de filtration) et `external` (filtration tierce), `update()` **retourne de façon anticipée** ([`filtration.cpp:125`](../../src/filtration.cpp:125)) : aucune commande relais, planification masquée côté UI. Voir [Mode d'installation et présence d'eau](#mode-dinstallation-et-présence-deau-feature-056).
 
@@ -31,7 +52,7 @@ WaterPresence resolveWaterPresence() const;                        // SOURCE UNI
 
 ⚠️ **Le planning auto n'est plus jamais écrit pendant que la pompe tourne.** Avant bug-126, `computeAutoSchedule()` était rappelée 5 min après le démarrage du cycle ; une température en baisse pouvait rétracter la fenêtre et arrêter le cycle qui venait de produire la mesure (`decideFiltrationRun()` étant une décision de **niveau**, pas de front). Deux moments seulement modifient désormais l'état :
 
-1. **Pendant le cycle**, `sampleCycleTemperature()` échantillonne la température toutes les `kFiltrationTempSampleIntervalMs` (1 min) et l'intègre dans une **moyenne incrémentale** (`CycleTempAccumulator`, [`schedule_logic.h`](../../src/schedule_logic.h)) — **jamais une somme** (`mean += (x - mean) / count`), pour rester stable en mode `PoweredByFiltration` (eau présente 24/7). Un échantillon n'est retenu que si les **trois conditions cumulatives** de `isSampleEligible()` tiennent : purge terminée (`measureValidity.isCirculationSettled()`), horaire en plage (ferme un `forceOn` nocturne sans code dédié), sonde eau non figée (`!sensors.isTemperatureFrozen()`). La source est **exclusivement** `sensors.getWaterTemperature()` (offset de calibration borné appliqué, bug-114), avec un repli de tolérance `selectFiltrationRefTemp()` pour un appareil neuf sans rôle de sonde attribué — **jamais** `sensors.getTemperature()`, qui retomberait sur une sonde `Circuit` (boîtier électronique).
+1. **Pendant le cycle**, `sampleCycleTemperature()` échantillonne la température toutes les `kFiltrationTempSampleIntervalMs` (1 min) et l'intègre dans une **moyenne incrémentale** (`CycleTempAccumulator`, [`schedule_logic.h`](../../src/schedule_logic.h)) — **jamais une somme** (`mean += (x - mean) / count`), pour rester stable en mode `PoweredByFiltration` (eau présente 24/7). Un échantillon n'est retenu que si les **trois conditions cumulatives** de `isSampleEligible()` tiennent : purge terminée (`measureValidity.isCirculationSettled()`), horaire en plage de **base** (ferme un mode Marche nocturne sans code dédié — et jamais le créneau élargi par le Boost, [ADR-0093](../adr/0093-le-mode-de-filtration-est-la-seule-autorite.md)), sonde eau non figée (`!sensors.isTemperatureFrozen()`). La source est **exclusivement** `sensors.getWaterTemperature()` (offset de calibration borné appliqué, bug-114), avec un repli de tolérance `selectFiltrationRefTemp()` pour un appareil neuf sans rôle de sonde attribué — **jamais** `sensors.getTemperature()`, qui retomberait sur une sonde `Circuit` (boîtier électronique).
 2. **À l'arrêt du cycle**, `writePendingSchedule()` fige la moyenne dans un **planning en attente** 100 % RAM (`PendingSchedule`, ci-dessous) — jamais dans `filtrationCfg` directement.
 3. **À minuit**, `promotePendingScheduleIfDue()` (appelée en tête d'`update()`) bascule le planning en attente vers `filtrationCfg.start/end` si les conditions de promotion sont réunies — **une seule écriture NVS par jour**, zéro si la fenêtre calculée est identique à la fenêtre courante.
 
@@ -79,6 +100,8 @@ La promotion est gouvernée par la fonction pure `decideSchedulePromotion()` ([`
 
 Si `filtrationCfg.mode == "auto"` et `start == end` (NVS corrompue, ancien défaut, saisie incohérente), la plage est réparée sur `08:00`-`20:00`, avec `systemLogger.critical()` immédiat et une alerte MQTT `filtration_schedule_invalid` (différée jusqu'à la première connexion MQTT si l'appel a lieu au boot, avant `mqttManager.begin()`). **Mode `auto` uniquement** — en `manual`, une plage nulle peut être voulue par l'utilisateur.
 
+⚠️ **Mode inconnu (feature-146)** : `ensureTimesValid()` appelle désormais `parseFiltrationMode()` — un jeton non reconnu (config corrompue, client legacy envoyant une valeur hors `auto|manual|force|off`) est journalisé (`systemLogger.warning`) puis **replié sur `auto`**, au lieu d'être silencieusement ignoré. `update()` journalise en plus un `critical` throttlé s'il atteint malgré tout un mode `Inconnu` après cette coercition (course entre lecture et coercition) — voir [ADR-0093](../adr/0093-le-mode-de-filtration-est-la-seule-autorite.md).
+
 ## État interne
 
 ```cpp
@@ -86,20 +109,18 @@ struct FiltrationRuntime {
   bool running = false;
   unsigned long startedAtMs = 0;
   unsigned long lastStoppedAtMs = 0;   // 0 si jamais arrêtée
-  unsigned long forceOnStartMs = 0;    // 0 si inactif
-  unsigned long forceOffStartMs = 0;
 };
 ```
 
-`scheduleComputedThisCycle` (recalcul en marche) est **retiré** de cette structure par bug-126 — devenu sans objet, le recalcul en marche ayant disparu.
+`scheduleComputedThisCycle` (recalcul en marche) est **retiré** de cette structure par bug-126 — devenu sans objet, le recalcul en marche ayant disparu. `forceOnStartMs`/`forceOffStartMs` sont **retirés** par feature-146 avec le reste de l'ordre direct (v2.63.0).
 
 ## Interaction avec les autres composants
 
 - **`pump_controller`** :
   - Démarrage filtration → `PumpController.armStabilizationTimer()` (timer configurable, défaut 5 min) → bloque les injections pendant la stabilisation. **Uniquement en mode `managed`** : en `powered` / `external` le relais n'est pas piloté, donc le timer de stabilisation au démarrage filtration n'est jamais armé (feature-056).
   - Arrêt filtration → `PumpController.clearStabilizationTimer()`.
-  - Présence d'eau : `pump_controller` consomme désormais `filtration.resolveWaterPresence().waterPresent` (**source unique**, feature-056), et non plus `filtration.isRunning()` directement. En mode `scheduled`, l'horizon de répartition vaut `1440 − nowMin` hors `managed` (voir [pump-controller.md](pump-controller.md#mode-scheduled)).
-- **`mqtt_manager`** : `publishFiltrationState()` publie `{base}/filtration_state` (`ON`/`OFF`) et `{base}/filtration_mode`.
+  - Présence d'eau : `pump_controller` consomme désormais `filtration.resolveWaterPresence().waterPresent` (**source unique**, feature-056), et non plus `filtration.isRunning()` directement. En mode `scheduled`, l'horizon de répartition (`filtrationDosingHorizonMinutes()`, feature-146) vaut `1440 − nowMin` hors `managed`, **et aussi en mode Marche** (le créneau start/end ne décide plus rien dans ce mode — voir [pump-controller.md](pump-controller.md#mode-scheduled)).
+- **`mqtt_manager`** : `publishFiltrationState()` publie `{base}/filtration_state` (`ON`/`OFF`) et `{base}/filtration_mode`. Le switch HA `{base}/filtration/set` (ON/OFF) pilote désormais le **mode** (Marche/Arrêt), plus un ordre direct séparé (feature-146).
 
 ## Gestion des horaires traversant minuit
 
@@ -146,14 +167,23 @@ Module **générique** (pas spécifique filtration) : conçu pour être réutili
 | `int timeStringToMinutes(const char* hhmm)` | Parse `"HH:MM"` → minutes depuis minuit | longueur < 5 ou `[2] != ':'` → `-1` ; `hh` hors `[0,23]` ou `mm` hors `[0,59]` → `-1` ; sinon `hh*60+mm` |
 | `bool isMinutesInRange(int now, int start, int end, bool equalMeansAlways = false)` | Appartenance à `[start, end)` | `start`/`end` à `-1` → `false` (garde **avant** le test `start==end`) ; `start==end` → `equalMeansAlways` (filtration `false`, éclairage `true` — voir feature-040) ; `start<end` → `now>=start && now<end` ; `start>end` (wrap minuit) → `now>=start \|\| now<end` |
 | `ScheduleWindow computeAutoWindow(float tempC, float pivotHour)` | Créneau auto selon température | `tempC<0` ramené à 0 ; `durationHours = tempC/2` borné `[1,24]` ; centré sur `pivotHour` (`start = pivot - duration/2`, `end = start + duration`) ; **wrap des deux bornes dans `[0,24)`** ; conversion heure→minutes avec arrondi/carry identique à l'origine |
-| `bool decideFiltrationRun(mode, forceOn, forceOff, haveTime, nowMin, startMin, endMin, currentlyRunning)` | Décision marche/arrêt | priorités **`forceOn` > `forceOff` > plage horaire** ; `mode` (en minuscules) `manual`/`auto` → `isMinutesInRange(...)` si `haveTime`, sinon **conserve `currentlyRunning`** ; autre mode → `false` |
+| `FiltrationMode parseFiltrationMode(const char* token)` (feature-146) | **Unique** site de correspondance jeton → sens | `"auto"`→`Auto`, `"manual"`→`Programme`, `"force"`→`Marche`, `"off"`→`Arret`, tout autre (ou `nullptr`) → `Inconnu` ; `token` doit arriver en minuscules |
+| `RunWindow effectiveRunWindow(ScheduleWindow base, bool boostActive, int nowMin)` (feature-146) | Créneau **effectif** consommé par `decideFiltrationRun` | `!boostActive` → `base` inchangé ; `boostActive` → `{nowMin, 1440}` (élargi jusqu'au prochain minuit, expiration exacte du Boost). Type `RunWindow` **distinct** de `ScheduleWindow` : ne sert **qu'à** `decideFiltrationRun`, jamais à l'échantillonnage de température ni au planning annoncé ([ADR-0093](../adr/0093-le-mode-de-filtration-est-la-seule-autorite.md)) |
+| `bool decideFiltrationRun(FiltrationMode mode, bool haveTime, int nowMin, int startMin, int endMin, bool currentlyRunning)` | Décision marche/arrêt — `switch` **exhaustif sans `default`** (feature-146) | `Auto`/`Programme` → `isMinutesInRange(...)` si `haveTime`, sinon **conserve `currentlyRunning`** ; `Marche` → `true` (sans expiration) ; `Arret` → `false` (sans expiration) ; `Inconnu` → `currentlyRunning` (fail-safe de décision) |
 | `int remainingRangeMinutes(int nowMin, int startMin, int endMin)` (feature-011, v2.8.0) | Minutes restantes de la plage courante, **bornées à minuit** | hors plage ou plage invalide (`-1`, `start==end`) → `0` (délègue la garde à `isMinutesInRange`) ; `start<end` → `end − nowMin` ; plage à cheval sur minuit : partie du soir (`nowMin >= start`) → `1440 − nowMin` (**borné à minuit** : les compteurs journaliers se réinitialisent à minuit, l'horizon de répartition ne le franchit jamais), partie du matin (`nowMin < end`) → `end − nowMin` ; toujours ≥ 1 quand `nowMin` est dans la plage (fin exclusive) |
 
-> `remainingRangeMinutes` sert d'**horizon de répartition** au mode `scheduled` des pompes doseuses ([ADR-0021](../adr/0021-repartition-scheduled.md), [pump-controller.md §Mode scheduled](pump-controller.md#mode-scheduled)) — la coquille `filtration.cpp` n'est **pas** modifiée par feature-011.
+> `remainingRangeMinutes` sert d'**horizon de répartition** au mode `scheduled` des pompes doseuses ([ADR-0021](../adr/0021-repartition-scheduled.md), [pump-controller.md §Mode scheduled](pump-controller.md#mode-scheduled)) — la coquille `filtration.cpp` n'est **pas** modifiée par feature-011. feature-146 ajoute `filtrationDosingHorizonMinutes()` dans `pump_controller.cpp`, qui factorise l'appel et traite le mode Marche comme « journée entière » (même traitement que hors mode `managed`) — voir [pump-controller.md](pump-controller.md#mode-scheduled).
 
 ### Décision et temps indisponible
 
-`decideFiltrationRun` applique les priorités dans l'ordre : un **forçage `force_on`** force la marche, sinon un **forçage `force_off`** force l'arrêt, sinon la **plage horaire** (modes `manual`/`auto`) décide. Lorsque l'heure n'est pas disponible (`haveTime=false`, avant NTP/RTC, pendant OTA…) et sans forçage actif, la fonction **renvoie `currentlyRunning` tel quel** : pas de faux démarrage/arrêt, l'état du relais est conservé jusqu'à resynchronisation. Le `mode` doit arriver en minuscules — la coquille applique `toLowerCase()` avant délégation.
+`decideFiltrationRun` traite les **quatre modes** explicitement, sans priorité à négocier entre eux : `Marche` → marche sans condition, `Arrêt` → arrêt sans condition, `Auto`/`Programme` → la **plage horaire** décide. Lorsque l'heure n'est pas disponible (`haveTime=false`, avant NTP/RTC, pendant OTA…), la fonction **renvoie `currentlyRunning` tel quel** en `Auto`/`Programme` (pas de faux démarrage/arrêt, l'état du relais est conservé jusqu'à resynchronisation) — et aussi en mode `Inconnu` (fail-safe de décision, cas normalement inatteignable après `ensureTimesValid()`). Le `mode` doit arriver en minuscules — la coquille applique `toLowerCase()` avant délégation à `parseFiltrationMode()`.
+
+⚠️ **Le Mode Boost (feature-053) ne participe plus à cette décision** (feature-146,
+[ADR-0093](../adr/0093-le-mode-de-filtration-est-la-seule-autorite.md)) : il modifie le créneau
+**en amont**, via `effectiveRunWindow()`, résolu par la coquille `filtration.cpp` avant l'appel.
+Disponible dans tous les modes **sauf Arrêt** (surchloration : il faut de l'eau qui circule) —
+passer en mode Arrêt **efface** un Boost actif (`stopBoost()`), ce n'est pas une simple mise en
+veille.
 
 ### Fenêtre auto centrée sur le pivot
 
@@ -161,30 +191,31 @@ Module **générique** (pas spécifique filtration) : conçu pour être réutili
 
 ### Coquille `filtration.cpp`
 
-`begin()`, `update()` et `computeAutoSchedule()` deviennent des **coquilles minces** : elles collectent les entrées (heure RTC, `millis()`, config NVS, température), délèguent aux fonctions pures, puis appliquent les effets de bord. Restent **exclusivement dans la coquille** : lecture RTC/heure système, `millis()`, persistance NVS, **deadband 1 °C**, **timeout 4 h**, temporisation de stabilisation, commande relais (`digitalWrite`) et `publishState()`. La garde « présence d'eau » (`canDose()` exige `filtration.isRunning()`) est **strictement préservée**.
+`begin()`, `update()` et `computeAutoSchedule()` deviennent des **coquilles minces** : elles collectent les entrées (heure RTC, `millis()`, config NVS, température), délèguent aux fonctions pures, puis appliquent les effets de bord. Restent **exclusivement dans la coquille** : lecture RTC/heure système, `millis()`, persistance NVS, **deadband 1 °C**, temporisation de stabilisation, commande relais (`digitalWrite`) et `publishState()`. La garde « présence d'eau » (`canDose()` exige `filtration.isRunning()`) est **strictement préservée**. ⚠️ Le **timeout 4 h** de l'ancien ordre direct a **disparu** avec lui (feature-146, v2.63.0) — Marche et Arrêt n'expirent plus.
 
 ### Testabilité native
 
-`schedule_logic.cpp` est couvert à **100 % des lignes** par la suite Unity native (19 tests dédiés, **70 tests au total** à la feature-038). Le temps, la température et l'état courant étant injectés en paramètres, chaque branche (parsing invalide, wrap minuit, durée bornée, priorités de forçage, conservation d'état sans heure) est exercée sans matériel ni attente réelle. feature-011 ajoute **5 tests `remainingRangeMinutes`** ([`test/test_native_schedule/test_schedule_logic.cpp`](../../test/test_native_schedule/test_schedule_logic.cpp)) — 152 tests au total en v2.8.0. Voir [BUILD.md](../BUILD.md) pour `pio test -e native`.
+`schedule_logic.cpp` est couvert à **100 % des lignes** par la suite Unity native. Le temps, la température et l'état courant étant injectés en paramètres, chaque branche (parsing invalide, wrap minuit, durée bornée, quatre modes, conservation d'état sans heure) est exercée sans matériel ni attente réelle. feature-146 (v2.63.0) remplace les anciens tests de priorité `forceOn`/`forceOff`/`boostForce` par une **matrice complète** sur `decideFiltrationRun` (4 modes × dans/hors créneau × heure connue/inconnue × état courant), plus des tests dédiés `parseFiltrationMode` et `effectiveRunWindow` ([`test/test_native_schedule/test_schedule_logic.cpp`](../../test/test_native_schedule/test_schedule_logic.cpp)). Voir [BUILD.md](../BUILD.md) pour `pio test -e native` (nombre de suites et de cas : mesurer, ne pas recopier un chiffre périmé — voir `CLAUDE.md`).
 
 > ⚠️ **Invariant** : toute évolution future de la décision d'horaire **passe par `schedule_logic`** et doit conserver l'équivalence stricte verrouillée par les tests natifs.
 
 ## Cas limites
 
-- **Sans heure système valide** (avant NTP/RTC) : `getCurrentMinutesOfDay()` échoue → pas de démarrage automatique. La filtration reste à l'état où le relais l'a laissé. Récupération dès que l'heure se synchronise.
-- **Mode `off`** : le relais est forcé à LOW, aucune dérogation possible.
-- **Forçage expiré au reboot** : `force_on` / `force_off` ne sont pas persistés.
+- **Sans heure système valide** (avant NTP/RTC) : `getCurrentMinutesOfDay()` échoue → pas de démarrage/arrêt automatique en Auto/Programme. La filtration reste à l'état où le relais l'a laissé. Récupération dès que l'heure se synchronise.
+- **Mode Arrêt** : le relais est forcé à LOW, aucune dérogation possible — y compris pour le Mode Boost, qui s'efface en entrant dans ce mode.
+- **Marche et Arrêt ne sont plus temporaires** (feature-146, v2.63.0) : ils **survivent à un redémarrage** et durent jusqu'au prochain changement de mode explicite — pas de minuteur, pas de retour automatique. ⚠️ Un appareil laissé en Marche consomme en continu ; un appareil laissé en Arrêt pendant l'hivernage peut priver de protection hors-gel un montage où la pompe de filtration est le seul moyen de faire circuler l'eau.
+- **Mode inconnu** (config corrompue, client legacy) : replié sur Auto par `ensureTimesValid()`, journalisé — voir plus haut.
+- **Migration `force` → Marche** (feature-146) : un appareil qui redémarre avec `mode = "force"` passait auparavant par le `return false` par défaut de l'ancien `decideFiltrationRun()` (pompe **arrêtée**, un bug) ; il bascule désormais en **Marche** (pompe **tournante**) — `begin()` journalise un `warning` et publie une alerte MQTT `filtration_mode_force_migrated` au premier tour connecté.
 
 ## Endpoints HTTP
 
 | Action | Endpoint | Auth |
 |--------|----------|------|
-| Démarrer manuellement | `POST /filtration/on` | WRITE |
-| Arrêter manuellement | `POST /filtration/off` | WRITE |
+| Changer de mode (Auto/Programme/Marche/Arrêt), dont Démarrer/Arrêter | `POST /save-config` `{filtration_mode: "auto"\|"manual"\|"force"\|"off"}` (feature-146 — plus de route `/filtration/on`/`/off` dédiée) | CRITICAL |
 | Signaler l'état d'une filtration externe | `POST /filtration/external-state?running=…` | WRITE |
 | Sauvegarder mode/horaires + `install_mode` | `POST /save-config` | CRITICAL |
 
-Voir [`web_routes_control.cpp`](../../src/web_routes_control.cpp). `POST /filtration/external-state` accepte `running` en corps de formulaire OU en query (pas de JSON) — voir [API.md](../API.md#post-filtrationexternal-state--write).
+Voir [`web_routes_control.cpp`](../../src/web_routes_control.cpp) (`/filtration/external-state`) et [`web_routes_config.cpp`](../../src/web_routes_config.cpp) (`/save-config`, validation serveur du mode via `parseFiltrationMode()` — un jeton non reconnu est refusé, `warning`, le reste de la requête s'applique). `POST /filtration/external-state` accepte `running` en corps de formulaire OU en query (pas de JSON) — voir [API.md](../API.md#post-filtrationexternal-state--write).
 
 ## Fichiers liés
 
@@ -194,6 +225,7 @@ Voir [`web_routes_control.cpp`](../../src/web_routes_control.cpp). `POST /filtra
 - [`src/schedule_logic.h`](../../src/schedule_logic.h), [`src/schedule_logic.cpp`](../../src/schedule_logic.cpp) — logique d'horaire pure (feature-038), générique filtration/éclairage
 - [`src/dosing_logic.h`](../../src/dosing_logic.h), [`src/dosing_logic.cpp`](../../src/dosing_logic.cpp) — `InstallMode`, `resolveWaterPresent`, `migrateInstallMode` (feature-056)
 - [`src/constants.h`](../../src/constants.h) — `kExternalFiltrationStaleMs = 180000` (fraîcheur signal externe)
+- [ADR-0093](../adr/0093-le-mode-de-filtration-est-la-seule-autorite.md) — le mode de filtration est la seule autorité (feature-146, v2.63.0, remplace l'ADR-0025 Mode Boost)
 - [ADR-0026](../adr/0026-mode-installation.md) — mode d'installation (3 archétypes) + résolution de la présence d'eau
 - [ADR-0012](../adr/0012-mapping-gpio-pcb-v2.md) — mapping GPIO PCB v2
 - [ADR-0017](../adr/0017-logique-metier-pure-humble-object-testabilite.md) — logique métier pure (Humble Object) pour testabilité native

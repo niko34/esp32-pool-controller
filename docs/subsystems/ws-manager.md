@@ -981,6 +981,32 @@ Côté `/data`, les deux champs migrés **s'ajoutent** (ils n'y existaient pas) 
 
 **Cliquet `kWsOnlyLiveCeiling` abaissé 18 → 16** ([`test/test_native_ws_data_parity/test_ws_data_parity.cpp`](../../test/test_native_ws_data_parity/test_ws_data_parity.cpp)) : `filtration_state_source` et `filtration_ext_on` quittent `kWsOnlyLive` (la dette inventoriée se réduit, le plafond la suit — il ne peut **jamais** augmenter, seulement baisser quand une clé WS-seule migre ailleurs). `kDataOnly` passe de **4 à 6** entrées : les deux migrées s'ajoutent aux deux `ph_integral`/`ph_integral_term` de la v2.54.0.
 
+### Champs `sensor_data` retirés en v2.63.0 — fin de l'ordre direct de filtration (feature-146)
+
+`filtration_force_on` et `filtration_force_off` **disparaissent** de la trame (et du firmware
+entier) avec l'« ordre direct » de filtration (`forceOn`/`forceOff`, minuteur 4 h) qu'ils
+reflétaient — voir [ADR-0093](../adr/0093-le-mode-de-filtration-est-la-seule-autorite.md) et
+[filtration.md](filtration.md). **Aucune migration** : contrairement aux élagages précédents
+(v2.54.0, v2.55.0), ces deux clés ne se déplacent pas vers `/data`, elles n'ont plus de raison
+d'exister nulle part — c'était l'écho d'un état qui n'existe plus.
+
+Octets SÉRIALISÉS au pire cas retirés (méthode [ADR-0073](../adr/0073-chiffre-consigne-porte-sa-methode.md)) :
+
+```
+"filtration_force_on":false,  → 28 o
+"filtration_force_off":false, → 29 o
+```
+
+Retrait total **57 o**. Pire cas de trame : **3554 (décompte v2.62.0) − 57 = 3497 o**, sous le
+gabarit documentaire 3584 (aucun bump) et sous le seul plafond dur `kWsFrameBufBytes = 3584` o.
+
+**MARGE RÉSIDUELLE SOUS LE SEUL PLAFOND DUR, `sWsFrameBuf`** : 3584 − 3497 = **87 o** (elle était
+de 30 o avant ce retrait). Tout nouveau champ de cette trame exige toujours un retrait
+compensatoire OU un relèvement de `kWsFrameBufBytes` (décision d'ADR, pas de routine).
+
+Ces deux clés quittent aussi `kWsOnlyLive` dans la sentinelle de parité (`kWsOnlyLiveCeiling`
+abaissé **16 → 14**) — voir le tableau des quatre catégories d'exception plus haut.
+
 ### Le second axe de parité — `/data` ↔ `sensor_data` (`PARITE-DATA`)
 
 [ADR-0071](../adr/0071-parite-data-trame-capteurs.md) étend au **second axe** le principe posé par [ADR-0065](../adr/0065-trame-websocket-etat-mutable-pas-constantes.md) pour l'axe `config`. Deux différences de fond :
@@ -994,12 +1020,12 @@ Marqueurs commentés, lus tels quels par la sentinelle : `>>> PARITE-DATA:DEBUT`
 
 | Catégorie | Compte | Règle |
 |---|---:|---|
-| `kWsOnlyLive` — état vivant servi par **aucune** route HTTP | **16** (était 18) | **Dette inventoriée** (antérieure à feature-092), déclarée pour rendre la sentinelle utilisable, pas pour valider le motif. Sous **cliquet** `kWsOnlyLiveCeiling = 16` (abaissé de 18 en v2.55.0, feature-140) : le compte ne peut **jamais augmenter**, seulement baisser quand une clé WS-seule migre vers `/data` — ce qui vient d'arriver pour `filtration_state_source`/`filtration_ext_on`. |
+| `kWsOnlyLive` — état vivant servi par **aucune** route HTTP | **14** (était 16) | **Dette inventoriée** (antérieure à feature-092), déclarée pour rendre la sentinelle utilisable, pas pour valider le motif. Sous **cliquet** `kWsOnlyLiveCeiling = 14` (abaissé de 16 en v2.63.0, feature-146) : le compte ne peut **jamais augmenter**, seulement baisser quand une clé WS-seule migre vers `/data` **ou disparaît**. Cette fois, `filtration_force_on`/`filtration_force_off` ne migrent nulle part : ils **disparaissent** du firmware avec l'ordre direct qu'ils portaient — l'exception est retirée de la liste plutôt que neutralisée. |
 | `kWsPlusOtherRoute` — clés **dual-sourcées** | **6** (était 8) | Absentes de `/data` mais servies par une **autre** route HTTP, dont le **nom est obligatoire** et asserté non vide : **5** par `GET /get-config` (`lighting_enabled`, `boost_active`, `boost_until`, `install_mode`, `mqtt_connected`) et **1** par `GET /get-logs` (`uptime_ms` — la table de la sentinelle abrège la route en « GET /logs »). Catégorie qui **n'existe pas** sur l'axe config : une règle « aucune clé WS-seule » les signalerait à tort. |
 | `kDataOnly` — clés servies par `/data` seul | **6** (était 4) | `ph_pump_amplitude_duty`, `orp_pump_amplitude_duty` (grandeurs de **calibration**, lues dans des vues de diagnostic) ; **+2 en v2.54.0** (feature-138) : `ph_integral`, `ph_integral_term` — élaguées de la **seule** trame WS pour financer `*DoseBlockedForS` ; **+2 en v2.55.0** (feature-140) : `filtration_state_source`, `filtration_ext_on` — élaguées pour financer `rescue_until`/`rescue_dosing` (même méthode, [ADR-0086](../adr/0086-trame-websocket-sous-ensemble-choisi-de-data.md)). Les quatre restent un contrat externe sur `/data`/MQTT/HA. La 3ᵉ entrée d'origine — l'objet `flow_assist` — a été **retirée** en v2.47.1 : elle est devenue bilatérale (`bug-082`), et c'est la sentinelle qui l'a exigé. |
 | `kFlowAssistDataOnly` — champs **imbriqués** de `flow_assist` servis par `/data` seul | **7** | Second axe, v2.47.1 (`bug-082`) : `active`, `pump`, `phase`, `remaining_s`, `purges_left`, `purge_s`, `measure_s` — champs de **session**, lus à l'ouverture de l'assistant après un `GET /data` **forcé**. Motif écrit obligatoire, **cliquet à 7**, et **`aborted` / `flow255` y sont formellement interdits**. |
 
-Décompte **vérifié par mesure** et non supposé : les **22** clés WS-seules constatées (v2.59.0, était 24) = 16 « état vivant » + 6 dual-sourcées.
+Décompte **vérifié par mesure** et non supposé : les **20** clés WS-seules constatées (v2.63.0, était 22) = 14 « état vivant » + 6 dual-sourcées.
 
 > **`ph_container_ml` / `orp_container_ml` sorties de `kWsPlusOtherRoute` en v2.59.0
 > (feature-143).** Elles n'étaient déclarées dual-sourcées (`GET /get-config`) que
