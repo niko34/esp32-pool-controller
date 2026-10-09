@@ -2523,24 +2523,6 @@ input.is-computed:disabled {
   text-decoration: none;
 }
 
-/* Mini chart dans les cartes compactes du dashboard */
-.card__mini-chart {
-  width: 100%;
-  height: 88px;
-  min-height: 88px;
-  margin-top: 10px;
-  flex-shrink: 0;
-  position: relative;
-  overflow: hidden;
-}
-
-.card__mini-chart .chart-host {
-  position: absolute;
-  top: 0;
-  left: 0;
-  width: 100%;
-  height: 100%;
-}
 
 /* Badge d'alerte capteur dans les cartes compactes */
 .sensor-badge {
