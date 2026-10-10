@@ -100,16 +100,16 @@ Recensement exhaustif des appels à `setGuardRefusalCause()` :
 
 | Ligne | Voie | Contenu | État |
 |---|---|---|---|
-| 1279 | ORP | « pH indisponible / stabilisation » — aucune valeur | ✅ sain |
-| 1429 | ORP | seuil `kPhCeilingRawHard` seul | ✅ sain |
+| 1279 | ORP | « pH indisponible / stabilisation » — aucune valeur | pas de mesure figée |
+| 1429 | ORP | seuil `kPhCeilingRawHard` seul, **à 2 décimales** | pas de mesure figée ; décimales NON examinées |
 | 1462 | ORP | seuil `kPhOrpInhibit` seul | ✅ **corrigé le 2026-10-08** |
-| 1139 | pH | « régulation basculée en manuel » — aucune valeur | ✅ sain |
+| 1139 | pH | « régulation basculée en manuel » — aucune valeur | pas de mesure figée ; **point final manquant**, corrigé en cours de lot |
 | **916** | pH | `String(phRaw, 2)` | ❌ **se périme** |
 | **938** | pH | `String(ph, 2)` | ❌ **se périme** |
 | **994** | pH | `String(phRaw, 2)` **et** `String(ph, 2)` | ❌ **se périme, deux fois** |
 | **1025** | pH | `String(ph, 2)` | ❌ **se périme — cas signalé** |
 
-La voie ORP est entièrement assainie ; la voie pH n'a jamais reçu le correctif.
+La voie ORP ne porte aucune mesure figée ; la voie pH n'a jamais reçu le correctif.
 
 ### ⚠️ Tension à trancher par le gate, explicitement
 Le texte de la ligne 1025 a été **imposé mot à mot le 2026-10-05** (bug-135), mesure comprise :
@@ -394,10 +394,30 @@ l'estimation initiale, qui a fait basculer le « non » en « oui ».
   (6,5-6,9) et ORP effondré. Le blocage observé est le **fonctionnement normal** de la garde —
   elle fait son travail. Seul l'affichage est en cause.
 
+## ⚠️ CORRECTION DE RÉDACTION (2026-10-10, après clôture)
+
+Cette spec qualifiait la voie ORP de **« saine »** (tableau de recensement et section « Hors
+périmètre »). **Le mot est trop large et il a nui.** Une seule chose avait été vérifiée : que ces
+causes ne citent pas de **mesure vive**, donc qu'elles ne se périment pas. Exact, et rien de plus.
+
+« Sain » annonçait un examen d'ensemble qui n'avait pas eu lieu. Conséquence concrète : les deux
+causes ORP citent leurs seuils **à deux décimales** (`8.10`, `7.60`) alors que les causes pH les
+affichent désormais à **une** (`8.1`) — **la même constante `kPhCeilingRawHard`, écrite de deux
+façons**, et les deux gardes se déclenchant sur la même condition, le bandeau peut les afficher
+**simultanément**. Une fois la voie étiquetée saine, plus personne n'est allé voir.
+
+⇒ Règle de rédaction à retenir : **écrire ce qui a été vérifié, pas une appréciation globale.**
+« Ne porte pas de mesure figée » est un fait, « sain » est un jugement — et un jugement dans une
+section « hors périmètre » dissuade le lecteur suivant d'examiner le reste.
+
+Traité par **feature-150**. L'utilisateur a relevé lui-même l'attribution fautive : la formule
+venait de cette spec, pas de lui.
+
 ## Hors périmètre
 - Le dédoublonnage bandeau / badge → feature-148.
 - Toute modification de seuil, d'hystérésis, de condition de déclenchement ou de code de refus.
-- Les causes de la voie ORP, déjà saines.
+- Les causes de la voie ORP — **au seul titre de la mesure figée** : elles citent des seuils,
+  pas des mesures, donc elles ne se périment pas. ⚠️ **C'est la seule chose qui a été vérifiée.**
 - Le rafraîchissement périodique du texte — option explicitement rejetée le 2026-10-08, motif
   consigné dans le code. Ne pas la rouvrir sans argument neuf.
 
