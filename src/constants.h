@@ -1668,6 +1668,40 @@ constexpr float kPhFloorRawHard     = kPhFloorCorrected - kPhOffsetMax;  // 6,20
 // monter le pH) : seule (a) s'applique — d'où « quel que soit le produit ».
 constexpr float kPhCeilingRawHard   = kPhOrpInhibit + kPhOffsetMax;      // 8,10
 
+// --- Rondeur au dixième (feature-149, condition bloquante du gate) ---
+// Les causes de garde pH affichent désormais un SEUIL (constante), jamais une
+// mesure, avec UNE SEULE décimale (`String(x, 1)`). Ce helper vérifie à la
+// COMPILATION que chaque seuil cité est bien rond au dixième : sans ce verrou,
+// un futur `kPhSafetyMargin` à 0,45 ferait afficher « 6,8 » pour un seuil réel
+// à 6,75 — un seuil de SÉCURITÉ FAUX affiché à l'utilisateur.
+//
+// Pourquoi ne pas comparer par `==` : un seuil DÉRIVÉ (ex. kPhFloorCorrected =
+// kPhTargetMin - kPhSafetyMargin) n'est pas forcément bit-à-bit égal au
+// littéral qu'on croit lire — `7.20f - 0.50f` ne vaut pas nécessairement
+// `6.70f` au bit près en IEEE 754. Il faut donc une tolérance, pas une égalité.
+//
+// Pourquoi le calcul passe en `double` : fait en `float`, l'arrondi
+// intermédiaire de `v * 10.0f` peut lui-même introduire une erreur du même
+// ordre que celle qu'on cherche à détecter. Le `double` élimine cette
+// confusion — seule l'erreur du `float` d'origine subsiste dans le résultat.
+//
+// Pourquoi `kTenthTolerance = 1e-3` (en unités de DIXIÈMES, après le ×10) :
+// le bruit de représentation d'un `float` rond au dixième, une fois multiplié
+// par 10 en `double`, vaut de l'ordre de 3e-5 — 30× SOUS cette tolérance,
+// donc aucun faux négatif sur un seuil réellement rond. Le cas que ce verrou
+// doit justement détecter (gate, kPhSafetyMargin = 0,45 → seuil 6,75) vaut un
+// écart de 0,5 une fois en dixièmes, soit 500× la tolérance : aucune ambiguïté
+// possible entre bruit flottant et seuil réellement non-rond.
+namespace numfmt {
+constexpr double absd(double v) { return v < 0.0 ? -v : v; }
+constexpr double kTenthTolerance = 1e-3;
+constexpr bool isRoundedToTenth(float v) {
+  return absd(static_cast<double>(v) * 10.0 -
+              static_cast<double>(static_cast<long long>(
+                  static_cast<double>(v) * 10.0 + (v < 0.0f ? -0.5 : 0.5)))) < kTenthTolerance;
+}
+}  // namespace numfmt
+
 // --- Invariants verrouillés à la compilation ---
 // Toute retouche d'une valeur ci-dessus doit relire la justification chimique,
 // pas seulement compiler.
@@ -1712,6 +1746,17 @@ static_assert(kPhCeilingCorrected <= kPhOrpInhibit,
 static_assert(kPhCeilingRawHard >= kPhCeilingCorrected - kPhOffsetMin - 1e-4f,
               "Butee brute haute trop basse : elle mordrait avant le plafond "
               "corrige pour un offset legitime, rendant celui-ci inoperant");
+// (x) Condition bloquante du gate pool-chemistry (feature-149) : les causes de
+// garde pH affichent un SEUIL a UNE decimale (String(x,1)) -- il doit donc
+// etre rond au dixieme, sinon l'affichage ment (ex. 6,8 affiche pour 6,75 reel).
+static_assert(numfmt::isRoundedToTenth(kPhFloorCorrected) &&
+                  numfmt::isRoundedToTenth(kPhFloorRawHard) &&
+                  numfmt::isRoundedToTenth(kPhCeilingCorrected) &&
+                  numfmt::isRoundedToTenth(kPhCeilingRawHard),
+              "Un seuil pH cite dans une cause de garde doit etre rond au dixieme : "
+              "les causes l'affichent avec UNE decimale (feature-149). Un seuil a "
+              "6,75 s'afficherait 6,8 -- un seuil de securite FAUX. Corriger la "
+              "marge, ou repasser la cause a deux decimales via pool-chemistry.");
 
 // --- Diagnostic EZO : fenêtre de « sonde saine » (v2.25.0) ---
 // Sert UNIQUEMENT à nuancer le message d'escalade (3 refus / 24 h) : une sonde

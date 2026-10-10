@@ -4005,11 +4005,20 @@
       const offset = (cfg && typeof cfg.ph_offset === 'number') ? cfg.ph_offset : 0;
       const phRaw = ph - offset;
       if (phRaw > 7.6) {
-        // L4 — gabarit, %s = pH CORRIGÉ (phFiltered) à 2 décimales — délibéré
-        // et contre-intuitif : seul le TEST de seuil passe en échelle brute,
-        // l'AFFICHAGE reste en échelle corrigée, la seule que l'utilisateur
-        // reconnaît sur le reste du tableau de bord.
-        return `Chloration suspendue : pH ${ph.toFixed(2)} — le chlore y est peu actif. Faire baisser le pH d'abord.`;
+        // L4 — gabarit, %s = pH CORRIGÉ (phFiltered) à 1 décimale — règle
+        // produit du 2026-10-10, GO du gate pool-chemistry : le centième est
+        // du bruit de mesure (filtré ±0,08 sur 10 min), une décimale suffit
+        // pour toute valeur MESURÉE (deux décimales restent réservées aux
+        // réglages et aux écrans de diagnostic).
+        // 🔒 Toujours verrouillé : seul le TEST de seuil passe en échelle
+        // brute (offset retranché, ligne 4006), l'AFFICHAGE reste en échelle
+        // corrigée, la seule que l'utilisateur reconnaît sur le reste du
+        // tableau de bord — délibéré et contre-intuitif, ne pas « corriger »
+        // ce signe.
+        // Ce texte est recalculé à CHAQUE RENDU : il ne se périme pas, à la
+        // différence des causes de garde latchées du firmware (objet du
+        // reste de cette spec).
+        return `Chloration suspendue : pH ${ph.toFixed(1)} — le chlore y est peu actif. Faire baisser le pH d'abord.`;
       }
     }
     const effectiveDailyMl = _rescueEffectiveDailyMl(cfg || {});

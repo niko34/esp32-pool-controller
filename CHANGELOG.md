@@ -2,6 +2,42 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [2.65.0] - 2026-10-10
+
+### Firmware
+- **Régulation pH — plus de mesure figée dans les causes de garde (feature-149)** : les
+  quatre causes de refus posées par les gardes de sécurité pH (plancher, plafond, butées
+  brutes) citent désormais le **seuil** (constante, une décimale) et non plus la mesure du
+  moment, qui se figeait à l'instant du déclenchement puis contredisait la carte capteur,
+  vive. Relevé de production à l'origine du correctif : le bandeau affichait « pH 6.70 sous
+  le plancher de sécurité (6.70) » — le même nombre deux fois — pendant que la carte
+  affichait 6,67. Propage aux causes pH la même règle déjà appliquée aux causes ORP le
+  2026-10-08. Seuils, hystérésis, conditions de déclenchement et codes de refus **inchangés** :
+  seul le texte change.
+- **Réparation d'un défaut de production préexistant** : le texte de la cause « offset »
+  (site 994, garde de dernier recours sur le pH brut) pesait ~160 octets une fois les
+  mesures substituées, pour un tampon de 95 octets utiles — `strlcpy` le tronquait
+  silencieusement, et l'instruction « vérifiez l'offset pH » n'a **jamais atteint l'écran**
+  depuis sa mise en service. Le nouveau texte (seuils, pas mesures) pèse 91 octets et tient
+  avec marge. Bénéfice collatéral : l'alerte horaire du mode Programmé, qui réémet cette même
+  cause toutes les heures, était tronquée elle aussi et redevient complète.
+- **Tableau de bord** : le message « Chloration suspendue » affiche désormais le pH à une
+  décimale (était deux) — cohérent avec le reste des valeurs mesurées affichées, le centième
+  étant du bruit de mesure.
+
+### Documentation
+- `docs/subsystems/pump-controller.md` : règle « une cause de garde latchée cite un seuil,
+  jamais une mesure », étendue à la voie pH, avec ses trois précisions (seuil, action
+  d'abord/constat ensuite, une décimale sauf exception hystérésis) et le garde-fou
+  `static_assert` qui verrouille les seuils ronds au dixième.
+- `docs/API.md`, `docs/MQTT.md` : exemples de `phDoseBlockedReason` / `ph_guard_scheduled`
+  mis à jour sur le nouveau format de texte.
+- [ADR-0095](docs/adr/0095-une-cause-de-garde-cite-un-seuil-pas-une-mesure.md) : formalisation
+  de la règle « seuil, pas mesure » — tout nouveau seuil pH cité dans une cause de garde devra
+  être rond au dixième, vérifié à la compilation.
+
+---
+
 ## [2.64.0] - 2026-10-10
 
 ### Fonctionnalités

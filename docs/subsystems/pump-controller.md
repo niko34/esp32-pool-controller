@@ -476,12 +476,18 @@ Ce tableau décrit le texte **journalisé / publié en alerte MQTT** (`systemLog
 
 **Règle appliquée** (`src/pump_controller.cpp`, bloc `ACIDE`, validée GO par le gate `pool-chemistry` du 2026-10-05 — étiquetage seul, aucun seuil ni condition de blocage modifié) : la garde CORRIGÉE est évaluée en premier ([`pump_controller.cpp:889`](../../src/pump_controller.cpp:889)) ; la butée brute, évaluée ensuite, ne pose son log critique + alerte MQTT ni sa cause de refus que si elle est **discriminante** — elle mord **et** la garde corrigée ne mord **pas** au même tick ([`pump_controller.cpp:904`](../../src/pump_controller.cpp:904)). Quand les deux mordent, c'est **toujours** la cause corrigée qui est exposée, posée **inconditionnellement** ([`pump_controller.cpp:957`](../../src/pump_controller.cpp:957)) — c'est la valeur corrigée qui fait foi à l'écran (ADR-0039).
 
-Textes de **cause de refus** (`setGuardRefusalCause`, exposée au WS / au bandeau « Dosage bloqué » — distincts du texte log/MQTT ci-dessus), imposés mot à mot par le gate :
+Textes de **cause de refus** (`setGuardRefusalCause`, exposée au WS / au bandeau « Dosage bloqué » — distincts du texte log/MQTT ci-dessus), imposés mot à mot par le gate. **Depuis le 2026-10-10 (feature-149)**, ils ne citent plus une mesure mais un **seuil** — voir [la règle ci-dessous](#règle--une-cause-latchée-ne-porte-jamais-une-mesure-vive-v2571) :
 
 | Cas | Texte de la cause de refus exposée |
 |---|---|
-| Garde corrigée mord (seule, ou les deux mordent) | `pH 6.65 sous le plancher de sécurité (6.70) — dosage acide suspendu.` |
-| Butée brute mord **seule** (discriminante) | `pH brut 5.94 sous la butée de dernier recours (6.20) alors que le pH corrigé (6.44) reste au-dessus du plancher (6.70) — dosage acide suspendu, vérifiez l'offset pH.` |
+| Garde corrigée mord (seule, ou les deux mordent) | `pH sous le plancher de sécurité (6.7) — dosage acide suspendu.` |
+| Butée brute mord **seule** (discriminante) | `Vérifiez l'offset pH : brut sous 6.2, corrigé au-dessus de 6.7 — dosage acide suspendu.` |
+| Butée brute haute [BRUT, produit `ph_plus`] | `pH brut au-dessus de la butée de sécurité (8.1) — dosage pH+ suspendu.` |
+| Plafond [CORRIGÉ, produit `ph_plus`] | `pH au-dessus du plafond de sécurité (7.6) — dosage pH+ suspendu.` |
+
+⚠️ **Le texte « Vérifiez l'offset pH » a été TRONQUÉ en production du v2.55.1 à la v2.64.0** : son ancienne formulation (mesures comprises) pesait ~160 octets pour un tampon `_lastRefusalCause[2][96]` de 95 octets utiles (`kDoseBlockedReasonMaxLen`) — `strlcpy` coupait à « …reste au-dessus du pla », et l'instruction finale « vérifiez l'offset pH » n'a **jamais atteint l'écran**. Le nouveau texte (seuils, pas mesures) pèse **91 octets** et tient avec une marge de 4 octets. Bénéfice collatéral : l'alerte horaire du mode Programmé (`ph_guard_scheduled`, [ci-dessous](#escalade--3-refus-en-24-h-mode-automatic-uniquement)), qui réémet cette même cause toutes les heures, était tronquée elle aussi et **redevient complète**.
+
+> ⚠️ **Défaut non traité, repéré pendant cette documentation (hors périmètre feature-149, à router vers `code-reviewer`/`embedded-developer`)** : les quatre nouveaux textes se terminent désormais par un point (`…suspendu.`), alors que l'ancien format ne s'achevait jamais par une ponctuation. Le message `ph_guard_scheduled` (ligne 1191) concatène `"Dosage pH programmé refusé — " + String(_lastRefusalCause[0]) + ". Le volume quotidien…"` : avec un texte de cause qui se termine déjà par un point, le message publié affiche désormais **deux points consécutifs** (`…dosage acide suspendu.. Le volume…`). Inoffensif fonctionnellement, mais visible dans le journal et sur MQTT.
 
 ⚠️ **Conséquence** : le texte « offset positif probablement erroné » (log + alerte MQTT de la butée brute) ne peut désormais survenir qu'avec `offset < kPhOffsetMax` — un offset `== kPhOffsetMax` (le cas le plus fréquent en pratique, celui de l'incident) ne le déclenche plus jamais puisque les deux gardes mordent alors systématiquement ensemble. Ce message n'est donc plus un bruit de fond : sa simple apparition signale une **divergence entre deux lectures** du pH brut (butée sur un échantillon instantané, garde corrigée sur la valeur filtrée) — c'est le mécanisme même que `bug-135` continue d'instruire (fenêtre glissante sur la butée brute, hors périmètre de ce correctif).
 
@@ -603,7 +609,7 @@ Deux correctifs de revue v2.25.0, tous deux issus de cas observés :
 
 #### Règle : une cause latchée ne porte jamais une mesure vive (v2.57.1)
 
-**Une cause de refus latchée ne porte jamais une mesure vive — elle porte un seuil, ou rien.**
+**Une cause de refus latchée ne porte jamais une mesure vive — elle porte un seuil, ou rien.** Propagée à la voie pH en v2.65.0 (feature-149, voir [plus bas](#propagation-à-la-voie-ph-feature-149-v2650)).
 
 `setGuardRefusalCause()` est volontairement un **latch** : il n'est réécrit qu'en cas d'**aggravation** de gravité (voir l'anti-rafale ci-dessus), pas à chaque tour. C'est délibéré — réécrire à chaque mesure faisait battre deux libellés contradictoires, avec un `critical` et une alerte MQTT par oscillation, et chassait le journal de la partition `history`. Mais ce choix a une conséquence directe : **toute valeur de mesure inscrite dans ce texte se fige** au moment du déclenchement et ne se rafraîchit plus tant que l'épisode dure, alors que la carte pH, elle, continue d'évoluer en direct.
 
@@ -619,6 +625,18 @@ Deux correctifs de revue v2.25.0, tous deux issus de cas observés :
 Les alertes MQTT (`publishAlert("orp_ph_inhibit", …)`, lignes 1351 et 1378) **ne sont pas concernées** : elles portent un message distinct, construit juste au-dessus du latch, contenant la mesure **et** le seuil **et** l'offset, émis à l'instant du franchissement — donc jamais périmé par construction.
 
 **Pour tout futur ajout d'une cause de refus** (`setGuardRefusalCause`) : n'y inscrire une mesure que si le texte est **réécrit à chaque tour** (jamais latché). Si le texte est latché, n'y mettre qu'un seuil — une constante — ou rien.
+
+##### Propagation à la voie pH (feature-149, v2.65.0)
+
+Le même défaut existait sur les quatre causes pH (`isPhGuardBlocking`, lignes 916/938/994/1025) : un relevé de production du 2026-10-10 a montré le bandeau affichant *« pH 6.70 sous le plancher de sécurité (6.70) »* — **le même nombre apparaît deux fois** — pendant que la carte affichait 6,67. La mesure vaut par construction le seuil à l'instant de l'edge-trigger qui écrit la cause, donc elle n'apporte **aucune information au moment où elle est écrite**, puis devient fausse ensuite. Le correctif propage exactement la règle ci-dessus à la voie pH, avec trois précisions tranchées par le gate `pool-chemistry` (GO sous conditions, deux passages, 2026-10-10) :
+
+1. **Une cause latchée cite un seuil, jamais une mesure** — déjà posé ci-dessus, désormais vrai des **deux** voies (pH et ORP).
+2. **Action d'abord, constat ensuite.** Le tampon `_lastRefusalCause[2][96]` ne fait que 95 octets utiles (`kDoseBlockedReasonMaxLen`) et `strlcpy` coupe silencieusement la fin : une phrase qui annonce l'action requise (« dosage acide suspendu ») avant d'éventuels détails survit à une troncature ; une phrase qui termine sur l'instruction la perd (voir l'exemple de troncature documenté [ci-dessus](#priorité-des-causes-pour-lacide-discriminante-depuis-v2551)).
+3. **Une décimale pour un pH de mesure ou de seuil ; deux pour un réglage ou une bande de diagnostic.** Les quatre seuils cités (`kPhFloorCorrected`, `kPhFloorRawHard`, `kPhCeilingCorrected`, `kPhCeilingRawHard`) sont tous **ronds au dixième** — c'est ce qui rend une décimale suffisante sans perte d'information. ⛔ **Exception explicite, à ne PAS appliquer par réflexe** : `kPhGuardReleaseHysteresis = 0,05` n'est **pas** ronde au dixième. Les messages de **relâche** (logs de retour sous/au-dessus du seuil + hystérésis) et les bandes d'hystérésis ORP restent à **deux** décimales — les points de relâche réels valent 6,75 / 7,55 / 6,25 / 8,05, et les arrondir au dixième (6,8 / 7,5 / 6,3 / 8,1) annoncerait une reprise de dosage à un pH que l'appareil n'utilise pas.
+
+**Garde-fou à la compilation.** Un `static_assert(numfmt::isRoundedToTenth(...))` ([`constants.h:1752-1755`](../../src/constants.h:1752)) vérifie que les quatre seuils cités dans les causes pH sont bien ronds au dixième. Sans lui, un futur `kPhSafetyMargin` à 0,45 (au lieu de 0,50) ferait afficher « 6,8 » pour un seuil réel à 6,75 — un **seuil de sécurité faux** affiché à l'utilisateur. Vérifié par mutation : abaisser `kPhSafetyMargin` à 0,45 casse effectivement la compilation.
+
+Voir [test_native_ph_guard_causes](../../test/test_native_ph_guard_causes/test_ph_guard_causes.cpp) : le test lit le **texte source** des huit appels à `setGuardRefusalCause()` et échoue si un identifiant hors liste blanche de seuils y apparaît (donc si une mesure est réintroduite), et mesure la longueur en **octets** (pas en caractères) de chaque texte après substitution des seuils réels.
 
 ### 3. Fail-closed sur pH indisponible (régulation ORP automatique)
 

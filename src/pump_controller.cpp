@@ -913,10 +913,21 @@ void PumpControllerClass::tickPhGuardSurveillance() {
                          "le pH au réactif";
       systemLogger.critical("[Dosage pH] " + msg);
       mqttManager.publishAlert("ph_guard", msg);
-      setGuardRefusalCause(0, "pH brut au-dessus de la butée de sécurité (" + String(phRaw, 2) +
-                              " > " + String(kPhCeilingRawHard, 2) + ")");
+      // Texte posé par la garde (feature-149, 2026-10-10) : le SEUIL, jamais la
+      // mesure. setGuardRefusalCause() est un edge-trigger — la mesure vaut
+      // par construction le seuil à l'instant de l'écriture, puis devient
+      // fausse à mesure que le pH évolue sous un texte figé pendant tout le
+      // blocage (relevé de production, carte à 6,67 / bandeau « 6,70 sous
+      // 6,70 »). Le seuil, lui, est constant et ne périme jamais.
+      setGuardRefusalCause(0, "pH brut au-dessus de la butée de sécurité (" +
+                              String(kPhCeilingRawHard, 1) + ") — dosage pH+ suspendu.");
     } else if (!rawHardHigh && _phRawHardHighBlockActive) {
       _phRawHardHighBlockActive = false;
+      // ⛔ DEUX décimales, délibérément (feature-149) : kPhGuardReleaseHysteresis
+      // = 0,05 n'est pas ronde au dixième — le point de relâche vaut
+      // réellement 8,05. L'arrondir au dixième annoncerait une reprise de
+      // dosage à un pH que l'appareil n'utilise pas. Ne pas aligner ce
+      // message sur les causes de garde ci-dessus.
       systemLogger.info("[Dosage pH] pH brut redescendu à " + String(phRaw, 2) + " (butée " +
                         String(kPhCeilingRawHard, 2) + " − hystérésis " +
                         String(kPhGuardReleaseHysteresis, 2) +
@@ -935,11 +946,19 @@ void PumpControllerClass::tickPhGuardSurveillance() {
       mqttManager.publishAlert("ph_guard", msg);
       // La butée brute, plus grave, ne doit pas être écrasée si elle bloque aussi.
       if (!_phRawHardHighBlockActive) {
-        setGuardRefusalCause(0, "pH au-dessus du plafond de sécurité (" + String(ph, 2) +
-                                " > " + String(kPhCeilingCorrected, 2) + ")");
+        // Texte posé par la garde (feature-149, 2026-10-10) : le SEUIL, jamais
+        // la mesure — même motif que la butée brute ci-dessus (edge-trigger,
+        // mesure vraie seulement à l'instant de l'écriture).
+        setGuardRefusalCause(0, "pH au-dessus du plafond de sécurité (" +
+                                String(kPhCeilingCorrected, 1) + ") — dosage pH+ suspendu.");
       }
     } else if (!high && _phHighBlockActive) {
       _phHighBlockActive = false;
+      // ⛔ DEUX décimales, délibérément (feature-149) : kPhGuardReleaseHysteresis
+      // = 0,05 n'est pas ronde au dixième — le point de relâche vaut
+      // réellement 7,55. L'arrondir au dixième annoncerait une reprise de
+      // dosage à un pH que l'appareil n'utilise pas. Ne pas aligner ce
+      // message sur les causes de garde ci-dessus.
       systemLogger.info("[Dosage pH] pH redescendu à " + String(ph, 2) + " (plafond " +
                         String(kPhCeilingCorrected, 2) + " − hystérésis " +
                         String(kPhGuardReleaseHysteresis, 2) +
@@ -986,20 +1005,31 @@ void PumpControllerClass::tickPhGuardSurveillance() {
         systemLogger.critical("[Dosage pH] " + msg);
         mqttManager.publishAlert("ph_guard", msg);
       }
-      // Texte imposé MOT À MOT par le gate pool-chemistry (bug-135, 2026-10-05)
-      // — ne pas reformuler sans nouveau passage. Posé seulement si NON
-      // discriminante (cf. commentaire ci-dessus) : la garde corrigée pose sa
-      // propre cause plus bas, inconditionnellement.
+      // Texte imposé MOT À MOT par le gate pool-chemistry (feature-149,
+      // 2026-10-10) — ne pas reformuler sans nouveau passage. Posé seulement
+      // si NON discriminante (cf. commentaire ci-dessus) : la garde corrigée
+      // pose sa propre cause plus bas, inconditionnellement. Les DEUX seuils
+      // remplacent les deux MESURES de l'ancien texte : setGuardRefusalCause()
+      // est un edge-trigger, la mesure vaut par construction le seuil à
+      // l'instant de l'écriture puis devient fausse pendant tout le blocage.
+      // L'opposition brut/corrigé — ce qui pointe l'offset — reste portée par
+      // les deux seuils, qui sont constants et ne périment jamais.
+      // ⚠️ Ligne la plus longue des quatre : son ancien texte (mesures comprises)
+      // dépassait kDoseBlockedReasonMaxLen et était tronqué en production —
+      // l'instruction finale « vérifiez l'offset pH » n'atteignait jamais
+      // l'écran. Règle posée par le gate : action d'abord, constat ensuite.
       if (!low) {
-        setGuardRefusalCause(0, "pH brut " + String(phRaw, 2) +
-                                " sous la butée de dernier recours (" +
-                                String(kPhFloorRawHard, 2) + ") alors que le pH "
-                                "corrigé (" + String(ph, 2) + ") reste au-dessus "
-                                "du plancher (" + String(kPhFloorCorrected, 2) +
-                                ") — dosage acide suspendu, vérifiez l'offset pH.");
+        setGuardRefusalCause(0, "Vérifiez l'offset pH : brut sous " +
+                                String(kPhFloorRawHard, 1) + ", corrigé au-dessus de " +
+                                String(kPhFloorCorrected, 1) + " — dosage acide suspendu.");
       }
     } else if (!rawHard && _phRawHardBlockActive) {
       _phRawHardBlockActive = false;
+      // ⛔ DEUX décimales, délibérément (feature-149) : kPhGuardReleaseHysteresis
+      // = 0,05 n'est pas ronde au dixième — le point de relâche vaut
+      // réellement 6,25. L'arrondir au dixième annoncerait une reprise de
+      // dosage à un pH que l'appareil n'utilise pas. Ne pas aligner ce
+      // message sur les causes de garde ci-dessus.
       systemLogger.info("[Dosage pH] pH brut remonté à " + String(phRaw, 2) + " (butée " +
                         String(kPhFloorRawHard, 2) + " + hystérésis " +
                         String(kPhGuardReleaseHysteresis, 2) +
@@ -1015,17 +1045,26 @@ void PumpControllerClass::tickPhGuardSurveillance() {
       systemLogger.critical("[Dosage pH] " + msg);
       mqttManager.publishAlert("ph_guard", msg);
       // Cause exposée au WS (canDose n'est pas appelé tant que la garde bloque).
-      // Texte imposé MOT À MOT par le gate pool-chemistry (bug-135, 2026-10-05)
-      // — ne pas reformuler sans nouveau passage. Posé INCONDITIONNELLEMENT
-      // (priorité INVERSÉE par rapport à l'ancienne version) : c'est la valeur
-      // CORRIGÉE qui fait foi à l'écran (carte pH), donc c'est TOUJOURS elle
-      // qui doit apparaître dans la cause de refus quand elle bloque — y
-      // compris quand la butée brute bloque aussi au même tick (cas non
-      // discriminant, voir le commentaire du bloc ci-dessus).
-      setGuardRefusalCause(0, "pH " + String(ph, 2) + " sous le plancher de sécurité (" +
-                              String(kPhFloorCorrected, 2) + ") — dosage acide suspendu.");
+      // Texte imposé MOT À MOT par le gate pool-chemistry (feature-149,
+      // 2026-10-10) — ne pas reformuler sans nouveau passage. Posé
+      // INCONDITIONNELLEMENT (priorité INVERSÉE par rapport à l'ancienne
+      // version) : c'est la valeur CORRIGÉE qui fait foi à l'écran (carte pH),
+      // donc c'est TOUJOURS elle qui doit apparaître dans la cause de refus
+      // quand elle bloque — y compris quand la butée brute bloque aussi au
+      // même tick (cas non discriminant, voir le commentaire du bloc
+      // ci-dessus). Le SEUIL remplace la MESURE : setGuardRefusalCause() est
+      // un edge-trigger, la mesure vaut par construction le seuil à l'instant
+      // de l'écriture puis devient fausse pendant tout le blocage (relevé de
+      // production, carte à 6,67 / bandeau « 6,70 sous 6,70 »).
+      setGuardRefusalCause(0, "pH sous le plancher de sécurité (" +
+                              String(kPhFloorCorrected, 1) + ") — dosage acide suspendu.");
     } else if (!low && _phLowBlockActive) {
       _phLowBlockActive = false;
+      // ⛔ DEUX décimales, délibérément (feature-149) : kPhGuardReleaseHysteresis
+      // = 0,05 n'est pas ronde au dixième — le point de relâche vaut
+      // réellement 6,75. L'arrondir au dixième annoncerait une reprise de
+      // dosage à un pH que l'appareil n'utilise pas. Ne pas aligner ce
+      // message sur les causes de garde ci-dessus.
       systemLogger.info("[Dosage pH] pH remonté à " + String(ph, 2) + " (plancher " +
                         String(kPhFloorCorrected, 2) + " + hystérésis " +
                         String(kPhGuardReleaseHysteresis, 2) +
@@ -1136,7 +1175,11 @@ bool PumpControllerClass::isPhGuardBlocking(bool countRefusal) {
       saveMqttConfig();
       systemLogger.critical("[Dosage pH] " + alert);
       mqttManager.publishAlert("ph_guard", alert);
-      setGuardRefusalCause(0, "régulation pH basculée en manuel (refus de garde répétés)");
+      // feature-149 : point final OBLIGATOIRE — cette cause alimente
+      // `_lastRefusalCause[0]`, que l'alerte horaire du mode Programmé
+      // concatène sans ajouter de ponctuation. Sans lui : « …répétés) Le
+      // volume quotidien… », mots collés. Invariant verrouillé par T7.
+      setGuardRefusalCause(0, "régulation pH basculée en manuel (refus de garde répétés).");
     }
   }
 
@@ -1149,9 +1192,18 @@ bool PumpControllerClass::isPhGuardBlocking(bool countRefusal) {
       _phScheduledAlertMs = nowMs;
       // R2 : `_lastRefusalCause[0]` est un tampon char[] — String(...) explicite
       // (concaténation littéral + char* impossible sans elle).
+      // feature-149 : plus de point ajouté ici. Les CINQ causes qui écrivent dans
+      // `_lastRefusalCause[0]` se terminent désormais par un point — les quatre
+      // gardes pH (invariant posé par le gate pool-chemistry) ET l'escalade
+      // « basculée en manuel » ci-dessus, qui n'en avait pas. Invariant verrouillé
+      // par T7 (test_native_ph_guard_causes).
+      // En ajouter un second produisait « …suspendu.. Le volume… » ; en n'en ayant
+      // aucun on obtiendrait « …répétés) Le volume… », mots collés. Le double point
+      // préexistait pour les causes « plancher » et « offset », qui finissaient déjà
+      // par un point ; ce lot aligne les autres, donc réparable d'un seul endroit.
       const String msg = "Dosage pH programmé refusé — " +
                          String(_lastRefusalCause[0]) +
-                         ". Le volume quotidien ne sera pas injecté tant que la garde "
+                         " Le volume quotidien ne sera pas injecté tant que la garde "
                          "tient ; la régulation n'est PAS basculée en manuel dans ce "
                          "mode. Contrôler le pH au réactif, l'offset et le produit "
                          "déclaré.";
