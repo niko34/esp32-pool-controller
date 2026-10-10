@@ -492,32 +492,39 @@ void test_t2_aucune_mesure_reintroduite(void) {
 }
 
 // =============================================================================
-// T3 — les QUATRE causes pH utilisent , 1) ; relaches et hysteresis a , 2)
+// T3 — les SIX causes latchees citant un seuil pH utilisent , 1) ;
+//      relaches et hysteresis a , 2)
 // =============================================================================
+// feature-150 etend la regle "une decimale" (feature-149, pH seul) aux DEUX
+// causes ORP qui citent un seuil PH : kPhCeilingRawHard (~1487) et
+// kPhOrpInhibit (~1524). Motif du gate : ces deux constantes sont DEJA
+// citees par une cause pH homonyme (feature-149) -- les deux gardes mordent
+// sur la MEME condition et peuvent s'afficher cote a cote (une ligne par
+// voie) ; les montrer a des precisions differentes (8.1 cote pH, 8.10 cote
+// ORP) reproduirait exactement la contradiction que feature-149 corrigeait.
+// Les SIX causes : les 4 pH (922, 952, 1022, 1059) + les 2 ORP (1487, 1524).
+// Les DEUX causes restantes (1178 fallback manuel, 1331 nanKind) sont du
+// texte pur sans substitution : rien a y verifier ici (voir T7 pour 1178).
 
-void test_t3_les_quatre_causes_ph_utilisent_une_decimale(void) {
-  // Les quatre causes pH correspondent aux sites#1..4 dans l'ordre du fichier
-  // (922, 952, 1022 [2 substitutions], 1059) — tous pompe=0, tous AVANT le
-  // site « manuel » (1178, sans substitution) et les sites ORP (pompe=1).
+void test_t3_les_six_causes_latchees_utilisent_une_decimale(void) {
   int nbAvecSubst = 0;
   for (const CallSite& site : g_sites) {
-    if (site.name.find("pompe=0") == std::string::npos) continue;
     Analysis a = analyzeCauseExpr(site.exprText);
     char failMsg[320];
     snprintf(failMsg, sizeof(failMsg), "%s : %s", site.name.c_str(), a.failReason.c_str());
     TEST_ASSERT_TRUE_MESSAGE(a.ok, failMsg);
-    if (a.allDecimalsSeen.empty()) continue;  // site 1178 : pur litteral, rien a verifier
+    if (a.allDecimalsSeen.empty()) continue;  // 1178/1331 : pur litteral, rien a verifier
     nbAvecSubst++;
     for (int n : a.allDecimalsSeen) {
       char msg[192];
       snprintf(msg, sizeof(msg),
-          "%s : une cause de garde pH substitue encore %d decimales (attendu 1)",
+          "%s : une cause de garde (pH ou ORP) substitue encore %d decimales (attendu 1)",
           site.name.c_str(), n);
       TEST_ASSERT_EQUAL_INT_MESSAGE(1, n, msg);
     }
   }
-  TEST_ASSERT_EQUAL_INT_MESSAGE(4, nbAvecSubst,
-      "attendu exactement 4 causes pH (pompe=0) portant une substitution de seuil");
+  TEST_ASSERT_EQUAL_INT_MESSAGE(6, nbAvecSubst,
+      "attendu exactement 6 causes (4 pH + 2 ORP) portant une substitution de seuil");
 }
 
 // -----------------------------------------------------------------------------
@@ -647,14 +654,18 @@ void test_t5_is_rounded_to_tenth_non_vacuite(void) {
       "6.705 (a mi-chemin entre deux dixiemes) ne doit PAS passer pour rond");
 }
 
-void test_t5_static_assert_les_quatre_seuils_sont_ronds(void) {
+void test_t5_static_assert_les_cinq_seuils_sont_ronds(void) {
   // Rejoue a l'execution ce que le static_assert de constants.h verifie a la
   // compilation — si jamais quelqu'un neutralisait le static_assert (#if 0),
-  // ce test resterait un filet.
+  // ce test resterait un filet. CINQUIEME seuil (feature-150) : kPhOrpInhibit
+  // est desormais cite par une cause ORP a une decimale (~1524), en plus de
+  // la cause pH (~952) et des deux bandes d'hysteresis -- il doit rester rond
+  // au dixieme comme les quatre autres, sans quoi la cause ORP mentirait.
   TEST_ASSERT_TRUE(numfmt::isRoundedToTenth(kPhFloorCorrected));
   TEST_ASSERT_TRUE(numfmt::isRoundedToTenth(kPhFloorRawHard));
   TEST_ASSERT_TRUE(numfmt::isRoundedToTenth(kPhCeilingCorrected));
   TEST_ASSERT_TRUE(numfmt::isRoundedToTenth(kPhCeilingRawHard));
+  TEST_ASSERT_TRUE(numfmt::isRoundedToTenth(kPhOrpInhibit));
 }
 
 // =============================================================================
@@ -824,11 +835,11 @@ int main(int argc, char** argv) {
 
   RUN_TEST(test_t2_aucune_mesure_reintroduite);
 
-  RUN_TEST(test_t3_les_quatre_causes_ph_utilisent_une_decimale);
+  RUN_TEST(test_t3_les_six_causes_latchees_utilisent_une_decimale);
   RUN_TEST(test_t3_relaches_et_hysteresis_restent_a_deux_decimales);
 
   RUN_TEST(test_t5_is_rounded_to_tenth_non_vacuite);
-  RUN_TEST(test_t5_static_assert_les_quatre_seuils_sont_ronds);
+  RUN_TEST(test_t5_static_assert_les_cinq_seuils_sont_ronds);
 
   RUN_TEST(test_t6_discriminance_site_994_1022_if_not_low);
   RUN_TEST(test_t6_inconditionnalite_cause_floor_corrigee);

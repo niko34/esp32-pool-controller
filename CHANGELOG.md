@@ -2,6 +2,30 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [2.65.1] - 2026-10-10
+
+### Firmware
+- **Régulation ORP — décimales des causes de garde alignées sur le pH (feature-150)** : les
+  deux causes de garde ORP qui citent un seuil **pH** (`kPhCeilingRawHard`, `kPhOrpInhibit`)
+  passent à **une** décimale, comme les causes pH depuis feature-149 (v2.65.0). La même
+  constante `kPhCeilingRawHard` s'affichait `8.10` côté ORP et `8.1` côté pH ; les deux gardes
+  se déclenchant sur la même condition (pH brut trop haut) et le bandeau affichant une ligne
+  par voie, l'utilisateur pouvait lire le même seuil écrit deux fois différemment. `kPhOrpInhibit`
+  rejoint le `static_assert` de rondeur (désormais cinq seuils couverts). Aucun seuil,
+  hystérésis, condition de déclenchement ni code de refus modifié : seul le nombre de décimales
+  change.
+
+### Documentation
+- `docs/subsystems/pump-controller.md` : textes des deux causes ORP mis à jour, portée de la
+  règle « seuil, pas mesure » étendue explicitement aux deux voies, et recensement complet des
+  citations de seuil pH du fichier (six causes latchées à une décimale, le reste à deux pour une
+  raison identifiée).
+- [ADR-0095](docs/adr/0095-une-cause-de-garde-cite-un-seuil-pas-une-mesure.md) : la mention
+  « incohérence connue, non traitée » sur les causes ORP est retirée — traitée par ce lot.
+- `docs/API.md` : exemple de `orpDoseBlockedReason` mis à jour sur le nouveau format.
+
+---
+
 ## [2.65.0] - 2026-10-10
 
 ### Firmware

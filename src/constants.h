@@ -1746,17 +1746,23 @@ static_assert(kPhCeilingCorrected <= kPhOrpInhibit,
 static_assert(kPhCeilingRawHard >= kPhCeilingCorrected - kPhOffsetMin - 1e-4f,
               "Butee brute haute trop basse : elle mordrait avant le plafond "
               "corrige pour un offset legitime, rendant celui-ci inoperant");
-// (x) Condition bloquante du gate pool-chemistry (feature-149) : les causes de
-// garde pH affichent un SEUIL a UNE decimale (String(x,1)) -- il doit donc
-// etre rond au dixieme, sinon l'affichage ment (ex. 6,8 affiche pour 6,75 reel).
+// (x) Condition bloquante du gate pool-chemistry (feature-149, etendue par
+// feature-150) : les causes de garde pH ET ORP affichent un SEUIL a UNE
+// decimale (String(x,1)) -- il doit donc etre rond au dixieme, sinon
+// l'affichage ment (ex. 6,8 affiche pour 6,75 reel). kPhOrpInhibit est cite
+// par une cause de la voie ORP (feature-150) sur la MEME constante qu'une
+// cause pH : les deux doivent rester rondes ensemble, sous peine de voir le
+// meme seuil ecrit differemment selon la voie qui l'affiche.
 static_assert(numfmt::isRoundedToTenth(kPhFloorCorrected) &&
                   numfmt::isRoundedToTenth(kPhFloorRawHard) &&
                   numfmt::isRoundedToTenth(kPhCeilingCorrected) &&
-                  numfmt::isRoundedToTenth(kPhCeilingRawHard),
-              "Un seuil pH cite dans une cause de garde doit etre rond au dixieme : "
-              "les causes l'affichent avec UNE decimale (feature-149). Un seuil a "
-              "6,75 s'afficherait 6,8 -- un seuil de securite FAUX. Corriger la "
-              "marge, ou repasser la cause a deux decimales via pool-chemistry.");
+                  numfmt::isRoundedToTenth(kPhCeilingRawHard) &&
+                  numfmt::isRoundedToTenth(kPhOrpInhibit),
+              "Un seuil pH cite dans une cause de garde pH ou ORP doit etre rond "
+              "au dixieme : les causes l'affichent avec UNE decimale (feature-149, "
+              "feature-150). Un seuil a 6,75 s'afficherait 6,8 -- un seuil de "
+              "securite FAUX. Corriger la marge, ou repasser la cause a deux "
+              "decimales via pool-chemistry.");
 
 // --- Diagnostic EZO : fenêtre de « sonde saine » (v2.25.0) ---
 // Sert UNIQUEMENT à nuancer le message d'escalade (3 refus / 24 h) : une sonde

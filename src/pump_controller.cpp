@@ -1478,8 +1478,14 @@ void PumpControllerClass::tickOrpPhInhibitSurveillance() {
       // Cause exposée au WS (canDose(1) n'est pas appelé tant que l'inhibition dure).
       // Même raison qu'au site jumeau ci-dessous : cause latchée, donc pas de
       // mesure — la butée, elle, est constante.
+      // Une décimale (feature-150, 2026-10-10) : la cause pH (feature-149)
+      // affiche déjà cette MÊME constante « (8.1) » — les deux gardes mordent
+      // sur la même condition (pH brut trop haut) et peuvent s'afficher
+      // ensemble, une ligne par voie. Ne pas confondre avec la bande
+      // d'hystérésis ci-dessus (kPhCeilingRawHard − kPhGuardReleaseHysteresis),
+      // qui reste à deux décimales : non ronde, elle ne doit pas s'arrondir.
       setGuardRefusalCause(1, "pH brut en butée haute (butée " +
-                              String(kPhCeilingRawHard, 2) +
+                              String(kPhCeilingRawHard, 1) +
                               ") — dosage chlore suspendu");
       _orpPhCauseKind = 3;
     } else {
@@ -1511,7 +1517,11 @@ void PumpControllerClass::tickOrpPhInhibitSurveillance() {
       // On y met donc le SEUIL, qui est une constante et ne périme jamais — et
       // qui est de toute façon le chiffre utile : il dit où redescendre. La
       // mesure vive est déjà affichée sur la carte pH, à côté.
-      setGuardRefusalCause(1, "pH trop élevé (seuil " + String(kPhOrpInhibit, 2) +
+      // Une décimale (feature-150, 2026-10-10) : même règle que ci-dessus —
+      // sans perte (kPhOrpInhibit = 7,60, rond au dixième). Ne pas confondre
+      // avec la bande d'hystérésis ci-dessus (kPhOrpInhibit −
+      // kPhGuardReleaseHysteresis), qui reste à deux décimales.
+      setGuardRefusalCause(1, "pH trop élevé (seuil " + String(kPhOrpInhibit, 1) +
                               ") — dosage chlore suspendu");
       _orpPhCauseKind = 0;
     }

@@ -3,7 +3,7 @@
 - **Statut** : Accepté
 - **Date** : 2026-10-10
 - **Décideurs** : `pool-chemistry` (GO sous conditions, deux passages, 2026-10-10)
-- **Spec(s) liée(s)** : [feature-149](../../specs/features/done/feature-149-plus-de-mesure-figee-dans-les-causes-de-garde-ph.md) (plus de mesure figée dans les causes de garde pH) ; propage une décision déjà prise côté ORP le 2026-10-08 (commentaire `pump_controller.cpp:1452-1461`, non formalisée en ADR à l'époque) ; référence [bug-135](../../specs/features/todo/bug-135-butee-brute-ph-se-declenche-sur-une-lecture-isolee.md) (priorité des causes pour l'acide, non remise en cause ici)
+- **Spec(s) liée(s)** : [feature-149](../../specs/features/done/feature-149-plus-de-mesure-figee-dans-les-causes-de-garde-ph.md) (plus de mesure figée dans les causes de garde pH) ; propage une décision déjà prise côté ORP le 2026-10-08 (commentaire `pump_controller.cpp:1452-1461`, non formalisée en ADR à l'époque) ; référence [bug-135](../../specs/features/todo/bug-135-butee-brute-ph-se-declenche-sur-une-lecture-isolee.md) (priorité des causes pour l'acide, non remise en cause ici) ; étendue par [feature-150](../../specs/features/done/feature-150-decimales-des-causes-orp.md) (portée aux deux voies, voir en bas de page)
 
 ## Contexte
 
@@ -122,21 +122,26 @@ au texte latché, relu en continu pendant toute la durée du blocage.
   `setGuardRefusalCause()` doit d'abord faire tomber le test de mutation dédié
   (`test_native_ph_guard_causes`) — s'il n'y parvient pas, c'est que la règle tient.
 
-## Référence — incohérence connue, assumée hors périmètre
+## Référence — portée étendue aux deux voies (feature-150, 2026-10-10)
 
-Les causes **ORP** (`orp_ph_inhibit`, section « Inhibition du dosage ORP sur pH élevé ») citent
-leurs seuils à **deux** décimales (ex. « butée 8.10 »), alors que les causes **pH** affichent
-désormais **8.1** pour exactement la **même constante** (`kPhCeilingRawHard`). Cette
-incohérence n'est **pas** un oubli de cet ADR : le périmètre de feature-149 portait
-explicitement sur la **mesure figée**, pas sur l'harmonisation du nombre de décimales entre les
-deux voies. Elle est consignée ici pour qu'elle ne soit pas perdue, et resterait à reprendre par
-une spec dédiée si l'utilisateur le souhaite — pas par une extension silencieuse de celle-ci.
+Au moment de l'acceptation de cet ADR, les causes **ORP** (`orp_ph_inhibit`) citaient encore
+leurs seuils pH à **deux** décimales (ex. « butée 8.10 ») pour exactement la **même constante**
+(`kPhCeilingRawHard`) que la cause **pH** correspondante, déjà passée à **8.1** — une
+incohérence laissée ouverte à l'origine, qualifiée à tort de « voie ORP saine » dans la spec
+feature-149 (le mot n'annonçait qu'une vérification partielle : absence de mesure vive, pas
+d'examen du nombre de décimales). **Traitée par feature-150** : les deux causes ORP
+(`pump_controller.cpp:1488, 1524`) citent désormais leurs seuils pH à une décimale, et
+`kPhOrpInhibit` a rejoint le `static_assert` de rondeur (`src/constants.h:1752-1756`), qui
+couvre maintenant **cinq** seuils. La règle « une cause latchée cite un seuil, jamais une
+mesure, à une décimale » vaut désormais **identiquement** sur les deux voies — plus
+d'exception consignée.
 
 ## Références
 
 - Code : [`src/pump_controller.cpp`](../../src/pump_controller.cpp) — `setGuardRefusalCause()`
-  (ligne 759), sites 916/938/994/1025 (voie pH) ; [`src/constants.h:1695-1756`](../../src/constants.h) —
-  `numfmt::isRoundedToTenth()` et le `static_assert` associé
-- Spec : [feature-149](../../specs/features/done/feature-149-plus-de-mesure-figee-dans-les-causes-de-garde-ph.md)
+  (ligne 759), sites 916/938/994/1025 (voie pH), sites 1488/1524 (voie ORP, feature-150) ;
+  [`src/constants.h:1695-1756`](../../src/constants.h) — `numfmt::isRoundedToTenth()` et le
+  `static_assert` associé (cinq seuils depuis feature-150)
+- Spec : [feature-149](../../specs/features/done/feature-149-plus-de-mesure-figee-dans-les-causes-de-garde-ph.md), [feature-150](../../specs/features/done/feature-150-decimales-des-causes-orp.md)
 - Tests : [`test/test_native_ph_guard_causes/test_ph_guard_causes.cpp`](../../test/test_native_ph_guard_causes/test_ph_guard_causes.cpp)
 - Doc : [`docs/subsystems/pump-controller.md`](../subsystems/pump-controller.md#règle--une-cause-latchée-ne-porte-jamais-une-mesure-vive-v2571), [`docs/API.md`](../API.md#get-data--write), [`docs/MQTT.md`](../MQTT.md), [`CHANGELOG.md`](../../CHANGELOG.md)

@@ -609,16 +609,25 @@ Deux correctifs de revue v2.25.0, tous deux issus de cas observés :
 
 #### Règle : une cause latchée ne porte jamais une mesure vive (v2.57.1)
 
-**Une cause de refus latchée ne porte jamais une mesure vive — elle porte un seuil, ou rien.** Propagée à la voie pH en v2.65.0 (feature-149, voir [plus bas](#propagation-à-la-voie-ph-feature-149-v2650)).
+**Une cause de refus latchée ne porte jamais une mesure vive — elle porte un seuil, ou rien.** Propagée à la voie pH en v2.65.0 (feature-149), puis harmonisée en décimales avec la voie pH en v2.65.1 (feature-150, voir [plus bas](#propagation-à-la-voie-ph-puis-à-la-voie-orp-feature-149-v2650-feature-150-v2651)).
 
 `setGuardRefusalCause()` est volontairement un **latch** : il n'est réécrit qu'en cas d'**aggravation** de gravité (voir l'anti-rafale ci-dessus), pas à chaque tour. C'est délibéré — réécrire à chaque mesure faisait battre deux libellés contradictoires, avec un `critical` et une alerte MQTT par oscillation, et chassait le journal de la partition `history`. Mais ce choix a une conséquence directe : **toute valeur de mesure inscrite dans ce texte se fige** au moment du déclenchement et ne se rafraîchit plus tant que l'épisode dure, alors que la carte pH, elle, continue d'évoluer en direct.
 
 **Incident du 2026-10-08** : le bandeau affichait *« pH trop élevé (8.28) — dosage chlore suspendu »* pendant que la carte pH affichait **8,1** au même instant — deux valeurs différentes pour la même grandeur, au même écran, toutes deux correctes chacune à leur heure. Correctif : les deux causes de refus de ce bloc (`tickOrpPhInhibitSurveillance()`) remplacent la mesure par le **seuil franchi**, qui est une constante et ne périme jamais — et qui est de toute façon le chiffre utile pour l'utilisateur, puisqu'il dit **où redescendre** :
 
-| Avant (mesure, périmée) | Après (seuil, stable) |
-|---|---|
-| `pH trop élevé (8.28) — dosage chlore suspendu` | `pH trop élevé (seuil 7.60) — dosage chlore suspendu` ([`pump_controller.cpp:1394`](../../src/pump_controller.cpp:1394), `kPhOrpInhibit`) |
-| `pH brut en butée haute (8.14) — dosage chlore suspendu` | `pH brut en butée haute (butée 8.10) — dosage chlore suspendu` ([`pump_controller.cpp:1361`](../../src/pump_controller.cpp:1361), `kPhCeilingRawHard`) |
+| Avant (mesure, périmée) | Après le correctif v2.57.1 (seuil, deux décimales) | Après feature-150, v2.65.1 (seuil, une décimale) |
+|---|---|---|
+| `pH trop élevé (8.28) — dosage chlore suspendu` | `pH trop élevé (seuil 7.60) — dosage chlore suspendu` | `pH trop élevé (seuil 7.6) — dosage chlore suspendu` ([`pump_controller.cpp:1524`](../../src/pump_controller.cpp:1524), `kPhOrpInhibit`) |
+| `pH brut en butée haute (8.14) — dosage chlore suspendu` | `pH brut en butée haute (butée 8.10) — dosage chlore suspendu` | `pH brut en butée haute (butée 8.1) — dosage chlore suspendu` ([`pump_controller.cpp:1487`](../../src/pump_controller.cpp:1487), `kPhCeilingRawHard`) |
+
+⚠️ **feature-150 (2026-10-10)** : ces deux textes sont passés de deux à **une** décimale, pour la
+même raison que les causes pH ci-dessous — `kPhCeilingRawHard` est la **même constante** que
+celle citée par la cause pH « pH brut au-dessus de la butée de sécurité (8.1) », et les deux
+gardes se déclenchent sur la **même condition** (pH brut trop haut) : le bandeau du tableau de
+bord, qui affiche une ligne par voie, pouvait montrer le même seuil écrit `8.1` et `8.10` l'un
+sous l'autre. Les textes de relâche et les bandes d'hystérésis ORP (`8,05` / `7,55`, non ronds)
+**restent à deux décimales** — voir [la section dédiée](#propagation-à-la-voie-ph-puis-à-la-voie-orp-feature-149-v2650-feature-150-v2651),
+dont la portée s'étend désormais explicitement aux deux voies.
 
 **Aucun seuil ni aucune décision de dosage n'est modifié** : ce sont deux chaînes de caractères. La mesure en direct reste disponible — c'est la **carte pH** du tableau de bord (champ `ph` de `GET /data` et du message WebSocket `sensor_data`), rafraîchie à chaque tour, jamais latchée.
 
@@ -626,17 +635,21 @@ Les alertes MQTT (`publishAlert("orp_ph_inhibit", …)`, lignes 1351 et 1378) **
 
 **Pour tout futur ajout d'une cause de refus** (`setGuardRefusalCause`) : n'y inscrire une mesure que si le texte est **réécrit à chaque tour** (jamais latché). Si le texte est latché, n'y mettre qu'un seuil — une constante — ou rien.
 
-##### Propagation à la voie pH (feature-149, v2.65.0)
+##### Propagation à la voie pH, puis à la voie ORP (feature-149 v2.65.0, feature-150 v2.65.1)
 
 Le même défaut existait sur les quatre causes pH (`isPhGuardBlocking`, lignes 916/938/994/1025) : un relevé de production du 2026-10-10 a montré le bandeau affichant *« pH 6.70 sous le plancher de sécurité (6.70) »* — **le même nombre apparaît deux fois** — pendant que la carte affichait 6,67. La mesure vaut par construction le seuil à l'instant de l'edge-trigger qui écrit la cause, donc elle n'apporte **aucune information au moment où elle est écrite**, puis devient fausse ensuite. Le correctif propage exactement la règle ci-dessus à la voie pH, avec trois précisions tranchées par le gate `pool-chemistry` (GO sous conditions, deux passages, 2026-10-10) :
 
 1. **Une cause latchée cite un seuil, jamais une mesure** — déjà posé ci-dessus, désormais vrai des **deux** voies (pH et ORP).
 2. **Action d'abord, constat ensuite.** Le tampon `_lastRefusalCause[2][96]` ne fait que 95 octets utiles (`kDoseBlockedReasonMaxLen`) et `strlcpy` coupe silencieusement la fin : une phrase qui annonce l'action requise (« dosage acide suspendu ») avant d'éventuels détails survit à une troncature ; une phrase qui termine sur l'instruction la perd (voir l'exemple de troncature documenté [ci-dessus](#priorité-des-causes-pour-lacide-discriminante-depuis-v2551)).
-3. **Une décimale pour un pH de mesure ou de seuil ; deux pour un réglage ou une bande de diagnostic.** Les quatre seuils cités (`kPhFloorCorrected`, `kPhFloorRawHard`, `kPhCeilingCorrected`, `kPhCeilingRawHard`) sont tous **ronds au dixième** — c'est ce qui rend une décimale suffisante sans perte d'information. ⛔ **Exception explicite, à ne PAS appliquer par réflexe** : `kPhGuardReleaseHysteresis = 0,05` n'est **pas** ronde au dixième. Les messages de **relâche** (logs de retour sous/au-dessus du seuil + hystérésis) et les bandes d'hystérésis ORP restent à **deux** décimales — les points de relâche réels valent 6,75 / 7,55 / 6,25 / 8,05, et les arrondir au dixième (6,8 / 7,5 / 6,3 / 8,1) annoncerait une reprise de dosage à un pH que l'appareil n'utilise pas.
+3. **Une décimale pour un pH de mesure ou de seuil ; deux pour un réglage ou une bande de diagnostic.** Les cinq seuils cités (`kPhFloorCorrected`, `kPhFloorRawHard`, `kPhCeilingCorrected`, `kPhCeilingRawHard`, `kPhOrpInhibit`) sont tous **ronds au dixième** — c'est ce qui rend une décimale suffisante sans perte d'information. ⛔ **Exception explicite, à ne PAS appliquer par réflexe** : `kPhGuardReleaseHysteresis = 0,05` n'est **pas** ronde au dixième. Les messages de **relâche** (logs de retour sous/au-dessus du seuil + hystérésis) et les bandes d'hystérésis ORP restent à **deux** décimales — les points de relâche réels valent 6,75 / 7,55 / 6,25 / 8,05, et les arrondir au dixième (6,8 / 7,5 / 6,3 / 8,1) annoncerait une reprise de dosage à un pH que l'appareil n'utilise pas.
 
-**Garde-fou à la compilation.** Un `static_assert(numfmt::isRoundedToTenth(...))` ([`constants.h:1752-1755`](../../src/constants.h:1752)) vérifie que les quatre seuils cités dans les causes pH sont bien ronds au dixième. Sans lui, un futur `kPhSafetyMargin` à 0,45 (au lieu de 0,50) ferait afficher « 6,8 » pour un seuil réel à 6,75 — un **seuil de sécurité faux** affiché à l'utilisateur. Vérifié par mutation : abaisser `kPhSafetyMargin` à 0,45 casse effectivement la compilation.
+⚠️ **Résidu laissé par feature-149, corrigé par feature-150 (2026-10-10).** La spec feature-149 avait qualifié la voie ORP de « saine » dans son hors-périmètre — mais une seule chose avait été vérifiée à ce moment-là : que ses causes ne citent pas de mesure vive. Le nombre de décimales n'avait **pas** été examiné. Conséquence concrète : les deux causes ORP (`pump_controller.cpp:1487, 1524`) citaient encore `kPhCeilingRawHard` et `kPhOrpInhibit` à **deux** décimales (« butée 8.10 », « seuil 7.60 ») alors que la cause pH affichait désormais **8.1** pour `kPhCeilingRawHard` — **la même constante, écrite deux fois différemment**, visible simultanément puisque pH et ORP se bloquent sur la même condition (pH brut trop haut) et que le bandeau affiche une ligne par voie. feature-150 aligne les deux causes ORP sur une décimale (voir le tableau « Alertes de franchissement » ci-dessus) et ajoute `kPhOrpInhibit` au `static_assert` de rondeur. **La règle des trois points ci-dessus vaut désormais identiquement sur les deux voies, sans exception résiduelle.**
 
-Voir [test_native_ph_guard_causes](../../test/test_native_ph_guard_causes/test_ph_guard_causes.cpp) : le test lit le **texte source** des huit appels à `setGuardRefusalCause()` et échoue si un identifiant hors liste blanche de seuils y apparaît (donc si une mesure est réintroduite), et mesure la longueur en **octets** (pas en caractères) de chaque texte après substitution des seuils réels.
+**Recensement exhaustif des citations de seuil pH** (fait après feature-150, pour ne pas reproduire l'erreur d'appréciation globale de feature-149) : six causes latchées à une décimale (quatre pH + deux ORP) ; tout le reste du fichier reste à deux décimales, chaque site ayant une raison identifiée et vérifiée — logs `critical` + alertes MQTT au franchissement (horodatés, jamais périmés par construction), messages de **relâche**, bandes d'**hystérésis ORP** (8,05 / 7,55, non rondes). **Deux sites n'avaient jamais été examinés avant feature-150** et le sont désormais explicitement : `publishAlert("ph_low_warning", …)` (~ligne 884) et le `systemLogger.info` de relâche ORP (~ligne 1385) — tous deux conformes à la règle (journal/MQTT horodaté ⇒ deux décimales), **à ne pas « corriger » par symétrie** avec les six causes latchées : ce ne sont pas des causes latchées, ce sont des événements ponctuels datés.
+
+**Garde-fou à la compilation.** Un `static_assert(numfmt::isRoundedToTenth(...))` ([`constants.h:1752-1756`](../../src/constants.h:1752)) vérifie que les **cinq** seuils cités dans les causes pH et ORP sont bien ronds au dixième. Sans lui, un futur `kPhSafetyMargin` à 0,45 (au lieu de 0,50) ferait afficher « 6,8 » pour un seuil réel à 6,75 — un **seuil de sécurité faux** affiché à l'utilisateur. Vérifié par mutation : abaisser `kPhSafetyMargin` à 0,45 casse effectivement la compilation.
+
+Voir [test_native_ph_guard_causes](../../test/test_native_ph_guard_causes/test_ph_guard_causes.cpp) : le test lit le **texte source** des dix appels à `setGuardRefusalCause()` (huit pH + deux ORP depuis feature-150) et échoue si un identifiant hors liste blanche de seuils y apparaît (donc si une mesure est réintroduite), et mesure la longueur en **octets** (pas en caractères) de chaque texte après substitution des seuils réels. Les bandes d'hystérésis restent couvertes par un test de mutation distinct (les y faire passer à une décimale doit toujours tuer).
 
 ### 3. Fail-closed sur pH indisponible (régulation ORP automatique)
 
