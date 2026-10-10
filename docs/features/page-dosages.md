@@ -30,16 +30,64 @@ Suivre le volume des bidons de produits chimiques (pH et chlore), alerter quand 
 
 Deux cartes symétriques, une par produit :
 
+Chaque carte produit (pH comme ORP) est découpée en **trois zones séparées par un filet**
+(`<hr class="product-card__sep">`), depuis la correction de maquette du 2026-10-10 qui a
+remplacé la version livrée la veille (voir l'encadré ci-dessous) :
+
 1. **Carte pH** (`#product-ph-card`)
    - Toggle `ph_tracking_enabled` — active / désactive le suivi de ce bidon.
-   - Barre de volume (`#product-ph-bar`) + labels « restant / total » (L).
-   - **Relevé permanent** (v2.45.0, feature-110) : **Volume injecté** (`#product-ph-injected`, mL) et **Démarrages pompe** (`#product-ph-starts`) — affichés **en continu**, pour que le relevé **existe avant** le jour où il est détruit. Refonte ergonomique (2026-10-09, chantier de simplification) : les deux nombres passent d'une liste `<dl>` sur deux lignes à une phrase sur une seule ligne (« *N* injectés · *N* démarrages ») — **toujours affichés**, aucun contenu masqué. Seuls les mots « injectés » / « démarrages » passent en gris (`.muted`) ; les **valeurs** (`#product-ph-injected` / `#product-ph-starts`) restent en contraste plein — c'est le relevé qui compte, pas le libellé.
-   - Champ **Quantité dans le bidon (L)** (`#ph_level_l`, feature-143 — v2.59.0) — **jamais pré-rempli** (placeholder seul), avec le texte d'aide *« Bidon neuf, appoint ou correction : indiquez ce qu'il contient maintenant. »* Depuis le 2026-10-09, le champ et le bouton **Mettre à jour le niveau** sont sur la **même ligne** (classe `.field__row`), champ rétréci à **110 px** — gain d'ergonomie pur, aucun changement de comportement.
-   - Champ **Seuil d'alerte (L)** (`#ph_alert_threshold_l`) — par défaut 2 L. **Depuis le 2026-10-09, s'enregistre automatiquement** au `change` du champ (perte de focus / validation clavier / flèches du spinner) : `POST /save-config` est déclenché par l'écouteur du champ, **avec un anti-rafale de 600 ms** (`debounceSaveProduct()`) — sans lui, chaque clic sur les flèches ↑↓ du champ numérique déclencherait un envoi et une écriture flash distincts. Lui aussi passe en `.field__row`, **rétréci à 110 px comme le champ de niveau** — les deux champs de la carte sont désormais symétriques (demande utilisateur : « les champs », au pluriel). Retour visuel : la classe `.field.is-valid` est posée sur le conteneur `.field` pendant 2 s, affichant le texte « Enregistré » (`.field__success`, motif déjà utilisé ailleurs dans l'UI) avec `role="status"` — annoncé aux lecteurs d'écran, sans interrompre le focus. Échec de validation (valeur non numérique) : `.field.is-error`, toast « Valeur invalide » (singulier, un seul champ est en cause). ⚠️ **Écart assumé au motif du projet** : la convention `bindAutosave()` exclut explicitement les champs numériques (« pas d'auto-save, bouton Sauvegarder uniquement ») ; ce n'est donc **pas** une mise en cohérence avec un motif existant, mais une exception délibérée — justifiée par le fait qu'un seuil d'alerte n'a aucune conséquence immédiate (contrairement à une consigne de régulation).
-   - Bouton **Mettre à jour le niveau** (`#product-ph-update-level`) — pose le niveau saisi **et** réinitialise le cumul **et** les compteurs à 0, dans la même requête. **Demande confirmation** et **présente le relevé** avant de le détruire. **Inchangé** par la refonte du 2026-10-09 : reste le **seul** bouton de la carte, reste irréversible, reste confirmé.
+   - **Zone 1 — ce qu'on lit** (inchangée par la correction du 10/10) : barre de volume
+     (`#product-ph-bar`) + labels « restant / total » (L), puis le **relevé permanent**
+     (v2.45.0, feature-110) **Volume injecté** (`#product-ph-injected`, mL) et **Démarrages
+     pompe** (`#product-ph-starts`) sur une seule ligne (« *N* injectés · *N* démarrages »,
+     depuis le 09/10) — **toujours affiché**, seuls les mots passent en gris (`.muted`), les
+     valeurs restent en contraste plein.
+   - **Zone 2 — ce qu'on fait** : encadré ambre `.callout.callout--warn` (`role="group"`),
+     titré **« Changement de bidon »** (`.product-card__eyebrow`). Il contient le champ
+     **Quantité dans le bidon (L)** (`#ph_level_l`, feature-143 — v2.59.0, jamais pré-rempli)
+     et, **sur la même ligne en vue large / empilé en dessous de 768 px** (`.field__row`,
+     règle responsive ci-dessous), le bouton **Mettre à jour le niveau**
+     (`#product-ph-update-level`). Aide complétée le 10/10 : *« Bidon neuf, appoint ou
+     correction : indiquez ce qu'il contient maintenant. **Remet à zéro le volume injecté et
+     les démarrages ci-dessus.** »* — le texte dit désormais la conséquence destructrice
+     avant le clic, pas seulement la confirmation. Bouton et comportement HTTP **inchangés**
+     depuis le 09/10 : reste le **seul** bouton d'action de la carte, reste irréversible,
+     reste confirmé (`confirmDialog` `danger=true`, relevé présenté avant destruction).
+   - **Zone 3 — ce qu'on règle** : titre **« Réglages »** (`.product-card__eyebrow`), puis le
+     champ **Seuil d'alerte (L)** (`#ph_alert_threshold_l`, défaut 2 L) **à plat, sans
+     encadré** — sur sa propre ligne (règle responsive ci-dessous), avec une **aide
+     permanente** : *« Enregistré automatiquement à la modification. »* C'est elle qui
+     répond à la question « comment ça marche ? » **avant** qu'elle se pose — le retour
+     « Enregistré » (`.field__success`, `role="status"`) ne confirme qu'**après** coup, il ne
+     suffisait pas seul (constat de production du 10/10). Le champ s'enregistre tout seul au
+     `change` (perte de focus / validation clavier / flèches du spinner), avec un
+     **anti-rafale de 600 ms** (`debounceSaveProduct()`) pour éviter un `POST /save-config` +
+     une écriture flash par clic sur les flèches. Échec de validation (valeur non numérique) :
+     `.field.is-error`, toast « Valeur invalide » (singulier). ⚠️ **Écart assumé au motif du
+     projet** : la convention `bindAutosave()` exclut explicitement les champs numériques
+     (« pas d'auto-save, bouton Sauvegarder uniquement ») — ce n'est **pas** une mise en
+     cohérence avec elle, mais une exception délibérée, justifiée par l'absence de
+     conséquence immédiate d'un seuil d'alerte (contrairement à une consigne de régulation).
 2. **Carte Chlore / ORP** (`#product-orp-card`) — strictement symétrique, toggle `orp_tracking_enabled`.
 
-> **Refonte ergonomique du 2026-10-09 (chantier de simplification progressive de l'interface, sans spec numérotée)** — le bouton **« Enregistrer » disparaît** des deux cartes. Ce n'est pas qu'une simplification visuelle : c'est la **correction structurelle** de l'incident à l'origine de feature-143 (08/10/2026, ci-dessus) — un utilisateur avait saisi un niveau puis cliqué sur « Enregistrer » en pensant déclencher la mise à jour du niveau, sans effet puisque ce bouton ne portait que le seuil depuis la v2.59.0. Tant qu'il restait **deux boutons** sur la carte, cette confusion pouvait se reproduire quel que soit le texte d'aide. Il n'en reste plus **qu'un seul** : « Mettre à jour le niveau » — la confusion devient **impossible par construction**, pas seulement moins probable. Contrat HTTP et comportement du niveau **strictement inchangés** ; seul le seuil d'alerte change de mécanique de sauvegarde (ci-dessus). ⚠️ Pas de spec ni d'ID de feature pour ce lot (suite des commits `d86a9a5`/`b5d9a34`/`d5f8…`/`0d1411d` du même jour) — voir la note sur le code ci-dessous.
+> ⚠️ **Historique du chantier (sans spec numérotée) — deux versions en 24 h.** La version du
+> **09/10/2026** retirait le bouton « Enregistrer » mais plaçait le champ de seuil seul en
+> bas de carte, et le champ + bouton « Mettre à jour le niveau » **côte à côte** avec
+> `flex-wrap` en repli mobile. **Rejetée par l'utilisateur sur téléphone le 10/10** : « *un
+> bouton de mise à niveau perdu entre les 2 champs [...] un champ de seuil tout seul en bas.
+> L'écran semble déstructuré* » et « *il n'y a plus de bouton pour enregistrer le seuil
+> d'alerte. Comment ça marche ?* ». **Cause structurelle** : une règle déjà présente dans le
+> CSS du projet force **tout bouton en pleine largeur sous 768 px** — un champ étroit à côté
+> d'un bouton pleine largeur ne peut jamais produire une ligne équilibrée en mobile ; la
+> maquette du 09/10 l'ignorait. **La version du 10/10** (ci-dessus, actuelle) corrige par la
+> structure : encadré dédié pour l'action destructrice, aide permanente pour le réglage
+> silencieux, empilement plutôt que combat de l'invariant `.btn{width:100%}` sous 768 px. La
+> règle responsive qui en découle est maintenant écrite dans
+> [`CLAUDE.md`](../../CLAUDE.md) § Principes (« RESPONSIVE — règle permanente ») : le
+> téléphone (390 px) est l'écran de référence, pas un cas dégradé — toute disposition
+> « côte à côte en large, empilée en mobile » doit être vérifiée à 390 px, pas supposée.
+> Cette page en est l'**origine citée** par la règle. Cette description **remplace** celle du
+> 09/10 — ne pas les lire comme deux dispositions actuelles.
 
 Le titre de la carte pH s'adapte à `ph_correction_type` (affiche « pH+ (base) » si mode pH+ — [`app.js:1770`](../../data/app.js:1770)).
 
@@ -205,7 +253,7 @@ Aucune entité HA dédiée aux bidons produits à date. Les cumuls journaliers (
 
 ## Fichiers
 
-- [`data/index.html:1553`](../../data/index.html:1553) — structure HTML ; relevé permanent à [`data/index.html:1584`](../../data/index.html:1584) (pH) et [`:1630`](../../data/index.html:1630) (chlore)
+- [`data/index.html:1553`](../../data/index.html:1553) — structure HTML ; relevé permanent à [`data/index.html:1584`](../../data/index.html:1584) (pH) et [`:1644`](../../data/index.html:1644) (chlore)
 - [`data/app.js:3343`](../../data/app.js:3343) — `setupProductScreen()`, `saveProduct()`, `updateLevel()` (feature-143, anciennement `resetProduct()`), `updateProductUI()`
 - [`data/app.js:3399`](../../data/app.js:3399) — `_buildProductResetSummary()` : contenu de la confirmation « Mettre à jour le niveau »
 

@@ -3108,6 +3108,71 @@ input.is-computed:disabled {
   flex: 0 0 auto;
 }
 
+/* Correction de maquette (constat production, chantier simplification) : séparateurs
+   et intitulés de zone de la carte Produits. */
+.product-card__sep {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 4px 0;
+}
+
+.product-card__eyebrow {
+  color: var(--muted);
+  font-weight: 700;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+  margin: 0 0 8px;
+}
+
+/* Revue code-reviewer (seuil d'alerte, champ désormais SEUL dans son .field, sans
+   .field__row) : `.field` est en `display:grid`, donc sans largeur explicite son
+   input s'étire sur toute la largeur de la carte au-dessus de 768px — une
+   asymétrie symétrique et inverse de celle qu'on vient de corriger (champ large
+   sous un champ « Quantité » de 110px). Même largeur, même bascule responsive que
+   .field__row .form-control, par sélecteur d'enfant direct pour ne pas toucher au
+   champ niveau (qui reste dans .field__row, lui, avec son bouton). */
+.product-card .field > .form-control {
+  width: 110px;
+}
+
+/* .field__row n'est utilisé que dans la carte Produits (champ + bouton « Mettre
+   à jour le niveau ») : `.btn { width:100% }` (règle générale, cf. plus bas) force
+   déjà tout bouton en pleine largeur jusqu'à 768px — un champ étroit à côté d'un
+   bouton pleine largeur créait l'asymétrie constatée en production. On empile au
+   lieu de combattre l'invariant, sur TOUTE la plage où il s'applique (768px, pas
+   500px : une coupure à 500px aurait laissé le même défaut entre 500 et 768px,
+   la barre latérale repassant déjà en recouvrement dès 980px — cf. .app-body). */
+@media (max-width: 768px) {
+  .field__row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .field__row .form-control {
+    width: 100%;
+  }
+
+  .product-card .field > .form-control {
+    width: 100%;
+  }
+}
+
+/* Revue code-reviewer : le bloc « Changement de bidon » est un .callout réutilisé
+   tel quel (aucune classe neuve), mais .callout:hover{transform:translateY(-1px)}
+   a été pensé pour des messages, pas pour un bloc de saisie — il fait sautiller
+   le champ/bouton au survol. Neutralisé UNIQUEMENT ici. .callout{margin:12px 0}
+   s'ajoutait aussi au gap:16px du .card__body (28px autour de l'encadré contre
+   20px autour des <hr> du dessus/dessous) : remis à 0 pour un rythme vertical
+   uniforme, le gap du flex suffit. */
+.product-card .callout {
+  margin: 0;
+}
+
+.product-card .callout:hover {
+  transform: none;
+}
+
 /* ========== SECTIONS DÉTAILLÉES ========== */
 .grid--details {
   grid-template-columns: repeat(2, 1fr);

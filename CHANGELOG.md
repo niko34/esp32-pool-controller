@@ -82,25 +82,37 @@
   la jauge grise, pas de position suggérant une mesure fiable. Firmware non
   modifié, aucun champ `/data`/WebSocket ajouté.
 - **Page Produits — le bouton « Enregistrer » disparaît des cartes pH et
-  chlore.** Le **seuil d'alerte** s'enregistre désormais **tout seul** dès
-  qu'on quitte le champ (anti-rafale de 600 ms pour éviter un enregistrement
-  par clic sur les flèches du champ numérique), avec un retour visuel
-  « Enregistré » annoncé aux lecteurs d'écran. Il ne reste plus qu'un
-  **seul** bouton par carte, « Mettre à jour le niveau » — c'est la
-  correction structurelle de l'incident à l'origine de feature-143 (08/10/2026) :
-  tant que deux boutons coexistaient, un niveau saisi puis validé par erreur
-  sur « Enregistrer » restait sans effet. **Ce bouton garde sa confirmation et
-  efface toujours les compteurs** — aucun changement de son comportement. Les
-  **deux champs** de la carte (niveau et seuil d'alerte) passent sur la
-  même ligne que leur action, rétrécis à 110 px ; les compteurs « injectés /
-  démarrages » passent de deux lignes à une, **sans rien masquer** (seuls les
-  mots passent en gris, les valeurs restent en contraste plein). Page
-  nettement moins haute. Firmware non modifié, aucun contrat HTTP changé.
-  ⚠️ L'autosave du seuil est un **écart assumé** à la convention du projet
-  (`bindAutosave()` exclut les champs numériques) — pas une mise en
-  cohérence avec elle — justifié par l'absence de conséquence immédiate d'un
-  seuil d'alerte. Lot du chantier de simplification progressive de
-  l'interface ouvert le 2026-10-09, sans spec numérotée.
+  chlore, et la carte se découpe en trois zones.** Le **seuil d'alerte**
+  s'enregistre désormais **tout seul** à la modification (anti-rafale de
+  600 ms pour éviter un enregistrement par clic sur les flèches du champ
+  numérique) — une aide **permanente**, « Enregistré automatiquement à la
+  modification. », répond à la question avant qu'elle se pose ; le retour
+  « Enregistré » (annoncé aux lecteurs d'écran) ne confirme qu'après coup. Il
+  ne reste plus qu'un **seul** bouton par carte, « Mettre à jour le niveau »,
+  désormais dans un **encadré ambre « Changement de bidon »** dont l'aide
+  précise qu'il **remet à zéro le volume injecté et les démarrages** — c'est
+  la correction structurelle de l'incident à l'origine de feature-143
+  (08/10/2026) : tant que deux boutons coexistaient, un niveau saisi puis
+  validé par erreur sur « Enregistrer » restait sans effet. **Ce bouton garde
+  sa confirmation et efface toujours les compteurs** — aucun changement de
+  son comportement. Les compteurs « injectés / démarrages » passent de deux
+  lignes à une, **sans rien masquer**. Firmware non modifié, aucun contrat
+  HTTP changé.
+  ⚠️ **Deux versions livrées en 24 h.** La première (09/10) plaçait déjà
+  l'autosave mais gardait un champ et son bouton côte à côte avec repli en
+  `flex-wrap` — **rejetée par l'utilisateur sur téléphone** (« bouton perdu
+  entre les 2 champs », « l'écran semble déstructuré », « comment ça
+  marche ? »). Cause : une règle déjà présente dans le CSS force **tout
+  bouton en pleine largeur sous 768 px**, ce que la première maquette
+  ignorait. La version du 10/10 (ci-dessus) corrige par la structure
+  (encadré dédié, aide permanente, empilement sous 768 px plutôt que combat
+  de la règle CSS) et fait naître une **règle de projet permanente**
+  (`CLAUDE.md` § Principes — RESPONSIVE, téléphone = écran de référence, à
+  vérifier à 390 px et non supposé). L'autosave du seuil reste un **écart
+  assumé** à la convention `bindAutosave()` (qui exclut les champs
+  numériques) — justifié par l'absence de conséquence immédiate d'un seuil
+  d'alerte. Lot du chantier de simplification progressive de l'interface
+  ouvert le 2026-10-09, sans spec numérotée.
 
 ### Documentation
 - Nouvel [ADR-0093](docs/adr/0093-le-mode-de-filtration-est-la-seule-autorite.md)
@@ -124,16 +136,19 @@
   le gate `pool-chemistry`, pas une architecture qui contraint le reste du
   système). Captures d'écran à refaire : tableau de bord (changé en
   profondeur).
-- **Refonte ergonomique page Produits** : `docs/features/page-dosages.md`
-  (bouton « Enregistrer » retiré, autosave du seuil d'alerte, champ+bouton de
-  niveau sur une ligne, compteurs sur une ligne — avec le rappel que « Mettre
-  à jour le niveau » garde sa confirmation et efface toujours les compteurs) ;
-  `docs/user/src/guide-utilisation.html` (même explication en langage simple,
-  PDF non régénéré — release uniquement). Aucun ADR : refonte de surface sans
-  décision structurante. ⚠️ Écart de nommage signalé dans
+- **Refonte ergonomique page Produits** (version finale du 10/10, remplace la
+  description de la version du 09/10) : `docs/features/page-dosages.md`
+  décrit les **trois zones** de la carte (lecture / changement de bidon en
+  encadré / réglages à plat avec aide permanente), l'historique des deux
+  versions en 24 h et la cause du rejet de la première ; mentionne la
+  nouvelle règle responsive de `CLAUDE.md` § Principes dont cette page est
+  l'origine citée ; `docs/user/src/guide-utilisation.html` mis à jour en
+  langage simple. Aucun ADR : refonte de surface sans décision structurante
+  (la règle responsive, elle, est actée directement dans `CLAUDE.md`, pas un
+  ADR). ⚠️ Écart de nommage toujours signalé dans
   `docs/features/page-dosages.md` (menu « Produits » vs route/fichier
   `dosages`), non corrigé. Capture d'écran à refaire : page Produits (aspect
-  changé).
+  changé une seconde fois en 24 h).
 
 ---
 

@@ -69,6 +69,10 @@ Préciser les cas nominaux ET les cas limites.
 [remplir]
 
 ## Contraintes techniques
+- ⚠️ **RESPONSIVE (si `data/` est touché)** : téléphone **ET** tablette **ET** ordinateur.
+  Concevoir **à 390 px d'abord** — le téléphone est l'écran de référence, pas un cas
+  dégradé. Un `flex-wrap` est le cas NORMAL en mobile, pas un repli. Compter les
+  caractères des libellés placés sur une ligne partagée. Cf. CLAUDE.md § Principes.
 - ESP32, offline first
 - Vanilla JS dans `data/` (pas de framework, pas de bundler)
 - Français dans toute l'UI utilisateur

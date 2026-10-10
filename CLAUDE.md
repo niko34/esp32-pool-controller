@@ -308,6 +308,21 @@ faire.
 - **Changements minimaux** : pas de refactoring opportuniste, rester dans le périmètre de la spec
 - **Offline first** : aucune nouvelle dépendance au cloud
 - **Vanilla JS** : pas de framework frontend
+- ⚠️ **RESPONSIVE — règle permanente, non négociable.** L'interface doit fonctionner sur
+  **téléphone, tablette ET ordinateur**. Règle posée par l'utilisateur le 2026-10-10.
+  - **Le téléphone est l'écran de référence**, pas un cas dégradé : l'appareil se consulte au
+    bord du bassin. Toute mise en page se conçoit **à 390 px D'ABORD**, puis s'élargit.
+  - ⚠️ **Un `flex-wrap` n'est PAS un repli, c'est le cas NORMAL sur téléphone.** Une
+    disposition qui « tient sur une ligne » en vue large et passe à la ligne en mobile **n'a
+    pas été conçue pour mobile** — elle a été conçue pour desktop avec un rattrapage.
+  - **Vérifier, pas affirmer** : pour tout libellé placé sur une ligne partagée, **compter les
+    caractères** et dire si ça tient à 390 px. Un libellé trop long se **raccourcit** ; ce
+    n'est pas un tabou.
+  - **Origine de la règle** : refonte de la page Produits (2026-10-09). La maquette plaçait un
+    champ et son bouton sur une même ligne, avec `flex-wrap` « en repli ». Sur téléphone le
+    bouton passait **toujours** à la ligne en pleine largeur, « perdu entre les 2 champs »
+    (mots de l'utilisateur). Le rapport d'ergonomie disait « mobile d'abord » — sans l'avoir
+    vérifié, et **la règle n'était écrite nulle part**, donc non opposable.
 - **Tests avant commit** : `pio run` doit passer, lint doit être propre
 - **Toujours mettre à jour la spec** en fin de travail avec le statut réel
 
