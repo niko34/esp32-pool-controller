@@ -92,6 +92,18 @@
       // feature-138 (B2) : #dose-block-banner péremption — la classe pose l'opacité
       // (app.css), et révèle un texte explicite (.dose-block-banner__stale-note,
       // caché par défaut) : l'opacité seule n'explique rien à un lecteur d'écran.
+      //
+      // feature-148 (B4, cas limite « WebSocket déconnecté ») — comportement VOULU,
+      // écrit ici parce qu'il ne se lit nulle part ailleurs : quand la liaison tombe,
+      // le badge de carte RESTE MUET sur une cause portée par le bandeau. Ce n'est
+      // pas un oubli. Le bandeau n'efface rien — il garde sa ligne, l'estompe et
+      // révèle sa note de péremption : la cause reste donc affichée AVEC sa réserve
+      // de fraîcheur. La faire réapparaître dans le badge recréerait une seconde
+      // voix QUI A L'AIR FRAÎCHE, le badge n'ayant, lui, aucune note de péremption.
+      // ⚠️ Cet invariant repose sur un fait du flux, pas sur une garde : badge et
+      // bandeau lisent la MÊME trame (`latestSensorData`) dans la MÊME passe
+      // synchrone de loadSensorData(). Scinder ce rafraîchissement en deux cycles
+      // casserait le silence sans que rien ne le signale.
       ['#ph-card-stats', '#orp-card-stats', '#dose-block-banner'].forEach(sel => {
         const el = $(sel);
         if (el) el.classList.add('is-stale');
@@ -3039,7 +3051,13 @@
     // capteur instable, calibration insuffisante, stabilisation post-cal,
     // mélange en cours, régulation non automatique, anti-rafale, sonde
     // figée/muette, sécurité pH/ORP active…
-    if (block.label && !DOSE_BLOCK_CODE_ALREADY_SOURCED.has(block.code)) {
+    // feature-148 (B1) : second garde-fou, orthogonal au Set ci-dessus — une
+    // cause EFFECTIVEMENT portée par le bandeau du tableau de bord
+    // (doseBlockBannerCarries(), lit le même plan pur que le bandeau) ne doit
+    // pas être répétée ici, pour N'IMPORTE QUEL code, pas seulement ceux déjà
+    // recensés dans le Set. Voir le commentaire du Set, quelques lignes plus
+    // bas, pour la distinction entre les deux questions.
+    if (block.label && !DOSE_BLOCK_CODE_ALREADY_SOURCED.has(block.code) && !doseBlockBannerCarries(sensor, data)) {
       const v = doseBlockVariant(block.tone, block.code);
       segs.push({ priority: (v === 'danger') ? 0.5 : 1.5, variant: v, text: block.label });
     }
@@ -6665,6 +6683,27 @@
     return (tone === 'warning') ? 'warning' : 'info';
   }
 
+  // feature-148 (B3) : ce `Set` répond à UNE SEULE question, et son nom prête
+  // à confusion avec une autre, voisine mais distincte — les deux coexistent
+  // et NE SE REMPLACENT PAS :
+  //   - DOSE_BLOCK_CODE_ALREADY_SOURCED (ici) : « ce fait est déjà poussé
+  //     ailleurs DANS LE BADGE, par un chemin dédié qui le dit mieux (décompte
+  //     à la seconde, flag déjà testé…) » — une question STATIQUE, par code,
+  //     vraie quelle que soit la page.
+  //   - doseBlockBannerCarries() (définie plus bas, à côté du bandeau) :
+  //     « cette cause est-elle EFFECTIVEMENT affichée par le bandeau du
+  //     TABLEAU DE BORD en ce moment ? » — une question DYNAMIQUE, qui dépend
+  //     de la vue (le bandeau n'existe que sur le tableau de bord, jamais sur
+  //     /ph ou /orp) et de l'état courant (fusion, carte masquée…).
+  // Invariant qui rend la seconde question sûre sans filtre par code : SEULES
+  // les lignes 3123/3133 (badges pH/ORP du tableau de bord) appellent
+  // buildSensorSegments() → dosingLimitSegments() → doseBlockBannerCarries().
+  // Aucune page dédiée n'y passe (vérifié : /ph et /orp n'appellent que
+  // measureStateSegments(), cf. commentaire plus bas et feature-148 §« audit
+  // corrigé »). Ne JAMAIS étendre ce `Set` pour fermer le trou de feature-148
+  // — c'est doseBlockBannerCarries() qui le ferme, précisément parce qu'il
+  // n'a besoin d'AUCUNE liste de codes.
+  //
   // Faits déjà sourcés ailleurs par un chemin dédié — SOURCE UNIQUE, on ne les
   // repousse pas une seconde fois depuis la classification générique
   // DOSE_BLOCK_CODES (sous peine de dupliquer le même fait avec un texte
@@ -6884,14 +6923,15 @@
     container.hidden = false;
   }
 
-  // Bandeau d'état de blocage du dosage (B2), hors panneau développeur.
-  // Absent si rien n'est bloqué — pas de bandeau permanent qui s'ignore.
-  function updateDoseBlockBanner(json) {
-    const box = $("#dose-block-banner");
-    const rowPh = $("#dose-block-row-ph");
-    const rowOrp = $("#dose-block-row-orp");
-    if (!box || !rowPh || !rowOrp) return;
-
+  // feature-148 (B1-B4) : plan de rendu du bandeau, PUR (aucun DOM). Le
+  // bandeau (updateDoseBlockBanner, juste après) ne fait plus AUCUN choix :
+  // il lit ce plan et rend STRICTEMENT ce qu'il décrit. C'est ce qui rend
+  // `plan.carries` opposable — `carries.ph`/`carries.orp` ne disent PAS « le
+  // code est dans telle liste », ils disent « cette ligne sera effectivement
+  // à l'écran » : la garantie que `doseBlockBannerCarries()` (plus bas) peut
+  // s'y fier pour faire taire le badge sans jamais faire taire une cause que
+  // rien n'affiche réellement.
+  function _doseBlockBannerPlan(json) {
     const ph = _doseBlockRowData(json, 'ph');
     const orp = _doseBlockRowData(json, 'orp');
     // feature-140 (v2.55.3) : secours DÉJÀ actif ⇒ supprime l'offre L7/bouton
@@ -6900,10 +6940,7 @@
     const rescueActive = Number.isFinite(json?.rescue_until) && json.rescue_until > 0;
 
     if (!ph && !orp) {
-      box.hidden = true;
-      rowPh.hidden = true;
-      rowOrp.hidden = true;
-      return;
+      return { visible: false, rowPh: null, rowOrp: null, carries: { ph: false, orp: false } };
     }
 
     // LISTE DES CODES « ATTENTE DE MESURE » — 3e passage pool-chemistry,
@@ -6975,6 +7012,10 @@
     // façon vague (« dès que... ») ; `ph.label` porte désormais le texte
     // déterministe (_measuresWaitText, « Reprise automatique dans N min »),
     // la fin n'est donc annoncée QU'UNE fois, pas deux.
+    // feature-148 : fusion ⇒ carries = { ph:true, orp:true } dans LES DEUX cas
+    // ci-dessous (cause racine ET même-code). La ligne fusionnée RACONTE les
+    // deux voies à la fois ; laisser le badge ORP (ou pH) répéter l'une
+    // d'elles romprait exactement ce que la fusion visait à éviter.
     if (ph && orp && orp.code === DOSE_BLOCK_CODE_GUARD && DOSE_BLOCK_MEASURE_WAIT_CODES.includes(ph.code)) {
       const durations = [ph.durationS, orp.durationS].filter((v) => v != null);
       // « bloqué depuis » = la PLUS ANCIENNE des deux durées : la ligne décrit
@@ -6983,27 +7024,29 @@
       // estimerait la durée réelle pendant laquelle le dosage chlore est
       // suspendu.
       const durationS = durations.length ? Math.max(...durations) : null;
-      _renderDoseBlockRow(rowPh, {
-        // %s = ph.label, repris TEL QUEL depuis DOSE_BLOCK_CODES (non reformulé).
-        label: `${ph.label} — dosage du pH et du chlore en pause tous les deux, le temps que l'eau neuve arrive jusqu'aux sondes.`,
-        tone: 'normal', // jamais fault — cohérent avec toneOrp (code 250, voie ORP)
-        durationText: _doseBlockDurationText(durationS),
-        // Le chaînage feature-140 reste attaché à la ligne fusionnée. Mais
-        // depuis le 3e passage (feature-146), DOSE_BLOCK_SHORTCUT_CODES ([3,4])
-        // est plus ÉTROITE que DOSE_BLOCK_MEASURE_WAIT_CODES (fusion, 6 codes) :
-        // canShortcut(ph) ne vaut `true` QUE pour 3/4 (indéterminé, sans fin
-        // annoncée) — sur 15/18/19/22 (transitoires bornés et annoncés),
-        // shortcutPrefix/shortcutCode ressortent `null` et ni le bouton
-        // « Ouvrir l'injection manuelle » ni l'offre de secours (L7/bouton,
-        // _renderDoseBlockRow) ne s'affichent. Voulu : rien à proposer sur une
-        // attente qui se résout seule.
-        shortcutPrefix: canShortcut(ph) ? 'orp' : null,
-        shortcutCode: canShortcut(ph) ? ph.code : null,
-        rescueActive,
-      });
-      rowOrp.hidden = true;
-      box.hidden = false;
-      return;
+      return {
+        visible: true,
+        rowPh: {
+          // %s = ph.label, repris TEL QUEL depuis DOSE_BLOCK_CODES (non reformulé).
+          label: `${ph.label} — dosage du pH et du chlore en pause tous les deux, le temps que l'eau neuve arrive jusqu'aux sondes.`,
+          tone: 'normal', // jamais fault — cohérent avec toneOrp (code 250, voie ORP)
+          durationText: _doseBlockDurationText(durationS),
+          // Le chaînage feature-140 reste attaché à la ligne fusionnée. Mais
+          // depuis le 3e passage (feature-146), DOSE_BLOCK_SHORTCUT_CODES ([3,4])
+          // est plus ÉTROITE que DOSE_BLOCK_MEASURE_WAIT_CODES (fusion, 6 codes) :
+          // canShortcut(ph) ne vaut `true` QUE pour 3/4 (indéterminé, sans fin
+          // annoncée) — sur 15/18/19/22 (transitoires bornés et annoncés),
+          // shortcutPrefix/shortcutCode ressortent `null` et ni le bouton
+          // « Ouvrir l'injection manuelle » ni l'offre de secours (L7/bouton,
+          // _renderDoseBlockRow) ne s'affichent. Voulu : rien à proposer sur une
+          // attente qui se résout seule.
+          shortcutPrefix: canShortcut(ph) ? 'orp' : null,
+          shortcutCode: canShortcut(ph) ? ph.code : null,
+          rescueActive,
+        },
+        rowOrp: null,
+        carries: { ph: true, orp: true },
+      };
     }
 
     // Fusion UNIQUEMENT si même code ET ton normal — JAMAIS pour fault/unknown :
@@ -7011,44 +7054,85 @@
     if (ph && orp && ph.code === orp.code && ph.tone === 'normal' && orp.tone === 'normal') {
       const durations = [ph.durationS, orp.durationS].filter((v) => v != null);
       const durationS = durations.length ? Math.min(...durations) : null;
-      _renderDoseBlockRow(rowPh, {
-        label: `${ph.label} (pH et chlore)`,
-        tone: 'normal',
-        durationText: _doseBlockDurationText(durationS),
-        // C4 : ligne fusionnée → raccourci par défaut sur l'ORP uniquement.
-        shortcutPrefix: canShortcut(ph) ? 'orp' : null,
-        shortcutCode: canShortcut(ph) ? ph.code : null,
-        rescueActive,
-      });
-      rowOrp.hidden = true;
-      box.hidden = false;
-      return;
+      return {
+        visible: true,
+        rowPh: {
+          label: `${ph.label} (pH et chlore)`,
+          tone: 'normal',
+          durationText: _doseBlockDurationText(durationS),
+          // C4 : ligne fusionnée → raccourci par défaut sur l'ORP uniquement.
+          shortcutPrefix: canShortcut(ph) ? 'orp' : null,
+          shortcutCode: canShortcut(ph) ? ph.code : null,
+          rescueActive,
+        },
+        rowOrp: null,
+        carries: { ph: true, orp: true },
+      };
     }
 
-    if (ph) {
-      _renderDoseBlockRow(rowPh, {
+    // Lignes indépendantes : `carries` suit EXACTEMENT la présence de chaque
+    // ligne dans le plan — pas une relecture de `ph`/`orp` bruts, pour que le
+    // badge et le bandeau restent d'accord même si un futur appel ajoute une
+    // condition ici sans la répercuter plus bas.
+    return {
+      visible: true,
+      rowPh: ph ? {
         label: ph.label, tone: ph.tone,
         durationText: _doseBlockDurationText(ph.durationS),
         shortcutPrefix: canShortcut(ph) ? 'ph' : null,
         rescueActive,
-      });
-    } else {
-      rowPh.hidden = true;
-    }
-
-    if (orp) {
-      _renderDoseBlockRow(rowOrp, {
+      } : null,
+      rowOrp: orp ? {
         label: orp.label, tone: orp.tone,
         durationText: _doseBlockDurationText(orp.durationS),
         shortcutPrefix: canShortcut(orp) ? 'orp' : null,
         shortcutCode: canShortcut(orp) ? orp.code : null,
         rescueActive,
-      });
-    } else {
+      } : null,
+      carries: { ph: !!ph, orp: !!orp },
+    };
+  }
+
+  // Bandeau d'état de blocage du dosage (B2), hors panneau développeur.
+  // Absent si rien n'est bloqué — pas de bandeau permanent qui s'ignore.
+  // feature-148 : NE DÉCIDE PLUS RIEN — lit _doseBlockBannerPlan() et rend
+  // STRICTEMENT ce qu'il décrit. Point de vigilance du relecteur (feature-148) :
+  // si une seule décision de rendu revenait ici (un `hidden` posé hors plan, un
+  // retour anticipé), `plan.carries` mentirait et le silence du badge
+  // deviendrait faux. Toute évolution du rendu se fait dans le plan, jamais ici.
+  function updateDoseBlockBanner(json) {
+    const box = $("#dose-block-banner");
+    const rowPh = $("#dose-block-row-ph");
+    const rowOrp = $("#dose-block-row-orp");
+    if (!box || !rowPh || !rowOrp) return;
+
+    const plan = _doseBlockBannerPlan(json);
+
+    if (!plan.visible) {
+      box.hidden = true;
+      rowPh.hidden = true;
       rowOrp.hidden = true;
+      return;
     }
 
+    if (plan.rowPh) _renderDoseBlockRow(rowPh, plan.rowPh); else rowPh.hidden = true;
+    if (plan.rowOrp) _renderDoseBlockRow(rowOrp, plan.rowOrp); else rowOrp.hidden = true;
+
     box.hidden = false;
+  }
+
+  // feature-148 (B1-B4) — garde de présence DOM + plan. Un prédicat purement
+  // logique dirait « le bandeau porte cette voie » même sur une page sans les
+  // trois nœuds (`#dose-block-banner` n'existe QUE sur le tableau de bord,
+  // cf. feature-148 §« Correction d'une affirmation de l'audit » : les pages
+  // /ph et /orp n'appellent jamais buildSensorSegments()) — d'où la garde de
+  // présence DOM, en plus du plan, avant de faire taire le badge.
+  // En cas de doute, on duplique : si l'un des trois nœuds manque, ou si le
+  // plan ne couvre pas `prefix`, la fonction renvoie `false` et le badge PARLE
+  // — jamais l'inverse.
+  function doseBlockBannerCarries(prefix, json) {
+    if (!$("#dose-block-banner") || !$("#dose-block-row-ph") || !$("#dose-block-row-orp")) return false;
+    return !!_doseBlockBannerPlan(json).carries?.[prefix];
   }
 
   function _renderFilterModalValues(prefix, json) {
@@ -7365,6 +7449,17 @@
         updateDashboardMetrics(json);
         updateClockBadge(json.time_synced === true);
 
+        // feature-148 (code-reviewer, point de robustesse) : AVANT le badge,
+        // volontairement — doseBlockBannerCarries() (lu par updateSensorBadges
+        // via dosingLimitSegments) doit lire un bandeau déjà à jour pour CETTE
+        // trame. Si une exception survenait entre les deux appels (plus bas :
+        // updateDetailSections, _flowWizardOnData…), l'ancien ordre aurait pu
+        // figer le bandeau sur une trame périmée pendant que le ticker 1 s
+        // continuait de faire taire le badge sur la trame courante — un
+        // silence sans porteur, exactement ce que cette spec ferme. Ne pas
+        // remettre « dans l'ordre logique » (rendu global avant badges) sans
+        // revérifier cet invariant.
+        updateDoseBlockBanner(json);
         // Mettre à jour les badges et cartes status
         updateSensorBadges();
         updateStatusCards();
@@ -7419,8 +7514,6 @@
         updateFilterChip('orp', json);
         // v2.20.3 (D5) : bannière tableau de bord « régulation à l'arrêt »
         updateRegulationAlert(json);
-        // feature-138 (B2) : bandeau « dosage bloqué » (voie, cause, durée)
-        updateDoseBlockBanner(json);
 
         const tempCurrentValue = $("#temp_current_value");
         const tempCurrentLabel = $("#temp_current_label");

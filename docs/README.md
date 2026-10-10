@@ -135,7 +135,10 @@ docs/
 │   ├── 0088-diffusion-websocket-ciblee-sur-registre-borne-sans-verrou.md
 │   ├── 0089-ce-qu-un-redemarrage-a-le-droit-doublier.md
 │   ├── 0090-detecteur-de-chute-maximum-glissant-auto-rearme.md
-│   └── 0091-comptabilite-hors-du-corps-decisionnel-dupdate.md
+│   ├── 0091-comptabilite-hors-du-corps-decisionnel-dupdate.md
+│   ├── 0092-retrait-analyse-stabilite-porte-mesures.md
+│   ├── 0093-le-mode-de-filtration-est-la-seule-autorite.md
+│   └── 0094-trois-niveaux-d-affichage-d-un-message.md
 │
 ├── API.md               ← Référence REST + WebSocket
 ├── MQTT.md              ← Topics MQTT + auto-discovery Home Assistant

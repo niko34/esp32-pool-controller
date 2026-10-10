@@ -2,6 +2,42 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [2.64.0] - 2026-10-10
+
+### Fonctionnalités
+- **Tableau de bord — un message, un seul endroit (feature-148)** : quand le
+  bandeau « Dosage bloqué » affiche déjà une cause pour une voie (pH ou
+  chlore), le badge de la carte correspondante ne la répète plus. Le badge
+  continue d'afficher ses faits propres (hors plage, stock faible, capteur
+  indisponible…) ; les **quotas** (limite journalière, limite horaire, limite
+  de cycles) restent volontairement affichés aux **deux** niveaux. Gain
+  mesuré sur téléphone (390 px) : le badge pH passe de 46 px à 28 px de
+  hauteur quand le bandeau porte déjà la cause. Correction étendue à
+  **onze codes** (watchdog inactif, capteur instable/calibration
+  insuffisante, régulation non automatique, anti-rafale, sonde figée/muette,
+  sécurité pH/ORP active…) et pas seulement au cas signalé par l'utilisateur
+  (code 250). Aucune page dédiée (`/ph`, `/orp`) n'est affectée — le bandeau
+  n'existe que sur le tableau de bord.
+
+### Documentation
+- `docs/features/page-dashboard.md` : règle des trois niveaux d'affichage
+  d'un message (bandeau global / badge de carte / pastille de section) et
+  exception quotas.
+- [ADR-0094](docs/adr/0094-trois-niveaux-d-affichage-d-un-message.md) :
+  formalisation de la règle des trois niveaux — le silence du badge est
+  accordé par une fonction pure dérivée du rendu réel du bandeau, jamais par
+  une liste de codes dupliquée.
+- `docs/features/page-dashboard.md`, `docs/features/page-filtration.md` :
+  correction des étiquettes de version périmées de feature-147 (`v2.64.0` →
+  `v2.63.0`, version réelle de sortie), titres de section et ancres inclus.
+- `docs/user/src/guide-utilisation.html` : même correction, trois mentions
+  « Depuis la version 2.64 » qui décrivaient en réalité des changements
+  livrés en **2.63** (cinq cartes, carte Filtration à quatre boutons, Boost
+  devenu sous-bloc). Les laisser aurait attribué ces changements à la
+  version qui porte au contraire le présent lot.
+
+---
+
 ## [2.63.0] - 2026-10-09
 
 > **Ce qui change pour vous** : changer le mode de filtration **s'applique
