@@ -3,7 +3,7 @@
 - **Statut** : Accepté
 - **Date** : 2026-10-10
 - **Décideurs** : `architect` (confirmation de la règle et du mécanisme de silence)
-- **Spec(s) liée(s)** : [feature-148](../../specs/features/doing/feature-148-un-message-un-seul-endroit.md) (un message, un seul endroit) ; suite distincte : feature-149 (valeur figée dans une cause de garde pH, défaut de source firmware, hors périmètre de cet ADR)
+- **Spec(s) liée(s)** : [feature-148](../../specs/features/done/feature-148-un-message-un-seul-endroit.md) (un message, un seul endroit) ; suite distincte : feature-149 (valeur figée dans une cause de garde pH, défaut de source firmware, hors périmètre de cet ADR)
 
 ## Contexte
 
@@ -117,7 +117,7 @@ décision.
 - Code : [`data/app.js`](../../data/app.js) — `DOSE_BLOCK_CODE_ALREADY_SOURCED`,
   `dosingLimitSegments()`, `_doseBlockBannerPlan()`, `updateDoseBlockBanner()`,
   `doseBlockBannerCarries()`
-- Spec : [feature-148](../../specs/features/doing/feature-148-un-message-un-seul-endroit.md)
+- Spec : [feature-148](../../specs/features/done/feature-148-un-message-un-seul-endroit.md)
 - Tests : [`test/test_native_dose_banner_silence/test_dose_banner_silence.cpp`](../../test/test_native_dose_banner_silence/test_dose_banner_silence.cpp)
 - Doc : [`docs/features/page-dashboard.md`](../features/page-dashboard.md#règle-des-trois-niveaux-daffichage-dun-message-feature-148), [`CHANGELOG.md`](../../CHANGELOG.md)
 - ADR lié : [ADR-0049](0049-code-machine-de-cause-de-refus-et-etat-interne-du-filtre.md) (code
