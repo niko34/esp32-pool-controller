@@ -38,14 +38,17 @@ void setupDebugRoutes(AsyncWebServer* server) {
   if (server == nullptr) return;
 
   // ---------- GET /debug/sensor_trace ----------
-  // feature-057 : dump du ring buffer de trace capteur (pH/ORP brut + lissé, T°).
+  // feature-057 : dump du ring buffer de trace capteur (pH/ORP brut + médiane
+  // + lissé, T°).
   // PAGINÉ (bug-crash-sensor-trace-badalloc) : ?offset=N&count=M, M borné par
-  // kSensorTraceMaxSamplesPerPage (~3,5 Ko/page) — jamais ~20 Ko contigus dans
-  // le cbuf d'AsyncResponseStream (std::bad_alloc → abort() sur heap fragmenté).
+  // kSensorTraceMaxSamplesPerPage (~5 825 o/page projetés, feature-153 — à
+  // confirmer par mesure sur le firmware neuf, ADR-0073) — jamais ~20 Ko
+  // contigus dans le cbuf d'AsyncResponseStream (std::bad_alloc → abort() sur
+  // heap fragmenté).
   // Réponse : count (total buffer), offset (effectif clampé), returned (n de la
   // page), interval_ms, now, samples. Le glissement du ring buffer entre deux
   // pages est toléré (diagnostic, contrat lock-free SensorTraceSample).
-  // Non bloquant (< 50 ms) : lecture lock-free, 50 objets max/page.
+  // Non bloquant (< 50 ms) : lecture lock-free, 38 objets max/page.
   server->on("/debug/sensor_trace", HTTP_GET, [](AsyncWebServerRequest* req) {
     size_t offset = 0;
     size_t count  = kSensorTraceMaxSamplesPerPage;

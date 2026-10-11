@@ -139,7 +139,11 @@ docs/
 │   ├── 0092-retrait-analyse-stabilite-porte-mesures.md
 │   ├── 0093-le-mode-de-filtration-est-la-seule-autorite.md
 │   ├── 0094-trois-niveaux-d-affichage-d-un-message.md
-│   └── 0095-une-cause-de-garde-cite-un-seuil-pas-une-mesure.md
+│   ├── 0095-une-cause-de-garde-cite-un-seuil-pas-une-mesure.md
+│   ├── 0096-empreinte-sha256-obligatoire-sur-post-update.md
+│   ├── 0097-le-filtre-lisse-le-dosage-juge.md
+│   ├── 0098-toute-constante-de-mesure-declare-sa-source.md
+│   └── 0099-tester-par-extraction-de-texte-jamais-par-duplication.md
 │
 ├── API.md               ← Référence REST + WebSocket
 ├── MQTT.md              ← Topics MQTT + auto-discovery Home Assistant

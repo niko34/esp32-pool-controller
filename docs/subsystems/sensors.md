@@ -539,7 +539,7 @@ La méthode revalide la valeur (`isPhOffsetValid`) et neutralise à 0,00 si beso
 
 ## Trace des signaux capteurs — feature-057
 
-Ring buffer de trace **haute cadence** des signaux capteurs (pH & ORP, brut **et** lissé), réintroduction fidèle de l'outil retiré en feature-045 (v2.5.0) et **étendue à l'ORP**. Objectif : diagnostiquer bruit / oscillation de la chaîne de mesure en comparant brut vs lissé sur une fenêtre continue, à cadence bien supérieure à l'échantillonnage WS. Alimente la card « Signaux capteurs » de l'onglet Avancé ([page-settings.md](../features/page-settings.md#card-signaux-capteurs-brut--lissé-feature-057)) et les routes `GET /debug/sensor_trace` / `POST /debug/sensor_trace_clear` ([API.md](../API.md#trace-des-signaux-capteurs-feature-057-v270)).
+Ring buffer de trace **haute cadence** des signaux capteurs (pH & ORP, brut, **médiane** et lissé), réintroduction fidèle de l'outil retiré en feature-045 (v2.5.0), **étendue à l'ORP** (feature-057) puis à la **médiane** (feature-153, v2.69.0). Objectif : diagnostiquer bruit / oscillation de la chaîne de mesure en comparant les trois étages sur une fenêtre continue, à cadence bien supérieure à l'échantillonnage WS. Alimente la card « Signaux capteurs » de l'onglet Avancé ([page-settings.md](../features/page-settings.md#card-signaux-capteurs-feature-153-v2690)) et les routes `GET /debug/sensor_trace` / `POST /debug/sensor_trace_clear` ([API.md](../API.md#trace-des-signaux-capteurs-feature-057-v270)).
 
 ### Structure et coût mémoire
 
@@ -548,17 +548,23 @@ struct SensorTraceSample {
   uint32_t ms;          // millis() à l'enregistrement
   float    phRaw;       // pH brut Atlas EZO, SANS offset (NaN si lecture échouée)
   float    phCorrected; // feature-067 : pH brut + offset logiciel (NaN si brut NaN)
+  float    phMedian;    // feature-153 : médiane BRUTE du filtre pH (_phFilter.median(), NaN si fenêtre vide)
   float    phFiltered;  // pH lissé (médiane + EMA), SANS offset (NaN si filtre vide)
   float    orpRaw;      // ORP brut (NaN si lecture échouée)
+  float    orpMedian;   // feature-153 : médiane BRUTE du filtre ORP (_orpFilter.median(), NaN si fenêtre vide)
   float    orpFiltered; // ORP lissé (NaN si filtre vide)
   float    tempEau;     // T° eau envoyée à l'EZO pour compensation (NaN si sonde absente)
 };
-SensorTraceSample _traceBuffer[kSensorTraceBufferSize];  // 300 × 28 octets ≈ 8,4 Ko RAM
+// sizeof(SensorTraceSample) == 36 octets — figé par un static_assert dans sensors.h
+// (le padding du compilateur peut dépasser sizeof(float) × N, ne pas le recalculer à la main).
+SensorTraceSample _traceBuffer[kSensorTraceBufferSize];  // 200 × 36 o = 7 200 o RAM (mesuré le 2026-10-11)
 ```
 
-> **feature-067 — la trace est le seul endroit où `phFiltered` est BRUT.** Objectif de l'outil : pouvoir dire à tout instant **ce qui vient de l'EZO** et **ce qui vient de la correction**. Les trois champs pH sont donc `phRaw` (brut), `phFiltered` (brut filtré) et `phCorrected` (brut + offset). Partout ailleurs (`/data`, WS, MQTT), `phFiltered` est **corrigé**.
+> **feature-067 — la trace est le seul endroit où `phFiltered` est BRUT.** Objectif de l'outil : pouvoir dire à tout instant **ce qui vient de l'EZO** et **ce qui vient de la correction**. Les champs pH sont donc `phRaw` (brut), `phMedian` (médiane brute, feature-153), `phFiltered` (brut filtré) et `phCorrected` (brut + offset). Partout ailleurs (`/data`, WS, MQTT), `phFiltered` est **corrigé**.
 
-- `kSensorTraceBufferSize = 300` ([`constants.h`](../../src/constants.h)) → ~8,4 Ko RAM statique depuis la v2.20.0 (+1,2 Ko dus au champ `phCorrected` ; ~7,2 Ko auparavant).
+> **feature-153 (v2.69.0) — l'offset est ajouté par le NAVIGATEUR, pas par le firmware.** `phMedian`/`orpMedian` sont enregistrés depuis `_phFilter.median()`/`_orpFilter.median()` — jamais `getPhMedian()`, qui applique l'offset ([ADR-0039](../adr/0039-offset-ph-applique-en-sortie-des-accesseurs.md)). Les trois champs pH de la trace (`phRaw`, `phMedian`, `phFiltered`) partagent donc la **même référence brute** ; seul `phCorrected` porte l'offset. La carte « Signaux capteurs » ([page-settings.md](../features/page-settings.md#card-signaux-capteurs-feature-153-v2690)) ajoute l'offset à l'affichage pour que la Haute cadence, la vue Journée et le tableau de bord restent sur une seule échelle.
+
+- `kSensorTraceBufferSize = 200` depuis la v2.69.0 (feature-153 ; était 300) ([`constants.h`](../../src/constants.h)) → **7 200 o** RAM statique (200 × 36 o), **sous** les 8 400 o d'avant malgré les deux champs de plus — décision produit chiffrée de l'utilisateur du 2026-10-11 : le gain d'information (médiane) est payé en réduisant la durée du tampon, pas en grossissant son occupation. La fenêtre est dimensionnée en **nombre d'échantillons** (diagnostic pur) ; sa durée réelle — **16 min 40 s** à la cadence de lecture actuelle (5 s) — **se déduit de la cadence**, elle n'est volontairement pas figée ici (ADR-0073 : une durée affichée en dur aurait menti dès que la cadence change).
 - **Volatil** : perdu au reboot (comme l'original — pas de persistance, hors périmètre).
 - Les NaN sont **enregistrés tels quels** (filtre non amorcé, EZO injoignable) et exposés en `null` côté JSON → trou dans la courbe, pas de crash.
 
@@ -570,13 +576,13 @@ SensorTraceSample _traceBuffer[kSensorTraceBufferSize];  // 300 × 28 octets ≈
 
 | Méthode | Effet |
 |---------|-------|
-| `size_t getSensorTraceCount() const` | Nombre d'échantillons présents (0..300). |
-| `void appendSensorTraceJson(JsonArray out, size_t offset, size_t count) const` | Sérialise une **page** du buffer (ordre chronologique, `offset` 0 = le plus ancien) : les échantillons `[offset, offset+count)` — `t` (ms), `phRaw`/`phCorrected`/`phFiltered` (arrondi ×1000), `orpRaw`/`orpFiltered` (×10), `tempEau` (×10) ; `null` si NaN. Signature paginée depuis v2.10.1 (bug-crash-sensor-trace-badalloc) ; champ `phCorrected` ajouté en v2.20.0 (page de 50 ≈ 4,5 Ko). |
+| `size_t getSensorTraceCount() const` | Nombre d'échantillons présents (0..200). |
+| `void appendSensorTraceJson(JsonArray out, size_t offset, size_t count) const` | Sérialise une **page** du buffer (ordre chronologique, `offset` 0 = le plus ancien) : les échantillons `[offset, offset+count)` — `t` (ms), `phRaw`/`phCorrected`/`phMedian`/`phFiltered` (arrondi ×1000), `orpRaw`/`orpMedian`/`orpFiltered` (×10), `tempEau` (×10) ; `null` si NaN. Signature paginée depuis v2.10.1 (bug-crash-sensor-trace-badalloc) ; champ `phCorrected` ajouté en v2.20.0, `phMedian`/`orpMedian` ajoutés en v2.69.0 (feature-153, +34,7 o/échantillon mesurés par réinjection — page de 38 ≈ 5 825 o **projetés, non confirmés** au 2026-10-11). |
 | `void clearSensorTrace()` | Vide le buffer (`_traceCount = 0`). |
 
 ### Pagination — bug-crash-sensor-trace-badalloc (v2.10.1)
 
-La route `GET /debug/sensor_trace` sérialisait les 300 échantillons dans un seul `AsyncResponseStream` (~20 Ko contigus dans son `cbuf`) → `std::bad_alloc` non rattrapé → `abort()` → reboot sur heap fragmenté (coredump v2.10.0, 2026-07-23). Elle est désormais **paginée** (`?offset=N&count=M`, page bornée à `kSensorTraceMaxSamplesPerPage = 50` ≈ 3,5 Ko) avec **garde heap** (`measureJson` + `kSensorTraceHeapMarginBytes = 4096` vs `heapLargestFreeBlock8Bit()` depuis la **v2.40.0** — `ESP.getMaxAllocHeap()` avant, mesure qui comptait l'IRAM 32 bits inutilisable par ce `new` : voir [oom-guard.md](oom-guard.md) et [ADR-0058](../adr/0058-gardes-heap-metrique-8-bits.md) ; **seuil inchangé** → `503` propre) et stream **pré-dimensionné** (une seule allocation exacte, zéro `resize()`).
+La route `GET /debug/sensor_trace` sérialisait les 300 échantillons (taille d'alors) dans un seul `AsyncResponseStream` (~20 Ko contigus dans son `cbuf`) → `std::bad_alloc` non rattrapé → `abort()` → reboot sur heap fragmenté (coredump v2.10.0, 2026-07-23). Elle est désormais **paginée** (`?offset=N&count=M`, page bornée à `kSensorTraceMaxSamplesPerPage = 38` depuis la v2.69.0 — était 50 ; mesure réelle le 2026-10-11 **avant** feature-153 : 5 905 o pour 50 échantillons, pas les ≈ 4,5 Ko/3,5 Ko longtemps recopiés sans mesure, ADR-0073) avec **garde heap** (`measureJson` + `kSensorTraceHeapMarginBytes = 4096` vs `heapLargestFreeBlock8Bit()` depuis la **v2.40.0** — `ESP.getMaxAllocHeap()` avant, mesure qui comptait l'IRAM 32 bits inutilisable par ce `new` : voir [oom-guard.md](oom-guard.md) et [ADR-0058](../adr/0058-gardes-heap-metrique-8-bits.md) ; **seuil inchangé** → `503` propre) et stream **pré-dimensionné** (une seule allocation exacte, zéro `resize()`).
 
 Le clamp des bornes de page est un calcul **pur header-only** dans [`src/sensor_trace_page.h`](../../src/sensor_trace_page.h) (`computeTracePage()`, invariants `offset ≤ total`, `n ≤ max`, `offset + n ≤ total` pour tout input — testé en natif, suite `test_native_trace_page`, 16 tests, pattern [ADR-0017](../adr/0017-logique-metier-pure-humble-object-testabilite.md)). `appendSensorTraceJson()` applique en plus un **re-clamp défensif interne** sur son snapshot local de `_traceCount` (le buffer peut avoir glissé entre le clamp de la route et la lecture). Contrat complet de la route : [API.md](../API.md#get-debugsensor_trace--pas-dauth-cohérent-avec-autres-debug).
 
@@ -725,8 +731,8 @@ Ajoutée **sans changer aucun comportement** ([ADR-0074](../adr/0074-temperature
 | `kSensorFrozenEpsilonOrp` | `0.05` mV | Bande figé ORP = ½ LSB EZO (résolution 0.1) |
 | `kTempFrozenSamples` / `kTempFrozenEpsilonC` | `43200` / `0.03` °C | Figé T° eau (≈ **24 h** à 2 s, < ½ LSB DS18B20, bug-142 — était `900` / 30 min) — warning-only pour le DOSAGE, gate le planning de filtration |
 | `kPhOffsetMin` / `kPhOffsetMax` | `-0.50` / `+0.50` pH | Bornes de l'offset logiciel pH (feature-067) — validation serveur, refus 400 hors plage |
-| `kSensorTraceBufferSize` | `300` | Taille ring buffer trace signaux (~8,4 Ko RAM depuis feature-067) |
-| `kSensorTraceMaxSamplesPerPage` | `50` | Borne d'une page de `GET /debug/sensor_trace` (~3,5 Ko JSON — v2.10.1) |
+| `kSensorTraceBufferSize` | `200` | Taille ring buffer trace signaux — 7 200 o RAM (200 × 36 o), depuis feature-153 v2.69.0 (était 300 × 28 o ≈ 8,4 Ko) |
+| `kSensorTraceMaxSamplesPerPage` | `38` | Borne d'une page de `GET /debug/sensor_trace` (~5 825 o JSON **projetés, non confirmés** — v2.69.0, était 50 ≈ 5 905 o mesurés avant ce lot) |
 | `kSensorTraceHeapMarginBytes` | `4096` | Marge entre `measureJson` et `heapLargestFreeBlock8Bit()` → 503 au lieu de `bad_alloc` (v2.10.1 ; mesure basculée depuis `ESP.getMaxAllocHeap()` en **v2.40.0**, valeur du seuil **inchangée**) |
 
 Toutes définies dans [`src/constants.h`](../../src/constants.h).

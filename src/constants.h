@@ -1482,17 +1482,30 @@ constexpr uint32_t kSensorFilterMaxAgeMs          = 20000;    // Matériel (couv
 constexpr uint32_t kSensorFilterUiResetMinIntervalMs = 600000UL; // 10 min
 
 // Trace capteur (ring buffer RAM, feature-057) : chaque cycle EZO enregistre un
-// échantillon (pH brut/corrigé/lissé, ORP brut/lissé, T° eau).
+// échantillon (pH brut/corrigé/médiane/lissé, ORP brut/médiane/lissé, T° eau).
 // feature-067 : +1 champ float (phCorrected) → 300 × 28 o ≈ 8,4 Ko (+1,2 Ko).
-// Fenêtre glissante dimensionnée en NOMBRE D'ÉCHANTILLONS (diagnostic pur) —
-// sa durée réelle dépend de la cadence de lecture, volontairement non figée ici.
-constexpr size_t kSensorTraceBufferSize          = 300;
+// feature-153 (ADR-0098) : +2 champs float (phMedian, orpMedian) → échantillon
+// 28 → 36 o (sizeof(SensorTraceSample), figé par static_assert dans sensors.h).
+// Décision produit du 2026-10-11 (utilisateur, arbitrage mémoire chiffré) :
+// l'ajout de la médiane est payé en RÉDUISANT la durée du tampon plutôt qu'en
+// grossissant son occupation RAM — 300 → 200 points : 200 × 36 = 7 200 o, SOUS
+// les 8 400 o d'avant. Fenêtre glissante dimensionnée en NOMBRE D'ÉCHANTILLONS
+// (diagnostic pur) — sa durée réelle dépend de la cadence de lecture,
+// volontairement non figée ici.
+constexpr size_t kSensorTraceBufferSize          = 200;
 // Pagination de GET /debug/sensor_trace (bug-crash-sensor-trace-badalloc) :
-// 50 échantillons/page ≈ 4,5 Ko de JSON depuis feature-067 (champ phCorrected) —
-// pas d'allocation contiguë démesurée dans AsyncResponseStream (le heap
+// mesure réelle sur l'appareil le 2026-10-11, AVANT ce lot : 50 échantillons
+// (champs phRaw/phCorrected/phFiltered/orpRaw/orpFiltered/tempEau) → 5 905 o
+// de JSON (curl /debug/sensor_trace?offset=0 | wc -c), PAS les ≈ 4,5 Ko
+// supposés plus tôt (ADR-0073 : ne pas recopier un chiffre sans le mesurer).
+// Les deux champs ajoutés (phMedian, orpMedian) coûtent +34,7 o/échantillon
+// mesurés par réinjection dans la page réelle. 38 échantillons/page →
+// ~5 825 o PROJETÉS (même ordre de grandeur que les 5 905 o d'avant) —
+// PROJECTION NON CONFIRMÉE, à valider par mesure sur le firmware neuf après
+// flash. Pas d'allocation contiguë démesurée dans AsyncResponseStream (le heap
 // fragmenté peut descendre sous 8 Ko, ADR-0029) ; la garde measureJson +
 // kSensorTraceHeapMarginBytes reste le filet en cas de heap trop fragmenté.
-constexpr size_t kSensorTraceMaxSamplesPerPage   = 50;
+constexpr size_t kSensorTraceMaxSamplesPerPage   = 38;
 // Marge de sécurité entre la taille mesurée de la réponse (measureJson) et le
 // plus gros bloc libre 8 bits (heapLargestFreeBlock8Bit() depuis bug-080/
 // v2.33.0 — la brute d'avant comptait l'IRAM) : en dessous → 503 propre au

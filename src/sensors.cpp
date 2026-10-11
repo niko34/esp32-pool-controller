@@ -613,8 +613,12 @@ void SensorManager::_readEzoSensors(float tempC) {
   // feature-152 : `.value(now)` est la VALEUR OFFICIELLE (NaN si warmup/figé/
   // périmé) — la trace montre ce que la régulation voit réellement, jamais un
   // estimateur silencieusement maintenu sous une panne.
-  _recordSensorTrace(_lastPh, applyPhOffset(_lastPh, _phOffset), _phFilter.value((uint32_t)now),
-                     _lastOrp, _orpFilter.value((uint32_t)now), tempC);
+  // feature-153 : `.median()` est l'étage intermédiaire (brut, JAMAIS corrigé
+  // par l'offset — ADR-0039) : il montre comment la chaîne écarte les
+  // aberrations avant lissage.
+  _recordSensorTrace(_lastPh, applyPhOffset(_lastPh, _phOffset), _phFilter.median(),
+                     _phFilter.value((uint32_t)now),
+                     _lastOrp, _orpFilter.median(), _orpFilter.value((uint32_t)now), tempC);
 }
 
 // =============================================================================
@@ -658,15 +662,17 @@ void SensorManager::_updateFilterGates(uint32_t nowMs) {
 // Trace capteur (ring buffer RAM, feature-057)
 // =============================================================================
 
-void SensorManager::_recordSensorTrace(float phRaw, float phCorrected, float phFiltered,
-                                       float orpRaw, float orpFiltered,
-                                       float tempEau) {
+void SensorManager::_recordSensorTrace(float phRaw, float phCorrected, float phMedian,
+                                       float phFiltered, float orpRaw, float orpMedian,
+                                       float orpFiltered, float tempEau) {
   SensorTraceSample& s = _traceBuffer[_traceIdx];
   s.ms          = millis();
   s.phRaw       = phRaw;
   s.phCorrected = phCorrected;
+  s.phMedian    = phMedian;
   s.phFiltered  = phFiltered;
   s.orpRaw      = orpRaw;
+  s.orpMedian   = orpMedian;
   s.orpFiltered = orpFiltered;
   s.tempEau     = tempEau;
   _traceIdx = (_traceIdx + 1) % kSensorTraceBufferSize;
@@ -701,10 +707,17 @@ void SensorManager::appendSensorTraceJson(JsonArray out, size_t offset,
     // feature-067 : pH corrigé (brut + offset) exposé À CÔTÉ du brut.
     if (!isnan(s.phCorrected)) o["phCorrected"] = roundf(s.phCorrected * 1000.0f) / 1000.0f;
     else                       o["phCorrected"] = nullptr;
+    // feature-153 : médiane BRUTE (jamais corrigée par l'offset, ADR-0039) —
+    // même échelle que phRaw/phFiltered. Le navigateur ajoute l'offset à
+    // l'affichage (B11 de feature-153), pas ici.
+    if (!isnan(s.phMedian))    o["phMedian"]    = roundf(s.phMedian * 1000.0f) / 1000.0f;
+    else                       o["phMedian"]    = nullptr;
     if (!isnan(s.phFiltered))  o["phFiltered"]  = roundf(s.phFiltered * 1000.0f) / 1000.0f;
     else                       o["phFiltered"]  = nullptr;
     if (!isnan(s.orpRaw))      o["orpRaw"]      = roundf(s.orpRaw * 10.0f) / 10.0f;
     else                       o["orpRaw"]      = nullptr;
+    if (!isnan(s.orpMedian))   o["orpMedian"]   = roundf(s.orpMedian * 10.0f) / 10.0f;
+    else                       o["orpMedian"]   = nullptr;
     if (!isnan(s.orpFiltered)) o["orpFiltered"] = roundf(s.orpFiltered * 10.0f) / 10.0f;
     else                       o["orpFiltered"] = nullptr;
     if (!isnan(s.tempEau))     o["tempEau"]     = roundf(s.tempEau * 10.0f) / 10.0f;

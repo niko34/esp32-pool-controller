@@ -27,9 +27,11 @@
 void setUp(void) {}
 void tearDown(void) {}
 
-// Valeurs du firmware : kSensorTraceBufferSize=300, kSensorTraceMaxSamplesPerPage=50.
-static constexpr size_t kTotal = 300;
-static constexpr size_t kMax = 50;
+// Valeurs du firmware : kSensorTraceBufferSize=200, kSensorTraceMaxSamplesPerPage=38
+// (feature-153 : constantes de TEST, pas un contrat — à garder en phase avec
+// constants.h pour éviter un faux rouge imputé au mauvais endroit, ADR-0073).
+static constexpr size_t kTotal = 200;
+static constexpr size_t kMax = 38;
 
 // ---------------------------------------------------------------------------
 // 1. Défauts (paramètres absents → offset=0, count=0)
@@ -64,9 +66,9 @@ void test_middle_page(void) {
 }
 
 void test_last_page_exact(void) {
-  TracePageBounds b = computeTracePage(kTotal, 250, 0, kMax);
-  TEST_ASSERT_EQUAL_size_t(250, b.offset);
-  TEST_ASSERT_EQUAL_size_t(50, b.n);  // 250 + 50 == 300, dernière page pleine
+  TracePageBounds b = computeTracePage(kTotal, 162, 0, kMax);
+  TEST_ASSERT_EQUAL_size_t(162, b.offset);
+  TEST_ASSERT_EQUAL_size_t(38, b.n);  // 162 + 38 == 200, dernière page pleine
 }
 
 void test_last_page_partial(void) {
@@ -130,9 +132,9 @@ void test_count_size_max_clamped(void) {
 }
 
 void test_count_larger_than_remaining(void) {
-  TracePageBounds b = computeTracePage(kTotal, 290, 50, kMax);
-  TEST_ASSERT_EQUAL_size_t(290, b.offset);
-  TEST_ASSERT_EQUAL_size_t(10, b.n);
+  TracePageBounds b = computeTracePage(kTotal, 190, 50, kMax);
+  TEST_ASSERT_EQUAL_size_t(190, b.offset);
+  TEST_ASSERT_EQUAL_size_t(10, b.n);  // 200 - 190 == 10 restants, sous count ET kMax
 }
 
 // ---------------------------------------------------------------------------
@@ -147,7 +149,7 @@ void test_max_per_page_zero_yields_empty(void) {
 
 void test_invariants_hold_on_adversarial_grid(void) {
   // Balayage adversarial : les 3 invariants tiennent pour toute combinaison.
-  const size_t vals[] = {0, 1, 49, 50, 51, 299, 300, 301, 9999, SIZE_MAX};
+  const size_t vals[] = {0, 1, 37, 38, 39, 199, 200, 201, 9999, SIZE_MAX};
   const size_t nVals = sizeof(vals) / sizeof(vals[0]);
   for (size_t t = 0; t < nVals; ++t) {
     for (size_t o = 0; o < nVals; ++o) {

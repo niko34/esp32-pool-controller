@@ -2807,7 +2807,7 @@ input.is-computed:disabled {
   height: calc(100% - 8px);
 }
 
-/* Trace signaux capteurs (feature-057) — onglet Avancé */
+/* Trace signaux capteurs (feature-057, refondue feature-153) — onglet Avancé */
 .trace-block {
   margin-bottom: 16px;
 }
@@ -2828,26 +2828,24 @@ input.is-computed:disabled {
   height: calc(100% - 8px);
 }
 
-.trace-legend {
-  display: flex;
-  gap: 16px;
-  flex-wrap: wrap;
-  margin-bottom: 4px;
-  font-size: 12px;
-  color: var(--muted, #6b7280);
-}
-
-.trace-legend__item {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
-
+/* feature-153 (B12b) : la pastille de couleur migre devant le libellé de
+   chaque ligne de statistiques (une seule rangée nomme ET chiffre) — les
+   anciens blocs .trace-legend séparés ont disparu, cette classe est réutilisée
+   inline dans .kv__k. */
 .trace-legend__swatch {
   display: inline-block;
   width: 12px;
   height: 12px;
   border-radius: 3px;
+  margin-right: 6px;
+  vertical-align: -1px;
+}
+
+/* feature-153 (B16) : .segmented__btn générique n'impose PAS de min-height ≥
+   44 px (seule la variante --num le fait) — vérifié, pas supposé. Cible
+   tactile WCAG 2.5.8 sur CETTE instance (sélecteur de cadence). */
+#trace_rate_select .segmented__btn {
+  min-height: 44px;
 }
 
 /* ========== GRAPHIQUES uPlot ========== */

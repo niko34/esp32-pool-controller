@@ -2338,63 +2338,55 @@ action:
 
               <div class="card" id="card-sensor-trace">
                 <div class="card__head">
-                  <h2 class="card__title">Signaux capteurs (brut / lissé)</h2>
-                  <span class="pill" id="trace_count" role="status" aria-live="polite">0</span>
+                  <h2 class="card__title">Signaux capteurs</h2>
+                  <span class="pill" id="trace_count" role="status" aria-live="polite" hidden>0</span>
                 </div>
                 <div class="card__body">
-                  <div class="muted small" style="margin-bottom:12px;">
-                    Trace haute cadence des signaux pH et ORP (un point par cycle capteur),
-                    pour diagnostiquer bruit et oscillation. Le buffer est volatil : il est
-                    perdu au redémarrage de l'appareil.
-                  </div>
+                  <label class="field">
+                    <span class="field__label">Cadence d'affichage</span>
+                    <div class="segmented" id="trace_rate_select" role="group" aria-label="Cadence d'affichage">
+                      <button class="segmented__btn is-active" type="button" data-value="fast" aria-pressed="true">Haute cadence</button>
+                      <button class="segmented__btn" type="button" data-value="day" aria-pressed="false">Journée</button>
+                    </div>
+                  </label>
+
+                  <!-- feature-153 (B12e) : texte d'intro PAR POSITION, recalculé en JS
+                       (_renderTraceIntro) — jamais de durée codée en dur (ADR-0073). -->
+                  <div class="muted small" id="trace_intro" style="margin-bottom:12px;"></div>
+
+                  <!-- feature-153 (B11) : rappelle sur quelle échelle portent les courbes
+                       (corrigée de l'offset pH, ou brute si l'offset est indisponible). -->
+                  <div class="muted small" id="trace_scale_note" style="margin-bottom:12px;"></div>
 
                   <div class="row row--gap" style="margin-bottom:12px;">
-                    <button class="btn btn--secondary" type="button" id="trace_reload_btn">Recharger la trace</button>
+                    <button class="btn btn--secondary" type="button" id="trace_reload_btn">Recharger</button>
+                    <!-- feature-153 (B12c) : agit sur la RAM, donc masqué en vue Journée
+                         (un bouton sans effet observable serait trompeur). -->
                     <button class="btn btn--danger" type="button" id="trace_clear_btn">Vider le buffer</button>
                   </div>
 
-                  <!-- État du filtre de mesure (route /debug/sensor_filter_state, feature-152) :
-                       hors de #trace_charts pour rester visible même si le buffer de trace
-                       est vide, et survivre à une panne de la trace (requêtes indépendantes). -->
-                  <div class="kv kv--compact" style="margin-bottom:12px;">
-                    <div class="kv__row"><span class="kv__k">État filtre pH</span><span class="kv__v" id="trace_filter_ph">—</span></div>
-                    <div class="kv__row"><span class="kv__k">État filtre ORP</span><span class="kv__v" id="trace_filter_orp">—</span></div>
-                  </div>
-                  <!-- feature-138 (B1) : l'état ci-dessus est un instantané — cette ligne
-                       porte sa date et se rafraîchit tant que l'onglet Avancé est visible
-                       (cf. _armFilterStateRefresh dans app.js). -->
-                  <div class="muted small" id="trace_filter_age" style="margin:-6px 0 12px">—</div>
-
-                  <div class="muted small" id="trace_status" hidden>Aucune donnée dans le buffer.</div>
+                  <!-- feature-153 (B10) : trois messages distincts — tampon/historique vide
+                       (neutre), appareil injoignable ou heap fragmenté (callout--warn). -->
+                  <p class="muted small" id="trace_empty" hidden></p>
+                  <div class="callout callout--warn" id="trace_error" role="status" aria-live="polite" hidden></div>
 
                   <div id="trace_charts" hidden>
                     <div class="trace-block">
-                      <div class="trace-legend">
-                        <span class="trace-legend__item"><span class="trace-legend__swatch" style="background:#a78bfa"></span>pH brut</span>
-                        <span class="trace-legend__item"><span class="trace-legend__swatch" style="background:#7c3aed"></span>pH lissé</span>
-                      </div>
                       <div class="chart-container trace-chart">
                         <div id="trace_ph_chart" class="chart-host"></div>
                       </div>
                     </div>
 
                     <div class="trace-block">
-                      <div class="trace-legend">
-                        <span class="trace-legend__item"><span class="trace-legend__swatch" style="background:#34d399"></span>ORP brut</span>
-                        <span class="trace-legend__item"><span class="trace-legend__swatch" style="background:#059669"></span>ORP lissé</span>
-                      </div>
                       <div class="chart-container trace-chart">
                         <div id="trace_orp_chart" class="chart-host"></div>
                       </div>
                     </div>
 
-                    <div class="kv kv--compact" style="margin-top:16px;">
-                      <div class="kv__row"><span class="kv__k">pH brut</span><span class="kv__v" id="trace_stats_ph_raw">—</span></div>
-                      <div class="kv__row"><span class="kv__k">pH lissé</span><span class="kv__v" id="trace_stats_ph_filtered">—</span></div>
-                      <div class="kv__row"><span class="kv__k">ORP brut</span><span class="kv__v" id="trace_stats_orp_raw">—</span></div>
-                      <div class="kv__row"><span class="kv__k">ORP lissé</span><span class="kv__v" id="trace_stats_orp_filtered">—</span></div>
-                      <div class="kv__row"><span class="kv__k">T° eau</span><span class="kv__v" id="trace_stats_temp">—</span></div>
-                    </div>
+                    <!-- feature-153 (B4/B13) : un seul sous-titre, jamais répété par ligne —
+                         la durée se recalcule (_setTraceStatsSubtitle dans app.js). -->
+                    <div class="muted small" id="trace_stats_subtitle" style="margin-top:16px;"></div>
+                    <div class="kv kv--compact" id="trace_stats_rows"></div>
                   </div>
                 </div>
               </div>

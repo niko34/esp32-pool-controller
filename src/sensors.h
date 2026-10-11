@@ -224,11 +224,12 @@ public:
   bool isInitialized() const;
 
   // ===== Trace capteur (ring buffer RAM, feature-057) =====
-  // Capture chaque cycle EZO (pH brut + pH corrigé + pH lissé + ORP brut + ORP
-  // lissé + T° eau). Sert au diagnostic d'oscillation / de lissage (comparaison
-  // brut vs filtré) et, depuis feature-067, à distinguer ce qui vient de l'EZO
-  // de ce qui vient de l'offset logiciel : les champs pH de la trace sont
-  // TOUJOURS bruts (membres internes), sauf `phCorrected`.
+  // Capture chaque cycle EZO (pH brut + pH corrigé + pH médiane + pH lissé +
+  // ORP brut + ORP médiane + ORP lissé + T° eau). Sert au diagnostic
+  // d'oscillation / de lissage (comparaison brut vs médiane vs filtré) et,
+  // depuis feature-067, à distinguer ce qui vient de l'EZO de ce qui vient de
+  // l'offset logiciel : les champs pH de la trace sont TOUJOURS bruts
+  // (membres internes), sauf `phCorrected`.
   // Buffer glissant de kSensorTraceBufferSize échantillons (sa durée réelle
   // dépend de la cadence de lecture, volontairement non figée ici — feature-152).
   //
@@ -244,11 +245,21 @@ public:
     uint32_t ms;          // millis() au moment de la lecture
     float    phRaw;       // pH brut Atlas EZO, SANS offset (NaN si lecture échouée)
     float    phCorrected; // feature-067 : pH brut + offset logiciel (NaN si brut NaN)
+    float    phMedian;    // feature-153 : médiane BRUTE du filtre pH (_phFilter.median(), NaN si fenêtre vide)
     float    phFiltered;  // pH lissé BRUT (médiane + EMA, feature-025 ; NaN si filtre vide)
     float    orpRaw;      // ORP brut Atlas EZO (NaN si lecture échouée)
+    float    orpMedian;   // feature-153 : médiane BRUTE du filtre ORP (_orpFilter.median(), NaN si fenêtre vide)
     float    orpFiltered; // ORP lissé (NaN si filtre vide)
     float    tempEau;     // T° eau calibrée envoyée à l'EZO pour compensation (NaN si sonde absente)
   };
+  // ADR-0098 : occupation réelle du tampon, à ne JAMAIS supposer (le padding du
+  // compilateur peut dépasser sizeof(float)*N) — figée par ce static_assert.
+  // Constaté le 2026-10-11 : 8 float (32 o) + 1 uint32_t (4 o) = 36 o, sans
+  // padding sur cette ABI (xtensa-esp32, alignement 4). kSensorTraceBufferSize
+  // × sizeof(SensorTraceSample) donne l'occupation RAM réelle du tampon.
+  static_assert(sizeof(SensorTraceSample) == 36,
+                "SensorTraceSample : occupation inattendue, recalculer "
+                "kSensorTraceBufferSize (ADR-0098)");
   // Nombre d'échantillons valides actuellement dans le ring buffer.
   size_t getSensorTraceCount() const;
   // Ajoute une PAGE d'échantillons (ordre chronologique, plus ancien d'abord)
@@ -460,8 +471,12 @@ private:
   // Enregistre un échantillon de trace (appelé en fin de _readEzoSensors, loopTask).
   // feature-067 : `phCorrected` = brut + offset (NaN si brut NaN) ; `phRaw` et
   // `phFiltered` restent BRUTS (membres internes, jamais corrigés).
-  void _recordSensorTrace(float phRaw, float phCorrected, float phFiltered,
-                          float orpRaw, float orpFiltered, float tempEau);
+  // feature-153 : `phMedian`/`orpMedian` = médiane BRUTE des filtres
+  // (_phFilter.median() / _orpFilter.median()), JAMAIS corrigée par l'offset —
+  // même référence brute que phRaw/phFiltered (ADR-0039 : l'offset s'applique
+  // en sortie des accesseurs, pas ici).
+  void _recordSensorTrace(float phRaw, float phCorrected, float phMedian, float phFiltered,
+                          float orpRaw, float orpMedian, float orpFiltered, float tempEau);
   void _readDs18b20s();                // Lecture multi-sondes DS18B20
   void _processEzoQueue();             // Dépile au plus 1 commande par cycle
   void _executeEzoCmd(const EzoCmdRequest& req);

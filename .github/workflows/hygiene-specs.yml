@@ -204,3 +204,24 @@ jobs:
       # Même script en local (`./tools/check_removed_measurement_vocabulary.sh`) et en CI.
       - name: Contrôle anti-retour du vocabulaire
         run: ./tools/check_removed_measurement_vocabulary.sh
+
+  # JOB 11 — la logique pure de la carte « Signaux capteurs » tourne vraiment
+  # (feature-153, D3). Patron du job 9 (sha256-vectors, feature-118) : une
+  # sentinelle que personne ne lance ne protège de rien. Les trois fonctions
+  # pures `groupHistoryPoints()` / `seriesStats()` / `traceWindowDurationMs()`
+  # de `data/app.js` sont EXTRAITES par ancre + comptage de profondeur, jamais
+  # recopiées, puis évaluées sous Node contre des vecteurs couvrant fenêtres
+  # partielles, fenêtre entièrement vide (aucun point, pas un point à 0),
+  # bornes de fenêtre, `null` ignorés sans être comptés, et la dépendance de
+  # la durée annoncée à la cadence réelle. Node est préinstallé sur
+  # ubuntu-latest : aucun actions/setup-node nécessaire.
+  trace-logic-vectors:
+    name: Vecteurs de la logique « Signaux capteurs » (feature-153)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # Même script en local (`./tools/check_trace_logic_vectors.sh`) et en CI.
+      - name: Contrôle des vecteurs de logique de trace
+        run: ./tools/check_trace_logic_vectors.sh

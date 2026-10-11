@@ -2,6 +2,61 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [2.69.0] - 2026-10-11
+
+### Fonctionnalités
+
+- **Carte « Signaux capteurs » refondue (onglet Avancé → Réglages, feature-153)** —
+  jugée obsolète par l'utilisateur (« ce sont des infos liées à l'ancien système »),
+  elle est reconstruite autour du vrai usage : vérifier les mesures pH et ORP dans
+  la journée.
+  - **Deux cadences au choix**, un seul sélecteur pour toute la carte :
+    **Haute cadence** (tampon RAM volatil, un point par cycle capteur) avec
+    **trois courbes par voie** — brut, **médiane** (nouveau), lissé — et
+    **Journée** (historique persisté, survit à un redémarrage) avec **une seule
+    courbe par voie**, la valeur officielle, regroupée par 10 min sur 8 h puis en
+    moyennes horaires au-delà (bascule visible sur le graphique).
+  - **Échelle corrigée identique partout** : les courbes de la Haute cadence
+    affichent désormais le pH avec l'offset appliqué — donc **la même échelle**
+    qu'en vue Journée et sur le tableau de bord. Aucune marche en changeant de vue.
+  - **Statistiques min / max / moyenne** par courbe, calculées sur la **fenêtre
+    affichée** (et non sur « tout le bassin »).
+  - **Retiré** : les lignes « État filtre pH/ORP » (vestiges de l'ancienne chaîne
+    de mesure, feature-152), la ligne « T° eau » (orpheline sur cette carte), le
+    libellé « brut / lissé » du titre, et le crête-à-crête « Δ 25 min » qui
+    annonçait une durée devenue fausse depuis que la cadence de lecture n'est
+    plus figée.
+
+### Firmware
+
+- **Trace des signaux capteurs (feature-057, étendue par feature-153)** :
+  deux champs `phMedian` / `orpMedian` ajoutés au tampon RAM et à
+  `GET /debug/sensor_trace`, échelle **brute** (sans offset — c'est le
+  navigateur qui corrige à l'affichage, cohérent avec [ADR-0039](docs/adr/0039-offset-ph-applique-en-sortie-des-accesseurs.md)).
+  Le gain d'information est payé en **réduisant** la taille du tampon plutôt
+  qu'en l'agrandissant : `kSensorTraceBufferSize` passe de 300 à **200**
+  échantillons (décision chiffrée de l'utilisateur) — occupation RAM **en
+  baisse** malgré les deux champs de plus (7 200 o contre 8 400 o avant).
+  La taille de page de la route (`kSensorTraceMaxSamplesPerPage`) est
+  réajustée de 50 à **38** pour conserver un poids de réponse du même ordre.
+- `GET /debug/sensor_filter_state` **perd son dernier consommateur côté
+  interface** (remplacé par la carte ci-dessus) mais **reste exposée** —
+  son retrait éventuel est une décision produit distincte, non prise ici.
+
+### Documentation
+
+- `docs/features/page-settings.md` : refonte de la section « Signaux capteurs ».
+- `docs/subsystems/sensors.md` : tampon de trace à 200 × 36 o, trois chiffres
+  périmés corrigés (ADR-0073).
+- `docs/API.md` : champs `phMedian` / `orpMedian` de `GET /debug/sensor_trace`,
+  nouvelle taille de page.
+- `docs/BUILD.md` : onzième job CI (`trace-logic-vectors`).
+- [ADR-0099](docs/adr/0099-tester-par-extraction-de-texte-jamais-par-duplication.md) :
+  la logique pure du navigateur se teste par extraction de texte depuis
+  `data/app.js`, jamais par une duplication C++.
+
+---
+
 ## [2.68.0] - 2026-10-11
 
 > ⚠️ **Déploiement** : cette version touche le **firmware** ET le **filesystem**

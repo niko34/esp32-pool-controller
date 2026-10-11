@@ -3103,6 +3103,8 @@ curl http://poolcontroller.local/debug/sensor_filter_state
 
 Les champs `raw` / `median` / `filtered` valent `null` si la mesure est indisponible. Voir [`docs/subsystems/sensors.md`](subsystems/sensors.md#chaîne-de-mesure-à-5-étages-feature-152).
 
+> ℹ️ **Depuis la v2.69.0 (feature-153), cette route perd son dernier consommateur dans `data/`** — la carte « Signaux capteurs » affichait les lignes « État filtre pH/ORP » qu'elle alimentait ; elles sont retirées (voir [page-settings.md](features/page-settings.md#card-signaux-capteurs-feature-153-v2690)). **La route reste exposée** (diagnostic `curl`) : son retrait éventuel est une décision produit distincte, non prise ici.
+
 #### Champ `state` (v2.68.0, feature-152 — remplace `ready`/`unstable`/`dispersion`/`dispersion_max`/`latch_cycles`/`clean_streak`)
 
 ⚠️ **Retiré par la refonte de la chaîne de mesure.** Jusqu'en v2.67.x, cette route exposait `ready` (bool), `unstable` (bool) et quatre champs de dispersion (`dispersion`, `dispersion_max`, `latch_cycles`, `clean_streak`) qui pilotaient un **latch EMI** — mécanisme retiré, il se posait sur du bruit de mesure normal ([ADR-0097](adr/0097-le-filtre-lisse-le-dosage-juge.md)). Il n'existe plus d'état « instable » séparé de la valeur : la médiane absorbe les aberrations par construction.
@@ -3116,13 +3118,13 @@ Les champs `raw` / `median` / `filtered` valent `null` si la mesure est indispon
 
 ## Trace des signaux capteurs (feature-057, v2.7.0)
 
-Réintroduction **fidèle** (haute cadence) de la trace des signaux capteurs retirée en v2.5.0 (feature-045), **étendue à l'ORP** (l'original ne couvrait que le pH). Un ring buffer firmware de `kSensorTraceBufferSize = 300` échantillons enregistre les valeurs brutes **et** lissées à **chaque cycle capteur** (~5 s), cadence bien supérieure aux 5 s du WebSocket sur toute la fenêtre. Buffer **volatil** (perdu au reboot). Détail firmware : [`docs/subsystems/sensors.md`](subsystems/sensors.md#trace-des-signaux-capteurs--feature-057).
+Réintroduction **fidèle** (haute cadence) de la trace des signaux capteurs retirée en v2.5.0 (feature-045), **étendue à l'ORP** (l'original ne couvrait que le pH) puis à la **médiane** (feature-153, v2.69.0). Un ring buffer firmware de `kSensorTraceBufferSize = 200` échantillons (était 300 avant la v2.69.0 — gain d'information payé en réduisant la durée du tampon, pas en l'agrandissant) enregistre les valeurs brutes, **médianes** et lissées à **chaque cycle capteur** (~5 s), cadence bien supérieure aux 5 s du WebSocket sur toute la fenêtre. Buffer **volatil** (perdu au reboot). Détail firmware : [`docs/subsystems/sensors.md`](subsystems/sensors.md#trace-des-signaux-capteurs--feature-057).
 
 ### `GET /debug/sensor_trace` — pas d'auth (cohérent avec autres `/debug/*`)
 
 Dump JSON **paginé** du ring buffer, du plus ancien au plus récent. Handler **non bloquant** (< 50 ms) : lecture lock-free du buffer, réponse pré-dimensionnée (`beginResponseStream(type, taille)` — une seule allocation exacte, aucun `resize()` en cours de sérialisation), aucune allocation dans la loop.
 
-> ⚠️ **Pagination obligatoire depuis la v2.10.1** (bug-crash-sensor-trace-badalloc) : la route sérialisait auparavant les 300 échantillons en une seule réponse (~20 Ko contigus dans le `cbuf` d'`AsyncResponseStream`) — sur heap fragmenté (cf. [ADR-0029](adr/0029-auto-guerison-heap.md), le plus gros bloc libre peut descendre sous 8 Ko), l'allocation levait un `std::bad_alloc` non rattrapé sur la tâche `async_tcp` → `abort()` → **reboot** (coredump v2.10.0 du 2026-07-23, déclenché par l'ouverture de l'onglet Avancé). Chaque page est désormais bornée à `kSensorTraceMaxSamplesPerPage = 50` échantillons (~3,5 Ko).
+> ⚠️ **Pagination obligatoire depuis la v2.10.1** (bug-crash-sensor-trace-badalloc) : la route sérialisait auparavant les échantillons en une seule réponse (~20 Ko contigus dans le `cbuf` d'`AsyncResponseStream`) — sur heap fragmenté (cf. [ADR-0029](adr/0029-auto-guerison-heap.md), le plus gros bloc libre peut descendre sous 8 Ko), l'allocation levait un `std::bad_alloc` non rattrapé sur la tâche `async_tcp` → `abort()` → **reboot** (coredump v2.10.0 du 2026-07-23, déclenché par l'ouverture de l'onglet Avancé). Chaque page est désormais bornée à `kSensorTraceMaxSamplesPerPage = 38` échantillons depuis la v2.69.0 (feature-153 ; était 50) — mesure réelle **avant** ce lot, le 2026-10-11 : **5 905 o** pour 50 échantillons (`curl /debug/sensor_trace?offset=0 | wc -c`), pas les ≈ 4,5 Ko/3,5 Ko longtemps recopiés sans remesurer (ADR-0073). Les deux champs `phMedian`/`orpMedian` coûtent **+34,7 o/échantillon** (mesurés par réinjection dans la page réelle) ; 38 échantillons/page → **~5 825 o projetés, non confirmés** tant que la mesure n'a pas été refaite sur le firmware déployé.
 
 ```bash
 curl "http://poolcontroller.local/debug/sensor_trace?offset=0&count=50"
@@ -3133,43 +3135,45 @@ curl "http://poolcontroller.local/debug/sensor_trace?offset=0&count=50"
 | Paramètre | Défaut | Description |
 |-----------|--------|-------------|
 | `offset` | `0` | Index du premier échantillon (chronologique, 0 = le plus ancien). |
-| `count` | `kSensorTraceMaxSamplesPerPage` (50) | Nombre d'échantillons demandés. `0` ou valeur invalide → défaut. |
+| `count` | `kSensorTraceMaxSamplesPerPage` (38) | Nombre d'échantillons demandés. `0` ou valeur invalide → défaut. |
 
 **Clamp silencieux** (jamais de `400`, calcul pur `computeTracePage()` dans [`src/sensor_trace_page.h`](../src/sensor_trace_page.h)) :
 - `offset > count total` → page vide (`returned: 0`) ;
-- `count > 50` → borné à 50 ;
-- `offset + count` déborde → tronqué aux échantillons restants. Invariants garantis quel que soit l'input : `offset ≤ total`, `returned ≤ 50`, `offset + returned ≤ total`.
+- `count > 38` → borné à 38 ;
+- `offset + count` déborde → tronqué aux échantillons restants. Invariants garantis quel que soit l'input : `offset ≤ total`, `returned ≤ 38`, `offset + returned ≤ total`.
 
 **Réponse 200**
 
 ```json
 {
-  "count": 300,
+  "count": 200,
   "offset": 0,
-  "returned": 50,
+  "returned": 38,
   "interval_ms": 5000,
   "now": 3600000,
   "samples": [
-    { "t": 3595000, "phRaw": 7.241, "phCorrected": 7.191, "phFiltered": 7.234, "orpRaw": 722.0, "orpFiltered": 720.0, "tempEau": 24.5 },
-    { "t": 3600000, "phRaw": 7.238, "phCorrected": 7.188, "phFiltered": 7.235, "orpRaw": 721.0, "orpFiltered": 720.0, "tempEau": 24.5 }
+    { "t": 3595000, "phRaw": 7.241, "phCorrected": 7.191, "phMedian": 7.236, "phFiltered": 7.234, "orpRaw": 722.0, "orpMedian": 720.0, "orpFiltered": 720.0, "tempEau": 24.5 },
+    { "t": 3600000, "phRaw": 7.238, "phCorrected": 7.188, "phMedian": 7.235, "phFiltered": 7.235, "orpRaw": 721.0, "orpMedian": 720.0, "orpFiltered": 720.0, "tempEau": 24.5 }
   ]
 }
 ```
 
 | Champ | Type | Description |
 |-------|------|-------------|
-| `count` | integer | Nombre **total** d'échantillons présents dans le buffer (0..300) — permet au client d'enchaîner les pages. |
+| `count` | integer | Nombre **total** d'échantillons présents dans le buffer (0..200, depuis v2.69.0 — était 300) — permet au client d'enchaîner les pages. |
 | `offset` | integer | Offset **effectif** de la page (après clamp). |
-| `returned` | integer | Nombre d'échantillons dans `samples` (0..50). |
+| `returned` | integer | Nombre d'échantillons dans `samples` (0..38, depuis v2.69.0 — était 50). |
 | `interval_ms` | integer | Période nominale d'enregistrement (`kPhOrpSensorIntervalMs`, ~5000 ms). |
 | `now` | integer | `millis()` courant — permet à l'UI de reconstruire l'axe temps relatif (`t − now`). |
 | `samples[].t` | integer | Timestamp de l'échantillon en ms (`millis()` au moment de l'enregistrement). |
 | `samples[].phRaw` / `phFiltered` | float \| null | pH brut / lissé, **tous deux SANS offset** (mesure capteur telle quelle, arrondi ×1000). `null` si NaN (lecture échouée / filtre non amorcé). |
 | `samples[].phCorrected` | float \| null | **feature-067 (v2.20.0)** — pH brut **+ offset logiciel** (`ph_offset`, arrondi ×1000). `null` si le brut est NaN (l'offset ne fabrique jamais une mesure). À offset nul, égal à `phRaw`. |
+| `samples[].phMedian` | float \| null | **feature-153 (v2.69.0)** — médiane glissante pH, **échelle BRUTE** (SANS offset, `_phFilter.median()` — c'est le navigateur qui ajoute l'offset à l'affichage, cf. note ci-dessous). `null` si fenêtre pas encore pleine (warmup) ou brut NaN. |
 | `samples[].orpRaw` / `orpFiltered` | float \| null | ORP brut / lissé en mV (arrondi ×10). `null` si NaN. |
+| `samples[].orpMedian` | float \| null | **feature-153 (v2.69.0)** — équivalent ORP (mV, arrondi ×10, échelle brute — l'ORP n'a pas d'offset logiciel). |
 | `samples[].tempEau` | float \| null | T° eau envoyée à l'EZO pour compensation (°C, arrondi ×10). `null` si sonde absente. |
 
-> ⚠️ **Exception à la règle « seuls les `*Raw` sont bruts »** : dans cette trace de **diagnostic**, `phFiltered` est la sortie du filtre **sans offset** (le filtre travaille sur le brut, [ADR-0039](adr/0039-offset-ph-applique-en-sortie-des-accesseurs.md)). Seul `phCorrected` porte l'offset. L'objectif est de pouvoir dire à tout instant **ce qui vient de l'EZO** et **ce qui vient de la correction**. Ailleurs (`/data`, WebSocket, MQTT), `phFiltered` est **corrigé**. Coût mémoire : le champ ajouté porte l'échantillon à 28 octets (buffer ≈ 8,4 Ko RAM) et une page de 50 échantillons à ≈ 4,5 Ko de JSON.
+> ⚠️ **Exception à la règle « seuls les `*Raw` sont bruts »** : dans cette trace de **diagnostic**, `phFiltered` **et** `phMedian` sont la sortie du filtre **sans offset** (le filtre travaille sur le brut, [ADR-0039](adr/0039-offset-ph-applique-en-sortie-des-accesseurs.md)). Seul `phCorrected` porte l'offset. L'objectif est de pouvoir dire à tout instant **ce qui vient de l'EZO** et **ce qui vient de la correction**. Ailleurs (`/data`, WebSocket, MQTT), `phFiltered` est **corrigé**. **Côté navigateur** (carte « Signaux capteurs », [page-settings.md](features/page-settings.md#card-signaux-capteurs-feature-153-v2690)), l'offset pH est ajouté aux trois courbes de la Haute cadence **à l'affichage**, pour que cette vue, la vue Journée et le tableau de bord restent sur la même échelle. Coût mémoire : l'échantillon pèse désormais **36 octets** (buffer de 200 points = 7 200 o RAM, depuis v2.69.0 — était 28 octets × 300 = 8 400 o) et une page de 38 échantillons pèse **≈ 5 825 o de JSON, projetés et non confirmés** (mesure de référence avant ce lot : 5 905 o pour 50 échantillons de 28 o).
 
 **Erreurs**
 
@@ -3179,7 +3183,7 @@ curl "http://poolcontroller.local/debug/sensor_trace?offset=0&count=50"
 
 > ℹ️ **Glissement du ring entre deux pages** : le buffer continue d'avancer (~1 échantillon toutes les 5 s) pendant qu'un client enchaîne les pages — les bornes ne sont pas ancrées sur un identifiant d'échantillon, un décalage d'~1 échantillon entre pages est donc possible et **toléré** (route de diagnostic, contrat lock-free `SensorTraceSample` inchangé).
 
-Usage : diagnostiquer le **bruit** ou une **oscillation** de la chaîne de mesure en comparant brut vs lissé sur une fenêtre continue, depuis l'onglet **Avancé** — l'UI agrège les pages de façon transparente (voir [`docs/features/page-settings.md`](features/page-settings.md#card-signaux-capteurs-brut--lissé-feature-057)).
+Usage : diagnostiquer le **bruit** ou une **oscillation** de la chaîne de mesure en comparant brut, médiane et lissé sur une fenêtre continue, depuis l'onglet **Avancé** — l'UI agrège les pages de façon transparente (voir [`docs/features/page-settings.md`](features/page-settings.md#card-signaux-capteurs-feature-153-v2690)).
 
 ### `POST /debug/sensor_trace_clear` — pas d'auth (cohérent avec autres `/debug/*`)
 

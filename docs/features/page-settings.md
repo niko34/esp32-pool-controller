@@ -205,7 +205,7 @@ Champs : `#update_file` (input `accept=".bin"`), `#update_type` (`<select>` Firm
 - ⚠️ **Champ « Débit nominal des pompes » (`pump_max_flow_ml_per_min`) supprimé en v2.21.0** — le modèle linéaire duty↔débit est retiré ([ADR-0043](../adr/0043-dosage-proportionnel-de-temps-amplitude-calibree.md)) ; le débit vient exclusivement de la pesée par pompe.
 - Tests pompe : `POST /pump1/on`, `/pump1/off`, `/pump2/on`, `/pump2/off` — arrêt auto après 10 s côté firmware. Les boutons de l'UI démarrent toujours à **pleine puissance** ; le paramètre `?duty=N` ajouté en v2.20.5 (0-255, mesure du seuil de rotation au banc) est **volontairement absent de l'interface** — usage `curl` uniquement, voir [API.md](../API.md#post-pump1on-pump1off--write).
 - `sensor_logs_enabled` (bool) — verbosité logs capteurs pour diagnostic.
-- **Card "Signaux capteurs (brut / lissé)"** (feature-057, v2.7.0) — voir section dédiée ci-dessous.
+- **Card « Signaux capteurs »** (feature-057, v2.7.0 ; refondue feature-153, v2.69.0) — voir section dédiée ci-dessous.
 - **Card "Diagnostic crash"** — voir section dédiée ci-dessous.
 - **Card "Logs"** — voir section dédiée ci-dessous.
 - **Card « Écran LVGL » — supprimée en v2.17.1** : la card (déjà masquée, toggle rendu inerte en v2.17.0 par le retrait complet du support écran, feature-065) est retirée du DOM ([`data/index.html`](../../data/index.html)) et le champ `screen_enabled` n'est plus lu/envoyé par `save()` ([`data/app.js`](../../data/app.js)) ni exposé par `/get-config` / `/save-config` — un client legacy qui l'envoie encore est ignoré sans erreur (voir [API.md](../API.md)). La clé NVS n'est plus écrite ni lue (clé orpheline inoffensive sur les appareils existants).
@@ -303,47 +303,91 @@ Bouton **« Annuler »** visible aux étapes 1-5 → `POST /flow-assist/exit` (a
 - **Marche interrompue par le serveur** (perte de filtration) : drapeau `flow_assist.aborted` — purge : toast + retour au bouton « Purger » ; mesure : **jamais enregistrable** (double verrou : routage `verifyRunEnd` + filet à l'enregistrement). Le volume déjà pompé est crédité prorata au majorant côté firmware (P4).
 - **Refus 409 au démarrage d'une marche** : messages français dédiés (`FLOW_ASSIST_REFUSALS` — `assist_busy`, `purge_limit`, `already_injecting`, `invalid_amplitude` + les codes des gardes manuelles partagés `filtration_off`, `daily_limit`…), toast `error`, l'assistant reste à l'étape courante.
 
-#### Card Signaux capteurs (brut / lissé) — feature-057
+#### Card Signaux capteurs (feature-153, v2.69.0)
 
-Réintroduction **fidèle** (haute cadence) de l'ancienne card « Debug oscillation pH » (retirée en v2.5.0), **étendue au pH ET à l'ORP**. Permet de diagnostiquer visuellement le **bruit** ou une **oscillation** de la chaîne de mesure en comparant, sur une fenêtre temporelle continue, la valeur **brute** Atlas EZO à la valeur **lissée** (médiane + EMA, feature-025).
+> ℹ️ **Refonte complète en v2.69.0 (feature-153)** — cette section **remplace** la
+> description de la card « Signaux capteurs (brut / lissé) » (feature-057, v2.7.0
+> à v2.68.0). Déclencheur : demande utilisateur du 2026-10-11 — la card précédente
+> montrait des vestiges de la chaîne de mesure à 14 étages retirée par feature-152
+> (lignes « État filtre pH/ORP ») sans servir le vrai besoin : vérifier les
+> mesures pH/ORP dans la journée.
 
-Les données proviennent d'un **ring buffer firmware volatil** de 300 échantillons alimenté à chaque cycle capteur (~5 s), et non du WebSocket — la fidélité de la trace est donc garantie sur toute la fenêtre (voir [`docs/subsystems/sensors.md#trace-des-signaux-capteurs--feature-057`](../subsystems/sensors.md#trace-des-signaux-capteurs--feature-057)). Le buffer est **perdu au reboot**.
+Un **sélecteur de cadence** à deux positions (`#trace_rate_select`) commande toute
+la carte.
 
-**Chargement paresseux** : la trace n'est récupérée qu'à l'**activation de l'onglet Avancé** (pas de polling permanent) via `GET /debug/sensor_trace`.
+**Haute cadence** (par défaut) — la fenêtre fine, pour juger du bruit ou d'une
+oscillation :
+- Source : `GET /debug/sensor_trace` (ring buffer firmware **volatil**, un
+  échantillon par cycle capteur).
+- **Trois courbes par voie** : brut, **médiane** (nouveau, feature-153) et lissé.
+- Durée de couverture annoncée (`#trace_intro`) **déduite de la cadence réelle**
+  (`interval_ms` de la réponse), **jamais codée en dur** : au rythme actuel de
+  lecture (5 s), le tampon de 200 points couvre **16 min 40 s** — ce chiffre se
+  recalcule si la cadence de lecture change un jour.
+- Perdue au redémarrage de l'appareil (dit explicitement par le texte d'intro).
 
-**Pagination transparente (v2.10.1, bug-crash-sensor-trace-badalloc)** : la route est paginée (50 échantillons max/page — l'ancienne réponse unique de ~20 Ko pouvait provoquer un `std::bad_alloc` → reboot sur heap fragmenté). `loadSensorTrace()` ([`data/app.js`](../../data/app.js)) agrège les pages **séquentiellement** (`?offset=N`, enchaînement via les champs `count`/`returned`, borne dure de **12 itérations** — 6 en nominal pour 300 échantillons) avant de tracer les courbes ; rendu et comportement **inchangés** vus de l'utilisateur. Si le firmware répond **503** (heap trop fragmenté même pour une page), la card affiche « **Mémoire fragmentée, réessayez.** » et masque les graphes.
+**Journée** — la vue d'ensemble, sur l'historique **persisté** :
+- Source : `GET /get-history` (déjà consommée ailleurs sur cette page).
+- 🚨 **Une seule courbe par voie** — la **valeur officielle** (celle sur laquelle
+  la régulation décide), **pas** deux courbes brut/lissé comme en Haute cadence :
+  depuis feature-152, `point.phFiltered`/`point.orpFiltered` ne sont plus écrits
+  dans l'historique (`NAN`), seul `point.ph`/`point.orp` (valeur officielle) l'est.
+- Points fins (5 min) **regroupés par 10 minutes côté navigateur** sur les 8
+  dernières heures, puis **moyennes horaires** au-delà. La bascule de granularité
+  est **marquée sur le graphique** (trait vertical pointillé + étiquette, dessiné
+  dans le hook `draw` d'uPlot — jamais par un changement de style de la courbe
+  elle-même, qui resterait confondu avec un **trou** de mesure).
 
-**Contenu affiché :**
+**Échelle d'affichage — identique sur toute la carte et le tableau de bord** :
+le firmware enregistre les trois champs de la Haute cadence en échelle **brute**
+(sans offset — `_phFilter.median()`, jamais `getPhMedian()`, cf.
+[ADR-0039](../adr/0039-offset-ph-applique-en-sortie-des-accesseurs.md)). C'est
+le **navigateur** qui ajoute l'offset pH (`window._config.ph_offset`) aux trois
+courbes avant affichage (`#trace_scale_note` le rappelle) — de sorte que Haute
+cadence, Journée et tableau de bord soient sur la **même échelle** : **aucune
+marche** en changeant de vue, et une comparaison directe possible à un test
+manuel (bandelette, PoolLab).
 
-| Élément | Description |
-|---------|-------------|
-| Compteur | « Échantillons : N » (N = `count`, 0..300). |
-| État filtre pH / ORP | **feature-152, v2.68.0** — état **instantané** de la chaîne de mesure, lu sur `GET /debug/sensor_filter_state`. Voir sous-section dédiée ci-dessous. |
-| Graphe pH | 2 séries uPlot : pH **brut** vs pH **lissé**. |
-| Graphe ORP | 2 séries uPlot : ORP **brut** vs ORP **lissé** (mV). |
-| Stats min / max / « Δ 25 min » | Par série : pH brut, pH lissé, ORP brut, ORP lissé (+ T° min/max). C'est le crête-à-crête `max − min` sur **tout** le buffer (~300 pts ≈ 25 min), dérive lente comprise. |
+**Statistiques min / max / moyenne** (sous les graphiques, un sous-titre unique
+`#trace_stats_subtitle`, jamais répété par ligne) : calculées **côté navigateur**
+sur les points **effectivement affichés** — elles portent sur la **fenêtre
+affichée**, pas sur « le bassin ». Une courbe pas encore disponible (médiane en
+tout début de fenêtre) garde sa ligne de statistiques, avec `—` sur ses trois
+nombres (une ligne qui disparaît se lirait comme un défaut).
 
 **Boutons :**
 
-| Bouton | Endpoint | Action |
-|--------|----------|--------|
-| Recharger la trace | `GET /debug/sensor_trace` (paginé) | Récupère l'état courant du buffer (agrégation des pages) et redessine les graphes. |
-| Vider le buffer | `POST /debug/sensor_trace_clear` | Réinitialise le ring buffer firmware puis les graphes (fenêtre d'observation propre). |
+| Bouton | Endpoint | Visible |
+|--------|----------|---------|
+| Recharger | `GET /debug/sensor_trace` (Haute cadence) ou `GET /get-history` (Journée) | Toujours |
+| Vider le buffer | `POST /debug/sensor_trace_clear` | **Uniquement en Haute cadence** — agit sur la RAM volatile, afficher le bouton en vue Journée (historique persisté, non affecté) serait trompeur |
+
+**Trois messages distincts** (`#trace_empty` neutre / `#trace_error`
+`callout--warn`) : tampon ou historique vide, appareil injoignable, et `503`
+heap fragmenté — ces trois cas ne veulent pas dire la même chose et ne partagent
+jamais le même texte.
 
 **Cas limites :**
-- Valeurs `null`/NaN (filtre non amorcé, EZO injoignable) → **trou dans la courbe**, pas de crash.
-- Buffer vide → message « aucune donnée », graphes masqués — les lignes « État filtre pH/ORP » restent affichées (hors bloc graphes, voir ci-dessous).
-- Réponse **503** (heap fragmenté, v2.10.1) → message « Mémoire fragmentée, réessayez. », graphes masqués — plus jamais de reboot de l'appareil.
+- Valeurs `null` (sonde muette, porte de mesure fermée, fenêtre pas encore
+  pleine) → **trou dans la courbe**, jamais un 0 ni une interpolation.
+- Un seul point → min = max = moyenne, pas de tendance affichée.
+- Médiane absente mais brut présent (début de fenêtre) → la courbe médiane
+  commence plus tard, normal, non masqué.
+- Moins de 8 h d'historique en vue Journée → pas de bascule horaire à annoncer.
 
-##### ~~Dispersion du drapeau `unstable`~~ (feature-071/072) — remplacé par l'État filtre (feature-152, v2.68.0)
-
-Présentes de la v2.20.7 à la v2.67.x, les lignes « Dispersion pH/ORP », « Dispersion trace pH/ORP (indicatif) » et les sous-graphes « Courbes d'évolution de la dispersion » **ont disparu** — zéro occurrence du mot « Dispersion » dans `data/` aujourd'hui. Elles mesuraient l'amplitude d'une fenêtre médiane de 13 échantillons pour juger un drapeau `unstable` qui **n'existe plus** ([ADR-0097](../adr/0097-le-filtre-lisse-le-dosage-juge.md)) : plus de jugement d'instabilité séparé de la valeur, donc plus rien à faire dire à une dispersion.
-
-**Ce qui les remplace** : deux lignes « **État filtre pH** » / « **État filtre ORP** » (`#trace_filter_ph` / `#trace_filter_orp`), **hors du bloc graphes** (visibles même buffer de trace vide, résistent à une panne isolée de la trace), alimentées par [`GET /debug/sensor_filter_state`](../API.md#get-debugsensor_filter_state--pas-dauth-cohérent-avec-autres-debug) :
-
-- **Format** : `<état> · rejetés (cumulé) <N>` — `<état>` ∈ `ready` / `warmup` / `frozen` / `stale` / `gate_closed` / `unknown` (même discriminant `DoseFilterState` que les causes de refus de dosage, `src/dosing_logic.h`), `<N>` = compteur de rejets diagnostic (`rejected`, non décisionnel).
-- Une ligne « **relevé il y a N s/min** » (`#trace_filter_age`) date le dernier fetch réussi — **deux horloges distinctes** : un tick d'affichage local (1 s, sans réseau) et un intervalle de fetch réel (`DISPERSION_REFRESH_MS` = 15 s), armés/désarmés **ensemble** par `_armFilterStateRefresh()` au changement de route et au `visibilitychange` (un onglet caché ne continue pas d'interroger le contrôleur).
-- Panne isolée de la route → les deux lignes passent à « **indisponible** », le reste de la carte (trace, stats) reste fonctionnel : `loadFilterState()` et `loadSensorTrace()` ([`data/app.js`](../../data/app.js)) sont deux promesses volontairement jamais chaînées ni await-ées l'une sur l'autre.
+**Ce qui a disparu de la carte** (ergonomie, `ux-ui-designer`, règle
+d'accumulation CLAUDE.md) :
+- Les lignes « État filtre pH/ORP » et leur ligne d'âge (`#trace_filter_ph`,
+  `#trace_filter_orp`, `#trace_filter_age`) — vestiges de l'ancienne chaîne de
+  mesure (feature-152). La route [`GET /debug/sensor_filter_state`](../API.md#get-debugsensor_filter_state--pas-dauth-cohérent-avec-autres-debug)
+  **perd son dernier consommateur dans `data/`** mais **reste exposée** ailleurs
+  (`curl` de diagnostic) — son retrait est une décision produit distincte, non
+  prise ici.
+- La ligne de statistique « T° eau » — orpheline sur cette carte (aucun graphique
+  de température ici, la température a sa propre page avec historique).
+- Le libellé « brut / lissé » du titre (devenu faux avec trois courbes) et le
+  crête-à-crête « Δ 25 min » codé en dur (mentait déjà : la durée réelle du
+  tampon dépend de la cadence, pas d'une constante).
 
 Voir [`docs/API.md#trace-des-signaux-capteurs-feature-057-v270`](../API.md#trace-des-signaux-capteurs-feature-057-v270) pour le format JSON de la trace, et [`docs/subsystems/sensors.md`](../subsystems/sensors.md#chaîne-de-mesure-à-5-étages-feature-152) pour la chaîne de mesure.
 

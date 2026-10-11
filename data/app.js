@@ -7,11 +7,16 @@
   const clamp = (n, a, b) => Math.max(a, Math.min(b, n));
 
   // Segmented value controls (ex: regulation_speed)
+  // feature-153 (B1) : aria-pressed tenu à jour pour TOUT contrôle segmenté
+  // (pas seulement le nouveau sélecteur de cadence) — ajout rétrocompatible,
+  // ne change aucun comportement visuel existant.
   function setSegmented(id, value) {
     const container = $(`#${id}`);
     if (!container) return;
     container.querySelectorAll(".segmented__btn").forEach(btn => {
-      btn.classList.toggle("is-active", btn.dataset.value === value);
+      const active = btn.dataset.value === value;
+      btn.classList.toggle("is-active", active);
+      btn.setAttribute("aria-pressed", active ? "true" : "false");
     });
   }
   function getSegmented(id) {
@@ -1191,19 +1196,29 @@
     };
   }
 
-  // Graphe uPlot à 2 séries pour la trace des signaux capteurs (feature-057).
-  // Axe X numérique (secondes relatives). Les null créent des trous (uPlot les gère).
+  // Graphe uPlot à N séries pour la trace des signaux capteurs (feature-057) —
+  // DÉJÀ générique en nombre de séries malgré le nom historique (corrigé en
+  // revue feature-153 : ne pas ajouter de second helper pour la vue Journée,
+  // cette même fonction sert les deux cadences). Axe X numérique (secondes
+  // relatives par défaut, ou toute autre unité via opts.xFormat — ex. index de
+  // points horodatés pour la vue Journée). Les null créent des trous (uPlot
+  // les gère).
   // seriesDefs : [{ label, color }, ...] + options par série (feature-072,
   // rétro-compatibles — défauts = comportement historique) :
   //   width (défaut 2), dash (pointillés), linear (paths linéaires au lieu de
-  //   spline — obligatoire pour la dispersion : un point valide isolé entre
-  //   deux trous doit rester visible), points (point visible taille 4),
-  //   noTooltip (exclu du tooltip et du curseur), tooltip(v) → texte custom.
+  //   spline — un point valide isolé entre deux trous doit rester visible),
+  //   points (point visible taille 4), noTooltip (exclu du tooltip et du
+  //   curseur), tooltip(v) → texte custom.
   // opts.yInclude : seuil mutable TOUJOURS inclus dans l'échelle Y
   // (jamais d'autorange qui zoomerait sous le seuil).
+  // opts.xFormat(v) : formatte un tick/une valeur d'axe X (défaut `${v}s`,
+  // feature-153 : la vue Journée y branche un libellé horaire).
+  // opts.extraPlugins : plugins uPlot additionnels, ajoutés après le tooltip
+  // (feature-153 : marqueur de bascule de granularité, B15).
   function createTraceChart(host, seriesDefs, opts = {}) {
     if (!host || typeof uPlot === 'undefined') return null;
     const st = { xs: [], yInclude: opts.yInclude ?? null };
+    const xFmt = typeof opts.xFormat === 'function' ? opts.xFormat : (v) => `${v}s`;
 
     const series = [{}];
     seriesDefs.forEach(sd => {
@@ -1244,7 +1259,7 @@
           grid: { stroke: gridStroke, width: 1 },
           ticks: { stroke: gridStroke, width: 1 },
           space: 60,
-          values: (u, splits) => splits.map(v => (v != null ? `${v}s` : ''))
+          values: (u, splits) => splits.map(v => (v != null ? xFmt(v) : ''))
         },
         {
           scale: 'y',
@@ -1257,14 +1272,15 @@
       series,
       plugins: [
         tooltipPlugin({
-          title: (u, idx) => (st.xs[idx] != null ? `${st.xs[idx]} s` : ''),
+          title: (u, idx) => (st.xs[idx] != null ? xFmt(st.xs[idx]) : ''),
           rows: (u, idx) => seriesDefs.map((sd, si) => {
             if (sd.noTooltip) return null;
             const v = u.data[si + 1][idx];
             if (v == null || isNaN(v)) return null;
             return { color: sd.color, text: sd.tooltip ? sd.tooltip(v) : `${sd.label}: ${v}` };
           }).filter(Boolean)
-        })
+        }),
+        ...(Array.isArray(opts.extraPlugins) ? opts.extraPlugins : [])
       ]
     };
 
@@ -1283,6 +1299,144 @@
       // setData (le range est une fonction, réévaluée à chaque setData)
       setYInclude(v) {
         st.yInclude = v;
+      }
+    };
+  }
+
+  // =============================================================================
+  // feature-153 — logique PURE de la carte « Signaux capteurs » (D3) : ces trois
+  // fonctions sont EXTRAITES telles quelles par le harnais de test
+  // (test/trace_logic_vectors.js, patron sha256_vectors.js) et évaluées sous
+  // Node. Elles doivent donc rester SANS dépendance au DOM ni à authFetch —
+  // pures, nommées, signatures FIGÉES (décision architecte D3). Ne pas les
+  // renommer, ne pas les rendre impures.
+  // =============================================================================
+
+  // Regroupe des points d'historique par fenêtre temporelle de `windowMs`
+  // (même unité que `p.timestamp` — appelant responsable de la cohérence :
+  // la vue Journée convertit les secondes epoch de /get-history en
+  // millisecondes avant l'appel, feature-153/B3). Chaque point d'entrée porte
+  // au moins `timestamp` ; les champs numériques (`ph`, `orp`, `temperature`,
+  // …) sont MOYENNÉS en ignorant les `null`/non-finis — un groupe sans aucune
+  // valeur finie pour un champ rend `null` (jamais 0, jamais d'interpolation,
+  // B5). `granularity` du point de sortie = la plus grossière du groupe.
+  function groupHistoryPoints(points, windowMs) {
+    if (!Array.isArray(points) || !Number.isFinite(windowMs) || windowMs <= 0) return [];
+    const buckets = new Map();
+    const order = [];
+    for (const p of points) {
+      if (!p || !Number.isFinite(p.timestamp)) continue;
+      const key = Math.floor(p.timestamp / windowMs);
+      if (!buckets.has(key)) { buckets.set(key, []); order.push(key); }
+      buckets.get(key).push(p);
+    }
+    order.sort((a, b) => a - b);
+    const numericKeys = ['ph', 'orp', 'temperature'];
+    return order.map(key => {
+      const group = buckets.get(key);
+      const out = { timestamp: key * windowMs + Math.floor(windowMs / 2) };
+      for (const field of numericKeys) {
+        let sum = 0, n = 0;
+        for (const p of group) {
+          const v = p[field];
+          if (v == null || typeof v !== 'number' || !Number.isFinite(v)) continue;
+          sum += v; n++;
+        }
+        out[field] = n > 0 ? sum / n : null;
+      }
+      let gran = 0;
+      for (const p of group) {
+        const g = Number.isFinite(p.granularity) ? p.granularity : 0;
+        if (g > gran) gran = g;
+      }
+      out.granularity = gran;
+      return out;
+    });
+  }
+
+  // Min / max / moyenne d'un tableau de valeurs (null/non-finis ignorés,
+  // JAMAIS traités comme 0). `n` = nombre de valeurs finies retenues :
+  //   n === 0 → min/max/moyenne tous `null` (aucune valeur, pas un extremum à
+  //             zéro) ; n === 1 → min = max = moyenne = l'unique valeur.
+  function seriesStats(values) {
+    if (!Array.isArray(values)) return { min: null, max: null, avg: null, n: 0 };
+    let min = null, max = null, sum = 0, n = 0;
+    for (const v of values) {
+      if (v == null || typeof v !== 'number' || !Number.isFinite(v)) continue;
+      if (min == null || v < min) min = v;
+      if (max == null || v > max) max = v;
+      sum += v;
+      n++;
+    }
+    return { min, max, avg: n > 0 ? sum / n : null, n };
+  }
+
+  // Durée couverte par `sampleCount` échantillons à la cadence `intervalMs` —
+  // JAMAIS codée en dur (ADR-0073 : la cadence de lecture a déjà changé une
+  // fois, cf. feature-152). Entrées invalides/non positives → 0, jamais une
+  // valeur inventée.
+  function traceWindowDurationMs(sampleCount, intervalMs) {
+    const n = Number(sampleCount);
+    const iv = Number(intervalMs);
+    if (!Number.isFinite(n) || !Number.isFinite(iv) || n <= 0 || iv <= 0) return 0;
+    return n * iv;
+  }
+
+  // Formattage FR d'une durée en millisecondes ("16 min 40 s", "8 h 0 min",
+  // "0 s"). Pure, mais hors du périmètre D3 (pas une des trois signatures
+  // figées) — simple mise en forme, aucune décision.
+  function _formatTraceDurationFr(ms) {
+    if (!Number.isFinite(ms) || ms <= 0) return '0 s';
+    const totalSec = Math.round(ms / 1000);
+    const h = Math.floor(totalSec / 3600);
+    const m = Math.floor((totalSec % 3600) / 60);
+    const s = totalSec % 60;
+    const parts = [];
+    if (h > 0) parts.push(`${h} h`);
+    if (h > 0 || m > 0) parts.push(`${m} min`);
+    parts.push(`${s} s`);
+    return parts.join(' ');
+  }
+
+  // Plugin uPlot (feature-153, B15) : marque la bascule de granularité
+  // (RAW → horaire → quotidien) par un trait vertical pointillé + une
+  // étiquette discrète, dessinés dans le hook `draw` — le STYLE des courbes
+  // elles-mêmes reste intact (ne pas le modifier : un style de courbe changé
+  // se confondrait avec un trou de mesure, qui est précisément ce que B5 rend
+  // lisible). `getGranularity()` retourne le tableau de granularités (0/1/2)
+  // aligné sur les x actuellement affichés.
+  function granularityMarkerPlugin(getGranularity) {
+    return {
+      hooks: {
+        draw(u) {
+          const gran = getGranularity();
+          if (!Array.isArray(gran) || gran.length === 0) return;
+          const ctx = u.ctx;
+          ctx.save();
+          let prev = gran[0];
+          for (let i = 1; i < gran.length; i++) {
+            const g = gran[i];
+            if (g === prev) continue;
+            const x = u.valToPos(u.data[0][i], 'x', true);
+            ctx.beginPath();
+            ctx.setLineDash([4, 4]);
+            ctx.strokeStyle = 'rgba(107,114,128,0.6)';
+            ctx.lineWidth = 1;
+            ctx.moveTo(x, u.bbox.top);
+            ctx.lineTo(x, u.bbox.top + u.bbox.height);
+            ctx.stroke();
+            const label = granularityLabel(g);
+            if (label) {
+              ctx.setLineDash([]);
+              ctx.fillStyle = 'rgba(107,114,128,0.9)';
+              ctx.font = `11px ${UPLOT_FONT_STACK}`;
+              ctx.textBaseline = 'top';
+              ctx.fillText(label, x + 4, u.bbox.top + 2);
+            }
+            prev = g;
+          }
+          ctx.restore();
+        }
       }
     };
   }
@@ -2894,11 +3048,6 @@
   // ---------- Sensor data loop (/data) ----------
   const SENSOR_REFRESH_MS = 30000;
   const SENSOR_RETRY_MS = 2000;
-  // feature-138 (B1) : cadence de FETCH des lignes d'état du filtre de mesure
-  // (panneau Avancé uniquement, cf. _armFilterStateRefresh). Volontairement
-  // moins agressive que le heartbeat WS (kWsHeartbeatMs = 12000) : une page
-  // restée ouverte ne doit pas concurrencer la détection de perte de connexion.
-  const DISPERSION_REFRESH_MS = 15000;
   let lastSensorDataLoadTime = 0; // Timestamp du dernier chargement des données
   let sensorDataLoadInFlight = null;
   let sensorDataRetryTimer = null;
@@ -9325,210 +9474,369 @@
     onRouteChange();
   }
 
-  // ========== TRACE SIGNAUX CAPTEURS (feature-057) ==========
-  // Charge /debug/sensor_trace à l'activation de l'onglet Avancé et sur clic
-  // « Recharger ». Pas de polling permanent. 2 graphes uPlot (pH, ORP), stats
-  // min/max/Δ calculées en ignorant les null.
+  // ========== TRACE SIGNAUX CAPTEURS (feature-057, refondue feature-153) ==========
+  // Deux cadences au choix (sélecteur #trace_rate_select) :
+  //  - « fast » (Haute cadence) : /debug/sensor_trace (tampon RAM, volatil),
+  //    trois courbes par voie (brut / médiane / lissé) ;
+  //  - « day » (Journée)        : /get-history (persisté), UNE courbe par voie
+  //    (valeur officielle), points fins regroupés par 10 min sur les points
+  //    RAW, moyennes horaires servies telles quelles au-delà (B3).
+  // Chargé à l'activation de l'onglet Avancé et sur clic « Recharger ». Pas de
+  // polling permanent — aucune des deux sources n'a besoin d'un temps réel ici.
+  let _traceMode = "fast";            // "fast" | "day"
   let _tracePhChart = null;
   let _traceOrpChart = null;
+  let _traceChartsMode = null;        // cadence pour laquelle les graphes actuels ont été construits
   let _traceLoading = false;
+  // Journée uniquement : labels d'axe X et granularité par point affiché,
+  // tenus à jour avant chaque setData (closures lues par xFormat / le marqueur
+  // de bascule, B15) — jamais une durée fixe, toujours dérivés des points réels.
+  const _traceDayLabels = [];
+  const _traceDayGranularity = [];
+  // Journée (B3) : regroupement des points fins par fenêtre de 10 minutes.
+  const TRACE_DAY_GROUP_WINDOW_MS = 10 * 60 * 1000;
 
-  function _initTraceCharts() {
-    if (_tracePhChart || typeof uPlot === "undefined") return;
+  function _destroyTraceCharts() {
     const phHost = $("#trace_ph_chart");
     const orpHost = $("#trace_orp_chart");
-    if (phHost) {
-      _tracePhChart = createTraceChart(phHost, [
+    if (_tracePhChart) { unobserveChart(phHost); _tracePhChart.u.destroy(); _tracePhChart = null; }
+    if (_traceOrpChart) { unobserveChart(orpHost); _traceOrpChart.u.destroy(); _traceOrpChart = null; }
+    if (phHost) phHost.innerHTML = "";
+    if (orpHost) orpHost.innerHTML = "";
+    _traceChartsMode = null;
+  }
+
+  // (Re)construit les graphes pH/ORP pour la cadence demandée — les deux
+  // cadences n'ont ni le même nombre de séries ni le même axe X, donc un
+  // changement de cadence détruit et recrée (uPlot ne permet pas de changer le
+  // nombre de séries d'une instance existante).
+  function _ensureTraceCharts(mode) {
+    if (_tracePhChart && _traceChartsMode === mode) return;
+    _destroyTraceCharts();
+    const phHost = $("#trace_ph_chart");
+    const orpHost = $("#trace_orp_chart");
+    if (mode === "fast") {
+      if (phHost) _tracePhChart = createTraceChart(phHost, [
         { label: "pH brut", color: "#a78bfa" },
+        { label: "pH médiane", color: "#f59e0b" },
         { label: "pH lissé", color: "#7c3aed" }
       ]);
-    }
-    if (orpHost) {
-      _traceOrpChart = createTraceChart(orpHost, [
+      if (orpHost) _traceOrpChart = createTraceChart(orpHost, [
         { label: "ORP brut", color: "#34d399" },
+        { label: "ORP médiane", color: "#fbbf24" },
         { label: "ORP lissé", color: "#059669" }
       ]);
+    } else {
+      // Math.round : uPlot peut produire des splits NON ENTIERS quand les points
+      // sont peu nombreux (axe indexé). Sans arrondi, `_traceDayLabels[2.5]` est
+      // `undefined` et le tick s'affiche VIDE — un axe à trous se lit comme un
+      // défaut de données alors que les données sont là (relevé en revue).
+      const xFormat = (v) => _traceDayLabels[Math.round(v)] ?? "";
+      const getGran = () => _traceDayGranularity;
+      if (phHost) _tracePhChart = createTraceChart(phHost, [
+        { label: "pH", color: "#7c3aed" }
+      ], { xFormat, extraPlugins: [granularityMarkerPlugin(getGran)] });
+      if (orpHost) _traceOrpChart = createTraceChart(orpHost, [
+        { label: "ORP", color: "#059669" }
+      ], { xFormat, extraPlugins: [granularityMarkerPlugin(getGran)] });
+    }
+    _traceChartsMode = mode;
+  }
+
+  // Offset pH courant (feature-153, B11/A5) : la trace est enregistrée BRUTE
+  // (`_phFilter.median()`, jamais `getPhMedian()` — ADR-0039, l'offset
+  // s'applique en sortie des accesseurs). Absent/invalide → null, JAMAIS une
+  // valeur fabriquée (0 serait une correction silencieuse, pas une absence).
+  function _currentPhOffsetOrNull() {
+    const v = window._config?.ph_offset;
+    return (typeof v === "number" && Number.isFinite(v)) ? v : null;
+  }
+
+  function _fmtHourMinute(ms) {
+    const d = new Date(ms);
+    return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+  }
+
+  // Trois messages DISTINCTS (B10) : jamais le même texte pour des causes
+  // différentes — un lecteur en diagonale doit les distinguer sans relire.
+  function _renderTraceMessage(kind, text) {
+    const emptyEl = $("#trace_empty");
+    const errEl = $("#trace_error");
+    const chartsEl = $("#trace_charts");
+    if (emptyEl) emptyEl.hidden = true;
+    if (errEl) errEl.hidden = true;
+    if (chartsEl) chartsEl.hidden = true;
+    if (kind === "empty") {
+      if (emptyEl) { emptyEl.textContent = text; emptyEl.hidden = false; }
+    } else {
+      // "error" (appareil injoignable), "heap" (503 de /debug/sensor_trace :
+      // garde heap réelle) et "busy" (503 de /get-history : mutex de
+      // l'historique) partagent le même style d'alerte (callout--warn) mais
+      // JAMAIS le même texte (B10). Les deux 503 ont des CAUSES DIFFÉRENTES —
+      // les confondre envoie chercher un problème de mémoire qui n'existe pas.
+      if (errEl) { errEl.textContent = text; errEl.hidden = false; }
     }
   }
 
-  function _traceMinMax(arr) {
-    let mn = null, mx = null;
-    for (const v of arr) {
-      if (v == null || isNaN(v)) continue;
-      if (mn == null || v < mn) mn = v;
-      if (mx == null || v > mx) mx = v;
-    }
-    return { min: mn, max: mx };
+  function _showTraceCharts() {
+    const emptyEl = $("#trace_empty");
+    const errEl = $("#trace_error");
+    const chartsEl = $("#trace_charts");
+    if (emptyEl) emptyEl.hidden = true;
+    if (errEl) errEl.hidden = true;
+    if (chartsEl) chartsEl.hidden = false;
   }
 
-  function _setTraceStat(id, arr, decimals, withDelta = true) {
-    const el = $(id);
+  // Texte d'intro PAR POSITION (B12e) : le tampon est volatil, l'historique
+  // persiste — ce ne sont pas la même promesse, le texte ne doit pas le taire.
+  function _renderTraceIntro(mode, meta) {
+    const el = $("#trace_intro");
     if (!el) return;
-    const { min, max } = _traceMinMax(arr);
-    if (min == null || max == null) {
-      el.textContent = "—";
+    if (mode === "fast") {
+      const dur = traceWindowDurationMs(meta.count, meta.intervalMs);
+      el.textContent = `Trace haute cadence (un point par cycle capteur) : ${meta.count || 0} point(s) `
+        + `enregistré(s), soit ${_formatTraceDurationFr(dur)} de couverture. Volatile : perdue au `
+        + `redémarrage de l'appareil.`;
+    } else {
+      el.textContent = "Vue Journée (historique persisté, survit à un redémarrage) : points fins "
+        + "regroupés par 10 minutes sur les dernières heures, puis moyennes horaires au-delà.";
+    }
+  }
+
+  // Rappelle l'échelle d'affichage (B11) : jamais de valeur fabriquée si
+  // l'offset est indisponible — la vue Journée est TOUJOURS corrigée (la
+  // correction est faite par le firmware, point de vérité ADR-0039).
+  function _renderTraceScaleNote(mode, offsetOk) {
+    const el = $("#trace_scale_note");
+    if (!el) return;
+    if (mode === "day") {
+      el.textContent = "Échelle corrigée (offset pH appliqué) — comparable au tableau de bord.";
       return;
     }
-    let txt = `min ${min.toFixed(decimals)} · max ${max.toFixed(decimals)}`;
-    // « Δ 25 min » : crête-à-crête sur TOUT le buffer (~300 pts ≈ 25 min), dérive
-    // lente comprise.
-    if (withDelta) txt += ` · Δ 25 min ${(max - min).toFixed(decimals)}`;
-    el.textContent = txt;
+    el.textContent = offsetOk
+      ? "Échelle corrigée (offset pH appliqué) — comparable à la vue Journée et à un test manuel."
+      : "Échelle BRUTE (offset pH indisponible pour l'instant) — pas encore comparable à un test manuel.";
   }
 
-  // ---- État interne du filtre de mesure (feature-152, remplace le drapeau
-  // `unstable`/la dispersion de feature-071, retirés avec le mécanisme qu'ils
-  // jugeaient) ----
-  // Valeur instantanée publiée par /debug/sensor_filter_state : `state` est le
-  // même discriminant que celui qui qualifie les causes de refus de dosage
-  // (DoseFilterState, cf. src/dosing_logic.h), `rejected` le compteur cumulé
-  // de rejets (diagnostic, ne juge rien).
-  let _filterStateLoading = false;
-
-  function _setFilterStateRow(id, st) {
-    const el = $(id);
+  // Un seul sous-titre au-dessus du bloc de statistiques (B13), jamais répété
+  // par ligne — sa durée se recalcule, elle ne se code pas en dur.
+  function _setTraceStatsSubtitle(durationMs) {
+    const el = $("#trace_stats_subtitle");
     if (!el) return;
-    if (!st || typeof st.state !== "string") { el.textContent = "—"; return; }
-    const rejected = (typeof st.rejected === "number") ? st.rejected : "--";
-    el.textContent = `${st.state} · rejetés (cumulé) ${rejected}`;
+    el.textContent = `Sur la fenêtre affichée (${_formatTraceDurationFr(durationMs)}) :`;
   }
 
-  // feature-138 (B1) : horodatage CLIENT du dernier fetch RÉUSSI (pas du dernier
-  // essai) — c'est depuis cette date que la ligne d'état affiche son âge.
-  let _filterStateLastFetchAt = null;
+  function _formatSeriesStatsText(stats, decimals) {
+    if (!stats || stats.n === 0) return "—";
+    const f = (v) => v.toFixed(decimals);
+    return `min ${f(stats.min)} · max ${f(stats.max)} · moy ${f(stats.avg)}`;
+  }
 
-  async function loadFilterState() {
-    if (_filterStateLoading) return;
-    _filterStateLoading = true;
-    try {
-      const res = await authFetch("/debug/sensor_filter_state");
+  // Une ligne par courbe affichée, TOUJOURS — une courbe sans valeur encore
+  // disponible (médiane au tout début d'une fenêtre, feature-153 B14) garde sa
+  // ligne avec "—", elle ne s'évapore pas (une ligne qui disparaît se lit
+  // comme un défaut).
+  function _renderTraceStatsRows(container, rows) {
+    if (!container) return;
+    container.textContent = "";
+    rows.forEach(r => {
+      const row = document.createElement("div");
+      row.className = "kv__row";
+      const k = document.createElement("span");
+      k.className = "kv__k";
+      const swatch = document.createElement("span");
+      swatch.className = "trace-legend__swatch";
+      swatch.style.background = r.color;
+      k.appendChild(swatch);
+      k.appendChild(document.createTextNode(r.label));
+      const v = document.createElement("span");
+      v.className = "kv__v";
+      v.textContent = _formatSeriesStatsText(r.stats, r.decimals);
+      row.appendChild(k);
+      row.appendChild(v);
+      container.appendChild(row);
+    });
+  }
+
+  // ---- Cadence « Haute cadence » : /debug/sensor_trace (tampon RAM) ----
+  async function _loadTraceFast() {
+    // Route paginée (bug-crash-sensor-trace-badalloc) : on agrège les pages
+    // séquentiellement jusqu'à couvrir `count` (total buffer). Borne dérivée
+    // du couple (count, returned) réellement servi par l'API (B9) — jamais
+    // recalée sur un couple figé (300/50 hier, 200/38 aujourd'hui, un autre
+    // demain).
+    const samples = [];
+    let offset = 0;
+    let total = 0;
+    let intervalMs = 0;
+    let maxIterations = 1;
+    for (let i = 0; i < maxIterations; i++) {
+      const res = await authFetch(`/debug/sensor_trace?offset=${offset}`);
+      if (res.status === 503) {
+        _renderTraceMessage("heap", "Mémoire de l'appareil fragmentée, réessayez dans un instant.");
+        return;
+      }
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const json = await res.json();
-      _setFilterStateRow("#trace_filter_ph", json.ph);
-      _setFilterStateRow("#trace_filter_orp", json.orp);
-      _filterStateLastFetchAt = Date.now();
-      _renderDispAge();
-    } catch (e) {
-      console.error("[trace] filter state load failed:", e);
-      // Panne isolée : seules ces deux lignes se dégradent, le reste de la
-      // carte (trace, stats) reste fonctionnel.
-      for (const id of ["#trace_filter_ph", "#trace_filter_orp"]) {
-        const el = $(id);
-        if (el) el.textContent = "indisponible";
-      }
-    } finally {
-      _filterStateLoading = false;
+      const page = Array.isArray(json.samples) ? json.samples : [];
+      samples.push(...page);
+      const returned = Number(json.returned ?? page.length);
+      total = Number(json.count ?? 0);
+      if (Number.isFinite(json.interval_ms)) intervalMs = json.interval_ms;
+      if (i === 0) maxIterations = returned > 0 ? Math.ceil(total / returned) : 1;
+      if (returned === 0 || total === 0) break;  // buffer vide ou fin de page
+      offset += returned;
+      if (offset >= total) break;                // trace complète
     }
+
+    const countEl = $("#trace_count");
+    if (countEl) { countEl.hidden = false; countEl.textContent = String(samples.length); }
+
+    _renderTraceIntro("fast", { count: total, intervalMs });
+
+    if (samples.length === 0) {
+      _renderTraceMessage("empty", "Aucune donnée dans le buffer de trace.");
+      return;
+    }
+
+    _ensureTraceCharts("fast");
+
+    const offsetPh = _currentPhOffsetOrNull();
+    const addOffset = (arr) => offsetPh == null ? arr : arr.map(v => (v == null ? null : v + offsetPh));
+    const num = (v) => (v == null || isNaN(v)) ? null : v;
+    const t0 = samples[0].t ?? 0;
+    // Secondes relatives, arrondies à 0,1 s — l'axe reste bâti sur les
+    // horodatages réels, jamais sur un pas supposé constant.
+    const xs = samples.map(s => Math.round((((s.t ?? 0) - t0) / 100)) / 10);
+    const phRaw = addOffset(samples.map(s => num(s.phRaw)));
+    const phMed = addOffset(samples.map(s => num(s.phMedian)));
+    const phFilt = addOffset(samples.map(s => num(s.phFiltered)));
+    const orpRaw = samples.map(s => num(s.orpRaw));
+    const orpMed = samples.map(s => num(s.orpMedian));
+    const orpFilt = samples.map(s => num(s.orpFiltered));
+
+    _tracePhChart?.setData(xs, [phRaw, phMed, phFilt]);
+    _traceOrpChart?.setData(xs, [orpRaw, orpMed, orpFilt]);
+
+    _renderTraceScaleNote("fast", offsetPh != null);
+    _setTraceStatsSubtitle(traceWindowDurationMs(samples.length, intervalMs));
+    _renderTraceStatsRows($("#trace_stats_rows"), [
+      { color: "#a78bfa", label: "pH brut", stats: seriesStats(phRaw), decimals: 2 },
+      { color: "#f59e0b", label: "pH médiane", stats: seriesStats(phMed), decimals: 2 },
+      { color: "#7c3aed", label: "pH lissé", stats: seriesStats(phFilt), decimals: 2 },
+      { color: "#34d399", label: "ORP brut", stats: seriesStats(orpRaw), decimals: 1 },
+      { color: "#fbbf24", label: "ORP médiane", stats: seriesStats(orpMed), decimals: 1 },
+      { color: "#059669", label: "ORP lissé", stats: seriesStats(orpFilt), decimals: 1 }
+    ]);
+
+    _showTraceCharts();
   }
 
-  // feature-138 (B1) : DEUX horloges distinctes, volontairement séparées.
-  //  - un tick d'AFFICHAGE local (_dispAgeTickTimer) qui recalcule le texte
-  //    d'âge depuis _filterStateLastFetchAt, SANS réseau ;
-  //  - un intervalle de FETCH (_dispFetchTimer) qui rappelle loadFilterState().
-  // Les deux sont armés/désarmés ENSEMBLE par _armFilterStateRefresh(), appelée
-  // au changement de route ET au visibilitychange — le hash ne change pas
-  // quand l'onglet passe en arrière-plan, donc l'un sans l'autre laisserait
-  // tourner des requêtes panneau fermé ou onglet caché.
-  let _dispAgeTickTimer = null;
-  let _dispFetchTimer = null;
-
-  function _renderDispAge() {
-    const el = $("#trace_filter_age");
-    if (!el) return;
-    if (_filterStateLastFetchAt == null) { el.textContent = "—"; return; }
-    const txt = _elapsedText(Date.now() - _filterStateLastFetchAt, "relevé il y a");
-    el.textContent = txt || "—";
-  }
-
-  function _armFilterStateRefresh() {
-    const shouldRun = _isPanelDevActive() && !document.hidden;
-    if (shouldRun) {
-      if (!_dispAgeTickTimer) _dispAgeTickTimer = setInterval(_renderDispAge, 1000);
-      if (!_dispFetchTimer) {
-        _dispFetchTimer = setInterval(loadFilterState, DISPERSION_REFRESH_MS);
-        loadFilterState(); // à la réouverture : premier appel immédiat, pas d'attente
-      }
-    } else {
-      if (_dispAgeTickTimer) { clearInterval(_dispAgeTickTimer); _dispAgeTickTimer = null; }
-      if (_dispFetchTimer) { clearInterval(_dispFetchTimer); _dispFetchTimer = null; }
+  // ---- Cadence « Journée » : /get-history (persisté) ----
+  async function _loadTraceDay() {
+    const res = await authFetch("/get-history?range=24h");
+    if (res.status === 503) {
+      // ⚠️ CORRIGÉ EN REVUE (feature-153) : ce 503 n'a RIEN à voir avec le heap.
+      // Il vient de `history.snapshotFiltered()` qui n'a pas pu prendre son mutex
+      // (`web_routes_data.cpp` : « historique occupé, réessayez »). Le texte
+      // « mémoire fragmentée » — correct pour /debug/sensor_trace, qui lui a bien
+      // une garde heap — était recopié ici et MENTAIT sur la cause. B10 exige
+      // trois messages DISTINCTS *et VRAIS* : un message faux est pire qu'un
+      // message générique, il envoie chercher un problème qui n'existe pas.
+      _renderTraceMessage("busy", "Historique momentanément occupé, réessayez dans un instant.");
+      return;
     }
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const json = await res.json();
+    const history = Array.isArray(json.history) ? json.history : [];
+
+    const countEl = $("#trace_count");
+    if (countEl) countEl.hidden = true;  // compteur de tampon : sans objet hors Haute cadence
+
+    _renderTraceIntro("day", {});
+
+    if (history.length === 0) {
+      _renderTraceMessage("empty", "Aucune donnée dans l'historique.");
+      return;
+    }
+
+    _ensureTraceCharts("day");
+
+    const num = (v) => (v == null || isNaN(v)) ? null : v;
+    // feature-152 : point.ph / point.orp PORTENT DÉJÀ la valeur officielle
+    // (getPhFiltered()/getOrpFiltered(), corrigée côté pH) — une seule courbe
+    // par voie (B3). point.phFiltered/orpFiltered (NAN/"null" depuis
+    // feature-152) sont IGNORÉS ici : tolérés sans planter, jamais lus comme
+    // une seconde courbe.
+    // Timestamps /get-history en SECONDES epoch → convertis en millisecondes
+    // pour groupHistoryPoints (même unité que windowMs, B3).
+    const rawPts = history.filter(p => (p.granularity ?? 0) === 0)
+      .map(p => ({ timestamp: p.timestamp * 1000, ph: num(p.ph), orp: num(p.orp), granularity: 0 }));
+    const aggPts = history.filter(p => (p.granularity ?? 0) !== 0)
+      .map(p => ({ timestamp: p.timestamp * 1000, ph: num(p.ph), orp: num(p.orp), granularity: p.granularity }));
+    const grouped = groupHistoryPoints(rawPts, TRACE_DAY_GROUP_WINDOW_MS);
+    const merged = grouped.concat(aggPts).sort((a, b) => a.timestamp - b.timestamp);
+
+    if (merged.length === 0) {
+      _renderTraceMessage("empty", "Aucune donnée dans l'historique.");
+      return;
+    }
+
+    _traceDayLabels.length = 0;
+    _traceDayLabels.push(...merged.map(p => _fmtHourMinute(p.timestamp)));
+    _traceDayGranularity.length = 0;
+    _traceDayGranularity.push(...merged.map(p => p.granularity));
+
+    const xs = merged.map((_, i) => i);
+    const phVals = merged.map(p => p.ph);
+    const orpVals = merged.map(p => p.orp);
+
+    _tracePhChart?.setData(xs, [phVals]);
+    _traceOrpChart?.setData(xs, [orpVals]);
+
+    _renderTraceScaleNote("day", true);
+    const firstTs = merged[0].timestamp, lastTs = merged[merged.length - 1].timestamp;
+    _setTraceStatsSubtitle(lastTs - firstTs);
+    _renderTraceStatsRows($("#trace_stats_rows"), [
+      { color: "#7c3aed", label: "pH", stats: seriesStats(phVals), decimals: 2 },
+      { color: "#059669", label: "ORP", stats: seriesStats(orpVals), decimals: 1 }
+    ]);
+
+    _showTraceCharts();
   }
 
   async function loadSensorTrace() {
     if (_traceLoading) return;
     _traceLoading = true;
-    const status = $("#trace_status");
-    const charts = $("#trace_charts");
-    const countEl = $("#trace_count");
     try {
-      // Route paginée (bug-crash-sensor-trace-badalloc) : on agrège les pages
-      // séquentiellement jusqu'à couvrir `count` (total buffer). Borne dure de
-      // 12 itérations (300 échantillons / 50 par page = 6 en nominal).
-      const samples = [];
-      let offset = 0;
-      for (let i = 0; i < 12; i++) {
-        const res = await authFetch(`/debug/sensor_trace?offset=${offset}`);
-        if (res.status === 503) {
-          if (status) { status.textContent = "Mémoire fragmentée, réessayez."; status.hidden = false; }
-          if (charts) charts.hidden = true;
-          return;
-        }
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const json = await res.json();
-        const page = Array.isArray(json.samples) ? json.samples : [];
-        samples.push(...page);
-        const returned = Number(json.returned ?? page.length);
-        const total = Number(json.count ?? 0);
-        if (returned === 0 || total === 0) break;  // buffer vide ou fin de page
-        offset += returned;
-        if (offset >= total) break;                // trace complète
-      }
-
-      if (countEl) countEl.textContent = String(samples.length);
-
-      if (samples.length === 0) {
-        if (status) { status.textContent = "Aucune donnée dans le buffer."; status.hidden = false; }
-        if (charts) charts.hidden = true;
-        return;
-      }
-
-      _initTraceCharts();
-
-      const num = (v) => (v == null || isNaN(v)) ? null : v;
-      const t0 = samples[0].t ?? 0;
-      // Secondes relatives, arrondies à 0,1 s
-      const xs = samples.map(s => Math.round((((s.t ?? 0) - t0) / 100)) / 10);
-      const phRaw = samples.map(s => num(s.phRaw));
-      const phFilt = samples.map(s => num(s.phFiltered));
-      const orpRaw = samples.map(s => num(s.orpRaw));
-      const orpFilt = samples.map(s => num(s.orpFiltered));
-      const temp = samples.map(s => num(s.tempEau));
-
-      _tracePhChart?.setData(xs, [phRaw, phFilt]);
-      _traceOrpChart?.setData(xs, [orpRaw, orpFilt]);
-
-      _setTraceStat("#trace_stats_ph_raw", phRaw, 2);
-      _setTraceStat("#trace_stats_ph_filtered", phFilt, 2);
-      _setTraceStat("#trace_stats_orp_raw", orpRaw, 1);
-      _setTraceStat("#trace_stats_orp_filtered", orpFilt, 1);
-      _setTraceStat("#trace_stats_temp", temp, 1, false);
-
-      if (status) status.hidden = true;
-      if (charts) charts.hidden = false;
+      if (_traceMode === "day") await _loadTraceDay();
+      else await _loadTraceFast();
     } catch (e) {
       console.error("[trace] load failed:", e);
-      if (status) { status.textContent = "Trace indisponible (appareil injoignable)."; status.hidden = false; }
-      if (charts) charts.hidden = true;
+      _renderTraceMessage("error", "Trace indisponible (appareil injoignable).");
     } finally {
       _traceLoading = false;
     }
   }
 
   function bindSensorTrace() {
-    // loadFilterState() est volontairement une promesse séparée, jamais
-    // await-ée ni chaînée à loadSensorTrace() : une panne de l'une ne doit
-    // pas dégrader l'autre.
-    $("#trace_reload_btn")?.addEventListener("click", () => { loadSensorTrace(); loadFilterState(); });
+    setSegmented("trace_rate_select", _traceMode);
+
+    $$("#trace_rate_select .segmented__btn").forEach(btn => {
+      btn.addEventListener("click", () => {
+        const mode = btn.dataset.value;
+        if (mode === _traceMode || (mode !== "fast" && mode !== "day")) return;
+        _traceMode = mode;
+        setSegmented("trace_rate_select", mode);
+        // B12c : « Vider le buffer » agit sur la RAM — sans effet observable
+        // hors Haute cadence, donc trompeur à y laisser visible.
+        const clearBtn = $("#trace_clear_btn");
+        if (clearBtn) clearBtn.hidden = (mode !== "fast");
+        loadSensorTrace();
+      });
+    });
+
+    $("#trace_reload_btn")?.addEventListener("click", () => loadSensorTrace());
 
     $("#trace_clear_btn")?.addEventListener("click", async () => {
       if (!(await confirmDialog({
@@ -9549,11 +9857,8 @@
     });
 
     // Chargement à l'activation de l'onglet Avancé uniquement (pas de polling permanent)
-    // feature-138 (B1) : _armFilterStateRefresh() gère elle-même le cas « panneau
-    // fermé » (désarme) — loadFilterState() n'est donc plus appelée directement ici.
     const onRouteChange = () => {
       if (_isPanelDevActive()) loadSensorTrace();
-      _armFilterStateRefresh();
     };
     window.addEventListener("hashchange", onRouteChange);
     onRouteChange();
@@ -11643,10 +11948,6 @@
         // Petit délai pour laisser Safari libérer la socket avant d'en ouvrir une nouvelle
         setTimeout(initWebSocket, 100);
       }
-      // feature-138 (B1) : le hash ne change pas quand l'onglet passe en
-      // arrière-plan — sans ce rappel, un panneau Avancé resté ouvert dans un
-      // onglet caché continuerait de fetcher _dispersion dans le vide.
-      _armFilterStateRefresh();
     });
 
     // Charger la config avant d'ouvrir le WebSocket : l'ESP32 a fini de traiter
