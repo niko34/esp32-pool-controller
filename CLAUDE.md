@@ -200,6 +200,29 @@ explicitement : *évalue la page complète, propose ce qui doit DISPARAÎTRE*.
 ⇒ En cas de doute, invoquer : une étude d'ergonomie coûte une passe d'agent, une page dégradée
 coûte une refonte.
 
+### ⚠️ L'UX N'EST PAS OPTIONNEL — et son mandat NE SE DÉCOUPE PAS
+
+**Règle posée par l'utilisateur le 2026-10-11 : « l'ux n'est pas optionnel quand on touche à
+l'interface ».** Dès qu'un lot modifie `data/`, `ux-ui-designer` passe **avant**
+`web-ui-developer`. Aucune dérogation pour « c'est petit », « c'est juste un ajout » ou
+« la forme est évidente ».
+
+**Origine, et c'est la nuance qui compte.** Sur la carte « Signaux capteurs » (feature-153),
+`ux-ui-designer` **avait bien été invoqué**. Le défaut est venu d'un **mandat découpé** : on
+lui avait demandé la densité, les suppressions, le sélecteur, le responsive et les messages —
+**pas la palette**, alors que la carte passait de 2 à 3 courbes par graphique. Les couleurs ont
+donc été choisies par défaut, et l'utilisateur a livré le verdict : *« les couleurs des données
+brut et lissés sont tellement proches qu'on ne voit rien »*. C'est **le travers de la page
+Produits une seconde fois**, appliqué cette fois au rendu au lieu de la structure.
+
+⇒ **Son mandat n'est pas la liste des questions qu'on a pensé à lui poser.** Tout ce qui se
+voit lui revient : **couleurs et palette, épaisseur et style de trait**, typographie, densité,
+hiérarchie, états vides et d'erreur, cibles tactiles, contraste, **daltonisme**, mode sombre,
+responsive. Tout brief qui énumère des points se termine par : *« et tout autre choix visuel
+que ce lot impose — dis-le même si je ne l'ai pas demandé »*.
+⇒ **Un défaut visuel qui remonte APRÈS livraison est le signe d'un mandat trop étroit**, pas
+d'un agent défaillant. Chercher ce qu'on a oublié de lui confier, pas ce qu'il a raté.
+
 ## Quand utiliser l'orchestrateur vs travailler directement
 
 > **Rappel important** : l'`orchestrator` produit un **plan d'exécution**, il n'invoque pas les autres agents lui-même. C'est **l'agent principal Claude Code** (la session interactive) qui invoque ensuite `spec-reader`, `architect`, etc. via `Task` selon le plan reçu. Cette répartition est imposée par une limitation runtime de Claude Code (les sub-agents ne peuvent pas en invoquer d'autres).

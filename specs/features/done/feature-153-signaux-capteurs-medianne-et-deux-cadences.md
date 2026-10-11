@@ -242,17 +242,20 @@ Une seule cadence (le tampon RAM), aucune vue journée, aucune médiane.
       renseigne depuis `_phFilter.median()` / `_orpFilter.median()` au point d'appel existant.
 - [x] A2 — `kSensorTraceBufferSize` = 200, avec commentaire de source (décision produit +
       arbitrage mémoire chiffré, ADR-0098). **Occupation réelle recalculée et écrite.**
-- [~] A3 — `kSensorTraceMaxSamplesPerPage` porté à **38**, pour que la réponse reste du même
+- [x] A3 — `kSensorTraceMaxSamplesPerPage` porté à **38**, pour que la réponse reste du même
       ordre que les **5 905 o mesurés le 2026-10-11** (mesure de référence AVANT ce lot).
       ✅ Les **trois chiffres périmés** sont corrigés : `constants.h`, `docs/subsystems/sensors.md`
       (« 3,5 Ko ») et `docs/API.md` (« 4,5 Ko »).
-      🔴 **PARTIEL, ET C'EST VOULU : la valeur 38 est une PROJECTION (~5 825 o), PAS une
-      mesure.** Le firmware neuf **n'a pas été déployé** — le déploiement exige un feu vert
-      utilisateur, non donné à ce stade. La confirmation reste **DUE** :
-      `curl -s 'http://192.168.1.48/debug/sensor_trace?offset=0' | wc -c` sur firmware neuf
-      **et tampon plein (200 points)**. La réserve « projection non confirmée » est écrite
-      dans `constants.h` ET dans `docs/API.md` : **ne pas cocher cet item** tant que la mesure
-      n'est pas faite, et **ne jamais présenter l'estimation comme une mesure**.
+      ✅ **CONFIRMÉ PAR MESURE** le 2026-10-11, après déploiement de v2.69.0 :
+      **5 775 o** pour une page de 38 échantillons — la projection (~5 825 o) était juste à
+      **0,9 %** près, et la page a bien **RÉTRÉCI** (5 905 → 5 775 o). Les réserves
+      « projection non confirmée » sont levées dans `constants.h`, `docs/API.md` et
+      `docs/subsystems/sensors.md`.
+      ⚠️ **PIÈGE DE MESURE, à retenir** : mesurer sur une page **SANS champ `null`**
+      (`offset=20`), pas sur `offset=0`. Au démarrage, les plus anciens échantillons portent
+      des médianes nulles, et `null` est plus court qu'une valeur : la page à `offset=0` ne
+      pesait que **5 722 o** et aurait **sous-estimé le pire cas**. La première mesure prise
+      a été celle-là — l'écart n'a été vu qu'en comptant les champs nuls.
 - [x] A5 — **TRANCHÉ : la trace reste 100 % en échelle BRUTE, l'affichage est CORRIGÉ.**
       Le firmware enregistre `_phFilter.median()` (brut, membres internes) — **jamais**
       `getPhMedian()`, qui applique `applyPhOffset` (ADR-0039 : l'offset s'applique **en sortie

@@ -1500,9 +1500,15 @@ constexpr size_t kSensorTraceBufferSize          = 200;
 // supposés plus tôt (ADR-0073 : ne pas recopier un chiffre sans le mesurer).
 // Les deux champs ajoutés (phMedian, orpMedian) coûtent +34,7 o/échantillon
 // mesurés par réinjection dans la page réelle. 38 échantillons/page →
-// ~5 825 o PROJETÉS (même ordre de grandeur que les 5 905 o d'avant) —
-// PROJECTION NON CONFIRMÉE, à valider par mesure sur le firmware neuf après
-// flash. Pas d'allocation contiguë démesurée dans AsyncResponseStream (le heap
+// ~5 825 o projetés.
+// ✅ CONFIRMÉ PAR MESURE le 2026-10-11, sur le firmware v2.69.0 DÉPLOYÉ :
+// **5 775 o** pour une page de 38 échantillons (projection juste à 0,9 % près).
+// La page a donc RÉTRÉCI : 5 905 → 5 775 o, la garde est au moins aussi
+// protégée qu'avant. ⚠️ Mesurer sur une page SANS champ null (offset 20, pas
+// offset 0) : au démarrage les premiers échantillons portent des médianes
+// nulles, et `null` est plus court qu'une valeur — la page à offset 0 ne
+// pesait que 5 722 o et aurait SOUS-ESTIMÉ le pire cas.
+// Pas d'allocation contiguë démesurée dans AsyncResponseStream (le heap
 // fragmenté peut descendre sous 8 Ko, ADR-0029) ; la garde measureJson +
 // kSensorTraceHeapMarginBytes reste le filet en cas de heap trop fragmenté.
 constexpr size_t kSensorTraceMaxSamplesPerPage   = 38;

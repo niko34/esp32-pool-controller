@@ -3,7 +3,7 @@
 - **Statut** : Accepté
 - **Date** : 2026-10-11
 - **Décideurs** : `architect` (feature-153, critère 3 — alternatives crédibles à documenter)
-- **Spec(s) liée(s)** : [`feature-153`](../../specs/features/doing/feature-153-signaux-capteurs-medianne-et-deux-cadences.md), précédent [`feature-118`](../../specs/features/done/feature-118-authenticite-de-l-image-ota.md) (`sha256_vectors.js`)
+- **Spec(s) liée(s)** : [`feature-153`](../../specs/features/done/feature-153-signaux-capteurs-medianne-et-deux-cadences.md), précédent [`feature-118`](../../specs/features/done/feature-118-authenticite-de-l-image-ota.md) (`sha256_vectors.js`)
 
 ## Contexte
 
@@ -97,4 +97,4 @@ l'extraction et ferait échouer le job CI au lieu de faire échouer silencieusem
 - Code : [`test/trace_logic_vectors.js`](../../test/trace_logic_vectors.js), [`tools/check_trace_logic_vectors.sh`](../../tools/check_trace_logic_vectors.sh), [`data/app.js`](../../data/app.js) (`groupHistoryPoints`, `seriesStats`, `traceWindowDurationMs`)
 - Précédent généralisé : [`test/sha256_vectors.js`](../../test/sha256_vectors.js), [`tools/check_sha256_vectors.sh`](../../tools/check_sha256_vectors.sh) (feature-118)
 - CI : job `trace-logic-vectors` de [`.github/workflows/hygiene-specs.yml`](../../.github/workflows/hygiene-specs.yml), documenté dans [BUILD.md](../BUILD.md#intégration-continue-github-actions)
-- Spec : [`specs/features/doing/feature-153-signaux-capteurs-medianne-et-deux-cadences.md`](../../specs/features/doing/feature-153-signaux-capteurs-medianne-et-deux-cadences.md)
+- Spec : [`specs/features/done/feature-153-signaux-capteurs-medianne-et-deux-cadences.md`](../../specs/features/done/feature-153-signaux-capteurs-medianne-et-deux-cadences.md)

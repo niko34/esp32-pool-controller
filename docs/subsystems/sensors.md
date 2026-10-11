@@ -577,7 +577,7 @@ SensorTraceSample _traceBuffer[kSensorTraceBufferSize];  // 200 × 36 o = 7 200 
 | Méthode | Effet |
 |---------|-------|
 | `size_t getSensorTraceCount() const` | Nombre d'échantillons présents (0..200). |
-| `void appendSensorTraceJson(JsonArray out, size_t offset, size_t count) const` | Sérialise une **page** du buffer (ordre chronologique, `offset` 0 = le plus ancien) : les échantillons `[offset, offset+count)` — `t` (ms), `phRaw`/`phCorrected`/`phMedian`/`phFiltered` (arrondi ×1000), `orpRaw`/`orpMedian`/`orpFiltered` (×10), `tempEau` (×10) ; `null` si NaN. Signature paginée depuis v2.10.1 (bug-crash-sensor-trace-badalloc) ; champ `phCorrected` ajouté en v2.20.0, `phMedian`/`orpMedian` ajoutés en v2.69.0 (feature-153, +34,7 o/échantillon mesurés par réinjection — page de 38 ≈ 5 825 o **projetés, non confirmés** au 2026-10-11). |
+| `void appendSensorTraceJson(JsonArray out, size_t offset, size_t count) const` | Sérialise une **page** du buffer (ordre chronologique, `offset` 0 = le plus ancien) : les échantillons `[offset, offset+count)` — `t` (ms), `phRaw`/`phCorrected`/`phMedian`/`phFiltered` (arrondi ×1000), `orpRaw`/`orpMedian`/`orpFiltered` (×10), `tempEau` (×10) ; `null` si NaN. Signature paginée depuis v2.10.1 (bug-crash-sensor-trace-badalloc) ; champ `phCorrected` ajouté en v2.20.0, `phMedian`/`orpMedian` ajoutés en v2.69.0 (feature-153, +34,7 o/échantillon mesurés par réinjection — page de 38 = **5 775 o mesurés** au 2026-10-11 sur firmware déployé). |
 | `void clearSensorTrace()` | Vide le buffer (`_traceCount = 0`). |
 
 ### Pagination — bug-crash-sensor-trace-badalloc (v2.10.1)
@@ -732,7 +732,7 @@ Ajoutée **sans changer aucun comportement** ([ADR-0074](../adr/0074-temperature
 | `kTempFrozenSamples` / `kTempFrozenEpsilonC` | `43200` / `0.03` °C | Figé T° eau (≈ **24 h** à 2 s, < ½ LSB DS18B20, bug-142 — était `900` / 30 min) — warning-only pour le DOSAGE, gate le planning de filtration |
 | `kPhOffsetMin` / `kPhOffsetMax` | `-0.50` / `+0.50` pH | Bornes de l'offset logiciel pH (feature-067) — validation serveur, refus 400 hors plage |
 | `kSensorTraceBufferSize` | `200` | Taille ring buffer trace signaux — 7 200 o RAM (200 × 36 o), depuis feature-153 v2.69.0 (était 300 × 28 o ≈ 8,4 Ko) |
-| `kSensorTraceMaxSamplesPerPage` | `38` | Borne d'une page de `GET /debug/sensor_trace` (~5 825 o JSON **projetés, non confirmés** — v2.69.0, était 50 ≈ 5 905 o mesurés avant ce lot) |
+| `kSensorTraceMaxSamplesPerPage` | `38` | Borne d'une page de `GET /debug/sensor_trace` (**5 775 o JSON mesurés** le 2026-10-11 sur firmware déployé — v2.69.0, était 50 = 5 905 o mesurés avant ce lot) |
 | `kSensorTraceHeapMarginBytes` | `4096` | Marge entre `measureJson` et `heapLargestFreeBlock8Bit()` → 503 au lieu de `bad_alloc` (v2.10.1 ; mesure basculée depuis `ESP.getMaxAllocHeap()` en **v2.40.0**, valeur du seuil **inchangée**) |
 
 Toutes définies dans [`src/constants.h`](../../src/constants.h).

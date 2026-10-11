@@ -9510,21 +9510,52 @@
   // cadences n'ont ni le même nombre de séries ni le même axe X, donc un
   // changement de cadence détruit et recrée (uPlot ne permet pas de changer le
   // nombre de séries d'une instance existante).
+  // ---- Palette des courbes « Signaux capteurs » (étude ux-ui-designer, 2026-10-11) ----
+  // SOURCE UNIQUE : ces quatre constantes sont lues par le TRACÉ (_ensureTraceCharts)
+  // ET par les pastilles de la rangée de statistiques (_renderTraceStatsRows). Les hex
+  // étaient dupliqués littéralement aux deux endroits : changer l'un sans l'autre
+  // désynchronisait silencieusement la légende du tracé.
+  // Le gris est PARTAGÉ par pH et ORP : « brut » a le même signifiant dans toute la
+  // carte. Le violet et le vert sont ceux DÉJÀ utilisés par la vue Journée et par les
+  // pages de détail — aucune couleur d'identité nouvelle n'est introduite ici.
+  const TRACE_COLOR_RAW        = "#64748b";  // gris neutre — contraste 4,76:1 sur fond carte
+  const TRACE_COLOR_MEDIAN     = "#d97706";  // ambre        — 3,19:1 (seuil graphique WCAG : 3:1)
+  const TRACE_COLOR_PH_SMOOTH  = "#7c3aed";  // violet pH    — 5,71:1, identique à la vue Journée
+  const TRACE_COLOR_ORP_SMOOTH = "#059669";  // vert ORP     — 3,77:1, identique à la vue Journée
+  // ⚠️ Pas de thème sombre dans ce projet (vérifié : aucune règle `prefers-color-scheme`
+  // dans app.css). Si un jour il en apparaît un, le gris et l'ambre sont à revérifier sur
+  // fond sombre, et les deux teintes foncées devront probablement être éclaircies.
+
   function _ensureTraceCharts(mode) {
     if (_tracePhChart && _traceChartsMode === mode) return;
     _destroyTraceCharts();
     const phHost = $("#trace_ph_chart");
     const orpHost = $("#trace_orp_chart");
     if (mode === "fast") {
+      // PALETTE (étude ux-ui-designer, 2026-10-11) — corrige un défaut signalé par
+      // l'utilisateur sur la version livrée : « les couleurs des données brut et
+      // lissés sont tellement proches qu'on ne voit rien ». Brut et lissé étaient
+      // deux NUANCES DE LA MÊME TEINTE, et c'est justement la paire qu'on compare.
+      // Trois canaux de distinction, jamais la couleur seule (accessibilité) :
+      //   brut    gris neutre, trait FIN, plein    → « signal agité, pas une décision »
+      //   médiane ambre,       trait moyen, POINTILLÉ → « étape de calcul »
+      //   lissé   identité pH/ORP, trait ÉPAIS, tracé EN DERNIER → « c'est lui qui décide »
+      // Le pointillé est le filet NON-COULEUR : sous daltonisme rouge-vert, ambre et
+      // vert peuvent se rapprocher — le style de trait, lui, ne dépend d'aucune teinte.
+      // ⚠️ NE PAS retirer `dash` même si la palette suffit sur un écran de bureau :
+      // au bord du bassin, en plein soleil, le contraste perçu s'effondre.
+      // ⚠️ Les hex sont repris TELS QUELS pour les pastilles de légende plus bas
+      // (_renderTraceStatsRows) : les changer ici seulement désynchroniserait la
+      // légende du tracé. D'où les constantes partagées ci-dessous.
       if (phHost) _tracePhChart = createTraceChart(phHost, [
-        { label: "pH brut", color: "#a78bfa" },
-        { label: "pH médiane", color: "#f59e0b" },
-        { label: "pH lissé", color: "#7c3aed" }
+        { label: "pH brut",    color: TRACE_COLOR_RAW,       width: 1,   dash: null },
+        { label: "pH médiane", color: TRACE_COLOR_MEDIAN,    width: 1.5, dash: [5, 3] },
+        { label: "pH lissé",   color: TRACE_COLOR_PH_SMOOTH, width: 2.5, dash: null }
       ]);
       if (orpHost) _traceOrpChart = createTraceChart(orpHost, [
-        { label: "ORP brut", color: "#34d399" },
-        { label: "ORP médiane", color: "#fbbf24" },
-        { label: "ORP lissé", color: "#059669" }
+        { label: "ORP brut",    color: TRACE_COLOR_RAW,        width: 1,   dash: null },
+        { label: "ORP médiane", color: TRACE_COLOR_MEDIAN,     width: 1.5, dash: [5, 3] },
+        { label: "ORP lissé",   color: TRACE_COLOR_ORP_SMOOTH, width: 2.5, dash: null }
       ]);
     } else {
       // Math.round : uPlot peut produire des splits NON ENTIERS quand les points
@@ -9721,12 +9752,14 @@
     _renderTraceScaleNote("fast", offsetPh != null);
     _setTraceStatsSubtitle(traceWindowDurationMs(samples.length, intervalMs));
     _renderTraceStatsRows($("#trace_stats_rows"), [
-      { color: "#a78bfa", label: "pH brut", stats: seriesStats(phRaw), decimals: 2 },
-      { color: "#f59e0b", label: "pH médiane", stats: seriesStats(phMed), decimals: 2 },
-      { color: "#7c3aed", label: "pH lissé", stats: seriesStats(phFilt), decimals: 2 },
-      { color: "#34d399", label: "ORP brut", stats: seriesStats(orpRaw), decimals: 1 },
-      { color: "#fbbf24", label: "ORP médiane", stats: seriesStats(orpMed), decimals: 1 },
-      { color: "#059669", label: "ORP lissé", stats: seriesStats(orpFilt), decimals: 1 }
+      // Mêmes constantes que les courbes ci-dessus : la pastille de légende DOIT
+      // être la couleur du tracé, sinon la rangée de statistiques ment.
+      { color: TRACE_COLOR_RAW,        label: "pH brut",    stats: seriesStats(phRaw),  decimals: 2 },
+      { color: TRACE_COLOR_MEDIAN,     label: "pH médiane", stats: seriesStats(phMed),  decimals: 2 },
+      { color: TRACE_COLOR_PH_SMOOTH,  label: "pH lissé",   stats: seriesStats(phFilt), decimals: 2 },
+      { color: TRACE_COLOR_RAW,        label: "ORP brut",    stats: seriesStats(orpRaw),  decimals: 1 },
+      { color: TRACE_COLOR_MEDIAN,     label: "ORP médiane", stats: seriesStats(orpMed),  decimals: 1 },
+      { color: TRACE_COLOR_ORP_SMOOTH, label: "ORP lissé",   stats: seriesStats(orpFilt), decimals: 1 }
     ]);
 
     _showTraceCharts();
