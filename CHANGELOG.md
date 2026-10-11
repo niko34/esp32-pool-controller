@@ -2,6 +2,54 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [2.67.0] - 2026-10-11
+
+> ⚠️ **Déploiement** : cette version doit être installée en **firmware**, pas seulement en
+> filesystem — le refus « absente » et le nouveau format de journal vivent côté firmware
+> (`src/web_routes_ota.cpp`, `src/constants.h`). Un filesystem v2.67.0 sur un firmware
+> antérieur afficherait la nouvelle page sans que le serveur n'exige encore l'empreinte.
+
+### Firmware
+- **OTA — empreinte SHA-256 OBLIGATOIRE sur `POST /update` (feature-118 lot B,
+  [ADR-0096](docs/adr/0096-empreinte-sha256-obligatoire-sur-post-update.md))** : un envoi
+  **sans** empreinte est désormais **refusé** (`400`), à `index==0`, **avant tout effet de
+  bord** sur la partition — même place que le refus « malformée » déjà livré en lot A. Une
+  empreinte non conforme reste refusée comme depuis feature-026. `/update` est désormais au
+  **même niveau d'obligation** que `/download-update` ; la nature de la preuve (fournie par
+  l'appelant) ne change pas — toujours pas une signature, voir
+  [feature-151](specs/features/todo/feature-151-signature-de-l-image-ota.md).
+- **Message de refus à deux causes** : il cite d'abord la cause la plus fréquente en
+  pratique (page web en cache, chargée avant le déploiement du filesystem — rechargez-la),
+  puis la cause scriptée (ordre des champs multipart). Trouvaille d'une observation
+  on-target réelle du 2026-10-11.
+- **`ota_update.sh` devient fail-closed** : sans `sha256sum` ni `shasum` disponibles, le
+  script refuse désormais d'envoyer (avant tout appel réseau) plutôt que d'envoyer sans
+  empreinte en avertissant seulement sur la console.
+- **En-têtes de cache explicites** sur les fichiers statiques (`serveStatic("/")` pose
+  `.setCacheControl("no-cache")` explicitement). Une parade cache plus large (en-têtes
+  manuels sur les 7 routes HTML) a été **retirée** après audit `security-reviewer` :
+  redondante avec le comportement déjà correct d'`AsyncFileResponse`/`req->send(FS, …)`
+  (ETag + `Cache-Control: no-cache` + support de `If-None-Match`/`304`), et régressive (la
+  version manuelle perdait le support du `304`). La cause réelle de l'incident qui avait
+  motivé cette parade était un **onglet déjà ouvert avant le déploiement**, pas un défaut
+  d'en-tête — aucun en-tête HTTP ne rattrape ce cas, seul un rechargement le résout.
+
+### Documentation
+- `docs/API.md` : `sha256` documenté **obligatoire**, ordre des parties multipart explicité,
+  nouveau code de refus `400` (absente) et son message complet.
+- `docs/subsystems/ota-manager.md` : section lot B (refus effectif, nouveau format de
+  journal, fail-closed du script, retrait documenté de la parade cache et de son motif
+  erroné).
+- `docs/UPDATE_GUIDE.md` : procédure mise à jour, section « que faire si l'envoi est
+  refusé » (recharger la page).
+- `docs/features/page-settings.md` : comportement de refus affiché à l'écran.
+- [ADR-0096](docs/adr/0096-empreinte-sha256-obligatoire-sur-post-update.md) : addendum daté
+  — lot B livré, parade cache retirée et son motif consigné.
+- `specs/features/doing/feature-118-authenticite-de-l-image-ota.md` : verdicts
+  `security-reviewer` P1/P2 du lot B consignés, observations on-target enregistrées.
+
+---
+
 ## [2.66.0] - 2026-10-10
 
 ### Firmware

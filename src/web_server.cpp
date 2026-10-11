@@ -59,6 +59,24 @@ void WebServerManager::begin(AsyncWebServer* webServer, DNSServer* dnsServer) {
   systemLogger.info("Serveur Web démarré sur le port 80");
 }
 
+// feature-118 lot B — PARADE CACHE RETIRÉE après audit security-reviewer P2.
+// Une version intermédiaire remplaçait ici `req->send(LittleFS, …)` par un
+// `beginResponse` + `addHeader("Cache-Control","no-cache")` manuel, pour
+// corriger l'incident du 2026-10-11 (empreinte « absente » : page web obsolète).
+// ⚠️ C'ÉTAIT REDONDANT **ET** RÉGRESSIF, et le coordinateur s'était trompé en
+// le vérifiant (grep sur la chaîne "Cache-Control" alors que la bibliothèque
+// utilise la constante `T_Cache_Control` — le symbole, pas le littéral) :
+//   · `AsyncFileResponse` pose DÉJÀ `ETag` + `Cache-Control: no-cache`
+//     (WebResponses.cpp:744-745) ;
+//   · `req->send(FS, …)` teste DÉJÀ `If-None-Match` sur le repli gzip et peut
+//     répondre 304 (AsyncWebServerRequest.cpp:26+) — que la version manuelle
+//     PERDAIT ;
+//   · `serveStatic` pose aussi `no-cache` par défaut (WebHandlers.cpp:287).
+// ⇒ On garde `req->send(LittleFS, …)`. La cause réelle de l'incident n'était
+// PAS un défaut d'en-tête mais un ONGLET DÉJÀ OUVERT avant le déploiement —
+// aucun en-tête HTTP ne rattrape ça. Le remède est le rechargement, et le filet
+// est le message `kOtaSha256MissingMessage` (src/constants.h), qui le dit.
+
 void WebServerManager::setupRoutes() {
   // Pas de CORS : politique même-origine stricte (feature-028, option B).
   // L'UI est servie par l'ESP32 lui-même (offline first), aucun accès cross-origin supporté.
@@ -204,8 +222,14 @@ void WebServerManager::setupRoutes() {
   });
 
   // Fichiers statiques (CSS, JS, images) - PUBLIC pour que la page de login fonctionne
+  // .setCacheControl("no-cache") — feature-118 lot B : EXPLICITE plutôt que de
+  // compter sur le défaut de la bibliothèque (AsyncStaticWebHandler::handleRequest,
+  // WebHandlers.cpp) qui pose déjà "no-cache" en l'absence d'appel à cette
+  // méthode — ce chemin EST celui qui teste `If-None-Match` et peut répondre
+  // 304 (seul endroit du firmware où un 304 est possible).
   server->serveStatic("/", LittleFS, "/")
     .setDefaultFile("index.html")
+    .setCacheControl("no-cache")
     .setFilter([](AsyncWebServerRequest *req) {
       String path = req->url();
       // Autoriser les assets (CSS, JS, images, fonts)

@@ -3,7 +3,7 @@
 - **Statut** : Accepté
 - **Date** : 2026-10-10
 - **Décideurs** : `security-reviewer` (P1 sur les trois issues, GO sous 9 conditions ; P2 sur le diff livré), `architect` (arbitrage entre les trois issues), `embedded-developer`, `web-ui-developer`, `pool-chemistry` (impact : `setOtaInProgress`), `code-reviewer`, `doc-writer`
-- **Spec(s) liée(s)** : [`feature-118`](../../specs/features/doing/feature-118-authenticite-de-l-image-ota.md) (ce lot : lot A), [`feature-151`](../../specs/features/todo/feature-151-signature-de-l-image-ota.md) (suivi : signature), [`bug-117`](../../specs/features/done/bug-117-upload-ota-sans-verification-d-authentification.md) (prérequis, authentification de l'upload)
+- **Spec(s) liée(s)** : [`feature-118`](../../specs/features/done/feature-118-authenticite-de-l-image-ota.md) (ce lot : lot A), [`feature-151`](../../specs/features/todo/feature-151-signature-de-l-image-ota.md) (suivi : signature), [`bug-117`](../../specs/features/done/bug-117-upload-ota-sans-verification-d-authentification.md) (prérequis, authentification de l'upload)
 
 ## Contexte
 
@@ -50,9 +50,38 @@ Le point dur, trouvé en revue : **la page web d'upload ne peut pas calculer l'e
 - Le régime de R2 (recensement du tas, [ADR-0081](0081-recensement-du-tas-et-non-livraison-de-la-lecture-de-contenu.md)) reste conditionné à l'absence d'authenticité OTA **jusqu'à la livraison de la signature** ([feature-151](../../specs/features/todo/feature-151-signature-de-l-image-ota.md)) — pas jusqu'à celle de ce lot, qui ne change pas l'argument du plafond OTA (un porteur d'identifiants CRITICAL a déjà l'exécution de code arbitraire via `/update`).
 - L'exemption par origine perçue (« c'est la page officielle, donc on lui fait confiance ») est explicitement écartée comme motif recevable dans ce projet : elle a été nommée, chiffrée, et rejetée ici — une future relecture ne doit pas la réintroduire sans relire cette section.
 
+## Addendum — 2026-10-11 (lot B livré : refus effectif)
+
+Le lot B (v2.67.0) transforme le verdict journalisé par le lot A en **décision réelle** :
+`kAbsent` et `kNonConform` sont désormais refusés (`kMalformed` l'était déjà depuis le lot
+A). **Rien de ce qui précède ne change** : l'empreinte reste calculée par l'appelant, elle
+prouve l'intégrité du transfert, jamais l'authenticité de l'origine, et la règle de sécurité
+n° 6 de `CLAUDE.md` reste non satisfaite (voir [feature-151](../../specs/features/todo/feature-151-signature-de-l-image-ota.md)).
+
+**Une erreur de vérification corrigée dans ce lot, consignée pour ne pas se reproduire.**
+Une version intermédiaire du lot B avait ajouté, sur les 7 routes HTML, un remplacement
+manuel de `req->send(LittleFS, …)` par un `beginResponse` + en-tête `Cache-Control`
+construit à la main, pour répondre à un incident observé en production (un premier envoi
+refusé « absente » parce que la page était en cache). **Cette parade était redondante et
+régressive** : `AsyncFileResponse` pose déjà `ETag` + `Cache-Control: no-cache`
+(`WebResponses.cpp:744-745`), et `req->send(FS, …)` teste déjà `If-None-Match` et peut
+répondre `304` — propriété que la version manuelle perdait. La vérification initiale qui
+avait laissé passer cette redondance avait elle-même cherché la mauvaise preuve
+(`grep` sur la chaîne littérale `"Cache-Control"`, alors que la bibliothèque la pose via la
+constante `T_Cache_Control`). **Retiré**, conservé uniquement `.setCacheControl("no-cache")`
+explicite sur `serveStatic("/")` — seul chemin du firmware où un `304` est possible, posé
+pour la lisibilité, pas pour corriger un défaut.
+
+**La leçon qui dépasse ce lot** : la cause réelle de l'incident qui a motivé cette parade
+n'était ni un en-tête ni un défaut de cache — c'était un **onglet déjà ouvert avant le
+déploiement**, qui ne pouvait de toute façon recevoir aucun en-tête de la réponse suivante
+puisqu'il ne la demandait pas. Un correctif d'en-tête HTTP ne peut rien contre un document
+déjà chargé en mémoire du navigateur. Le remède reste le **rechargement** ; le filet est le
+**message de refus** (`kOtaSha256MissingMessage`), pas une parade cache côté serveur.
+
 ## Références
 
-- Code : [`src/web_routes_ota.cpp`](../../src/web_routes_ota.cpp) (handler d'upload), [`src/ota_integrity_logic.h`](../../src/ota_integrity_logic.h)/[`.cpp`](../../src/ota_integrity_logic.cpp) (`parseOtaSha256Param`, `otaUploadIntegrityVerdict`, `otaUploadWouldLotBReject`), [`data/app.js`](../../data/app.js) (`createSha256`, `sha256OfFile`), [`ota_update.sh`](../../ota_update.sh) (`compute_sha256`), [`src/constants.h`](../../src/constants.h) (`kOtaSha256MissingMessage`, préparée pour le lot B)
-- Tests : `test/test_native_ota_integrity/`, [`test/test_native_ota_sha256_param/`](../../test/test_native_ota_sha256_param/), [`test/test_native_ota_order_guard/`](../../test/test_native_ota_order_guard/), [`test/sha256_vectors.js`](../../test/sha256_vectors.js) + [`tools/check_sha256_vectors.sh`](../../tools/check_sha256_vectors.sh)
-- Spec : [`specs/features/doing/feature-118-authenticite-de-l-image-ota.md`](../../specs/features/doing/feature-118-authenticite-de-l-image-ota.md) (verdict `security-reviewer` P1, les 9 conditions), [`specs/features/todo/feature-151-signature-de-l-image-ota.md`](../../specs/features/todo/feature-151-signature-de-l-image-ota.md)
-- Doc externe : [`docs/API.md`](../API.md#post-update--critical), [`docs/subsystems/ota-manager.md`](../subsystems/ota-manager.md#lot-a-feature-118-empreinte-envoyee-systematiquement-verdict-journalise), [`docs/UPDATE_GUIDE.md`](../UPDATE_GUIDE.md)
+- Code : [`src/web_routes_ota.cpp`](../../src/web_routes_ota.cpp) (handler d'upload), [`src/ota_integrity_logic.h`](../../src/ota_integrity_logic.h)/[`.cpp`](../../src/ota_integrity_logic.cpp) (`parseOtaSha256Param`, `otaUploadIntegrityVerdict`, `otaUploadIntegrityIsRejected`), [`data/app.js`](../../data/app.js) (`createSha256`, `sha256OfFile`), [`ota_update.sh`](../../ota_update.sh) (`compute_sha256`, fail-closed lot B), [`src/constants.h`](../../src/constants.h) (`kOtaSha256MissingMessage`), [`src/web_server.cpp`](../../src/web_server.cpp) (`.setCacheControl("no-cache")` sur `serveStatic`)
+- Tests : `test/test_native_ota_integrity/`, [`test/test_native_ota_sha256_param/`](../../test/test_native_ota_sha256_param/), [`test/test_native_ota_order_guard/`](../../test/test_native_ota_order_guard/) (gardes G1-G4), [`test/test_native_ota_update_fail_closed/`](../../test/test_native_ota_update_fail_closed/), [`test/sha256_vectors.js`](../../test/sha256_vectors.js) + [`tools/check_sha256_vectors.sh`](../../tools/check_sha256_vectors.sh)
+- Spec : [`specs/features/done/feature-118-authenticite-de-l-image-ota.md`](../../specs/features/done/feature-118-authenticite-de-l-image-ota.md) (verdicts `security-reviewer` P1/P2, lots A et B), [`specs/features/todo/feature-151-signature-de-l-image-ota.md`](../../specs/features/todo/feature-151-signature-de-l-image-ota.md)
+- Doc externe : [`docs/API.md`](../API.md#post-update--critical), [`docs/subsystems/ota-manager.md`](../subsystems/ota-manager.md#lot-b-feature-118-empreinte-obligatoire-refus-effectif), [`docs/UPDATE_GUIDE.md`](../UPDATE_GUIDE.md)

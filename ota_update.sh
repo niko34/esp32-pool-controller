@@ -52,15 +52,16 @@ else
 fi
 
 # feature-118 [O1] : empreinte SHA-256 du fichier, format "sha256:<64 hex
-# minuscule>" accepté par /update (lot A : journalisé côté serveur, pas
-# encore exigé — on l'envoie déjà pour que le journal affiche « conforme »
-# pour firmware ET filesystem avant l'ouverture du lot B, cf. spec feature-118
-# condition 4). Portabilité : `sha256sum` (coreutils GNU, présent sur Linux)
-# est tenté en premier ; `shasum -a 256` (Perl, c'est l'outil natif sur
-# macOS — `sha256sum` n'y existe PAS par défaut) en repli. Si ni l'un ni
-# l'autre n'est trouvé, échec SILENCIEUX côté empreinte uniquement (le champ
-# n'est simplement pas envoyé — lot A reste fail-open sur l'absence) mais
-# AVERTI côté console.
+# minuscule>" EXIGÉ par /update depuis le lot B (empreinte obligatoire — une
+# requête sans ce champ est refusée AVANT tout flash, cf.
+# kOtaSha256MissingMessage, src/constants.h). Portabilité : `sha256sum`
+# (coreutils GNU, présent sur Linux) est tenté en premier ; `shasum -a 256`
+# (Perl, c'est l'outil natif sur macOS — `sha256sum` n'y existe PAS par
+# défaut) en repli. Si NI L'UN NI L'AUTRE n'est trouvé : FAIL-CLOSED — le
+# script refuse l'envoi lui-même, AVANT curl (cf. update_file ci-dessous).
+# Le repli « envoi sans empreinte » du lot A a disparu : un appareil en lot B
+# refuserait cet envoi de toute façon, un script qui l'enverrait quand même
+# ferait croire à une tentative alors qu'elle est vouée à l'échec.
 compute_sha256() {
     local file=$1
     if command -v sha256sum >/dev/null 2>&1; then
@@ -86,13 +87,18 @@ update_file() {
     # l'ordre des arguments curl (le serveur lit les champs non-fichier du
     # multipart dans l'ordre d'arrivée — un sha256 envoyé APRÈS le fichier
     # arriverait trop tard pour être vu à index==0).
-    local sha256_args=()
+    # FAIL-CLOSED (feature-118 lot B) : sans outil de hachage disponible, on
+    # refuse l'envoi ICI, AVANT curl — un /update sans empreinte serait de
+    # toute façon rejeté par le contrôleur (400, kOtaSha256MissingMessage) ;
+    # échouer tôt évite une tentative réseau pour rien et un message serveur
+    # moins actionnable que celui-ci.
     local digest
-    if digest=$(compute_sha256 "$file"); then
-        sha256_args=(-F "sha256=sha256:${digest}")
-    else
-        echo -e "${RED}⚠️  Ni sha256sum ni shasum disponibles — envoi de $name SANS empreinte${NC}"
+    if ! digest=$(compute_sha256 "$file"); then
+        echo -e "${RED}❌ Ni sha256sum ni shasum disponibles — impossible de calculer l'empreinte SHA-256${NC}"
+        echo -e "${RED}   Installez coreutils (sha256sum) ou Perl (shasum -a 256) — envoi de $name refusé (fail-closed)${NC}"
+        return 1
     fi
+    local sha256_args=(-F "sha256=sha256:${digest}")
 
     echo -e "${BLUE}📤 Envoi de $name...${NC}"
     if ! response=$(curl -s --show-error --connect-timeout 10 --max-time 120 \

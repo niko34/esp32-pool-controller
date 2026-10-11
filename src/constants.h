@@ -3534,16 +3534,25 @@ constexpr size_t kOtaSha256HexLen = 64;
 // Préfixe des digests d'assets GitHub (champ `digest` de l'API releases).
 constexpr const char* kOtaSha256Prefix = "sha256:";
 
-// feature-118 [C8] — PRÉPARÉ pour le lot B (empreinte obligatoire), lot A ne
-// l'utilise pas encore (il journalise sans refuser l'absence). Insiste
-// explicitement sur l'ORDRE des champs du formulaire : ESPAsyncWebServer ne
-// connaît un champ non-fichier qu'une fois sa partie du corps multipart
-// atteinte — un `sha256` placé APRÈS la partie fichier n'est pas encore lu à
-// index==0 et serait vu comme « absent » alors que le client l'a bien envoyé.
+// feature-118 [C8] lot B — refus EFFECTIF de l'upload à index==0 quand le
+// paramètre `sha256` est absent (voir handleOtaUpdate, web_routes_ota.cpp).
+// Message à DEUX causes, dans cet ordre délibéré (trouvaille de l'étape
+// d'observation on-target du 2026-10-11, 09:33:17) : la cause qu'un
+// utilisateur non technique rencontrera EST la page web en cache (obsolète,
+// chargée avant un déploiement de `data/app.js`) — elle est citée EN PREMIER.
+// La cause « ordre des champs multipart » ne concerne qu'un appelant
+// scripté : ESPAsyncWebServer ne connaît un champ non-fichier qu'une fois sa
+// partie du corps multipart atteinte — un `sha256` placé APRÈS la partie
+// fichier n'est pas encore lu à index==0 et serait vu comme « absent » alors
+// que le client l'a bien envoyé.
+// 317 octets UTF-8 (+28 de préfixe de log = 345, sous kLogMessageMaxBytes =
+// 768) — NE PAS reformuler sans revalider cette mesure.
 constexpr const char* kOtaSha256MissingMessage =
-    "empreinte SHA-256 absente — le champ \"sha256\" doit PRÉCÉDER la partie "
-    "fichier dans le formulaire (upload refusé dès le premier octet, l'ordre "
-    "des champs multipart est déterminant)";
+    "empreinte SHA-256 absente — si l'envoi vient de la page web, elle est "
+    "obsolète (en cache) : rechargez-la (Ctrl+Maj+R, ou videz le cache du "
+    "site) puis recommencez ; si l'envoi vient d'un script, le champ "
+    "\"sha256\" doit PRÉCÉDER la partie fichier dans le formulaire "
+    "multipart — l'ordre des champs est déterminant";
 
 // ============================================================================
 // NETWORK CONSTANTS - Paramètres réseau

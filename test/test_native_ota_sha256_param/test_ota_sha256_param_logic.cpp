@@ -8,7 +8,7 @@
 //   - otaUploadIntegrityVerdict(paramVerdict, expected, computed)
 //       -> OtaUploadIntegrityVerdict
 //   - otaUploadIntegrityVerdictLabel(verdict)
-//   - otaUploadWouldLotBReject(verdict)
+//   - otaUploadIntegrityIsRejected(verdict)
 //
 // Cas exigés nommément par l'audit sécurité (condition 2) pour le paramètre
 // `sha256` de POST /update : chaîne vide, préfixe seul, 63 hex, 65 hex,
@@ -216,22 +216,27 @@ void test_label_non_conform(void) {
 }
 
 // -----------------------------------------------------------------------------
-// otaUploadWouldLotBReject — centralise la règle lot B : tout sauf kConform
+// otaUploadIntegrityIsRejected — DÉCISION RÉELLE du lot B (tout sauf kConform
+// est refusé) ; sous feature-118 lot A, cette même fonction (alors nommée
+// otaUploadWouldLotBReject) ne faisait que journaliser une PROJECTION.
+// test_is_rejected_absent_true est la couverture explicitement demandée par
+// security-reviewer/lot B : le verdict kAbsent (empreinte manquante) doit
+// désormais être REFUSÉ, pas seulement observé.
 // -----------------------------------------------------------------------------
-void test_would_reject_absent(void) {
-  TEST_ASSERT_TRUE(otaUploadWouldLotBReject(OtaUploadIntegrityVerdict::kAbsent));
+void test_is_rejected_absent_true(void) {
+  TEST_ASSERT_TRUE(otaUploadIntegrityIsRejected(OtaUploadIntegrityVerdict::kAbsent));
 }
 
-void test_would_reject_malformed(void) {
-  TEST_ASSERT_TRUE(otaUploadWouldLotBReject(OtaUploadIntegrityVerdict::kMalformed));
+void test_is_rejected_malformed_true(void) {
+  TEST_ASSERT_TRUE(otaUploadIntegrityIsRejected(OtaUploadIntegrityVerdict::kMalformed));
 }
 
-void test_would_reject_non_conform(void) {
-  TEST_ASSERT_TRUE(otaUploadWouldLotBReject(OtaUploadIntegrityVerdict::kNonConform));
+void test_is_rejected_non_conform_true(void) {
+  TEST_ASSERT_TRUE(otaUploadIntegrityIsRejected(OtaUploadIntegrityVerdict::kNonConform));
 }
 
-void test_would_not_reject_conform(void) {
-  TEST_ASSERT_FALSE(otaUploadWouldLotBReject(OtaUploadIntegrityVerdict::kConform));
+void test_is_rejected_conform_false(void) {
+  TEST_ASSERT_FALSE(otaUploadIntegrityIsRejected(OtaUploadIntegrityVerdict::kConform));
 }
 
 // -----------------------------------------------------------------------------
@@ -267,10 +272,10 @@ int main(int argc, char** argv) {
   RUN_TEST(test_label_conform);
   RUN_TEST(test_label_non_conform);
 
-  RUN_TEST(test_would_reject_absent);
-  RUN_TEST(test_would_reject_malformed);
-  RUN_TEST(test_would_reject_non_conform);
-  RUN_TEST(test_would_not_reject_conform);
+  RUN_TEST(test_is_rejected_absent_true);
+  RUN_TEST(test_is_rejected_malformed_true);
+  RUN_TEST(test_is_rejected_non_conform_true);
+  RUN_TEST(test_is_rejected_conform_false);
 
   return UNITY_END();
 }

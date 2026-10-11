@@ -30,10 +30,11 @@ bool sha256Equal(const uint8_t a[32], const uint8_t b[32]);
 void sha256ToHex(const uint8_t hash[32], char* out, size_t outLen);
 
 // =============================================================================
-// feature-118 lot A : verdict d'authenticité de l'empreinte `sha256` de
-// POST /update — JOURNALISÉ seulement (lot A n'ajoute AUCUN refus ; lot B
-// transformera ce verdict en décision). Découpé en DEUX pas pour coller aux
-// DEUX moments du handler :
+// feature-118 : verdict d'authenticité de l'empreinte `sha256` de POST
+// /update. Lot A (journalisation seule) a introduit ce prédicat ; lot B le
+// transforme en DÉCISION (kAbsent et kNonConform sont désormais refusés —
+// kMalformed l'était déjà depuis feature-026). Découpé en DEUX pas pour
+// coller aux DEUX moments du handler :
 //   1) parseOtaSha256Param, évalué à index==0 (dès réception du paramètre) :
 //      tranche ABSENT/MALFORMED sans connaître encore l'empreinte CALCULÉE
 //      sur le flux (le hachage incrémental n'est terminé qu'à `final`).
@@ -63,11 +64,12 @@ enum class OtaSha256ParamVerdict : uint8_t {
 // dédié nécessaire au-delà des vecteurs de parseSha256Digest).
 OtaSha256ParamVerdict parseOtaSha256Param(bool present, const char* digestStr, uint8_t out[32]);
 
-// Verdict COMPLET d'authenticité. Ne préjuge d'aucun refus : lot A le
-// journalise, lot B le transforme en refus pour kAbsent/kNonConform
-// (kMalformed est déjà refusé depuis feature-026 — inchangé par ce lot, et
-// n'atteint jamais ce point : le refus a lieu à index==0, AVANT que
-// `computed` ne soit même disponible).
+// Verdict COMPLET d'authenticité. Lot B (feature-118) : kAbsent est refusé à
+// index==0 (voir handleOtaUpdate) — il n'atteint donc plus non plus ce point
+// au moment du `final`, AVANT que `computed` existe ; seul kNonConform y est
+// encore tranché, via otaUploadIntegrityIsRejected ci-dessous (kMalformed
+// était déjà refusé depuis feature-026, refus déplacé à index==0 en lot A —
+// inchangé par ce lot).
 enum class OtaUploadIntegrityVerdict : uint8_t {
   kAbsent = 0,
   kMalformed = 1,
@@ -86,9 +88,10 @@ OtaUploadIntegrityVerdict otaUploadIntegrityVerdict(OtaSha256ParamVerdict paramV
 // "non conforme". Jamais nul.
 const char* otaUploadIntegrityVerdictLabel(OtaUploadIntegrityVerdict verdict);
 
-// true si un futur lot B (empreinte obligatoire) aurait refusé ce verdict,
-// c.-à-d. tout sauf kConform. Centralise la règle : lot B n'aura qu'à
-// retourner cette valeur au lieu de la journaliser.
-bool otaUploadWouldLotBReject(OtaUploadIntegrityVerdict verdict);
+// true si ce verdict DOIT être refusé (feature-118 lot B), c.-à-d. tout sauf
+// kConform. Anciennement `otaUploadWouldLotBReject` (lot A : journalisation
+// seule, « lot B aurait refusé ») — renommé lot B car ce n'est plus une
+// projection, c'est la DÉCISION effective appliquée par handleOtaUpdate.
+bool otaUploadIntegrityIsRejected(OtaUploadIntegrityVerdict verdict);
 
 #endif // OTA_INTEGRITY_LOGIC_H

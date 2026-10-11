@@ -2668,11 +2668,13 @@ Depuis la v2.46.2, la garde `otaUploadAuthorized()` est la **première instructi
 
 Une tentative non authentifiée est journalisée `WARNING` **au plus 1 fois/60 s**, avec l'IP d'origine — et **une seule fois par upload** (au premier fragment). Détail, motif et limites : [`docs/subsystems/ota-manager.md`](subsystems/ota-manager.md#authentification-du-handler-dupload-v2462).
 
-**Champ POST `sha256`** (v2.11.0, [ADR-0022](adr/0022-verification-integrite-ota.md) ; comportement élargi en v2.66.0, feature-118 lot A, [ADR-0096](adr/0096-empreinte-sha256-obligatoire-sur-post-update.md)) : empreinte SHA-256 de l'image, avec ou sans préfixe `sha256:`. Depuis la v2.66.0, **les deux appelants officiels l'envoient systématiquement** — la page d'upload la calcule en JavaScript pur (`crypto.subtle` est **indisponible** : l'appareil sert du HTTP en clair sur une IP de LAN, un contexte non sécurisé) et `ota_update.sh` via `sha256sum`/`shasum`. Le champ reste **optionnel côté serveur** dans ce lot : son absence ne bloque toujours rien (fail-open assumé, upload manuel = utilisateur physiquement présent), et le verdict d'une empreinte **fournie** (absente/conforme/non conforme) est désormais **journalisé** à chaque upload — un lot ultérieur (feature-118 lot B) transformera cette journalisation en refus. Seul le cas **malformé** reste refusé, et il l'est désormais **avant tout effet de bord** : dès réception du paramètre, avant `g_uploadOwner = request`, avant `Update.begin()` et avant le démontage de LittleFS — auparavant ce refus n'intervenait qu'en toute fin d'upload, **après** effacement **et réécriture** de la partition.
+**Champ POST `sha256` — OBLIGATOIRE depuis la v2.67.0** (v2.11.0, [ADR-0022](adr/0022-verification-integrite-ota.md) ; rendu obligatoire en v2.67.0, feature-118 lot B, [ADR-0096](adr/0096-empreinte-sha256-obligatoire-sur-post-update.md)) : empreinte SHA-256 de l'image, avec ou sans préfixe `sha256:`. **Une requête sans ce champ est désormais refusée** — `400`, **avant tout effet de bord** sur la partition (avant `g_uploadOwner = request`, avant `Update.begin()`, avant le démontage de LittleFS). Même place et même motif que le refus « malformée » introduit par le lot A.
 
-> ⚠️ **Ce que cette empreinte prouve, et ce qu'elle ne prouve pas.** L'empreinte est **calculée par l'appelant** : elle prouve que l'image écrite est celle qu'il a envoyée, **pas qui l'a produite**. Pour le **firmware**, l'IDF vérifie déjà l'image à l'activation (`Update.end(true)` → `esp_ota_set_boot_partition()`) ; l'empreinte ajoute la détection du **mauvais fichier**. Pour le **filesystem**, elle est la **seule** vérification d'intégrité. **La règle de sécurité n° 6 de `CLAUDE.md` n'est PAS satisfaite par ce mécanisme** ; elle le sera par une signature à clé publique, voir la spec de suivi [feature-151](../specs/features/todo/feature-151-signature-de-l-image-ota.md). Le terme à employer est **« intégrité du transfert »** — jamais « sécurité ».
+> ⚠️ **ORDRE DES PARTIES DU MULTIPART — déterminant.** Le champ `sha256` doit **précéder** la partie fichier (`update_file`) dans le formulaire. ESPAsyncWebServer ne connaît un champ non-fichier qu'une fois sa partie du corps atteinte : un `sha256` envoyé **après** le fichier n'est pas encore lu à `index==0` et se voit comme **absent**, même si le client l'a bien envoyé — refus garanti. Les deux appelants officiels respectent cet ordre : `ota_update.sh` place `-F "sha256=…"` avant `-F "update=…"` dans la commande `curl`, et la page web ajoute `sha256` au `FormData` avant `update_file`.
+
+> ⚠️ **Ce que cette empreinte prouve, et ce qu'elle ne prouve pas.** L'empreinte est **calculée par l'appelant** : elle prouve que l'image écrite est celle qu'il a envoyée, **pas qui l'a produite** — même devenue obligatoire. Pour le **firmware**, l'IDF vérifie déjà l'image à l'activation (`Update.end(true)` → `esp_ota_set_boot_partition()`) ; l'empreinte ajoute la détection du **mauvais fichier**. Pour le **filesystem**, elle est la **seule** vérification d'intégrité. **La règle de sécurité n° 6 de `CLAUDE.md` n'est TOUJOURS PAS satisfaite** ; elle le sera par une signature à clé publique, voir la spec de suivi [feature-151](../specs/features/todo/feature-151-signature-de-l-image-ota.md). Le terme à employer reste **« intégrité du transfert »** — jamais « sécurité ».
 >
-> `POST /download-update` n'est pas mieux armé : son paramètre `digest` est, lui aussi, **fourni par l'appelant**, et `isUrlAllowed()` ne contrôle que l'**hôte** (n'importe quel dépôt GitHub passe). Les deux routes sont au **même niveau de preuve** — ce lot aligne leur **obligation**, pas leur **nature**.
+> `POST /download-update` n'est pas mieux armé : son paramètre `digest` est, lui aussi, **fourni par l'appelant**, et `isUrlAllowed()` ne contrôle que l'**hôte** (n'importe quel dépôt GitHub passe). Les deux routes sont désormais au **même niveau de preuve ET à la même obligation**.
 
 ```bash
 curl -u admin:monmotdepasse -X POST \
@@ -2680,6 +2682,18 @@ curl -u admin:monmotdepasse -X POST \
   -F "update=@.pio/build/esp32dev_core3/firmware.bin" \
   http://poolcontroller.local/update
 ```
+
+**Message de refus « absente »** (`kOtaSha256MissingMessage`, [`src/constants.h`](../src/constants.h)), **verrouillé mot à mot par une garde de test** — il couvre **deux** causes distinctes, dans cet ordre délibéré (la première est celle qu'un utilisateur non technique rencontrera réellement) :
+
+```
+FAIL: empreinte SHA-256 absente — si l'envoi vient de la page web, elle est
+obsolète (en cache) : rechargez-la (Ctrl+Maj+R, ou videz le cache du site)
+puis recommencez ; si l'envoi vient d'un script, le champ "sha256" doit
+PRÉCÉDER la partie fichier dans le formulaire multipart — l'ordre des champs
+est déterminant
+```
+
+Cause la plus fréquente en pratique : un onglet de l'interface **déjà ouvert avant le déploiement** du filesystem a chargé l'ancien `data/app.js`, sans le calcul SHA-256. Un onglet rechargé après le déploiement, ou ouvert après coup, n'y est pas exposé.
 
 <a id="reponses-post-update-v2201"></a>
 
@@ -2693,6 +2707,7 @@ curl -u admin:monmotdepasse -X POST \
 | **Non authentifié** (v2.46.2) | **`401`** | `{"error":"Authentication required"}` — corps d'upload **refusé avant toute écriture de partition** ([détail](#authentification-de-lupload-v2462)) |
 | Upload concurrent | `409` | `Upload refusé: une mise à jour OTA est déjà en cours` — inchangé |
 | Refus de type (octet magique) | `400` | `FAIL: <cause>` |
+| `sha256` **absent** (v2.67.0) | `400` | `FAIL: empreinte SHA-256 absente — si l'envoi vient de la page web, elle est obsolète (en cache)…` (texte complet ci-dessous) |
 | `sha256` malformé, ou empreinte non conforme | `400` | `FAIL: <cause>` |
 | Échec `begin` / écriture / finalisation | `500` | `FAIL: <cause> (<errorString>)` |
 

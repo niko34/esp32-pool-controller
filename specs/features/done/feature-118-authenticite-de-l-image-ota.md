@@ -4,9 +4,9 @@
 | | |
 |---|---|
 | Type | feature (sécurité) |
-| Statut | en cours — **lot A livré** (empreinte envoyée systématiquement, verdict journalisé), **lot B non livré** (pas encore de refus sur absente/non conforme), **aucun commit** sur ce lot à la date de cette note |
+| Statut | en cours — **lot A ET lot B livrés** (refus effectif : empreinte absente, malformée et non conforme toutes refusées avant tout effet de bord) ; **reste ouvert** : la signature (seule réponse complète à la règle n° 6, voir feature-151) et une observation on-target de la **route de refus du lot B elle-même** sur matériel réel (les observations existantes couvrent le chemin « conforme » et « malformée », pas encore « absente refusée en v2.67.0 ») ; **aucun commit** sur cette spec à la date de cette note |
 | Priorité | Haute — `bug-117` est **close** (`specs/features/done/`), le prérequis est levé |
-| Version cible | 2.66.0 (`src/version.h`, lot A) |
+| Version cible | 2.67.0 (`src/version.h`, lot B) |
 | Origine | 4ᵉ critère d'acceptation de `bug-117`, délibérément **non traité** dans son correctif |
 | Specs liées | `bug-117` (la garde d'authentification), `feature-026` (vérification d'intégrité OTA), [`feature-151`](../todo/feature-151-signature-de-l-image-ota.md) (suivi : signature à clé publique, seule réponse complète à la règle n° 6) |
 
@@ -169,6 +169,24 @@ Empreinte reçue à 09:35:49 = `11d4147d…`, identique au `sha256sum` local du 
 le calcul **JavaScript pur** du navigateur est exact (pas de `crypto.subtle`, indisponible en
 HTTP clair).
 
+### ✅ ESSAI TÉLÉPHONE — 2026-10-11, condition bloquante du P1 lot B LEVÉE
+
+Envois réels depuis le **navigateur mobile** de l'utilisateur, sur le **lot A encore en place**
+(v2.66.0 — choix délibéré : avec le lot B, un calcul qui échoue ou expire devient un *refus*,
+on aurait découvert le problème quand il bloque) :
+
+```
+2026-10-11T09:52:03  firmware    11d4147d…  conforme — lot B aurait refusé : non
+2026-10-11T09:52:53  filesystem  c6769858…  conforme — lot B aurait refusé : non
+```
+
+Les deux empreintes sont **identiques au `sha256sum` local** des fichiers envoyés.
+
+⇒ **Le SHA-256 en JavaScript PUR fonctionne sur navigateur mobile, sur une image de 1,87 Mo.**
+C'était **l'inconnue de tout l'arbitrage** : l'issue retenue repose entièrement sur ce pari,
+`crypto.subtle` étant indisponible en HTTP clair sur IP de LAN. Le pari est tenu, sur l'écran
+de référence du projet.
+
 ### 🚨 TROUVAILLE DE L'ÉTAPE D'OBSERVATION — à traiter DANS le lot B
 ```
 2026-10-11T09:33:17 INFO [feature-118 lot A] Empreinte upload OTA : absente — lot B aurait refusé : oui
@@ -191,11 +209,43 @@ n'aide en rien quelqu'un dont la page ne l'envoie **pas du tout**.
 ⚠️ Sans ce point, le lot B est livrable mais **hostile au premier usage** — chaque déploiement
 de FS créant une fenêtre où la page en cache est refusée.
 
+## ✅ VERDICT `security-reviewer` P1 (DESIGN) lot B — GO SOUS CONDITIONS, 2026-10-11
+
+Passage sur le design du durcissement, déclenché directement par la **trouvaille** de
+l'étape d'observation ci-dessus (empreinte « absente » rencontrée en pratique à cause d'un
+onglet en cache, pas d'un ordre de champs fautif).
+
+### Conditions
+1. **Même place, même motif que le refus « malformée »** : la branche `kAbsent` doit
+   s'exécuter à `index==0`, **hors** du bloc `if (len >= 1)` (un fichier vide produit un
+   unique appel `len==0, final==true`), **avant** `g_uploadOwner = request` — copie à
+   l'identique du patron déjà validé en P1 lot A, pas une nouvelle conception.
+2. **`markUploadRejected(request)` DOIT être appelé dans la branche `kAbsent`** — défaut
+   qualifié le **plus grave** de ce lot s'il manquait : sans lui, `Update.hasError()` reste
+   faux côté lambda de réponse, qui sert « OK » et planifie un **redémarrage parasite** sur
+   une requête pourtant refusée.
+3. **Message à DEUX causes, dans l'ordre qui correspond à la fréquence réelle** : la page web
+   en cache (rencontrée en pratique, 09:33:17) **avant** l'ordre des champs multipart (cause
+   uniquement scriptée). Dire explicitement de **recharger la page**.
+4. **`ota_update.sh` devient fail-closed** : un script sans `sha256sum` ni `shasum` doit
+   **refuser d'envoyer lui-même**, avant tout appel `curl` — un envoi fatalement voué au
+   refus serveur ne doit pas atteindre le réseau.
+5. **Condition bloquante — le calcul SHA-256 JS doit être éprouvé sur l'écran de référence du
+   projet (téléphone) AVANT le lot B** : avec le lot B, un calcul qui échoue ou expire
+   devient un **refus**, alors qu'il n'était qu'une observation en lot A. **LEVÉE** par
+   l'essai téléphone du 2026-10-11 (voir ci-dessus, 09:52:03/09:52:53, firmware et
+   filesystem, empreintes identiques au `sha256sum` local).
+6. **Ne pas introduire de parade cache ad hoc sans vérifier l'existant** — rappel explicite
+   après que la première ébauche de ce lot ait ajouté une telle parade sans l'avoir vérifié
+   correctement (voir le verdict P2 ci-dessous).
+7. **Vocabulaire inchangé** : « intégrité du transfert », jamais « sécurité » ; la règle n° 6
+   de `CLAUDE.md` reste non satisfaite par ce lot, ce sera `feature-151`.
+
 ## Comportement attendu
 À trancher par l'`architect` sur les trois issues, avec le coût de chacune chiffré —
 poids FS, complexité, et ce que chacune **prouve réellement**.
 
-**Issue retenue (lot A livré) : issue 1, empreinte obligatoire à terme + SHA-256 JS embarqué.**
+**Issue retenue : issue 1, empreinte obligatoire + SHA-256 JS embarqué — lots A et B livrés.**
 Détail complet de l'arbitrage et des coûts mesurés : [ADR-0096](../../docs/adr/0096-empreinte-sha256-obligatoire-sur-post-update.md).
 
 ## ✅ VERDICT `security-reviewer` P2 (DIFF), lot A — GO, conditions reportées au lot B
@@ -209,7 +259,7 @@ conditions du P1 ci-dessus sont reprises une à une ; celles qui concernent le l
 | 1 | Place et motif du refus « malformée » | **Livré** — `index==0`, hors du `if (len >= 1)`, avant `g_uploadOwner = request`, `markUploadRejected()` + `failOtaUpload()` + `onDisconnect` repris à l'identique. Une **garde structurelle anti-régression** a été ajoutée après une première relecture (`test/test_native_ota_order_guard/`) : elle a d'abord révélé que les **vecteurs JS** (`test/sha256_vectors.js`) **recopiaient** l'implémentation au lieu de l'**extraire** de `data/app.js` — corrigé avant cette note (extraction par ancre + comptage de profondeur, patron `test_native_ws_config_parity`) |
 | 2 | Prédicat pur + mutation | **Livré** — `parseOtaSha256Param`/`otaUploadIntegrityVerdict` dans `src/ota_integrity_logic.h`, cas vide/préfixe seul/63-65 hex/majuscules/espace/`\n` couverts (`test/test_native_ota_sha256_param/`) |
 | 3 | Lot A = même prédicat, verdict journalisé, zéro régression | **Livré** — refus « malformée » et « non conforme » existants **conservés** (le second n'atteint plus ce point que via `g_uploadHasExpected`, inchangé en comportement) ; `logOtaUploadIntegrityVerdict()` journalise sans introduire de refus nouveau |
-| 4 | Ordre de déploiement (script avant page, 4 cas « conforme ») | **OUVERT — observation on-target due avant le lot B**, voir ci-dessous |
+| 4 | Ordre de déploiement (script avant page, 4 cas « conforme ») | **Livré** — observation on-target du 2026-10-11, table ci-dessus (script firmware/FS, page firmware/FS, ordinateur et téléphone) |
 | 5 | Vecteurs SHA-256 JS versionnés | **Livré** — `test/sha256_vectors.js`, exécuté par `tools/check_sha256_vectors.sh`, **vecteurs vérifiés le 2026-10-10** : chaîne vide, « abc », 55/56/64/65 octets, bloc > 1 Mo entier et fragmenté — tous conformes à `node:crypto` |
 | 6 | Formulation de la doc (intégrité du transfert, pas sécurité) | **Livré par ce tour** — `docs/API.md`, `docs/subsystems/ota-manager.md`, [ADR-0096](../../docs/adr/0096-empreinte-sha256-obligatoire-sur-post-update.md) portent les trois phrases et le constat de non-satisfaction de la règle n° 6 |
 | 7 | ADR-0081 relu | **Livré par ce tour** — ligne datée du 2026-10-10, déclencheur déplacé vers `feature-151` |
@@ -222,16 +272,42 @@ remesurer avec `ls -d test/test_native_* | wc -l` + dernière ligne de `pio test
 Mutation prouvée sur le bourrage SHA-256 JS : **25/25 vecteurs échouent** si l'implémentation
 extraite est altérée. 5 mutations tuées sur le prédicat pur ajouté.
 
-### Observations on-target encore dues AVANT d'ouvrir le lot B (condition 4)
-Aucune n'est levée à la date de cette note (aucun commit, aucun déploiement) :
-1. Déployer le lot A par le **script** (`ota_update.sh`), firmware **ET** filesystem.
-2. Vérifier la page web sur **ordinateur ET téléphone**, pour les **deux** types d'image,
-   après rechargement forcé du cache.
-3. Le journal du contrôleur doit afficher `… conforme … lot B aurait refusé : non` pour les
-   **quatre** cas (script firmware, script FS, page firmware, page FS) avant toute ouverture
-   du lot B.
-4. Lot B, une fois ouvert : redéployer FS puis firmware **par le script, jamais par la
-   page** ; vérifier la page **ensuite**, après rechargement forcé.
+### Observations on-target du lot A (toutes levées le 2026-10-11)
+1. Déployé par le **script** (`ota_update.sh`), firmware **ET** filesystem — ✅.
+2. Vérifié sur la page web, **ordinateur ET téléphone**, pour les **deux** types d'image,
+   après rechargement forcé du cache — ✅.
+3. Journal du contrôleur : `… conforme … lot B aurait refusé : non` pour les **quatre** cas
+   (script firmware, script FS, page firmware, page FS) — ✅, voir la table ci-dessus.
+4. **Trouvaille inattendue** (09:33:17, empreinte « absente ») directement intégrée au
+   périmètre du lot B — voir plus haut.
+
+## ✅ VERDICT `security-reviewer` P2 (DIFF), lot B — GO, implémentation vérifiée
+
+Passage sur le diff livré du lot B (code non commité à la date de cette note). Les 7
+conditions du P1 lot B ci-dessus sont reprises une à une.
+
+| # | Condition (résumé) | État |
+|---|---|---|
+| 1 | Même place/motif que « malformée » | **Livré** — `kAbsent` copié à l'identique du patron de `kMalformed` (`index==0`, hors du `if (len >= 1)`, avant `g_uploadOwner`). Garde structurelle `G3` dans `test/test_native_ota_order_guard/` vérifie les trois propriétés (ordre vs owner, hors du bloc `len >= 1`, présence de `markUploadRejected`) |
+| 2 | `markUploadRejected` dans la branche `kAbsent` | **Livré et verrouillé par test** — garde `G3` fait échouer toute régression qui l'omettrait ou le déplacerait |
+| 3 | Message à deux causes, ordre par fréquence réelle | **Livré** — `kOtaSha256MissingMessage` cite d'abord la page en cache (cause constatée en pratique), puis l'ordre des champs (cause scriptée) ; 317 o UTF-8 mesurés, sous `kLogMessageMaxBytes` |
+| 4 | `ota_update.sh` fail-closed | **Livré et PROUVÉ PAR EXÉCUTION** — `PATH` privé d'outil de hachage, `curl` remplacé par un piège qui se serait marqué s'il avait été appelé : **jamais appelé**, code de sortie 1. Garde structurelle dédiée : `test/test_native_ota_update_fail_closed/` (échec de `compute_sha256()` avant l'appel `curl` réel, aucune troisième branche de repli ne produit de digest bidon) |
+| 5 | Calcul JS éprouvé sur téléphone AVANT le lot B | **Levée** — essai du 2026-10-11, voir ci-dessus |
+| 6 | Pas de parade cache ad hoc non vérifiée | **Violation PUIS correction, consignée** — une première version de ce lot a ajouté une parade cache manuelle sur 7 routes HTML, vérifiée à tort (`grep` sur le littéral `"Cache-Control"` au lieu de la constante `T_Cache_Control` de la bibliothèque). `security-reviewer` P2 a établi que `AsyncFileResponse` posait déjà `ETag`+`Cache-Control: no-cache` et testait déjà `If-None-Match` — la version manuelle était **redondante ET régressive** (perdait le support du `304`). **Retiré**, conservé uniquement `.setCacheControl("no-cache")` explicite sur `serveStatic("/")`, vérifié par la garde `G4`. Voir l'addendum daté de [ADR-0096](../../docs/adr/0096-empreinte-sha256-obligatoire-sur-post-update.md) |
+| 7 | Vocabulaire inchangé | **Livré par ce tour** — `docs/API.md`, `docs/subsystems/ota-manager.md`, `docs/UPDATE_GUIDE.md`, ADR-0096 répètent « intégrité du transfert », jamais « sécurité » ; non-satisfaction de la règle n° 6 réaffirmée |
+
+**Zéro régression confirmée** : `pio test -e native` — **66 suites / 2 156 cas, tous verts**
+(mesuré le 2026-10-11, ne pas recopier ce chiffre aux cycles suivants — ADR-0073). `pio run
+-e esp32dev_core3` : **SUCCESS**, aucun nouveau warning. 4 mutations tuées sur le lot B, dont
+le retrait de `markUploadRejected` (répondrait « OK » et planifierait un redémarrage parasite
+sur une requête refusée).
+
+### Observation on-target encore due avant toute clôture définitive
+Le chemin de **refus** lui-même (empreinte absente → `400` réellement observé) n'a pas
+encore été vérifié sur l'appareil en v2.67.0 — les observations on-target existantes
+couvrent le chemin « conforme » (lot A) et un refus « malformée » (09:25:07), pas encore un
+refus « absente » **après** que le serveur l'exige. À faire immédiatement après le
+déploiement de cette version, conformément à la contrainte ci-dessous.
 
 ## Contraintes techniques
 - ⚠️ **L'OTA est le seul canal de déploiement** (pas de port série, conteneur LXC). Toute
@@ -243,18 +319,23 @@ Aucune n'est levée à la date de cette note (aucun commit, aucun déploiement) 
   livraison.
 
 ## Critères d'acceptation
-- [ ] Une image sans preuve d'origine acceptable est **refusée** avant tout `Update.begin()`
-      — **lot B seulement** ; lot A journalise sans refuser (sauf malformée)
-- [ ] `ota_update.sh` fonctionne — **prouvé par un déploiement réel** — **observation
-      on-target due**, voir le verdict P2 ci-dessus
-- [ ] La page web d'upload fonctionne, ou son exemption est **explicite et documentée** —
-      **observation on-target due** (ordinateur et téléphone) ; l'exemption a été
-      **tranchée par le refus** (issue 2 écartée, voir [ADR-0096](../../docs/adr/0096-empreinte-sha256-obligatoire-sur-post-update.md)), aucune route web n'est exemptée
+- [x] Une image sans preuve d'origine acceptable est **refusée** avant tout `Update.begin()`
+      — **livré lot B** (absente et non conforme refusées, malformée depuis le lot A) ;
+      preuve par tests natifs + structurels (G1-G4) ; **reste dû** : l'observation sur
+      matériel réel du refus « absente » en v2.67.0 elle-même (voir note ci-dessus)
+- [x] `ota_update.sh` fonctionne — **prouvé par un déploiement réel** (observations
+      on-target du 2026-10-11) **et** son fail-closed prouvé par exécution (T4)
+- [x] La page web d'upload fonctionne, ou son exemption est **explicite et documentée** —
+      **prouvé sur ordinateur ET téléphone** (observations on-target + essai téléphone du
+      2026-10-11) ; l'exemption a été **tranchée par le refus** (issue 2 écartée, voir
+      [ADR-0096](../../docs/adr/0096-empreinte-sha256-obligatoire-sur-post-update.md)),
+      aucune route web n'est exemptée
 - [x] La documentation dit ce que le mécanisme prouve **et ce qu'il ne prouve pas** :
       transport contre authenticité. Ne pas laisser croire à une signature ce qui n'en est pas une.
       (`docs/API.md`, `docs/subsystems/ota-manager.md`, ADR-0096, `docs/UPDATE_GUIDE.md`)
 - [x] ADR : le choix entre les trois issues verrouille un futur, il en relève
-      ([ADR-0096](../../docs/adr/0096-empreinte-sha256-obligatoire-sur-post-update.md))
+      ([ADR-0096](../../docs/adr/0096-empreinte-sha256-obligatoire-sur-post-update.md),
+      addendum lot B daté du 2026-10-11)
 
 ## Hors périmètre
 - La garde d'authentification de l'upload : c'est `bug-117`, livrée en v2.46.2.

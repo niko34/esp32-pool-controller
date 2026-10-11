@@ -23,6 +23,20 @@
 //        vérification — même si le code JS qui la calcule est parfaitement
 //        correct.
 //
+//   [G3] src/web_routes_ota.cpp, feature-118 LOT B : la branche de refus
+//        `OtaSha256ParamVerdict::kAbsent` (empreinte absente → upload refusé,
+//        et non plus seulement journalisé comme au lot A) doit, comme la
+//        branche « malformée » de G1 :
+//          (a) s'exécuter AVANT `g_uploadOwner = request;` ;
+//          (b) rester HORS du bloc `if (len >= 1) { ... }` (pré-contrôle de
+//              l'octet magique) — ce bloc peut être vide (upload d'un fichier
+//              de taille nulle, `len==0, final==true`) et le paramètre
+//              `sha256` ne doit JAMAIS dépendre de la présence d'octets de
+//              fichier pour être contrôlé.
+//        Si (b) est violé (le refus se retrouve nesté DANS le bloc `len>=1`),
+//        un upload de fichier vide contournerait le refus « absente » — le
+//        chemin precis que ce lot ferme.
+//
 // LIMITE CONNUE (à ne pas masquer) : extraction TEXTUELLE. Un bloc remis en
 // COMMENTAIRE entre les marqueurs reste invisible — la garde protège contre la
 // distraction (un refactor qui déplace le bloc), pas contre un contournement
@@ -133,6 +147,43 @@ static long indexOf(const char* hay, const char* needle) {
   return (long)(p - hay);
 }
 
+// Retourne l'offset de l'accolade fermante '}' correspondant à l'accolade
+// ouvrante '{' située à `openIdx` dans `hay` (hay DÉJÀ débarrassé de ses
+// commentaires par stripComments — les chaînes restent, donc on continue de
+// les sauter ici pour ne jamais compter une accolade littérale comme
+// structurelle). -1 si aucune fermeture trouvée.
+static long findMatchingBrace(const char* hay, long openIdx) {
+  if (hay[openIdx] != '{') return -1;
+  long depth = 0;
+  long i = openIdx;
+  while (hay[i] != '\0') {
+    const char c = hay[i];
+    if (c == '"') {
+      i++;
+      while (hay[i] != '\0' && hay[i] != '"') {
+        i += (hay[i] == '\\' && hay[i + 1] != '\0') ? 2 : 1;
+      }
+      if (hay[i] != '\0') i++;
+      continue;
+    }
+    if (c == '\'') {
+      i++;
+      if (hay[i] == '\\' && hay[i + 1] != '\0') i += 2;
+      else if (hay[i] != '\0') i++;
+      if (hay[i] == '\'') i++;
+      continue;
+    }
+    if (c == '{') {
+      depth++;
+    } else if (c == '}') {
+      depth--;
+      if (depth == 0) return i;
+    }
+    i++;
+  }
+  return -1;
+}
+
 // =============================================================================
 // [G1] web_routes_ota.cpp : contrôle sha256 AVANT g_uploadOwner = request;
 // =============================================================================
@@ -183,6 +234,127 @@ void test_sha256_control_precedes_upload_owner_assignment(void) {
 }
 
 // =============================================================================
+// [G3] web_routes_ota.cpp, lot B : refus « absente » AVANT g_uploadOwner =
+// request; ET HORS du bloc if (len >= 1) { ... }
+// =============================================================================
+void test_kabsent_branch_before_owner_and_outside_len_check(void) {
+  long len = 0;
+  char* src = readProjectFile("src/web_routes_ota.cpp", &len);
+  TEST_ASSERT_NOT_NULL_MESSAGE(
+      src, "src/web_routes_ota.cpp introuvable — la garde structurelle est aveugle");
+
+  // --- Unicité des marqueurs ------------------------------------------------
+  const char* lenCheckOpen = "if (len >= 1) {";
+  const char* kAbsentCond = "shaParamVerdict == OtaSha256ParamVerdict::kAbsent) {";
+  const char* ownerAssign = "g_uploadOwner = request;";
+
+  TEST_ASSERT_EQUAL_INT_MESSAGE(1, countIn(src, lenCheckOpen),
+      "if (len >= 1) { doit apparaitre EXACTEMENT une fois dans web_routes_ota.cpp");
+  TEST_ASSERT_EQUAL_INT_MESSAGE(1, countIn(src, kAbsentCond),
+      "la condition kAbsent doit apparaitre EXACTEMENT une fois dans web_routes_ota.cpp");
+  TEST_ASSERT_EQUAL_INT_MESSAGE(1, countIn(src, ownerAssign),
+      "g_uploadOwner = request; doit apparaitre EXACTEMENT une fois (prise de propriete)");
+
+  const long lenCheckIdx = indexOf(src, lenCheckOpen);
+  const long kAbsentIdx = indexOf(src, kAbsentCond);
+  const long ownerIdx = indexOf(src, ownerAssign);
+  TEST_ASSERT_TRUE_MESSAGE(lenCheckIdx >= 0 && kAbsentIdx >= 0 && ownerIdx >= 0,
+                            "marqueurs introuvables dans web_routes_ota.cpp");
+
+  // --- (a) AVANT g_uploadOwner = request; -----------------------------------
+  TEST_ASSERT_TRUE_MESSAGE(
+      kAbsentIdx < ownerIdx,
+      "REGRESSION feature-118 lot B : le refus « absente » doit precede "
+      "g_uploadOwner = request; — sinon la session est deja possedee quand le "
+      "refus serait applique (owner fantome / effet de bord avant verification)");
+
+  // --- (b) HORS du bloc if (len >= 1) { ... } -------------------------------
+  // L'accolade ouvrante de lenCheckOpen est son DERNIER caractère.
+  const long lenOpenBraceIdx = lenCheckIdx + (long)strlen(lenCheckOpen) - 1;
+  const long lenCloseBraceIdx = findMatchingBrace(src, lenOpenBraceIdx);
+  TEST_ASSERT_TRUE_MESSAGE(lenCloseBraceIdx >= 0,
+                            "fermeture du bloc if (len >= 1) introuvable (brace non appariee)");
+  TEST_ASSERT_TRUE_MESSAGE(
+      kAbsentIdx > lenCloseBraceIdx,
+      "REGRESSION feature-118 lot B : la condition kAbsent doit rester HORS du bloc "
+      "if (len >= 1) { ... } — a l'interieur, un upload de fichier VIDE (len==0, "
+      "final==true) contournerait le refus « absente »");
+
+  // --- (c) markUploadRejected(request); DOIT être appelé DANS la branche ----
+  // kAbsent, entre sa condition et la prise de propriété qui suit. SANS lui,
+  // Update.hasError() reste FAUX côté lambda de réponse : la requête reçoit
+  // "OK" et un REDÉMARRAGE PARASITE est planifié alors que l'upload a été
+  // refusé (security-reviewer, feature-118 lot B — défaut qualifié de le plus
+  // grave de ce lot).
+  const char* markRejected = "markUploadRejected(request);";
+  bool markRejectedInsideKAbsentBranch = false;
+  {
+    const char* search = src + kAbsentIdx;
+    while (true) {
+      const char* hit = strstr(search, markRejected);
+      if (hit == NULL) break;
+      const long hitIdx = (long)(hit - src);
+      if (hitIdx >= ownerIdx) break;  // dépassé la branche kAbsent, on arrête
+      markRejectedInsideKAbsentBranch = true;
+      break;
+    }
+  }
+  TEST_ASSERT_TRUE_MESSAGE(
+      markRejectedInsideKAbsentBranch,
+      "REGRESSION feature-118 lot B : markUploadRejected(request); doit etre appele "
+      "DANS la branche kAbsent (entre sa condition et g_uploadOwner = request;) — "
+      "sans lui, Update.hasError() reste FAUX et la reponse \"OK\" planifie un "
+      "REDEMARRAGE PARASITE malgre le refus");
+
+  free(src);
+}
+
+// =============================================================================
+// [G4] web_server.cpp, lot B : serveStatic("/") pose EXPLICITEMENT
+// .setCacheControl("no-cache") — seul endroit du firmware qui répond un 304
+// (AsyncStaticWebHandler teste If-None-Match), donc le seul chemin où une
+// page web mise en cache AVANT un déploiement pourrait survivre sans
+// revalidation si cet en-tête disparaissait.
+// =============================================================================
+void test_serve_static_sets_no_cache_control(void) {
+  long len = 0;
+  char* src = readProjectFile("src/web_server.cpp", &len);
+  TEST_ASSERT_NOT_NULL_MESSAGE(src, "src/web_server.cpp introuvable — la garde structurelle est aveugle");
+
+  const char* serveStaticCall = "serveStatic(\"/\", LittleFS, \"/\")";
+  const char* cacheControlCall = ".setCacheControl(\"no-cache\")";
+
+  TEST_ASSERT_EQUAL_INT_MESSAGE(1, countIn(src, serveStaticCall),
+      "serveStatic(\"/\", LittleFS, \"/\") doit apparaitre EXACTEMENT une fois dans web_server.cpp");
+  TEST_ASSERT_EQUAL_INT_MESSAGE(1, countIn(src, cacheControlCall),
+      "REGRESSION feature-118 lot B : .setCacheControl(\"no-cache\") doit apparaitre "
+      "EXACTEMENT une fois (code, hors commentaire) — absent, une page en cache ne "
+      "revaliderait plus apres un deploiement");
+
+  const long serveStaticIdx = indexOf(src, serveStaticCall);
+  const long cacheControlIdx = indexOf(src, cacheControlCall);
+  TEST_ASSERT_TRUE_MESSAGE(serveStaticIdx >= 0 && cacheControlIdx >= 0,
+                            "marqueurs introuvables dans web_server.cpp");
+
+  // .setCacheControl(...) doit être chaîné sur CE serveStatic (donc situé
+  // juste après lui, avant le point-virgule qui termine l'instruction
+  // chaînée — recherché depuis serveStaticCall pour borner la fenêtre).
+  const char* endOfChain = ";";
+  const char* afterServeStatic = src + serveStaticIdx;
+  const char* semicolon = strstr(afterServeStatic, endOfChain);
+  TEST_ASSERT_NOT_NULL_MESSAGE(semicolon, "instruction serveStatic(...) non terminee par ';'");
+  const long semicolonIdx = (long)(semicolon - src);
+
+  TEST_ASSERT_TRUE_MESSAGE(
+      cacheControlIdx > serveStaticIdx && cacheControlIdx < semicolonIdx,
+      "REGRESSION feature-118 lot B : .setCacheControl(\"no-cache\") doit etre "
+      "CHAINE sur ce serveStatic(...) (entre l'appel et le ';' qui termine "
+      "l'instruction), pas ailleurs dans le fichier");
+
+  free(src);
+}
+
+// =============================================================================
 // [G2] data/app.js : sha256 ajouté au FormData AVANT update_file
 // =============================================================================
 void test_formdata_sha256_precedes_update_file(void) {
@@ -220,6 +392,8 @@ int main(int argc, char** argv) {
   (void)argv;
   UNITY_BEGIN();
   RUN_TEST(test_sha256_control_precedes_upload_owner_assignment);
+  RUN_TEST(test_kabsent_branch_before_owner_and_outside_len_check);
+  RUN_TEST(test_serve_static_sets_no_cache_control);
   RUN_TEST(test_formdata_sha256_precedes_update_file);
   return UNITY_END();
 }

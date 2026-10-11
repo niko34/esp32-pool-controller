@@ -150,6 +150,6 @@ const char* otaUploadIntegrityVerdictLabel(OtaUploadIntegrityVerdict verdict) {
   return "absente";  // Inatteignable — silence un warning -Wreturn-type
 }
 
-bool otaUploadWouldLotBReject(OtaUploadIntegrityVerdict verdict) {
+bool otaUploadIntegrityIsRejected(OtaUploadIntegrityVerdict verdict) {
   return verdict != OtaUploadIntegrityVerdict::kConform;
 }
