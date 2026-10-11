@@ -2,6 +2,102 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [2.68.0] - 2026-10-11
+
+> ⚠️ **Déploiement** : cette version touche le **firmware** ET le **filesystem**
+> — installer les deux (`./deploy.sh ota-all`). Le firmware seul laisserait une
+> interface qui cite des champs et des codes de blocage disparus ; le filesystem
+> seul laisserait une interface sans les valeurs qu'elle attend.
+
+> ⚠️ **La série d'historique pH/ORP change de nature au moment du déploiement —
+> attendez-vous à une MARCHE dans les courbes, pas à une dérive de votre eau.**
+> Le lissage de la mesure (médiane + filtrage) n'est pas le même avant/après
+> cette version (voir détail ci-dessous). Le pH ou l'ORP affichés peuvent faire
+> un petit saut visible sur le graphique juste après le déploiement : c'est un
+> changement de MESURE du même phénomène physique, pas un changement de l'EAU.
+> Inutile de chercher une cause chimique à ce saut précis.
+
+### Firmware
+
+- **Refonte de la chaîne de mesure pH/ORP (feature-152, [ADR-0097](docs/adr/0097-le-filtre-lisse-le-dosage-juge.md), [ADR-0098](docs/adr/0098-toute-constante-de-mesure-declare-sa-source.md))** —
+  « le filtre lisse, le dosage juge ». La chaîne passe de **14 étages et 13
+  états bloquants à 5 étages et 4** (température inchangée, déjà à 5 étages).
+  Lissage : **médiane glissante de 9 échantillons** (`kSensorFilterMedianWindow`)
+  puis **lissage exponentiel de constante de temps 45 s** (`kSensorFilterEmaTauMs`,
+  recalculé à chaque échantillon depuis le temps réellement écoulu — indépendant
+  de la cadence de lecture, inchangée à 5 s). La médiane absorbe les aberrations
+  **par construction, sans seuil réglable** : un échelon légitime (sonde
+  replongée après étalonnage, remise en eau) traverse la fenêtre en (N+1)/2
+  échantillons, **quoi qu'il arrive**.
+- **Le filtre de mesure ne peut plus se bloquer : zéro verrou collant (était
+  deux).** Retirés, faute de dommage évité démontrable (verdict `pool-chemistry`) :
+  rejet de spike isolé, sortie de secours de ré-amorçage et ses trois gardes
+  cumulatives, **latch EMI** (se posait sur du bruit de mesure normal), alarme
+  « filtre non prêt durablement ». Cela ferme pour de bon l'incident du
+  2026-10-11 où une sonde pH plongée dans une solution étalon avait verrouillé
+  le filtre sur une médiane figée à 4,623 pendant qu'un pH réel à 8,328 était
+  rejeté 141 fois — ce type de blocage est désormais **structurellement
+  impossible**. Conservé : la détection de sonde figée (seul mécanisme protégeant
+  d'une sonde morte rendant une valeur constante plausible).
+- **Une seule valeur officielle publiée par voie, fin du repli silencieux** :
+  `ph`/`orp` valent directement la médiane + lissage (corrigée), `null` pendant
+  la montée en régime, sonde figée ou mesure périmée — plus de repli sur une
+  autre valeur pendant que le dosage, lui, refuse sur une valeur absente.
+- **Garde de dosage unique** : `isnan(valeur officielle)` remplace les deux
+  anciennes gardes séparées (filtre prêt / capteur instable). La **cause** du
+  refus reste qualifiée (codes `15` à `18` : fenêtre de lissage, sonde figée,
+  mesure périmée, mesures non représentatives) ; les codes `4`, `5`, `19` à `22`
+  sont retirés et **jamais recyclés**.
+- **Nouvelle alerte « plafond journalier atteint plusieurs jours de suite »**
+  (`ph_daily_limit_streak` / `orp_daily_limit_streak`, MQTT + journal `critical`) :
+  se lève après **3 jours calendaires consécutifs** où le plafond journalier a
+  été atteint — signal seul, aucun blocage de dosage supplémentaire. ⚠️ **Le
+  compteur n'est PAS persisté** (variable RAM) : il repart à **zéro à chaque
+  redémarrage** de l'appareil. Un appareil qui redémarre plus souvent que tous
+  les 3 jours n'atteindra donc jamais ce seuil — choix assumé pour ce lot, voir
+  [`docs/subsystems/pump-controller.md`](docs/subsystems/pump-controller.md#alerte-plafond-journalier-atteint-j-jours-consécutifs).
+- **Nettoyage du vocabulaire associé** : messages, chips, codes et topics MQTT
+  décrivant les mécanismes retirés (« filtre non prêt », « capteur instable »,
+  « stabilisation du filtre », alarme « filtre bloqué ») sont retirés de
+  l'interface, de l'API et de MQTT — voir `docs/API.md` et `docs/MQTT.md`.
+
+### Hygiène du dépôt
+
+- Nouveau contrôle CI `removed-measurement-vocabulary` (`tools/check_removed_measurement_vocabulary.sh`) :
+  garde anti-retour du vocabulaire de l'ancienne chaîne de mesure, avec
+  marqueur de dérogation explicite `vocab-ok`.
+- **La sentinelle de parité `/data` ↔ WebSocket ne surveillait que les CLÉS,
+  jamais les EXPRESSIONS** — trou découvert par mutation en fin de ce cycle :
+  désaligner volontairement le calcul d'un champ d'un seul côté laissait
+  `test_native_ws_data_parity` entièrement verte. Comme `latestSensorData` est
+  remplacé en entier par la dernière charge reçue, deux expressions divergentes
+  pour une même clé font **osciller sa valeur** au rythme des deux cadences
+  (~5 s / ~30 s) : c'est le clignotement déjà vu trois fois dans ce dépôt, mais
+  **invisible**, puisque la clé est bien présente des deux côtés. Nouvel axe
+  `(q)` : les clés déclarées « à expression partagée » doivent être calculées à
+  l'identique des deux côtés, aux noms de variables locales près.
+
+### Documentation
+
+- `docs/API.md` : contrat `/data`/WS mis à jour (champs retirés/reclassés,
+  nouveaux codes de refus), route `POST /reset-sensor-filter` documentée comme
+  **orpheline côté UI, conservée côté API** (diagnostic uniquement).
+- `docs/MQTT.md` : topics et entités auto-discovery « filtre prêt/instable »
+  dépubliés, nouvelle alerte `*_daily_limit_streak` documentée.
+- `docs/subsystems/{sensors,ws-manager,pump-controller,measure-validity}.md` :
+  mis à jour pour la chaîne de mesure à 5 étages et le retrait du plancher de
+  gel du filtre (`getDoseAvailableInS()` devient total vis-à-vis de l'absence
+  d'eau).
+- `docs/features/{page-ph,page-orp,page-settings,page-dashboard}.md` : chip et
+  modal d'état du filtre retirés/fusionnés dans le modal sonde ; bannière
+  « Régulation à l'arrêt » retirée ; bloc « Dispersion » de l'onglet Avancé
+  remplacé par l'« État filtre pH/ORP » ; liste blanche de codes de blocage
+  réduite.
+- `docs/adr/0097-le-filtre-lisse-le-dosage-juge.md`, `docs/adr/0098-toute-constante-de-mesure-declare-sa-source.md` : nouveaux. ADR-0027 et ADR-0041 marqués `Superseded`/`Partiellement superseded` par l'ADR-0097 ; ADR-0049 amendé (six codes retirés).
+- `docs/BUILD.md` : nouveau job d'hygiène CI documenté.
+
+---
+
 ## [2.67.0] - 2026-10-11
 
 > ⚠️ **Déploiement** : cette version doit être installée en **firmware**, pas seulement en

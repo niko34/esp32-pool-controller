@@ -182,3 +182,25 @@ jobs:
       # Même script en local (`./tools/check_sha256_vectors.sh`) et en CI.
       - name: Contrôle des vecteurs SHA-256
         run: ./tools/check_sha256_vectors.sh
+
+  # JOB 10 — garde anti-retour du vocabulaire de l'ancienne chaîne de mesure
+  # (feature-152, D6/D7). 14 étages et 13 états bloquants sont devenus 5 étages
+  # sans aucun verrou ; sans ce job, le premier correctif pressé qui recopie un
+  # message d'un commit antérieur (« filtre non prêt », « capteur instable »,
+  # « stabilisation du filtre », les alertes *_filter_rearm_denied/
+  # *_filter_not_ready) fait réapparaître en silence le vocabulaire — et avec
+  # lui la question — d'un fonctionnement abandonné. Périmètre PRÉCIS, voir
+  # l'en-tête du script : data/ en texte brut, src/ limité aux littéraux
+  # `"..."` hors des fichiers où rearm/latch désignent des mécanismes
+  # INDÉPENDANTS toujours actifs (feedforward pH, oom_guard, net_health, heap,
+  # session pH, intégrale pH).
+  removed-measurement-vocabulary:
+    name: Vocabulaire retiré de la chaîne de mesure (feature-152, D6/D7)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # Même script en local (`./tools/check_removed_measurement_vocabulary.sh`) et en CI.
+      - name: Contrôle anti-retour du vocabulaire
+        run: ./tools/check_removed_measurement_vocabulary.sh

@@ -318,12 +318,10 @@ Les données proviennent d'un **ring buffer firmware volatil** de 300 échantill
 | Élément | Description |
 |---------|-------------|
 | Compteur | « Échantillons : N » (N = `count`, 0..300). |
-| Dispersion pH / ORP | **feature-071, v2.20.7** — dispersion **instantanée** du drapeau `unstable`, lue sur `GET /debug/sensor_filter_state`. Voir sous-section dédiée ci-dessous. |
+| État filtre pH / ORP | **feature-152, v2.68.0** — état **instantané** de la chaîne de mesure, lu sur `GET /debug/sensor_filter_state`. Voir sous-section dédiée ci-dessous. |
 | Graphe pH | 2 séries uPlot : pH **brut** vs pH **lissé**. |
 | Graphe ORP | 2 séries uPlot : ORP **brut** vs ORP **lissé** (mV). |
-| Stats min / max / « Δ 25 min » | Par série : pH brut, pH lissé, ORP brut, ORP lissé (+ T° min/max). **Δ renommé « Δ 25 min » en v2.20.7** : c'est le crête-à-crête `max − min` sur **tout** le buffer (~300 pts ≈ 25 min), dérive lente comprise — **sans rapport d'échelle** avec la dispersion du drapeau `unstable` (mesuré sur une même série : crête-à-crête 0,279 pour une dispersion réelle de 0,055). C'est cette confusion qui a motivé la feature-071. |
-| Dispersion trace pH / ORP (indicatif) | **feature-071, v2.20.7** — dispersion **reconstruite** sur la trace affichée. Voir sous-section dédiée ci-dessous. |
-| Courbes de dispersion pH / ORP | **feature-072, v2.20.8** — sous-graphe sous chaque graphe brut/lissé : **trajectoire** de la dispersion reconstruite, avec ligne de seuil. Voir sous-section dédiée ci-dessous. |
+| Stats min / max / « Δ 25 min » | Par série : pH brut, pH lissé, ORP brut, ORP lissé (+ T° min/max). C'est le crête-à-crête `max − min` sur **tout** le buffer (~300 pts ≈ 25 min), dérive lente comprise. |
 
 **Boutons :**
 
@@ -334,46 +332,20 @@ Les données proviennent d'un **ring buffer firmware volatil** de 300 échantill
 
 **Cas limites :**
 - Valeurs `null`/NaN (filtre non amorcé, EZO injoignable) → **trou dans la courbe**, pas de crash.
-- Buffer vide → message « aucune donnée », graphes masqués — les lignes « Dispersion pH/ORP » restent affichées (hors bloc graphes, voir ci-dessous).
+- Buffer vide → message « aucune donnée », graphes masqués — les lignes « État filtre pH/ORP » restent affichées (hors bloc graphes, voir ci-dessous).
 - Réponse **503** (heap fragmenté, v2.10.1) → message « Mémoire fragmentée, réessayez. », graphes masqués — plus jamais de reboot de l'appareil.
 
-##### Dispersion du drapeau `unstable` — feature-071 (v2.20.7)
+##### ~~Dispersion du drapeau `unstable`~~ (feature-071/072) — remplacé par l'État filtre (feature-152, v2.68.0)
 
-Deux lignes « **Dispersion pH** » / « **Dispersion ORP** » affichent la valeur **instantanée** publiée par [`GET /debug/sensor_filter_state`](../API.md#get-debugsensor_filter_state--pas-dauth-cohérent-avec-autres-debug) (v2.20.6) : l'amplitude `max − min` de la fenêtre médiane de 13 échantillons, **la grandeur qui décide du drapeau `unstable`** et donc de l'inhibition du dosage automatique — directement comparable aux résultats des campagnes de mesure.
+Présentes de la v2.20.7 à la v2.67.x, les lignes « Dispersion pH/ORP », « Dispersion trace pH/ORP (indicatif) » et les sous-graphes « Courbes d'évolution de la dispersion » **ont disparu** — zéro occurrence du mot « Dispersion » dans `data/` aujourd'hui. Elles mesuraient l'amplitude d'une fenêtre médiane de 13 échantillons pour juger un drapeau `unstable` qui **n'existe plus** ([ADR-0097](../adr/0097-le-filtre-lisse-le-dosage-juge.md)) : plus de jugement d'instabilité séparé de la valeur, donc plus rien à faire dire à une dispersion.
 
-- **Format** : `valeur / seuil` (seuil = champ `dispersion_max` de la route : 0,5 pH / 100 mV ; arrondis de la route : 3 décimales pH, 1 décimale mV), suivi d'une pill « **stable** » (verte, `pill ok`) ou « **INSTABLE** » (rouge, `pill bad` — l'inhibition du dosage est en cours).
-- **Sémantique EXACTE du tiret** — `dispersion: null` (warmup ou porte d'alimentation fermée, filtration arrêtée) → `— · pas de jugement (circulation arrêtée ou fenêtre en cours de remplissage)`, **sans pill**. Jamais « stable » : `unstable: false` sans données signifie « **aucun jugement rendu** », pas « la mesure est stable » — piège de lecture réel documenté dans [`docs/API.md` §Marge d'instabilité](../API.md#marge-dinstabilité-v2206). L'UI ne juge que si `dispersion` est un nombre.
-- **Indépendance** : ces lignes vivent **hors du bloc graphes** (`#trace_charts`) — elles s'affichent même buffer de trace vide, et une panne de `/debug/sensor_filter_state` les passe à « **indisponible** » sans toucher au reste de la carte. `loadFilterState()` et `loadSensorTrace()` ([`data/app.js`](../../data/app.js)) sont deux promesses volontairement jamais chaînées ni await-ées l'une sur l'autre.
-- **Déclencheurs** : les mêmes que la trace — activation de l'onglet Avancé + bouton « Recharger la trace ». Pas de polling permanent.
+**Ce qui les remplace** : deux lignes « **État filtre pH** » / « **État filtre ORP** » (`#trace_filter_ph` / `#trace_filter_orp`), **hors du bloc graphes** (visibles même buffer de trace vide, résistent à une panne isolée de la trace), alimentées par [`GET /debug/sensor_filter_state`](../API.md#get-debugsensor_filter_state--pas-dauth-cohérent-avec-autres-debug) :
 
-##### Dispersion reconstruite sur la trace (indicatif) — feature-071 (v2.20.7)
+- **Format** : `<état> · rejetés (cumulé) <N>` — `<état>` ∈ `ready` / `warmup` / `frozen` / `stale` / `gate_closed` / `unknown` (même discriminant `DoseFilterState` que les causes de refus de dosage, `src/dosing_logic.h`), `<N>` = compteur de rejets diagnostic (`rejected`, non décisionnel).
+- Une ligne « **relevé il y a N s/min** » (`#trace_filter_age`) date le dernier fetch réussi — **deux horloges distinctes** : un tick d'affichage local (1 s, sans réseau) et un intervalle de fetch réel (`DISPERSION_REFRESH_MS` = 15 s), armés/désarmés **ensemble** par `_armFilterStateRefresh()` au changement de route et au `visibilitychange` (un onglet caché ne continue pas d'interroger le contrôleur).
+- Panne isolée de la route → les deux lignes passent à « **indisponible** », le reste de la carte (trace, stats) reste fonctionnel : `loadFilterState()` et `loadSensorTrace()` ([`data/app.js`](../../data/app.js)) sont deux promesses volontairement jamais chaînées ni await-ées l'une sur l'autre.
 
-Deux lignes « **Dispersion trace pH/ORP (indicatif)** » reconstruisent la dispersion firmware sur les points **bruts** de la trace affichée, pour comparaison avec les rapports de campagne (médiane/max) : fenêtre glissante de **13 points** (= `kSensorFilterCentralWindow`), affichage `médiane · max` des dispersions de fenêtres.
-
-- Une fenêtre est **écartée** si elle contient un trou (`null`/NaN) ou un **saut consécutif** ≥ 1,0 pH / 300 mV (`kPhFilterSpikeReject` / `kOrpFilterSpikeReject`, dupliquées de [`constants.h`](../../src/constants.h)) : le firmware rejette ces pics **avant** la fenêtre médiane, la trace brute les contient encore. Précédent réel : reconstruction naïve → faux max 5,425 sur un transitoire de redémarrage de filtration, là où le firmware voyait 0,308.
-- **Tiret** si la trace compte moins de 13 points ou si aucune fenêtre n'est valide.
-
-⚠️ **Deux limites de fidélité, d'où le libellé « indicatif »** :
-1. La fenêtre firmware est **gelée** circulation arrêtée (porte d'alimentation, [ADR-0041](../adr/0041-autorite-mesures-non-representatives-et-sortie-de-secours-filtre.md)) alors que la trace enregistre tout : hors régime établi, la reconstruction inclut des points que le firmware n'a jamais ingérés. Une note sous les stats le rappelle : **la valeur instantanée fait foi**.
-2. Le critère de rejet diffère : la reconstruction écarte les fenêtres sur **sauts consécutifs**, alors que le firmware rejette chaque échantillon sur `|brut − médiane|` — approximation assumée (nuance relevée en revue de code).
-
-##### Courbes d'évolution de la dispersion — feature-072 (v2.20.8)
-
-La ligne « médiane · max » (feature-071) résume la trace mais ne distingue pas un plateau tranquille d'excursions répétées qui frôlent le drapeau. La feature-072 ajoute la **trajectoire** : dans chaque bloc de graphe (pH puis ORP), un **sous-graphe de 120 px** ([`data/app.css`](../../data/app.css) `.trace-chart--dispersion`) placé sous le graphe brut/lissé trace la dispersion de chaque fenêtre glissante de 13 points, en **valeur absolue** (pH d'un côté, mV de l'autre — décision utilisateur explicite : **pas** de normalisation en % du seuil).
-
-**Lecture du graphe :**
-
-- **Courbe ambre `#d97706`** — identité visuelle unique de la dispersion, distincte des violets pH et des verts ORP. Tracé **linéaire à points visibles** (pas de spline : un point valide isolé entre deux trous doit se voir). Chaque point est positionné au **temps du dernier échantillon de sa fenêtre** (série alignée sur les échantillons bruts, calculée par `_traceDispersionStats()` [`data/app.js`](../../data/app.js) — même calcul que la ligne médiane · max, série exposée sans duplication). Tooltip « Dispersion : x » (3 décimales pH, 1 décimale mV).
-- **Ligne de seuil en pointillé rouge `#dc2626`** (0,5 pH / 100 mV), exclue du tooltip, avec légende « Seuil 0,50 » / « Seuil 100 mV ». **L'échelle Y inclut toujours le seuil** (option `yInclude` de `createTraceChart`) : une courbe très basse montre la **marge** au drapeau `unstable`, jamais un zoom sur le bruit.
-- **Même axe X** que les graphes brut/lissé au-dessus → corrélation verticale directe : on voit le transitoire sur le brut ET le trou correspondant dessous.
-
-**Sémantique des trous — une information, pas un manque :** un trou dans la courbe = **fenêtre écartée** par la reconstruction 071 (trou `null`/NaN dans le brut, ou saut consécutif ≥ 1,0 pH / 300 mV = transitoire rejeté par le firmware avant sa fenêtre médiane). Aucune interpolation par-dessus. La note muted de la carte le rappelle : *« Un trou dans la courbe de dispersion signale une fenêtre écartée (transitoire rejeté), pas une absence de mesure. »* Moins de 13 points de trace (ou aucune fenêtre valide) → **bloc masqué**, pas d'erreur — cohérent avec le tiret des stats.
-
-**Source du seuil :** `dispersion_max` de [`GET /debug/sensor_filter_state`](../API.md#get-debugsensor_filter_state--pas-dauth-cohérent-avec-autres-debug) si la route a répondu (mémorisé puis ré-appliqué au graphe déjà tracé : légende + échelle Y + ligne pointillée), sinon **repli JS** (constantes commentées `kPhDispersionSeuilFallback` / `kOrpDispersionSeuilFallback` = `kPhFilterMaxDispersion` / `kOrpFilterMaxDispersion` de [`constants.h`](../../src/constants.h)). Les deux fetchs `loadFilterState()` / `loadSensorTrace()` restent **indépendants** (invariant 071) : la courbe s'affiche même si la route échoue, avec le seuil de repli.
-
-**Statut « indicatif » :** hérité de la reconstruction 071 (fenêtre firmware gelée circulation arrêtée, critère de rejet approché) — porté par la légende « **Dispersion pH (indicatif)** » / « **Dispersion ORP (indicatif)** ». Hors régime établi, la valeur instantanée fait foi.
-
-Voir [`docs/API.md#trace-des-signaux-capteurs-feature-057-v270`](../API.md#trace-des-signaux-capteurs-feature-057-v270) pour le format JSON.
+Voir [`docs/API.md#trace-des-signaux-capteurs-feature-057-v270`](../API.md#trace-des-signaux-capteurs-feature-057-v270) pour le format JSON de la trace, et [`docs/subsystems/sensors.md`](../subsystems/sensors.md#chaîne-de-mesure-à-5-étages-feature-152) pour la chaîne de mesure.
 
 #### Card Diagnostic crash
 

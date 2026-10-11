@@ -11,20 +11,20 @@
 // ADR-0017, idiome de heap_drop_logic.h / acct_window_logic.h : AUCUNE
 // dépendance Arduino/FreeRTOS ici — header-only, inline, testable en natif.
 // La coquille impure (PumpControllerClass::getDoseAvailableInS(), qui lit
-// measureValidity.getSnapshot(), sensors.getFilterGateRemainingMs() et
-// millis()) vit dans pump_controller.cpp.
+// measureValidity.getSnapshot() et millis()) vit dans pump_controller.cpp.
 //
-// DEUX PLANCHERS INDÉPENDANTS peuvent dominer le délai avant dosage :
+// ⚠️ feature-152 : le plancher de GEL DU FILTRE capteur (ex-kSensorFilterGateFloorMs,
+// sensor_filter.{h,cpp}) a été RETIRÉ — la porte d'alimentation du filtre est
+// désormais simplifiée (vider/remplir, sans plancher ni ré-amorçage). La
+// coquille transmet donc `filterRemainingMs = 0` en permanence ; la formule
+// à deux planchers est conservée TELLE QUELLE (générique) pour un éventuel
+// futur plancher indépendant, plutôt que simplifiée à un seul terme.
+//
+// UN SEUL PLANCHER reste pertinent aujourd'hui :
 //   - le reste du plancher de PURGE de measure_validity (kPurgeFloorMs,
 //     10 min) — pertinent UNIQUEMENT tant que measure_validity n'a pas encore
 //     ouvert sa porte (measuresValid == false, purge en cours OU attente
-//     fail-closed) ;
-//   - le reste du plancher de GEL DU FILTRE capteur (kSensorFilterGateFloorMs,
-//     60 s, sensor_filter.{h,cpp}) — armé INCONDITIONNELLEMENT à chaque front
-//     montant d'eau, y compris quand measure_validity dispense sa propre
-//     purge. C'est pourquoi les deux planchers sont INDÉPENDANTS : l'un peut
-//     être déjà satisfait (measuresValid == true, cycle dispensé) pendant que
-//     l'autre reste actif.
+//     fail-closed).
 //
 // DÉFAUT TROUVÉ PAR LE TEST (à l'extraction, 2026-10-08) : la première version
 // de la coquille (pump_controller.cpp) ne passait PAS `measuresValid` à la

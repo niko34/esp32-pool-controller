@@ -13,6 +13,7 @@
 #include "ph_actuator_limit_logic.h"  // feature-086 : phActuatorUndersized() (pure)
 #include "utf8_clamp.h"         // feature-129 (phase A) : ex-clampReasonUtf8, module pur partagé
 #include "dose_available_logic.h"  // feature-139 (B1, extraction test-engineer) : formule pure
+#include "daily_limit_streak_logic.h"  // feature-152 (C6, C1 gate P2) : prédicat pur
 #include <esp_task_wdt.h>
 #include <string.h>  // strlcpy / strnlen / memcpy — tampon de cause de refus (R2)
 #include <time.h>
@@ -35,8 +36,7 @@ static_assert(static_cast<int>(DoseRefusal::None) == 0, "DoseRefusal::None renum
 static_assert(static_cast<int>(DoseRefusal::WatchdogInactive) == 1, "DoseRefusal renuméroté");
 static_assert(static_cast<int>(DoseRefusal::FiltrationOff) == 2, "DoseRefusal renuméroté");
 static_assert(static_cast<int>(DoseRefusal::ReadingNaN) == 3, "DoseRefusal renuméroté");
-static_assert(static_cast<int>(DoseRefusal::FilterNotReady) == 4, "DoseRefusal renuméroté");
-static_assert(static_cast<int>(DoseRefusal::FilterUnstable) == 5, "DoseRefusal renuméroté");
+// 4 (FilterNotReady), 5 (FilterUnstable) : RETIRÉS feature-152, JAMAIS recyclés.
 static_assert(static_cast<int>(DoseRefusal::CalibrationInsufficient) == 6, "DoseRefusal renuméroté");
 static_assert(static_cast<int>(DoseRefusal::StabilizationActive) == 7, "DoseRefusal renuméroté");
 static_assert(static_cast<int>(DoseRefusal::MixingActive) == 8, "DoseRefusal renuméroté");
@@ -50,13 +50,11 @@ static_assert(static_cast<int>(DoseRefusal::ReadingNaNWarmup) == 15, "DoseRefusa
 static_assert(static_cast<int>(DoseRefusal::ReadingNaNFrozen) == 16, "DoseRefusal renuméroté");
 static_assert(static_cast<int>(DoseRefusal::ReadingNaNStale) == 17, "DoseRefusal renuméroté");
 static_assert(static_cast<int>(DoseRefusal::ReadingNaNGateClosed) == 18, "DoseRefusal renuméroté");
-static_assert(static_cast<int>(DoseRefusal::FilterWarmup) == 19, "DoseRefusal renuméroté");
-static_assert(static_cast<int>(DoseRefusal::FilterFrozen) == 20, "DoseRefusal renuméroté");
-static_assert(static_cast<int>(DoseRefusal::FilterStale) == 21, "DoseRefusal renuméroté");
-static_assert(static_cast<int>(DoseRefusal::FilterGateClosed) == 22, "DoseRefusal renuméroté");
+// 19-22 (FilterWarmup/Frozen/Stale/GateClosed) : RETIRÉS feature-152, JAMAIS
+// recyclés — un appareil non mis à jour afficherait l'ancien libellé.
 // La sentinelle « cause posée par une garde » ne doit jamais collisionner avec
 // une valeur de l'énum (elle serait traduite en cause de canDose côté client).
-static_assert(static_cast<int>(DoseRefusal::FilterGateClosed) < kDoseBlockedCodeGuard,
+static_assert(static_cast<int>(DoseRefusal::ReadingNaNGateClosed) < kDoseBlockedCodeGuard,
               "kDoseBlockedCodeGuard collisionne avec DoseRefusal : relever la sentinelle");
 
 // Définitions des membres statiques
@@ -513,27 +511,26 @@ unsigned long PumpControllerClass::getMixingRemainingS(int pumpIndex) const {
 // commentaire de déclaration (pump_controller.h) pour la formule et son
 // motif. Bug corrigé par ce calcul : l'ancien ne regardait QUE le reste de la
 // purge et annonçait jusqu'à 10 min sur un arrêt d'eau COURT (dispensé, purge
-// déjà ouverte) alors que le plancher de gel du filtre capteur (60 s,
-// sensor_filter.cpp) était la contrainte réellement dominante — soit un
-// facteur 10 d'erreur d'affichage.
+// déjà ouverte) alors que le plancher de gel du filtre capteur (alors 60 s)
+// était la contrainte réellement dominante — soit un facteur 10 d'erreur
+// d'affichage.
 //
-// Coquille MINCE : la décision pure (extraction test-engineer, même lot) vit
-// dans dose_available_logic.h (ADR-0017), testée en natif. Second défaut
-// trouvé à cette extraction (cf. commentaire du module pur) : `mv.measuresValid`
-// doit être transmis pour clamper le reste de purge à 0 une fois la porte déjà
-// ouverte (dispensée ou non) — sans quoi le même facteur 10 revenait sur tout
-// cycle dispensé, et la valeur restait figée à 10 min en régime permanent.
-// TROISIÈME défaut (code-reviewer, 2e passage) : `mv.waterPresent` doit AUSSI
-// être transmis — filtration à l'arrêt, aucun des deux planchers ne court,
-// l'ancien calcul retombait sur 600 s FIGÉ toute la nuit. Le retour peut donc
-// valoir UINT32_MAX (délai INDÉTERMINÉ) : voir dose_available_logic.h.
+// ⚠️ feature-152 : le plancher de gel du filtre capteur a été RETIRÉ (porte
+// d'alimentation simplifiée, sans plancher ni ré-amorçage) — `filterRemainMs`
+// vaut désormais toujours 0. La formule à deux planchers de
+// dose_available_logic.h est conservée TELLE QUELLE (générique, ADR-0017) :
+// voir son en-tête.
+//
+// Coquille MINCE : la décision pure (extraction test-engineer) vit dans
+// dose_available_logic.h, testée en natif. `mv.measuresValid` est transmis
+// pour clamper le reste de purge à 0 une fois la porte déjà ouverte (dispensée
+// ou non), et `mv.waterPresent` pour renvoyer UINT32_MAX (délai INDÉTERMINÉ)
+// quand aucun des deux planchers ne court (filtration à l'arrêt).
 // ⚠️ Appelée aussi depuis async_tcp (/data, WebSocket) : ne lire ICI que des
-// accesseurs explicitement sûrs hors loopTask (snapshot measureValidity,
-// sensors.getFilterGateRemainingMs() — cf. leurs commentaires respectifs).
+// accesseurs explicitement sûrs hors loopTask (snapshot measureValidity).
 unsigned long PumpControllerClass::getDoseAvailableInS() const {
   const MeasureValiditySnapshot mv = measureValidity.getSnapshot();
-  const uint32_t nowMs = (uint32_t)millis();
-  const uint32_t filterRemainMs = sensors.getFilterGateRemainingMs(nowMs);
+  const uint32_t filterRemainMs = 0;  // feature-152 : plancher de gel retiré
   return computeDoseAvailableInS(mv.waterPresent, mv.measuresValid, mv.stabElapsedS,
                                  kPurgeFloorMs, filterRemainMs);
 }
@@ -671,16 +668,15 @@ void PumpControllerClass::logRefusalOnce(int pumpIndex, const String& cause,
   // v2.25.1 — PANNES de mesure : le filtre n'est pas « en train de chauffer », la
   // sonde ne répond plus (figée, ou plus aucune mesure acceptée depuis maxAgeMs).
   // La régulation est à l'arrêt et rien ne le signale hors de l'interface web.
-  const bool sensorFault = (code == DoseRefusal::FilterFrozen ||
-                            code == DoseRefusal::FilterStale ||
-                            code == DoseRefusal::ReadingNaNFrozen ||
+  const bool sensorFault = (code == DoseRefusal::ReadingNaNFrozen ||
                             code == DoseRefusal::ReadingNaNStale);
   const uint32_t nowMs = (uint32_t)millis();
   // ÉPISODE = période de panne CONTINUE, sans considération de la NATURE de la
   // panne. La fenêtre n'est donc redatée que sur la transition non-panne → panne
   // (revue : elle l'était sur tout changement de code, y compris panne → panne).
-  // Un EZO agonisant alterne FilterFrozen ↔ FilterStale par phases plus courtes
-  // que la temporisation : la date de début était repoussée à chaque bascule et le
+  // Un EZO agonisant alterne ReadingNaNFrozen ↔ ReadingNaNStale par phases plus
+  // courtes que la temporisation : la date de début était repoussée à chaque
+  // bascule et le
   // droit d'alerter réarmé → le `warning` et l'alerte MQTT ne partaient JAMAIS
   // alors que la régulation était à l'arrêt. Le correctif anti-panne-silencieuse
   // introduisait donc une panne silencieuse.
@@ -800,11 +796,19 @@ void PumpControllerClass::clearGuardRefusalCause(int pumpIndex) {
 //   - les deux BUTÉES de dernier recours portent sur le pH BRUT, pour rester
 //     valides quand l'offset lui-même est faux (cf. ph_offset.h / ADR-0039).
 //
-// Le pH corrigé est RECALCULÉ ici, applyPhOffset(getPhFilteredRaw(), offset), et
-// non lu via getPhFiltered() : getPhFilteredRaw() est le seul accesseur qui porte
-// la garde d'âge du filtre (pool-chemistry P2 — une EMA périmée ne doit jamais
-// déclencher un refus fantôme). Ajouter cette garde d'âge à getPhFiltered()
-// casserait au contraire le contrat de /data, du WebSocket et de MQTT.
+// Le pH corrigé est RECALCULÉ ici, applyPhOffset(getPhValueRaw(), offset), et
+// non lu via getPhFiltered().
+// ⚠️ CORRIGÉ PAR feature-152 (condition C2 du gate pool-chemistry P2, 2026-10-11) :
+// l'ancien commentaire affirmait que getPhValueRaw() était « le SEUL accesseur
+// qui porte la garde d'âge ». C'EST FAUX DEPUIS CE LOT — getPhFiltered() appelle
+// lui aussi value(millis()), donc il porte la même garde. Laisser cette phrase
+// aurait justifié un futur changement dangereux, en laissant croire qu'on peut
+// substituer l'un à l'autre sans conséquence.
+// LA VRAIE RAISON, qui elle n'a pas changé : getPhValueRaw() rend l'ÉCHELLE
+// BRUTE. Les butées de plausibilité comparent du brut à des seuils bruts, pour
+// rester valides même si l'offset est FAUX (cf. ph_offset.h / ADR-0039). Passer
+// par getPhFiltered() ferait dépendre la seule butée du projet de l'offset
+// qu'elle est précisément censée contourner.
 //
 // Appelées EN AMONT de canDose() dans update() (loopTask) : quand elles bloquent,
 // canDose() n'est pas évalué et `_lastRefusalCause` porte la cause de la garde.
@@ -822,7 +826,7 @@ void PumpControllerClass::clearGuardRefusalCause(int pumpIndex) {
 // Surveillance pH INCONDITIONNELLE (contre-visite C1) — détection, hystérésis,
 // logs et alertes MQTT. Ne compte RIEN, n'escalade JAMAIS : un appareil laissé en
 // mode `manual` s'auto-escaladerait sinon, alors qu'il ne refuse aucun dosage.
-// Aucune transaction I²C : getPhFilteredRaw() et getPhOffset() lisent des caches.
+// Aucune transaction I²C : getPhValueRaw() et getPhOffset() lisent des caches.
 void PumpControllerClass::tickPhGuardSurveillance() {
   // --- Snapshot du produit de correction, lu UNE FOIS par tick ---
   // Changer de produit change de seuil ET de direction : les drapeaux
@@ -850,7 +854,7 @@ void PumpControllerClass::tickPhGuardSurveillance() {
                       " — gardes de seuil réarmées (compteur de refus conservé)");
   }
 
-  const float phRaw = sensors.getPhFilteredRaw();
+  const float phRaw = sensors.getPhValueRaw();
   // Mesure indisponible (garde d'âge du filtre, pool-chemistry P2) : les gardes
   // NaN existantes (canDose / filtre non prêt) traitent déjà le cas — ne pas
   // fabriquer ici de refus fantôme, ni d'ALERTE fantôme, ni de refus à compter.
@@ -1266,7 +1270,7 @@ void PumpControllerClass::tickOrpPhInhibitSurveillance() {
   // poserait l'inhibition ORP, et la branche `scheduled` resterait fermée par
   // `!isOrpInhibitedByPh()` — zéro injection, la feature morte à l'arrivée.
   const bool requireKnownPh = (effectiveOrpMode() == OrpMode::Automatic);
-  const float phRaw = sensors.getPhFilteredRaw();
+  const float phRaw = sensors.getPhValueRaw();
 
   if (isnan(phRaw)) {
     if (!requireKnownPh) {
@@ -1578,16 +1582,12 @@ bool PumpControllerClass::canDose(int pumpIndex) {
   // 2. Présence d'eau (feature-056) : source UNIQUE resolveWaterPresent() selon
   // le mode d'installation (Managed=commandé, Powered=présumé, External=signal frais).
   in.waterPresent = filtration.resolveWaterPresence().waterPresent;
-  // 3. Lecture FILTRÉE (feature-025 : le PID auto consomme la mesure filtrée).
+  // 3. VALEUR OFFICIELLE (feature-152 : le PID auto consomme la valeur
+  // officielle, qui encapsule déjà warmup/figé/périmé/porte fermée → NaN).
   in.reading = (pumpIndex == 0) ? sensors.getPhFiltered()
                                 : sensors.getOrpFiltered();
-  // 3b/3c. État du filtre capteur (warmup / instabilité).
-  in.filterReady = (pumpIndex == 0) ? sensors.isPhFilterReady()
-                                    : sensors.isOrpFilterReady();
-  in.filterUnstable = (pumpIndex == 0) ? sensors.isPhFilterUnstable()
-                                       : sensors.isOrpFilterUnstable();
-  // v2.25.1 — état INTERNE du filtre : sert UNIQUEMENT à nommer la cause des
-  // gardes 3/3b (aucune garde ajoutée, aucun verdict modifié). Deux lectures de
+  // v2.25.1 — état INTERNE du filtre : sert UNIQUEMENT à nommer la cause de la
+  // garde 3 (aucune garde ajoutée, aucun verdict modifié). Deux lectures de
   // cache, aucun I²C.
   in.filterState = (pumpIndex == 0) ? sensors.getPhFilterState()
                                     : sensors.getOrpFilterState();
@@ -1660,9 +1660,6 @@ bool PumpControllerClass::canDose(int pumpIndex) {
     case DoseRefusal::ReadingNaN:
       cause = "mesure filtrée indisponible (état du filtre indéterminé)";
       break;
-    case DoseRefusal::FilterNotReady:
-      cause = "filtre capteur non prêt (état du filtre indéterminé)";
-      break;
     case DoseRefusal::ReadingNaNWarmup:
       cause = "mesure filtrée indisponible : fenêtre de lissage en cours";
       break;
@@ -1693,27 +1690,6 @@ bool PumpControllerClass::canDose(int pumpIndex) {
       cause = buf;
       break;
     }
-    case DoseRefusal::FilterWarmup:
-      cause = "filtre capteur en cours de remplissage (stabilisation)";
-      break;
-    case DoseRefusal::FilterFrozen:
-      cause = "sonde figée (valeur constante) — filtre non prêt";
-      break;
-    case DoseRefusal::FilterStale:
-      cause = "plus aucune mesure acceptée par le filtre (sonde muette)";
-      break;
-    case DoseRefusal::FilterGateClosed: {
-      // feature-139 (v2.62.0) : idem ReadingNaNGateClosed ci-dessus (N2, M3).
-      char buf[96];
-      snprintf(buf, sizeof(buf),
-               "eau neuve pas encore arrivée aux sondes, dosage disponible dans %lu min",
-               (getDoseAvailableInS() + 59UL) / 60UL);
-      cause = buf;
-      break;
-    }
-    case DoseRefusal::FilterUnstable:
-      cause = "capteur instable (rejets consécutifs)";
-      break;
     case DoseRefusal::CalibrationInsufficient:
       cause = String("calibration insuffisante (cal=") + String(in.calPoints) +
               ", requis=" + String(in.requiredPoints) + ")";
@@ -1945,11 +1921,10 @@ bool PumpControllerClass::phIntegralAccumulationAllowed() {
   if (_phGuardBlockingNow) return false;
 
   // 4. PORTE DE VALIDITÉ DE LA MESURE — rejet EXPLICITE, jamais délégué au
-  // `isfinite(error)` interne du module pur. Ce dernier ne voit qu'un flottant :
-  // une sonde FIGÉE sur une valeur haute rend une erreur parfaitement finie et
-  // constante, exactement le cas qui chargerait l'intégrale jusqu'au plafond.
-  if (!sensors.isPhFilterReady()) return false;    // warmup, gate fermée, figée, périmée
-  if (sensors.isPhFilterUnstable()) return false;  // rejets consécutifs
+  // `isfinite(error)` interne du module pur. feature-152 : la VALEUR OFFICIELLE
+  // (getPhFiltered()) encapsule déjà warmup, porte fermée, sonde figée ET
+  // péremption — un seul test suffit désormais (avant feature-152, filtered()
+  // restait fini sur une sonde figée, d'où l'ex-test séparé isPhFilterReady()).
   if (!isfinite(sensors.getPhFiltered())) return false;
   // feature-091 (C6 pool-chemistry) : porte de validité relue EXPLICITEMENT (le
   // filtre la répercute déjà via ready(), mais le prédicat doit rester vrai
@@ -1998,12 +1973,10 @@ float PumpControllerClass::tickPhFeedforward(unsigned long now, float signedErro
   }
 
   // Porte de validité de la MESURE, évaluée ici (caches capteur, aucun I²C) :
-  // mêmes critères que le §4 de phIntegralAccumulationAllowed — une sonde figée
-  // ou périmée ferme le filtre, une valeur non finie n'est pas une mesure.
+  // même critère que le §4 de phIntegralAccumulationAllowed — la valeur
+  // officielle encapsule déjà sonde figée/porte fermée/péremption (feature-152).
   // feature-091 (C6) : + porte de validité des mesures relue explicitement.
-  const bool measureValid = sensors.isPhFilterReady() &&
-                            !sensors.isPhFilterUnstable() &&
-                            isfinite(sensors.getPhFiltered()) &&
+  const bool measureValid = isfinite(sensors.getPhFiltered()) &&
                             measureValidity.measuresValid();
 
   // Session de dosage pH AUTOMATIQUE ouverte — état du tour PRÉCÉDENT (le latch
@@ -2267,10 +2240,10 @@ bool PumpControllerClass::isPhLimitedByHourlyBudget() const {
   // Conjonction VOULUE (spec, livrable A2) : l'épisode de saturation C5 est tenu
   // en temps de branche automatique — sur panne de sonde, la branche ne tourne
   // plus et le drapeau resterait FIGÉ à sa dernière valeur. Exiger une mesure pH
-  // valide (getPhFilteredRaw porte la garde d'âge du filtre, NaN si périmée)
+  // valide (getPhValueRaw porte la garde d'âge du filtre, NaN si périmée)
   // évite de servir ce verdict gelé : « borné par la limite horaire » doit
   // rester distinct de « panne de sonde » et de « bidon vide ».
-  return _phIntegral.satActive && !isnan(sensors.getPhFilteredRaw());
+  return _phIntegral.satActive && !isnan(sensors.getPhValueRaw());
 }
 
 bool PumpControllerClass::isPhUndersizedSuspected() const {
@@ -2286,10 +2259,10 @@ bool PumpControllerClass::isPhUndersizedSuspected() const {
   // une montée du streak 2→3 à la clôture de journée pendant une panne de sonde
   // émettrait l'alerte sur un épisode d'anomalie FIGÉ. Prédicat STRICTEMENT
   // identique à celui d'isPhLimitedByHourlyBudget (pas une variante) :
-  // getPhFilteredRaw porte la garde d'âge du filtre, NaN si périmée.
+  // getPhValueRaw porte la garde d'âge du filtre, NaN si périmée.
   return phActuatorUndersized(_phLimitStreakDays,
                               _phIntegral.anomalyHeldMs > 0) &&
-         !isnan(sensors.getPhFilteredRaw());
+         !isnan(sensors.getPhValueRaw());
 }
 
 // =============================================================================
@@ -2875,15 +2848,17 @@ float PumpControllerClass::getEffectiveMaxChlorineMlPerDay() const {
 // chloration de secours, À SENS UNIQUE — termine le mode, ne le RÉ-ARME jamais
 // (un état absorbant ne peut pas battre par construction, contrairement au
 // défaut corrigé par feature-139). Seuil : kRescueChlorineAutoLiftHoldMs
-// (30 min) de tenue CONTINUE de !isOrpFilterUnstable() &&
+// (30 min) de tenue CONTINUE de isfinite(getOrpFiltered()) &&
 // measureValidity.measuresValid() — les DEUX mêmes signaux que ceux qui
-// déclarent la mesure ORP exploitable ailleurs dans ce fichier.
+// déclarent la mesure ORP exploitable ailleurs dans ce fichier. feature-152 :
+// plus de drapeau d'instabilité distinct (la valeur officielle encapsule déjà
+// le rejet des aberrations par la médiane, sans seuil et sans latch).
 void PumpControllerClass::tickRescueChlorineAutoLift(unsigned long nowMs) {
   if (!isRescueChlorineActive(time(nullptr))) {
     _rescueStableSinceMs = 0;  // mode inactif : minuteur au repos
     return;
   }
-  const bool stable = !sensors.isOrpFilterUnstable() && measureValidity.measuresValid();
+  const bool stable = isfinite(sensors.getOrpFiltered()) && measureValidity.measuresValid();
   if (!stable) {
     _rescueStableSinceMs = 0;  // la moindre instabilité réarme la tenue à zéro
     return;
@@ -2992,6 +2967,60 @@ void PumpControllerClass::tickDailyRollover() {
         }
       }
       resetScheduledSplit();  // feature-011 : reliquat scheduled + réarmement fenêtres
+
+      // feature-152 (C6, gate pool-chemistry) : compte la streak de jours
+      // consécutifs où le plafond journalier a été atteint, AVANT de réinitialiser
+      // le drapeau du jour qui se termine (phLimitReached porte l'info du jour
+      // ENTIER). Alerte SEULEMENT — réutilise phLimitReached/orpLimitReached déjà
+      // publiés, aucun nouveau verrou, aucun chemin de dosage n'en dépend.
+      // Chemin DATE uniquement (jour calendaire fiable) : le rollover fallback
+      // 24h (clock non synchronisée) n'alimente pas cette streak.
+      // Le CALCUL (incrément/remise à zéro + franchissement de seuil) est
+      // extrait en module pur testable en natif — evaluateDailyLimitStreak()
+      // (daily_limit_streak_logic.h, C1 gate pool-chemistry P2 : « une alerte
+      // non testée est une promesse »).
+      //
+      // ⚠️ PERSISTANCE — `static` locales, PAS en NVS : le compteur repart à 0
+      // à CHAQUE redémarrage. Un appareil qui redémarre plus souvent que tous
+      // les kDailyLimitStreakAlertDays (3) jours n'atteindra donc JAMAIS le
+      // seuil et cette alerte précise ne se lèvera JAMAIS sur un tel appareil.
+      // Accepté SANS persistance (lot de retrait, aucun mécanisme ajouté au-delà
+      // de l'extraction demandée) : (1) le plafond journalier LUI-MÊME reste
+      // signalé CHAQUE jour, redémarrage ou non — `checkSafetyLimits()` pose
+      // phLimitReached et son propre `critical` dès le franchissement du jour
+      // courant, ce n'est que l'ESCALADE « plusieurs jours de suite » qui peut
+      // manquer ; (2) un appareil qui redémarre tous les 1-2 jours a un
+      // problème distinct (reboot-loop) déjà couvert par d'autres diagnostics
+      // (ADR-0029 et suivants) ; (3) persister ajouterait une écriture NVS
+      // quotidienne pour un strict gain de visibilité, pas de sécurité — si un
+      // usage réel montre que des redémarrages fréquents masquent cette
+      // alerte, c'est le sujet d'une spec dédiée (persistance), pas un ajout
+      // silencieux ici.
+      static uint8_t sPhDailyLimitStreakDays = 0;
+      static uint8_t sOrpDailyLimitStreakDays = 0;
+      const DailyLimitStreakResult phStreakResult = evaluateDailyLimitStreak(
+          safetyLimits.phLimitReached, sPhDailyLimitStreakDays, kDailyLimitStreakAlertDays);
+      const DailyLimitStreakResult orpStreakResult = evaluateDailyLimitStreak(
+          safetyLimits.orpLimitReached, sOrpDailyLimitStreakDays, kDailyLimitStreakAlertDays);
+      sPhDailyLimitStreakDays = phStreakResult.streak;
+      sOrpDailyLimitStreakDays = orpStreakResult.streak;
+      if (phStreakResult.alert) {
+        String msg = "Plafond journalier pH atteint " + String(sPhDailyLimitStreakDays) +
+                     " jours consécutifs — poursuivre le dosage sans y voir plus clair "
+                     "n'est pas sûr (sonde suspecte ou eau réellement hors cible) : "
+                     "contrôler le pH au réactif.";
+        systemLogger.critical(msg);
+        mqttManager.publishAlert("ph_daily_limit_streak", msg);
+      }
+      if (orpStreakResult.alert) {
+        String msg = "Plafond journalier chlore atteint " + String(sOrpDailyLimitStreakDays) +
+                     " jours consécutifs — sous le seuil de redox, poursuivre le "
+                     "goutte-à-goutte fabrique des chloramines : contrôler le chlore "
+                     "et le pH au réactif.";
+        systemLogger.critical(msg);
+        mqttManager.publishAlert("orp_daily_limit_streak", msg);
+      }
+
       safetyLimits.dailyPhInjectedMl  = 0;
       safetyLimits.dailyOrpInjectedMl = 0;
       safetyLimits.dailyFiltrationMinutes = 0;
@@ -3769,7 +3798,7 @@ void PumpControllerClass::updateDosingCore(unsigned long now) {
   bool phSessionClosed = false;
   if (phMode == "automatic" && phLimitOk && phSafetyOk && !isPhGuardBlocking(true) && canDose(0)) {
     // feature-025 : le PID auto consomme la mesure FILTRÉE (médiane + EMA).
-    // canDose(0) a déjà garanti isPhFilterReady() && !isPhFilterUnstable() → non NaN.
+    // canDose(0) a déjà garanti que la valeur officielle n'est pas NaN (feature-152).
     // feature-084 : l'erreur signée est calculée UNE SEULE FOIS par tour, en
     // amont de cette branche (le terme intégral en a besoin hors conjonction).
     // On reprend ici EXACTEMENT la même valeur — deux formules pour une seule
@@ -4591,7 +4620,7 @@ void PumpControllerClass::updateDosingCore(unsigned long now) {
   const float orpEffectiveDailyTargetMl = getEffectiveOrpDailyTargetMl();
   if (orpModeEff == OrpMode::Automatic && orpLimitOk && orpSafetyOk && !isOrpInhibitedByPh() && canDose(1)) {
     // feature-025 : le PID auto consomme la mesure FILTRÉE (médiane + EMA).
-    // canDose(1) a déjà garanti isOrpFilterReady() && !isOrpFilterUnstable() → non NaN.
+    // canDose(1) a déjà garanti que la valeur officielle n'est pas NaN (feature-152).
     float orpValue = sensors.getOrpFiltered();
     float effectiveOrp = orpValue;
 

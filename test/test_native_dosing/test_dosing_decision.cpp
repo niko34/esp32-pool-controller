@@ -37,8 +37,9 @@ static DoseInputs validInputs() {
   in.watchdogActive = true;
   in.waterPresent = true;       // feature-056 : présence d'eau résolue en amont
   in.reading = 7.2f;            // lecture pH valide (non NaN)
-  in.filterReady = true;
-  in.filterUnstable = false;
+  // feature-152 : filterReady/filterUnstable ont disparu — la valeur officielle
+  // de sensor_filter encapsule déjà warmup/figé/périmé/porte fermée (NaN dans
+  // tous ces cas), une seule garde (isnan(reading)) suffit désormais.
   in.calPoints = 2;            // pH : 2 points calibrés
   in.requiredPoints = 2;      // pH requiert 2 points
   in.stabilizationActive = false;
@@ -132,23 +133,14 @@ void test_T6_refusal_reading_nan(void) {
   TEST_ASSERT_EQUAL(DoseRefusal::ReadingNaN, d.cause);
 }
 
-// T7 — FilterNotReady (warmup / EZO injoignable).
-void test_T7_refusal_filter_not_ready(void) {
-  DoseInputs in = validInputs();
-  in.filterReady = false;
-  DoseDecision d = evaluateDose(in);
-  TEST_ASSERT_FALSE(d.allowed);
-  TEST_ASSERT_EQUAL(DoseRefusal::FilterNotReady, d.cause);
-}
-
-// T8 — FilterUnstable (rejets consécutifs).
-void test_T8_refusal_filter_unstable(void) {
-  DoseInputs in = validInputs();
-  in.filterUnstable = true;
-  DoseDecision d = evaluateDose(in);
-  TEST_ASSERT_FALSE(d.allowed);
-  TEST_ASSERT_EQUAL(DoseRefusal::FilterUnstable, d.cause);
-}
+// T7/T8 — RETIRÉS (feature-152) : la garde séparée « filtre prêt » / « capteur
+// instable » (3b/3c de l'ancien canDose()) a disparu avec les champs
+// filterReady/filterUnstable qui l'alimentaient. La valeur officielle de
+// sensor_filter encapsule désormais directement warmup, sonde figée,
+// péremption et porte fermée (NaN dans tous ces cas) : une seule garde
+// (isnan(in.reading), déjà couverte par T6) suffit. La qualification de cette
+// garde par filterState (warmup/figé/périmé/porte fermée) est couverte par la
+// section V2251 ci-dessous (test_V2251_qualification_reading_nan_par_etat).
 
 // T9 — CalibrationInsufficient (calPoints < requiredPoints).
 void test_T9_refusal_calibration_insufficient(void) {
@@ -2921,27 +2913,40 @@ void test_V253_ecretage_fail_closed_inatteignable_a_10s(void) {
 // =============================================================================
 // V2251 — Qualification des causes de refus par l'état interne du filtre
 // =============================================================================
-// Contexte du défaut corrigé : l'UI devinait la cause par sous-chaînes dans une
-// phrase française, et l'ancienne cause FilterNotReady conflatait « warmup » et
-// « EZO injoignable » — une VRAIE panne de sonde s'affichait donc comme une
-// stabilisation normale. Le firmware sert désormais un CODE machine.
+// Contexte du défaut corrigé (v2.25.1) : l'UI devinait la cause par
+// sous-chaînes dans une phrase française, et l'ancienne cause FilterNotReady
+// conflatait « warmup » et « EZO injoignable » — une VRAIE panne de sonde
+// s'affichait donc comme une stabilisation normale. Le firmware sert depuis un
+// CODE machine.
+//
+// feature-152 (refonte de la chaîne de mesure) : la garde séparée « filtre
+// prêt »/« capteur instable » (3b/3c de l'ancien canDose(), codes
+// FilterNotReady/FilterUnstable/FilterWarmup/FilterFrozen/FilterStale/
+// FilterGateClosed) a disparu — la valeur officielle de sensor_filter
+// encapsule désormais directement warmup, sonde figée, péremption et porte
+// fermée (NaN dans tous ces cas) : UNE SEULE garde (isnan(reading)) suffit,
+// qualifiée par les codes ReadingNaN{Warmup,Frozen,Stale,GateClosed} (15-18).
+// Ces six codes retirés (4, 5, 19-22) ne sont JAMAIS recyclés (un appareil non
+// mis à jour afficherait l'ancien libellé sur un code réattribué) : ce lot ne
+// les référence donc plus du tout, y compris dans les tests — un appel au nom
+// retiré redeviendrait une erreur de COMPILATION, la garde la plus stricte
+// possible contre un recyclage accidentel.
 //
 // Ce que ces tests protègent, dans l'ordre d'importance :
 //   1. le VERDICT (`allowed`) est strictement inchangé, quel que soit
-//      `filterState` : le correctif ne renomme que la cause ;
+//      `filterState` : la qualification ne renomme que la cause ;
 //   2. la priorité « pannes d'abord » de resolveFilterState() ;
 //   3. le contrat de sérialisation (valeurs numériques figées).
 
 // --- Oracle de verdict INDÉPENDANT DE L'ORDRE des gardes ---------------------
-// Conjonction pure des 14 conditions : ne reproduit NI l'ordre, NI la structure
-// de evaluateDose. Si l'implémentation ajoutait/retirait une condition (ce que le
-// correctif ne doit surtout pas faire), l'oracle divergerait.
+// Conjonction pure des 12 conditions (14 avant feature-152 : la fusion des
+// gardes 3/3b/3c en une seule a retiré deux conditions distinctes) : ne
+// reproduit NI l'ordre, NI la structure de evaluateDose. Si l'implémentation
+// ajoutait/retirait une condition, l'oracle divergerait.
 static bool allGuardsPassOracle(const DoseInputs& in) {
   if (!in.watchdogActive) return false;
   if (!in.waterPresent) return false;
   if (isnan(in.reading)) return false;
-  if (!in.filterReady) return false;
-  if (in.filterUnstable) return false;
   if (in.calPoints < in.requiredPoints) return false;
   if (in.stabilizationActive) return false;
   if (in.mixingActive) return false;
@@ -2960,7 +2965,8 @@ static const DoseFilterState kAllFilterStates[6] = {
     DoseFilterState::Frozen,  DoseFilterState::Stale,  DoseFilterState::GateClosed};
 
 // Cause ATTENDUE pour l'état `st`, dérivée de la cause de référence obtenue avec
-// filterState = Unknown : seules les deux familles qualifiables changent de nom.
+// filterState = Unknown : seule la famille ReadingNaN change de nom (feature-152
+// a retiré la seconde famille, FilterNotReady, avec la garde qu'elle qualifiait).
 static DoseRefusal expectedQualified(DoseRefusal ref, DoseFilterState st) {
   if (ref == DoseRefusal::ReadingNaN) {
     switch (st) {
@@ -2969,15 +2975,6 @@ static DoseRefusal expectedQualified(DoseRefusal ref, DoseFilterState st) {
       case DoseFilterState::Stale:      return DoseRefusal::ReadingNaNStale;
       case DoseFilterState::GateClosed: return DoseRefusal::ReadingNaNGateClosed;
       default:                          return DoseRefusal::ReadingNaN;
-    }
-  }
-  if (ref == DoseRefusal::FilterNotReady) {
-    switch (st) {
-      case DoseFilterState::Warmup:     return DoseRefusal::FilterWarmup;
-      case DoseFilterState::Frozen:     return DoseRefusal::FilterFrozen;
-      case DoseFilterState::Stale:      return DoseRefusal::FilterStale;
-      case DoseFilterState::GateClosed: return DoseRefusal::FilterGateClosed;
-      default:                          return DoseRefusal::FilterNotReady;
     }
   }
   return ref;  // toutes les autres causes IGNORENT filterState
@@ -3006,33 +3003,32 @@ void test_V2251_precondition_frontieres_flottantes_exactes(void) {
       "frontiere horaire >= reellement atteinte a egalite");
 }
 
-// --- (1) NON-RÉGRESSION DU VERDICT — balayage 2^14 × 6 états -----------------
-// Pour chacune des 16 384 combinaisons de gardes passantes/échouantes, et pour
-// chacun des 6 états de filtre :
+// --- (1) NON-RÉGRESSION DU VERDICT — balayage 2^12 × 6 états -----------------
+// Pour chacune des 4 096 combinaisons de gardes passantes/échouantes (12 bits,
+// contre 14 avant feature-152 — la fusion des gardes 3/3b/3c en retire deux),
+// et pour chacun des 6 états de filtre :
 //   * `allowed` == oracle indépendant (le verdict ne dépend JAMAIS de
-//     filterState : aucune condition ajoutée ni retirée par le correctif) ;
+//     filterState : aucune condition ajoutée ni retirée par la refonte) ;
 //   * `allowed` == (cause == None) (cohérence interne du verdict) ;
-//   * la cause est celle du cas Unknown, SAUF pour les deux familles
-//     qualifiables — donc aucune garde n'a changé de rang.
+//   * la cause est celle du cas Unknown, SAUF pour la famille ReadingNaN*
+//     qualifiable — donc aucune garde n'a changé de rang.
 void test_V2251_verdict_invariant_balayage_exhaustif(void) {
   static char msg[192];
-  uint32_t causesSeen = 0;  // bitmask des DoseRefusal observés (23 valeurs)
-  for (uint32_t mask = 0; mask < (1u << 14); ++mask) {
+  uint32_t causesSeen = 0;  // bitmask des DoseRefusal observés
+  for (uint32_t mask = 0; mask < (1u << 12); ++mask) {
     DoseInputs base = validInputs();
     base.watchdogActive     =  (mask & (1u << 0)) == 0 ? true : false;
     base.waterPresent       =  (mask & (1u << 1)) == 0 ? true : false;
     base.reading            =  (mask & (1u << 2)) == 0 ? 7.2f : NAN;
-    base.filterReady        =  (mask & (1u << 3)) == 0 ? true : false;
-    base.filterUnstable     =  (mask & (1u << 4)) == 0 ? false : true;
-    base.calPoints          =  (mask & (1u << 5)) == 0 ? 2 : 1;   // requis 2
-    base.stabilizationActive = (mask & (1u << 6)) == 0 ? false : true;
-    base.mixingActive       =  (mask & (1u << 7)) == 0 ? false : true;
-    base.modeAutomatic      =  (mask & (1u << 8)) == 0 ? true : false;
-    base.dailyInjectedMl    =  (mask & (1u << 9)) == 0 ? 100.0f : 500.0f;  // max 500
-    base.usedMs             =  (mask & (1u << 10)) == 0 ? 60000UL : 600000UL;
-    base.cyclesToday        =  (mask & (1u << 11)) == 0 ? 3u : kMaxCyclesPerDay;
-    base.cyclesLastMin      =  (mask & (1u << 12)) == 0 ? 0 : 3;   // max 3
-    base.cyclesLast15Min    =  (mask & (1u << 13)) == 0 ? 0 : 8;   // max 8
+    base.calPoints          =  (mask & (1u << 3)) == 0 ? 2 : 1;   // requis 2
+    base.stabilizationActive = (mask & (1u << 4)) == 0 ? false : true;
+    base.mixingActive       =  (mask & (1u << 5)) == 0 ? false : true;
+    base.modeAutomatic      =  (mask & (1u << 6)) == 0 ? true : false;
+    base.dailyInjectedMl    =  (mask & (1u << 7)) == 0 ? 100.0f : 500.0f;  // max 500
+    base.usedMs             =  (mask & (1u << 8)) == 0 ? 60000UL : 600000UL;
+    base.cyclesToday        =  (mask & (1u << 9)) == 0 ? 3u : kMaxCyclesPerDay;
+    base.cyclesLastMin      =  (mask & (1u << 10)) == 0 ? 0 : 3;   // max 3
+    base.cyclesLast15Min    =  (mask & (1u << 11)) == 0 ? 0 : 8;   // max 8
 
     const bool expectedAllowed = allGuardsPassOracle(base);
 
@@ -3068,12 +3064,24 @@ void test_V2251_verdict_invariant_balayage_exhaustif(void) {
       }
     }
   }
-  // Le balayage doit atteindre les 23 codes : aucun n'est mort, aucun n'est
-  // inatteignable (une cause inatteignable = une table UI jamais validée).
-  for (int c = 0; c <= 22; ++c) {
+  // Le balayage doit atteindre tous les codes ENCORE VALIDES (0-18 moins les
+  // deux retirés 4 et 5) : aucun n'est mort, aucun n'est inatteignable (une
+  // cause inatteignable = une table UI jamais validée). Les codes 19-22 sont
+  // volontairement ABSENTS de cette liste : ils n'existent plus dans l'énum
+  // (voir expectedQualified) et ne doivent donc jamais apparaître ici.
+  const int kValidCodes[] = {0, 1, 2, 3, 6, 7, 8, 9, 10, 11, 12, 13, 14,
+                             15, 16, 17, 18};
+  for (int c : kValidCodes) {
     snprintf(msg, sizeof(msg), "code %d jamais atteint par le balayage", c);
     TEST_ASSERT_TRUE_MESSAGE((causesSeen & (1u << (uint32_t)c)) != 0, msg);
   }
+  // Les deux codes retirés ne sont par construction jamais observés (ils ne
+  // peuvent plus être produits par evaluateDose) : le vérifier explicitement
+  // documente l'absence, plutôt que de la laisser implicite.
+  TEST_ASSERT_EQUAL_UINT32_MESSAGE(0, causesSeen & (1u << 4),
+      "code 4 (FilterNotReady, retire) jamais recycle");
+  TEST_ASSERT_EQUAL_UINT32_MESSAGE(0, causesSeen & (1u << 5),
+      "code 5 (FilterUnstable, retire) jamais recycle");
 }
 
 // --- (2) resolveFilterState : états simples, chacun atteignable UNE fois -----
@@ -3180,50 +3188,37 @@ void test_V2251_qualification_reading_nan_par_etat(void) {
   TEST_ASSERT_EQUAL(DoseRefusal::ReadingNaN, evaluateDose(in).cause);
 }
 
-// --- Qualification de la garde 3b (filtre non prêt) --------------------------
-void test_V2251_qualification_filter_not_ready_par_etat(void) {
-  const DoseFilterState states[4] = {
-      DoseFilterState::Warmup, DoseFilterState::Frozen,
-      DoseFilterState::Stale, DoseFilterState::GateClosed};
-  const DoseRefusal wants[4] = {
-      DoseRefusal::FilterWarmup, DoseRefusal::FilterFrozen,
-      DoseRefusal::FilterStale, DoseRefusal::FilterGateClosed};
-  for (int i = 0; i < 4; ++i) {
-    DoseInputs in = validInputs();
-    in.filterReady = false;
-    in.filterState = states[i];
-    DoseDecision d = evaluateDose(in);
-    TEST_ASSERT_FALSE(d.allowed);
-    TEST_ASSERT_EQUAL(wants[i], d.cause);
-  }
-  DoseInputs in = validInputs();
-  in.filterReady = false;
-  in.filterState = DoseFilterState::Unknown;
-  TEST_ASSERT_EQUAL(DoseRefusal::FilterNotReady, evaluateDose(in).cause);
-  in.filterState = DoseFilterState::Ready;
-  TEST_ASSERT_EQUAL(DoseRefusal::FilterNotReady, evaluateDose(in).cause);
-}
-
-// --- Scénario de production : panne EZO annoncée comme panne, pas comme warmup
-void test_V2251_panne_ezo_nest_plus_annoncee_comme_stabilisation(void) {
+// --- RETIRÉS (feature-152) --------------------------------------------------
+// test_V2251_qualification_filter_not_ready_par_etat et
+// test_V2251_panne_ezo_nest_plus_annoncee_comme_stabilisation testaient la
+// garde séparée « filtre non prêt » (3b), qui n'existe plus : la valeur
+// officielle de sensor_filter est NaN dans tous les cas qu'elle couvrait, la
+// seule garde restante est isnan(reading) (garde 3), déjà qualifiée par
+// test_V2251_qualification_reading_nan_par_etat ci-dessus.
+//
+// --- Scénario de production : panne EZO annoncée comme panne, pas comme
+// warmup — réécrit sur la garde 3 UNIQUE qui subsiste (reading NaN qualifié
+// par filterState, composé via resolveFilterState()).
+void test_V2251_panne_ezo_annoncee_comme_panne_pas_comme_stabilisation(void) {
   // Sonde figée (répond, valeur constante) : la fenêtre est pleine et fraîche,
-  // mais ready() est faux. Avant le correctif : « warmup / EZO injoignable ».
+  // mais frozen() est vrai → valeur officielle NaN. Avant v2.25.1 : « warmup /
+  // EZO injoignable » aurait masqué la panne.
   DoseInputs in = validInputs();
-  in.filterReady = false;
+  in.reading = NAN;
   in.filterState = resolveFilterState(/*frozen*/ true, /*gate*/ false,
                                       /*stale*/ false, /*warmingUp*/ false);
   DoseDecision d = evaluateDose(in);
   TEST_ASSERT_FALSE(d.allowed);
-  TEST_ASSERT_EQUAL_MESSAGE(DoseRefusal::FilterFrozen, d.cause,
-      "une vraie panne de sonde ne doit PLUS partager son code avec le warmup");
-  TEST_ASSERT_NOT_EQUAL(DoseRefusal::FilterWarmup, d.cause);
+  TEST_ASSERT_EQUAL_MESSAGE(DoseRefusal::ReadingNaNFrozen, d.cause,
+      "une vraie panne de sonde ne doit PAS partager son code avec le warmup");
+  TEST_ASSERT_NOT_EQUAL(DoseRefusal::ReadingNaNWarmup, d.cause);
 
   // Symétrique : warmup légitime au boot → code de warmup, jamais un code de panne.
   in.filterState = resolveFilterState(false, false, false, true);
   d = evaluateDose(in);
-  TEST_ASSERT_EQUAL(DoseRefusal::FilterWarmup, d.cause);
-  TEST_ASSERT_NOT_EQUAL(DoseRefusal::FilterFrozen, d.cause);
-  TEST_ASSERT_NOT_EQUAL(DoseRefusal::FilterStale, d.cause);
+  TEST_ASSERT_EQUAL(DoseRefusal::ReadingNaNWarmup, d.cause);
+  TEST_ASSERT_NOT_EQUAL(DoseRefusal::ReadingNaNFrozen, d.cause);
+  TEST_ASSERT_NOT_EQUAL(DoseRefusal::ReadingNaNStale, d.cause);
 }
 
 // --- Initialiseur fail-closed d'observabilité -------------------------------
@@ -3232,7 +3227,7 @@ void test_V2251_filter_state_defaut_est_unknown(void) {
   TEST_ASSERT_EQUAL_MESSAGE(DoseFilterState::Unknown, in.filterState,
       "sans initialiseur de membre, un site de collecte lirait une valeur "
       "indeterminee et pourrait afficher une cause fausse");
-  // validInputs() ne renseigne PAS filterState → les tests historiques (T6/T7/T18)
+  // validInputs() ne renseigne PAS filterState → les tests historiques (T6/T18)
   // exercent bien les causes génériques : c'est ce qui les rend inchangés.
   DoseInputs v = validInputs();
   TEST_ASSERT_EQUAL(DoseFilterState::Unknown, v.filterState);
@@ -3243,14 +3238,18 @@ void test_V2251_filter_state_defaut_est_unknown(void) {
 // côté client. Une renumérotation décalerait la table et réafficherait une
 // mauvaise cause — exactement la classe de défaut corrigée en v2.25.1.
 // Baseline vérifiée sur `git show 15a10de:src/dosing_logic.h` (0→14 implicites).
+// feature-152 : 4 (FilterNotReady) et 5 (FilterUnstable) sont RETIRÉS — ils
+// n'existent plus comme énumérateurs (voir dosing_logic.h) : toute tentative
+// de les référencer ici redeviendrait une erreur de COMPILATION, la preuve la
+// plus stricte qu'ils ne sont pas recyclés. Le test vérifie donc l'ÉCART
+// (ReadingNaN=3 puis CalibrationInsufficient=6, sans rien entre les deux).
 void test_V2251_contrat_serialisation_codes_0_a_14_inchanges(void) {
   TEST_ASSERT_EQUAL_INT(0, (int)DoseRefusal::None);
   TEST_ASSERT_EQUAL_INT(1, (int)DoseRefusal::WatchdogInactive);
   TEST_ASSERT_EQUAL_INT(2, (int)DoseRefusal::FiltrationOff);
   TEST_ASSERT_EQUAL_INT(3, (int)DoseRefusal::ReadingNaN);
-  TEST_ASSERT_EQUAL_INT(4, (int)DoseRefusal::FilterNotReady);
-  TEST_ASSERT_EQUAL_INT(5, (int)DoseRefusal::FilterUnstable);
-  TEST_ASSERT_EQUAL_INT(6, (int)DoseRefusal::CalibrationInsufficient);
+  TEST_ASSERT_EQUAL_INT_MESSAGE(6, (int)DoseRefusal::CalibrationInsufficient,
+      "4 et 5 (FilterNotReady/FilterUnstable) retires : le prochain code reel est 6");
   TEST_ASSERT_EQUAL_INT(7, (int)DoseRefusal::StabilizationActive);
   TEST_ASSERT_EQUAL_INT(8, (int)DoseRefusal::MixingActive);
   TEST_ASSERT_EQUAL_INT(9, (int)DoseRefusal::ModeNotAutomatic);
@@ -3261,17 +3260,16 @@ void test_V2251_contrat_serialisation_codes_0_a_14_inchanges(void) {
   TEST_ASSERT_EQUAL_INT(14, (int)DoseRefusal::BurstPer15Min);
 }
 
-void test_V2251_contrat_serialisation_nouveaux_codes_15_a_22(void) {
+// feature-152 : 19-22 (FilterWarmup/FilterFrozen/FilterStale/FilterGateClosed)
+// sont RETIRÉS eux aussi — seuls 15-18 (famille ReadingNaN*) subsistent, et
+// sont désormais le DERNIER bloc de l'énum (prochaine valeur disponible : 23).
+void test_V2251_contrat_serialisation_codes_15_a_18_inchanges(void) {
   TEST_ASSERT_EQUAL_INT(15, (int)DoseRefusal::ReadingNaNWarmup);
   TEST_ASSERT_EQUAL_INT(16, (int)DoseRefusal::ReadingNaNFrozen);
   TEST_ASSERT_EQUAL_INT(17, (int)DoseRefusal::ReadingNaNStale);
   TEST_ASSERT_EQUAL_INT(18, (int)DoseRefusal::ReadingNaNGateClosed);
-  TEST_ASSERT_EQUAL_INT(19, (int)DoseRefusal::FilterWarmup);
-  TEST_ASSERT_EQUAL_INT(20, (int)DoseRefusal::FilterFrozen);
-  TEST_ASSERT_EQUAL_INT(21, (int)DoseRefusal::FilterStale);
-  TEST_ASSERT_EQUAL_INT(22, (int)DoseRefusal::FilterGateClosed);
-  // Les nouveaux codes sont AJOUTÉS EN FIN : tous > BurstPer15Min (14), et le
-  // bloc est contigu (aucun trou, aucune insertion au milieu).
+  // Ces codes sont AJOUTÉS EN FIN : tous > BurstPer15Min (14), et le bloc est
+  // contigu (aucun trou, aucune insertion au milieu).
   TEST_ASSERT_TRUE((int)DoseRefusal::ReadingNaNWarmup >
                    (int)DoseRefusal::BurstPer15Min);
   // DoseFilterState est un enum d'ENTRÉE : ses valeurs ne sont pas transportées,
@@ -3306,8 +3304,11 @@ void test_V2251_episode_premisse_codes_de_panne_alternent_a_panne_continue(void)
   // Un seul et même épisode : la mesure est en panne de bout en bout, seule la
   // NATURE de la panne change (EZO agonisant : figé, puis plus aucune mesure
   // acceptée, puis figé de nouveau). Chaque phase produit un code DIFFÉRENT.
+  // feature-152 : la garde séparée « filtre non prêt » (filterReady) a
+  // disparu — il ne reste qu'une seule garde (reading NaN), qualifiée par
+  // filterState. L'épisode s'exerce donc entièrement sur cette famille.
   DoseInputs in = validInputs();
-  in.filterReady = false;
+  in.reading = NAN;
 
   in.filterState = resolveFilterState(/*frozen*/ true, /*gate*/ false,
                                       /*stale*/ false, /*warmingUp*/ false);
@@ -3320,51 +3321,41 @@ void test_V2251_episode_premisse_codes_de_panne_alternent_a_panne_continue(void)
   in.filterState = resolveFilterState(true, false, false, false);
   const DoseRefusal phase3 = evaluateDose(in).cause;
 
-  TEST_ASSERT_EQUAL(DoseRefusal::FilterFrozen, phase1);
-  TEST_ASSERT_EQUAL(DoseRefusal::FilterStale, phase2);
-  TEST_ASSERT_EQUAL(DoseRefusal::FilterFrozen, phase3);
+  TEST_ASSERT_EQUAL(DoseRefusal::ReadingNaNFrozen, phase1);
+  TEST_ASSERT_EQUAL(DoseRefusal::ReadingNaNStale, phase2);
+  TEST_ASSERT_EQUAL(DoseRefusal::ReadingNaNFrozen, phase3);
   TEST_ASSERT_TRUE_MESSAGE(phase1 != phase2,
       "PREMISSE du defaut corrige : une panne CONTINUE change de code => une "
       "fenetre redatee sur tout changement de code n'expirait jamais");
   TEST_ASSERT_EQUAL_MESSAGE(phase1, phase3,
       "le retour a la nature initiale ne doit pas etre pris pour un nouvel episode");
-
-  // La même alternance existe sur la famille « lecture NaN » (garde 3) : l'épisode
-  // doit rester ouvert quand la panne bascule ENTRE les deux familles.
-  in.filterReady = true;
-  in.reading = NAN;
-  in.filterState = resolveFilterState(true, false, false, false);
-  TEST_ASSERT_EQUAL(DoseRefusal::ReadingNaNFrozen, evaluateDose(in).cause);
-  in.filterState = resolveFilterState(false, false, true, false);
-  TEST_ASSERT_EQUAL(DoseRefusal::ReadingNaNStale, evaluateDose(in).cause);
 }
 
 // (b) Frontière de classification + (c) temporisation.
-// Les quatre codes de PANNE sont exactement {16, 17, 20, 21} ; les qualifications
-// bénignes (warmup, porte fermée) et les causes génériques n'en font pas partie.
-// Ce verrou est la contrepartie testable de la liste `sensorFault` de
-// pump_controller.cpp : si un code y était ajouté ou retiré, la liste des codes
-// « PANNE » documentée dans dosing_logic.h et ici divergerait.
+// Les deux codes de PANNE sont exactement {16, 17} (feature-152 a retiré la
+// seconde famille, {20, 21} : FilterFrozen/FilterStale n'existent plus) ; les
+// qualifications bénignes (warmup, porte fermée) et les causes génériques
+// n'en font pas partie. Ce verrou est la contrepartie testable de la liste
+// `sensorFault` de pump_controller.cpp : si un code y était ajouté ou retiré,
+// la liste des codes « PANNE » documentée dans dosing_logic.h et ici divergerait.
 void test_V2251_episode_frontiere_de_classification_et_temporisation(void) {
   TEST_ASSERT_EQUAL_UINT32_MESSAGE(60000UL, kDoseSensorFaultAlertDelayMs,
       "temporisation d'alerte de panne de mesure : 60 s (ecarte le transitoire de "
       "reamorcage du filtre a la reprise de circulation)");
 
   // PANNES (la regulation est a l'arret et la sonde est en cause).
-  const DoseRefusal faults[4] = {
-      DoseRefusal::ReadingNaNFrozen, DoseRefusal::ReadingNaNStale,
-      DoseRefusal::FilterFrozen, DoseRefusal::FilterStale};
-  const int wants[4] = {16, 17, 20, 21};
-  for (int i = 0; i < 4; ++i) TEST_ASSERT_EQUAL_INT(wants[i], (int)faults[i]);
+  const DoseRefusal faults[2] = {
+      DoseRefusal::ReadingNaNFrozen, DoseRefusal::ReadingNaNStale};
+  const int wants[2] = {16, 17};
+  for (int i = 0; i < 2; ++i) TEST_ASSERT_EQUAL_INT(wants[i], (int)faults[i]);
 
   // NON-PANNES : etats normaux ou blocage voulu par le systeme. Alerter ici
   // banaliserait l'alerte (demarrage de filtration, purge, boot).
-  const DoseRefusal benign[6] = {
+  const DoseRefusal benign[3] = {
       DoseRefusal::ReadingNaNWarmup, DoseRefusal::ReadingNaNGateClosed,
-      DoseRefusal::FilterWarmup, DoseRefusal::FilterGateClosed,
-      DoseRefusal::ReadingNaN, DoseRefusal::FilterNotReady};
-  for (int i = 0; i < 6; ++i) {
-    for (int j = 0; j < 4; ++j) {
+      DoseRefusal::ReadingNaN};
+  for (int i = 0; i < 3; ++i) {
+    for (int j = 0; j < 2; ++j) {
       TEST_ASSERT_TRUE_MESSAGE(benign[i] != faults[j],
           "un etat benin ne doit JAMAIS partager le code d'une panne");
     }
@@ -3383,8 +3374,7 @@ int main(int, char **) {
   // T5-T17 — causes de refus, une par test.
   RUN_TEST(test_T5_refusal_filtration_off);
   RUN_TEST(test_T6_refusal_reading_nan);
-  RUN_TEST(test_T7_refusal_filter_not_ready);
-  RUN_TEST(test_T8_refusal_filter_unstable);
+  // T7/T8 retirés (feature-152) — voir commentaire au site de définition.
   RUN_TEST(test_T9_refusal_calibration_insufficient);
   RUN_TEST(test_T10_refusal_stabilization_active);
   RUN_TEST(test_T11_refusal_mixing_active);
@@ -3534,11 +3524,11 @@ int main(int, char **) {
   RUN_TEST(test_V2251_resolve_filter_state_priorite_pannes_dabord);
   RUN_TEST(test_V2251_resolve_filter_state_balayage_16_combinaisons);
   RUN_TEST(test_V2251_qualification_reading_nan_par_etat);
-  RUN_TEST(test_V2251_qualification_filter_not_ready_par_etat);
-  RUN_TEST(test_V2251_panne_ezo_nest_plus_annoncee_comme_stabilisation);
+  // qualification_filter_not_ready_par_etat retiré (feature-152, mécanisme disparu).
+  RUN_TEST(test_V2251_panne_ezo_annoncee_comme_panne_pas_comme_stabilisation);
   RUN_TEST(test_V2251_filter_state_defaut_est_unknown);
   RUN_TEST(test_V2251_contrat_serialisation_codes_0_a_14_inchanges);
-  RUN_TEST(test_V2251_contrat_serialisation_nouveaux_codes_15_a_22);
+  RUN_TEST(test_V2251_contrat_serialisation_codes_15_a_18_inchanges);
   // Épisode de panne de mesure : entrées de la machine d'état (couverture
   // partielle assumée — la chronologie vit dans PumpControllerClass).
   RUN_TEST(test_V2251_episode_premisse_codes_de_panne_alternent_a_panne_continue);

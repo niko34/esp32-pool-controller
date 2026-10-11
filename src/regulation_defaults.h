@@ -31,7 +31,7 @@
 // (ADR-0017).
 
 #include <string.h>     // strcmp (poolSizeFromString)
-#include "constants.h"  // kPhTargetMin/Max, kOrpFilterRearmMin/Max (header pur)
+#include "constants.h"  // kPhTargetMin/Max, kOrpTargetPlausibleMin/Max (header pur)
 
 // =============================================================================
 // feature-090 — TAILLE DU BASSIN (sérialisation stable NVS/JSON)
@@ -162,12 +162,12 @@ constexpr int regulationSpeedRank(const char* s) {
 // --- Bornes chimiques d'UNE colonne (mêmes fenêtres que la feature-088) ---
 // Consignes dans les fenêtres du projet ; limites horaires = clamp serveur de
 // /save-config ([1 ; 60]) ; volumes programmés jamais négatifs ; vitesse = un libellé connu.
-// Plage ORP : bornes NOMMÉES du projet = fenêtre de plausibilité du réarmement
-// filtre [300 ; 950] mV (kOrpFilterRearmMin/Max) — le chemin de commande MQTT
-// accepte [400 ; 900], 600 est confortablement dans les deux.
+// Plage ORP : bornes NOMMÉES du projet = fenêtre de plausibilité de consigne
+// [300 ; 950] mV (kOrpTargetPlausibleMin/Max, feature-152) — le chemin de
+// commande MQTT accepte [400 ; 900], 600 est confortablement dans les deux.
 constexpr bool regulationDefaultsColumnValid(const RegulationDefaults& d) {
   return d.phTarget >= kPhTargetMin && d.phTarget <= kPhTargetMax &&
-         d.orpTarget >= kOrpFilterRearmMin && d.orpTarget <= kOrpFilterRearmMax &&
+         d.orpTarget >= kOrpTargetPlausibleMin && d.orpTarget <= kOrpTargetPlausibleMax &&
          d.phInjectionLimitMin >= 1 && d.phInjectionLimitMin <= 60 &&
          d.orpInjectionLimitMin >= 1 && d.orpInjectionLimitMin <= 60 &&
          d.phDailyTargetMl >= 0 && d.orpDailyTargetMl >= 0 &&

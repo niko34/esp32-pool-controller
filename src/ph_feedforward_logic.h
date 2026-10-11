@@ -46,8 +46,8 @@
 // [stop ; start] absorbe le rebond. Ne PAS ajouter d'hystérésis interne ici —
 // elle ferait double emploi et créerait un second point de réglage.
 //
-// A6 — SONDE FIGÉE : corollaire structurel. Une sonde figée ferme la porte de
-// validité (isPhFilterReady() == false) ⇒ canDose() refuse ⇒ aucune session ⇒
+// A6 — SONDE FIGÉE : corollaire structurel. Une sonde figée rend la valeur
+// officielle NaN (feature-152) ⇒ canDose() refuse ⇒ aucune session ⇒
 // FF = 0. Le latch « mesure invalide » ci-dessous double cette garantie en
 // EXPLICITE : même si une session survivait d'un tick à la bascule, le FF est
 // retenu dès que la mesure n'est plus digne de confiance.

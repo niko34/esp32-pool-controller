@@ -629,8 +629,14 @@ void test_source_consolidation_n_agrege_jamais_la_filtree(void) {
 }
 
 void test_source_enregistrement_sans_repli_sur_le_brut(void) {
-  // « Pas de filtrée » doit rester observable : aucun repli sur la mesure brute,
-  // et la porte de mesure (measuresValid) invalide la filtrée comme le brut.
+  // feature-152 (B4) : UNE SEULE valeur officielle est historisée — point.ph/
+  // point.orp PORTENT DÉSORMAIS la valeur officielle de sensor_filter
+  // (médiane + lissage, corrigée côté pH), jamais un repli silencieux sur une
+  // mesure instantanée. Les anciens champs séparés point.phFiltered/
+  // orpFiltered sont MORTS à l'écriture (NaN par initialiseur de membre,
+  // history.h) : ce test verrouille qu'ils ne sont RÉ-ALIMENTÉS nulle part
+  // dans recordDataPoint() — sinon deux valeurs concurrentes referaient
+  // exactement le défaut du 11/10 (écran ≠ valeur qui décide).
   long len = 0;
   char* src = readProjectFile("src/history.cpp", &len);
   TEST_ASSERT_NOT_NULL(src);
@@ -638,15 +644,16 @@ void test_source_enregistrement_sans_repli_sur_le_brut(void) {
   const char* body = slice(src, "void HistoryManager::recordDataPoint()",
                            "void HistoryManager::saveToFile()", &bodyLen);
   TEST_ASSERT_NOT_NULL(body);
-  TEST_ASSERT_TRUE(containsIn(body, bodyLen, "point.phFiltered = sensors.getPhFiltered();"));
-  TEST_ASSERT_TRUE(containsIn(body, bodyLen, "point.orpFiltered = sensors.getOrpFiltered();"));
-  TEST_ASSERT_EQUAL_INT_MESSAGE(0, countIn(body, bodyLen, "point.phFiltered = point.ph"),
-      "repli de la filtree sur le brut : une filtree inexistante serait inventee");
-  TEST_ASSERT_EQUAL_INT_MESSAGE(0, countIn(body, bodyLen, "point.orpFiltered = point.orp;"),
-      "repli de la filtree sur le brut : une filtree inexistante serait inventee");
-  // Mesures non représentatives → la filtrée tombe aussi.
-  TEST_ASSERT_TRUE(containsIn(body, bodyLen, "point.phFiltered = NAN;"));
-  TEST_ASSERT_TRUE(containsIn(body, bodyLen, "point.orpFiltered = NAN;"));
+  TEST_ASSERT_TRUE(containsIn(body, bodyLen, "point.ph = sensors.getPhFiltered();"));
+  TEST_ASSERT_TRUE(containsIn(body, bodyLen, "point.orp = sensors.getOrpFiltered();"));
+  TEST_ASSERT_EQUAL_INT_MESSAGE(0, countIn(body, bodyLen, "point.phFiltered ="),
+      "le champ phFiltered legacy ne doit jamais etre realimente : une seule valeur officielle");
+  TEST_ASSERT_EQUAL_INT_MESSAGE(0, countIn(body, bodyLen, "point.orpFiltered ="),
+      "le champ orpFiltered legacy ne doit jamais etre realimente : une seule valeur officielle");
+  // Mesures non représentatives (porte fermée / purge) → la valeur officielle
+  // tombe aussi : jamais de point historisé à cheval sur une eau non brassée.
+  TEST_ASSERT_TRUE(containsIn(body, bodyLen, "point.ph = NAN;"));
+  TEST_ASSERT_TRUE(containsIn(body, bodyLen, "point.orp = NAN;"));
   free(src);
 }
 

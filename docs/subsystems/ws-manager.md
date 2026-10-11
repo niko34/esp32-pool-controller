@@ -434,20 +434,38 @@ Les deux champs sont lus depuis le **cache** du singleton `measureValidity` (`ge
 
 Buffer `_buildSensorJson()` bumpe de **2048 → 2112 octets** (l'étape intermédiaire 1920 → 2048 venait des champs `ph/orp_mix_remaining_s`, v2.19.1).
 
-## Champs `sensor_data` ajoutés en v2.20.3 (alarme filtre bloqué)
+## ~~Champs `sensor_data` ajoutés en v2.20.3 (alarme filtre bloqué)~~ — RETIRÉS en v2.68.0
 
-| Champ | Type | Description |
-|-------|------|-------------|
-| `phFilterAlarm` | bool | `true` quand le filtre pH est resté **non prêt > 5 min** (`kSensorFilterNotReadyAlarmMs`) **alors que** la filtration tournait **et** que les mesures étaient déclarées représentatives → plus **aucune** régulation pH, ni chlore (fail-closed feature-067 sur pH brut indisponible). |
-| `orpFilterAlarm` | bool | Symétrique ORP. |
+⚠️ **`phFilterAlarm`/`orpFilterAlarm` (et `phFilterReady`/`orpFilterReady`,
+`phFilterUnstable`/`orpFilterUnstable`) sont RETIRÉS en v2.68.0** (feature-152) — le mécanisme
+« filtre non prêt durablement » et son verrou ont disparu (verdict `pool-chemistry` : ce
+mécanisme se posait sur du bruit normal, aucun cas où il a démontrablement évité un dommage).
+`isnan(ph)`/`isnan(orp)` sur les champs `ph`/`orp` eux-mêmes porte désormais toute
+l'information : il n'y a plus d'état « prêt »/« instable »/« alarme » séparé de la valeur.
 
-Source : `sensors.isPhFilterNotReadyAlarm()` / `isOrpFilterNotReadyAlarm()` — simple reflet d'un drapeau, toute l'hystérésis est côté `SensorManager`. **Mêmes champs et mêmes valeurs dans `GET /data`** (aucune asymétrie WS/HTTP ici, contrairement à `filtration_state_stale`).
+Les **six** booléens retirés (`phFilterReady`, `phFilterUnstable`, `phFilterAlarm`,
+`orpFilterReady`, `orpFilterUnstable`, `orpFilterAlarm`) allègent `_buildSensorJson()` de
+**141 octets** au pire cas (recompté, ADR-0073) : `"phFilterReady":false,` = 22 o,
+`"phFilterUnstable":false,` = 25 o, `"phFilterAlarm":false,` = 22 o,
+`"orpFilterReady":false,` = 23 o, `"orpFilterUnstable":false,` = 26 o,
+`"orpFilterAlarm":false,` = 23 o. Pire cas de trame recalculé : **3356 o**, sous
+`kWsFrameBufBytes = 3584 o` — **marge résiduelle 228 o**. Voir le décompte complet en
+commentaire de [`src/ws_manager.cpp`](../../src/ws_manager.cpp) (`_buildSensorJson()`).
 
-⚠️ **Distinction à ne pas perdre** : `phFilterReady = false` est **banal** (warmup, purge, plusieurs fois par jour) ; `phFilterAlarm = true` est une **anomalie durable**. La purge de la chambre de mesure, le warmup et la filtration à l'arrêt ne l'arment jamais. C'est ce champ que consomment le chip d'état filtre (label « Régulation à l'arrêt », prioritaire sur tous les autres états, y compris « EZO indisponible ») et la bannière du tableau de bord.
+Section conservée pour archive (description v2.20.3 à v2.67.x) :
 
-**Budget de payload** : `_buildSensorJson()` passe de **2112 → 2176 octets**. Décompte exact des octets sérialisés ajoutés (pire cas, la valeur `false` étant la plus longue) : `"phFilterAlarm":false,` = 22 o, `"orpFilterAlarm":false,` = 23 o, soit **45 o**. `StaticJson` dimensionne le **pool ArduinoJson** (nœuds), pas la chaîne : 2 nœuds booléens ≈ 32 o, clés non copiées (littéraux). Marge de 64 o retenue pour couvrir pool **et** alignement. `sWsFrameBuf` reste vérifié indépendamment par la garde `measureJson(doc) + 1 > sizeof(sWsFrameBuf)`. Côté `/data`, buffer porté de **1280 → 1344** octets.
+<details>
+<summary>Description historique (archivée)</summary>
 
-Voir [sensors.md](sensors.md#alarme--filtre-non-prêt-durablement--v2203), [page-ph.md](../features/page-ph.md#bouton--réarmer-le-filtre-ph--v2203) et [page-dashboard.md](../features/page-dashboard.md#bannière--régulation-à-larrêt--v2203).
+`phFilterAlarm`/`orpFilterAlarm` (booléens) passaient à `true` quand le filtre restait non
+prêt plus de 5 min alors que la filtration tournait et que les mesures étaient représentatives
+— plus aucune régulation pH, ni chlore. Source : `sensors.isPhFilterNotReadyAlarm()` /
+`isOrpFilterNotReadyAlarm()`. Mêmes champs et mêmes valeurs dans `GET /data`. Distinction
+documentée à l'époque : `phFilterReady = false` était banal (warmup, purge),
+`phFilterAlarm = true` était une anomalie durable. Budget de payload d'alors : 2112 → 2176
+octets côté WS, 1280 → 1344 octets côté `/data`.
+
+</details>
 
 ## Parité `/data` ↔ `sensor_data` — indicateurs de garde pH (v2.25.0)
 

@@ -1,6 +1,6 @@
 # ADR-0027 — Filtre pH/ORP recalé sur la tendance centrale (estimateur robuste + découplage valeur/latch)
 
-- **Statut** : Accepté
+- **Statut** : Superseded by ADR-0097
 - **Date** : 2026-07-11
 - **Décideurs** : architect, pool-chemistry (double passage GO), code-reviewer
 - **Spec(s) liée(s)** : feature-058 (successeur de feature-025 pour la stratégie de filtrage ; diagnostic feature-057)

@@ -20,8 +20,10 @@
 //   3. mqtt_manager.cpp:1614     (~630 o : litteral + phAutoManualReason)
 //   4. config.cpp:379            (~530 o : litteral + phAutoManualReason)
 //   5. mqtt_manager.cpp:770      ("Alerte: " + type + " - " + message)
-//   6. sensors.cpp:716           (ré-amorçage REFUSÉ)
-//   7. sensors.cpp:794           (filtre NON PRÊT depuis)
+//   6. sensors.cpp:_checkFrozenAndLog() — capteur pH figé (feature-152 : le
+//      ré-amorçage/NON PRÊT a disparu ; le détecteur de sonde figée reste le
+//      SEUL chemin restant vers « pas de valeur » durable, gate pool-chemistry)
+//   7. sensors.cpp:_checkFrozenAndLog() — capteur ORP figé (idem, voie ORP)
 //   8. main.cpp:942              (performFailSafeRestart, reason)
 //   9. fs_guard.cpp:212          (char ligne[128], EpisodeEnd)
 //  10. oom_guard.cpp:931         (char ligne[224], parachute sans reserve)
@@ -29,13 +31,13 @@
 // MUTATION ASSOCIÉE (à exécuter séparément, pas dans cette suite) : ramener
 // kLogMessageMaxBytes à 256 dans constants.h (en suspendant temporairement le
 // static_assert `kLogMessageMaxBytes >= 640` qui bloquerait sinon la
-// compilation avant même d'atteindre ces tests) fait échouer SIX de ces dix
-// cas -- chiffre MESURÉ le 16/09/2026, et non huit comme estimé au départ.
-// Les quatre autres (fs_guard.cpp:212, oom_guard.cpp:931, main.cpp:942,
-// sensors.cpp:716) restent sous 256 parce qu'ils sont bornés
-// STRUCTURELLEMENT par de petits tampons de pile fixes ou des littéraux
-// courts : c'est une propriété du firmware, pas un trou de cette suite.
-// Ne pas conclure à une régression si la mutation n'en tue que six.
+// compilation avant même d'atteindre ces tests) fait échouer CINQ de ces dix
+// cas -- chiffre RE-MESURÉ le 2026-10-11 (feature-152 a changé les sites 6/7,
+// ré-écrits sur le message [SENSOR_FROZEN] qui tient sous 256 o ; ne pas
+// recopier ce chiffre sans re-mesurer, ADR-0073). Les cinq qui survivent
+// (sites 6 à 10) restent sous 256 parce qu'ils sont bornés STRUCTURELLEMENT
+// par de petits tampons de pile fixes ou des littéraux courts : c'est une
+// propriété du firmware, pas un trou de cette suite.
 // =============================================================================
 
 #include <unity.h>
@@ -183,50 +185,40 @@ void test_site5_mqtt_alerte_journal_non_clampee(void) {
 }
 
 // =============================================================================
-// Site 6 -- sensors.cpp:716-720 -- ré-amorçage REFUSÉ.
+// Site 6 -- sensors.cpp:_checkFrozenAndLog() -- capteur pH figé (critical).
+// feature-152 : reconstruction FIDELE du message réel (String() Arduino, donc
+// formatage %.Nf a virgule fixe, jamais d'exposant). `raw` reprend le pire cas
+// deja retenu par ce projet pour une grandeur flottante non bornee au moment
+// du log (_phFilter.raw() renvoie la DERNIERE brute SOUMISE, y compris une
+// lecture hors plage survenue apres le gel -- pas necessairement dans [0;14]).
 // =============================================================================
-void test_site6_sensors_reamorcage_refuse(void) {
-  const char* label = "ORP";  // 3 caracteres, pire cas vs "pH" (2)
-  char motif[80];
-  // Branche `denied==1` : litteral + kSensorFilterRearmCooldownMs/60000
-  // (constante figee a 30 -- PAS une variable runtime, donc pas de pire cas
-  // a chercher au-dela de la valeur reelle).
-  snprintf(motif, sizeof(motif), "délai anti-répétition de %lu min non écoulé",
-           (unsigned long)(kSensorFilterRearmCooldownMs / 60000UL));
-
+void test_site6_sensors_capteur_ph_fige(void) {
   size_t n = (size_t)snprintf(gBuf, sizeof(gBuf),
-      "Filtre %s : ré-amorçage REFUSÉ (%s) sur brut %.3f — le filtre reste "
-      "NON PRÊT, régulation %s à l'arrêt : vérifier la sonde",
-      label, motif, -9999.999, label);
+      "[SENSOR_FROZEN] Capteur pH figé : %u lectures dans une bande < %.4f "
+      "autour de %.3f — régulation pH auto inhibée (valeur officielle "
+      "indisponible)",
+      (unsigned)kSensorFrozenSamples, (double)kSensorFrozenEpsilonPh, -9999.999);
   TEST_ASSERT_TRUE(n > 0 && n < sizeof(gBuf));
   size_t len = strlen(gBuf);
   TEST_ASSERT_LESS_OR_EQUAL_size_t_MESSAGE(
-      kLogMessageMaxBytes, len, "sensors.cpp:716 -- reamorcage refuse");
+      kLogMessageMaxBytes, len,
+      "sensors.cpp:_checkFrozenAndLog -- capteur pH fige (critical)");
 }
 
 // =============================================================================
-// Site 7 -- sensors.cpp:788-794 -- filtre NON PRÊT durablement.
+// Site 7 -- sensors.cpp:_checkFrozenAndLog() -- capteur ORP figé (critical).
 // =============================================================================
-void test_site7_sensors_filtre_non_pret_depuis(void) {
-  const char* label = "ORP";
-  // minutes = (nowMs - since) / 60000, nowMs/since en uint32_t (millis()) :
-  // le pire cas ABSOLU est borne par 2^32-1 ms / 60000 = 71582 (5 chiffres),
-  // jamais davantage (arithmetique 32 bits, cf. commentaire log_arena_logic
-  // sur le repliement de millis()).
-  const unsigned long minutes = 4294967295UL / 60000UL;  // 71582
-  const char* cause = "ré-amorçage refusé (sonde suspecte)";  // le plus long des 4
-  const unsigned rejected = 255;  // uint8_t max
-
+void test_site7_sensors_capteur_orp_fige(void) {
   size_t n = (size_t)snprintf(gBuf, sizeof(gBuf),
-      "Filtre %s NON PRÊT depuis %lu min alors que la filtration tourne et "
-      "que les mesures sont représentatives — régulation %s À L'ARRÊT (cause "
-      "probable : %s, rejets=%u). Vérifier la sonde ; réinitialisation du "
-      "filtre possible depuis l'interface.",
-      label, minutes, label, cause, rejected);
+      "[SENSOR_FROZEN] Capteur ORP figé : %u lectures dans une bande < %.2f "
+      "mV autour de %.1f mV — régulation ORP auto inhibée (valeur officielle "
+      "indisponible)",
+      (unsigned)kSensorFrozenSamples, (double)kSensorFrozenEpsilonOrp, -9999.9);
   TEST_ASSERT_TRUE(n > 0 && n < sizeof(gBuf));
   size_t len = strlen(gBuf);
   TEST_ASSERT_LESS_OR_EQUAL_size_t_MESSAGE(
-      kLogMessageMaxBytes, len, "sensors.cpp:794 -- filtre non pret durablement");
+      kLogMessageMaxBytes, len,
+      "sensors.cpp:_checkFrozenAndLog -- capteur ORP fige (critical)");
 }
 
 // =============================================================================
@@ -279,8 +271,8 @@ int main(int argc, char** argv) {
   RUN_TEST(test_site3_mqtt_mode_refuse_avec_trace);
   RUN_TEST(test_site4_config_critical_bascule_non_acquittee);
   RUN_TEST(test_site5_mqtt_alerte_journal_non_clampee);
-  RUN_TEST(test_site6_sensors_reamorcage_refuse);
-  RUN_TEST(test_site7_sensors_filtre_non_pret_depuis);
+  RUN_TEST(test_site6_sensors_capteur_ph_fige);
+  RUN_TEST(test_site7_sensors_capteur_orp_fige);
   RUN_TEST(test_site8_main_reason_autoguerison);
   RUN_TEST(test_site9_fsguard_episode_retabli);
   RUN_TEST(test_site10_oomguard_parachute_sans_reserve);

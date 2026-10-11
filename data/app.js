@@ -2152,12 +2152,6 @@
     return out;
   }
 
-  // Offset actuellement appliqué par le firmware (config, pas le champ de saisie).
-  function _phOffsetValue() {
-    const v = window._config?.ph_offset;
-    return (typeof v === "number" && isFinite(v)) ? v : 0;
-  }
-
   // Formatage français : virgule décimale, 2 décimales, signe explicite si demandé.
   function _fmtPh(v, signed) {
     const s = Math.abs(v).toFixed(2).replace(".", ",");
@@ -2900,10 +2894,10 @@
   // ---------- Sensor data loop (/data) ----------
   const SENSOR_REFRESH_MS = 30000;
   const SENSOR_RETRY_MS = 2000;
-  // feature-138 (B1) : cadence de FETCH des lignes de dispersion (panneau Avancé
-  // uniquement, cf. _armDispersionRefresh). Volontairement moins agressive que
-  // le heartbeat WS (kWsHeartbeatMs = 12000) : une page restée ouverte ne doit
-  // pas concurrencer la détection de perte de connexion.
+  // feature-138 (B1) : cadence de FETCH des lignes d'état du filtre de mesure
+  // (panneau Avancé uniquement, cf. _armFilterStateRefresh). Volontairement
+  // moins agressive que le heartbeat WS (kWsHeartbeatMs = 12000) : une page
+  // restée ouverte ne doit pas concurrencer la détection de perte de connexion.
   const DISPERSION_REFRESH_MS = 15000;
   let lastSensorDataLoadTime = 0; // Timestamp du dernier chargement des données
   let sensorDataLoadInFlight = null;
@@ -2960,8 +2954,8 @@
   // — il ne décrit plus rien (plus d'analyse de stabilité dans cet appareil)
   // et c'est exactement le vocabulaire que l'utilisateur a dit ne plus
   // comprendre. Remplacé par `_measuresWaitText(data)` : MÊME source que le
-  // bandeau de blocage / la pastille / le chip filtre (codes 18/22), pour
-  // qu'un seul endroit du code puisse se tromper sur ce délai, pas quatre.
+  // bandeau de blocage / la pastille (code 18), pour qu'un seul endroit du
+  // code puisse se tromper sur ce délai, pas trois.
   // `water_present === true` est garanti dans cette branche (cf. condition
   // ci-dessous) : la sous-branche « filtration arrêtée » de
   // _measuresWaitText() ne peut pas s'y déclencher, aucune contradiction.
@@ -3048,9 +3042,9 @@
 
     // Reste de la classification firmware (DOSE_BLOCK_CODES), faits non
     // encore sourcés ailleurs (DOSE_BLOCK_CODE_ALREADY_SOURCED) : watchdog,
-    // capteur instable, calibration insuffisante, stabilisation post-cal,
-    // mélange en cours, régulation non automatique, anti-rafale, sonde
-    // figée/muette, sécurité pH/ORP active…
+    // calibration insuffisante, stabilisation post-cal, mélange en cours,
+    // régulation non automatique, anti-rafale, sonde figée/muette, sécurité
+    // pH/ORP active…
     // feature-148 (B1) : second garde-fou, orthogonal au Set ci-dessus — une
     // cause EFFECTIVEMENT portée par le bandeau du tableau de bord
     // (doseBlockBannerCarries(), lit le même plan pur que le bandeau) ne doit
@@ -3834,7 +3828,7 @@
   // RESTAURÉ sur décision du coordinateur (le lot précédent l'avait remplacé
   // par les libellés statiques DOSE_BLOCK_CODES[7]/[8] — refusé). Décompte à
   // la seconde, PAS un libellé figé : c'est précisément le défaut corrigé ce
-  // matin sur les codes 15/19 (« un message sans fin annoncée ne vaut rien »),
+  // matin sur le code 15 (« un message sans fin annoncée ne vaut rien »),
   // et la demande la plus constante de l'utilisateur. Segment NEUTRE de
   // faible priorité (ux-ui-designer : « relocalisé tel quel, pas supprimé,
   // pas tranché pour un futur chantier »). Texte et calcul INCHANGÉS depuis
@@ -5193,10 +5187,10 @@
     // quand il n'y en a pas — les libellés des codes 2 et 10-14 sont déjà
     // assez courts pour une pastille.
     let short = (entry && (entry.pill || entry.chip)) || info.label || "";
-    // feature-139 (v2.62.0, lot B) : codes 18/22 — `info.label` porte déjà le
+    // feature-139 (v2.62.0, lot B) : code 18 — `info.label` porte déjà le
     // texte DÉTERMINISTE (_measuresWaitText), il doit primer sur `entry.chip`
     // (repli statique hors-ligne de la table).
-    if (info.code === 18 || info.code === 22) short = info.label;
+    if (info.code === 18) short = info.label;
     if (info.code === DOSE_BLOCK_CODE_GUARD) {
       // Sentinelle 250 : cause de GARDE, message porteur de valeurs runtime →
       // trop long pour une pastille (le modal filtre garde le texte complet).
@@ -6330,6 +6324,9 @@
       _phProbeRefreshFinish(true);
     }
 
+    // feature-025 : ligne brute discrète (brut/maj) de la carte « Lecture pH ».
+    updateFilterSub('ph', json);
+
     // Mettre à jour le contenu du modal si ouvert
     const modal = $("#ph-probe-modal");
     if (modal && modal.open) _renderPhProbeModalValues(json);
@@ -6361,6 +6358,16 @@
       zeroEl.textContent = fmtMv(zero);
     }
     ageEl.textContent = formatProbeAge(ageMs);
+
+    // feature-152 (B6) : 3 champs de diagnostic de la chaîne de mesure,
+    // absorbés ici (plus de modal « filtre » séparé) — valeur brute et valeur
+    // RETENUE (celle qui décide, cf. getPhFiltered côté firmware), + fraîcheur.
+    const fmRawEl = $("#ph-fm-raw");
+    if (fmRawEl) fmRawEl.textContent = _fmtFilterVal('ph', json?.phRaw);
+    const fmFilEl = $("#ph-fm-filtered");
+    if (fmFilEl) fmFilEl.textContent = _fmtFilterVal('ph', json?.phFiltered);
+    const fmAgeEl = $("#ph-fm-age");
+    if (fmAgeEl) fmAgeEl.textContent = _filterAgeText('ph');
   }
 
   function _phProbeRefreshFinish(success) {
@@ -6447,18 +6454,14 @@
     });
   }
 
-  // ---- feature-025 : chips + modals « état filtre » pH/ORP ----
-  // La valeur principale (#xx_current_value) affiche déjà la valeur FILTRÉE (json.ph/json.orp).
-  // Ces helpers gèrent la ligne brute discrète, le chip d'état et le modal détail.
-  const FILTER_REJECT_WINDOW_MS = 30000; // fenêtre « pics rejetés récents »
-  // v2.25.1 : au-delà de cette fenêtre sans valeur brute, l'absence de lecture
-  // cesse d'être un blip et devient « EZO indisponible » (2 rafraîchissements
-  // /data de 30 s au minimum avant de condamner la sonde).
-  const FILTER_RAW_BLIP_MS = 60000;
-  const _filterState = {
-    ph:  { lastRawAt: 0, prevRejected: null, lastRejectAt: 0 },
-    orp: { lastRawAt: 0, prevRejected: null, lastRejectAt: 0 },
-  };
+  // ---- feature-025 (réduit par feature-152) : ligne brute + modal diagnostic pH/ORP ----
+  // La valeur principale (#xx_current_value) affiche déjà la valeur OFFICIELLE
+  // (json.ph/json.orp). Les chips et modal « état filtre » séparés ont disparu
+  // (plus d'état bloquant à diagnostiquer : measures_valid/le badge capteur
+  // couvrent déjà la montée en régime, cf. measureStateSegments()). Il ne reste
+  // que la ligne brute discrète et trois champs de diagnostic (brut, valeur
+  // retenue, âge), absorbés dans le modal sonde de chaque voie.
+  const _lastRawAt = { ph: 0, orp: 0 };
 
   function _filterRawIsValid(v) { return v != null && !(typeof v === 'number' && isNaN(v)); }
 
@@ -6468,66 +6471,28 @@
   }
 
   function _filterAgeText(prefix) {
-    const st = _filterState[prefix];
-    if (!st || !st.lastRawAt) return '--';
-    const age = Date.now() - st.lastRawAt;
+    const lastAt = _lastRawAt[prefix];
+    if (!lastAt) return '--';
+    const age = Date.now() - lastAt;
     if (age < 3600000) return _elapsedText(age, 'il y a', 10000);
     return formatProbeAge(age);
   }
 
-  // Le compteur de rejets est cumulatif côté firmware : on ne signale « Pics rejetés »
-  // que si le compteur a augmenté récemment (fenêtre FILTER_REJECT_WINDOW_MS).
-  function _classifyFilterState(json, prefix, st) {
-    const raw = json?.[prefix + 'Raw'];
-    // v2.20.3 (D5) : l'alarme firmware « filtre non prêt durablement » prime sur
-    // TOUT le reste, y compris sur « EZO indisponible ». Elle signifie qu'il n'y a
-    // plus AUCUNE régulation depuis > 5 min alors que la filtration tourne — c'est
-    // le seul état que l'utilisateur doit voir immédiatement.
-    if (json?.[prefix + 'FilterAlarm'] === true) {
-      return { cls: 'bad', label: 'Régulation à l’arrêt' };
-    }
-    // v2.25.1 : le CODE de refus discrimine PANNE (sonde figée / muette) et état
-    // transitoire (préchauffage, porte de validité fermée). Il passe avant le
-    // test « brut invalide », qui condamnait l'EZO sans savoir pourquoi.
-    const blockInfo = _doseBlockInfo(json, prefix);
-    const entry = DOSE_BLOCK_CODES[blockInfo.code];
-    // feature-139 (v2.62.0, lot B) : codes 18/22 — `blockInfo.label` porte le
-    // texte DÉTERMINISTE (_measuresWaitText), prioritaire sur `entry.chip`
-    // (repli statique hors-ligne de la table).
-    const short = (blockInfo.code === 18 || blockInfo.code === 22)
-      ? blockInfo.label
-      : (entry && entry.chip);   // undefined si code absent / non qualifiant
-    if (short && entry.tone === 'fault') return { cls: 'bad', label: short };
-    // Remonté avant le test « brut invalide », qui le masquait (une sonde
-    // instable finit souvent par rendre une lecture nulle).
-    if (json?.[prefix + 'FilterUnstable'] === true) return { cls: 'bad', label: 'Capteur instable' };
-    if (!_filterRawIsValid(raw)) {
-      // Une lecture manquante alors qu'on en avait une il y a moins d'une minute
-      // est un blip de bus, pas une panne établie : on nuance au lieu de conclure.
-      const recent = st && st.lastRawAt && (Date.now() - st.lastRawAt) < FILTER_RAW_BLIP_MS;
-      return recent ? { cls: 'warn', label: 'Lecture EZO manquante' }
-                    : { cls: 'unknown', label: 'EZO indisponible' };
-    }
-    // Cause connue et NORMALE (préchauffage, mesure en pause) :
-    // ton d'attente, jamais le registre visuel d'une panne.
-    if (short) return { cls: 'warn', label: short };
-    // Repli hors taxonomie (code absent/non qualifiant mais FilterReady déjà
-    // à false) : même correctif que les codes 15/19 ci-dessus — même mot
-    // « Stabilisation… » aurait réintroduit le même défaut sur ce chemin plus
-    // rare (pas d'offre d'action ici, ce n'est qu'un chip).
-    if (json?.[prefix + 'FilterReady'] === false) return { cls: 'warn', label: 'Mesures en place' };
-    if (st.lastRejectAt && (Date.now() - st.lastRejectAt) < FILTER_REJECT_WINDOW_MS) {
-      return { cls: 'warn2', label: 'Pics rejetés' };
-    }
-    return { cls: 'good', label: 'Mesure stable' };
-  }
-
+  // feature-152 (B6) : « médiane » retiré de cette ligne — étape interne du
+  // lissage, pas un fait à lire en permanence sur l'écran principal.
   function _renderFilterSub(prefix, json) {
     const el = $(`#${prefix}-filter-sub`);
     if (!el) return;
     const raw = _fmtFilterVal(prefix, json?.[prefix + 'Raw']);
-    const med = _fmtFilterVal(prefix, json?.[prefix + 'Median']);
-    el.textContent = `brut ${raw} · médiane ${med} · maj ${_filterAgeText(prefix)}`;
+    el.textContent = `brut ${raw} · maj ${_filterAgeText(prefix)}`;
+  }
+
+  // Met à jour la ligne brute discrète (brut/maj) + l'horodatage interne de
+  // fraîcheur. Appelé depuis loadSensorData après chaque push WS / fetch /data.
+  function updateFilterSub(prefix, json) {
+    const raw = json?.[prefix + 'Raw'];
+    if (_filterRawIsValid(raw)) _lastRawAt[prefix] = Date.now();
+    _renderFilterSub(prefix, json);
   }
 
   // ==========================================================================
@@ -6538,8 +6503,9 @@
   //   - « mesure filtrée indisponible (NaN) » contenait « indispo » → affichage
   //     « EZO indisponible » pendant ~6 min au boot, sonde parfaitement saine ;
   //   - « warmup / EZO injoignable » contenait « warm » ET « ezo », « warm » testé
-  //     d'abord → une VRAIE panne d'EZO s'affichait « Stabilisation du filtre »,
-  //     c'est-à-dire une panne matérielle maquillée en état normal.
+  //     d'abord → une VRAIE panne d'EZO s'affichait comme une mise en place
+  //     normale des mesures, c'est-à-dire une panne matérielle maquillée en
+  //     état normal.
   // Le firmware publie désormais `ph/orpDoseBlockedCode` (entier) À CÔTÉ du texte.
   // Ces valeurs sont un CONTRAT DE SÉRIALISATION FIGÉ (jamais renumérotées, toute
   // nouvelle cause s'ajoute à la fin) — cf. enum DoseRefusal, src/dosing_logic.h.
@@ -6550,16 +6516,16 @@
   //   'fault'   → PANNE (sonde figée, sonde muette, watchdog…) : ton d'alerte ;
   //   'unknown' → cause non attribuable (le firmware lui-même dit qu'il ne sait
   //               pas, ou code plus récent que cette page) : aveu d'ignorance.
-  // chip : libellé court pour le chip d'état filtre (absent = pas d'incidence).
+  // chip : libellé court pour la pastille « Débit d'injection » (absent = pas d'incidence).
   // stab : cause appartenant à la famille « stabilisation des mesures », déjà
   //        annoncée par le badge capteur (cf. measureStateSegments) — sert à ne
   //        pas afficher deux messages concurrents côte à côte.
   //
-  // feature-139 (v2.62.0, lot B puis correctif gate du 2026-10-08) : les codes
-  // 18 (ReadingNaNGateClosed) et 22 (FilterGateClosed) — l'ATTENTE avant la
-  // première mesure jugée fiable après une coupure d'eau/filtration — passent
-  // d'un libellé STATIQUE qui ne parlait que d'instabilité à un texte
-  // DÉTERMINISTE qui ANNONCE SA FIN.
+  // feature-139 (v2.62.0, lot B puis correctif gate du 2026-10-08) : le code
+  // 18 (ReadingNaNGateClosed, commun à pH et ORP depuis feature-152) —
+  // l'ATTENTE avant la première mesure jugée fiable après une coupure
+  // d'eau/filtration — passe d'un libellé STATIQUE qui ne parlait que
+  // d'instabilité à un texte DÉTERMINISTE qui ANNONCE SA FIN.
   // ⚠️ Correctif gate (2e passage, 2026-10-08) : un PREMIER calcul côté client
   // (`600 − measures_stab_elapsed_s`, mirroir local de kPurgeFloorMs) MENTAIT
   // d'un facteur 10 sur le cas le plus fréquent de ce lot — un cycle DISPENSÉ
@@ -6574,7 +6540,7 @@
   // « purge » / « représentativité » jugés incompréhensibles) : on dit ce qui
   // se passe et quand ça finit, jamais plus.
   // ⚠️ Correctif code-reviewer (3e occurrence du même défaut dans ce lot,
-  // 2026-10-08) : filtration ARRÊTÉE ⇒ le code 22 (FilterGateClosed) reste
+  // 2026-10-08) : filtration ARRÊTÉE ⇒ le code 18 (ReadingNaNGateClosed) reste
   // émis EN PERMANENCE, et `measures_dose_available_in_s` ne peut PLUS être un
   // nombre fixe (il n'y a pas de date de reprise tant que rien ne circule) :
   // le firmware OMET désormais ce champ dans ce cas précis (pas de sentinelle
@@ -6610,12 +6576,20 @@
     return 'Mesure en pause, reprise automatique à venir';
   }
   const DOSE_BLOCK_CODE_GUARD = 250;
+  // feature-152 (refonte de la chaîne de mesure) : codes 4 (FilterNotReady) et
+  // 5 (FilterUnstable) RETIRÉS — les deux gardes séparées (disponibilité et
+  // fiabilité du signal) ont disparu, la VALEUR OFFICIELLE encapsule désormais
+  // directement warmup/sonde figée/péremption/porte fermée (NaN dans tous ces
+  // cas). Codes
+  // 19-22 RETIRÉS aussi : ORP partage désormais EXACTEMENT les mêmes codes
+  // 15-18 que pH (garde unique isnan(reading), qualifiée par le même état de
+  // filtre pour les deux voies). Ces six numéros ne sont JAMAIS recyclés — un
+  // appareil non mis à jour afficherait l'ancien libellé sur un code réattribué.
   const DOSE_BLOCK_CODES = {
     1:  { tone: 'fault',   label: 'Watchdog inactif — dosage suspendu' },
     2:  { tone: 'normal',  label: 'Filtration arrêtée' },
     3:  { tone: 'unknown', label: 'Mesure indisponible — cause indéterminée' },
-    4:  { tone: 'unknown', label: 'Filtre de mesure non prêt — cause indéterminée' },
-    5:  { tone: 'fault',   label: 'Capteur instable (mesures rejetées)', chip: 'Capteur instable' },
+    // 4, 5 : RETIRÉS (feature-152), ne jamais recycler — voir note ci-dessus.
     6:  { tone: 'fault',   label: 'Calibration insuffisante' },
     7:  { tone: 'normal',  label: 'Stabilisation post-calibration' },
     8:  { tone: 'normal',  label: 'Mélange en cours' },
@@ -6625,43 +6599,29 @@
     12: { tone: 'normal',  label: 'Limite cycles/jour atteinte — reprise à minuit' },
     13: { tone: 'normal',  label: 'Anti-rafale — patienter avant la prochaine injection' },
     14: { tone: 'normal',  label: 'Anti-rafale (15 min) — patienter avant la prochaine injection' },
-    // Qualification de la garde 3 (lecture filtrée NaN). Libellé/chip revus
-    // (retour utilisateur « message de stabilisation du filtre ») : durée
-    // DÉTERMINISTE et connue d'avance (kSensorFilterCentralWindow = 13
-    // échantillons × kPhOrpSensorIntervalMs = 5 s ⇒ 65 s, src/constants.h:1417
-    // et :177) — dite en ordre de grandeur, PAS en engagement ferme (une sonde
-    // muette prolonge l'attente), donc AUCUN champ /data ou WS à ajouter, et
-    // surtout AUCUN décompte fabriqué côté client (un rechargement le
-    // remettrait à zéro et mentirait). ⚠️ Volontairement SANS cause annoncée
-    // (« après un redémarrage ») : SensorFilter::rearm() se déclenche aussi à
-    // chaque réouverture de la porte d'eau (reprise de filtration), pas
-    // seulement au boot — l'annoncer comme un redémarrage aurait été faux la
-    // plupart du temps. « Stabilisation » / « filtre » retirés (jargon jugé
-    // peu clair) : plus aucune offre d'action sur ce code (retiré ce matin).
+    // Qualification de la garde 3 (lecture officielle NaN), COMMUNE à pH et
+    // ORP depuis feature-152 (une seule garde isnan(reading), qualifiée par
+    // l'état interne du filtre). Durée DÉTERMINISTE et connue d'avance
+    // (kSensorFilterMedianWindow échantillons × cadence de lecture) — dite en
+    // ordre de grandeur, PAS en engagement ferme (une sonde muette prolonge
+    // l'attente), donc AUCUN champ /data ou WS à ajouter, et surtout AUCUN
+    // décompte fabriqué côté client (un rechargement le remettrait à zéro et
+    // mentirait).
     15: { tone: 'normal',  label: 'Les mesures se mettent en place — environ une minute', chip: 'Mesures en place', stab: true },
     16: { tone: 'fault',   label: 'Sonde figée — vérifier la sonde', chip: 'Sonde figée' },
     17: { tone: 'fault',   label: 'Plus aucune mesure acceptée — vérifier la sonde', chip: 'Sonde muette' },
     // feature-139 (v2.62.0, lot B) : label/chip ci-dessous = REPLI STATIQUE
     // seulement (firmware antérieur à measures_stab_elapsed_s, ou appel qui
     // n'aurait pas accès à `json`) — l'affichage normal passe par
-    // _measuresWaitText(json), voir les 3 points d'appel (_doseBlockInfo,
-    // _renderDosePill, _classifyFilterState) : ne pas reformuler ici sans
-    // reformuler là-bas.
+    // _measuresWaitText(json), voir les 2 points d'appel (_doseBlockInfo,
+    // _renderDosePill) : ne pas reformuler ici sans reformuler là-bas.
     18: { tone: 'normal',  label: 'Reprise automatique à venir', chip: 'Reprise à venir', stab: true },
-    // Qualification de la garde 3b (filtre non prêt) — même phénomène que le
-    // code 15 sur l'autre voie, même libellé/chip (voir commentaire ci-dessus).
-    19: { tone: 'normal',  label: 'Les mesures se mettent en place — environ une minute', chip: 'Mesures en place', stab: true },
-    20: { tone: 'fault',   label: 'Sonde figée — vérifier la sonde', chip: 'Sonde figée' },
-    21: { tone: 'fault',   label: 'Plus aucune mesure acceptée — vérifier la sonde', chip: 'Sonde muette' },
-    22: { tone: 'normal',  label: 'Reprise automatique à venir', chip: 'Reprise à venir', stab: true },
     // feature-092 — sentinelle 250 (cause de GARDE) : le message firmware porte
-    // des valeurs runtime (seuils, mesure) et reste cité tel quel par le modal
-    // filtre ; la pastille des cartes « Débit d'injection » a besoin d'un
-    // libellé COURT, il vit donc ici, dans la source unique.
-    // ⚠️ Le champ s'appelle `pill`, PAS `chip`, à dessein : `chip` est consommé
-    // par _classifyFilterState() pour le chip d'état FILTRE (qui décrit la
-    // mesure, pas le dosage) — le nommer `chip` détournerait ce chip vers une
-    // cause de dosage, sans rapport avec l'état de la sonde.
+    // des valeurs runtime (seuils, mesure) et reste cité tel quel ; la pastille
+    // des cartes « Débit d'injection » a besoin d'un libellé COURT, il vit donc
+    // ici, dans la source unique.
+    // `chip` : libellé court consommé par _renderDosePill() (pastille des
+    // cartes « Débit d'injection »), PAS un chip d'état filtre (retiré).
     // `pillOrp` / `toneOrp` : côté chlore, cette garde est l'inhibition sur pH
     // élevé. État d'ATTENTE normal, GRIS — jamais ambre, jamais rouge (verdict
     // pool-chemistry feature-092 : un écart de chlore pendant un pH haut n'est
@@ -6720,17 +6680,16 @@
   //   2  Filtration arrêtée        → measureStateSegments() (water_present)
   //   3  Mesure indisponible (cause indéterminée) → subsumé par « Capteur
   //      indisponible » (valeur ph/orp null), même fait pour l'utilisateur
-  //   4  idem, variante « filtre non prêt »
   //   7  Stabilisation post-calibration → dosingStabOrMixSegment() : décompte
   //      à la seconde RESTAURÉ (refus coordinateur du libellé statique figé —
-  //      exactement le défaut corrigé ce matin sur les codes 15/19, et la
+  //      exactement le défaut corrigé ce matin sur le code 15, et la
   //      demande la plus constante de l'utilisateur : dire combien de temps).
   //   8  Mélange en cours           → idem, « Pause mélange : M min S s ».
   //   10 Limite journalière        → flag *_limit_reached (updateSensorBadges)
   //   11 Limite horaire            → traité explicitement (règle de combinaison)
   //   12 Limite cycles/jour        → idem
-  //   15,18,19,22 (famille « stab ») → measureStateSegments() (measures_valid)
-  const DOSE_BLOCK_CODE_ALREADY_SOURCED = new Set([2, 3, 4, 7, 8, 10, 11, 12, 15, 18, 19, 22]);
+  //   15,18 (famille « stab »)     → measureStateSegments() (measures_valid)
+  const DOSE_BLOCK_CODE_ALREADY_SOURCED = new Set([2, 3, 7, 8, 10, 11, 12, 15, 18]);
 
   // Traduit le couple (code, texte) servi pour `prefix` en { code, label, tone }.
   // SÉMANTIQUE STRICTE des états du champ code (clé absente ≠ null ≠ 0) :
@@ -6765,10 +6724,10 @@
       const guardTone = (prefix === 'orp' && g && g.toneOrp) ? g.toneOrp : 'fault';
       return { code, label: text || 'Sécurité pH/ORP active', tone: guardTone };
     }
-    // feature-139 (v2.62.0, lot B) : codes 18/22 — libellé DÉTERMINISTE calculé
+    // feature-139 (v2.62.0, lot B) : code 18 — libellé DÉTERMINISTE calculé
     // depuis measures_stab_elapsed_s (cf. _measuresWaitText ci-dessus), jamais
     // le texte statique de la table (devenu simple repli hors-ligne).
-    if (code === 18 || code === 22) {
+    if (code === 18) {
       const e = DOSE_BLOCK_CODES[code];
       return { code, label: _measuresWaitText(json), tone: e ? e.tone : 'normal' };
     }
@@ -6793,19 +6752,17 @@
     return _elapsedText(durationS * 1000, 'bloqué depuis') || '—';
   }
 
-  // null si la voie n'est pas bloquée, OU si #regul-alert affiche déjà cette
-  // voie (non-duplication voulue entre les deux bandeaux).
+  // null si la voie n'est pas bloquée.
   function _doseBlockRowData(json, prefix) {
     const info = _doseBlockInfo(json, prefix);
     if (!info || info.tone === 'none') return null;
-    if (json?.[prefix + 'FilterAlarm'] === true) return null;
     const raw = json?.[prefix + 'DoseBlockedForS'];
     const durationS = (typeof raw === 'number' && isFinite(raw)) ? raw : null;
     return { prefix, code: info.code, label: info.label, tone: info.tone, durationS };
   }
 
   // feature-138 (B3) — GO SOUS CONDITIONS pool-chemistry (C1 à C6, 2026-10-04).
-  // LIEN DE NAVIGATION PUR, comme #regul-alert-cta : ne touche JAMAIS
+  // LIEN DE NAVIGATION PUR : ne touche JAMAIS
   // ph/orp_regulation_mode (basculer ce sélecteur persiste la config et COUPE
   // la régulation automatique — cf. le handler de #ph_regulation_mode). Aucune
   // présélection de volume/durée/produit (C1) : on se contente de naviguer vers
@@ -6885,15 +6842,15 @@
     // texte de la ligne et le bouton « Ouvrir l'injection manuelle » restent
     // inchangés.
     // ⚠️ Correctif gate pool-chemistry (3e passage, 2026-10-09, feature-146) :
-    // pendant une attente COURTE et AUTO-RÉSOLUTIVE (transitoires 15/18/19/22 —
+    // pendant une attente COURTE et AUTO-RÉSOLUTIVE (transitoires 15/18 —
     // fenêtre de lissage en remplissage ou attente de circulation), l'appareil
     // ne doit RIEN proposer : ni raccourci d'injection manuelle, ni chloration
     // de secours. Il annonce la cause et la durée, point. Les DEUX offres sont
-    // donc restreintes aux seuls états INDÉTERMINÉS, sans fin annoncée (3
-    // ReadingNaN, 4 FilterNotReady) — `shortcutPrefix`/`shortcutCode` ne sont
-    // désormais produits que pour ces deux codes (canShortcut, plus bas, filtre
-    // sur DOSE_BLOCK_SHORTCUT_CODES = [3, 4]) : aucune exclusion locale à
-    // empiler ici, la restriction est faite UNE fois, à la source.
+    // donc restreintes au seul état INDÉTERMINÉ, sans fin annoncée (3
+    // ReadingNaN) — `shortcutPrefix`/`shortcutCode` ne sont désormais produits
+    // que pour ce code (canShortcut, plus bas, filtre sur
+    // DOSE_BLOCK_SHORTCUT_CODES = [3]) : aucune exclusion locale à empiler ici,
+    // la restriction est faite UNE fois, à la source.
     if (shortcutPrefix === 'orp' && !rescueActive) {
       const cfg = window._config || {};
       const isManual = (cfg.orp_regulation_mode || 'automatic') === 'manual';
@@ -6907,7 +6864,7 @@
         // L7 — libellé IMPOSÉ par le gate pool-chemistry (2e passage,
         // 2026-10-08, feature-139), repris MOT À MOT. Remplace le texte
         // antérieur (feature-140) : ne s'affiche plus que pour les vraies
-        // pannes de mesure (codes 3, 4, 15, 19 — jamais 18/22, exclus ci-dessus).
+        // pannes de mesure (code 3 — jamais 15/18, exclus ci-dessus).
         rescueHint.textContent = "Le chlore n'est plus dosé : l'appareil n'a plus de mesure fiable, et rien ne dit quand elle reviendra. La chloration de secours injecte un volume fixe, sans tenir compte de la mesure — à réserver aux pannes de sonde qui durent.";
         container.appendChild(rescueHint);
 
@@ -6953,44 +6910,39 @@
     }
 
     // LISTE DES CODES « ATTENTE DE MESURE » — 3e passage pool-chemistry,
-    // 2026-10-09, feature-146. Les SIX codes ci-dessous partagent la même
-    // cause générique (mesure pH/ORP non exploitable), mais se répartissent en
-    // DEUX familles bien distinctes du point de vue de l'utilisateur :
+    // 2026-10-09, feature-146 ; réduite de SIX à TROIS codes par feature-152
+    // (codes 4/19/22 retirés — ORP partage désormais les mêmes codes 15/18 que
+    // pH). Ces codes partagent la même cause générique (mesure pH/ORP non
+    // exploitable), mais se répartissent en DEUX familles bien distinctes du
+    // point de vue de l'utilisateur :
     //   - 3  ReadingNaN            état INDÉTERMINÉ, sans fin annoncée
-    //   - 4  FilterNotReady        état INDÉTERMINÉ, sans fin annoncée
     //   - 15 ReadingNaNWarmup      TRANSITOIRE, borné et annoncé à l'écran
     //   - 18 ReadingNaNGateClosed  TRANSITOIRE, borné et annoncé à l'écran
-    //   - 19 FilterWarmup         TRANSITOIRE, borné et annoncé à l'écran
-    //   - 22 FilterGateClosed     TRANSITOIRE, borné et annoncé à l'écran
-    // Cette liste à SIX codes ne sert plus qu'à la FUSION pH→ORP (plus bas) :
-    // c'est elle qui détermine si la conséquence ORP (code 250) partage la
-    // cause racine pH. Elle ne doit JAMAIS déterminer un raccourci ou une
-    // offre de secours — un transitoire court et auto-résolutif ne doit RIEN
-    // proposer, cf. DOSE_BLOCK_SHORTCUT_CODES ci-dessous.
+    // Cette liste ne sert plus qu'à la FUSION pH→ORP (plus bas) : c'est elle
+    // qui détermine si la conséquence ORP (code 250) partage la cause racine
+    // pH. Elle ne doit JAMAIS déterminer un raccourci ou une offre de secours
+    // — un transitoire court et auto-résolutif ne doit RIEN proposer, cf.
+    // DOSE_BLOCK_SHORTCUT_CODES ci-dessous.
     // ⚠️ Toute addition à cette liste exige un passage du gate pool-chemistry.
-    const DOSE_BLOCK_MEASURE_WAIT_CODES = [3, 4, 15, 18, 19, 22];
+    const DOSE_BLOCK_MEASURE_WAIT_CODES = [3, 15, 18];
 
     // LISTE BLANCHE des causes ouvrant une OFFRE (raccourci d'injection
     // manuelle ET chloration de secours, gate pool-chemistry 3e passage,
     // 2026-10-09, feature-146 — incident de production : un bandeau proposait
     // encore ces deux offres sur un transitoire de 24 s qui s'est résolu seul).
-    // RESTREINTE aux deux seuls états INDÉTERMINÉS, sans fin annoncée — les
-    // transitoires (15, 18, 19, 22) sont retirés des DEUX offres : proposer un
-    // geste sur une attente qui se termine seule n'aide personne, et le texte
-    // L7 (« rien ne dit quand elle reviendra ») y serait un mensonge.
-    // L'injection manuelle reste pleinement ATTEIGNABLE sur ces codes — par
+    // RESTREINTE au seul état INDÉTERMINÉ, sans fin annoncée — les transitoires
+    // (15, 18) sont retirés des DEUX offres : proposer un geste sur une
+    // attente qui se termine seule n'aide personne, et le texte L7 (« rien ne
+    // dit quand elle reviendra ») y serait un mensonge.
+    // L'injection manuelle reste pleinement ATTEIGNABLE sur ce code — par
     // #ph-inject-section / #orp-inject-section directement, sans raccourci —
     // on retire un raccourci, pas un recours.
     //   3  ReadingNaN       lecture filtrée NaN, état indéterminé
-    //   4  FilterNotReady   filtre non prêt, état indéterminé
-    // Les PANNES (16, 17, 20, 21) sont déjà écartées par le ton `fault`, et un
-    // code inconnu l'est par la liste blanche elle-même — on ne peut alors pas
+    // Les PANNES (16, 17) sont déjà écartées par le ton `fault`, et un code
+    // inconnu l'est par la liste blanche elle-même — on ne peut alors pas
     // exclure « filtration arrêtée ».
     // ⚠️ Toute addition à cette liste exige un passage du gate pool-chemistry.
-    const DOSE_BLOCK_SHORTCUT_CODES = [3, 4];
-    // NB : le code 5 (capteur instable) est volontairement ABSENT — il porte
-    // le ton `fault`, donc la condition de ton l'écarte déjà. L'inscrire ici
-    // ferait croire qu'il est offert alors qu'il est inatteignable.
+    const DOSE_BLOCK_SHORTCUT_CODES = [3];
     const canShortcut = (row) => !!row
       && (row.tone === 'normal' || row.tone === 'unknown')
       && row.code !== DOSE_BLOCK_FILTRATION_STOPPED_CODE
@@ -7005,13 +6957,12 @@
     //
     // CONDITION DE FUSION, non négociable, codée EXPLICITEMENT (pas par
     // approximation sur les textes) : orp.code === DOSE_BLOCK_CODE_GUARD (250)
-    // ET ph.code ∈ DOSE_BLOCK_MEASURE_WAIT_CODES ({3,4,15,18,19,22} — les SIX
-    // codes d'attente de mesure, pas la liste restreinte du raccourci/secours
+    // ET ph.code ∈ DOSE_BLOCK_MEASURE_WAIT_CODES ({3,15,18} — les codes
+    // d'attente de mesure, pas la liste restreinte du raccourci/secours
     // ci-dessus). Toute AUTRE valeur côté ORP (quota journalier, inhibition sur
-    // pH haut en régulation stable, pompe non caractérisée, filtre ORP
-    // instable…) est une cause INDÉPENDANTE ⇒ deux lignes, SANS EXCEPTION :
-    // fusionner là masquerait un second problème réel, ce qui serait pire que
-    // la redondance.
+    // pH haut en régulation stable, pompe non caractérisée…) est une cause
+    // INDÉPENDANTE ⇒ deux lignes, SANS EXCEPTION : fusionner là masquerait un
+    // second problème réel, ce qui serait pire que la redondance.
     //
     // ⚠️ Libellé IMPOSÉ MOT À MOT par le gate pool-chemistry (2e passage,
     // 2026-10-08, feature-139), opposable au même titre que L1-L9 : ne JAMAIS
@@ -7041,10 +6992,10 @@
           tone: 'normal', // jamais fault — cohérent avec toneOrp (code 250, voie ORP)
           durationText: _doseBlockDurationText(durationS),
           // Le chaînage feature-140 reste attaché à la ligne fusionnée. Mais
-          // depuis le 3e passage (feature-146), DOSE_BLOCK_SHORTCUT_CODES ([3,4])
-          // est plus ÉTROITE que DOSE_BLOCK_MEASURE_WAIT_CODES (fusion, 6 codes) :
-          // canShortcut(ph) ne vaut `true` QUE pour 3/4 (indéterminé, sans fin
-          // annoncée) — sur 15/18/19/22 (transitoires bornés et annoncés),
+          // depuis le 3e passage (feature-146), DOSE_BLOCK_SHORTCUT_CODES ([3])
+          // est plus ÉTROITE que DOSE_BLOCK_MEASURE_WAIT_CODES (fusion) :
+          // canShortcut(ph) ne vaut `true` QUE pour 3 (indéterminé, sans fin
+          // annoncée) — sur 15/18 (transitoires bornés et annoncés),
           // shortcutPrefix/shortcutCode ressortent `null` et ni le bouton
           // « Ouvrir l'injection manuelle » ni l'offre de secours (L7/bouton,
           // _renderDoseBlockRow) ne s'affichent. Voulu : rien à proposer sur une
@@ -7144,112 +7095,44 @@
     return !!_doseBlockBannerPlan(json).carries?.[prefix];
   }
 
-  function _renderFilterModalValues(prefix, json) {
-    const rawEl = $(`#${prefix}-fm-raw`);
+  // feature-152 (B6) : les 3 champs survivants (brut, valeur retenue, dernière
+  // mesure) sont absorbés dans le modal sonde de chaque voie — pH dans
+  // #ph-probe-modal (cf. _renderPhProbeModalValues), ORP dans #orp-filter-modal
+  // réutilisé/retitré (ci-dessous). Médiane, compteur de rejets, indicateur de
+  // disponibilité et dosage bloqué ont disparu avec le mécanisme qu'ils
+  // décrivaient (plus d'état bloquant à diagnostiquer, plus de réarmement
+  // manuel).
+  function _renderOrpProbeModalValues(json) {
+    const rawEl = $('#orp-fm-raw');
     if (!rawEl) return;
-    const medEl = $(`#${prefix}-fm-median`);
-    const filEl = $(`#${prefix}-fm-filtered`);
-    const rejEl = $(`#${prefix}-fm-rejected`);
-    const ageEl = $(`#${prefix}-fm-age`);
-    const rdyEl = $(`#${prefix}-fm-ready`);
-    const blockedRow = $(`#${prefix}-fm-blocked-row`);
-    const blockedEl = $(`#${prefix}-fm-blocked`);
-
-    rawEl.textContent = _fmtFilterVal(prefix, json?.[prefix + 'Raw']);
-    // feature-067 : diagnostic pH — brut EZO, offset appliqué, corrigé (brut + offset).
-    // Médiane et valeur filtrée sont déjà corrigées côté firmware.
-    if (prefix === 'ph') {
-      const off = _phOffsetValue();
-      const offEl = $('#ph-fm-offset');
-      const corEl = $('#ph-fm-corrected');
-      if (offEl) offEl.textContent = (off >= 0 ? '+' : '') + off.toFixed(2);
-      if (corEl) {
-        const raw = json?.phRaw;
-        corEl.textContent = _filterRawIsValid(raw) ? Number(raw + off).toFixed(2) : '--';
-      }
-    }
-    if (medEl) medEl.textContent = _fmtFilterVal(prefix, json?.[prefix + 'Median']);
-    if (filEl) filEl.textContent = _fmtFilterVal(prefix, json?.[prefix + 'Filtered']);
-    if (rejEl) { const r = json?.[prefix + 'RejectedCount']; rejEl.textContent = (typeof r === 'number') ? String(r) : '--'; }
-    if (ageEl) ageEl.textContent = _filterAgeText(prefix);
-    if (rdyEl) {
-      const ready = json?.[prefix + 'FilterReady'];
-      rdyEl.textContent = ready === true ? 'Oui' : (ready === false ? 'Non' : '--');
-    }
-
-    const block = _doseBlockInfo(json, prefix);
-    let reason = block.label;
-    let tone = block.tone;
-    if (!reason && json?.[prefix + 'MixingDelayActive'] === true) {
-      reason = 'Mélange en cours';
-      tone = 'normal';
-    }
-    if (blockedRow && blockedEl) {
-      // Le ton d'alerte est RÉSERVÉ aux pannes : un préchauffage ou une porte de
-      // validité fermée sont des états attendus et restent en ton neutre.
-      blockedEl.classList.toggle('probe-modal__value--bad', tone === 'fault');
-      if (reason) { blockedEl.textContent = reason; blockedRow.style.display = ''; }
-      else { blockedRow.style.display = 'none'; }
-    }
+    const filEl = $('#orp-fm-filtered');
+    const ageEl = $('#orp-fm-age');
+    rawEl.textContent = _fmtFilterVal('orp', json?.orpRaw);
+    if (filEl) filEl.textContent = _fmtFilterVal('orp', json?.orpFiltered);
+    if (ageEl) ageEl.textContent = _filterAgeText('orp');
   }
 
-  // Met à jour le chip d'état filtre + la ligne brute. Appelé depuis loadSensorData
-  // après chaque push WS / fetch /data.
-  function updateFilterChip(prefix, json) {
-    const chip = $(`#${prefix}-filter-chip`);
-    const lblEl = $(`#${prefix}-filter-chip-label`);
-    const st = _filterState[prefix];
-    if (!chip || !lblEl || !st) return;
+  function bindOrpCalChip() {
+    const chip = $('#orp-cal-chip');
+    const modal = $('#orp-filter-modal');
+    const closeBtn = $('#orp-filter-close');
+    if (!chip || !modal) return;
 
-    const raw = json?.[prefix + 'Raw'];
-    if (_filterRawIsValid(raw)) st.lastRawAt = Date.now();
-    const rejected = json?.[prefix + 'RejectedCount'];
-    if (typeof rejected === 'number') {
-      if (st.prevRejected != null && rejected > st.prevRejected) st.lastRejectAt = Date.now();
-      st.prevRejected = rejected;
+    if (typeof modal.showModal !== 'function') {
+      chip.setAttribute('aria-disabled', 'true');
+      chip.style.cursor = 'default';
+      return;
     }
 
-    const { cls, label } = _classifyFilterState(json, prefix, st);
-    chip.classList.remove(
-      'chip--probe-good', 'chip--probe-warn', 'chip--probe-warn2',
-      'chip--probe-bad', 'chip--probe-unknown', 'chip--probe-stale'
-    );
-    chip.classList.add(`chip--probe-${cls}`);
-    lblEl.textContent = label;
-
-    _renderFilterSub(prefix, json);
-    const modal = $(`#${prefix}-filter-modal`);
-    if (modal && modal.open) _renderFilterModalValues(prefix, json);
-  }
-
-  // ---- v2.20.3 (D5) : bannière tableau de bord « régulation à l'arrêt » ----
-  // Alimentée par les drapeaux firmware ph/orpFilterAlarm (/data + WebSocket).
-  // Le firmware ne les arme QUE si la filtration tourne, que les mesures sont
-  // représentatives et que le filtre reste non prêt > 5 min : aucun affichage
-  // pendant une purge, un warmup ou une filtration à l'arrêt.
-  function updateRegulationAlert(json) {
-    const box = $("#regul-alert");
-    if (!box) return;
-    const phAlarm = json?.phFilterAlarm === true;
-    const orpAlarm = json?.orpFilterAlarm === true;
-    if (!phAlarm && !orpAlarm) { box.hidden = true; return; }
-
-    const titleEl = $("#regul-alert-title");
-    const textEl = $("#regul-alert-text");
-    const cta = $("#regul-alert-cta");
-    let quoi, cible;
-    if (phAlarm && orpAlarm) { quoi = "pH et chlore"; cible = "#/ph"; }
-    else if (phAlarm)        { quoi = "pH"; cible = "#/ph"; }
-    else                     { quoi = "chlore"; cible = "#/orp"; }
-    if (titleEl) titleEl.textContent = `Régulation ${quoi} à l’arrêt`;
-    if (textEl) {
-      textEl.textContent =
-        `Le filtre de mesure est bloqué depuis plus de 5 minutes alors que la ` +
-        `filtration tourne : aucun dosage ${quoi} n’est effectué. ` +
-        `Ouvrez l’état du filtre pour diagnostiquer et le réarmer si besoin.`;
-    }
-    if (cta) cta.setAttribute('href', cible);
-    box.hidden = false;
+    chip.addEventListener('click', () => {
+      _renderOrpProbeModalValues(latestSensorData || {});
+      try { modal.showModal(); } catch (e) { console.error('[orp-probe] showModal:', e); }
+    });
+    chip.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); chip.click(); }
+    });
+    if (closeBtn) closeBtn.addEventListener('click', () => modal.close());
+    modal.addEventListener('click', (e) => { if (e.target === modal) modal.close(); });
   }
 
   // ---- v2.20.3 (C5) : encart « bascule automatique pH → manuel » (page pH) ----
@@ -7314,82 +7197,6 @@
     });
   }
 
-  // ---- v2.20.3 (D3) : réarmement manuel d'un filtre depuis son modal ----
-  // Confirmation EXPLICITE exigée par pool-chemistry (P6) : l'utilisateur doit
-  // être informé que la détection de sonde figée sera effacée.
-  async function requestFilterReset(prefix) {
-    const nom = prefix === 'ph' ? 'pH' : 'ORP';
-    const ok = await confirmDialog({
-      title: `Réarmer le filtre ${nom} ?`,
-      message:
-        `Cette action vide la fenêtre de mesure du filtre ${nom} et le fait ` +
-        `repartir de zéro : le dosage automatique ${nom} restera bloqué environ ` +
-        `une minute, le temps du réamorçage.\n\n` +
-        `⚠ La détection de sonde figée et l’alarme de bruit électrique en cours ` +
-        `seront EFFACÉES. Si la sonde est réellement défectueuse, le défaut sera ` +
-        `de nouveau masqué et devra être re-détecté.\n\n` +
-        `Un seul réarmement est autorisé par capteur toutes les 10 minutes.`,
-      confirmLabel: 'Réarmer',
-      cancelLabel: 'Annuler',
-      danger: true,
-    });
-    if (!ok) return;
-
-    const btn = $(`#${prefix}-filter-reset`);
-    if (btn) { btn.disabled = true; btn.textContent = 'Réarmement…'; }
-    try {
-      const res = await authFetch(`/reset-sensor-filter?sensor=${prefix}`, { method: 'POST' });
-      if (res.status === 429) {
-        let wait = 0;
-        try { wait = (await res.json())?.retry_after_s || 0; } catch (e) { /* corps vide */ }
-        showToast(
-          wait > 0
-            ? `Réarmement refusé : réessayez dans ${Math.ceil(wait / 60)} min.`
-            : `Réarmement refusé : un seul par capteur toutes les 10 minutes.`,
-          'error');
-        return;
-      }
-      if (res.status === 401 || res.status === 403) {
-        showToast("Réarmement refusé : droits administrateur requis.", 'error');
-        return;
-      }
-      if (!res.ok) { showToast(`Échec du réarmement du filtre ${nom}.`, 'error'); return; }
-      showToast(`Filtre ${nom} en cours de réarmement (~1 min avant reprise du dosage).`, 'success');
-      const modal = $(`#${prefix}-filter-modal`);
-      if (modal && modal.open) modal.close();
-    } catch (e) {
-      // Hors ligne / ESP32 injoignable : l'UI ne doit jamais rester figée.
-      console.error(`[${prefix}-filter] reset:`, e);
-      showToast("Contrôleur injoignable — réarmement non envoyé.", 'error');
-    } finally {
-      if (btn) { btn.disabled = false; btn.textContent = `Réarmer le filtre ${nom}`; }
-    }
-  }
-
-  function bindFilterChip(prefix) {
-    const chip = $(`#${prefix}-filter-chip`);
-    const modal = $(`#${prefix}-filter-modal`);
-    const closeBtn = $(`#${prefix}-filter-close`);
-    const resetBtn = $(`#${prefix}-filter-reset`);
-    if (resetBtn) resetBtn.addEventListener('click', () => requestFilterReset(prefix));
-    if (!chip || !modal) return;
-
-    if (typeof modal.showModal !== 'function') {
-      chip.setAttribute('aria-disabled', 'true');
-      chip.style.cursor = 'default';
-      return;
-    }
-
-    chip.addEventListener('click', () => {
-      _renderFilterModalValues(prefix, latestSensorData || {});
-      try { modal.showModal(); } catch (e) { console.error(`[${prefix}-filter] showModal:`, e); }
-    });
-    chip.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); chip.click(); }
-    });
-    if (closeBtn) closeBtn.addEventListener('click', () => modal.close());
-    modal.addEventListener('click', (e) => { if (e.target === modal) modal.close(); });
-  }
 
   async function loadSensorData(options = {}) {
     if (sensorDataLoadInFlight && !options.data) return sensorDataLoadInFlight;
@@ -7504,9 +7311,8 @@
         }
 
         // Chip d'état sonde pH (feature-024) — basé sur phSlopeAcid/Base/Zero/AgeMs + phCalPoints
+        // (met aussi à jour la ligne brute et le modal diagnostic, cf. updateFilterSub)
         updatePhProbeChip(json);
-        // Chip d'état filtre pH (feature-025) — brut/médiane/filtré + stabilité
-        updateFilterChip('ph', json);
 
         const orpCurrentValue = $("#orp_current_value");
         const orpCurrentLabel = $("#orp_current_label");
@@ -7519,10 +7325,11 @@
             orpCurrentValue.textContent = "--";
           }
         }
-        // Chip d'état filtre ORP (feature-025)
-        updateFilterChip('orp', json);
-        // v2.20.3 (D5) : bannière tableau de bord « régulation à l'arrêt »
-        updateRegulationAlert(json);
+        // feature-025 : ligne brute discrète (brut/maj) de la carte « Lecture ORP »
+        // + rafraîchissement du modal sonde ORP si ouvert.
+        updateFilterSub('orp', json);
+        const orpProbeModal = $('#orp-filter-modal');
+        if (orpProbeModal && orpProbeModal.open) _renderOrpProbeModalValues(json);
 
         const tempCurrentValue = $("#temp_current_value");
         const tempCurrentLabel = $("#temp_current_label");
@@ -9524,22 +9331,7 @@
   // min/max/Δ calculées en ignorant les null.
   let _tracePhChart = null;
   let _traceOrpChart = null;
-  let _traceDispPhChart = null;
-  let _traceDispOrpChart = null;
   let _traceLoading = false;
-
-  // Seuils tracés sur les graphes de dispersion (feature-072) : dispersion_max
-  // de /debug/sensor_filter_state si chargée, sinon repli constantes JS —
-  // le tracé ne dépend jamais du succès du fetch route (invariant 071).
-  const _dispThresholds = { ph: null, orp: null };
-  const kPhDispersionSeuilFallback = 0.5;   // = kPhFilterMaxDispersion (constants.h)
-  const kOrpDispersionSeuilFallback = 100;  // = kOrpFilterMaxDispersion (constants.h)
-
-  function _dispSeuil(kind) {
-    return _dispThresholds[kind] ?? (kind === "ph" ? kPhDispersionSeuilFallback : kOrpDispersionSeuilFallback);
-  }
-
-  const _fmtVirgule = (v, decimals) => v.toFixed(decimals).replace(".", ",");
 
   function _initTraceCharts() {
     if (_tracePhChart || typeof uPlot === "undefined") return;
@@ -9556,25 +9348,6 @@
         { label: "ORP brut", color: "#34d399" },
         { label: "ORP lissé", color: "#059669" }
       ]);
-    }
-    // Graphes dispersion (feature-072) : tracé linéaire + points visibles
-    // (PAS de spline : un point valide isolé entre deux trous doit se voir),
-    // ligne de seuil pointillée exclue du tooltip, échelle Y incluant le seuil.
-    const dispPhHost = $("#trace_disp_ph_chart");
-    const dispOrpHost = $("#trace_disp_orp_chart");
-    if (dispPhHost) {
-      _traceDispPhChart = createTraceChart(dispPhHost, [
-        { label: "Dispersion pH", color: "#d97706", linear: true, points: true,
-          tooltip: (v) => `Dispersion : ${_fmtVirgule(v, 3)}` },
-        { label: "Seuil", color: "#dc2626", width: 1, dash: [6, 6], linear: true, noTooltip: true }
-      ], { yInclude: _dispSeuil("ph") });
-    }
-    if (dispOrpHost) {
-      _traceDispOrpChart = createTraceChart(dispOrpHost, [
-        { label: "Dispersion ORP", color: "#d97706", linear: true, points: true,
-          tooltip: (v) => `Dispersion : ${_fmtVirgule(v, 1)}` },
-        { label: "Seuil", color: "#dc2626", width: 1, dash: [6, 6], linear: true, noTooltip: true }
-      ], { yInclude: _dispSeuil("orp") });
     }
   }
 
@@ -9598,41 +9371,30 @@
     }
     let txt = `min ${min.toFixed(decimals)} · max ${max.toFixed(decimals)}`;
     // « Δ 25 min » : crête-à-crête sur TOUT le buffer (~300 pts ≈ 25 min), dérive
-    // lente comprise — sans rapport avec la dispersion du drapeau unstable.
+    // lente comprise.
     if (withDelta) txt += ` · Δ 25 min ${(max - min).toFixed(decimals)}`;
     el.textContent = txt;
   }
 
-  // ---- Dispersion du drapeau `unstable` (feature-071) ----
-  // Valeur instantanée publiée par /debug/sensor_filter_state (v2.20.6) :
-  // amplitude max−min de la fenêtre médiane pleine, la grandeur qui décide
-  // de l'inhibition du dosage.
+  // ---- État interne du filtre de mesure (feature-152, remplace le drapeau
+  // `unstable`/la dispersion de feature-071, retirés avec le mécanisme qu'ils
+  // jugeaient) ----
+  // Valeur instantanée publiée par /debug/sensor_filter_state : `state` est le
+  // même discriminant que celui qui qualifie les causes de refus de dosage
+  // (DoseFilterState, cf. src/dosing_logic.h), `rejected` le compteur cumulé
+  // de rejets (diagnostic, ne juge rien).
   let _filterStateLoading = false;
 
-  function _setDispersionRow(id, st, decimals) {
+  function _setFilterStateRow(id, st) {
     const el = $(id);
     if (!el) return;
-    el.textContent = "";
-    // Piège docs/API.md §Marge d'instabilité : dispersion null + unstable=false
-    // signifie « aucun jugement rendu », PAS « stable ». On ne juge que si
-    // dispersion est un nombre.
-    if (!st || typeof st.dispersion !== "number") {
-      const note = document.createElement("span");
-      note.className = "muted";
-      note.textContent = "— · pas de jugement (circulation arrêtée ou fenêtre en cours de remplissage)";
-      el.appendChild(note);
-      return;
-    }
-    const seuil = (typeof st.dispersion_max === "number") ? ` / ${st.dispersion_max}` : "";
-    el.appendChild(document.createTextNode(`${st.dispersion.toFixed(decimals)}${seuil} `));
-    const pill = document.createElement("span");
-    pill.className = st.unstable ? "pill bad" : "pill ok";
-    pill.textContent = st.unstable ? "INSTABLE" : "stable";
-    el.appendChild(pill);
+    if (!st || typeof st.state !== "string") { el.textContent = "—"; return; }
+    const rejected = (typeof st.rejected === "number") ? st.rejected : "--";
+    el.textContent = `${st.state} · rejetés (cumulé) ${rejected}`;
   }
 
   // feature-138 (B1) : horodatage CLIENT du dernier fetch RÉUSSI (pas du dernier
-  // essai) — c'est depuis cette date que la ligne de dispersion affiche son âge.
+  // essai) — c'est depuis cette date que la ligne d'état affiche son âge.
   let _filterStateLastFetchAt = null;
 
   async function loadFilterState() {
@@ -9642,22 +9404,15 @@
       const res = await authFetch("/debug/sensor_filter_state");
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const json = await res.json();
-      _setDispersionRow("#trace_disp_ph", json.ph, 3);
-      _setDispersionRow("#trace_disp_orp", json.orp, 1);
-      // Seuils des graphes de dispersion (feature-072) : mémorise dispersion_max
-      // et ré-applique au graphe déjà tracé (légende + échelle). Pas de
-      // chaînage avec loadSensorTrace : une panne de l'un n'affecte pas l'autre.
-      if (typeof json.ph?.dispersion_max === "number") _dispThresholds.ph = json.ph.dispersion_max;
-      if (typeof json.orp?.dispersion_max === "number") _dispThresholds.orp = json.orp.dispersion_max;
-      _applyDispThreshold("ph", _traceDispPhChart, "#trace_disp_ph_seuil", (v) => _fmtVirgule(v, 2));
-      _applyDispThreshold("orp", _traceDispOrpChart, "#trace_disp_orp_seuil", (v) => `${v} mV`);
+      _setFilterStateRow("#trace_filter_ph", json.ph);
+      _setFilterStateRow("#trace_filter_orp", json.orp);
       _filterStateLastFetchAt = Date.now();
       _renderDispAge();
     } catch (e) {
       console.error("[trace] filter state load failed:", e);
       // Panne isolée : seules ces deux lignes se dégradent, le reste de la
       // carte (trace, stats) reste fonctionnel.
-      for (const id of ["#trace_disp_ph", "#trace_disp_orp"]) {
+      for (const id of ["#trace_filter_ph", "#trace_filter_orp"]) {
         const el = $(id);
         if (el) el.textContent = "indisponible";
       }
@@ -9670,7 +9425,7 @@
   //  - un tick d'AFFICHAGE local (_dispAgeTickTimer) qui recalcule le texte
   //    d'âge depuis _filterStateLastFetchAt, SANS réseau ;
   //  - un intervalle de FETCH (_dispFetchTimer) qui rappelle loadFilterState().
-  // Les deux sont armés/désarmés ENSEMBLE par _armDispersionRefresh(), appelée
+  // Les deux sont armés/désarmés ENSEMBLE par _armFilterStateRefresh(), appelée
   // au changement de route ET au visibilitychange — le hash ne change pas
   // quand l'onglet passe en arrière-plan, donc l'un sans l'autre laisserait
   // tourner des requêtes panneau fermé ou onglet caché.
@@ -9678,14 +9433,14 @@
   let _dispFetchTimer = null;
 
   function _renderDispAge() {
-    const el = $("#trace_disp_age");
+    const el = $("#trace_filter_age");
     if (!el) return;
     if (_filterStateLastFetchAt == null) { el.textContent = "—"; return; }
     const txt = _elapsedText(Date.now() - _filterStateLastFetchAt, "relevé il y a");
     el.textContent = txt || "—";
   }
 
-  function _armDispersionRefresh() {
+  function _armFilterStateRefresh() {
     const shouldRun = _isPanelDevActive() && !document.hidden;
     if (shouldRun) {
       if (!_dispAgeTickTimer) _dispAgeTickTimer = setInterval(_renderDispAge, 1000);
@@ -9696,79 +9451,6 @@
     } else {
       if (_dispAgeTickTimer) { clearInterval(_dispAgeTickTimer); _dispAgeTickTimer = null; }
       if (_dispFetchTimer) { clearInterval(_dispFetchTimer); _dispFetchTimer = null; }
-    }
-  }
-
-  // Reconstruction de la dispersion firmware sur la trace affichée (indicatif).
-  // Fenêtre glissante de 13 points = kSensorFilterCentralWindow (constants.h).
-  // Une fenêtre est écartée si elle contient un trou (null/NaN) ou un saut
-  // consécutif ≥ spikeReject : le firmware rejette ces pics AVANT la fenêtre
-  // médiane, la trace brute les contient encore. Précédent réel : sans ce
-  // filtre, faux max 5,425 sur un transitoire de redémarrage de filtration
-  // là où le firmware voyait 0,308.
-  function _traceDispersionStats(values, spikeReject) {
-    const kWindow = 13; // = kSensorFilterCentralWindow (firmware)
-    if (!Array.isArray(values) || values.length < kWindow) return null;
-    const dispersions = [];
-    // Série alignée sur values (feature-072) : series[i+12] = dispersion de la
-    // fenêtre [i, i+12] (point au temps du dernier échantillon), null pour les
-    // 12 premiers indices et les fenêtres écartées → mêmes xs que les graphes
-    // brut/lissé, et les trous restent des trous (transitoire rejeté).
-    const series = new Array(values.length).fill(null);
-    for (let i = 0; i + kWindow <= values.length; i++) {
-      let mn = Infinity, mx = -Infinity, valide = true;
-      for (let j = i; j < i + kWindow; j++) {
-        const v = values[j];
-        if (v == null || isNaN(v)) { valide = false; break; }
-        if (j > i && Math.abs(v - values[j - 1]) >= spikeReject) { valide = false; break; }
-        if (v < mn) mn = v;
-        if (v > mx) mx = v;
-      }
-      if (valide) {
-        const d = mx - mn;
-        dispersions.push(d);
-        series[i + kWindow - 1] = d;
-      }
-    }
-    if (dispersions.length === 0) return null;
-    dispersions.sort((a, b) => a - b);
-    const mid = Math.floor(dispersions.length / 2);
-    const median = (dispersions.length % 2 === 1)
-      ? dispersions[mid]
-      : (dispersions[mid - 1] + dispersions[mid]) / 2;
-    return { median, max: dispersions[dispersions.length - 1], windows: dispersions.length, series };
-  }
-
-  function _setTraceDispRecon(id, stats, decimals) {
-    const el = $(id);
-    if (!el) return;
-    el.textContent = stats
-      ? `médiane ${stats.median.toFixed(decimals)} · max ${stats.max.toFixed(decimals)}`
-      : "—";
-  }
-
-  // Alimente un graphe de dispersion (feature-072). stats null (< 13 points,
-  // ou aucune fenêtre valide) → bloc masqué, pas d'erreur. La ligne de seuil
-  // est une série constante alignée sur xs.
-  function _renderDispChart(chart, blockId, xs, stats, seuil) {
-    const block = $(blockId);
-    if (!block) return;
-    if (!chart || !stats) { block.hidden = true; return; }
-    chart.setYInclude(seuil);
-    chart.setData(xs, [stats.series, xs.map(() => seuil)]);
-    block.hidden = false;
-  }
-
-  // Ré-applique le seuil (route ou repli) : span de légende, puis échelle Y et
-  // ligne pointillée si le graphe est déjà tracé — u.data[1] (la dispersion)
-  // est conservée telle quelle.
-  function _applyDispThreshold(kind, chart, spanId, fmt) {
-    const seuil = _dispSeuil(kind);
-    const span = $(spanId);
-    if (span) span.textContent = fmt(seuil);
-    if (chart && chart.st.xs.length) {
-      chart.setYInclude(seuil);
-      chart.setData(chart.st.xs, [chart.u.data[1], chart.st.xs.map(() => seuil)]);
     }
   }
 
@@ -9831,18 +9513,6 @@
       _setTraceStat("#trace_stats_orp_filtered", orpFilt, 1);
       _setTraceStat("#trace_stats_temp", temp, 1, false);
 
-      // Dispersion reconstruite sur la trace (fenêtre 13, seuils de rejet
-      // dupliqués du firmware : kPhFilterSpikeReject = 1.0 pH,
-      // kOrpFilterSpikeReject = 300 mV — constants.h).
-      const phDispStats = _traceDispersionStats(phRaw, 1.0);
-      const orpDispStats = _traceDispersionStats(orpRaw, 300.0);
-      _setTraceDispRecon("#trace_disp_recon_ph", phDispStats, 3);
-      _setTraceDispRecon("#trace_disp_recon_orp", orpDispStats, 1);
-
-      // Courbes de dispersion (feature-072) — même axe X que les graphes du dessus
-      _renderDispChart(_traceDispPhChart, "#trace_disp_ph_block", xs, phDispStats, _dispSeuil("ph"));
-      _renderDispChart(_traceDispOrpChart, "#trace_disp_orp_block", xs, orpDispStats, _dispSeuil("orp"));
-
       if (status) status.hidden = true;
       if (charts) charts.hidden = false;
     } catch (e) {
@@ -9879,11 +9549,11 @@
     });
 
     // Chargement à l'activation de l'onglet Avancé uniquement (pas de polling permanent)
-    // feature-138 (B1) : _armDispersionRefresh() gère elle-même le cas « panneau
+    // feature-138 (B1) : _armFilterStateRefresh() gère elle-même le cas « panneau
     // fermé » (désarme) — loadFilterState() n'est donc plus appelée directement ici.
     const onRouteChange = () => {
       if (_isPanelDevActive()) loadSensorTrace();
-      _armDispersionRefresh();
+      _armFilterStateRefresh();
     };
     window.addEventListener("hashchange", onRouteChange);
     onRouteChange();
@@ -11950,8 +11620,7 @@
     bindPhCalibration();
     bindPhProbeChip();
     bindPhAutoManualAck();  // v2.25.0 : acquittement de la bascule de sécurité pH
-    bindFilterChip('ph');
-    bindFilterChip('orp');
+    bindOrpCalChip();
     bindOrpCalibration();
     bindTempCalibration();
     bindWifi();
@@ -11977,7 +11646,7 @@
       // feature-138 (B1) : le hash ne change pas quand l'onglet passe en
       // arrière-plan — sans ce rappel, un panneau Avancé resté ouvert dans un
       // onglet caché continuerait de fetcher _dispersion dans le vide.
-      _armDispersionRefresh();
+      _armFilterStateRefresh();
     });
 
     // Charger la config avant d'ouvrir le WebSocket : l'ESP32 a fini de traiter

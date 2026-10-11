@@ -11,7 +11,7 @@ Point d'entrée unique pour **tout** ce qui concerne le pH : mesure, mode de ré
 
 En mode nominal, six zones :
 
-1. **Bloc Statistiques** (bandeau compact, sans titre) — valeur pH **filtrée** courante en grand (1 décimale, cohérent avec le tableau de bord) + **ligne brute discrète** « brut · médiane · maj » + **rangée de chips** : chip d'état filtre cliquable (cf. [Chip d'état filtre](#chip-détat-filtre-feature-025)) et **chip unique sonde + calibration** cliquable (cf. [Chip d'état sonde](#chip-détat-sonde-feature-024)) + dosage du jour (barre de progression). Depuis feature-034, le chip de calibration distinct est **supprimé** : son information est fusionnée dans le chip sonde. Depuis la **v2.37.0** (feature-096), ce bloc se termine par « **Atteinte de la cible** » (`#ph-ttt-block`) : ligne de valeur + bande de 7 pastilles — voir [Atteinte de la cible](#atteinte-de-la-cible-feature-096-v2370).
+1. **Bloc Statistiques** (bandeau compact, sans titre) — valeur pH **officielle** courante en grand (1 décimale, cohérent avec le tableau de bord) + **ligne brute discrète** « brut · maj » + **rangée de chips** : **chip unique sonde + calibration** cliquable (cf. [Chip d'état sonde](#chip-détat-sonde-feature-024)) + dosage du jour (barre de progression). Depuis feature-034, le chip de calibration distinct est **supprimé** : son information est fusionnée dans le chip sonde. ⚠️ **Depuis la refonte de la chaîne de mesure (feature-152, v2.68.0)**, il n'existe plus de chip ni de modal d'état du **filtre** distincts : voir [Ce qui a été retiré, fusionné, conservé](#ce-qui-a-été-retiré-fusionné-conservé-feature-152-v2680). Depuis la **v2.37.0** (feature-096), ce bloc se termine par « **Atteinte de la cible** » (`#ph-ttt-block`) : ligne de valeur + bande de 7 pastilles — voir [Atteinte de la cible](#atteinte-de-la-cible-feature-096-v2370).
 2. **Carte Débit d'injection pH** (`#ph-card-dosing`, feature-092, v2.46.0) — insérée **entre** le bloc Statistiques et la carte Régulation, visible **en mode automatique uniquement** : quatre lignes (dose de base apprise, écart courant, rattrapage accumulé, **Demande** en total) et une pastille d'état à 5 priorités. Voir [Carte « Débit d'injection pH »](#carte--débit-dinjection-ph--ph-card-dosing-feature-092-v2460).
 3. **Carte Régulation pH** — sélecteur de mode : `Automatique`, `Programmée`, `Manuelle`. Sous-blocs conditionnels :
    - **Automatique** : pH cible — **contrôle segmenté 4 positions** `#ph_target_group` depuis la v2.25.0 (7,20 / 7,30 / 7,40 / 7,50), avec hint de plage `#ph_target_hint`. Voir [Consigne pH : contrôle segmenté](#consigne-ph--contrôle-segmenté-v2250) et [Règles firmware appliquées](#règles-firmware-appliquées).
@@ -42,19 +42,20 @@ Pendant ces états, la **valeur pH « actuelle » affiche `--`** (le badge expli
 
 ## Affichage mesure filtrée / brute (feature-025)
 
-La valeur affichée **en grand** dans le bloc Statistiques est la mesure **filtrée** (`phFiltered`, médiane + EMA). C'est aussi la valeur utilisée par la régulation. La fonction `_renderFilterSub('ph', json)` ([`data/app.js`](../../data/app.js)) rend une **ligne discrète** `#ph-filter-sub` :
+La valeur affichée **en grand** dans le bloc Statistiques est la **valeur officielle** (`ph` = médiane 9 + lissage exponentiel, champ `phFiltered` équivalent). C'est aussi la valeur utilisée par la régulation. La fonction `_renderFilterSub('ph', json)` ([`data/app.js`](../../data/app.js)) rend une **ligne discrète** `#ph-filter-sub` :
 
 ```
-brut 7.24 · médiane 7.24 · maj à l'instant
+brut 7.24 · maj à l'instant
 ```
 
 - **brut** = `phRaw` (dernière mesure Atlas non filtrée, **sans offset** — diagnostic EMI) ;
-- **médiane** = `phMedian` (médiane glissante, **corrigée** depuis la v2.20.0) ;
 - **maj** = âge de la dernière mesure brute valide (`à l'instant` / `il y a N s/min`).
+
+⚠️ **Depuis la refonte de la chaîne de mesure (feature-152, v2.68.0)** : la **médiane a disparu de cette ligne** — « étape interne du lissage, pas un fait à lire en permanence sur l'écran principal » (commentaire du code). La médiane reste consultable en diagnostic dans le modal sonde (cf. [Chip d'état sonde](#chip-détat-sonde-feature-024)) et via [`GET /debug/sensor_filter_state`](../API.md#get-debugsensor_filter_state--pas-dauth-cohérent-avec-autres-debug).
 
 > **feature-067 (v2.20.0)** : la valeur affichée en grand (`ph`), la médiane et la valeur filtrée intègrent l'**offset logiciel** `ph_offset` ; seul `phRaw` reste brut. Voir [Carte « Correction de la mesure pH »](#carte--correction-de-la-mesure-ph--feature-067-v2200).
 
-`--` est affiché si la valeur est `null` (filtre non amorcé / EZO injoignable).
+`--` est affiché si la valeur est `null` (montée en régime, sonde figée ou mesure périmée — **plus de repli silencieux** sur une autre valeur, feature-152).
 
 ## Repères du graphique d'historique (feature-083, v2.28.1)
 
@@ -334,85 +335,31 @@ Formatage français : virgule décimale, 2 décimales, signe explicite sur l'off
 
 `POST /save-config` avec le seul champ `{"ph_offset": <valeur>}` (via `sendConfigDetailed`), puis `loadConfig()`. L'incrémenteur ne produisant que des multiples du pas dans la plage, il n'y a plus de pré-contrôle de saisie à faire : la validation qui fait foi est côté serveur, qui **refuse en HTTP 400** hors bornes (jamais d'écrêtage) et **arrondit au pas** dans la plage (voir [API.md](../API.md#bornes-de-la-consigne-ph-et-de-loffset-v2250)). En cas de refus, le message serveur est affiché tel quel et le bouton passe en « Erreur » 2 s — l'UI ne laisse jamais croire qu'une valeur refusée a été enregistrée.
 
-### Diagnostic dans le modal filtre pH
+### Diagnostic dans le modal sonde pH
 
-Le `<dialog id="ph-filter-modal">` (« État filtre pH », ouvert par le chip d'état filtre) expose la chaîne complète :
+⚠️ **Réduit par la refonte de la chaîne de mesure (feature-152, v2.68.0)** — jusqu'en v2.67.x ce diagnostic vivait dans un `<dialog id="ph-filter-modal">` séparé et comptait cinq lignes (brute, offset, corrigée, médiane, filtrée) plus les pics rejetés / l'âge / le « filtre prêt » / la raison de blocage. Ce modal a **disparu** (voir [Ce qui a été retiré, fusionné, conservé](#ce-qui-a-été-retiré-fusionné-conservé-feature-152-v2680)) ; ce qui reste utile en diagnostic est **absorbé** dans `<dialog id="ph-probe-modal">` (« État sonde pH », cf. [Chip d'état sonde](#chip-détat-sonde-feature-024) → [Modal détails](#modal-détails)) :
 
 | Ligne | Élément | Contenu |
 |---|---|---|
-| Valeur brute | `#ph-fm-raw` | `phRaw` — brut Atlas EZO |
-| Offset | `#ph-fm-offset` | offset appliqué, signé (`+0.40`) |
-| Valeur corrigée | `#ph-fm-corrected` | `phRaw + offset` (`--` si le brut est indisponible) |
-| Médiane (corrigée) | `#ph-fm-median` | `phMedian` — déjà corrigée côté firmware |
-| Valeur filtrée (corrigée) | `#ph-fm-filtered` | `phFiltered` — déjà corrigée côté firmware |
+| Valeur brute | `#ph-fm-raw` | `phRaw` — brut Atlas EZO, **sans offset** |
+| Valeur retenue | `#ph-fm-filtered` | **valeur officielle** (médiane 9 + lissage, **corrigée**) — identique au champ `ph` |
+| Dernière mesure | `#ph-fm-age` | âge de la dernière brute reçue côté UI |
 
-Suivent les lignes existantes (pics rejetés, âge, filtre prêt, raison de blocage dosage).
+L'offset, la valeur « corrigée » intermédiaire et la médiane en tant que ligne séparée **ne sont plus affichés** : il n'y a plus qu'une seule valeur officielle à lire (fin du repli silencieux, feature-152), et l'offset se consulte sur la [carte Correction de la mesure pH](#carte--correction-de-la-mesure-ph--feature-067-v2200). Les **pics rejetés**, l'état **« filtre prêt »** et la **raison de blocage dosage** ne sont plus affichés dans ce modal non plus : la raison de blocage se lit sur la [pastille d'état dosage](#pastille-détat-ph-dosing-pill--5-priorités-3-couleurs), et il n'y a plus d'état « prêt » distinct de la valeur (`isnan(ph)` suffit).
 
 ### L'écran de calibration reste sur le BRUT
 
 ⚠️ **Invariant** : `updateCalibrationReadouts()` alimente `#cal-ph-mid-readout` / `#cal-ph-low-readout` **exclusivement** depuis `json.phRaw`. Le **repli sur `json.ph`** qui existait auparavant a été **supprimé** : ce champ porte désormais la valeur corrigée, et afficher un pH corrigé face à une solution étalon reviendrait à calibrer la sonde sur une valeur déjà décalée. Conséquence assumée : si `phRaw` est indisponible (EZO muet, lecture stale), le readout affiche `--` au lieu de replier sur une autre valeur. Le lissage léger dédié calibration (médiane des ~5 dernières brutes) et l'indicateur de stabilité Δ60 s travaillent également sur le brut, comme avant.
 
-## Chip d'état filtre (feature-025)
+## ~~Chip d'état filtre~~ (feature-025) — Ce qui a été retiré, fusionné, conservé (feature-152, v2.68.0)
 
-À côté de la valeur filtrée, un **chip cliquable** `#ph-filter-chip` reflète l'état du filtre. Classification **côté UI** par `_classifyFilterState(json, 'ph', st)` ([`data/app.js`](../../data/app.js)), évaluée dans cet ordre :
+Présent de la feature-025 à la v2.67.x, le chip cliquable `#ph-filter-chip` + le modal `#ph-filter-modal` + le bouton « Réarmer le filtre pH » (`#ph-filter-reset`) **ont disparu** avec la refonte de la chaîne de mesure ([ADR-0097 « le filtre lisse, le dosage juge »](../adr/0097-le-filtre-lisse-le-dosage-juge.md)). Zéro occurrence des trois identifiants dans `data/` aujourd'hui.
 
-| Condition (ordre de priorité) | Label chip | Classe / couleur |
-|---|---|---|
-| **`phFilterAlarm === true`** (v2.20.3) | **« Régulation à l'arrêt »** | `bad` (rouge) |
-| **`phDoseBlockedCode` = PANNE de mesure** (v2.25.1 — codes 16/20 « sonde figée », 17/21 « plus aucune mesure acceptée ») | « Sonde figée » / « Sonde muette » | `bad` (rouge) |
-| `phFilterUnstable === true` | « Capteur instable » | `bad` (rouge) |
-| `phRaw` invalide (`null`) **et** dernière brute valide < 1 min (v2.25.1) | « Lecture EZO manquante » | `warn` (ambré) |
-| `phRaw` invalide (`null`) et aucune brute valide depuis ≥ 1 min | « EZO indisponible » | `unknown` (gris) |
-| **`phDoseBlockedCode` = état TRANSITOIRE** (v2.25.1 — codes 15/19 warmup, 18/22 mesures non représentatives) | « Stabilisation… » / « Mesures non représentatives » | `warn` (ambré) |
-| `phFilterReady === false` | « Stabilisation… » | `warn` (ambré) |
-| `phRejectedCount` a augmenté récemment (`< FILTER_REJECT_WINDOW_MS`) | « Pics rejetés » | `warn2` (ambré) |
-| sinon | « Mesure stable » | `good` (vert) |
+**Pourquoi** : ce chip existait pour diagnostiquer des **états bloquants** (filtre non prêt, capteur instable, alarme « filtre non prêt durablement ») qui n'existent plus — la chaîne de mesure est passée de 14 étages et 13 états bloquants à 5 étages et 4, sans aucun verrou collant. Il n'y a donc plus d'état « capteur instable »/« sonde figée bloquante »/« régulation à l'arrêt » distinct à faire clignoter sur un chip séparé : la montée en régime (ou son absence) se lit déjà sur `measures_valid`/le [badge d'état mesure](#badge-détat-mesure-ph-page-badge-feature-061-v2130) et sur la [pastille d'état dosage](#pastille-détat-ph-dosing-pill--5-priorités-3-couleurs) (code de refus `15`, « Les mesures se mettent en place »).
 
-> Le compteur de rejets étant **cumulatif** côté firmware, l'UI ne signale « Pics rejetés » que si `phRejectedCount` a augmenté dans la fenêtre récente (`st.lastRejectAt`), pas tant que le total reste non nul.
+**Ce qui est fusionné** : les trois champs de diagnostic qui restent utiles (valeur brute, valeur retenue, âge de la dernière mesure) sont **absorbés dans le modal sonde** `#ph-probe-modal` (qui se retitre « État sonde pH », cf. [Chip d'état sonde](#chip-détat-sonde-feature-024) → [Modal détails](#modal-détails)) — plus de modal séparé.
 
-> **v2.25.1 — deux changements de rang et un nouveau libellé.**
-> 1. Le **code de refus** est consulté **avant** le test « brut invalide ». Ce test condamnait l'EZO sans savoir pourquoi : au démarrage, pendant que la porte de validité était fermée et que la fenêtre de lissage se remplissait, le chip annonçait « EZO indisponible » — une panne matérielle affichée sur une sonde saine, pendant environ six minutes à chaque redémarrage.
-> 2. Une lecture brute manquante **depuis moins d'une minute** (`FILTER_RAW_BLIP_MS`) devient « **Lecture EZO manquante** » (avertissement) et non plus « EZO indisponible » (panne) : un blip de bus I²C n'est pas une panne établie.
->
-> Les **pannes** (sonde figée, sonde muette) et les **états transitoires** (préchauffage, mesures non représentatives) sont désormais dans deux registres visuels **disjoints** — le rouge est réservé aux pannes. La catégorie vient du **firmware** (`phDoseBlockedCode`), plus d'une analyse de la phrase française : voir [ADR-0049](../adr/0049-code-machine-de-cause-de-refus-et-etat-interne-du-filtre.md) et la [table des codes](../API.md#code-de-cause-de-refus-de-dosage-v2251).
-
-### Modal détail filtre
-
-Clic sur le chip → `<dialog id="ph-filter-modal">` (`État filtre pH`). `_renderFilterModalValues('ph', json)` remplit : valeur brute, médiane, filtrée, **Pics rejetés** (`phRejectedCount`), âge dernière mesure, **Filtre prêt** (Oui/Non), et une ligne conditionnelle **raison de blocage dosage** (affiche aussi « Mélange en cours » si `phMixingDelayActive`).
-
-**v2.25.1 — la raison de blocage est traduite depuis le CODE** (`_doseBlockInfo()` + table `DOSE_BLOCK_CODES`), plus par recherche de fragments de texte (`_doseBlockReasonFr()`, supprimée). Trois chemins **distincts** :
-
-| État de `phDoseBlockedCode` | Affichage |
-|---|---|
-| `0` ou `null` | ligne **masquée** (dosage autorisé) |
-| code répertorié | libellé de la table, avec ton **rouge uniquement si PANNE** (`probe-modal__value--bad`) ; un préchauffage ou une porte de validité fermée restent en ton neutre |
-| `250` | texte serveur cité tel quel (message de garde à valeurs runtime) |
-| clé **absente** (firmware plus ancien) | repli sur `phDoseBlockedReason`, affiché tel quel — **seul** cas de repli sur le texte |
-| code **inconnu** (firmware plus récent que la page) | « **Cause inconnue (code N)** » — jamais le libellé voisin : une page périmée doit avouer son ignorance plutôt que nommer une cause plausible et fausse |
-
-> **v2.20.3** — l'état `phFilterAlarm` prime sur **tout** le reste, y compris sur « EZO indisponible ». Justification : il signifie qu'il n'y a plus **aucune** régulation depuis plus de 5 min alors que la filtration tourne — c'est le seul état que l'utilisateur doit voir immédiatement, avant tout détail de diagnostic. Le firmware ne l'arme jamais pendant une purge, un warmup ou une filtration à l'arrêt.
-
-### Bouton « Réarmer le filtre pH » (v2.20.3)
-
-`<button id="ph-filter-reset" class="btn btn--danger">` au pied du modal « État filtre pH ». C'est la **sortie de secours utilisateur** quand le filtre reste verrouillé : avant la v2.20.3, la seule porte de sortie était `POST /debug/sensor_filter_reset`, absente de l'interface — le bassin est resté sans régulation ≥ 3 h faute de recours accessible.
-
-**Confirmation explicite obligatoire** (exigence `pool-chemistry`) via `confirmDialog({ danger: true })`. Le texte annonce les trois conséquences :
-
-1. la fenêtre de mesure est vidée et repart de zéro ⇒ **dosage automatique bloqué ~1 min** (le temps du réamorçage) ;
-2. ⚠️ la **détection de sonde figée** et l'**alarme de bruit électrique** en cours **seront EFFACÉES** — si la sonde est réellement défectueuse, le défaut sera de nouveau masqué et devra être re-détecté ;
-3. un seul réarmement est autorisé **par capteur toutes les 10 minutes**.
-
-Appel : `POST /reset-sensor-filter?sensor=ph` via `authFetch`. Le bouton est désactivé et libellé « Réarmement… » pendant la requête, puis restauré dans un `finally` (l'UI ne reste jamais figée, même contrôleur injoignable).
-
-| Réponse | Retour utilisateur |
-|---|---|
-| `200` | toast succès « Filtre pH en cours de réarmement (~1 min avant reprise du dosage). » + fermeture du modal |
-| `429` | toast erreur « Réarmement refusé : réessayez dans N min. » (`retry_after_s` arrondi à la minute supérieure ; message générique si le corps est vide) |
-| `401` / `403` | toast erreur « Réarmement refusé : droits administrateur requis. » |
-| autre | toast erreur « Échec du réarmement du filtre pH. » |
-| exception réseau | toast erreur « Contrôleur injoignable — réarmement non envoyé. » |
-
-La page ORP expose le même bouton pour son propre capteur ([page-orp.md](page-orp.md#bouton--réarmer-le-filtre-orp--v2203)) : réparer le pH ne touche jamais l'ORP.
+**Ce qui n'est PAS retrouvable dans l'UI, mais vit toujours côté API** : `POST /reset-sensor-filter?sensor=ph` (vidage manuel de la fenêtre + détection de sonde figée). ⚠️ **Route doublement orpheline, conservée en l'état, délibérément** : (1) plus aucun bouton ne l'appelle, (2) sa raison d'être (filtre verrouillable) a disparu. Elle reste un usage de **diagnostic** légitime (`curl`), voir [API.md](../API.md#post-reset-sensor-filter--critical) et le commentaire au-dessus du handler dans [`src/web_routes_control.cpp`](../../src/web_routes_control.cpp).
 
 ### Bannière « Bascule automatique en mode manuel » (v2.20.3)
 
@@ -496,6 +443,10 @@ Au clic (ou `Enter`/`Espace`), un `<dialog id="ph-probe-modal">` s'ouvre :
 - **Pente base** — `<id="ph-probe-base">` au format `100.3 %`.
 - **Décalage zéro** — `<id="ph-probe-zero">` au format `-0.89 mV` (2 décimales). `--` si firmware EZO ancien ne le rapporte pas.
 - **Vérifié** — `<id="ph-probe-age">` libellé lisible : « à l'instant », « il y a 14 h », « il y a 2 j 3 h », « jamais ».
+- ⚠️ **Trois lignes de diagnostic de la chaîne de mesure, absorbées ici depuis la v2.68.0** (feature-152 — plus de modal « filtre » séparé, voir [Ce qui a été retiré, fusionné, conservé](#ce-qui-a-été-retiré-fusionné-conservé-feature-152-v2680)) :
+  - **Valeur brute** — `<id="ph-fm-raw">` (`phRaw`, 2 décimales, sans offset).
+  - **Valeur retenue** — `<id="ph-fm-filtered">` (valeur officielle, médiane 9 + lissage, corrigée — identique au champ `ph`).
+  - **Dernière mesure** — `<id="ph-fm-age">` (âge de la dernière brute, même formatage que « Vérifié »).
 - **Bouton « Rafraîchir »** (`#ph-probe-refresh`) → `POST /debug/ph_slope_refresh`. Texte bascule en « Rafraîchissement… » jusqu'à ce que `phSlopeAgeMs` redescende sous 60 s (succès → toast « Pente sonde pH rafraîchie ») ou timeout 8 s (`PH_PROBE_REFRESH_TIMEOUT_MS` → toast « Sonde non joignable »).
 - **Bouton « Fermer »** (`#ph-probe-close`) ou clic backdrop ou `ESC`.
 
@@ -559,7 +510,7 @@ Le focus est déplacé sur le contrôle de l'étape active (`focusActiveStep()`)
 
 Après une calibration EZO réussie, `completeCalStep()` marque l'étape « calibrer » comme faite (✓) et avance le stepper. La fermeture de la carte (`#ph_cal_close_btn`) annule toute minuterie en cours et restaure la carte Régulation dans le mode initial.
 
-> **Readout de calibration = valeur brute.** `updateCalibrationReadouts()` alimente `#cal-ph-mid-readout` et `#cal-ph-low-readout` avec la mesure **brute** (`json.phRaw` **uniquement** — le repli sur `json.ph` a été **supprimé** en v2.20.0, ce champ portant désormais la valeur corrigée par l'offset ; cf. [L'écran de calibration reste sur le BRUT](#lécran-de-calibration-reste-sur-le-brut)), **pas** la valeur lissée affichée ailleurs dans l'UI. Raison : en changeant de solution étalon (ex. pH 7 → pH 4, saut ≈ 3.0), le lissé — médiane sur fenêtre **longue** (13 échantillons ≈ 65 s) + EMA (feature-058) — met plusieurs dizaines de secondes à converger vers la nouvelle valeur ; le saut initial ressemble d'ailleurs à un **spike dur** (`|raw − médiane| > kPhFilterSpikeReject` = 1.0) et est écarté tant que la médiane n'a pas suivi. Le brut suit immédiatement le potentiel réel de l'électrode, indispensable pour juger la stabilité avant de calibrer. Le reste de l'UI (dashboard, valeur principale pH, MQTT) continue d'afficher le lissé.
+> **Readout de calibration = valeur brute.** `updateCalibrationReadouts()` alimente `#cal-ph-mid-readout` et `#cal-ph-low-readout` avec la mesure **brute** (`json.phRaw` **uniquement** — le repli sur `json.ph` a été **supprimé** en v2.20.0, ce champ portant désormais la valeur corrigée par l'offset ; cf. [L'écran de calibration reste sur le BRUT](#lécran-de-calibration-reste-sur-le-brut)), **pas** la valeur officielle affichée ailleurs dans l'UI. Raison : en changeant de solution étalon (ex. pH 7 → pH 4, saut ≈ 3.0), la valeur officielle — médiane (**9** échantillons ≈ **45 s**, était 13 ≈ 65 s avant la refonte feature-152, v2.68.0) puis lissage exponentiel (τ = 45 s) — met plusieurs dizaines de secondes à converger vers la nouvelle valeur ; la médiane absorbe seule le saut initial, sans seuil de rejet dédié (le rejet de spike isolé a disparu avec la refonte : voir [ADR-0097](../adr/0097-le-filtre-lisse-le-dosage-juge.md)). Le brut suit immédiatement le potentiel réel de l'électrode, indispensable pour juger la stabilité avant de calibrer. Le reste de l'UI (dashboard, valeur principale pH, MQTT) continue d'afficher la valeur officielle.
 
 L'ordre d'exécution est libre (mid puis low, ou inverse). En pratique, les utilisateurs commencent par le milieu (référence neutre) puis enchaînent avec le bas.
 
@@ -586,7 +537,7 @@ L'ordre d'exécution est libre (mid puis low, ou inverse). En pratique, les util
 ## Données consommées (WebSocket `/ws`)
 
 **Mesure** : `ph` (= valeur **filtrée corrigée**, 3 décimales) ; `phMedian`, `phFiltered` (**corrigés**) ; `phRaw` (**brut EZO**, feature-025 / feature-067)
-**État filtre** : `phFilterReady`, `phFilterUnstable`, `phRejectedCount`, `phMixingDelayActive`, `phDoseBlockedReason` (feature-025), `phFilterAlarm` (v2.20.3), **`phDoseBlockedCode`** (v2.25.1 — code machine de la cause de refus, source de la catégorie) — voir [Chip d'état filtre](#chip-détat-filtre-feature-025)
+**État filtre** : `phRejectedCount` (diagnostic seul), `phMixingDelayActive`, `phDoseBlockedReason` (feature-025), **`phDoseBlockedCode`** (v2.25.1 — code machine de la cause de refus, source de la catégorie) — voir [Modal détails](#modal-détails). ⚠️ `phFilterReady` / `phFilterUnstable` / `phFilterAlarm` sont **retirés en v2.68.0** (feature-152) — voir [Ce qui a été retiré, fusionné, conservé](#ce-qui-a-été-retiré-fusionné-conservé-feature-152-v2680) et [API.md](../API.md#get-data--write)
 **Calibration** : `phCalPoints` (`-1..3`) — voir [Chip d'état de calibration](#chip-détat-de-calibration-feature-034)
 **Pente sonde** : `phSlopeAcid`, `phSlopeBase`, `phSlopeZero`, `phSlopeAgeMs` (feature-024) — voir [Chip d'état sonde](#chip-détat-sonde-feature-024)
 **Dosage** : `ph_dosing`, `ph_used_ms`, `ph_daily_ml`, `ph_limit_reached` — ⚠️ **`ph_dosing` change de SENS en v2.36.0**, voir [Sens de « en dosage »](#sens-de--en-dosage--feature-094-v2360)
@@ -618,9 +569,10 @@ L'ordre d'exécution est libre (mid puis low, ou inverse). En pratique, les util
 | Calibration EZO (mid ou low) | `POST /calibrate_ph` | `{"step":"mid"}` ou `{"step":"low"}` | WRITE |
 | Effacer calibration EZO | `POST /calibrate_clear` | `{"sensor":"ph"}` | WRITE |
 | Refresh pente sonde (feature-024) | `POST /debug/ph_slope_refresh` | — | aucune |
-| **Réarmer le filtre pH (v2.20.3)** | `POST /reset-sensor-filter?sensor=ph` | querystring | **CRITICAL** (1×/10 min → `429`) |
 
 > Routes legacy supprimées (404) : `/calibrate_ph_neutral`, `/calibrate_ph_acid`, `/clear_ph_calibration`. Voir [ADR-0014](../adr/0014-migration-atlas-ezo.md).
+>
+> ⚠️ **`POST /reset-sensor-filter?sensor=ph` n'est plus déclenchable depuis cette page** depuis la v2.68.0 (feature-152) — le bouton qui l'appelait a disparu avec le modal « État filtre pH » (voir [Ce qui a été retiré, fusionné, conservé](#ce-qui-a-été-retiré-fusionné-conservé-feature-152-v2680)). La route reste vivante, en usage de diagnostic `curl` : [API.md](../API.md#post-reset-sensor-filter--critical).
 
 Validation côté firmware :
 - `ph_regulation_mode` rejeté si hors de l'enum → valeur ignorée. **v2.25.0** : sortie du mode `manual` refusée en **HTTP 409** tant que la bascule de sécurité n'est pas acquittée.
@@ -700,7 +652,7 @@ Encart `#ph_inject_raw_guard_warning` (titre `#ph_inject_raw_guard_title`, texte
 ## Cas limites
 
 - **Filtration arrêtée / purge post-reprise (feature-061)** : valeur pH « actuelle » à `--`, badge `#ph-page-badge` bleu « Filtration arrêtée » ou « Stabilisation depuis N min », trous dans le graphique d'historique. Ligne brute et calibration non gatées.
-- **EZO pH injoignable** : chip rouge « EZO pH injoignable » sur la carte Régulation. Régulation auto inhibée (cond #5).
+- **EZO pH injoignable** : hint `#ph_cal_hint` « EZO pH injoignable — vérifiez le câblage I²C et l'alimentation. » sous le bouton « Calibrer la sonde », et header de la carte Calibration « EZO pH injoignable ». Régulation auto inhibée (cond #5).
 - **Lecture pH stale > 20 s** : valeur du bloc Statistiques en `is-stale` (opacité 0.5). Régulation auto inhibée (cond #1) + alerte MQTT `pool/alerts/sensor_stale`.
 - **Calibration en cours et utilisateur clique 2× sur le même bouton** : queue à 4 slots accepte sans erreur les 4 premières mises en file. Au-delà : 503 + toast « Calibration en cours, réessayer dans 1 seconde ».
 - **WebSocket déconnecté** : éléments dépendants des données capteur taggés `.is-stale` (transition 300 ms). Reset automatique à la reconnexion.
@@ -741,8 +693,8 @@ Encart `#ph_inject_raw_guard_warning` (titre `#ph_inject_raw_guard_title`, texte
 - [`src/web_routes_calibration.cpp`](../../src/web_routes_calibration.cpp) — endpoints `/calibrate_ph`, `/calibrate_clear`
 - [`src/web_routes_control.cpp`](../../src/web_routes_control.cpp) — endpoints `/ph/inject/*` (coquille des gardes : collecte + 409 JSON, feature-006)
 - [`src/dosing_logic.h`](../../src/dosing_logic.h), [`src/dosing_logic.cpp`](../../src/dosing_logic.cpp) — `evaluateManualInject()` : gardes d'injection manuelle pures (feature-006)
-- [`src/ws_manager.cpp`](../../src/ws_manager.cpp) — diffusion `ph` (= filtré) + `phRaw/Median/Filtered/FilterReady/...` (feature-025)
-- [`src/sensor_filter.h`](../../src/sensor_filter.h), [`src/sensor_filter.cpp`](../../src/sensor_filter.cpp) — filtre médiane + EMA (feature-025)
+- [`src/ws_manager.cpp`](../../src/ws_manager.cpp) — diffusion `ph` (= valeur officielle) + `phRaw`/`phMedian`/`phFiltered`/`phRejectedCount` (feature-025 ; `phFilterReady`/`phFilterUnstable`/`phFilterAlarm` retirés en v2.68.0, feature-152)
+- [`src/sensor_filter.h`](../../src/sensor_filter.h), [`src/sensor_filter.cpp`](../../src/sensor_filter.cpp) — chaîne de mesure à 5 étages, médiane 9 + lissage exponentiel (feature-152, v2.68.0 ; ex-feature-025)
 
 ## Documentation liée
 

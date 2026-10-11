@@ -1,6 +1,6 @@
 # ADR-0041 — Autorité des mesures non représentatives et sortie de secours du filtre de tendance centrale
 
-- **Statut** : Accepté
+- **Statut** : Partiellement superseded by ADR-0097 (la sortie de secours de ré-amorçage et ses trois gardes cumulatives disparaissent ; le principe de porte d'alimentation SURVIT, simplifié et re-énoncé dans l'ADR-0097 — vider à la fermeture, aucune action à l'ouverture)
 - **Date** : 2026-08-21
 - **Décideurs** : `architect`, `pool-chemistry` (verdict GO conditionnel), `code-reviewer`, utilisateur
 - **Spec(s) liée(s)** : `specs/features/done/bug-filtre-ph-verrouille-par-rejet-de-spike-sans-issue.md` — succède fonctionnellement à [ADR-0027](0027-filtre-tendance-centrale.md) (feature-058), qui reste en vigueur

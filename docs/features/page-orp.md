@@ -11,7 +11,7 @@ Point d'entrée unique pour **tout** ce qui concerne l'ORP (potentiel redox, pil
 
 En mode nominal, cinq zones :
 
-1. **Bloc Statistiques** (bandeau compact, sans titre) — valeur ORP **filtrée** courante en grand (mV) + **ligne brute discrète** « brut · médiane · maj » + **rangée de chips** : chip d'état filtre cliquable (cf. [Chip d'état filtre](#chip-détat-filtre-feature-025)) et **chip d'état de calibration** (cf. [Chip d'état de calibration](#chip-détat-de-calibration-feature-034)) + dosage du jour (barre de progression, borne `max_orp_ml_per_day`). Depuis la **v2.37.0** (feature-096), ce bloc se termine par « **Atteinte de la cible** » (`#orp-ttt-block`) — voir [Atteinte de la cible](#atteinte-de-la-cible-feature-096-v2370).
+1. **Bloc Statistiques** (bandeau compact, sans titre) — valeur ORP **officielle** courante en grand (mV) + **ligne brute discrète** « brut · maj » + **rangée de chips** : **chip d'état de calibration** (cf. [Chip d'état de calibration](#chip-détat-de-calibration-feature-034)) + dosage du jour (barre de progression, borne `max_orp_ml_per_day`). ⚠️ **Depuis la refonte de la chaîne de mesure (feature-152, v2.68.0)**, il n'existe plus de chip ni de modal d'état du **filtre** distincts — voir [Ce qui a été retiré, fusionné, conservé](#ce-qui-a-été-retiré-fusionné-conservé-feature-152-v2680). Depuis la **v2.37.0** (feature-096), ce bloc se termine par « **Atteinte de la cible** » (`#orp-ttt-block`) — voir [Atteinte de la cible](#atteinte-de-la-cible-feature-096-v2370).
 2. **Carte Débit d'injection ORP** (`#orp-card-dosing`, feature-092, v2.46.0) — insérée **entre** le bloc Statistiques et la carte Régulation, visible **en mode automatique uniquement** : **deux** lignes (écart courant, **Demande** en total) et une pastille d'état. Voir [Carte « Débit d'injection ORP »](#carte--débit-dinjection-orp--orp-card-dosing-feature-092-v2460).
 3. **Carte Régulation ORP** — sélecteur de mode : `Automatique`, `Programmée`, `Manuelle`. Sous-blocs :
    - **Automatique** : ORP cible (mV) + bouton Sauvegarder.
@@ -102,13 +102,15 @@ Identiques à la carte pH, aux deux lignes près : mode ≠ `automatic` **ou** `
 
 ## Affichage mesure filtrée / brute (feature-025)
 
-La valeur affichée **en grand** est l'ORP **filtré** (`orpFiltered`, médiane + EMA), également utilisé par la régulation. La ligne discrète `#orp-filter-sub` (`_renderFilterSub('orp', json)`) affiche :
+La valeur affichée **en grand** est la **valeur officielle** ORP (médiane 9 + lissage exponentiel, champ `orpFiltered` équivalent), également utilisée par la régulation. La ligne discrète `#orp-filter-sub` (`_renderFilterSub('orp', json)`) affiche :
 
 ```
-brut 720 mV · médiane 720 mV · maj à l'instant
+brut 720 mV · maj à l'instant
 ```
 
-- **brut** = `orpRaw` ; **médiane** = `orpMedian` ; **maj** = âge de la dernière mesure brute valide. `--` si `null`.
+- **brut** = `orpRaw` ; **maj** = âge de la dernière mesure brute valide. `--` si `null` (montée en régime, sonde figée ou mesure périmée — plus de repli silencieux sur une autre valeur, feature-152).
+
+⚠️ **Depuis la refonte de la chaîne de mesure (feature-152, v2.68.0)** : la **médiane a disparu de cette ligne** (étape interne du lissage) ; elle reste consultable en diagnostic dans le modal sonde ORP (« Valeur retenue », cf. [Ce qui a été retiré, fusionné, conservé](#ce-qui-a-été-retiré-fusionné-conservé-feature-152-v2680)).
 
 ## Repère du graphique d'historique (feature-083, v2.28.1)
 
@@ -126,37 +128,13 @@ La v2.38.0 historise la mesure **lissée** (celle sur laquelle la régulation d�
 
 Détails : [page-dashboard.md](page-dashboard.md#mini-graphiques-ph--orp--la-courbe-suit-le-nombre-affiché-feature-095-v2380), [ADR-0064](../adr/0064-la-courbe-suit-le-nombre-affiche.md), [history.md](../subsystems/history.md#mesure-lissée-historisée-feature-095-v2380).
 
-## Chip d'état filtre (feature-025)
+## ~~Chip d'état filtre~~ (feature-025) — Ce qui a été retiré, fusionné, conservé (feature-152, v2.68.0)
 
-Chip cliquable `#orp-filter-chip` reflétant l'état du filtre ORP. Classification UI par `_classifyFilterState(json, 'orp', st)` (même logique que la page pH) :
+Présent de la feature-025 à la v2.67.x, le chip cliquable `#orp-filter-chip` + le bouton « Réarmer le filtre ORP » (`#orp-filter-reset`) **ont disparu** avec la refonte de la chaîne de mesure ([ADR-0097 « le filtre lisse, le dosage juge »](../adr/0097-le-filtre-lisse-le-dosage-juge.md)) — même retrait que côté pH, voir [page-ph.md](page-ph.md#ce-qui-a-été-retiré-fusionné-conservé-feature-152-v2680) pour le détail du raisonnement (14 étages → 5, 13 états bloquants → 4, zéro verrou collant).
 
-| Condition (ordre) | Label | Classe / couleur |
-|---|---|---|
-| **`orpFilterAlarm === true`** (v2.20.3) | **« Régulation à l'arrêt »** | `bad` (rouge) |
-| **`orpDoseBlockedCode` = PANNE de mesure** (v2.25.1 — codes 16/20, 17/21) | « Sonde figée » / « Sonde muette » | `bad` (rouge) |
-| `orpFilterUnstable === true` | « Capteur instable » | `bad` (rouge) |
-| `orpRaw` invalide **et** dernière brute valide < 1 min (v2.25.1) | « Lecture EZO manquante » | `warn` (ambré) |
-| `orpRaw` invalide et aucune brute valide depuis ≥ 1 min | « EZO indisponible » | `unknown` (gris) |
-| **`orpDoseBlockedCode` = état TRANSITOIRE** (v2.25.1 — codes 15/19, 18/22) | « Stabilisation… » / « Mesures non représentatives » | `warn` (ambré) |
-| `orpFilterReady === false` | « Stabilisation… » | `warn` (ambré) |
-| `orpRejectedCount` augmenté récemment | « Pics rejetés » | `warn2` (ambré) |
-| sinon | « Mesure stable » | `good` (vert) |
+**Ce qui est fusionné** : le modal `<dialog id="orp-filter-modal">` **survit, retitré** « État sonde ORP » (identifiant HTML inchangé, contenu réduit) et affiche désormais trois lignes de diagnostic seulement : **Valeur brute** (`#orp-fm-raw`, `orpRaw`), **Valeur retenue** (`#orp-fm-filtered`, valeur officielle médiane 9 + lissage, corrigée — identique au champ `orp`), **Dernière mesure** (`#orp-fm-age`). Plus de médiane en ligne séparée, plus de « Pics rejetés », plus de « Filtre prêt », plus de raison de blocage dosage (qui se lit sur la [pastille d'état dosage](#pastille-détat-orp-dosing-pill)) : une seule valeur officielle à lire, fin du repli silencieux (feature-152). Ouvert par le chip de calibration `#orp-cal-chip` (cf. [Chip d'état de calibration](#chip-détat-de-calibration-feature-034)), qui porte désormais seul la responsabilité « sonde + calibration » pour cette page — plus de chip séparé.
 
-> **v2.25.1** — le défaut corrigé était **symétrique côté ORP** : le libellé firmware « filtre capteur non prêt (warmup / EZO injoignable) » mélangeait deux causes physiques, et l'UI, qui testait « warm » avant « ezo », affichait « Stabilisation du filtre » sur une **vraie panne du module EZO ORP**. La catégorie vient désormais du firmware (`orpDoseBlockedCode`), les pannes et les états transitoires ont deux registres visuels **disjoints**, et une brute manquante depuis moins d'une minute est un avertissement (« Lecture EZO manquante ») et non une panne. Détail du mécanisme et table des codes : [page-ph.md](page-ph.md#chip-détat-filtre-feature-025), [API.md](../API.md#code-de-cause-de-refus-de-dosage-v2251), [ADR-0049](../adr/0049-code-machine-de-cause-de-refus-et-etat-interne-du-filtre.md).
-
-Clic → `<dialog id="orp-filter-modal">` (`État filtre ORP`) : brut, médiane, filtré, **Pics rejetés**, âge, **Filtre prêt**, et raison de blocage dosage conditionnelle (traduite depuis `orpDoseBlockedCode`, ou « Mélange en cours » si `orpMixingDelayActive`) — mêmes trois chemins que la page pH (code répertorié / sentinelle 250 → texte serveur / clé absente → repli sur `orpDoseBlockedReason` / code inconnu → « Cause inconnue (code N) »). Le ton rouge est réservé aux **pannes**. La pause mélange ORP est plus longue (20 min vs 15 min pour le pH).
-
-> **v2.20.3** — `orpFilterAlarm` prime sur tout le reste, y compris sur « EZO indisponible » : le filtre ORP est resté non prêt > 5 min alors que la filtration tournait et que les mesures étaient représentatives, donc **plus aucune chloration**. Le firmware ne l'arme jamais pendant une purge, un warmup ou une filtration à l'arrêt.
-
-### Bouton « Réarmer le filtre ORP » (v2.20.3)
-
-`<button id="orp-filter-reset" class="btn btn--danger">` au pied du modal « État filtre ORP ». Le filtre ORP partage la logique de `SensorFilter` avec le pH : il est donc exposé **au même piège de verrouillage** sur rejet de spike (`kOrpFilterSpikeReject` = 300 mV) et dispose des mêmes correctifs (porte d'alimentation, sortie de secours, alarme).
-
-Comportement identique à la page pH ([détail](page-ph.md#bouton--réarmer-le-filtre-ph--v2203)), avec `sensor=orp` :
-
-- confirmation explicite (`danger: true`) rappelant que la **détection de sonde figée** et l'alarme de bruit électrique **seront effacées**, et que le dosage restera bloqué ~1 min ;
-- `POST /reset-sensor-filter?sensor=orp`, auth **CRITICAL**, **1 réarmement/10 min** par capteur (`429` avec `retry_after_s`) ;
-- le cooldown est **par capteur** : réarmer le pH ne consomme pas le crédit de l'ORP, et réparer le pH ne réinitialise plus un filtre ORP sain (ce qui arrivait avec l'ancienne route de debug).
+**Ce qui n'est PAS retrouvable dans l'UI, mais vit toujours côté API** : `POST /reset-sensor-filter?sensor=orp` (vidage manuel de la fenêtre + détection de sonde figée). ⚠️ **Route doublement orpheline, conservée en l'état, délibérément** : (1) plus aucun bouton ne l'appelle, (2) sa raison d'être (filtre verrouillable) a disparu — la chaîne de mesure ne compte plus aucun verrou collant. Elle reste un usage de **diagnostic** légitime (`curl`), voir [API.md](../API.md#post-reset-sensor-filter--critical) et le commentaire au-dessus du handler dans [`src/web_routes_control.cpp`](../../src/web_routes_control.cpp). Le cooldown reste **par capteur** : réarmer le pH ne consomme pas le crédit de l'ORP.
 
 ## Chip d'état de calibration (feature-034)
 
@@ -191,7 +169,7 @@ La carte `#orp-card-calibration` présente un **stepper** (`<ol class="calibrati
 - **États visuels du stepper** : `is-completed` (✓) / `is-active` (`aria-current="step"`) / `is-upcoming`, identiques à la page pH (voir [page-ph.md](page-ph.md#architecture-ui--écran-guidé-feature-034)).
 - **Minuterie de stabilisation** (aide non bloquante, `CAL_STAB_DURATION_S = 60`) : bouton « Démarrer la minuterie (60 s) » → compte à rebours `mm:ss` + barre dans `#orp-cal-timer` (`role="timer"`), message « Stabilisation atteinte » à 0. On peut calibrer avant la fin.
 - **Indicateur de stabilité Δ60 s** (indicatif) : amplitude `max − min` de la mesure brute sur ~60 s, seuil cosmétique `5` mV.
-- **Readout live** : `<div class="readout">` (`#cal-orp-readout`) affichant la valeur ORP **brute** lue toutes les 5 s. `updateCalibrationReadouts()` utilise `json.orpRaw` (repli sur `json.orp` si absent), **pas** la valeur lissée. Raison : en changeant de solution étalon (saut de plusieurs centaines de mV), le lissé — médiane sur fenêtre **longue** (13 échantillons ≈ 65 s) + EMA (feature-058) — met plusieurs dizaines de secondes à converger ; le saut initial ressemble à un **spike dur** (`|raw − médiane| > kOrpFilterSpikeReject` = 300 mV) et est écarté tant que la médiane n'a pas suivi. Le brut suit immédiatement le potentiel réel de l'électrode, indispensable pour juger la stabilité avant de calibrer. Le reste de l'UI (valeur principale ORP, MQTT) continue d'afficher le lissé.
+- **Readout live** : `<div class="readout">` (`#cal-orp-readout`) affichant la valeur ORP **brute** lue toutes les 5 s. `updateCalibrationReadouts()` utilise `json.orpRaw` (repli sur `json.orp` si absent), **pas** la valeur officielle. Raison : en changeant de solution étalon (saut de plusieurs centaines de mV), la valeur officielle — médiane (**9** échantillons ≈ **45 s**, était 13 ≈ 65 s avant la refonte feature-152, v2.68.0) puis lissage exponentiel (τ = 45 s) — met plusieurs dizaines de secondes à converger ; la médiane absorbe seule le saut initial, sans seuil de rejet dédié (le rejet de spike isolé a disparu avec la refonte : voir [ADR-0097](../adr/0097-le-filtre-lisse-le-dosage-juge.md)). Le brut suit immédiatement le potentiel réel de l'électrode, indispensable pour juger la stabilité avant de calibrer. Le reste de l'UI (valeur principale ORP, MQTT) continue d'afficher la valeur officielle.
 
 ### Workflow temporel
 
@@ -215,7 +193,7 @@ La carte `#orp-card-calibration` présente un **stepper** (`<ol class="calibrati
 ## Données consommées (WebSocket `/ws`)
 
 **Mesure** : `orp` (= valeur **filtrée**, entier mV) ; `orpRaw`, `orpMedian`, `orpFiltered` (feature-025)
-**État filtre** : `orpFilterReady`, `orpFilterUnstable`, `orpRejectedCount`, `orpMixingDelayActive`, `orpDoseBlockedReason` (feature-025), `orpFilterAlarm` (v2.20.3), **`orpDoseBlockedCode`** (v2.25.1 — code machine de la cause de refus, source de la catégorie) — voir [Chip d'état filtre](#chip-détat-filtre-feature-025)
+**État filtre** : `orpRejectedCount` (diagnostic seul), `orpMixingDelayActive`, `orpDoseBlockedReason` (feature-025), **`orpDoseBlockedCode`** (v2.25.1 — code machine de la cause de refus, source de la catégorie) — voir le modal sonde ORP, [Ce qui a été retiré, fusionné, conservé](#ce-qui-a-été-retiré-fusionné-conservé-feature-152-v2680). ⚠️ `orpFilterReady` / `orpFilterUnstable` / `orpFilterAlarm` sont **retirés en v2.68.0** (feature-152) — voir [API.md](../API.md#get-data--write)
 **Calibration** : `orpCalPoints` (`-1..1`) — voir [Chip d'état de calibration](#chip-détat-de-calibration-feature-034)
 **Dosage** : `orp_dosing`, `orp_used_ms`, `orp_daily_ml`, `orp_limit_reached`
 **Composition du débit (feature-092, v2.46.0)** : `orp_p_term_ml_per_min`, `orp_demand_ml_per_min`, `orp_sustainable_ml_per_min` (float 2 décimales \| `null`), `orp_limited_by_hourly_budget` (bool, **verdict** firmware — jamais `null`), plus `orpMixingDelayActive` / `orp_mix_remaining_s` (pause mélange, désormais servis **aussi** par `/data`) et `orp_pump_flow_uncharacterized` (désormais servi **aussi** par le WebSocket). Tous en **parité stricte** ([ADR-0071](../adr/0071-parite-data-trame-capteurs.md)). `orp_demand_ml_per_min` absent = firmware antérieur → **carte masquée**. Voir [Carte « Débit d'injection ORP »](#carte--débit-dinjection-orp--orp-card-dosing-feature-092-v2460)
@@ -238,9 +216,10 @@ La carte `#orp-card-calibration` présente un **stepper** (`<ol class="calibrati
 | Injection manuelle stop | `POST /orp/inject/stop` | — | WRITE |
 | Calibration EZO ORP | `POST /calibrate_orp` | `{"reference": <mV float>}` | WRITE |
 | Effacer calibration EZO | `POST /calibrate_clear` | `{"sensor":"orp"}` | WRITE |
-| **Réarmer le filtre ORP (v2.20.3)** | `POST /reset-sensor-filter?sensor=orp` | querystring | **CRITICAL** (1×/10 min → `429`) |
 
 > Avant feature-021 : la calibration ORP se faisait entièrement côté UI client (calcul offset/slope, persistance via `POST /save-config` avec `orp_calibration_*`) — voir [ADR-0003](../adr/0003-calibration-orp-cote-client.md). Cette voie est **supersédée** par la calibration interne au module Atlas EZO ORP. ADR-0003 reste applicable historiquement (PCB v1).
+>
+> ⚠️ **`POST /reset-sensor-filter?sensor=orp` n'est plus déclenchable depuis cette page** depuis la v2.68.0 (feature-152) — le bouton qui l'appelait a disparu (voir [Ce qui a été retiré, fusionné, conservé](#ce-qui-a-été-retiré-fusionné-conservé-feature-152-v2680)). La route reste vivante, en usage de diagnostic `curl` : [API.md](../API.md#post-reset-sensor-filter--critical).
 
 Validation côté firmware :
 - `orp_regulation_mode` rejeté si hors de l'enum.
@@ -296,7 +275,7 @@ Encart `#orp_inject_raw_guard_warning` (titre `#orp_inject_raw_guard_title`, tex
 ## Cas limites
 
 - **Filtration arrêtée / purge post-reprise (feature-061)** : valeur ORP « actuelle » à `--`, badge `#orp-page-badge` bleu « Filtration arrêtée » ou « Stabilisation depuis N min », trous dans le graphique d'historique. Ligne brute et calibration non gatées.
-- **EZO ORP injoignable** : chip rouge « EZO ORP injoignable » sur la carte Régulation.
+- **EZO ORP injoignable** : chip `#orp-cal-chip` gris « EZO indisponible » + hint « EZO ORP injoignable — vérifiez le câblage I²C. », header de la carte Calibration « EZO ORP injoignable » (voir [Chip d'état de calibration](#chip-détat-de-calibration-feature-034)).
 - **Lecture ORP stale > 20 s** : valeur en `is-stale` + alerte MQTT `pool/alerts/sensor_stale`. Régulation auto inhibée.
 - **Recalibration sur un capteur déjà à `orpCalPoints == 1`** : fallback succès UI après 5 s (le compteur EZO ne change pas, le polling de transition échoue → on bascule sur un succès optimiste).
 - **WebSocket déconnecté** : éléments capteur taggés `.is-stale`. Reset à la reconnexion.
@@ -308,10 +287,10 @@ Encart `#orp_inject_raw_guard_warning` (titre `#orp_inject_raw_guard_title`, tex
 
 | Entité HA | Topic | Commande |
 |-----------|-------|----------|
-| `sensor.*_orp` | `{base}/orp` (= filtré) | — |
+| `sensor.*_orp` | `{base}/orp` (= valeur officielle) | — |
 | `sensor.*_orp_raw` | `{base}/orp_raw` (feature-025) | — |
-| `sensor.*_orp_filtered` | `{base}/orp_filtered` (feature-025) | — |
-| `binary_sensor.*_orp_filter_ready` | `{base}/orp_filter_ready` (feature-025) | — |
+| `sensor.*_orp_filtered` | `{base}/orp_filtered` (feature-025, diagnostic seul) | — |
+| ~~`binary_sensor.*_orp_filter_ready`~~ | ~~`{base}/orp_filter_ready`~~ | **RETIRÉ en v2.68.0** (feature-152) — `{base}/orp` vaut directement `null` pendant la montée en régime. Voir [MQTT.md](../MQTT.md#auto-discovery-ha-feature-025). |
 | `sensor.*_orp_cal_points` | `{base}/orp_cal_points` (`-1..1`) | — |
 | `number.*_orp_target` | `{base}/orp_target` | `{base}/orp_target/set` |
 | `select.*_orp_regulation_mode` | `{base}/orp_regulation_mode` | `{base}/orp_regulation_mode/set` (feature-009, v2.7.0) |
@@ -333,9 +312,9 @@ Encart `#orp_inject_raw_guard_warning` (titre `#orp_inject_raw_guard_title`, tex
 - [`src/web_routes_control.cpp`](../../src/web_routes_control.cpp) — endpoints `/orp/inject/*` (coquille des gardes : collecte + 409 JSON, feature-006)
 - [`src/dosing_logic.h`](../../src/dosing_logic.h), [`src/dosing_logic.cpp`](../../src/dosing_logic.cpp) — `evaluateManualInject()` : gardes d'injection manuelle pures (feature-006)
 - [`src/web_routes_config.cpp`](../../src/web_routes_config.cpp) — validation `orp_regulation_mode` et `orp_daily_target_ml`
-- [`src/ws_manager.cpp`](../../src/ws_manager.cpp) — diffusion `orp` (= filtré) + `orpRaw/Median/Filtered/FilterReady/...` (feature-025)
-- [`src/sensor_filter.h`](../../src/sensor_filter.h), [`src/sensor_filter.cpp`](../../src/sensor_filter.cpp) — filtre médiane + EMA (feature-025)
-- [`src/mqtt_manager.cpp`](../../src/mqtt_manager.cpp) — publication `orp_regulation_mode`, `orp_daily_target_ml`, `orp_cal_points`, `orp_cal_valid`, topics filtre (feature-025)
+- [`src/ws_manager.cpp`](../../src/ws_manager.cpp) — diffusion `orp` (= valeur officielle) + `orpRaw`/`orpMedian`/`orpFiltered`/`orpRejectedCount` (feature-025 ; `orpFilterReady`/`orpFilterUnstable`/`orpFilterAlarm` retirés en v2.68.0, feature-152)
+- [`src/sensor_filter.h`](../../src/sensor_filter.h), [`src/sensor_filter.cpp`](../../src/sensor_filter.cpp) — chaîne de mesure à 5 étages, médiane 9 + lissage exponentiel (feature-152, v2.68.0 ; ex-feature-025)
+- [`src/mqtt_manager.cpp`](../../src/mqtt_manager.cpp) — publication `orp_regulation_mode`, `orp_daily_target_ml`, `orp_cal_points`, `orp_cal_valid`, topics diagnostic (feature-025 ; dépublication des topics « filtre » retirés, feature-152)
 
 ## Documentation liée
 

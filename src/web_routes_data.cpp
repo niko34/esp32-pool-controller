@@ -286,20 +286,22 @@ static void handleGetData(AsyncWebServerRequest* request) {
   // ci-dessus (champ PRÉSENT, valeur 1800) reste le bon majorant, inchangé.
   StaticJson<3200> doc;
 
-  // feature-025 : la "valeur courante" (champs ph/orp) reflète la valeur FILTRÉE
-  // (médiane + EMA), alignée sur le WS. Le brut reste exposé séparément (phRaw/orpRaw).
-  // Fallback sur le brut si le filtre n'est pas encore amorcé (warmup).
+  // feature-152 : la "valeur courante" (champs ph/orp) EST la VALEUR OFFICIELLE
+  // (médiane + lissage), alignée sur le WS. Le brut reste exposé séparément
+  // (phRaw/orpRaw). ⛔ PLUS DE REPLI SILENCIEUX sur le brut pendant la montée en
+  // régime : l'écran dit que la mesure se met en place via `measures_valid`
+  // (défaut constaté le 11/10 — afficher un autre nombre que celui qui décide,
+  // sans le dire).
   // feature-067 : `ph` = valeur CORRIGÉE (brut + offset logiciel), comme le WS et
-  // MQTT. `phRaw` reste le BRUT EZO (diagnostic), `phMedian`/`phFiltered` sont
-  // corrigés. Le repli de warmup passe par getPh() (corrigé), jamais par le brut.
+  // MQTT. `phRaw` reste le BRUT EZO (diagnostic), `phMedian`/`phFiltered` sont corrigés.
   float orpRaw = sensors.getOrpRaw();
   float phRaw  = sensors.getPhRaw();      // BRUT EZO (sans offset)
   float orpMed = sensors.getOrpMedian();
-  float phMed  = sensors.getPhMedian();   // médiane CORRIGÉE
+  float phMed  = sensors.getPhMedian();   // médiane (diagnostic CORRIGÉE)
   float orpFil = sensors.getOrpFiltered();
-  float phFil  = sensors.getPhFiltered(); // lissé CORRIGÉ
-  float orpVal = !isnan(orpFil) ? orpFil : orpRaw;
-  float phVal  = !isnan(phFil)  ? phFil  : sensors.getPh();
+  float phFil  = sensors.getPhFiltered(); // VALEUR OFFICIELLE CORRIGÉE
+  float orpVal = orpFil;
+  float phVal  = phFil;
 
   // ORP (valeur courante = filtrée)
   if (!isnan(orpVal)) {
@@ -315,24 +317,15 @@ static void handleGetData(AsyncWebServerRequest* request) {
     doc["ph"] = nullptr;
   }
 
-  // feature-025 : chaîne de filtrage exposée pour la chip d'état + ligne brute UI.
+  // feature-152 : champs de diagnostic (brut, médiane, valeur officielle).
   if (!isnan(phRaw)) doc["phRaw"] = round(phRaw * 1000.0f) / 1000.0f; else doc["phRaw"] = nullptr;
   if (!isnan(phMed)) doc["phMedian"] = round(phMed * 1000.0f) / 1000.0f; else doc["phMedian"] = nullptr;
   if (!isnan(phFil)) doc["phFiltered"] = round(phFil * 1000.0f) / 1000.0f; else doc["phFiltered"] = nullptr;
-  doc["phFilterReady"]    = sensors.isPhFilterReady();
-  doc["phFilterUnstable"] = sensors.isPhFilterUnstable();
   doc["phRejectedCount"]  = sensors.getPhRejectedCount();
-  // v2.20.3 (C2) : alarme « filtre non prêt durablement » (≥ 5 min alors que la
-  // filtration tourne ET que les mesures sont représentatives) = plus AUCUNE
-  // régulation. Exposée pour le chip d'état et la bannière du tableau de bord.
-  doc["phFilterAlarm"]    = sensors.isPhFilterNotReadyAlarm();
   if (!isnan(orpRaw)) doc["orpRaw"] = round(orpRaw); else doc["orpRaw"] = nullptr;
   if (!isnan(orpMed)) doc["orpMedian"] = round(orpMed); else doc["orpMedian"] = nullptr;
   if (!isnan(orpFil)) doc["orpFiltered"] = round(orpFil); else doc["orpFiltered"] = nullptr;
-  doc["orpFilterReady"]    = sensors.isOrpFilterReady();
-  doc["orpFilterUnstable"] = sensors.isOrpFilterUnstable();
   doc["orpRejectedCount"]  = sensors.getOrpRejectedCount();
-  doc["orpFilterAlarm"]    = sensors.isOrpFilterNotReadyAlarm();  // v2.20.3 (C2)
 
   // feature-034 : points de calibration EZO (déjà publiés en WS, mais ABSENTS de /data —
   // nécessaires au polling de calibration qui interroge /data activement, Safari mettant
@@ -387,6 +380,11 @@ static void handleGetData(AsyncWebServerRequest* request) {
   {
     const MeasureValiditySnapshot mv = measureValidity.getSnapshot();
     doc["water_present"] = mv.waterPresent;
+    // feature-152 (B1, CORRIGÉ en revue) : measures_valid reste la validité de
+    // la CHAMBRE DE MESURE uniquement — le remplissage de la fenêtre est porté
+    // PAR VOIE par le code de refus 15. Motif complet et conséquences du
+    // couplage écarté : voir ws_manager.cpp, même bloc.
+    // PARITÉ /data ↔ WS obligatoire (même expression des deux côtés).
     doc["measures_valid"] = mv.measuresValid;
     // Nom distinct de stabilization_remaining_s (WS = stabilisation post-
     // calibration des pompes) : ici purge de la chambre de mesure.

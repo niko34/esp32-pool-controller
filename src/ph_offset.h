@@ -10,9 +10,11 @@
 //
 // Point d'application (décision architect) : EN SORTIE des accesseurs de
 // SensorManager, jamais à l'ingestion du filtre. Le filtre pH (src/sensor_filter)
-// continue de travailler sur le signal BRUT : latch EMI, seuils de rejet de pics
-// et dispersion restent inchangés, et un changement d'offset est pris en compte
-// IMMÉDIATEMENT (pas dilué sur la fenêtre de lissage).
+// continue de travailler sur le signal BRUT, et un changement d'offset est donc
+// pris en compte IMMÉDIATEMENT (pas dilué sur la fenêtre de lissage).
+// NB (feature-152) : cette phrase citait « latch EMI, seuils de rejet de pics et
+// dispersion » — ces trois mécanismes N'EXISTENT PLUS. Le point d'application de
+// l'offset, lui, est inchangé : c'est tout ce que ce paragraphe énonce.
 //
 // CONTRAINTE (style ADR-0017, comme dosing_logic / measure_validity_logic) :
 // pas d'Arduino.h, pas de FreeRTOS, pas de String — en-têtes C uniquement, plus

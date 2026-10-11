@@ -15,11 +15,15 @@
 //        d'architecture « offset appliqué EN SORTIE des accesseurs » — elle est
 //        démontrée ici sur le filtre de production, pas supposée.
 //
-//   D2 — Non-régression du filtre pH : latch EMI, rejet de pics et compteurs de
-//        rejets STRICTEMENT identiques avec et sans offset. Le filtre ne voit
+//   D2 — Non-régression du filtre pH : compteur de rejets, figé, périmé et
+//        porte STRICTEMENT identiques avec et sans offset. Le filtre ne voit
 //        que le brut ; l'offset ne peut donc pas déplacer un seuil de sécurité.
-//        (La suite test_native_sensor_filter reste inchangée : le module pur
-//        n'a aucune notion d'offset, ADR-0017.)
+//        feature-152 : le filtre lisse, il ne juge plus — il n'y a donc plus
+//        de latch EMI ni de rejet de pic par seuil de déviation (la médiane
+//        écarte déjà les aberrations par construction). La suite
+//        test_native_sensor_filter reste la source de vérité du module pur
+//        (ADR-0017, aucune notion d'offset) ; ici on ne vérifie que la
+//        NON-DÉPENDANCE des signaux de diagnostic à l'offset.
 //
 //   D3 — ARTICULATION offset ↔ seuils de sécurité (refonte v2.25.0) : les seuils
 //        chimiques portent sur le pH CORRIGÉ, les deux butées de dernier recours
@@ -29,11 +33,13 @@
 //        couvertes par test_native_ph_guard ; ici on ne teste QUE ce qui met
 //        l'offset en jeu.
 //
-// Chaîne de production reproduite (src/sensors.cpp + pump_controller.cpp) :
-//   EZO → _lastPh (brut) → _phFilter.addSample(brut) → filtered() (brut lissé)
-//       → getPhFiltered() = applyPhOffset(filtered(), offset)   [/data, WS, MQTT]
-//       → getPhFilteredRaw() = filtered()                       [butées pH BRUT]
-//       → pump_controller RECALCULE applyPhOffset(getPhFilteredRaw(), offset)
+// Chaîne de production reproduite (src/sensors.cpp + pump_controller.cpp,
+// feature-152) :
+//   EZO → _lastPh (brut) → _phFilter.addSample(brut, now) → value(now)
+//         (médiane + lissage, NaN si warmup/figé/périmé/porte fermée)
+//       → getPhFiltered() = applyPhOffset(value(now), offset)   [/data, WS, MQTT, dosage]
+//       → getPhValueRaw() = value(now)                          [butées pH BRUT]
+//       → pump_controller RECALCULE applyPhOffset(getPhValueRaw(), offset)
 //         pour les seuils chimiques [pH CORRIGÉ]
 // =============================================================================
 
@@ -48,19 +54,19 @@
 void setUp(void) {}
 void tearDown(void) {}
 
-// Config filtre pH calquée sur constants.h (même ordre positionnel que la suite
-// test_native_sensor_filter) : min 0, max 14, spike 1.0, α 0.10, fenêtre 13,
-// maxRejets 10, âge max 20 s, cap dispersion 0.5.
+// Config filtre pH calquée sur constants.h (même ordre positionnel que
+// SensorFilter::Config, 7 champs depuis feature-152) : plage physique [0;14],
+// médiane kSensorFilterMedianWindow, lissage kSensorFilterEmaTauMs, fraîcheur
+// kSensorFilterMaxAgeMs, détecteur figé kSensorFrozenSamples/EpsilonPh.
 static SensorFilter::Config phCfg() {
   return SensorFilter::Config{
-      /*minValue*/ 0.0f,
-      /*maxValue*/ 14.0f,
-      /*spikeReject*/ 1.0f,
-      /*emaAlpha*/ 0.10f,
-      /*centralWindow*/ 13,
-      /*maxConsecutiveRejects*/ 10,
-      /*maxAgeMs*/ 20000,
-      /*maxDispersion*/ 0.5f};
+      /*minValue*/ kPhFilterMin,
+      /*maxValue*/ kPhFilterMax,
+      /*medianWindow*/ kSensorFilterMedianWindow,
+      /*emaTauMs*/ kSensorFilterEmaTauMs,
+      /*maxAgeMs*/ kSensorFilterMaxAgeMs,
+      /*frozenSamples*/ kSensorFrozenSamples,
+      /*frozenEpsilon*/ kSensorFrozenEpsilonPh};
 }
 
 // =============================================================================
@@ -208,9 +214,8 @@ void test_offset_bounds_constants(void) {
 // choisit la sortie (prise en compte immédiate + filtre sur signal brut).
 // Démontré ici sur le module de production, pas sur un modèle.
 
-// Séquence pH réaliste : oscillation modérée sous le cap de dispersion (0.5),
-// 30 échantillons, loin des bornes de plausibilité [0 ; 14] pour que la
-// translation ne heurte aucun bornage.
+// Séquence pH réaliste, 30 échantillons, loin des bornes de plausibilité
+// [0 ; 14] pour que la translation ne heurte aucun bornage physique (étage 2).
 static float seqAt(int i) {
   const float pattern[10] = {7.00f, 7.08f, 6.95f, 7.12f, 7.03f,
                              6.98f, 7.15f, 7.05f, 6.92f, 7.10f};
@@ -218,8 +223,8 @@ static float seqAt(int i) {
 }
 
 // Cœur de la démonstration : deux filtres, l'un nourri en brut, l'autre nourri
-// en brut + c. À chaque pas, filtreB.filtered() == filtreA.filtered() + c, ce
-// qui est exactement applyPhOffset(filtreA.filtered(), c).
+// en brut + c. À chaque pas, filtreB.value(t) == filtreA.value(t) + c, ce qui
+// est exactement applyPhOffset(filtreA.value(t), c).
 static void assertTranslationInvariance(float c) {
   SensorFilter fa(phCfg());
   SensorFilter fb(phCfg());
@@ -228,20 +233,23 @@ static void assertTranslationInvariance(float c) {
     const float raw = seqAt(i);
     const bool acceptedA = fa.addSample(raw, t);
     const bool acceptedB = fb.addSample(raw + c, t);
-    // Même décision d'acceptation : les seuils du filtre sont RELATIFS (|raw −
-    // médiane|), donc insensibles à une translation.
+    // Même décision d'acceptation : l'étage 2 (NaN / hors plage PHYSIQUE) et la
+    // médiane ne comparent jamais à un état interne dépendant de l'historique
+    // dans une bande relative — ils sont donc insensibles à une translation.
     TEST_ASSERT_EQUAL_MESSAGE(acceptedA, acceptedB,
                               "acceptation identique sous translation");
-    if (!isnan(fa.filtered())) {
+    const float va = fa.value(t);
+    const float vb = fb.value(t);
+    if (!isnan(va)) {
       TEST_ASSERT_FLOAT_WITHIN_MESSAGE(
-          1e-4f, fb.filtered(), applyPhOffset(fa.filtered(), c),
+          1e-4f, vb, applyPhOffset(va, c),
           "filtre(x+c) doit valoir filtre(x)+c");
       TEST_ASSERT_FLOAT_WITHIN_MESSAGE(
           1e-4f, fb.median(), applyPhOffset(fa.median(), c),
           "mediane(x+c) doit valoir mediane(x)+c");
     } else {
       // Warmup : les deux filtres sont NaN au même instant (même amorçage).
-      TEST_ASSERT_TRUE(isnan(fb.filtered()));
+      TEST_ASSERT_TRUE(isnan(vb));
     }
     t += 1000;
   }
@@ -268,17 +276,25 @@ void test_offset_change_is_immediate_at_output(void) {
   SensorFilter out(phCfg());   // offset appliqué en SORTIE (production)
   SensorFilter in(phCfg());    // offset appliqué en ENTRÉE (variante écartée)
   uint32_t t = 0;
-  for (int i = 0; i < 30; ++i) { out.addSample(7.00f, t); in.addSample(7.00f, t); t += 1000; }
-  TEST_ASSERT_FLOAT_WITHIN(0.01f, 7.00f, out.filtered());
+  // Bruit minimal (> epsilon du détecteur figé) : 30 échantillons STRICTEMENT
+  // identiques déclencheraient kSensorFrozenSamples (30) et rendraient value()
+  // NaN — un capteur VIVANT ne reste jamais rigoureusement constant.
+  for (int i = 0; i < 30; ++i) {
+    const float jitter = (i % 2 == 0) ? 0.001f : -0.001f;
+    out.addSample(7.00f + jitter, t);
+    in.addSample(7.00f + jitter, t);
+    t += 1000;
+  }
+  TEST_ASSERT_FLOAT_WITHIN(0.01f, 7.00f, out.value(t));
 
   // L'utilisateur saisit +0.30 : côté SORTIE, l'effet est complet au tick suivant.
   out.addSample(7.00f, t);
   in.addSample(7.00f + 0.30f, t);
   t += 1000;
-  TEST_ASSERT_FLOAT_WITHIN_MESSAGE(0.005f, 7.30f, applyPhOffset(out.filtered(), 0.30f),
+  TEST_ASSERT_FLOAT_WITHIN_MESSAGE(0.005f, 7.30f, applyPhOffset(out.value(t), 0.30f),
                                    "offset en sortie => effet complet immediat");
-  // Côté ENTRÉE, la valeur n'a quasiment pas bougé (dilution médiane + EMA).
-  TEST_ASSERT_TRUE_MESSAGE(in.filtered() < 7.10f,
+  // Côté ENTRÉE, la valeur n'a quasiment pas bougé (dilution médiane + lissage).
+  TEST_ASSERT_TRUE_MESSAGE(in.value(t) < 7.10f,
                            "offset en entree => effet dilue sur la fenetre de lissage");
 }
 
@@ -286,9 +302,11 @@ void test_offset_change_is_immediate_at_output(void) {
 // D2 — Non-régression du filtre pH : le filtre ne voit QUE le brut
 // =============================================================================
 // La chaîne de production nourrit le filtre avec le BRUT, quel que soit l'offset.
-// On vérifie que TOUS les signaux de sécurité (latch EMI, rejets de pics,
-// compteurs, ready, dispersion) sont STRICTEMENT identiques offset ou pas, et
-// que seule la valeur exposée à la régulation est décalée.
+// On vérifie que TOUS les signaux de diagnostic (rejets, figé, périmé, porte)
+// sont STRICTEMENT identiques offset ou pas, et que seule la valeur exposée à
+// la régulation est décalée. feature-152 : il n'y a plus de latch ni de rejet
+// de pic par seuil de déviation — la médiane absorbe déjà les aberrations par
+// construction, sans état collant à comparer.
 
 // Pipeline de production : ingestion brute, lecture corrigée en sortie.
 struct PhPipeline {
@@ -296,20 +314,20 @@ struct PhPipeline {
   float offset;
   explicit PhPipeline(float o) : filter(phCfg()), offset(o) {}
   bool ingest(float raw, uint32_t t) { return filter.addSample(raw, t); }
-  float corrected() const { return applyPhOffset(filter.filtered(), offset); }   // getPhFiltered()
-  float rawFiltered() const { return filter.filtered(); }                        // getPhFilteredRaw()
+  float corrected(uint32_t now) const { return applyPhOffset(filter.value(now), offset); }  // getPhFiltered()
+  float rawValue(uint32_t now) const { return filter.value(now); }                           // getPhValueRaw()
 };
 
-// Scénario dur commun : oscillation EMI (pose du latch), spikes durs isolés,
-// NaN, hors-plage, puis retour au calme.
-// (oscillation 7.2/7.8 = amplitude 0.6 > cap 0.5 ; il faut la fenêtre pleine (13)
-// PUIS 3 fenêtres consécutives en dépassement pour poser le latch → 20 pas.)
+// Scénario dur commun : oscillation légitime, NaN, hors-plage physique, puis
+// retour au calme. (feature-152 : l'oscillation 7.2/7.8 ne provoque plus aucun
+// rejet — elle est dans la plage physique [0;14] — seuls NaN et le hors-plage
+// stricte sont rejetés, identiquement quel que soit l'offset.)
 static void runHarshScenario(PhPipeline& p, uint32_t& t) {
-  for (int i = 0; i < 20; ++i) { p.ingest((i % 2 == 0) ? 7.2f : 7.8f, t); t += 1000; }  // latch EMI
-  p.ingest(9.50f, t); t += 1000;   // spike dur isolé
-  p.ingest(NAN, t);   t += 1000;   // mesure absente
-  p.ingest(20.0f, t); t += 1000;   // hors plage [0 ; 14]
-  p.ingest(-3.0f, t); t += 1000;   // hors plage
+  for (int i = 0; i < 20; ++i) { p.ingest((i % 2 == 0) ? 7.2f : 7.8f, t); t += 1000; }  // oscillation légitime
+  p.ingest(9.50f, t); t += 1000;   // valeur extrême mais dans la plage physique
+  p.ingest(NAN, t);   t += 1000;   // mesure absente → rejetée
+  p.ingest(20.0f, t); t += 1000;   // hors plage [0 ; 14] → rejetée
+  p.ingest(-3.0f, t); t += 1000;   // hors plage → rejetée
   for (int i = 0; i < 20; ++i) { p.ingest(7.50f, t); t += 1000; }  // retour au calme
 }
 
@@ -321,74 +339,28 @@ void test_filter_flags_identical_with_and_without_offset(void) {
   runHarshScenario(noOffset, t0);
   runHarshScenario(withOffset, t1);
   runHarshScenario(maxOffset, t2);
+  TEST_ASSERT_EQUAL_UINT32(t0, t1);
+  TEST_ASSERT_EQUAL_UINT32(t0, t2);
 
-  // Latch EMI : posé/levé à l'identique.
-  TEST_ASSERT_EQUAL_MESSAGE(noOffset.filter.unstableLatched(),
-                            withOffset.filter.unstableLatched(),
-                            "latch EMI ne doit pas dependre de l'offset");
-  TEST_ASSERT_EQUAL(noOffset.filter.unstableLatched(), maxOffset.filter.unstableLatched());
-  TEST_ASSERT_EQUAL(noOffset.filter.unstable(), withOffset.filter.unstable());
-  TEST_ASSERT_EQUAL(noOffset.filter.unstable(), maxOffset.filter.unstable());
-
-  // Compteurs de rejets : STRICTEMENT égaux (comparaison entière, pas de tolérance).
+  // Compteurs de rejets : STRICTEMENT égaux (comparaison entière, pas de tolérance) —
+  // exactement 3 (NaN, 20.0, -3.0), identiquement quel que soit l'offset.
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE(3, noOffset.filter.rejectedCount(),
+                                  "3 rejets attendus : NaN, 20.0, -3.0");
   TEST_ASSERT_EQUAL_UINT8_MESSAGE(noOffset.filter.rejectedCount(),
                                   withOffset.filter.rejectedCount(),
                                   "compteur de rejets ne doit pas dependre de l'offset");
   TEST_ASSERT_EQUAL_UINT8(noOffset.filter.rejectedCount(), maxOffset.filter.rejectedCount());
-  TEST_ASSERT_EQUAL_UINT8(noOffset.filter.consecutiveRejects(),
-                          withOffset.filter.consecutiveRejects());
-  TEST_ASSERT_EQUAL_UINT8(noOffset.filter.dispersionCleanStreak(),
-                          withOffset.filter.dispersionCleanStreak());
 
-  // ready() et figé : mêmes verdicts de sécurité.
-  TEST_ASSERT_EQUAL(noOffset.filter.ready(t0 - 1000), withOffset.filter.ready(t1 - 1000));
+  // Figé, périmé, porte : mêmes verdicts de sécurité, offset ou pas.
   TEST_ASSERT_EQUAL(noOffset.filter.frozen(), withOffset.filter.frozen());
+  TEST_ASSERT_EQUAL(noOffset.filter.stale(t0), withOffset.filter.stale(t1));
+  TEST_ASSERT_EQUAL(noOffset.filter.gateClosed(), withOffset.filter.gateClosed());
+  TEST_ASSERT_EQUAL(noOffset.filter.warmingUp(), withOffset.filter.warmingUp());
 
-  // Diagnostic : le brut lissé est identique, seule la valeur corrigée bouge.
-  TEST_ASSERT_FLOAT_WITHIN(1e-5f, noOffset.rawFiltered(), withOffset.rawFiltered());
-  TEST_ASSERT_FLOAT_WITHIN(1e-4f, noOffset.rawFiltered() + 0.30f, withOffset.corrected());
-}
-
-// Le rejet de pic est ÉVALUÉ SUR LE BRUT : un spike dur reste écarté à
-// l'identique, et il n'est pas « rattrapé » par l'offset. Vérifié pas à pas.
-void test_spike_rejection_identical_with_offset(void) {
-  PhPipeline a(0.0f), b(kPhOffsetMax);
-  uint32_t t = 0;
-  const float seq[] = {7.00f, 7.02f, 6.98f, 7.01f, 6.99f, 7.03f, 7.00f,
-                       6.97f, 7.04f, 7.00f, 6.96f, 7.02f, 7.01f,
-                       9.50f,   // spike dur (|9.50 − 7.00| = 2.5 > 1.0)
-                       7.00f, 4.00f, 7.00f};
-  for (unsigned i = 0; i < sizeof(seq) / sizeof(seq[0]); ++i) {
-    const bool ra = a.ingest(seq[i], t);
-    const bool rb = b.ingest(seq[i], t);
-    TEST_ASSERT_EQUAL_MESSAGE(ra, rb, "acceptation/rejet identique avec offset");
-    TEST_ASSERT_EQUAL_UINT8(a.filter.rejectedCount(), b.filter.rejectedCount());
-    t += 1000;
-  }
-  TEST_ASSERT_TRUE_MESSAGE(a.filter.rejectedCount() >= 2, "les 2 spikes durs sont bien rejetes");
-}
-
-// Latch EMI : l'offset ne le pose ni ne le lève, même appliqué en cours de route
-// (l'utilisateur peut changer l'offset à chaud pendant une instabilité).
-void test_latch_unaffected_by_offset_change_mid_run(void) {
-  PhPipeline p(0.0f);
-  uint32_t t = 0;
-  // Même borne de sécurité que la suite sensor_filter : on injecte jusqu'à la
-  // pose du latch (fenêtre pleine + 3 fenêtres en dépassement), max 40 pas.
-  for (int i = 0; i < 40 && !p.filter.unstableLatched(); ++i) {
-    p.ingest((i % 2 == 0) ? 7.2f : 7.8f, t);
-    t += 1000;
-  }
-  TEST_ASSERT_TRUE_MESSAGE(p.filter.unstableLatched(), "oscillation > cap => latch pose");
-
-  const uint8_t rejectsBefore = p.filter.rejectedCount();
-  p.offset = kPhOffsetMax;  // changement à chaud
-  TEST_ASSERT_TRUE_MESSAGE(p.filter.unstableLatched(), "changement d'offset ne leve pas le latch");
-  TEST_ASSERT_EQUAL_UINT8(rejectsBefore, p.filter.rejectedCount());
-
-  // Et l'inhibition dosage (unstable) reste vraie tant que le bruit persiste.
-  for (int i = 0; i < 6; ++i) { p.ingest((i % 2 == 0) ? 7.2f : 7.8f, t); t += 1000; }
-  TEST_ASSERT_TRUE(p.filter.unstable());
+  // Diagnostic : la valeur officielle brute est identique, seule la valeur
+  // corrigée bouge.
+  TEST_ASSERT_FLOAT_WITHIN(1e-5f, noOffset.rawValue(t0), withOffset.rawValue(t1));
+  TEST_ASSERT_FLOAT_WITHIN(1e-4f, noOffset.rawValue(t0) + 0.30f, withOffset.corrected(t1));
 }
 
 // Filtre non amorcé (warmup) + offset : la valeur exposée à la régulation reste
@@ -396,15 +368,15 @@ void test_latch_unaffected_by_offset_change_mid_run(void) {
 void test_warmup_with_offset_still_exposes_nan(void) {
   PhPipeline p(kPhOffsetMax);
   uint32_t t = 0;
-  for (int i = 0; i < 12; ++i) {  // 12 < fenêtre centrale 13
+  for (int i = 0; i < (int)kSensorFilterMedianWindow - 1; ++i) {
     p.ingest(7.00f, t);
-    TEST_ASSERT_TRUE_MESSAGE(isnan(p.corrected()),
+    TEST_ASSERT_TRUE_MESSAGE(isnan(p.corrected(t)),
                              "warmup + offset => la regulation ne doit voir aucune valeur");
     t += 1000;
   }
-  p.ingest(7.00f, t);  // 13ᵉ → fenêtre pleine
-  TEST_ASSERT_FALSE(isnan(p.corrected()));
-  TEST_ASSERT_FLOAT_WITHIN(0.01f, 7.50f, p.corrected());
+  p.ingest(7.00f, t);  // dernier échantillon → fenêtre pleine
+  TEST_ASSERT_FALSE(isnan(p.corrected(t)));
+  TEST_ASSERT_FLOAT_WITHIN(0.01f, 7.50f, p.corrected(t));
 }
 
 // =============================================================================
@@ -592,10 +564,8 @@ int main(int, char**) {
   RUN_TEST(test_filter_translation_invariance_negative_offset);
   RUN_TEST(test_filter_translation_invariance_at_bounds);
   RUN_TEST(test_offset_change_is_immediate_at_output);
-  // D2 — non-régression filtre
+  // D2 — non-régression filtre (feature-152 : plus de latch/rejet de pic à tester)
   RUN_TEST(test_filter_flags_identical_with_and_without_offset);
-  RUN_TEST(test_spike_rejection_identical_with_offset);
-  RUN_TEST(test_latch_unaffected_by_offset_change_mid_run);
   RUN_TEST(test_warmup_with_offset_still_exposes_nan);
   // D3 — articulation offset / seuils de sécurité (v2.25.0)
   RUN_TEST(test_corrected_floor_protects_a_constant_real_ph);

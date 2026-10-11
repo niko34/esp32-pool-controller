@@ -332,6 +332,39 @@ Trois branches dans `tickDailyRollover()` :
 2. **NTP/RTC synchronisé + `currentDayDate` vide** (première initialisation après boot) → date stockée, `dayStartTimestamp` remis à `0` pour invalider tout timer fallback `millis()` accumulé depuis le boot. Évite un double reset si NTP retombe en panne plus tard.
 3. **Pas de temps valide** → fallback `millis()` : reset après 24 h écoulées depuis `dayStartTimestamp`. Persiste les compteurs (`saveDailyCounters()`) et arme le timer de stabilisation.
 
+### Alerte « plafond journalier atteint J jours consécutifs » (v2.68.0, feature-152, condition #6 du gate)
+
+Avant la remise à zéro de `phLimitReached`/`orpLimitReached` (branche NTP ci-dessus, chemin
+**daté uniquement** — le fallback 24 h n'alimente pas cette streak), la coquille compte les
+jours calendaires consécutifs où le plafond a été atteint, via le module pur
+[`src/daily_limit_streak_logic.h`](../../src/daily_limit_streak_logic.h)
+(`evaluateDailyLimitStreak()` — « une alerte non testée est une promesse », motif du gate) :
+
+```cpp
+static uint8_t sPhDailyLimitStreakDays = 0;
+static uint8_t sOrpDailyLimitStreakDays = 0;
+const DailyLimitStreakResult phStreakResult = evaluateDailyLimitStreak(
+    safetyLimits.phLimitReached, sPhDailyLimitStreakDays, kDailyLimitStreakAlertDays);
+```
+
+- **Alerte seulement, aucun nouveau verrou** : `systemLogger.critical()` + `mqttManager.publishAlert("ph_daily_limit_streak", …)` / `("orp_daily_limit_streak", …)` dès que la streak atteint `kDailyLimitStreakAlertDays` (= **3**). Ne bloque rien, ne modifie aucune décision de `canDose()`.
+- **Motif** : sous les deux hypothèses possibles (sonde qui ment / eau réellement mauvaise),
+  poursuivre le goutte-à-goutte au-delà de 3 jours est faux dans les deux cas — et sous le
+  seuil de redox, il **fabrique des chloramines** (épisode de boue d'octobre 2026). C'est la
+  borne qui manquait, et elle **ne juge pas la mesure**.
+- ⚠️ **Le compteur n'est PAS persisté** — `static` locales à `pump_controller.cpp`, pas de NVS :
+  il repart à **0** à chaque redémarrage de l'appareil. Un appareil qui redémarre plus souvent
+  que tous les `kDailyLimitStreakAlertDays` (3) jours **n'atteindra jamais** ce seuil, et cette
+  alerte précise ne se lèvera jamais sur un tel appareil. **Accepté sans persistance** (lot de
+  retrait, aucun mécanisme ajouté au-delà de l'extraction demandée) : (1) le plafond journalier
+  **lui-même** reste signalé chaque jour, redémarrage ou non — c'est seulement l'**escalade**
+  « plusieurs jours de suite » qui peut manquer ; (2) un appareil qui redémarre tous les 1-2
+  jours a un problème distinct (reboot-loop) déjà couvert par d'autres diagnostics
+  (ADR-0029 et suivants) ; (3) persister ajouterait une écriture NVS quotidienne pour un strict
+  gain de visibilité, pas de sécurité — si un usage réel montre que des redémarrages fréquents
+  masquent cette alerte, c'est le sujet d'une spec dédiée, pas un ajout silencieux ici.
+- Tests natifs : [`test/test_native_daily_limit_streak/`](../../test/test_native_daily_limit_streak/).
+
 ## Garde-fous `canDose`
 
 `canDose(int pumpIndex)` (feature-021, validé pool-chemistry — voir [ADR-0014](../adr/0014-migration-atlas-ezo.md)) est appelée à chaque cycle `update()` pour la pompe pH (index 0) puis ORP (index 1), **avant** tout calcul PID ou démarrage d'injection. La fonction est **fail-closed strict** : tout résultat ambigu retourne `false` (refus de dosage).
@@ -343,9 +376,9 @@ Les conditions sont évaluées dans l'ordre suivant. Le premier `false` rencontr
 | 1 | **Index pompe valide** | `pumpIndex` ∉ {0, 1} | bug interne |
 | 2 | **Watchdog actif** | wdt non initialisé | sécurité hardware |
 | 3 | **Présence d'eau** | `filtration.resolveWaterPresence().waterPresent == false` | eau ne circule pas — risque bouchon doseuse / injection en eau stagnante. **Source unique** selon le mode d'installation (feature-056, voir [Présence d'eau selon le mode d'installation](#présence-deau-selon-le-mode-dinstallation-feature-056)) |
-| 4 | **Lecture FILTRÉE non NaN** | `getPhFiltered()` ou `getOrpFiltered()` = NaN | feature-025 : le PID consomme le filtré (**corrigé** côté pH depuis feature-067) ; NaN = warmup non amorcé / stale. **v2.25.1** : la cause exposée est **qualifiée** en 4 codes distincts (15-18) selon l'état interne du filtre |
-| 4b | **Filtre prêt** (feature-025) | `!isPhFilterReady()` / `!isOrpFilterReady()` | fenêtre de lissage incomplète, sonde figée, plus aucune mesure acceptée (> 20 s), ou porte de validité fermée — **fail-closed**. **v2.25.1** : ces quatre raisons sont désormais **distinguées** (codes 19-22) ; l'ancien libellé unique « warmup / EZO injoignable » présentait une panne comme un état normal |
-| 4c | **Capteur stable** (feature-025) | `isPhFilterUnstable()` / `isOrpFilterUnstable()` | ≥ 10 rejets consécutifs (EMI persistant) → on bloque plutôt que de lisser |
+| 4 | **Valeur officielle non NaN** | `getPhFiltered()` ou `getOrpFiltered()` = NaN | feature-152 (v2.68.0) : le PID consomme la valeur officielle (**corrigée** côté pH depuis feature-067) ; NaN = warmup non amorcé / sonde figée / mesure périmée / porte fermée. La cause exposée est **qualifiée** en 4 codes distincts (15-18) selon l'état interne du filtre — **seule garde restante** depuis feature-152, qui a retiré les gardes 4b/4c ci-dessous |
+| ~~4b~~ | ~~Filtre prêt~~ (feature-025) | — | **RETIRÉE en v2.68.0** (feature-152) — `isPhFilterReady()`/`isOrpFilterReady()` n'existent plus : `isnan()` de la garde 4 ci-dessus encapsule désormais directement warmup, sonde figée, péremption et porte fermée |
+| ~~4c~~ | ~~Capteur stable~~ (feature-025) | — | **RETIRÉE en v2.68.0** — `isPhFilterUnstable()`/`isOrpFilterUnstable()` n'existent plus : la médiane écarte les aberrations par construction, sans jugement d'instabilité séparé (verdict `pool-chemistry` : ce mécanisme se posait sur du bruit normal, il n'inhibait pas un danger) |
 | 5 | **EZO calibré** | `cal_points < 2` (pH) ou `< 1` (ORP). `-1` (bus down) bloque. | pool-chemistry **cond #2** : régulation auto inhibée tant que calibration incomplète |
 | 6 | **Pas de stabilisation post-cal** | `isStabilizationTimerActive(pumpIndex)` = true | pool-chemistry **cond #3** : 5 min pH / 3 min ORP après calibration EZO |
 | 6b | **Pas de pause mélange** (feature-025) | `isPhMixingDelayActive()` / `isOrpMixingDelayActive()` | homogénéisation du bassin après injection (15 min pH / 20 min ORP) — gate **indépendante** de la stabilisation post-cal |
@@ -354,9 +387,9 @@ Les conditions sont évaluées dans l'ordre suivant. Le premier `false` rencontr
 | 9 | **Limite horaire non atteinte** | `usedMs >= xxxLimitMinutes × 60000` dans la fenêtre 1 h glissante (limite à 0 = désactivée) | sécurité chimique config |
 | 10 | **Anti-rafale court terme** (Pass 3.5) | > 6 cycles/min OU > 20 cycles/15 min | anti-emballement PID — voir [Ring buffer anti-rafale](#ring-buffer-anti-rafale) |
 
-> **Conditions #1, #2, #3, #5, #6** issues du checklist `pool-chemistry` validé en cadrage feature-021. **Condition #10** ajoutée en correctif Pass 3.5. **Conditions #4 (filtré), #4b, #4c, #6b** ajoutées en feature-025 — toutes **fail-closed** et **prioritaires** : elles s'ajoutent aux gardes existantes sans les contourner.
+> **Conditions #1, #2, #3, #5, #6** issues du checklist `pool-chemistry` validé en cadrage feature-021. **Condition #10** ajoutée en correctif Pass 3.5. **Condition #4 (valeur officielle), #6b** ajoutées en feature-025 — toutes **fail-closed** et **prioritaires** : elles s'ajoutent aux gardes existantes sans les contourner. **#4b et #4c retirées en v2.68.0** (feature-152) : leur rôle est entièrement couvert par #4 depuis que la valeur officielle encapsule directement warmup, sonde figée, péremption et porte fermée.
 >
-> **L'ordre et le contenu de `canDose()` sont INCHANGÉS par feature-067 comme par la refonte v2.25.0.** Les gardes pH sont évaluées **en amont**, jamais à l'intérieur : aucune valeur d'énum `DoseRefusal` n'est ajoutée, aucune garde existante n'est déplacée.
+> **L'ordre et le contenu de `canDose()` sont INCHANGÉS par feature-067 comme par la refonte v2.25.0.** Les gardes pH sont évaluées **en amont**, jamais à l'intérieur : aucune valeur d'énum `DoseRefusal` n'est ajoutée, aucune garde existante n'est déplacée. feature-152 (v2.68.0) retire les gardes #4b/#4c **sans déplacer** les autres — leur numérotation reste un historique de revue, pas un contrat figé comme celui de `DoseRefusal`.
 
 ## Gardes de sécurité pH (refonte v2.25.0)
 
@@ -370,7 +403,7 @@ Jusqu'à la v2.25.0, le plancher de refus était **asservi à l'offset** (`phRaw
 
 Les seuils sont désormais **FIXES**, **dérivés** de la plage de consigne, et comparés au pH **CORRIGÉ** — celui que l'utilisateur voit à l'écran. Justification : l'offset est une correction de **mesure** ; une fois appliqué, la valeur *est* le pH de l'eau, et un seuil chimique (agressivité, fraction de HClO) porte sur l'eau réelle.
 
-Le pH brut ne garde qu'un rôle : **deux butées de dernier recours**, qui doivent rester valides si l'offset est faux. Elles lisent `sensors.getPhFilteredRaw()`, seul accesseur portant la garde d'âge du filtre ([sensors.md](sensors.md#garde-dâge-de-getphfilteredraw--pourquoi-elle-existe)). Le pH corrigé est **recalculé** ici — `applyPhOffset(getPhFilteredRaw(), offset)` — et non lu via `getPhFiltered()`, dont le contrat est celui de `/data`, du WS et de MQTT.
+Le pH brut ne garde qu'un rôle : **deux butées de dernier recours**, qui doivent rester valides si l'offset est faux. Elles lisent `sensors.getPhValueRaw()` (ex-`getPhFilteredRaw`, renommé feature-152), seul accesseur portant la garde d'âge du filtre ([sensors.md](sensors.md#garde-dâge-de-getphvalueraw--pourquoi-elle-existe)). Le pH corrigé est **recalculé** ici — `applyPhOffset(getPhValueRaw(), offset)` — et non lu via `getPhFiltered()`, dont le contrat est celui de `/data`, du WS et de MQTT.
 
 | Grandeur | Valeur | Référentiel | Dérivation (`constants.h`) |
 |---|---:|---|---|
@@ -440,7 +473,7 @@ Le seuil appliqué dépend du **produit déclaré** (`phCorrectionType`) : un ac
 
 **Changement de produit** : les cinq drapeaux d'hystérésis sont réarmés (le seuil ET la direction changent, les drapeaux deviennent caducs), mais le **compteur de refus n'est PAS réinitialisé** — une anomalie durable ne s'effface pas d'un changement de réglage.
 
-**Mesure indisponible** (`getPhFilteredRaw()` = NaN, garde d'âge du filtre) : **aucun refus, aucune alerte, aucun refus compté**. Les gardes NaN existantes (`canDose`, filtre non prêt) couvrent déjà le cas ; fabriquer un refus ici ajouterait un refus **fantôme** au compteur des 3 refus / 24 h, jusqu'à fermer la régulation sur une donnée qui n'existe pas. Tous les drapeaux d'hystérésis pH sont **réarmés**.
+**Mesure indisponible** (`getPhValueRaw()` = NaN, garde d'âge du filtre) : **aucun refus, aucune alerte, aucun refus compté**. Les gardes NaN existantes (`canDose`, garde #4) couvrent déjà le cas ; fabriquer un refus ici ajouterait un refus **fantôme** au compteur des 3 refus / 24 h, jusqu'à fermer la régulation sur une donnée qui n'existe pas. Tous les drapeaux d'hystérésis pH sont **réarmés**.
 
 > ⚠️ **Asymétrie assumée de la politique NaN** — les gardes pH **réarment** leurs mémoires d'hystérésis sur mesure indisponible, les gardes ORP les **conservent**. Côté pH c'est un *fail-open borné à 0,05 pH* : après un trou de mesure, la garde peut se relâcher 0,05 pH plus tôt — au niveau du bruit résiduel du filtre. Côté ORP la conservation est **nécessaire** (voir [filet 2](#2-inhibition-du-dosage-orp-sur-ph-élevé-isorpinhibitedbyph)). Détail dans l'[ADR-0048](../adr/0048-seuils-ph-fixes-derives-de-la-plage-de-consigne.md).
 
@@ -729,18 +762,18 @@ Cette valeur est résolue par la fonction **pure** `resolveWaterPresent(WaterPre
 
 ### Causes de refus (code machine ↔ String FR)
 
-`enum class DoseRefusal` ([`dosing_logic.h`](../../src/dosing_logic.h)) — l'ordre des 15 premières valeurs **suit l'ordre des gardes** de `canDose()` ; les valeurs 15-22, ajoutées en v2.25.1, **qualifient** les gardes #4 et #4b. La coquille traduit chaque valeur en une chaîne française (les valeurs runtime — points de calibration, mode, nombre de cycles — sont réinjectées au moment du formatage), **et** publie la valeur numérique telle quelle sur `/data` + WS.
+`enum class DoseRefusal` ([`dosing_logic.h`](../../src/dosing_logic.h)) — l'ordre des valeurs **suit l'ordre des gardes** de `canDose()` ; les valeurs 15-18 **qualifient** la garde #4. La coquille traduit chaque valeur en une chaîne française (les valeurs runtime — points de calibration, mode, nombre de cycles — sont réinjectées au moment du formatage), **et** publie la valeur numérique telle quelle sur `/data` + WS.
 
-> ⚠️ **CONTRAT DE SÉRIALISATION FIGÉ (v2.25.1, [ADR-0049](../adr/0049-code-machine-de-cause-de-refus-et-etat-interne-du-filtre.md))** : ces valeurs sont **écrites explicitement** dans l'énum, **jamais renumérotées**, **jamais insérées au milieu** — toute cause nouvelle s'**ajoute à la fin**, une cause retirée reste **réservée**. **23 `static_assert`** verrouillent la correspondance valeur par valeur en tête de [`pump_controller.cpp`](../../src/pump_controller.cpp), et un `static_assert` supplémentaire garantit que l'énum ne rejoindra jamais la sentinelle `kDoseBlockedCodeGuard` = 250. Un décalage d'une seule valeur ferait afficher **une mauvaise cause** — précisément la classe de défaut que la v2.25.1 corrige.
+> ⚠️ **CONTRAT DE SÉRIALISATION FIGÉ ([ADR-0049](../adr/0049-code-machine-de-cause-de-refus-et-etat-interne-du-filtre.md), amendé par [ADR-0097](../adr/0097-le-filtre-lisse-le-dosage-juge.md))** : ces valeurs sont **écrites explicitement** dans l'énum, **jamais renumérotées**, **jamais insérées au milieu** — toute cause nouvelle s'**ajoute à la fin** (prochaine valeur disponible : **23**), une cause retirée reste **réservée, jamais recyclée**. **18 `static_assert`** (23 avant v2.68.0 — six retirés avec les codes ci-dessous, zéro ajouté) verrouillent la correspondance valeur par valeur en tête de [`pump_controller.cpp`](../../src/pump_controller.cpp), et un `static_assert` supplémentaire garantit que l'énum ne rejoindra jamais la sentinelle `kDoseBlockedCodeGuard` = 250.
 
 | Code | `DoseRefusal` | Garde | Cause FR (réinjectée) |
 |---:|---|---|---|
 | 0 | `None` | — | *(aucun refus — publié `null`)* |
 | 1 | `WatchdogInactive` | #2 | watchdog inactif |
 | 2 | `FiltrationOff` | #3 | filtration arrêtée (présence d'eau résolue par `resolveWaterPresent`) |
-| 3 | `ReadingNaN` | #4 | mesure filtrée indisponible (**état du filtre indéterminé**) |
-| 4 | `FilterNotReady` | #4b | filtre capteur non prêt (**état du filtre indéterminé**) |
-| 5 | `FilterUnstable` | #4c | capteur instable (rejets consécutifs) |
+| 3 | `ReadingNaN` | #4 | valeur officielle indisponible (**état du filtre indéterminé**) |
+| ~~4~~ | ~~`FilterNotReady`~~ | ~~#4b~~ | **RETIRÉ en v2.68.0** (feature-152) — la garde séparée a disparu, jamais recyclé |
+| ~~5~~ | ~~`FilterUnstable`~~ | ~~#4c~~ | **RETIRÉ en v2.68.0** — la médiane écarte les aberrations par construction, jamais recyclé |
 | 6 | `CalibrationInsufficient` | #5 | calibration insuffisante (`cal=X, requis=Y`) |
 | 7 | `StabilizationActive` | #6 | stabilisation post-calibration en cours |
 | 8 | `MixingActive` | #6b | pause mélange en cours |
@@ -750,17 +783,14 @@ Cette valeur est résolue par la fonction **pure** `resolveWaterPresent(WaterPre
 | 12 | `CyclesPerDay` | #9 | limite cycles/jour atteinte |
 | 13 | `BurstPerMinute` | #10 | anti-rafale : N cycles dans la dernière minute |
 | 14 | `BurstPer15Min` | #10 | anti-rafale : N cycles dans les 15 dernières minutes |
-| 15 | `ReadingNaNWarmup` | #4 | mesure filtrée indisponible : fenêtre de lissage en cours |
-| 16 | `ReadingNaNFrozen` | #4 | mesure filtrée indisponible : **sonde figée** |
-| 17 | `ReadingNaNStale` | #4 | mesure filtrée indisponible : **plus aucune mesure acceptée** |
-| 18 | `ReadingNaNGateClosed` | #4 | mesure filtrée indisponible : mesures non représentatives |
-| 19 | `FilterWarmup` | #4b | filtre capteur en cours de remplissage (stabilisation) |
-| 20 | `FilterFrozen` | #4b | **sonde figée** (valeur constante) — filtre non prêt |
-| 21 | `FilterStale` | #4b | **plus aucune mesure acceptée par le filtre** (sonde muette) |
-| 22 | `FilterGateClosed` | #4b | mesures non représentatives (purge / circulation à l'arrêt) |
+| 15 | `ReadingNaNWarmup` | #4 | valeur officielle indisponible : fenêtre de lissage en cours |
+| 16 | `ReadingNaNFrozen` | #4 | valeur officielle indisponible : **sonde figée** |
+| 17 | `ReadingNaNStale` | #4 | valeur officielle indisponible : **plus aucune mesure acceptée** |
+| 18 | `ReadingNaNGateClosed` | #4 | valeur officielle indisponible : mesures non représentatives |
+| ~~19~~-~~22~~ | ~~`FilterWarmup`/`FilterFrozen`/`FilterStale`/`FilterGateClosed`~~ | ~~#4b~~ | **RETIRÉS en v2.68.0** — qualifiaient la garde #4b, qui a disparu avec eux. Jamais recyclés |
 | 250 | *(sentinelle `kDoseBlockedCodeGuard`)* | — | cause posée par une **garde de sécurité pH/ORP** ou par l'escalade (hors `canDose`) |
 
-**Aucun libellé ne mélange plus deux causes.** Les deux anciennes phrases — « lecture pH/ORP filtrée indisponible (NaN) » et « filtre capteur non prêt (**warmup / EZO injoignable**) » — recouvraient chacune plusieurs causes physiques, et l'interface en extrayait un fragment de texte : une **vraie panne d'EZO** s'affichait « Stabilisation du filtre ». Les codes 3 et 4 subsistent pour le cas où l'état du filtre n'a **pas** été collecté (`DoseFilterState::Unknown`) et disent alors explicitement qu'ils ne savent pas — pire cas : une cause **imprécise**, jamais une panne maquillée en état normal.
+**Aucun libellé ne mélange plus deux causes.** L'ancienne phrase « lecture pH/ORP filtrée indisponible (NaN) » recouvrait plusieurs causes physiques, et l'interface en extrayait un fragment de texte : une **vraie panne d'EZO** s'affichait « Stabilisation du filtre ». Le code 3 subsiste pour le cas où l'état du filtre n'a **pas** été collecté (`DoseFilterState::Unknown`) et dit alors explicitement qu'il ne sait pas — pire cas : une cause **imprécise**, jamais une panne maquillée en état normal. **Depuis v2.68.0** (feature-152), il n'existe plus qu'**une seule** famille de qualification (15-18, garde #4) : la garde #4b et ses quatre qualifications symétriques (19-22) ont disparu avec le mécanisme « filtre non prêt » séparé.
 
 #### Qualification par l'état interne du filtre (`resolveFilterState`)
 
@@ -780,7 +810,7 @@ Collecte : `SensorManager::getPhFilterState()` / `getOrpFilterState()` — voir 
 
 #### Alerte de panne de mesure (v2.25.1)
 
-Quand la cause de refus courante est une **panne** de la chaîne de mesure — `FilterFrozen`, `FilterStale`, `ReadingNaNFrozen`, `ReadingNaNStale` — `logRefusalOnce()` escalade en `warning` + alerte MQTT `ph_dose_sensor_fault` / `orp_dose_sensor_fault`, **une seule fois par épisode**, après `kDoseSensorFaultAlertDelayMs` = **60 s** de panne **continue**.
+Quand la cause de refus courante est une **panne** de la chaîne de mesure — `ReadingNaNFrozen`, `ReadingNaNStale` (seuls codes restants depuis le retrait de `FilterFrozen`/`FilterStale` en v2.68.0, feature-152) — `logRefusalOnce()` escalade en `warning` + alerte MQTT `ph_dose_sensor_fault` / `orp_dose_sensor_fault`, **une seule fois par épisode**, après `kDoseSensorFaultAlertDelayMs` = **60 s** de panne **continue**.
 
 | Mécanisme | Règle | Motif |
 |---|---|---|
@@ -1457,7 +1487,7 @@ Aucun compteur d'alerte n'est persisté : la série est **recalculée** à chaqu
 
 ### Garde mesure-valide sur les DEUX accesseurs booléens
 
-L'épisode C5 est tenu en **temps de branche automatique** : sur mesure pH invalide (panne de sonde), la branche d'entretien s'arrête et `anomalyHeldMs` **GÈLE** à sa dernière valeur > 0 — sans garde, une montée du streak 2→3 à la clôture de journée pendant une panne de sonde émettrait l'alerte sur un épisode **figé** (trou trouvé par le `test-engineer` en cours de cycle, corrigé — condition bloquante n°1 du visa). Les deux booléens portent donc **strictement le même prédicat** `!isnan(sensors.getPhFilteredRaw())` (garde d'âge du filtre comprise) : « borné par la limite » et « sous-dimensionné » restent distincts de « bidon vide » et de « panne de sonde ». Le journal passe par l'accesseur lui-même : journal et champ publié **ne peuvent pas diverger** — une panne de sonde fait aussi retomber l'alerte (fail-closed), qui se réarme d'elle-même au retour de la mesure.
+L'épisode C5 est tenu en **temps de branche automatique** : sur mesure pH invalide (panne de sonde), la branche d'entretien s'arrête et `anomalyHeldMs` **GÈLE** à sa dernière valeur > 0 — sans garde, une montée du streak 2→3 à la clôture de journée pendant une panne de sonde émettrait l'alerte sur un épisode **figé** (trou trouvé par le `test-engineer` en cours de cycle, corrigé — condition bloquante n°1 du visa). Les deux booléens portent donc **strictement le même prédicat** `!isnan(sensors.getPhValueRaw())` (garde d'âge du filtre comprise) : « borné par la limite » et « sous-dimensionné » restent distincts de « bidon vide » et de « panne de sonde ». Le journal passe par l'accesseur lui-même : journal et champ publié **ne peuvent pas diverger** — une panne de sonde fait aussi retomber l'alerte (fail-closed), qui se réarme d'elle-même au retour de la mesure.
 
 ### Cache `_phLimitStreakDays` — zéro NVS dans `update()`
 
@@ -2627,7 +2657,7 @@ float effectiveOrpDailyTargetMlPure(float nvsDailyTargetMl, bool rescueActive,
 
 ### Levée automatique — à SENS UNIQUE
 
-`PumpControllerClass::tickRescueChlorineAutoLift(unsigned long nowMs)`, appelée à **chaque tour** d'`update()` (après `tickOrpPhInhibitSurveillance()`, avant toute décision de dosage) : après `kRescueChlorineAutoLiftHoldMs` (30 min) de tenue **continue** de `!sensors.isOrpFilterUnstable() && measureValidity.measuresValid()`, le mode est **levé** (`stopRescueChlorine(RescueLiftReason::AutoLift)`) et le log **L6** (libellé imposé mot à mot par le gate) est émis. ⚠️ **À sens unique par construction** : cette levée **termine** le mode, elle ne le **ré-arme jamais** — un état absorbant ne peut pas battre (contrairement au défaut corrigé par feature-139). La moindre instabilité réarme le minuteur de tenue à zéro ; le mode inactif maintient le minuteur à zéro (no-op).
+`PumpControllerClass::tickRescueChlorineAutoLift(unsigned long nowMs)`, appelée à **chaque tour** d'`update()` (après `tickOrpPhInhibitSurveillance()`, avant toute décision de dosage) : après `kRescueChlorineAutoLiftHoldMs` (30 min) de tenue **continue** de `isfinite(sensors.getOrpFiltered()) && measureValidity.measuresValid()` (condition réécrite en v2.68.0, feature-152 : `isOrpFilterUnstable()` n'existe plus, une valeur officielle non-NaN suffit), le mode est **levé** (`stopRescueChlorine(RescueLiftReason::AutoLift)`) et le log **L6** (libellé imposé mot à mot par le gate) est émis. ⚠️ **À sens unique par construction** : cette levée **termine** le mode, elle ne le **ré-arme jamais** — un état absorbant ne peut pas battre (contrairement au défaut corrigé par feature-139). La moindre instabilité réarme le minuteur de tenue à zéro ; le mode inactif maintient le minuteur à zéro (no-op).
 
 ### Garde-fous conservés, sans exception
 
@@ -2744,7 +2774,7 @@ bool restoreRegulationDefaults();  // false = timeout mutex, RIEN modifié
 | Composant | Interaction |
 |-----------|-------------|
 | [`filtration`](filtration.md) | Arrêt filtration → `clearStabilizationTimer()` (l'arming au **démarrage** est retiré en v2.34.0 : la purge adaptative de [`measure_validity`](measure-validity.md) le remplace). **Boost** : `boostForce` prioritaire dans `decideFiltrationRun` force la marche tant que `isBoostActive()` (feature-053) |
-| [`sensors`](sensors.md) | Lecture **filtrée** `getPhFiltered()` / `getOrpFiltered()` pour l'erreur PID (+ `isPhFilterReady`/`isPhFilterUnstable` dans `canDose`). Brut `getPh()`/`getOrp()` pour logs uniquement (feature-025) |
+| [`sensors`](sensors.md) | Lecture de la **valeur officielle** `getPhFiltered()` / `getOrpFiltered()` pour l'erreur PID (+ `isnan()` dans `canDose`, garde #4 seule depuis feature-152). Brut `getPh()`/`getOrp()` pour logs uniquement |
 | [`mqtt_manager`](mqtt-manager.md) | Publication `ph_dosing`, `orp_dosing`, `ph_limit`, `orp_limit`, `ph/orp_mixing_delay_active`, `boost` (switch HA « Boost », feature-053) ; commande `{base}/boost/set` ; `rescue` + `rescue_lift_reason` (switch HA « Chloration de secours », feature-140) ; commande `{base}/rescue/set` |
 | [`ota_manager`](ota-manager.md) | `setOtaInProgress(true)` arrête toutes les pompes |
 | [`web_routes_control`](web-server.md) | `/ph/inject/start`, `/orp/inject/start`, `/pump[12]/on` — gardes feature-006 : lecture `getCyclesToday`/`getRecentCycles`/`getStabilizationRemainingS(i)`/`get*UsedMs`, enregistrement via `requestManualCycleRecord` |

@@ -83,15 +83,18 @@ Si accordée, la coquille pré-sème `waterStopMs`/`haveWaterStop` du module pur
 
 ```cpp
 // src/dose_available_logic.h
-uint32_t computeDoseAvailableInS(bool measuresValid, uint32_t stabElapsedS,
-                                  uint32_t floorMs, uint32_t filterRemainingMs);
+uint32_t computeDoseAvailableInS(bool waterPresent, bool measuresValid,
+                                  uint32_t stabElapsedS, uint32_t floorMs,
+                                  uint32_t filterRemainingMs);
 ```
+
+⚠️ **Paramètre `waterPresent` ajouté par feature-152 (v2.68.0)** — troisième défaut trouvé par `code-reviewer` au même lot : ni le reste de purge ni le reste de plancher de filtre ne **courait** quand l'eau était absente (filtration à l'arrêt), le calcul retombait alors sur `floorS` complet (10 min) **figé toute la durée de l'arrêt**. La fonction est désormais **totale** : `waterPresent` explicite, son absence renvoie `UINT32_MAX` — sentinelle « délai **indéterminé** », déjà idiomatique au projet (cf. `getPhSlopeAgeMs()`), **jamais sérialisée telle quelle** (les deux points d'exposition JSON omettent le champ plutôt que d'inventer un nombre).
 
 Deux plancher **indépendants** peuvent dominer le délai :
 - le reste du **plancher de purge** de `measure_validity` (`kPurgeFloorMs`, 10 min) — pertinent **uniquement** tant que la porte n'est pas encore ouverte (`measuresValid == false`) ;
-- le reste du **plancher de gel du filtre** capteur (`kSensorFilterGateFloorMs`, 60 s, `sensor_filter.{h,cpp}`) — armé **inconditionnellement** à chaque front montant d'eau, y compris quand `measure_validity` dispense sa propre purge. C'est pourquoi les deux planchers sont indépendants : l'un peut déjà être satisfait (cycle dispensé) pendant que l'autre reste actif.
+- le reste du **plancher de gel du filtre** capteur — **retiré par feature-152, v2.68.0** : la porte d'alimentation du filtre est désormais simplifiée (vider/remplir, sans plancher ni ré-amorçage explicite). La coquille transmet donc `filterRemainingMs = 0` **en permanence** ; la formule à deux planchers est **conservée telle quelle** (générique, pour un éventuel futur plancher indépendant) plutôt que simplifiée à un seul terme. `kSensorFilterGateFloorMs` **n'existe plus** dans `constants.h`.
 
-Le délai annoncé est le **max** des deux restes, jamais négatif (arithmétique non signée avec clamp explicite). **0** si le dosage est déjà possible.
+Le délai annoncé est le **max** des deux restes, jamais négatif (arithmétique non signée avec clamp explicite). **0** si le dosage est déjà possible, **`UINT32_MAX`** si indéterminé (eau absente).
 
 ⚠️ **Deux défauts trouvés par le test au moment de l'extraction** (même lot, gate `pool-chemistry` 2ᵉ passage) :
 1. la première version ne passait **pas** `measuresValid` à la formule — elle calculait `floorS − stabElapsedS` sans jamais regarder si `measure_validity` avait déjà ouvert sa porte. Or `measureValidityElapsedS()` renvoie **toujours** 0 dès que la porte est ouverte (dispensée ou par plancher) : le terme de purge valait donc `floorS` complet (10 min) **en permanence**, y compris sur un cycle dispensé — recréant exactement le défaut d'affichage d'un facteur 10 que ce lot corrigeait. Corrigé en clampant le terme de purge à 0 dès que `measuresValid` est vrai ;
@@ -153,13 +156,13 @@ Le cache est lu depuis **deux contextes** : `loopTask` (history, push WS, pump_c
 | `history` | exclusion des points pH/ORP/température du point 5 min |
 | UI (WS + `/data`) | textes déterministes « Reprise automatique dans N min » (remplace les anciens badges « Stabilisation depuis N min » / « Re-stabilisation depuis N min », vocabulaire jugé incompréhensible par l'utilisateur) ; ligne « Dernière purge » (Réglages) |
 | `pump_controller` | `measuresValid()` : intégrale pH, feedforward, alertes système pH/ORP ; `isCirculationSettled()` : branche Programmée (C4) ; `getDoseAvailableInS()` : délai annoncé |
-| `sensor_filter` (v2.20.3, C6 v2.34.0) | porte d'alimentation des filtres pH/ORP ; `ready()` faux porte fermée |
+| `sensor_filter` (v2.20.3 ; simplifiée v2.68.0, feature-152) | porte d'alimentation des filtres pH/ORP (`setContext()`) ; `value(nowMs)` renvoie `NaN` porte fermée (fenêtre vidée) |
 
-### La porte d'alimentation des filtres (v2.20.3, durcie en v2.34.0)
+### La porte d'alimentation des filtres (v2.20.3, durcie en v2.34.0, simplifiée en v2.68.0)
 
-Jusqu'en v2.20.2, le verdict suspendait l'**injection** mais pas l'**ingestion** : les filtres pH/ORP avalaient les mesures de stagnation, leur médiane acquérait autorité et rejetait ensuite les mesures représentatives (incident du 2026-08-16). `SensorManager::_updateFilterGates()` lit le **cache** et le transmet via `SensorFilter::setContext(waterPresent, measuresValid, nowMs)` avant `addSample()`. Porte fermée ⇒ l'échantillon n'entre nulle part ; réouverture ⇒ ré-amorçage.
+Jusqu'en v2.20.2, le verdict suspendait l'**injection** mais pas l'**ingestion** : les filtres pH/ORP avalaient les mesures de stagnation, leur médiane acquérait autorité et rejetait ensuite les mesures représentatives (incident du 2026-08-16). `SensorManager::_updateFilterGates()` lit le **cache** et le transmet via `SensorFilter::setContext(waterPresent, measuresValid, nowMs)` avant `addSample()`. Porte fermée ⇒ l'échantillon n'entre nulle part.
 
-**C6 (v2.34.0)** : `SensorFilter::ready()` retourne aussi **faux tant que la porte est fermée**. Le plancher de gel de 60 s (`kSensorFilterGateFloorMs`) appliqué par le filtre après tout front montant est conservé et indépendant — c'est lui qui alimente le second terme de `computeDoseAvailableInS()`. Décision : [ADR-0041](../adr/0041-autorite-mesures-non-representatives-et-sortie-de-secours-filtre.md).
+⚠️ **Simplifiée par la refonte de la chaîne de mesure (feature-152, v2.68.0, [ADR-0097](../adr/0097-le-filtre-lisse-le-dosage-juge.md))** : `SensorFilter::ready()` **n'existe plus** (remplacé par `value(nowMs)`, `NaN` si la valeur officielle n'est pas disponible — fenêtre incomplète, sonde figée, ou mesure périmée). Le **plancher de gel** (`kSensorFilterGateFloorMs`, 60 s) et le **ré-amorçage explicite** à la réouverture ont **disparu** : à la fermeture, vidage immédiat de la fenêtre (même primitive que la fraîcheur qui expire) ; à l'ouverture, **aucune action** — la fenêtre, déjà vide, se remplit naturellement au fil des échantillons acceptés qui suivent, sans plancher à attendre en plus. Décision : [ADR-0041](../adr/0041-autorite-mesures-non-representatives-et-sortie-de-secours-filtre.md) (partiellement supersédé par l'ADR-0097 sur ce point précis).
 
 ## Comportement au boot
 
@@ -196,7 +199,7 @@ Eau présente au premier `update()` → front montant vu au boot → **attente c
 
 - [`src/main.cpp`](../../src/main.cpp) — `measureValidity.begin()` après `rtcManager.applyToSystem()`, `update()` dans la loop **avant** `history.update()`
 - [`src/history.cpp`](../../src/history.cpp) — exclusion pH/ORP/température du point 5 min
-- [`src/sensor_filter.cpp`](../../src/sensor_filter.cpp) — `setContext()`, `ready()` (C6)
+- [`src/sensor_filter.cpp`](../../src/sensor_filter.cpp) — `setContext()`, `value(nowMs)` (porte d'alimentation simplifiée, feature-152)
 - [`src/pump_controller.cpp`](../../src/pump_controller.cpp) — `measuresValid()` (intégrale, FF, alertes), `isCirculationSettled()` (branche Programmée pH et ORP), `getDoseAvailableInS()` (coquille de `dose_available_logic.h`)
 - [`src/dose_available_logic.h`](../../src/dose_available_logic.h) — délai avant dosage, module pur (feature-139)
 - [`src/ws_manager.cpp`](../../src/ws_manager.cpp), [`src/web_routes_data.cpp`](../../src/web_routes_data.cpp) — publication des champs

@@ -1284,6 +1284,149 @@ void test_p_le_repli_client_flow255_reste_distinct_de_la_constante_firmware(void
 
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// (q) PARITÉ D'EXPRESSION — l'angle mort que les axes (a)-(p) laissaient ouvert.
+//
+// DÉCOUVERT PAR MUTATION (feature-152, 2026-10-11). Tous les axes ci-dessus
+// comparent des JEUX DE CLÉS. Ils sont donc AVEUGLES au cas où une clé est
+// présente des deux côtés mais CALCULÉE DIFFÉREMMENT. Preuve : remplacer, dans
+// ws_manager.cpp SEULEMENT,
+//     d["measures_valid"] = mv.measuresValid;
+// par
+//     d["measures_valid"] = mv.measuresValid && !isnan(phFiltered);
+// laissait la suite ENTIÈREMENT VERTE (16/16).
+//
+// POURQUOI C'EST LE MÊME DÉFAUT, EN PIRE. `latestSensorData` est REMPLACÉ en
+// entier par la dernière charge reçue (data/app.js, aucune fusion). Deux
+// expressions divergentes pour une même clé font donc OSCILLER sa valeur au
+// rythme des deux cadences (~5 s / ~30 s) — exactement le CLIGNOTEMENT du piège
+// n° 1, sauf qu'ici la clé est présente des deux côtés : le défaut est INVISIBLE
+// à la lecture d'une seule charge, et aucun des axes précédents ne le voit.
+//
+// PÉRIMÈTRE VOLONTAIREMENT ÉTROIT. Exiger l'égalité textuelle sur TOUTES les
+// clés produirait un torrent de faux positifs légitimes (arrondis, variables
+// locales, types). Cette table ne porte donc que les clés dont l'expression
+// ELLE-MÊME est le contrat — celles dont une divergence silencieuse change ce
+// que l'utilisateur voit. On y ajoute une clé quand on constate que sa valeur,
+// et pas seulement sa présence, doit être la même des deux côtés.
+//
+// NORMALISATION : les deux fichiers nomment différemment les mêmes locales
+// (`phFil`/`phFiltered`, `orpFil`/`orpFiltered`). Les alias ci-dessous sont
+// appliqués avant comparaison, et les espaces retirés. Toute AUTRE différence
+// est un échec.
+// ---------------------------------------------------------------------------
+struct SharedExprKey {
+  const char* key;
+  const char* why;
+};
+static const SharedExprKey kSharedExpr[] = {
+  { "measures_valid",
+    "Pilote measuresAreValid() cote client, qui gate la TEMPERATURE et les DEUX "
+    "voies. Une divergence entre /data et le WS fait apparaitre et disparaitre "
+    "la temperature au rythme des deux cadences." },
+};
+static const size_t kSharedExprCount = sizeof(kSharedExpr) / sizeof(kSharedExpr[0]);
+
+// Alias de locales : {dans ws_manager.cpp, forme canonique}. Appliques APRES
+// retrait des espaces. L'ordre compte : le plus long d'abord.
+static const char* kLocalAliases[][2] = {
+  { "phFiltered",  "phFil"  },
+  { "orpFiltered", "orpFil" },
+};
+static const size_t kLocalAliasCount = sizeof(kLocalAliases) / sizeof(kLocalAliases[0]);
+
+// Membre droit de `recv["key"] = ... ;` dans `scope`, espaces retires et alias
+// normalises. Retourne NULL si l'affectation est introuvable. A liberer.
+static char* extractNormalizedRhs(const char* scope, const char* recv, const char* key) {
+  char needle[128];
+  snprintf(needle, sizeof(needle), "%s[\"%s\"]", recv, key);
+  const char* p = strstr(scope, needle);
+  if (p == NULL) return NULL;
+  p += strlen(needle);
+  while (*p == ' ' || *p == '\t') p++;
+  if (*p != '=') return NULL;   // `.to<JsonArray>()` ou autre forme : hors perimetre
+  p++;
+  const char* end = strchr(p, ';');
+  if (end == NULL) return NULL;
+
+  char* out = (char*)malloc((size_t)(end - p) + 1);
+  if (out == NULL) return NULL;
+  size_t n = 0;
+  for (const char* q = p; q < end; ++q) {
+    if (*q == ' ' || *q == '\t' || *q == '\n' || *q == '\r') continue;
+    out[n++] = *q;
+  }
+  out[n] = '\0';
+
+  // Normalisation des alias de locales, en place (le remplacement RACCOURCIT
+  // toujours la chaine : "phFiltered" -> "phFil").
+  for (size_t a = 0; a < kLocalAliasCount; ++a) {
+    const char* from = kLocalAliases[a][0];
+    const char* to   = kLocalAliases[a][1];
+    const size_t lf = strlen(from), lt = strlen(to);
+    char* hit = strstr(out, from);
+    while (hit != NULL) {
+      memcpy(hit, to, lt);
+      memmove(hit + lt, hit + lf, strlen(hit + lf) + 1);
+      hit = strstr(hit + lt, from);
+    }
+  }
+  return out;
+}
+
+void test_q_les_cles_a_expression_partagee_sont_calculees_a_l_identique(void) {
+  char* httpScope = readScopeText(kHttpFile, kHttpScopeBegin, kHttpScopeEnd);
+  TEST_ASSERT_NOT_NULL_MESSAGE(httpScope,
+      "PORTEE ILLISIBLE dans src/web_routes_data.cpp : la parite d'EXPRESSION "
+      "ne verifie rien. QUE FAIRE : corriger l'ancre. NE PAS DESACTIVER CE TEST.");
+  char* wsScope = readScopeText(kWsFile, kWsScopeBegin, kWsScopeEnd);
+  TEST_ASSERT_NOT_NULL_MESSAGE(wsScope,
+      "PORTEE ILLISIBLE dans src/ws_manager.cpp : la parite d'EXPRESSION ne "
+      "verifie rien. QUE FAIRE : corriger l'ancre. NE PAS DESACTIVER CE TEST.");
+  if (httpScope == NULL || wsScope == NULL) { free(httpScope); free(wsScope); return; }
+
+  for (size_t i = 0; i < kSharedExprCount; ++i) {
+    const char* key = kSharedExpr[i].key;
+    char msg[1400];
+
+    char* httpRhs = extractNormalizedRhs(httpScope, "doc", key);
+    snprintf(msg, sizeof(msg),
+             "EXPRESSION DE `%s` INTROUVABLE dans src/web_routes_data.cpp "
+             "(forme attendue : doc[\"%s\"] = ... ;). La cle est declaree a "
+             "EXPRESSION PARTAGEE : si elle a change de forme, mettre ce test a "
+             "jour SCIEMMENT. NE PAS DESACTIVER CE TEST.", key, key);
+    TEST_ASSERT_NOT_NULL_MESSAGE(httpRhs, msg);
+
+    char* wsRhs = extractNormalizedRhs(wsScope, "d", key);
+    snprintf(msg, sizeof(msg),
+             "EXPRESSION DE `%s` INTROUVABLE dans src/ws_manager.cpp (forme "
+             "attendue : d[\"%s\"] = ... ;). NE PAS DESACTIVER CE TEST.", key, key);
+    TEST_ASSERT_NOT_NULL_MESSAGE(wsRhs, msg);
+    if (httpRhs == NULL || wsRhs == NULL) { free(httpRhs); free(wsRhs); continue; }
+
+    snprintf(msg, sizeof(msg),
+             "PARITE D'EXPRESSION ROMPUE sur `%s` : les deux cotes servent la "
+             "cle mais ne la CALCULENT PAS pareil.\n"
+             "  /data : %s\n"
+             "  WS    : %s\n"
+             "latestSensorData est REMPLACE en entier par la derniere charge "
+             "recue : la valeur va donc OSCILLER au rythme des deux cadences "
+             "(~5 s / ~30 s), sans qu'aucune charge prise isolement paraisse "
+             "fausse. MOTIF DE LA DECLARATION : %s\n"
+             "QUE FAIRE : aligner les deux expressions. Si la divergence est "
+             "VOULUE, retirer la cle de kSharedExpr EN ECRIVANT POURQUOI. NE "
+             "PAS DESACTIVER CE TEST.",
+             key, httpRhs, wsRhs, kSharedExpr[i].why);
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(httpRhs, wsRhs, msg);
+
+    free(httpRhs);
+    free(wsRhs);
+  }
+
+  free(httpScope);
+  free(wsScope);
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_a_ancres_et_marqueurs_presents_des_deux_cotes);
@@ -1304,5 +1447,7 @@ int main(int, char**) {
   // Gardes de forme et de repli (visa chimique).
   RUN_TEST(test_o_flow255_est_un_tableau_de_deux_elements_des_deux_cotes);
   RUN_TEST(test_p_le_repli_client_flow255_reste_distinct_de_la_constante_firmware);
+
+  RUN_TEST(test_q_les_cles_a_expression_partagee_sont_calculees_a_l_identique);
   return UNITY_END();
 }

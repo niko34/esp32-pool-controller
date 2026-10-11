@@ -542,16 +542,18 @@ void HistoryManager::recordDataPoint() {
 
   DataPoint point;
   point.timestamp = nowEpoch;
-  // feature-067 : getPh() renvoie le pH CORRIGÉ (brut + offset) — c'est la valeur
-  // "vraie" du bassin, donc celle qui doit être historisée.
-  point.ph = sensors.getPh();
-  point.orp = sensors.getOrp();
+  // feature-152 (B4) : point.ph/orp portent désormais la VALEUR OFFICIELLE
+  // (getPhFiltered()/getOrpFiltered() — médiane + lissage, CORRIGÉE côté pH) :
+  // une seule valeur historisée, celle sur laquelle la régulation décide. Les
+  // anciens champs séparés `point.phFiltered`/`point.orpFiltered` et les clés
+  // persistées "pf"/"of" disparaissent de l'ÉCRITURE (ils restent à NAN, leur
+  // valeur par défaut — history.h — et ne sont donc jamais sérialisés par
+  // formatPersistedHistoryPoint, qui omet déjà tout champ non fini). La
+  // RELECTURE (import JSON, voir plus bas) reste tolérante aux anciens exports
+  // qui portaient encore "pf"/"of".
+  point.ph = sensors.getPhFiltered();
+  point.orp = sensors.getOrpFiltered();
   point.temperature = sensors.getTemperature();
-  // feature-095 : la valeur FILTRÉE, celle sur laquelle la régulation décide
-  // (mêmes accesseurs que /data). NaN tant que le filtre n'est pas amorcé —
-  // AUCUN repli sur le brut : « pas de filtrée » doit rester observable.
-  point.phFiltered = sensors.getPhFiltered();
-  point.orpFiltered = sensors.getOrpFiltered();
   point.filtrationActive = filtration.isRunning();
   // bug-098 : les deux voies dans le masque — elles ne se confondent plus.
   point.doseMask = (uint8_t)((PumpController.isPhDosing()  ? kHistDosePh  : 0) |
@@ -567,10 +569,6 @@ void HistoryManager::recordDataPoint() {
     point.ph = NAN;
     point.orp = NAN;
     point.temperature = NAN;
-    // feature-095 : la filtrée subit le MÊME sort que le brut — une mesure non
-    // représentative filtrée reste une mesure non représentative.
-    point.phFiltered = NAN;
-    point.orpFiltered = NAN;
   }
 
   memoryBuffer.push_back(point);

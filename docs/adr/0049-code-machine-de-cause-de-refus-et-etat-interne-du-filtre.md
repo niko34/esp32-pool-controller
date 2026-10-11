@@ -1,6 +1,6 @@
 # ADR-0049 — La cause de refus de dosage est transportée par un code machine, et discriminée sur l'état interne du filtre
 
-- **Statut** : Accepté
+- **Statut** : Accepté (six codes `DoseRefusal` retirés par l'ADR-0097 — `FilterNotReady`(4), `FilterUnstable`(5), `FilterWarmup`(19), `FilterFrozen`(20), `FilterStale`(21), `FilterGateClosed`(22), jamais recyclés ; le contrat de sérialisation et le reste du mécanisme sont inchangés)
 - **Date** : 2026-08-27
 - **Décideurs** : `architect`, `pool-chemistry` (gate : refus du discriminant fondé sur la fraîcheur de la lecture brute), `code-reviewer` (grâce de ré-amorçage, épisode d'alerte non redaté), utilisateur (report du défaut observé au démarrage)
 - **Spec(s) liée(s)** : `fix-cause-de-refus-de-dosage-devinee-par-texte` (v2.25.1) ; prolonge [ADR-0017](0017-logique-metier-pure-humble-object-testabilite.md) (logique pure) et [ADR-0041](0041-autorite-mesures-non-representatives-et-sortie-de-secours-filtre.md) (porte de validité des mesures) ; s'appuie sur l'exigence de parité `/data` ↔ WebSocket consignée par [ADR-0048](0048-seuils-ph-fixes-derives-de-la-plage-de-consigne.md)

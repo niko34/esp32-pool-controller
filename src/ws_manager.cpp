@@ -829,31 +829,45 @@ size_t WsManager::_buildSensorJson(char* buf, size_t cap) const {
   // juste au-dessus est donc DESSERRÉE par ce lot). Tout nouveau champ de cette
   // trame exige toujours un retrait compensatoire OU un relèvement de
   // kWsFrameBufBytes (décision d'ADR, pas de routine).
+  //
+  // feature-152 (refonte de la chaîne de mesure) : retrait de 6 booléens —
+  // phFilterReady, phFilterUnstable, phFilterAlarm, orpFilterReady,
+  // orpFilterUnstable, orpFilterAlarm (mécanismes retirés : garde séparée
+  // « filtre prêt »/« instable », alarme « filtre non prêt durablement »).
+  // Octets SÉRIALISÉS au pire cas retirés, RECOMPTÉS (ADR-0073) :
+  //   "phFilterReady":false,    → 1+13+1+1+5+1 = 22 o
+  //   "phFilterUnstable":false, → 1+16+1+1+5+1 = 25 o
+  //   "phFilterAlarm":false,    → 1+13+1+1+5+1 = 22 o
+  //   "orpFilterReady":false,    → 1+14+1+1+5+1 = 23 o
+  //   "orpFilterUnstable":false, → 1+17+1+1+5+1 = 26 o
+  //   "orpFilterAlarm":false,    → 1+14+1+1+5+1 = 23 o
+  //   Total retiré : 141 o.
+  // Pire cas de trame : 3497 (décompte ci-dessus) − 141 = 3356 o, SOUS
+  // kWsFrameBufBytes = 3584 o. MARGE RÉSIDUELLE : 3584 − 3356 = 228 o.
   StaticJson<3584> doc;
   doc["type"] = "sensor_data";
   JsonObject d = doc["data"].to<JsonObject>();
 
   // feature-021 : pH publié avec 3 décimales (l'EZO rend 3 décimales fiables, cf. spec ligne 247).
   // ORP reste en entier (mV) — la résolution physique du capteur ne justifie pas de décimales.
-  // feature-025 : la "valeur courante" UI/MQTT (champs ph/orp) reflète désormais la valeur
-  // FILTRÉE (getPhFiltered/getOrpFiltered), pas le brut. getPh()/getOrp() firmware restent
-  // bruts (rétrocompat scheduled/diagnostic), mais l'utilisateur affiche la mesure lissée.
-  // Le brut reste exposé séparément via phRaw/orpRaw pour diagnostic EMI. Si le filtre n'est
-  // pas encore amorcé (NaN filtré), on retombe sur le brut pour ne pas afficher "--" au boot.
+  // feature-152 : la "valeur courante" UI/MQTT (champs ph/orp) EST la VALEUR
+  // OFFICIELLE (getPhFiltered/getOrpFiltered) — NaN tant que la fenêtre de
+  // mesure se remplit, est figée, ou est périmée. ⛔ PLUS DE REPLI SILENCIEUX
+  // sur le brut : afficher un autre nombre que celui qui décide, sans le dire,
+  // était le défaut constaté le 11/10. La montée en régime est dite par
+  // `measures_valid` (ci-dessous), jamais masquée par une substitution muette.
+  // Le brut reste exposé séparément via phRaw/orpRaw pour diagnostic EMI.
   // Lectures cachées en variables locales pour éviter une race entre le check `isnan` et le `round`.
   // feature-067 : côté pH, phRaw est le BRUT EZO (sans offset) — il n'alimente QUE
-  // le champ de diagnostic `phRaw`. Le champ `ph` porte toujours une valeur CORRIGÉE
-  // (filtrée-corrigée, ou getPh() au warmup) : on ne mélange jamais brut et corrigé
-  // sur une même grandeur affichée.
+  // le champ de diagnostic `phRaw`. Le champ `ph` porte toujours la valeur CORRIGÉE.
   float orpRaw = sensors.getOrpRaw();
   float phRaw  = sensors.getPhRaw();          // BRUT EZO (diagnostic)
   float orpFiltered = sensors.getOrpFiltered();
-  float phFiltered  = sensors.getPhFiltered();  // lissé CORRIGÉ
+  float phFiltered  = sensors.getPhFiltered();  // VALEUR OFFICIELLE, CORRIGÉE
   float orpMedian = sensors.getOrpMedian();
-  float phMedian  = sensors.getPhMedian();      // médiane CORRIGÉE
-  // Valeur principale = filtrée si disponible, sinon dernière mesure (warmup), sinon null.
-  float orpVal = !isnan(orpFiltered) ? orpFiltered : orpRaw;
-  float phVal  = !isnan(phFiltered)  ? phFiltered  : sensors.getPh();  // corrigé dans les 2 cas
+  float phMedian  = sensors.getPhMedian();      // médiane (diagnostic, CORRIGÉE)
+  float orpVal = orpFiltered;
+  float phVal  = phFiltered;
   float tVal   = sensors.getTemperature();
   // T° eau brute (sans offset utilisateur) : exposée pour permettre à l'UI de calibration
   // de calculer un nouvel offset à partir d'une référence externe sans dépendre de la
@@ -861,23 +875,15 @@ size_t WsManager::_buildSensorJson(char* buf, size_t cap) const {
   float tRawWater = sensors.getWaterTemperatureRaw();
   if (!isnan(orpVal))     d["orp"] = orpVal;                                    else d["orp"] = nullptr;
   if (!isnan(phVal))      d["ph"]  = round(phVal * 1000.0f) / 1000.0f;          else d["ph"] = nullptr;
-  // feature-025 : champs filtre — null si NaN/indisponible (EZO débranché → UI sans crash).
+  // feature-152 : champs de diagnostic — null si NaN/indisponible (EZO débranché → UI sans crash).
   if (!isnan(phRaw))      d["phRaw"] = round(phRaw * 1000.0f) / 1000.0f;        else d["phRaw"] = nullptr;
   if (!isnan(phMedian))   d["phMedian"] = round(phMedian * 1000.0f) / 1000.0f;  else d["phMedian"] = nullptr;
   if (!isnan(phFiltered)) d["phFiltered"] = round(phFiltered * 1000.0f) / 1000.0f; else d["phFiltered"] = nullptr;
-  d["phFilterReady"]    = sensors.isPhFilterReady();
-  d["phFilterUnstable"] = sensors.isPhFilterUnstable();
   d["phRejectedCount"]  = sensors.getPhRejectedCount();
-  // v2.20.3 (C2) : alarme « filtre non prêt durablement » — cf. bump du buffer
-  // en tête de fonction pour le décompte exact des octets ajoutés.
-  d["phFilterAlarm"]    = sensors.isPhFilterNotReadyAlarm();
   if (!isnan(orpRaw))      d["orpRaw"] = round(orpRaw);                          else d["orpRaw"] = nullptr;
   if (!isnan(orpMedian))   d["orpMedian"] = round(orpMedian);                    else d["orpMedian"] = nullptr;
   if (!isnan(orpFiltered)) d["orpFiltered"] = round(orpFiltered);               else d["orpFiltered"] = nullptr;
-  d["orpFilterReady"]    = sensors.isOrpFilterReady();
-  d["orpFilterUnstable"] = sensors.isOrpFilterUnstable();
   d["orpRejectedCount"]  = sensors.getOrpRejectedCount();
-  d["orpFilterAlarm"]    = sensors.isOrpFilterNotReadyAlarm();  // v2.20.3 (C2)
   // Pause mélange hydraulique active (post-injection) + secondes restantes :
   // feature-092 — ces quatre champs ont MIGRÉ dans le bloc `PARITE-DATA` en fin
   // de fonction. Ils étaient WS-SEULS (absents de /data), c'est-à-dire dans
@@ -1144,6 +1150,20 @@ size_t WsManager::_buildSensorJson(char* buf, size_t cap) const {
   // web_routes_data.cpp (un champ WS-seul CLIGNOTERAIT à chaque rafraîchissement).
   {
     const MeasureValiditySnapshot mv = measureValidity.getSnapshot();  // snapshot cohérent
+    // feature-152 (B1, CORRIGÉ en revue) : measures_valid reste la validité
+    // de la CHAMBRE DE MESURE (filtration arrêtée / purge), et RIEN D'AUTRE.
+    // Une version intermédiaire y fusionnait `!isnan(phFiltered) &&
+    // !isnan(orpFiltered)` pour signaler le remplissage de la fenêtre. C'était
+    // un couplage COLLATÉRAL : côté UI, measuresAreValid() gate la
+    // TEMPÉRATURE (chaîne saine, hors périmètre) et la voie OPPOSÉE — une
+    // sonde ORP figée aurait masqué le pH ET la température, et
+    // measureStateSegments() aurait annoncé « Reprise automatique imminente »
+    // sur une PANNE MATÉRIELLE, c'est-à-dire une cause fausse.
+    // Le remplissage de la fenêtre est DÉJÀ porté, PAR VOIE, par le code de
+    // refus 15 « Les mesures se mettent en place » (garde NaN d'evaluateDose,
+    // placée AVANT la garde de mode : le bandeau parle donc même en manuel),
+    // et la valeur elle-même tombe à « -- » parce que d["ph"]/d["orp"] sont
+    // sérialisés null quand ils sont NaN. Aucun mécanisme neuf n'est requis.
     d["measures_valid"] = mv.measuresValid;
     d["measures_stab_elapsed_s"] = mv.stabElapsedS;
     d["measures_purge_last_duration_s"] = mv.lastPurgeDurationS;

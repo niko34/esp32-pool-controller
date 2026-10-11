@@ -867,9 +867,22 @@ void setupControlRoutes(AsyncWebServer* server) {
   // POST /debug/sensor_filter_reset, absente de l'interface, et elle sacrifiait
   // aussi le filtre ORP sain).
   //
+  // ⚠️ ÉTAT APRÈS feature-152 (relevé en revue de code, 2026-10-11) — À TRANCHER :
+  // cette route est doublement orpheline. (1) Plus AUCUN appelant dans data/ : le
+  // bouton « Réarmer le filtre » a été retiré avec la refonte. (2) Sa raison
+  // d'être a disparu : elle existait parce qu'un filtre pouvait rester VERROUILLÉ
+  // (incident 2026-08-16) — or la chaîne ne compte plus aucun verrou collant
+  // (2 → 0), et toute cause de blocage se résorbe désormais d'elle-même.
+  // Elle est CONSERVÉE en l'état, délibérément et sans la rebrancher : c'est une
+  // route publique sous auth administrateur, la retirer est un changement de
+  // contrat d'API qui appartient à une décision produit, pas à ce lot. Elle garde
+  // un usage légitime en diagnostic (curl) : vider la fenêtre et la détection de
+  // sonde figée sans redémarrer l'appareil.
+  //
   // Gardes (verdict pool-chemistry P6) :
-  //   - auth ADMIN (RouteProtection::CRITICAL) : un reset relance un warmup et
-  //     efface la détection de sonde figée + le latch EMI ;
+  //   - auth ADMIN (RouteProtection::CRITICAL) : un reset relance le remplissage
+  //     de la fenêtre et efface la détection de sonde figée (le « latch EMI »
+  //     qu'évoquait cette ligne n'existe plus — feature-152) ;
   //   - SÉLECTIF par capteur : réparer le pH ne touche jamais l'ORP ;
   //   - 1 reset par capteur par kSensorFilterUiResetMinIntervalMs (10 min) → 429 ;
   //   - AUCUN accès direct au filtre depuis ce handler : requestFilterReset()

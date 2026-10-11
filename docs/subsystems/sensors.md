@@ -68,44 +68,36 @@ void update();                          // appelé dans loopTask, non bloquant c
 float getPh()  const;                // feature-067 : pH CORRIGÉ (brut + phOffset)
 float getOrp() const;                // ORP brut (aucun offset côté ORP)
 
-// Chaîne de filtrage pH/ORP (feature-025) — médiane(13) + EMA. NaN si non amorcé.
-// feature-067 : côté pH, seuls les accesseurs `*Raw` sont bruts (cf. contrat ci-dessous).
-float getPhRaw()  const;             // Dernière brute pH EZO, SANS offset (NaN si stale)
-float getPhMedian()  const;          // Médiane courante pH CORRIGÉE (NaN si pas de donnée)
-float getPhFiltered()  const;        // pH filtré EMA CORRIGÉ — valeur PID/UI/MQTT
-float getPhFilteredRaw() const;      // pH filtré SANS offset + garde d'âge — filets de sécurité
+// Chaîne de mesure à 5 étages (feature-152, v2.68.0) — médiane(9) + lissage
+// τ=45 s. NaN si warmup / sonde figée / mesure périmée. feature-067 : côté pH,
+// seuls les accesseurs `*Raw` sont bruts (cf. contrat ci-dessous).
+float getPhRaw()  const;             // Dernière brute pH EZO, SANS offset (NaN si stale) — diagnostic
+float getPhMedian()  const;          // Médiane courante pH CORRIGÉE — diagnostic seul
+float getPhFiltered()  const;        // VALEUR OFFICIELLE pH CORRIGÉE — PID/UI/MQTT/historique
+float getPhValueRaw() const;         // VALEUR OFFICIELLE pH, échelle BRUTE + garde d'âge — filets de sécurité (ex-getPhFilteredRaw, CONSERVÉ, renommé)
 void  refreshPhOffsetCache();        // Recharge l'offset depuis mqttCfg (boot + après save)
 float getPhOffset() const;           // Offset actuellement APPLIQUÉ aux mesures
-bool isPhFilterReady()  const;       // true après warmup + dernière mesure valide récente
-bool isPhFilterUnstable()  const;    // true si trop de rejets consécutifs
-uint8_t getPhRejectedCount()  const; // Compteur glissant de rejets pH (sature à 255)
+uint8_t getPhRejectedCount()  const; // Compteur glissant de rejets pH (étage 2, diagnostic seul, sature à 255)
 float getOrpRaw()  const;
-float getOrpMedian()  const;
-float getOrpFiltered()  const;
-bool isOrpFilterReady()  const;
-bool isOrpFilterUnstable()  const;
+float getOrpMedian()  const;         // Diagnostic seul
+float getOrpFiltered()  const;       // VALEUR OFFICIELLE ORP
 uint8_t getOrpRejectedCount()  const;
 
-// v2.25.1 — POURQUOI le filtre n'est pas prêt (observabilité, cf. « Prédicats
-// d'état du filtre »). État INTERNE composé par resolveFilterState() : priorité
-// pannes d'abord. Consommé par canDose() pour QUALIFIER la cause de refus,
-// JAMAIS pour décider du dosage. Ne jamais reconstruire depuis get*Raw().
+// v2.25.1, mis à jour feature-152 — POURQUOI la valeur officielle est NaN
+// (observabilité, cf. « Prédicats d'état du filtre »). État INTERNE composé
+// par resolveFilterState() : priorité pannes d'abord. Consommé par canDose()
+// pour QUALIFIER la cause de refus, JAMAIS pour décider du dosage (un seul
+// test isnan() suffit désormais à la décision). Ne jamais reconstruire depuis
+// get*Raw().
 DoseFilterState getPhFilterState() const;
 DoseFilterState getOrpFilterState() const;
 
-// v2.20.6 — passerelles de diagnostic sur la dispersion (cf. « Observabilité de
-// la dispersion »). Amplitude (max−min) de la fenêtre médiane PLEINE, NaN sinon :
-// c'est la grandeur qui DÉCIDE du drapeau d'instabilité. Échelle brute (une
-// amplitude est insensible à l'offset pH).
-float getPhDispersion()  const;
-float getOrpDispersion() const;
-uint8_t getPhDispersionCleanStreak()  const;  // Progression vers l'auto-levée du latch
-uint8_t getOrpDispersionCleanStreak() const;
 void resetPhFilter();                // Reset filtre (warmup) — appelé après calibration pH
 void resetOrpFilter();               // Reset filtre (warmup) — appelé après calibration ORP
 
-// feature-022 — détection capteur figé (variance nulle). Un capteur figé rend
-// is*FilterReady() = false → dosage bloqué par la garde FilterNotReady existante.
+// feature-022 — détection capteur figé (variance nulle), CONSERVÉE telle
+// quelle par feature-152 (seul mécanisme restant vers « pas de valeur »
+// durable). Un capteur figé rend la VALEUR OFFICIELLE NaN → dosage bloqué.
 bool isPhSensorFrozen()  const;      // 30 lectures acceptées dans une bande < kSensorFrozenEpsilonPh
 bool isOrpSensorFrozen() const;      // idem, bande < kSensorFrozenEpsilonOrp
 bool isTemperatureFrozen() const;    // sonde eau DS18B20 — warning-only, AUCUN impact dosage (exposé : /data, WS, MQTT, badge UI — feature-068)
@@ -307,15 +299,114 @@ Conséquences :
 - Logger `critical` 1× à la **transition** vers stale (flag `_phStaleLogged` / `_orpStaleLogged`).
 - Alerte MQTT `pool/alerts/sensor_stale` publiée edge-triggered (cf. [docs/MQTT.md](../MQTT.md)).
 
-## Filtrage des mesures pH/ORP — feature-025 → feature-058
+## Chaîne de mesure à 5 étages — feature-152
 
-Lissage logiciel **robuste** des mesures EZO pour livrer une valeur représentative de la **tendance centrale** du signal, entrée de l'affichage, MQTT/HA et **surtout de la régulation** (PID). Les valeurs **brutes restent exposées** pour diagnostic ; les valeurs **filtrées sont la référence** pour l'UI principale, MQTT et le PID.
+⚠️ **Refonte complète (v2.68.0, feature-152, [ADR-0097](../adr/0097-le-filtre-lisse-le-dosage-juge.md))** — cette
+section **remplace entièrement** les descriptions `feature-025`/`feature-058`/`v2.20.3` qui
+suivaient jusqu'ici (chaîne à 14 étages, rejet de spike, sortie de secours à trois gardes,
+latch EMI, alarme « filtre non prêt durablement »). Toute cette ancienne architecture a
+**disparu** — pas assouplie, **retirée**, après que le gate `pool-chemistry` n'ait trouvé
+**aucun cas** où elle a démontrablement évité un dommage, et après deux incidents de
+production où elle a au contraire **arrêté la régulation** sans raison (dosage pH et chlore à
+l'arrêt ≥ 3 h, v2.20.3 ; sonde replongée après étalonnage verrouillée 141 rejets, 2026-10-11).
+Historique archivé en fin de section pour qui doit retrouver le comportement d'un firmware
+antérieur à la v2.68.0.
 
-> **Refonte feature-058 ([ADR-0027](../adr/0027-filtre-tendance-centrale.md))** — La chaîne d'origine (rejet de saut `maxStep` → médiane(7) → EMA + re-sync anti latch-up) **collait** au haut ou au bas d'une oscillation soutenue (le rejet de saut traitait les transitions comme aberrantes → n'intégrait qu'un côté de l'enveloppe), et pouvait **figer** la valeur sur un nombre trompeur via le latch. Elle est remplacée par un **estimateur de tendance centrale** dont la valeur est **découplée** du drapeau d'instabilité. La cause racine du bruit reste **matérielle** ; ce filtre livre en attendant une valeur **honnête et centrée**, plus sûre qu'une valeur collée ou gelée.
+**Ligne directrice** : *le filtre lisse, il ne juge pas — c'est la couche de dosage
+(`pump_controller`/`dosing_logic`) qui juge, avec des bornes qui comparent sans délibérer*
+(butées de plausibilité, plafonds de dose). Voir [ADR-0097](../adr/0097-le-filtre-lisse-le-dosage-juge.md).
+
+### Les 5 étages (mêmes qu'en température, qui n'a jamais posé de problème)
+
+| # | Étage | Constante | Source (voir [ADR-0098](../adr/0098-toute-constante-de-mesure-declare-sa-source.md)) |
+|---|---|---|---|
+| 1 | Lecture du module EZO | — | matériel |
+| 2 | Rejet de l'absurde : NaN / hors plage physique, comparaison **stricte** | `kPhFilterMin/Max` (0–14), `kOrpFilterMin/Max` (±1019,9 mV) | physique / matériel (plage de sortie EZO-ORP) |
+| 3 | **Médiane** glissante (`kSensorFilterMedianWindow` = **9**) **puis** lissage exponentiel (`kSensorFilterEmaTauMs` = **45 000 ms**, α recalculé à chaque échantillon depuis le temps réellement écoulé) | `kSensorFilterMedianWindow`, `kSensorFilterEmaTauMs` | décision produit (dynamique du bassin — voir ci-dessous) |
+| 4 | Offset utilisateur, **en sortie d'accesseur** | `ph_offset` | décision produit, [ADR-0039](../adr/0039-offset-ph-applique-en-sortie-des-accesseurs.md), **inchangé** |
+| 5 | Fraîcheur : pas de mesure **acceptée** depuis `kSensorFilterMaxAgeMs` (20 s) ⇒ vidage de la fenêtre | `kSensorFilterMaxAgeMs` | matériel (couvre un échec I²C isolé) |
+
+### 🔑 La médiane EST le rejet d'aberrations
+
+Une médiane de N écarte **par construction** jusqu'à (N−1)/2 valeurs extrêmes, **sans aucun
+seuil réglable sur une installation**. À N = 9 : 4 aberrations consécutives écartées, un
+échelon légitime (sonde replongée après étalonnage, remise en eau) traverse la fenêtre en **5
+échantillons**, quoi qu'il arrive. Il n'existe donc **aucune séquence d'entrées qui verrouille
+ce module** — contrairement à l'ancienne chaîne (rejet de spike + sortie de secours), qui
+pouvait se verrouiller indéfiniment sur une médiane périmée.
+
+Largeur et constante de temps sont des **décisions produit** (verdict `pool-chemistry`,
+2026-10-11), pas des mesures d'installation : retard total ≈ **67 s à 5 s de cadence**, soit
+**1/13 de `kPhMixingDelayMs`** (900 s) — invisible pour la régulation. ⚠️ **La cadence de
+lecture (5 s, `kPhOrpSensorIntervalMs`) n'est volontairement PAS une entrée de ce calcul** : la
+largeur se compte en **échantillons**, le lissage se chronomètre en **millisecondes** — doubler
+la cadence ne change ni l'un ni l'autre (test D3, `test/test_native_sensor_filter/`).
+
+### Ce qui reste, et pourquoi
+
+| Mécanisme | Rôle | Pourquoi il reste |
+|---|---|---|
+| Rejet NaN / hors plage physique (étage 2) | borne dure, comparaison stricte | gratuit, jamais faux |
+| Médiane + lissage (étage 3) | lisse, **ne juge pas** | fait le travail de rejet sans seuil et sans verrou |
+| **Détecteur de sonde figée** (`FrozenDetector`, feature-022) | sortie **immédiate** dès une lecture hors bande, **sans verrou** | seul mécanisme qui attrape une sonde morte rendant une constante plausible — **sourcé** : epsilon = ½ LSB du capteur (matériel), borne haute de N = décision produit |
+| Fraîcheur (étage 5) | fait, pas jugement | pas de lecture récente ⇒ pas de valeur |
+| Porte d'alimentation (filtration arrêtée / purge) | **simplifiée** : fermeture ⇒ vidage immédiat, ouverture ⇒ aucune action (la fenêtre se remplit seule) | plus de plancher de gel ni de ré-amorçage explicite à gérer |
+| Butées de plausibilité pH, plafonds de dose | **bornes de dosage**, pas de mesure | couche de décision, hors de ce module |
+
+### Ce qui a disparu (verdict `pool-chemistry` P1, feature-152, aucun contre-exemple trouvé)
+Rejet de spike isolé (`spikeReject`) · sortie de secours de ré-amorçage et ses **trois gardes
+cumulatives** (cooldown 30 min, bande admissible, cohérence de série) · dispersion de fenêtre et
+son **latch EMI collant** (il se posait sur du **bruit normal**, dispersion 0,402 relevée pour
+un cap à 0,5 — il n'inhibait pas un danger) · plancher de gel de la porte (60 s) · tolérance aux
+trous de la sortie de secours · grâce de péremption post-ré-amorçage · alarme « filtre non prêt
+durablement » (5 min / répétition 30 min) · état `unstable` et ses rejets consécutifs comptés.
+**Les deux verrous collants du projet disparaissent avec ce lot.**
+
+### Classe `SensorFilter` — API actuelle
+
+Module pur, 1 instance par capteur (`_phFilter`, `_orpFilter` dans `SensorManager`), **zéro
+allocation**, buffer médian fixe `float[kSensorFilterMedianWindowMax]`
+([`src/sensor_filter.h`](../../src/sensor_filter.h)/[`.cpp`](../../src/sensor_filter.cpp),
+[ADR-0017](../adr/0017-logique-metier-pure-humble-object-testabilite.md)) :
+
+| Méthode | Effet |
+|---------|-------|
+| `bool addSample(float raw, uint32_t nowMs)` | Soumet une brute. `true` si **acceptée** (NaN/hors-plage/porte fermée rejettent) |
+| `void setContext(bool waterPresent, bool measuresValid, uint32_t nowMs)` | Porte d'alimentation — à appeler **avant** `addSample()` à chaque cycle. Fermée si `!waterPresent \|\| !measuresValid`. Fermeture ⇒ vidage immédiat ; ouverture ⇒ aucune action |
+| `void reset()` | Vide la fenêtre, le détecteur de sonde figée. Appelé après calibration EZO réussie ou bouton debug/UI |
+| `float raw() / median()` | Dernière brute / médiane courante — **diagnostic seul** |
+| `float value(uint32_t nowMs)` | **VALEUR OFFICIELLE** — NaN si fenêtre non pleine (warmup), capteur figé, ou dernière mesure périmée. Jamais figée par un jugement d'instabilité : il n'y en a plus |
+| `bool gateClosed() / frozen() / stale(nowMs) / warmingUp()` | Prédicats d'observabilité **lecture seule**, composés par `resolveFilterState()` (priorité pannes d'abord) pour qualifier la cause de refus `DoseRefusal` — voir [pump-controller.md](pump-controller.md#codes-de-refus-ph--devenus-sans-objet-retirés-feature-152) |
+| `uint8_t rejectedCount()` | Compteur glissant de rejets (étage 2) — **diagnostic seul**, ne décide plus rien |
+
+`Config` compte **7 champs** (contre 13 avant ce lot) : `minValue`, `maxValue`, `medianWindow`,
+`emaTauMs`, `maxAgeMs`, `frozenSamples`, `frozenEpsilon` — aucun champ de réglage de rejet
+(spike/dispersion/ré-amorçage), ces mécanismes n'existent plus.
+
+### Une seule valeur officielle, fin du repli silencieux
+
+Avant ce lot : `phRaw`, `ph`, `phMedian`, `phFiltered` coexistaient, plus `getPhFilteredRaw()`
+pour les gardes — et `ws_manager.cpp`/`web_routes_data.cpp`/`mqtt_manager.cpp` retombaient
+chacun sur le brut (ou la dernière mesure) si la filtrée était `NaN`, **sans le dire**. Pendant
+la montée en régime, l'écran montrait 8,3 pendant que le dosage refusait sur une valeur absente
+(défaut constaté le 2026-10-11). Depuis la v2.68.0 : **une seule** valeur officielle
+(`getPhFiltered()`/`getOrpFiltered()`), consommée **à l'identique** par l'affichage,
+l'historique, MQTT **et** le dosage ; `null`/`NaN` pendant la montée en régime, **sans
+substitution**. `getPhRaw()`/`getOrpRaw()` restent du diagnostic.
+
+`getPhFilteredRaw()` est **conservé** (verdict `pool-chemistry` P2, condition bloquante),
+**renommé `getPhValueRaw()`** et reclassé « valeur officielle, échelle brute » : `pump_controller.cpp`
+l'utilise pour les **butées de plausibilité pH**, qui travaillent volontairement sur l'échelle
+brute pour rester valides si l'offset lui-même est faux (`pump_controller.h:312-314`) — le
+supprimer ferait dépendre la seule butée du projet de l'offset qu'elle est censée contourner.
 
 ### Signal pH brut — anti-corrélation et mode commun (feature-097)
 
-Fait mesuré sur le bassin de référence, distinct de la robustesse du filtre ci-dessous : le pH **brut** de ce bassin n'est **pas** du bruit blanc autour d'une moyenne — c'est un signal **anti-corrélé, presque à deux niveaux**. Trace du 2026-09-20 (`test/fixtures/f097_purge_noise_20260920.csv`, 300 échantillons à 5 s, 25 min, eau établie, porte ouverte) :
+Fait mesuré sur le bassin de référence, distinct de la robustesse du filtre ci-dessus — et **le
+motif pour lequel une médiane, pas une moyenne, est le bon estimateur** : le pH **brut** de ce
+bassin n'est **pas** du bruit blanc autour d'une moyenne — c'est un signal **anti-corrélé,
+presque à deux niveaux**. Trace du 2026-09-20 (`test/fixtures/f097_purge_noise_20260920.csv`,
+300 échantillons à 5 s, 25 min, eau établie, porte ouverte) :
 
 | Indice | Mesuré | Attendu si bruit IID |
 |---|---|---|
@@ -323,383 +414,43 @@ Fait mesuré sur le bassin de référence, distinct de la robustesse du filtre c
 | Saut moyen entre 2 lectures consécutives | 0,173 pH = **1,47 σ** | 1,128 σ (≈ 0,133) |
 | Changements de signe autour de la médiane | **197 / 299** | ~150 |
 
-Bloc réel de 12 lectures (minute 22 de la trace) :
-
-```
-7.051 · 6.747 · 7.083 · 6.752 · 7.083 · 6.743 · 7.085 · 6.775 · 7.079 · 6.749 · 7.079 · 7.068
-```
-
-— deux niveaux séparés de ~0,21 pH, en **alternance quasi stricte** d'une lecture à l'autre. La corrélation instantanée pH↔ORP vaut **+0,462**, et l'ORP est lui aussi anti-corrélé (**−0,396**) : les **deux électrodes voient la même perturbation**, à l'instant même de la lecture — signature d'un **mode commun**, pas d'un bruit indépendant par voie. Explication retenue sur ce projet : les **courants de fuite de la pompe de filtration**, hypothèse déjà admise sur ce bassin et confirmée ici indépendamment par la mesure d'anti-corrélation croisée pH/ORP.
-
-**Pourquoi c'est un fait durable, pas une anecdote de la feature-097** :
-- une **médiane** sur un tel signal n'est pas une moyenne robuste, c'est un **interrupteur** qui bascule sur le niveau momentanément majoritaire (7 lectures hautes contre 5 → elle saute) — c'est ce qui avait fait remplacer l'estimateur de bloc du détecteur de purge par une moyenne interquartile (feature-097). ⚠️ **Ce détecteur (`purge_stability_logic`) a été retiré en v2.62.0** (feature-139, [ADR-0092](../adr/0092-retrait-analyse-stabilite-porte-mesures.md), supersède l'[ADR-0059](../adr/0059-purge-adaptative-fenetre-de-medianes.md)) : l'épisode reste une démonstration **durable** de l'anti-corrélation du signal pH brut sur ce bassin, pas une justification encore active de ce code disparu — voir [measure-validity.md](measure-validity.md) pour ce qui reste ;
-- toute **future statistique** calculée sur le brut (nouveau filtre, nouvelle garde, nouveau diagnostic) doit être vérifiée sur un signal bimodal avant d'être calée sur une hypothèse de bruit gaussien ou uniforme ;
-- ce même mode commun conditionne la **butée de sécurité brute pH 6,20** (comparaison d'un seuil dur à une lecture isolée d'un signal qui alterne entre deux niveaux) — hors périmètre de feature-097, traité par une spec dédiée avec son propre gate `pool-chemistry` (voir feature-097 §Hors périmètre).
-
-### Chaîne de filtrage
-
-```text
-mesure brute Atlas EZO
-  → rejet des VRAIES aberrations uniquement :
-      NaN  /  hors plage plausible  /  spike DUR isolé (|raw − médiane| > spikeReject)
-  → médiane sur fenêtre LONGUE (13 échantillons ≈ 65 s, > 1 période d'oscillation)
-  → EMA (moyenne exponentielle lente : alpha pH 0.10 / ORP 0.08)
-  → valeur filtrée (tendance centrale, JAMAIS figée) → UI / MQTT / PID
-```
-
-L'**oscillation légitime soutenue n'est plus rejetée** : elle alimente le filtre, la médiane longue la moyenne sur ≥ 1 période → valeur **centrée**. Seule la vraie aberration (spike dur isolé, NaN, hors-plage) est écartée.
-
-À chaque lecture EZO valide (`_readEzoSensors`), `SensorManager` soumet la brute au filtre du capteur via `SensorFilter::addSample(raw, nowMs)`. La brute est **toujours** mémorisée (`getPhRaw()` / `getOrpRaw()`), même si le filtre la rejette.
-
-> **feature-067** : le filtre pH est alimenté par le signal **brut** ; l'offset logiciel `ph_offset` est ajouté **en sortie** des accesseurs. `getOrpRaw()` reste un alias de `getOrp()`, mais **`getPhRaw()` n'est plus un alias de `getPh()`** — voir [Offset logiciel de mesure pH](#offset-logiciel-de-mesure-ph--feature-067).
-
-### Contrat `filtered()` — jamais figée
-
-`filtered()` renvoie **toujours** l'EMA de la médiane-longue **recalculée en continu** : c'est l'estimateur central **courant**. Elle n'est **jamais figée**, **jamais ré-amorcée** en cours de route par une instabilité. Elle vaut `NaN` **uniquement** tant que la fenêtre centrale n'est pas **pleine** (warmup, C2). Invariant iso-sécurité : `filtered() ∈ [min, max]` de la fenêtre observée, **jamais** tirée vers la consigne.
-
-Le **drapeau** `unstable()` (inhibition de la régulation) est **découplé** de la valeur — il ne modifie jamais `filtered()`.
-
-### Classe `SensorFilter`
-
-Module dédié **déterministe et testable hors matériel** ([`src/sensor_filter.h`](../../src/sensor_filter.h), [`src/sensor_filter.cpp`](../../src/sensor_filter.cpp)). Une instance par capteur dans `SensorManager` (`_phFilter`, `_orpFilter`).
-
-- **Zéro allocation dynamique** : buffer médian FIXE `float[kSensorFilterCentralWindowMax]` (capacité physique 16, fenêtre logique `kSensorFilterCentralWindow` = 13).
-- **Mono-contexte** : écrit par `addSample()` (loopTask), lu par les getters. Pas de mutex interne — l'appelant respecte le contrat mono-thread, comme `_lastPh`/`_lastOrp`.
-- **Pas de membre statique** : module **100 % pur**, couvert par les tests natifs (`test/test_native_sensor_filter/`).
-
-| Méthode | Effet |
-|---------|-------|
-| `bool addSample(float raw, uint32_t nowMs)` | Soumet une brute. Retourne `true` si **acceptée** (filtre alimenté), `false` si rejetée (NaN / hors-plage / spike dur isolé) |
-| `void reset()` | Réinitialise warmup, buffers, compteurs **et le latch EMI** |
-| `float raw() / median() / filtered()` | Dernière brute / médiane courante / EMA (estimateur central courant, NaN tant que la fenêtre n'est pas pleine) |
-| `float dispersion()` | Amplitude (`max − min`) de la fenêtre brute **pleine** (NaN sinon). Diagnostic + moteur du drapeau d'instabilité |
-| `bool ready(uint32_t nowMs)` | `true` ssi fenêtre centrale **pleine** **ET** dernière mesure valide récente (`< maxAgeMs`) **ET** non figé (feature-022) |
-| `bool unstable()` | `true` si **dispersion > cap** (fenêtre pleine) **OU** **latch EMI** posé **OU** `consecutiveRejects >= maxConsecutiveRejects` |
-| `bool frozen()` | `true` si `frozenSamples` échantillons acceptés consécutifs tiennent dans une bande < `frozenEpsilon` (feature-022, via `FrozenDetector` composé) |
-| `uint8_t rejectedCount() / consecutiveRejects()` | Compteur glissant 8 bits (sature à 255) / rejets NaN/hors-plage consécutifs courants |
-| `bool unstableLatched()` | `true` si le latch EMI (dispersion soutenue) est posé — auto-levé après `kSensorFilterLatchClearCycles` fenêtres pleines propres consécutives, ou immédiatement par `reset()` (v2.8.4) |
-| `uint8_t dispersionCleanStreak()` | Fenêtres pleines **propres** consécutives (disp ≤ cap ET zéro rejet). Compteur qui pilote l'auto-levée du latch EMI ; remis à 0 par tout rejet ou tout dépassement de dispersion (diagnostic, v2.8.4) |
-| `uint32_t ageMs(uint32_t nowMs)` | Âge de la dernière mesure acceptée (`UINT32_MAX` si aucune) |
-| `void setContext(bool waterPresent, bool measuresValid, uint32_t nowMs)` | **v2.20.3** — Porte d'alimentation : ferme le filtre aux mesures non représentatives (voir [Porte d'alimentation](#porte-dalimentation-du-filtre-v2203)). **v2.25.1** : **désarme en tête** une grâce de ré-amorçage expirée — appelé toutes les 5 s **inconditionnellement**, y compris bus I²C mort |
-| `void rearm()` | **v2.20.3** — Ré-amorce l'**estimateur seul** (buffer, EMA, clean streak) — **ne touche NI** le `FrozenDetector` **NI** le latch EMI (voir [rearm() distincte de reset()](#rearm-distincte-de-reset-v2203)). **v2.25.1** : arme aussi une **grâce d'observabilité** sur `stale()` |
-| `bool gateClosed()` | **v2.20.3** — `true` si la porte est fermée : `addSample()` sort en tête, aucune alimentation |
-| `bool warmingUp()` | **v2.25.1** — Fenêtre centrale **incomplète** (`_bufCount < centralWindow`). Observabilité uniquement |
-| `bool stale(uint32_t nowMs)` | **v2.25.1** — Aucune mesure acceptée, **ou** âge > `maxAgeMs` — **sauf** pendant la grâce de ré-amorçage (intervalle fermé depuis l'armement, wrap-safe). Observabilité uniquement, **même frontière** que la garde d'âge de `ready()` |
-| `bool rearmedSinceLastPoll()` | **v2.20.3** — Drapeau consommé (edge-triggered) : un ré-amorçage a eu lieu depuis le dernier appel. Sert à la journalisation par la coquille (module pur : pas de logger, [ADR-0017](../adr/0017-logique-metier-pure-humble-object-testabilite.md)) |
-| `uint8_t rearmDenied()` | **v2.20.3** — Motif du **dernier refus** de ré-amorçage, **collant** : `0` aucun, `1` cooldown non écoulé, `2` valeur hors bande admissible. Un refus ⇒ filtre non prêt ⇒ dosage fail-closed ⇒ la coquille **doit** alarmer |
-| `uint8_t rejectedBeforeRearm()` | **v2.20.3** — Valeur de `rejectedCount()` juste **avant** le dernier `rearm()`. Le ré-amorçage remet le compteur à 0 (sinon `/debug/sensor_filter_state` continuait d'afficher `rejected=255` sur un filtre réparé) : c'est cette valeur qu'il faut journaliser pour tracer l'ampleur du verrouillage levé |
-
-### Logique de rejet — vraies aberrations uniquement
-
-Une mesure **n'alimente pas** le filtre (mais la brute reste lisible) si :
-
-- elle vaut `NaN` (lecture stale / bus I²C dégradé via `getPh()`/`getOrp()` qui renvoient déjà NaN) → incrémente `consecutiveRejects` ;
-- elle sort de `[minValue, maxValue]` (plage plausible) → incrémente `consecutiveRejects` ;
-- **spike DUR isolé** : `|raw − médiane| > spikeReject` (`kPhFilterSpikeReject` = 1.0 pH / `kOrpFilterSpikeReject` = 300 mV) → l'échantillon est **écarté**, **exclu** du calcul de dispersion, **ne compte PAS** comme instabilité (n'incrémente pas `consecutiveRejects`) et **ne met pas à jour** `lastValid` → l'âge grandit. Un spike **répété** maintient donc le filtre non alimenté → âge > maxAge → non prêt → dosage fail-closed (invariant feature-022 préservé).
-
-Le seuil `spikeReject` est **très au-dessus** de l'amplitude d'oscillation légitime : il ne rejette que l'aberration franche, jamais une transition d'oscillation soutenue (qui, elle, doit alimenter la médiane).
-
-### Le piège du spike répété — incident du 2026-08-16 (v2.20.3)
-
-Jusqu'en v2.20.2, le comportement décrit ci-dessus (« un spike **répété** rend le filtre non prêt ») était documenté comme un **fail-closed volontaire**, pensé pour une sonde défaillante. C'était en réalité un **piège sans issue**, et il s'est refermé en production :
-
-```text
-/debug/sensor_filter_state (firmware 2.20.0)
-ph : raw=6.957  median=5.293(corrigé)  filtered=5.282  ready=false  rejected=255
-orp: raw=556    median=561             filtered=568    ready=true   rejected=0
-```
-
-Médiane **interne** = 5,293 − 0,50 (offset) = **4,793**, contre un brut à **6,957** : 2,16 pH d'écart. Le raisonnement du piège est déterministe :
-
-1. la médiane ne peut évoluer **que** si des échantillons entrent dans le buffer ;
-2. un échantillon à plus de `spikeReject` de la médiane est écarté **avant** d'y entrer ;
-3. donc dès que la grandeur **vraie** s'éloigne durablement de la médiane courante, **chaque** échantillon suivant est rejeté à son tour → médiane figée **pour toujours**.
-
-Les deux échappatoires existantes étaient inopérantes par conception : `consecutiveRejects` n'est **volontairement pas** incrémenté sur ce chemin (donc `maxConsecutiveRejects` ne se déclenche jamais), et `dispersionCleanStreak` est remis à 0 par tout spike écarté (donc l'auto-levée du latch EMI ne se déclenche jamais non plus). `rejectedCount` sature à 255 sans rien piloter. **Seul `reset()` en sortait.**
-
-Conséquence : `ready() == false` en permanence ⇒ dosage pH bloqué (garde `FilterNotReady`) **et** dosage chlore inhibé (fail-closed feature-067 sur pH brut indisponible). Le bassin est resté **sans aucune régulation ≥ 3 h**, sans alarme, la seule porte de sortie étant une route de debug absente de l'interface. Le mécanisme n'avait jamais été pensé pour un **échelon légitime** de la grandeur mesurée.
-
-Le **déclencheur** est distinct du mécanisme, et c'est lui qui rendait le défaut récurrent : le filtre ingérait les mesures de la **stagnation** (eau immobile dans la chambre de mesure, au voisinage du point d'injection d'acide), que `measure_validity` déclarait pourtant **non représentatives** — puis leur donnait autorité sur les mesures représentatives suivantes, qu'il rejetait une à une.
-
-> **En une phrase** : le filtre ingérait des échantillons que le système lui-même avait déclarés non représentatifs, puis leur donnait autorité sur les échantillons représentatifs suivants.
-
-Trois correctifs complémentaires en v2.20.3 (tous dans le module **pur**, donc couverts par les tests natifs) : la **porte d'alimentation**, la **sortie de secours**, et l'**alarme**. Décision et alternatives écartées : [ADR-0041](../adr/0041-autorite-mesures-non-representatives-et-sortie-de-secours-filtre.md).
-
-### Porte d'alimentation du filtre (v2.20.3)
-
-`setContext(waterPresent, measuresValid, nowMs)` est appelée à **chaque** cycle de lecture, **avant** `addSample()`, avec le verdict de représentativité de [`measure_validity`](measure-validity.md) (lu dans son **cache** sous spinlock, jamais via `filtration` directement).
-
-| Condition | Porte |
-|---|---|
-| `!waterPresent` (circulation arrêtée / signal externe périmé) | **fermée** |
-| `!measuresValid` (purge de la chambre de mesure en cours) | **fermée** |
-| Front montant d'eau, pendant `kSensorFilterGateFloorMs` = **60 s** | **fermée** (plancher de gel) |
-| sinon | ouverte |
-
-- **Porte fermée** ⇒ `addSample()` **sort en tête** : l'échantillon est mémorisé pour le diagnostic (`raw()`) mais ne touche **ni** le buffer, **ni** le `FrozenDetector`, **ni** aucun compteur — il n'existe pas pour le filtre. L'âge de la dernière mesure valide continue de grandir ⇒ `ready() = false` ⇒ dosage fail-closed pendant toute la purge, ce qui est le comportement voulu.
-- **Plancher de gel de 60 s** : appliqué **même si** la coquille déclare déjà les mesures représentatives — il couvre le cas d'une porte de validité qui s'ouvrirait sans délai (dispense après coupure courte). Comparaison wrap-safe sur `(int32_t)(nowMs - _gateFloorUntilMs)`. Ce plancher est **indépendant** du plancher de purge `kPurgeFloorMs` (10 min) de `measure_validity`, qui joue en amont.
-- **Transition fermée → ouverte** ⇒ `rearm()` : la médiane construite avant/pendant la stagnation n'a **aucune** autorité sur les mesures représentatives qui suivent. Le filtre repart en warmup complet (13 échantillons ≈ 65 s) — disponibilité sacrifiée au profit de la justesse, arbitrage `pool-chemistry`.
-- **Rétrocompatibilité** : `_gateClosed` vaut `false` par défaut. Un appelant qui n'utilise pas `setContext()` (tests natifs existants) conserve strictement le comportement antérieur.
-
-Journalisation **edge-triggered** par `SensorManager::_updateFilterGates()` (les deux filtres partageant le même contexte, une seule paire de lignes) :
-
-- fermeture — `info` : `Filtres pH/ORP : alimentation GELÉE — mesures non représentatives (circulation arrêtée | stabilisation en cours) — dosage auto bloqué tant que la porte est fermée`
-- réouverture — `info` : `Filtres pH/ORP : alimentation REPRISE — mesures représentatives, filtres ré-amorcés (warmup en cours, la médiane de stagnation est abandonnée)`
-
-Le drapeau `rearmedSinceLastPoll()` est **drainé** juste après, pour que le ré-amorçage de porte (légitime et déjà journalisé) ne soit pas attribué à tort à la sortie de secours.
-
-#### `ready()` est faux tant que la porte est fermée (C6, v2.34.0)
-
-Depuis la v2.34.0 (feature-091, condition **C6** de `pool-chemistry`), `SensorFilter::ready(nowMs)` retourne **faux immédiatement** quand la porte est fermée — un cinquième prédicat s'ajoute aux quatre existants (fenêtre pleine, mesure présente, âge ≤ `maxAgeMs`, non figé), à la toute fin de [`sensor_filter.cpp`](../../src/sensor_filter.cpp) (`if (_gateClosed) return false;`).
-
-**Le trou qu'il ferme** : jusque-là, `ready()` ne devenait faux qu'*indirectement*, par vieillissement du dernier échantillon accepté (`maxAgeMs` = 20 s). À la **première** ouverture ce n'était pas visible (le ré-amorçage vide déjà la fenêtre), mais lors d'une **re-fermeture** (re-purge C1, mesure redevenue instable après ouverture) le filtre restait « prêt » pendant jusqu'à 20 s **avec la dernière valeur filtrée du rinçage**. Pendant cette fenêtre, le terme proportionnel, le **terme intégral**, le **feedforward** et les gardes d'alerte pH/ORP pouvaient consommer une mesure que le système venait de déclarer non représentative.
-
-- **Aucun terme de régulation ni aucune alerte pH/ORP ne consomme les mesures de rinçage** : toutes ces consommations passent par `ready()`.
-- **Sans effet** sur un appelant qui n'utilise pas `setContext()` (tests natifs antérieurs : `_gateClosed` reste `false`), ni à la première ouverture d'un cycle d'eau.
-- Le prédicat d'observabilité `gateClosed()` (v2.25.1) est **inchangé** : il continue de qualifier le refus en « attente normale », jamais en panne de sonde.
-
-Décision d'origine : [ADR-0041](../adr/0041-autorite-mesures-non-representatives-et-sortie-de-secours-filtre.md) ; purge adaptative qui rend la re-fermeture possible : [ADR-0059](../adr/0059-purge-adaptative-fenetre-de-medianes.md) et [measure-validity.md](measure-validity.md).
-
-### Sortie de secours sur rejets cohérents (v2.20.3)
-
-Le critère qui distingue un capteur qui crache des aberrations **isolées** (à filtrer) d'une grandeur qui a **franchement changé** (à suivre) est la **cohérence mutuelle des rejets** : `kSensorFilterSpikeRearmCount` = **12** rejets de spike consécutifs contenus dans une bande `max − min ≤ rearmCoherence` (**0,20 pH** / **40 mV**) décrivent une **nouvelle valeur**, pas du bruit. Une série dispersée **ré-ancre** immédiatement le compteur sur le dernier brut : du bruit n'atteindra jamais 12.
-
-Au 12ᵉ rejet cohérent, **trois gardes cumulatives** (verdict `pool-chemistry`) décident :
-
-| Garde | Valeur | Effet si refus |
-|---|---|---|
-| **Cooldown** par capteur depuis le dernier ré-amorçage | `kSensorFilterRearmCooldownMs` = **30 min** | `rearmDenied() = 1` |
-| **Bande admissible**, jugée sur le **centre** de la série (`(min+max)/2`) | pH **[6,50 ; 8,20]**, ORP **[300 ; 950]** | `rearmDenied() = 2` |
-| **Cohérence** de la série | `max − min ≤ rearmCoherence` | série ré-ancrée |
-
-- La bande est jugée sur le **centre** de la série et non sur le dernier brut reçu (revue `pool-chemistry`) : le centre représente la valeur vers laquelle on s'apprête à converger, et la fuite hors bande est ainsi divisée par deux à disponibilité identique.
-- ⚠️ **Les bornes pH sont exprimées sur l'échelle BRUTE** (le filtre travaille sur le brut, [ADR-0039](../adr/0039-offset-ph-applique-en-sortie-des-accesseurs.md)) : la bande **effective en pH corrigé** est donc décalée de `ph_offset`. Avec un offset de +0,40, elle vaut `[6,90 ; 8,60]` en valeur affichée.
-- Les 12 échantillons rejetés sont **JETÉS**, jamais réinjectés dans le buffer : aucune valeur aberrante n'entre par cette porte. Le filtre re-converge **uniquement** sur les mesures à venir, après un **warmup complet** (13 échantillons ≈ 65 s), dosage bloqué pendant toute la re-convergence — fail-closed conservé.
-- Un refus rend `rearmDenied()` **collant** : le filtre **reste** verrouillé, donc sans régulation. La coquille journalise alors un `critical` et publie une alerte MQTT (`ph_filter_rearm_denied` / `orp_filter_rearm_denied`), **une seule fois par épisode**. Une sonde réellement HS ne ré-amorce donc **jamais** en silence.
-- `rearmCoherence == 0` (init agrégat courte, cas des tests) ⇒ sortie de secours **désactivée**, comportement strictement antérieur.
-
-Journalisation (`SensorManager::_checkRearmAndLog()`) :
-
-- succès — `warning` : `Filtre pH : RÉ-AMORÇAGE après 12 rejets cohérents autour de 6.957 — la grandeur mesurée a franchement changé, la médiane figée est abandonnée (warmup en cours, dosage auto bloqué)`
-- refus — `critical` + alerte MQTT : `Filtre pH : ré-amorçage REFUSÉ (délai anti-répétition de 30 min non écoulé | valeur hors bande admissible) sur brut 4.793 — le filtre reste NON PRÊT, régulation pH à l'arrêt : vérifier la sonde`
-
-### Tolérance aux trous de lecture (v2.20.3)
-
-Condition **bloquante** du gate `pool-chemistry`, ajoutée en revue : un **trou** (`NaN` ou hors-plage) survenant pendant une série de rejets cohérents **n'annule plus** la série. Sans elle, une sonde ratant **un cycle sur douze** pendant un échelon légitime n'aurait **jamais** ré-amorcé — c'est-à-dire que l'incident d'origine se serait reproduit à l'identique.
-
-Règle chiffrée (`_noteSpikeSeriesGap()`) :
-
-- au plus **2 trous** par série ;
-- **jamais 2 consécutifs** ;
-- un trou **ne fait pas avancer** `_spikeCount` : l'évidence doit rester acquise par des rejets **réels** ;
-- 2 trous consécutifs ou 3ᵉ trou ⇒ série remise à zéro (fail-closed).
-
-Un rejet réel remet `_lastWasGap` à `false` : la continuité de l'évidence reprend.
-
-### rearm() distincte de reset() (v2.20.3)
-
-| | `rearm()` | `reset()` |
-|---|---|---|
-| Buffer médian, EMA, `dispersionCleanStreak` | vidés | vidés |
-| `rejectedCount` | remis à 0 (valeur d'avant lisible via `rejectedBeforeRearm()`) | remis à 0 |
-| Bookkeeping sortie de secours (`_spike*`, `rearmDenied`) | remis à zéro | remis à zéro |
-| **`FrozenDetector`** (feature-022) | **intact** | réinitialisé |
-| **Latch EMI** (feature-058) | **intact** | levé |
-| Porte d'alimentation | inchangée | remise à l'état ouvert (recalculée au prochain `setContext()`) |
-| **Grâce « périmé »** (v2.25.1) | **armée** (`maxAgeMs` au plus, datée de `_lastSeenMs`) | **jamais armée**, et une grâce en cours est **désarmée** |
-
-**Pourquoi cette distinction existe** : re-converger ne doit **jamais blanchir un défaut de mesure**. Une sonde figée le reste jusqu'à fournir un échantillon hors bande ; une ambiance EMI soutenue continue d'inhiber le dosage. C'est la garantie explicite qu'on ne masque pas une sonde défaillante en réparant le filtre — d'autant que **l'origine de l'excursion à ~4,8 n'est toujours pas tranchée** (stagnation acide au point d'injection **ou** défaillance de sonde ; cf. l'instrumentation de [`measure_validity`](measure-validity.md#instrumentation-des-bruts-au-front-montant-deau-v2203)).
-
-Conséquence voulue : après `rearm()`, `_bufCount = 0` ⇒ `ready() = false` pendant **tout** le warmup ⇒ dosage fail-closed pendant la reprise.
-
-### États du filtre
-
-- **warmup** : tant que la fenêtre centrale n'est pas **pleine** (`< kSensorFilterCentralWindow` = 13 échantillons acceptés) → `filtered() = NaN`, `ready() = false`. **Aucun dosage** tant que non prêt.
-- **ready** : fenêtre pleine ET dernière mesure valide `< kSensorFilterMaxAgeMs` (= 20 s) ET capteur non figé ET **porte d'alimentation ouverte** (C6, v2.34.0). Au-delà (EZO injoignable) → `ready()` repasse `false` → dosage fail-closed.
-- **unstable** (drapeau d'inhibition, **découplé** de la valeur — ne fige jamais `filtered()`) : `true` si l'un de ces trois signaux est posé :
-  - **(a) dispersion > cap** : l'amplitude `max − min` de la fenêtre brute **pleine** dépasse `kPhFilterMaxDispersion` (= 0.5 pH) / `kOrpFilterMaxDispersion` (= 100 mV) → oscillation de niveau EMI. Les caps sont maintenus **sous** l'amplitude EMI observée (feature-057) pour préserver l'inhibition existante — **ne pas assouplir** ;
-  - **(b) latch EMI** : dispersion > cap **soutenue** (`kSensorFilterDispersionLatchCycles` = 3 fenêtres pleines consécutives en dépassement) → latch collant `unstableLatched()`. Auto-levé après `kSensorFilterLatchClearCycles` = 12 fenêtres pleines **propres** consécutives (≈ 2 min de signal réellement propre, v2.8.4) ou immédiatement par `reset()`/recalibration ;
-  - **(c) rejets consécutifs** : `>= kSensorFilterMaxConsecutiveRejects` (= 10) rejets NaN/hors-plage consécutifs. État transitoire, s'éteint dès qu'une mesure est acceptée.
-- **frozen** (feature-022) : `kSensorFrozenSamples` (= 30) lectures acceptées consécutives dans une bande < epsilon → `ready()` repasse `false` → dosage fail-closed via la garde #4b existante (cause exposée `FilterFrozen` depuis la v2.25.1, `FilterNotReady` avant). Sortie **immédiate sans re-warmup** dès une lecture vivante. Voir [Détection capteur figé](#détection-capteur-figé--feature-022).
-
-### Prédicats d'état du filtre (observabilité, v2.25.1)
-
-`ready()` est faux pour **quatre** raisons physiquement distinctes, dont deux sont des états d'attente normaux et deux des **pannes**. (Depuis la v2.34.0, la porte fermée est en plus une condition **directe** de `ready()` — voir [`ready()` est faux tant que la porte est fermée](#ready-est-faux-tant-que-la-porte-est-fermée-c6-v2340) ; les quatre prédicats d'observabilité ci-dessous sont inchangés.) Jusqu'à la v2.25.1, la chaîne de refus de dosage les confondait dans un seul libellé (« warmup / EZO injoignable ») : une vraie panne d'EZO s'affichait « Stabilisation du filtre ». `SensorFilter` expose donc quatre prédicats `const`, **lecture seule, sans effet sur la décision** :
-
-| Prédicat | Vrai quand | Registre |
-|---|---|---|
-| `warmingUp()` | `_bufCount < centralWindow` (fenêtre de lissage incomplète) | attente normale |
-| `gateClosed()` | porte d'alimentation fermée : mesures déclarées **non représentatives** ([ADR-0041](../adr/0041-autorite-mesures-non-representatives-et-sortie-de-secours-filtre.md)) | attente normale |
-| `stale(nowMs)` | aucune mesure acceptée, **ou** âge > `kSensorFilterMaxAgeMs` (20 s) — hors grâce de ré-amorçage | **panne** |
-| `frozen()` | capteur figé (`FrozenDetector`, feature-022) | **panne** |
-
-Composition par la fonction pure `resolveFilterState()` ([`dosing_logic.cpp`](../../src/dosing_logic.cpp)), **priorité pannes d'abord** : `frozen → gateClosed → stale → warmup → ready`. Exposition côté `SensorManager` :
-
-```cpp
-DoseFilterState getPhFilterState() const;   // lock-free, même contrat que isPhFilterReady()
-DoseFilterState getOrpFilterState() const;
-```
-
-> ⚠️ **Ne JAMAIS reconstruire ce diagnostic depuis `getPhRaw()` / `getOrpRaw()`.** Le cache brut est alimenté par **toute** lecture, y compris hors plage et y compris une valeur constante : il reste donc **frais** sur une sonde figée ou sur un EZO débitant du garbage. Un discriminant fondé sur sa fraîcheur — proposé lors du cadrage, **refusé par le gate `pool-chemistry`** — aurait classé une panne en « warmup ». C'est exactement le défaut que la v2.25.1 corrige. Voir [ADR-0049](../adr/0049-code-machine-de-cause-de-refus-et-etat-interne-du-filtre.md).
-
-`stale()` partage **exactement** la frontière de la garde d'âge de `ready()` (`age > maxAgeMs`, `age == maxAgeMs` n'est pas périmé) : sinon la cause affichée et le verdict de dosage divergeraient sur un intervalle d'une lecture.
-
-#### Grâce de ré-amorçage sur `stale()`
-
-`rearm()` vide l'estimateur mais **ne fabrique pas de mesure** : `_hasValid` et `_lastValidMs` restent ceux d'avant, invariant qui rend `ready()` et `ageMs()` honnêtes. Conséquence non voulue de la priorité pannes-d'abord : juste après une réouverture de porte (démarrage de filtration, fin de purge), le filtre était simultanément `warmingUp` **et** `stale` → l'interface affichait une puce rouge **« Sonde muette »** sur une sonde parfaitement saine.
-
-Correctif : `rearm()` **mémorise que l'âge courant est imputable au ré-amorçage** — la datation n'est pas falsifiée. Règles :
-
-- **armement** : `rearm()` uniquement — les **deux** chemins réels de ré-amorçage (réouverture de porte dans `setContext()`, sortie de secours sur rejets cohérents dans `addSample()`). L'instant d'armement est `_lastSeenMs`, la dernière horloge vue par ces deux chemins, affectée en tête : il vaut donc exactement le `nowMs` du cycle en cours ;
-- **durée** : `kSensorFilterMaxAgeMs` (20 s) au plus, levée par la **première mesure acceptée** ;
-- **`stale()` seul lit ce drapeau.** `ready()`, `unstable()`, `ageMs()` et tout le chemin du verdict de dosage sont **inchangés au bit près** — la grâce est un mécanisme d'affichage, pas une tolérance de sécurité ;
-- `reset()` **n'arme rien** et **désarme** une grâce en cours : une sonde muette au **démarrage à froid** est annoncée **immédiatement**, sans le moindre délai de courtoisie. La grâce ne couvre que le cas où l'âge affiché est *imputable au ré-amorçage*, ce qui n'a aucun sens sur un filtre qui n'a jamais rien mesuré ;
-- retard résiduel assumé : une sonde réellement muette au moment précis d'un ré-amorçage est annoncée jusqu'à 20 s plus tard. Le retard est intrinsèque — on ne peut pas conclure avant d'avoir laissé sa chance à la première lecture qui suit.
-
-##### Deux protections cumulatives contre le repliement de `millis()`
-
-La **première écriture** de cette grâce portait le **troisième défaut de repliement du projet** (après la retentative de `Slope,?` en v2.21.2 et la comptabilité d'impulsions `tickPulse`). L'échéance n'était évaluée que dans `stale()`, qui est `const` : sur une sonde restée muette, le drapeau ne redescendait **jamais**, et la comparaison de deadline `(int32_t)(now − until) < 0` — juste au premier tour — **se retournait 2³¹ ms plus tard**. La panne était **masquée à nouveau pendant 24,8 jours**, l'appareil réaffichant « en stabilisation » sur une sonde morte. Atteignable : `millis()` se replie à 49,7 jours et l'appareil tourne en continu.
-
-Le correctif est **redondant par conception** :
-
-| # | Protection | Où | Ce qu'elle garantit seule |
-|---|---|---|---|
-| 1 | **Forme du prédicat** : intervalle fermé `[from, from + maxAgeMs[`, testé en `(nowMs − _staleGraceFromMs) < maxAgeMs` **non signé** — jamais de date de fin, jamais de comparaison signée à une échéance | `stale()` ([`sensor_filter.cpp`](../../src/sensor_filter.cpp)) | le prédicat est monotone en **durée écoulée**, pas en `now` : même un drapeau resté armé ne peut re-rentrer dans la grâce qu'au repliement **complet** de `millis()` (49,7 j, limite intrinsèque du projet) au lieu de 24,8 j |
-| 2 | **Désarmement effectif** : `_expireStaleGrace(nowMs)` remet `_staleGraceArmed` à `false`, appelée en **tête** de `setContext()` **et** de `addSample()` — les deux seuls chemins non-`const` recevant l'horloge | `sensor_filter.cpp` | `setContext()` est atteint **toutes les 5 s inconditionnellement** depuis `SensorManager::_updateFilterGates()`, **y compris bus I²C mort** (il ne lit aucun capteur) : la grâce expire donc pour de bon, même quand plus aucune mesure n'arrive |
-
-> ⚠️ **Les deux protections sont testées séparément** (`test_V2251_grace_expiree_ne_se_rearme_pas_apres_2exp31_ms` pour la forme du prédicat, `test_V2251_grace_desarmee_par_setContext_meme_sans_lecture` et `test_V2251_grace_desarmee_par_addSample_sonde_muette` pour le désarmement, `test_V2251_grace_traverse_le_repliement_de_millis` pour le franchissement). Une mutation supprimant l'une **laisse survivre** les tests de l'autre : c'est délibéré, personne ne doit pouvoir en retirer une au motif que l'autre suffit.
-
-La règle générale qui s'en dégage — **mémoriser l'instant d'armement et tester la durée écoulée, jamais une date de fin** — est consignée dans [ADR-0049](../adr/0049-code-machine-de-cause-de-refus-et-etat-interne-du-filtre.md#pourquoi-la-forme-du-prédicat-compte-correctif-de-repliement-revue-v2251) et vaut pour tout code manipulant `millis()`.
-
-Une panne persistante est en outre remontée sur MQTT (`ph/orp_dose_sensor_fault`, 60 s de panne continue) — voir [pump-controller.md](pump-controller.md#alerte-de-panne-de-mesure-v2251).
-
-### Latch EMI (persistance de l'inhibition)
-
-Un bruit de niveau EMI **soutenu** (dispersion > cap sur `kSensorFilterDispersionLatchCycles` = 3 fenêtres pleines consécutives) pose un latch **collant** :
-
-- `unstable()` reste `true` (via `unstableLatched()`) **indépendamment des mesures suivantes** → dosage bloqué.
-- Le latch distingue un **pic de dispersion ponctuel** (inhibition transitoire, s'éteint dès que la fenêtre repasse sous le cap) d'un **défaut EMI persistant** (latch collant).
-- **La valeur `filtered()` reste publiée et recalculée** pendant tout l'état latché : le latch inhibe le **dosage**, il ne fige **pas** la valeur (contrat feature-058).
-
-#### Auto-levée après signal propre soutenu (v2.8.4)
-
-Le latch n'est **plus purement collant** : il s'auto-lève après un retour au calme durable, sans intervention. Asymétrie **voulue** — rapide à poser (3 fenêtres ≈ 15 s, défaut EMI), lent à lever (~2 min de signal réellement propre, anti-flapping) :
-
-- Compteur `dispersionCleanStreak()` : nombre de fenêtres pleines **propres** consécutives. Une fenêtre est « propre » ssi sa dispersion `max − min` reste **sous le cap** ET qu'aucun échantillon n'a été rejeté sur cette fenêtre.
-- **Incrément uniquement sur fenêtre PLEINE et propre.** Un rejet (NaN / hors-plage / spike dur isolé) fait `return` avant l'évaluation de dispersion en **remettant la streak à 0** ; tout dépassement de dispersion la remet aussi à 0. → la streak ne compte **que** des fenêtres sans aucune perturbation. Un capteur qui crache des spikes ne peut donc **jamais** lever le latch à tort.
-- Auto-levée dès `dispersionCleanStreak() >= kSensorFilterLatchClearCycles` (= 12). 12 fenêtres ≈ 60 s auxquelles s'ajoute la purge de la fenêtre médiane (~13 échantillons ≈ 65 s) → **≈ 2 min de signal réellement propre** avant reprise du dosage.
-
-`reset()` reste la **levée manuelle immédiate** (sans attendre la streak), déclenché par :
-- `POST /reset-sensor-filter?sensor=ph|orp` (réarmement manuel depuis l'interface, v2.20.3) ou `POST /debug/sensor_filter_reset[?sensor=…]` (**un** filtre si le paramètre est fourni, les deux sinon) ;
-- une **calibration pH/ORP réussie** (`resetPhFilter()` / `resetOrpFilter()`).
-
-> Le reset filtre + warmup post-calibration est **mode-indépendant** : il est déclenché par le **succès de la commande EZO** dans `_processEzoQueue()`, sans aucune condition sur le mode de régulation (`automatic` / `scheduled` / `manual`). L'élargissement de l'accès à la calibration dans tous les modes (feature-034, purement frontend) ne modifie donc pas ce comportement firmware.
-
-#### Logs de transition (`SensorManager`)
-
-Le module `SensorFilter` est **100 % pur** (pas de logger, ADR-0017) : c'est la coquille `SensorManager` qui détecte la transition de `unstableLatched()` et journalise (une ligne par transition, par capteur) :
-
-- **Pose** — `warning` : `Filtre pH : latch EMI posé (oscillation soutenue > seuil) — dosage inhibé` (idem `Filtre ORP : …`).
-- **Auto-levée** — `info` : `Filtre pH : latch EMI levé (signal stable) — dosage à nouveau possible si mesure OK` (idem ORP).
-
-Getters associés : `unstableLatched()` (état du latch EMI), `dispersionCleanStreak()` (progression vers l'auto-levée).
-
-### Observabilité de la dispersion (v2.20.6)
-
-La dispersion est le **moteur** des deux mécanismes ci-dessus (cap → `unstable`, dépassement soutenu → latch EMI), donc de l'**inhibition du dosage automatique**. Jusqu'en v2.20.5 elle n'était exposée par **aucune route** : l'inhibition était pilotée par une valeur que personne ne pouvait observer, ni depuis l'interface, ni depuis l'API. Conséquence concrète : pour évaluer la marge au seuil pendant une campagne de mesure, il fallait la **reconstruire de l'extérieur** par un minorant (crête-à-crête sur des relevés espacés de 30 s, alors que le critère porte sur 13 mesures à 5 s) — une incertitude qu'aucune analyse ne pouvait lever.
-
-Quatre champs par capteur sont désormais publiés par [`GET /debug/sensor_filter_state`](../API.md#get-debugsensor_filter_state--pas-dauth-cohérent-avec-autres-debug) (route toujours **sans auth**, lecture seule) :
-
-| Champ JSON | Source firmware | Rôle |
-|---|---|---|
-| `dispersion` | `getPhDispersion()` / `getOrpDispersion()` → `SensorFilter::dispersion()` | Amplitude `max − min` de la fenêtre pleine ; `null` si `NaN` |
-| `dispersion_max` | `kPhFilterMaxDispersion` / `kOrpFilterMaxDispersion` | Seuil (0,5 pH / 100 mV) — évite au client de connaître les constantes |
-| `latch_cycles` | `kSensorFilterDispersionLatchCycles` | Fenêtres consécutives en dépassement avant latch (3) |
-| `clean_streak` | `getPhDispersionCleanStreak()` / `getOrpDispersionCleanStreak()` | Progression vers l'auto-levée (12 requises) |
-
-Arrondi de sérialisation : **3 décimales** en pH, **1 décimale** en mV. Lecture **lock-free** (scalaires), cohérente avec le reste de la route.
-
-**Rattachement à la porte d'alimentation** — `dispersion` vaut `null` dès que la fenêtre n'est pas pleine, ce qui inclut le cas **porte fermée** ([Porte d'alimentation](#porte-dalimentation-du-filtre-v2203)) : `addSample()` sort en tête, le buffer reste vide, il n'y a **rien à mesurer**. Ce n'est pas un défaut, c'est le comportement voulu.
-
-> ⚠️ **Piège de lecture, à ne jamais confondre** : circulation arrêtée, `unstable = false` ne signifie **pas** « mesure stable » mais « **aucun jugement rendu**, faute de données ». La confusion conduit à déclarer saine une configuration qui n'a simplement jamais été évaluée — elle s'est produite en analyse. La seule lecture valide de l'instabilité est **filtration en marche + `dispersion` non nulle**.
-
-**Échelle** : la dispersion est calculée sur le buffer interne, en échelle **brute**. Une amplitude étant invariante par translation, elle est **insensible à `ph_offset`** — contrairement aux bornes de la sortie de secours (exprimées en brut, donc à décaler, cf. [Sortie de secours](#sortie-de-secours-sur-rejets-cohérents-v2203)) et contrairement à `median` / `filtered` de la même route, qui sont corrigés ([ADR-0039](../adr/0039-offset-ph-applique-en-sortie-des-accesseurs.md)).
-
-### Paramètres (centralisés dans [`constants.h`](../../src/constants.h), bloc feature-058)
-
-| Paramètre | pH | ORP |
-|---|---:|---:|
-| Fenêtre médiane logique (`kSensorFilterCentralWindow`) | 13 | 13 |
-| Capacité physique buffer (`kSensorFilterCentralWindowMax`) | 16 | 16 |
-| EMA alpha | `kPhEmaAlpha` = 0.10 | `kOrpEmaAlpha` = 0.08 |
-| Spike dur isolé écarté | `kPhFilterSpikeReject` = 1.0 pH | `kOrpFilterSpikeReject` = 300 mV |
-| Cap dispersion → instable | `kPhFilterMaxDispersion` = 0.5 pH | `kOrpFilterMaxDispersion` = 100 mV |
-| Plage plausible | `kPhFilterMin/Max` = 0.0 – 14.0 | `kOrpFilterMin/Max` = -1000 – +1500 mV |
-| Rejets consécutifs → instable (`kSensorFilterMaxConsecutiveRejects`) | 10 | 10 |
-| Fenêtres en dépassement → latch EMI (`kSensorFilterDispersionLatchCycles`) | 3 | 3 |
-| Âge max ready (`kSensorFilterMaxAgeMs`) | 20 000 ms | 20 000 ms |
-| **v2.20.3** — Rejets cohérents avant ré-amorçage (`kSensorFilterSpikeRearmCount`) | 12 (≈ 60 s) | 12 (≈ 60 s) |
-| **v2.20.3** — Cohérence de la série rejetée (`k*FilterRearmCoherence`) | 0,20 pH | 40 mV |
-| **v2.20.3** — Bande admissible de ré-amorçage (`k*FilterRearmMin/Max`) | 6,50 – 8,20 (**brut**) | 300 – 950 mV |
-| **v2.20.3** — Cooldown entre deux ré-amorçages (`kSensorFilterRearmCooldownMs`) | 30 min | 30 min |
-| **v2.20.3** — Plancher de gel après front montant d'eau (`kSensorFilterGateFloorMs`) | 60 s | 60 s |
-| **v2.20.3** — Délai avant alarme « filtre non prêt » (`kSensorFilterNotReadyAlarmMs`) | 5 min | 5 min |
-| **v2.20.3** — Répétition de l'alarme (`kSensorFilterNotReadyRepeatMs`) | 30 min | 30 min |
-| **v2.20.3** — Cooldown du réarmement manuel UI (`kSensorFilterUiResetMinIntervalMs`) | 10 min | 10 min |
-
-> **Latence** : la fenêtre médiane passe de 7 à 13 échantillons → retard médian ≈ 30 s (à 5 s/échantillon), soit **+15 s** vs l'ancien filtre. Négligeable devant la **pause mélange hydraulique** post-injection (15–20 min) ; pH/ORP varient lentement.
-
-### Reset après calibration
-
-Une calibration change la fonction de transfert de la sonde → la valeur filtrée pré-calibration n'est plus représentative. Après **succès** d'une calibration via `_processEzoQueue()` :
-
-- **pH** (`mid` / `low` / `clear`) → `resetPhFilter()` ;
-- **ORP** (`cal` / `clear`) → `resetOrpFilter()`.
-
-Le filtre repasse en **warmup** → dosage de la sonde concernée bloqué jusqu'à ce que la **fenêtre centrale soit de nouveau pleine** (`kSensorFilterCentralWindow` = 13 nouvelles mesures valides ; cumulé avec le timer de stabilisation post-cal `kStabilizationDuration*Ms`, gates indépendantes).
-
-### Reset manuel / diagnostic
-
-Le reset est **sélectif par capteur depuis la v2.20.3** — réparer le pH ne sacrifie plus un filtre ORP sain (ce qui est arrivé lors du déblocage en production du 2026-08-16) :
-
-| Route | Auth | Portée |
-|---|---|---|
-| `POST /reset-sensor-filter?sensor=ph\|orp` | **CRITICAL** | **un seul** capteur (paramètre obligatoire), cooldown 10 min/capteur → `429` |
-| `POST /debug/sensor_filter_reset?sensor=ph\|orp` | **CRITICAL** (⚠️ était sans auth ≤ v2.20.2) | un seul capteur ; **sans paramètre** = les deux (comportement historique) |
-| `GET /debug/sensor_filter_state` | pas d'auth | lecture seule (raw/median/filtered/ready/unstable/rejected par capteur ; **+ dispersion/dispersion_max/latch_cycles/clean_streak depuis la v2.20.6**) |
-
-Un reset reste la **levée manuelle immédiate** du latch EMI (`unstableLatched()`), en complément de l'auto-levée après ~2 min de signal propre (v2.8.4) et de la levée sur calibration réussie. Voir [API.md](../API.md#post-reset-sensor-filter--critical).
-
-### Réarmement manuel par capteur (v2.20.3)
-
-**Contrat de concurrence** — `resetPhFilter()` / `resetOrpFilter()` écrivent dans le filtre : elles sont réservées au contexte **`loopTask`**. Plus **aucun** handler asynchrone ne les appelle directement (l'ancienne route de debug le faisait, en violation du contrat `sensor_filter.h` : écriture concurrente du buffer pendant un `addSample()`).
-
-Depuis n'importe quel contexte (`async_tcp`, `mqttTask`) on passe par :
-
-```cpp
-bool requestFilterReset(bool ph, bool orp, const char* origin = "inconnue");
-```
-
-- Pose un drapeau `volatile` **consommé en tête de `SensorManager::update()`** — même pattern que `enqueuePhSlopeQuery()`. La réponse HTTP est donc « **acceptée** », pas « exécutée » (effectif < 100 ms).
-- `origin` **doit** être un littéral de chaîne / une constante statique : seul le **pointeur** est mémorisé (aucune copie, aucune allocation dans un contexte async).
-- Retourne `false` si aucun filtre n'est demandé.
-
-**Journalisation de l'état détruit** (`_executeRequestedReset()`, au moment de l'exécution) — médiane avant → après, rejets, latch EMI, filtre prêt, sonde figée :
-
-- `warning` en cas normal ;
-- `critical` si une **détection de sonde figée** vient d'être effacée : `… — la DÉTECTION DE SONDE FIGÉE vient d'être effacée : si la sonde est réellement HS, le défaut sera de nouveau masqué au prochain cycle`.
-
-### Alarme « filtre non prêt durablement » (v2.20.3)
-
-Un filtre non prêt **alors que** la filtration tourne **et que** les mesures sont déclarées représentatives = plus **aucune** régulation sur ce paramètre. C'est exactement l'état dans lequel l'installation est restée ≥ 3 h le 2026-08-16, **sans la moindre alarme**. Verdict `pool-chemistry` :
-
-- déclenchement après `kSensorFilterNotReadyAlarmMs` = **5 min** de blocage **continu** (toute interruption remet le compteur à zéro) ;
-- la **purge** de la chambre de mesure (`measures_valid == false`) et la **circulation arrêtée** ne comptent **jamais** : ce sont des états bloquants légitimes ;
-- **pose** : `critical` + alerte MQTT (`ph_filter_not_ready` / `orp_filter_not_ready`), avec la **cause probable** diagnostiquée (`sonde figée` / `ré-amorçage refusé (sonde suspecte)` / `capteur instable (bruit/EMI)` / `fenêtre de mesure non remplie`) et le compteur de rejets ;
-- **répétition** toutes les `kSensorFilterNotReadyRepeatMs` = **30 min** tant que la panne dure ;
-- **levée** : `info` — `Filtre pH : de nouveau PRÊT — régulation pH automatique réarmée (alerte levée)`.
-
-Accesseurs : `isPhFilterNotReadyAlarm()` / `isOrpFilterNotReadyAlarm()`. Consommés par `GET /data` (`phFilterAlarm` / `orpFilterAlarm`), le WebSocket, MQTT (`{base}/ph_filter_stuck`, `binary_sensor` HA `device_class: problem`) et l'UI (chip d'état + bannière « Régulation à l'arrêt »).
+La corrélation instantanée pH↔ORP vaut **+0,462**, et l'ORP est lui aussi anti-corrélé
+(**−0,396**) : les **deux électrodes voient la même perturbation** à l'instant même de la
+lecture — signature d'un **mode commun** (courants de fuite de la pompe de filtration,
+hypothèse déjà admise sur ce bassin), pas d'un bruit indépendant par voie.
+
+⚠️ **Rappel de l'exigence de généricité (feature-152)** : cette trace **vérifie** que la
+médiane tient sur du signal réel (fixture D5), elle n'a **jamais** servi à **choisir** la
+largeur ou la constante de temps — celles-ci se déduisent de la dynamique du procédé
+(homogénéisation en minutes/heures) et de la cadence matérielle, jamais d'un bruit mesuré sur
+une installation. Toute **future statistique** calculée sur le brut doit être vérifiée sur ce
+signal bimodal avant d'être calée sur une hypothèse de bruit gaussien ou uniforme — c'est le
+piège qui a produit le défaut principal corrigé par ce lot (bande de cohérence à 0,20 contre un
+bruit terrain à 0,36, inopérante par construction).
+
+<details>
+<summary>Archive — ancienne chaîne de filtrage (feature-025 à v2.67.x, RETIRÉE en v2.68.0)</summary>
+
+> **Refonte feature-058 ([ADR-0027](../adr/0027-filtre-tendance-centrale.md), superseded par
+> [ADR-0097](../adr/0097-le-filtre-lisse-le-dosage-juge.md))** — La chaîne d'origine (rejet de
+> saut `maxStep` → médiane(7) → EMA + re-sync anti latch-up) **collait** au haut ou au bas d'une
+> oscillation soutenue, et pouvait **figer** la valeur sur un nombre trompeur via le latch. Elle
+> avait été remplacée par un estimateur à 14 étages (médiane longue + EMA + spike reject + sortie
+> de secours à trois gardes + dispersion + latch EMI + alarme), lui-même **intégralement retiré**
+> par feature-152 : aucun cas n'a été trouvé où ces mécanismes ont démontrablement évité un
+> dommage, et ils ont causé deux arrêts de régulation en production (v2.20.3, 2026-10-11).
+>
+> Paramètres historiques (tous retirés, conservés ici pour mémoire) : fenêtre médiane 13,
+> EMA α 0,10/0,08, spike dur 1,0 pH/300 mV, cap dispersion 0,5 pH/100 mV, 12 rejets cohérents
+> avant ré-amorçage, cohérence 0,20 pH/40 mV, bande admissible 6,50–8,20/300–950 mV, cooldown
+> 30 min, plancher de gel 60 s, alarme à 5 min/répétition 30 min. Décisions d'origine :
+> [ADR-0041](../adr/0041-autorite-mesures-non-representatives-et-sortie-de-secours-filtre.md)
+> (superseded partiellement — le principe de porte survit, simplifié),
+> [ADR-0049](../adr/0049-code-machine-de-cause-de-refus-et-etat-interne-du-filtre.md) (en
+> vigueur, amendé), [ADR-0059](../adr/0059-purge-adaptative-fenetre-de-medianes.md) (déjà
+> superseded par l'ADR-0092, non concerné par ce lot).
+
+</details>
 
 ## Offset logiciel de mesure pH — feature-067
 
@@ -711,10 +462,14 @@ Correction logicielle `pH corrigé = pH brut EZO + phOffset`, destinée à compe
 
 ### Point d'application : EN SORTIE des accesseurs
 
-Le filtre pH (`SensorFilter` : médiane longue + EMA + rejet de pics + latch EMI) continue de travailler sur le signal **brut** ; l'offset est ajouté **au moment de lire** la valeur. Médiane et EMA étant **invariantes par translation** (`filtre(x + c) == filtre(x) + c`, propriété démontrée par un test natif sur le filtre réel), le résultat numérique est identique — mais :
+Le filtre pH (`SensorFilter` : médiane + lissage exponentiel, feature-152) continue de
+travailler sur le signal **brut** ; l'offset est ajouté **au moment de lire** la valeur.
+Médiane et lissage étant **invariants par translation** (`filtre(x + c) == filtre(x) + c`,
+propriété démontrée par un test natif sur le filtre réel), le résultat numérique est
+identique — mais :
 
-1. un changement d'offset est pris en compte **immédiatement**, au lieu d'être dilué sur toute la fenêtre de lissage (≈ 13 échantillons ≈ 65 s) ;
-2. les **seuils de rejet de pics** et le **latch EMI** restent calés sur le signal brut, donc inchangés ;
+1. un changement d'offset est pris en compte **immédiatement**, au lieu d'être dilué sur toute la fenêtre de lissage (≈ 67 s à 5 s de cadence) ;
+2. le **rejet de l'absurde** (étage 2, plage physique) reste calé sur le signal brut, donc inchangé ;
 3. la **trace de diagnostic** conserve naturellement le brut.
 
 Décision structurante et alternatives écartées : [ADR-0039](../adr/0039-offset-ph-applique-en-sortie-des-accesseurs.md).
@@ -729,26 +484,31 @@ Décision structurante et alternatives écartées : [ADR-0039](../adr/0039-offse
 |---|---|---|---|
 | `getPh()` | dernière mesure **corrigée** | ✅ | brut NaN ou lecture stale (> `kSensorStaleTimeoutMs`) |
 | `getPhMedian()` | médiane **corrigée** | ✅ | fenêtre médiane vide |
-| `getPhFiltered()` | EMA **corrigée** — entrée du PID | ✅ | filtre non amorcé (warmup) |
+| `getPhFiltered()` | VALEUR OFFICIELLE **corrigée** — entrée du PID, de l'affichage, de l'historique et de MQTT | ✅ | warmup / sonde figée / périmée |
 | `getPhRaw()` | dernière mesure **brute EZO** | ❌ | brut NaN ou lecture stale |
-| `getPhFilteredRaw()` | EMA **brute** — filets de sécurité chimique | ❌ | **filtre non `ready()`** (voir garde d'âge) |
+| `getPhValueRaw()` | VALEUR OFFICIELLE **brute** — filets de sécurité chimique (ex-`getPhFilteredRaw`, renommé feature-152, **conservé**) | ❌ | **filtre non prêt** (voir garde d'âge) |
 | `getPhOffset()` | offset **effectivement appliqué** (copie locale) | — | jamais (toujours dans les bornes) |
 
 ⚠️ `getPhRaw()` était historiquement un **alias pur** de `getPh()`. Depuis la v2.20.0 les deux divergent dès que l'offset est non nul : `getPhRaw()` est la source unique de la fenêtre stale, `getPh()` s'appuie dessus et y ajoute l'offset. Tout code qui utilisait `getPhRaw()` en pensant « la même chose que `getPh()` » doit être relu.
 
 Côté ORP, rien ne change : `getOrpRaw()` reste un alias de `getOrp()` et aucun offset n'existe.
 
-### Garde d'âge de `getPhFilteredRaw()` — pourquoi elle existe
+### Garde d'âge de `getPhValueRaw()` — pourquoi elle existe
 
-`getPhFilteredRaw()` retourne `_phFilter.filtered()` **seulement si** `_phFilter.ready(millis())`, sinon `NaN` :
+`getPhValueRaw()` retourne `_phFilter.value(millis())` à l'échelle brute (sans offset) — la
+valeur officielle est déjà `NaN` tant que la fenêtre n'est pas pleine, que la sonde est figée,
+ou que la dernière mesure acceptée est périmée (feature-152, étages 3/5) :
 
 ```cpp
-float SensorManager::getPhFilteredRaw() const {
-  return _phFilter.ready(millis()) ? _phFilter.filtered() : NAN;
+float SensorManager::getPhValueRaw() const {
+  return _phFilter.value(millis());  // échelle brute, pas d'offset
 }
 ```
 
-Raison (exigence `pool-chemistry`) : par contrat feature-058, **`filtered()` n'expire jamais de lui-même** — c'est `ready()` qui porte la fraîcheur. Sans cette garde, une EMA **périmée** (EZO muet depuis plusieurs minutes) resterait lisible et pourrait :
+Raison (exigence `pool-chemistry`) : la valeur officielle **n'expire jamais silencieusement**
+— c'est l'étage 5 (fraîcheur) qui porte la péremption, intégré à `value()` elle-même depuis
+feature-152 (auparavant porté séparément par `ready()`). Sans cette propriété, une valeur
+**périmée** (EZO muet depuis plusieurs minutes) resterait lisible et pourrait :
 
 - déclencher un **faux plancher** de refus d'acide, et consommer le compteur des 3 refus jusqu'à basculer la régulation pH en manuel sur une donnée fantôme ;
 - ou, symétriquement, **masquer un vrai franchissement** de seuil en gelant une valeur rassurante.
@@ -769,8 +529,8 @@ La méthode revalide la valeur (`isPhOffsetValid`) et neutralise à 0,00 si beso
 | Consommateur | Valeur consommée |
 |---|---|
 | PID / régulation pH ([`pump_controller`](pump-controller.md)) | **corrigée** (`getPhFiltered()`) |
-| Filets de sécurité chimique (planchers pH brut, inhibition ORP) | **brute** (`getPhFilteredRaw()`) |
-| `/data`, WebSocket `sensor_data`, MQTT `{base}/ph` et `{base}/ph_filtered` | **corrigée** (repli warmup sur `getPh()`, jamais sur le brut) |
+| Filets de sécurité chimique (planchers pH brut, inhibition ORP) | **brute** (`getPhValueRaw()`) |
+| `/data`, WebSocket `sensor_data`, MQTT `{base}/ph` | **corrigée** (valeur officielle, `null`/NaN pendant la montée en régime depuis v2.68.0 — **plus de repli**, voir feature-152) |
 | MQTT `{base}/ph_raw`, test de vivacité `phStale` de l'alerte `sensor_stale` | **brute** |
 | [`history`](history.md) (`/history.json`) | **corrigée** (`getPh()`) — ⚠️ discontinuité à l'activation, cf. CHANGELOG 2.20.0 |
 | Health check `ph_abnormal` ([`main.cpp`](../../src/main.cpp)) | détection sur la **corrigée**, message citant **toujours** brut + offset |
@@ -902,15 +662,15 @@ Un capteur **vivant** bruite d'au moins ±1 LSB (quantification + bruit sonde + 
 ### Intégration fail-closed dans `SensorFilter`
 
 - Le détecteur est alimenté **uniquement par les bruts ACCEPTÉS** dans `addSample()` : les rejets (NaN / hors plage / saut) ne l'alimentent jamais → l'état figé **persiste pendant une rafale de rejets** (pas d'échappatoire par le bruit EMI).
-- `frozen()` ⇒ `ready() == false` ⇒ garde `FilterNotReady` existante de `evaluateDose()` — **aucune modification de l'ordre des gardes verrouillé**, pas de nouvelle valeur d'enum `DoseRefusal`.
+- `frozen()` ⇒ la valeur officielle (`value()`) devient NaN ⇒ garde `ReadingNaN` existante de `evaluateDose()` (feature-152) — **aucune modification de l'ordre des gardes verrouillé**, pas de nouvelle valeur d'enum `DoseRefusal`.
 - `SensorFilter::reset()` (calibration réussie, reset manuel) réinitialise aussi le détecteur.
 - La sortie de l'état figé est **immédiate** (une seule lecture vivante suffit) et **sans re-warmup** : la valeur figée était par définition stable, le filtre est resté cohérent.
 
 ### Observabilité
 
-- **Logs edge-triggered `[SENSOR_FROZEN]`** (`_checkFrozenAndLog()`, une seule ligne par transition) : `critical` pH/ORP (mentionne « régulation auto inhibée (filtre non prêt) » — c'est CE log qui porte le diagnostic, la garde mutualisée `FilterNotReady` ne dit pas la cause), `warning` température, `info` à la levée.
+- **Logs edge-triggered `[SENSOR_FROZEN]`** (`_checkFrozenAndLog()`, une seule ligne par transition) : `critical` pH/ORP (mentionne « régulation auto inhibée (valeur officielle NaN) » — c'est CE log qui porte le diagnostic, la garde générique `ReadingNaN` ne dit pas la cause), `warning` température, `info` à la levée.
 - **MQTT** : alerte `{base}/alerts/sensor_frozen` (JSON retain, clear payload vide, pH/ORP uniquement) + états binaires `{base}/ph|orp_sensor_problem` (`ON` = stale OU figé) avec discovery HA `binary_sensor` `device_class: problem` — voir [MQTT.md](../MQTT.md#topics-et-entités-ajoutés-en-feature-022-problème-capteur-phorp-v2100).
-- **Getters lock-free** : `isPhSensorFrozen()` / `isOrpSensorFrozen()` / `isTemperatureFrozen()` (simple comparaison d'entiers 16 bits, même contrat de concurrence que `is*FilterUnstable()`).
+- **Getters lock-free** : `isPhSensorFrozen()` / `isOrpSensorFrozen()` / `isTemperatureFrozen()` (simple comparaison d'entiers 16 bits, même contrat de concurrence que les autres getters).
 
 #### Exposition de la sonde de température figée — feature-068
 
@@ -955,17 +715,12 @@ Ajoutée **sans changer aucun comportement** ([ADR-0074](../adr/0074-temperature
 | `kPhSlopeQueryIntervalMs` | `86_400_000` ms (24 h) | Re-query auto `Slope,?` (feature-024) |
 | `kPhSlopeBootRetryIntervalMs` | `30_000` ms | Intervalle entre retentatives `Slope,?` de boot (v2.21.2) |
 | `kPhSlopeBootRetryMaxAttempts` | `5` | Borne DURE de retentatives de boot, jamais réarmée (gate C1 pool-chemistry) |
-| `kSensorFilterCentralWindow` | `13` | Fenêtre médiane logique longue (feature-058, retard ≈30 s) |
-| `kSensorFilterCentralWindowMax` | `16` | Capacité physique buffer médian FIXE |
-| `kPhEmaAlpha` / `kOrpEmaAlpha` | `0.10` / `0.08` | Coefficient EMA (lissage lent) |
-| `kPhFilterSpikeReject` / `kOrpFilterSpikeReject` | `1.0` pH / `300` mV | Spike DUR isolé (`|raw − médiane|`) → écarté (feature-058) |
-| `kPhFilterMaxDispersion` / `kOrpFilterMaxDispersion` | `0.5` pH / `100` mV | Cap dispersion fenêtre pleine → instable (feature-058) |
-| `kPhFilterMin/Max` / `kOrpFilterMin/Max` | `0/14` pH / `-1000/1500` mV | Plage plausible |
-| `kSensorFilterMaxConsecutiveRejects` | `10` | Rejets NaN/hors-plage consécutifs → instable (transitoire) |
-| `kSensorFilterDispersionLatchCycles` | `3` | Fenêtres pleines en dépassement de dispersion → latch EMI (≈ 15 s pour poser) |
-| `kSensorFilterLatchClearCycles` | `12` | Fenêtres pleines propres consécutives → auto-levée du latch EMI (≈ 2 min effectif avec purge médiane, v2.8.4) |
-| `kSensorFilterMaxAgeMs` | `20000` ms | Âge max dernière mesure valide pour `ready()` |
-| `kSensorFrozenSamples` | `30` | Lectures acceptées consécutives dans la bande → figé (≈ 2,5 min à 5 s — feature-022) |
+| `kSensorFilterMedianWindow` / `kSensorFilterMedianWindowMax` | `9` / `9` | Largeur de la médiane (étage 3) et capacité physique du buffer FIXE — décision produit, feature-152, retard ≈ 67 s à 5 s de cadence |
+| `kSensorFilterEmaTauMs` | `45000` ms | Constante de temps du lissage exponentiel (étage 3) — décision produit, dynamique du bassin, feature-152 |
+| `kPhFilterMin/Max` | `0` / `14` pH | Plage physique plausible (étage 2) |
+| `kOrpFilterMin/Max` | `-1019,9` / `+1019,9` mV | Plage matérielle plausible (étage 2) — plage de sortie du module EZO-ORP, comparaison **stricte** : la saturation exacte du module est rejetée, pas lissée (feature-152) |
+| `kSensorFilterMaxAgeMs` | `20000` ms | Étage 5 — âge max d'une mesure acceptée avant vidage de la fenêtre |
+| `kSensorFrozenSamples` | `30` | Lectures acceptées consécutives dans la bande → figé (≈ 2,5 min à 5 s — feature-022, borne haute de N = décision produit, feature-152) |
 | `kSensorFrozenEpsilonPh` | `0.0005` pH | Bande figé pH = ½ LSB EZO (résolution 0.001) |
 | `kSensorFrozenEpsilonOrp` | `0.05` mV | Bande figé ORP = ½ LSB EZO (résolution 0.1) |
 | `kTempFrozenSamples` / `kTempFrozenEpsilonC` | `43200` / `0.03` °C | Figé T° eau (≈ **24 h** à 2 s, < ½ LSB DS18B20, bug-142 — était `900` / 30 min) — warning-only pour le DOSAGE, gate le planning de filtration |
@@ -1085,8 +840,8 @@ Logs et alertes MQTT émis **aux transitions uniquement** (entrée et sortie de 
 
 ## Interaction avec les autres composants
 
-- [`pump_controller`](pump-controller.md) : le PID consomme **uniquement** `getPhFiltered()` / `getOrpFiltered()` (feature-025 ; **valeur corrigée** côté pH depuis feature-067) et exige `isPhFilterReady()` / `isOrpFilterReady()` (+ `!isPhFilterUnstable()`) dans `canDose(int)`. Les **filets de sécurité chimique** feature-067 consomment `getPhFilteredRaw()` (brut, avec garde d'âge) et `getPhOffset()`. `getPh()`/`getOrp()` restent disponibles pour les logs et l'affichage brut. Vérifie aussi `getPhCalibrationPointsCached()` / `getOrpCalibrationPointsCached()` (conditions #1, #2, #5).
-- [`ws_manager`](ws-manager.md) : `broadcastSensorData()` publie `ph`/`orp` (= valeur **filtrée**, fallback brut si filtre non amorcé), `temperature`, `temperature_circuit`, `phCalPoints`, `orpCalPoints`, `phSlopeAcid/Base/Zero/AgeMs` toutes les 5 s. feature-025 : champs supplémentaires `ph/orpRaw|Median|Filtered`, `ph/orpFilterReady`, `ph/orpFilterUnstable`, `ph/orpRejectedCount`, `ph/orpMixingDelayActive`, `ph/orpDoseBlockedReason` ; v2.25.1 : `ph/orpDoseBlockedCode` (code machine de la cause de refus, parité `/data` ↔ WS).
+- [`pump_controller`](pump-controller.md) : le PID consomme **uniquement** `getPhFiltered()` / `getOrpFiltered()` (VALEUR OFFICIELLE, **corrigée** côté pH) et teste `isnan()` dans `canDose(int)` (feature-152 : une seule garde, plus de `isPhFilterReady()`/`isPhFilterUnstable()`). Les **filets de sécurité chimique** feature-067 consomment `getPhValueRaw()` (brut, avec garde d'âge, ex-`getPhFilteredRaw`) et `getPhOffset()`. `getPh()`/`getOrp()` restent disponibles pour les logs et l'affichage brut. Vérifie aussi `getPhCalibrationPointsCached()` / `getOrpCalibrationPointsCached()` (conditions #1, #2, #5).
+- [`ws_manager`](ws-manager.md) : `broadcastSensorData()` publie `ph`/`orp` (= VALEUR OFFICIELLE, **plus de repli silencieux** depuis v2.68.0 — `null` pendant la montée en régime), `temperature`, `temperature_circuit`, `phCalPoints`, `orpCalPoints`, `phSlopeAcid/Base/Zero/AgeMs` toutes les 5 s. Champs de diagnostic : `ph/orpRaw|Median|Filtered`, `ph/orpRejectedCount`, `ph/orpMixingDelayActive`, `ph/orpDoseBlockedReason`/`Code` (parité `/data` ↔ WS). ⚠️ `ph/orpFilterReady`, `ph/orpFilterUnstable` et `ph/orpFilterAlarm` sont **retirés en v2.68.0** (feature-152).
 - [`mqtt_manager`](mqtt-manager.md) : publie `{base}/ph` / `{base}/orp` (= **filtré**), `{base}/temperature`, `{base}/temperature_circuit`, `{base}/ph_cal_points`, `{base}/orp_cal_points` toutes les 10 s (`kMqttPublishIntervalMs`). 3 topics `{base}/ph_slope_*` edge-triggered. feature-025 : topics `{base}/ph|orp_raw|median|filtered|filter_ready|filter_unstable|rejected_count` + `{base}/ph|orp_mixing_delay_active` (retain). Alertes edge-triggered `{base}/alerts/calibration_required`, `{base}/alerts/sensor_stale` et `{base}/alerts/sensor_frozen` + états binaires dédupliqués `{base}/ph|orp_sensor_problem` (feature-022).
 - [`history`](history.md) : snapshot des valeurs courantes toutes les 5 min.
 
@@ -1129,7 +884,8 @@ Si une sonde est remplacée physiquement (adresse ROM différente), le scan au b
 ## Fichiers liés
 
 - [`src/sensors.h`](../../src/sensors.h), [`src/sensors.cpp`](../../src/sensors.cpp)
-- [`src/sensor_filter.h`](../../src/sensor_filter.h), [`src/sensor_filter.cpp`](../../src/sensor_filter.cpp) — filtre médiane + EMA (feature-025)
+- [`src/sensor_filter.h`](../../src/sensor_filter.h), [`src/sensor_filter.cpp`](../../src/sensor_filter.cpp) — chaîne à 5 étages, médiane + lissage exponentiel (feature-152, v2.68.0 ; 393 lignes au total, contre 959 avant)
+- [`test/test_native_sensor_filter/`](../../test/test_native_sensor_filter/) — tests natifs du module pur, dont le test central de non-verrouillage (D2, feature-152)
 - [`src/ph_offset.h`](../../src/ph_offset.h) — logique pure de l'offset pH `applyPhOffset()` / `isPhOffsetValid()` (feature-067, testé en natif `test/test_native_ph_offset/`)
 - [`src/atlas_ezo.h`](../../src/atlas_ezo.h), [`src/atlas_ezo.cpp`](../../src/atlas_ezo.cpp)
 - [`src/web_routes_calibration.cpp`](../../src/web_routes_calibration.cpp) — routes refondues `/calibrate_ph`, `/calibrate_orp`, `/calibrate_clear`
@@ -1143,6 +899,8 @@ Si une sonde est remplacée physiquement (adresse ROM différente), le scan au b
 - [ADR-0013](../adr/0013-identification-sondes-onewire.md) — identification 2 sondes DS18B20
 - [ADR-0016](../adr/0016-regulation-p-temporisee-vs-pid.md) — régulation P temporisée sur mesure filtrée (feature-025)
 - [ADR-0039](../adr/0039-offset-ph-applique-en-sortie-des-accesseurs.md) — offset pH appliqué en sortie des accesseurs (feature-067)
+- [ADR-0097](../adr/0097-le-filtre-lisse-le-dosage-juge.md) — refonte de la chaîne de mesure à 5 étages, retrait des verrous collants (feature-152, supersède l'[ADR-0027](../adr/0027-filtre-tendance-centrale.md), amende l'[ADR-0041](../adr/0041-autorite-mesures-non-representatives-et-sortie-de-secours-filtre.md) et l'[ADR-0049](../adr/0049-code-machine-de-cause-de-refus-et-etat-interne-du-filtre.md))
+- [ADR-0098](../adr/0098-toute-constante-de-mesure-declare-sa-source.md) — règle de conception opposable : toute constante de mesure déclare sa source (physique, décision produit, ou matériel)
 - [feature-021](../../specs/features/done/feature-021-migration-atlas-ezo.md) — spec d'origine
 - [feature-025](../../specs/features/done/feature-025-lissage-mesures-ph-orp-pid.md) — filtrage mesures + adaptation régulation
 - feature-022 (`specs/features/`) — détection capteur figé `FrozenDetector` + observabilité HA (v2.10.0)

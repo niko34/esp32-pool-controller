@@ -10,6 +10,26 @@
 #include "sensor_trace_page.h"
 #include "sensors.h"
 
+namespace {
+
+// feature-152 : libellé DIAGNOSTIC seul (pas un contrat de sérialisation, au
+// contraire de DoseRefusal) — sert à exposer en clair, sur l'endpoint de
+// debug, le MÊME discriminant que celui qui qualifie les causes de refus de
+// dosage (resolveFilterState(), dosing_logic.h).
+const char* doseFilterStateLabel(DoseFilterState st) {
+  switch (st) {
+    case DoseFilterState::Ready:      return "ready";
+    case DoseFilterState::Warmup:     return "warmup";
+    case DoseFilterState::Frozen:     return "frozen";
+    case DoseFilterState::Stale:      return "stale";
+    case DoseFilterState::GateClosed: return "gate_closed";
+    case DoseFilterState::Unknown:
+    default:                          return "unknown";
+  }
+}
+
+}  // namespace
+
 // =============================================================================
 // Endpoints HTTP
 // =============================================================================
@@ -94,10 +114,9 @@ void setupDebugRoutes(AsyncWebServer* server) {
   });
 
   // ---------- POST /debug/sensor_filter_reset[?sensor=ph|orp] ----------
-  // feature-025 : reset des filtres pH/ORP (médiane + EMA). Repasse le filtre
-  // visé en warmup → dosage auto bloqué tant que la fenêtre centrale
-  // (kSensorFilterCentralWindow) n'est pas de nouveau pleine ; lève aussi le
-  // latch EMI (feature-058).
+  // feature-152 : reset des filtres pH/ORP (médiane + lissage). Repasse le
+  // filtre visé en warmup → dosage auto bloqué tant que la fenêtre médiane
+  // (kSensorFilterMedianWindow) n'est pas de nouveau pleine.
   //
   // v2.20.3 (D2) — DEUX correctifs :
   //   (a) SÉLECTIVITÉ : `?sensor=ph` ou `?sensor=orp` ne réinitialise QUE le
@@ -147,8 +166,11 @@ void setupDebugRoutes(AsyncWebServer* server) {
   });
 
   // ---------- GET /debug/sensor_filter_state ----------
-  // feature-025 : état brut JSON des filtres pH/ORP (diagnostic). Lecture lock-free
-  // des getters SensorManager (contexte handler async — valeurs scalaires atomiques).
+  // feature-152 : état brut JSON de la chaîne de mesure pH/ORP (diagnostic).
+  // Lecture lock-free des getters SensorManager (contexte handler async —
+  // valeurs scalaires atomiques). `state` est le MÊME discriminant qui qualifie
+  // les causes de refus de dosage (DoseFilterState, dosing_logic.h) : il dit
+  // POURQUOI `filtered` est NaN quand c'est le cas, sans dupliquer de logique.
   server->on("/debug/sensor_filter_state", HTTP_GET, [](AsyncWebServerRequest* req) {
     JsonDocument doc;
     JsonObject ph = doc["ph"].to<JsonObject>();
@@ -157,43 +179,23 @@ void setupDebugRoutes(AsyncWebServer* server) {
     // identiques à ce que consomme la régulation. L'offset appliqué est lisible via
     // GET /get-config (champ ph_offset).
     float phRaw = sensors.getPhRaw();       // BRUT
-    float phMed = sensors.getPhMedian();    // CORRIGÉ
-    float phFil = sensors.getPhFiltered();  // CORRIGÉ
+    float phMed = sensors.getPhMedian();    // CORRIGÉ (diagnostic)
+    float phFil = sensors.getPhFiltered();  // VALEUR OFFICIELLE, CORRIGÉE
     if (!isnan(phRaw)) ph["raw"] = round(phRaw * 1000.0f) / 1000.0f; else ph["raw"] = nullptr;
     if (!isnan(phMed)) ph["median"] = round(phMed * 1000.0f) / 1000.0f; else ph["median"] = nullptr;
     if (!isnan(phFil)) ph["filtered"] = round(phFil * 1000.0f) / 1000.0f; else ph["filtered"] = nullptr;
-    ph["ready"] = sensors.isPhFilterReady();
-    ph["unstable"] = sensors.isPhFilterUnstable();
+    ph["state"] = doseFilterStateLabel(sensors.getPhFilterState());
     ph["rejected"] = sensors.getPhRejectedCount();
-    // v2.20.6 : `dispersion` est la grandeur qui DÉCIDE de `unstable` — amplitude
-    // (max−min) de la fenêtre médiane PLEINE, donc null pendant le warmup. Elle
-    // n'était exposée nulle part : on inhibait le dosage sur une valeur
-    // inobservable, et sa marge au seuil ne pouvait qu'être estimée de l'extérieur.
-    // Le seuil et le nombre de fenêtres avant latch sont publiés à côté pour que
-    // la marge soit lisible sans connaître les constantes du firmware.
-    float phDisp = sensors.getPhDispersion();
-    if (!isnan(phDisp)) ph["dispersion"] = roundf(phDisp * 1000.0f) / 1000.0f;
-    else                ph["dispersion"] = nullptr;
-    ph["dispersion_max"] = kPhFilterMaxDispersion;
-    ph["latch_cycles"] = kSensorFilterDispersionLatchCycles;
-    ph["clean_streak"] = sensors.getPhDispersionCleanStreak();
 
     JsonObject orp = doc["orp"].to<JsonObject>();
     float orpRaw = sensors.getOrpRaw();
     float orpMed = sensors.getOrpMedian();
-    float orpFil = sensors.getOrpFiltered();
+    float orpFil = sensors.getOrpFiltered();  // VALEUR OFFICIELLE
     if (!isnan(orpRaw)) orp["raw"] = round(orpRaw); else orp["raw"] = nullptr;
     if (!isnan(orpMed)) orp["median"] = round(orpMed); else orp["median"] = nullptr;
     if (!isnan(orpFil)) orp["filtered"] = round(orpFil); else orp["filtered"] = nullptr;
-    orp["ready"] = sensors.isOrpFilterReady();
-    orp["unstable"] = sensors.isOrpFilterUnstable();
+    orp["state"] = doseFilterStateLabel(sensors.getOrpFilterState());
     orp["rejected"] = sensors.getOrpRejectedCount();
-    float orpDisp = sensors.getOrpDispersion();   // cf. commentaire côté pH
-    if (!isnan(orpDisp)) orp["dispersion"] = roundf(orpDisp * 10.0f) / 10.0f;
-    else                 orp["dispersion"] = nullptr;
-    orp["dispersion_max"] = kOrpFilterMaxDispersion;
-    orp["latch_cycles"] = kSensorFilterDispersionLatchCycles;
-    orp["clean_streak"] = sensors.getOrpDispersionCleanStreak();
 
     String out;
     serializeJson(doc, out);

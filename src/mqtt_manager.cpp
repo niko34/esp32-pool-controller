@@ -282,22 +282,16 @@ void MqttManager::refreshTopics() {
   topics.phSlopeAcidState       = base + "/ph_slope_acid";
   topics.phSlopeBaseState       = base + "/ph_slope_base";
   topics.phSlopeZeroState       = base + "/ph_slope_zero";
-  // feature-025 : chaîne de filtrage pH/ORP (médiane + EMA + rejet pics).
+  // feature-152 : chaîne de mesure pH/ORP — champs de DIAGNOSTIC seuls (brut,
+  // médiane, rejets). La valeur officielle est publiée sur /ph et /orp
+  // (topics.phState/orpState) : plus de topic *_filtered séparé, ni
+  // *_filter_ready/*_filter_unstable/*_filter_stuck (mécanismes retirés).
   topics.phRawState                 = base + "/ph_raw";
   topics.phMedianState              = base + "/ph_median";
-  topics.phFilteredState            = base + "/ph_filtered";
-  topics.phFilterReadyState         = base + "/ph_filter_ready";
-  topics.phFilterUnstableState      = base + "/ph_filter_unstable";
   topics.phRejectedCountState       = base + "/ph_rejected_count";
   topics.orpRawState                = base + "/orp_raw";
   topics.orpMedianState             = base + "/orp_median";
-  topics.orpFilteredState           = base + "/orp_filtered";
-  topics.orpFilterReadyState        = base + "/orp_filter_ready";
-  topics.orpFilterUnstableState     = base + "/orp_filter_unstable";
   topics.orpRejectedCountState      = base + "/orp_rejected_count";
-  // v2.20.3 (C3) : alarme « filtre non prêt durablement » (régulation à l'arrêt).
-  topics.phFilterStuckState         = base + "/ph_filter_stuck";
-  topics.orpFilterStuckState        = base + "/orp_filter_stuck";
   // feature-068 (A5) : sonde de température d'eau figée (retain, ON/OFF).
   topics.tempSensorFrozenState      = base + "/temp_sensor_frozen";
   topics.phMixingDelayActiveState   = base + "/ph_mixing_delay_active";
@@ -939,17 +933,15 @@ void MqttManager::publishAllStatesInternal() {
   // Capteurs : lectures atomiques côté firmware (float scalaires)
   float t = sensors.getTemperature();
   float tCircuit = sensors.getCircuitTemperature();   // feature-020
-  // feature-025 : les topics /ph et /orp publient la valeur FILTRÉE (identique au
-  // tableau de bord / WebSocket), PAS le brut. Le brut reste exposé sur /ph_raw et
-  // /orp_raw. Fallback sur le brut au warmup (filtré = NaN) — même logique que
-  // ws_manager::_buildSensorJson (phVal/orpVal). Corrige la divergence UI vs MQTT.
-  // feature-067 : l'entité `ph` porte TOUJOURS la valeur CORRIGÉE (brut + offset) —
-  // au warmup on retombe sur getPh() (corrigé), jamais sur le brut : une même entité
-  // HA ne doit jamais alterner entre corrigé et brut. Le brut reste sur `ph_raw`.
-  float phFiltered  = sensors.getPhFiltered();   // lissé CORRIGÉ
-  float orpFiltered = sensors.getOrpFiltered();
-  float ph  = !isnan(phFiltered)  ? phFiltered  : sensors.getPh();
-  float orp = !isnan(orpFiltered) ? orpFiltered : sensors.getOrpRaw();
+  // feature-152 : les topics /ph et /orp publient la VALEUR OFFICIELLE
+  // (identique au tableau de bord / WebSocket), PAS le brut. Le brut reste
+  // exposé sur /ph_raw et /orp_raw. ⛔ PLUS DE REPLI SILENCIEUX sur le brut
+  // pendant la montée en régime (défaut constaté le 11/10 : Home Assistant
+  // afficherait alors un nombre différent de celui qui décide, sans le dire).
+  // `null` est publié tant que la fenêtre se remplit — HA affiche "indisponible",
+  // ce qui est honnête.
+  float ph  = sensors.getPhFiltered();   // VALEUR OFFICIELLE CORRIGÉE
+  float orp = sensors.getOrpFiltered();  // VALEUR OFFICIELLE
 
   // Tous les publish passent par safePublish() : reset wdt + check connected interne.
   // Plus besoin de garde-fous intermédiaires ni de wdt reset explicites — voir IT4 / ADR-0011.
@@ -1098,12 +1090,12 @@ void MqttManager::publishAllStatesInternal() {
   // feature-021 : statut calibration EZO + alertes (cf. cond #4 pool-chemistry).
   publishCalibrationStatusInternal();
 
-  // feature-025 : chaîne de filtrage pH/ORP (raw/median/filtered/ready/unstable/rejected).
+  // feature-152 : chaîne de mesure pH/ORP (raw/median/rejected — diagnostic).
   publishFilterStatesInternal();
 }
 
 // =============================================================================
-// feature-025 : publication des états de la chaîne de filtrage pH/ORP
+// feature-152 : publication des champs de DIAGNOSTIC pH/ORP (raw/median/rejected)
 // =============================================================================
 //
 // Topics retain=true, dédupliqués (anti-spam) : on ne republie un topic que si
@@ -1111,6 +1103,9 @@ void MqttManager::publishAllStatesInternal() {
 // Suit le rythme MQTT existant (appelé depuis publishAllStatesInternal, cadencé par
 // publishStatesRequested toutes les kMqttPublishIntervalMs).
 // Valeurs NaN/indisponibles : non publiées (le retain précédent reste valable côté HA).
+// La VALEUR OFFICIELLE (ce qui décide) est publiée ailleurs, sur /ph et /orp
+// (topics.phState/orpState, publishAllStatesInternal) — ces topics-ci ne sont
+// que du diagnostic, jamais consultés par le dosage.
 void MqttManager::safePublishDedup(int cacheIdx, const char* topic, const String& payload) {
   if (cacheIdx >= 0 && cacheIdx < kDedupCacheSlots && _lastFilterPub[cacheIdx] == payload) return;
   if (safePublish(topic, payload.c_str(), true) && cacheIdx >= 0 && cacheIdx < kDedupCacheSlots) {
@@ -1121,39 +1116,25 @@ void MqttManager::safePublishDedup(int cacheIdx, const char* topic, const String
 void MqttManager::publishFilterStatesInternal() {
   if (!mqtt.connected()) return;
 
-  // Lectures atomiques (float scalaires / bool) — pas d'I²C ici.
+  // Lectures atomiques (float scalaires) — pas d'I²C ici.
   // feature-067 : `ph_raw` = BRUT EZO (sans offset, diagnostic électrochimique) ;
-  // `ph_median` et `ph_filtered` sont CORRIGÉS (brut + offset). Aucun renommage
-  // d'entité : seule la valeur publiée sur median/filtered change si offset ≠ 0.
+  // `ph_median` est CORRIGÉ (brut + offset).
   float phRaw = sensors.getPhRaw();       // BRUT
   float phMed = sensors.getPhMedian();    // CORRIGÉ
-  float phFil = sensors.getPhFiltered();  // CORRIGÉ
   float orpRaw = sensors.getOrpRaw();
   float orpMed = sensors.getOrpMedian();
-  float orpFil = sensors.getOrpFiltered();
-  uint32_t nowMs = millis();
 
   // pH (3 décimales, alignement WS/REST) — uniquement si non NaN.
   if (!isnan(phRaw)) safePublishDedup(0, topics.phRawState.c_str(),      String(phRaw, 3));
   if (!isnan(phMed)) safePublishDedup(1, topics.phMedianState.c_str(),   String(phMed, 3));
-  if (!isnan(phFil)) safePublishDedup(2, topics.phFilteredState.c_str(), String(phFil, 3));
-  safePublishDedup(3, topics.phFilterReadyState.c_str(),    sensors.isPhFilterReady()    ? "ON" : "OFF");
-  safePublishDedup(4, topics.phFilterUnstableState.c_str(), sensors.isPhFilterUnstable() ? "ON" : "OFF");
   safePublishDedup(5, topics.phRejectedCountState.c_str(),  String(sensors.getPhRejectedCount()));
 
   // ORP (entier mV) — uniquement si non NaN.
   if (!isnan(orpRaw)) safePublishDedup(6, topics.orpRawState.c_str(),      String(orpRaw, 0));
   if (!isnan(orpMed)) safePublishDedup(7, topics.orpMedianState.c_str(),   String(orpMed, 0));
-  if (!isnan(orpFil)) safePublishDedup(8, topics.orpFilteredState.c_str(), String(orpFil, 0));
-  safePublishDedup(9,  topics.orpFilterReadyState.c_str(),    sensors.isOrpFilterReady()    ? "ON" : "OFF");
-  safePublishDedup(10, topics.orpFilterUnstableState.c_str(), sensors.isOrpFilterUnstable() ? "ON" : "OFF");
   safePublishDedup(11, topics.orpRejectedCountState.c_str(),  String(sensors.getOrpRejectedCount()));
 
-  // v2.20.3 (C3) : alarme « filtre non prêt durablement ». Le firmware l'arme
-  // après kSensorFilterNotReadyAlarmMs de blocage CONTINU avec eau + mesures
-  // représentatives — donc jamais pendant une purge ni un warmup normal.
-  safePublishDedup(16, topics.phFilterStuckState.c_str(),  sensors.isPhFilterNotReadyAlarm()  ? "ON" : "OFF");
-  safePublishDedup(17, topics.orpFilterStuckState.c_str(), sensors.isOrpFilterNotReadyAlarm() ? "ON" : "OFF");
+  uint32_t nowMs = millis();
 
   // feature-068 (A5) : sonde de température d'EAU figée.
   //
@@ -2893,16 +2874,13 @@ void MqttManager::publishDiscovery(DiscoveryReason reason) {
   makeDevice(doc["device"].to<JsonObject>());
   publishConfig(topic);
 
-  // feature-025 : sonde pH filtré (médiane + EMA — valeur de régulation)
-  topic = discoveryBase + "sensor/" + HA_DEVICE_ID + "_ph_filtered/config";
-  doc["name"] = "Piscine pH Filtré";
-  doc["unique_id"] = String(HA_DEVICE_ID) + "_ph_filtered";
-  doc["state_topic"] = topics.phFilteredState;
-  doc["unit_of_measurement"] = "pH";
-  doc["icon"] = "mdi:water-check";
-  doc["state_class"] = "measurement";
-  makeDevice(doc["device"].to<JsonObject>());
-  publishConfig(topic);
+  // feature-152 (C7) : "_ph_filtered" RETIRÉ — l'entité HA n'a plus de sens
+  // séparée de "ph" (topics.phState), qui porte désormais directement la
+  // VALEUR OFFICIELLE. Charge VIDE RETAINED sur l'ancien topic de config pour
+  // que Home Assistant supprime l'entité fantôme (ADR-0085 : le jeu d'entités
+  // est figé à la compilation, un retrait exige ce nettoyage explicite — il
+  // n'est pas automatique au changement d'empreinte).
+  safePublish((discoveryBase + "sensor/" + HA_DEVICE_ID + "_ph_filtered/config").c_str(), "", true);
 
   // feature-025 : sonde ORP brut (mV)
   topic = discoveryBase + "sensor/" + HA_DEVICE_ID + "_orp_raw/config";
@@ -2915,63 +2893,23 @@ void MqttManager::publishDiscovery(DiscoveryReason reason) {
   makeDevice(doc["device"].to<JsonObject>());
   publishConfig(topic);
 
-  // feature-025 : sonde ORP filtré (mV — valeur de régulation)
-  topic = discoveryBase + "sensor/" + HA_DEVICE_ID + "_orp_filtered/config";
-  doc["name"] = "Piscine ORP Filtré";
-  doc["unique_id"] = String(HA_DEVICE_ID) + "_orp_filtered";
-  doc["state_topic"] = topics.orpFilteredState;
-  doc["unit_of_measurement"] = "mV";
-  doc["icon"] = "mdi:flash-alert";
-  doc["state_class"] = "measurement";
-  makeDevice(doc["device"].to<JsonObject>());
-  publishConfig(topic);
+  // feature-152 (C7) : "_orp_filtered" RETIRÉ — même motif que "_ph_filtered" ci-dessus.
+  safePublish((discoveryBase + "sensor/" + HA_DEVICE_ID + "_orp_filtered/config").c_str(), "", true);
 
-  // feature-025 : binary_sensor Filtre pH prêt
-  topic = discoveryBase + "binary_sensor/" + HA_DEVICE_ID + "_ph_filter_ready/config";
-  doc["name"] = "Piscine Filtre pH Prêt";
-  doc["unique_id"] = String(HA_DEVICE_ID) + "_ph_filter_ready";
-  doc["state_topic"] = topics.phFilterReadyState;
-  doc["payload_on"] = "ON";
-  doc["payload_off"] = "OFF";
-  doc["icon"] = "mdi:filter-check";
-  makeDevice(doc["device"].to<JsonObject>());
-  publishConfig(topic);
+  // feature-152 (C7) : "_ph_filter_ready" / "_orp_filter_ready" RETIRÉS — la
+  // garde séparée « filtre prêt » a disparu (la valeur officielle encapsule
+  // désormais directement warmup/figé/périmé/porte fermée). Charge VIDE
+  // RETAINED sur les deux anciens topics de config (ADR-0085).
+  safePublish((discoveryBase + "binary_sensor/" + HA_DEVICE_ID + "_ph_filter_ready/config").c_str(), "", true);
+  safePublish((discoveryBase + "binary_sensor/" + HA_DEVICE_ID + "_orp_filter_ready/config").c_str(), "", true);
 
-  // feature-025 : binary_sensor Filtre ORP prêt
-  topic = discoveryBase + "binary_sensor/" + HA_DEVICE_ID + "_orp_filter_ready/config";
-  doc["name"] = "Piscine Filtre ORP Prêt";
-  doc["unique_id"] = String(HA_DEVICE_ID) + "_orp_filter_ready";
-  doc["state_topic"] = topics.orpFilterReadyState;
-  doc["payload_on"] = "ON";
-  doc["payload_off"] = "OFF";
-  doc["icon"] = "mdi:filter-check";
-  makeDevice(doc["device"].to<JsonObject>());
-  publishConfig(topic);
-
-  // v2.20.3 (C3) : binary_sensor « Filtre pH bloqué » (device_class problem).
-  // Entité NOUVELLE — l'auto-discovery des entités existantes est inchangée.
-  topic = discoveryBase + "binary_sensor/" + HA_DEVICE_ID + "_ph_filter_stuck/config";
-  doc["name"] = "Piscine Filtre pH Bloqué";
-  doc["unique_id"] = String(HA_DEVICE_ID) + "_ph_filter_stuck";
-  doc["state_topic"] = topics.phFilterStuckState;
-  doc["payload_on"] = "ON";
-  doc["payload_off"] = "OFF";
-  doc["device_class"] = "problem";
-  doc["icon"] = "mdi:filter-remove";
-  makeDevice(doc["device"].to<JsonObject>());
-  publishConfig(topic);
-
-  // v2.20.3 (C3) : binary_sensor « Filtre ORP bloqué ».
-  topic = discoveryBase + "binary_sensor/" + HA_DEVICE_ID + "_orp_filter_stuck/config";
-  doc["name"] = "Piscine Filtre ORP Bloqué";
-  doc["unique_id"] = String(HA_DEVICE_ID) + "_orp_filter_stuck";
-  doc["state_topic"] = topics.orpFilterStuckState;
-  doc["payload_on"] = "ON";
-  doc["payload_off"] = "OFF";
-  doc["device_class"] = "problem";
-  doc["icon"] = "mdi:filter-remove";
-  makeDevice(doc["device"].to<JsonObject>());
-  publishConfig(topic);
+  // feature-152 (C7) : "_ph_filter_stuck" / "_orp_filter_stuck" RETIRÉS —
+  // l'alarme « filtre non prêt durablement » (v2.20.3, C3) est un mécanisme
+  // retiré par la refonte de la chaîne de mesure : le gate pool-chemistry P1 a
+  // montré qu'il ne protégeait rien de plus que la médiane ne protège déjà par
+  // construction. Charge VIDE RETAINED sur les deux anciens topics (ADR-0085).
+  safePublish((discoveryBase + "binary_sensor/" + HA_DEVICE_ID + "_ph_filter_stuck/config").c_str(), "", true);
+  safePublish((discoveryBase + "binary_sensor/" + HA_DEVICE_ID + "_orp_filter_stuck/config").c_str(), "", true);
 
   // feature-068 (A5) : binary_sensor « Sonde température figée », sur le PATRON
   // EXACT de ph_filter_stuck ci-dessus (device_class `problem`, payloads ON/OFF,

@@ -121,25 +121,35 @@ enum class DoseFilterState : uint8_t {
 DoseFilterState resolveFilterState(bool frozen, bool gateClosed, bool stale,
                                    bool warmingUp);
 
-// Cause de refus de dosage (énum pur). L'ordre des 15 premières valeurs suit
-// l'ordre des gardes de canDose() ; les suivantes sont des QUALIFICATIONS des
-// gardes 3 et 3b, ajoutées en v2.25.1.
+// Cause de refus de dosage (énum pur). L'ordre des valeurs suit l'ordre des
+// gardes de canDose() ; 15-18 sont des QUALIFICATIONS de la garde 3, ajoutées
+// en v2.25.1.
 //
 // ⚠️ CONTRAT DE SÉRIALISATION (v2.25.1) : ces valeurs sont exposées telles
 // quelles par `phDoseBlockedCode` / `orpDoseBlockedCode` (/data + WebSocket) et
 // traduites par une table côté client. Valeurs FIXÉES EXPLICITEMENT :
 // ne JAMAIS renuméroter, ne JAMAIS insérer au milieu — toute nouvelle cause
-// s'AJOUTE À LA FIN. Un décalage ferait afficher une mauvaise cause, soit
-// précisément la classe de défaut que ce code corrige (précédent : InstallMode).
-// La complétude est verrouillée valeur par valeur par les static_assert de
-// pump_controller.cpp (switch énum → libellé français).
+// s'AJOUTE À LA FIN (prochaine valeur disponible : 23). Un décalage ferait
+// afficher une mauvaise cause, soit précisément la classe de défaut que ce
+// code corrige (précédent : InstallMode). La complétude est verrouillée
+// valeur par valeur par les static_assert de pump_controller.cpp (switch
+// énum → libellé français).
+//
+// feature-152 (refonte de la chaîne de mesure) : FilterNotReady(4),
+// FilterUnstable(5), FilterWarmup(19), FilterFrozen(20), FilterStale(21) et
+// FilterGateClosed(22) sont RETIRÉS — la garde séparée « filtre prêt » / «
+// capteur instable » (3b/3c de l'ancien canDose()) a disparu : la VALEUR
+// OFFICIELLE de sensor_filter encapsule désormais directement warmup, sonde
+// figée, péremption et porte fermée (NaN dans tous ces cas). Une seule garde
+// (isnan(reading)) suffit, qualifiée par ReadingNaN* ci-dessous. Ces six
+// numéros ne sont JAMAIS recyclés — un appareil non mis à jour afficherait
+// l'ancien libellé sur un code réattribué.
 enum class DoseRefusal : uint8_t {
   None = 0,
   WatchdogInactive = 1,        // watchdog inactif
   FiltrationOff = 2,           // pas de présence d'eau (resolveWaterPresent, selon le mode d'installation)
-  ReadingNaN = 3,              // lecture filtrée NaN, état de filtre indéterminé
-  FilterNotReady = 4,          // filtre non prêt, état de filtre indéterminé
-  FilterUnstable = 5,          // capteur instable (rejets consécutifs)
+  ReadingNaN = 3,              // valeur officielle NaN, état de filtre indéterminé
+  // 4, 5 : RETIRÉS (feature-152), ne jamais recycler — voir note ci-dessus.
   CalibrationInsufficient = 6, // calibration insuffisante (cal=X, requis=Y)
   StabilizationActive = 7,     // stabilisation post-calibration en cours
   MixingActive = 8,            // pause mélange en cours
@@ -149,16 +159,12 @@ enum class DoseRefusal : uint8_t {
   CyclesPerDay = 12,           // limite cycles/jour atteinte
   BurstPerMinute = 13,         // anti-rafale : N cycles dans la dernière minute
   BurstPer15Min = 14,          // anti-rafale : N cycles dans les 15 dernières minutes
-  // --- v2.25.1 : qualification de la garde 3 (lecture filtrée NaN) ------------
+  // --- v2.25.1 : qualification de la garde 3 (valeur officielle NaN) --------
   ReadingNaNWarmup = 15,       // fenêtre de lissage en cours de remplissage
   ReadingNaNFrozen = 16,       // capteur figé (PANNE)
   ReadingNaNStale = 17,        // aucune mesure acceptée / trop ancienne (PANNE)
-  ReadingNaNGateClosed = 18,   // mesures déclarées non représentatives (purge/eau à l'arrêt)
-  // --- v2.25.1 : qualification de la garde 3b (filtre non prêt) --------------
-  FilterWarmup = 19,           // fenêtre de lissage en cours de remplissage
-  FilterFrozen = 20,           // capteur figé (PANNE)
-  FilterStale = 21,            // aucune mesure acceptée / trop ancienne (PANNE)
-  FilterGateClosed = 22        // mesures déclarées non représentatives (purge/eau à l'arrêt)
+  ReadingNaNGateClosed = 18    // mesures déclarées non représentatives (purge/eau à l'arrêt)
+  // 19, 20, 21, 22 : RETIRÉS (feature-152), ne jamais recycler.
 };
 
 // Entrées POD de la décision de dosage. Tous les champs sont collectés par la
@@ -167,16 +173,19 @@ struct DoseInputs {
   bool watchdogActive;          // esp_task_wdt_status(NULL) == ESP_OK
   bool waterPresent;            // feature-056 : source UNIQUE resolveWaterPresent()
                                 // (Managed=commandé, Powered=présumé, External=signal frais)
-  float reading;                // sensors.getPhFiltered() / getOrpFiltered()
-  bool filterReady;             // isPhFilterReady() / isOrpFilterReady()
-  // v2.25.1 — état interne du filtre, UNIQUEMENT pour QUALIFIER la cause de refus
-  // des gardes 3 et 3b (aucune condition ajoutée : le verdict ne le lit jamais).
-  // INITIALISEUR DE MEMBRE OBLIGATOIRE : `DoseInputs in;` (canDose) ne
+  // feature-152 : VALEUR OFFICIELLE de sensor_filter — sensors.getPhFiltered() /
+  // getOrpFiltered(). NaN encapsule déjà warmup, sonde figée, péremption et
+  // porte fermée : une seule garde (isnan) suffit désormais (les anciennes
+  // gardes 3b « filtre prêt » et 3c « capteur instable » ont disparu avec les
+  // champs filterReady/filterUnstable qui les alimentaient).
+  float reading;
+  // v2.25.1 — état interne du filtre, UNIQUEMENT pour QUALIFIER la cause de
+  // refus de la garde 3 (aucune condition ajoutée : le verdict ne le lit
+  // jamais). INITIALISEUR DE MEMBRE OBLIGATOIRE : `DoseInputs in;` (canDose) ne
   // value-initialise PAS l'agrégat — sans ce défaut, un site de collecte ou une
   // fixture de test lirait une valeur indéterminée. `Unknown` = aucune
   // attribution de cause (fail-closed d'observabilité, cf. DoseFilterState).
   DoseFilterState filterState = DoseFilterState::Unknown;
-  bool filterUnstable;          // isPhFilterUnstable() / isOrpFilterUnstable()
   int calPoints;                // points de calibration cachés (-1 si EZO injoignable)
   int requiredPoints;           // 2 (pH) ou 1 (ORP)
   bool stabilizationActive;     // isStabilizationTimerActive(pumpIndex)

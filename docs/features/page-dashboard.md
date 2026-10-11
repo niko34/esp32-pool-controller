@@ -75,28 +75,15 @@ Les cartes pH et ORP gagnent une **jauge de position** horizontale (`.gauge`, CS
 
 **Fichiers** : `data/index.html` (markup `.gauge` dans `#dashboard-ph-card` / `#dashboard-orp-card`) · `data/app.js` : `phGaugePosition()`, `phGaugeStateText()`, `orpGaugePosition()`, `orpGaugeStateText()`, `updatePhGauge()`, `updateOrpGauge()` (appelées depuis le flux `/data` + WS existant — **aucun nouveau champ**, mesure et consigne déjà publiés) · `data/app.css` : classes `.gauge*` (nouvelles, réutilisent uniquement les variables existantes `--danger`/`--success`/`--warn`/`--accent`/`--text`/`--text-secondary`/`--panel2`).
 
-## Bannière « Régulation à l'arrêt » (v2.20.3)
+## ~~Bannière « Régulation à l'arrêt »~~ (v2.20.3) — RETIRÉE (feature-152, v2.68.0)
 
-`<div class="regul-alert" id="regul-alert" role="alert" hidden>` en tête de page, au-dessus de la grille de cartes. Rendue par `updateRegulationAlert(json)` à partir des drapeaux firmware `phFilterAlarm` / `orpFilterAlarm` (`GET /data` **et** WebSocket).
+Présente de la v2.20.3 à la v2.67.x, `<div class="regul-alert" id="regul-alert" role="alert" hidden>` (+ `updateRegulationAlert()`) alertait en tête de page sur les drapeaux firmware `phFilterAlarm` / `orpFilterAlarm`. **Les deux ont disparu** avec la refonte de la chaîne de mesure ([ADR-0097](../adr/0097-le-filtre-lisse-le-dosage-juge.md)) : plus de mécanisme « filtre non prêt durablement » à signaler, donc plus de bannière dédiée. `#rescue-active-banner` est désormais la **première** bannière en tête de page.
 
-Motivation : lors de l'incident du 2026-08-16, le bassin est resté **sans régulation pH ni chlore pendant ≥ 3 h** et rien ne le signalait — l'utilisateur ne l'a détecté que parce qu'une valeur affichée lui semblait incohérente.
-
-| Drapeaux | Titre | Cible du bouton « Diagnostiquer » |
-|---|---|---|
-| `phFilterAlarm` seul | « Régulation pH à l'arrêt » | `#/ph` |
-| `orpFilterAlarm` seul | « Régulation chlore à l'arrêt » | `#/orp` |
-| les deux | « Régulation pH et chlore à l'arrêt » | `#/ph` |
-| aucun | masquée (`hidden`) | — |
-
-Texte : `Le filtre de mesure est bloqué depuis plus de 5 minutes alors que la filtration tourne : aucun dosage <pH|chlore|pH et chlore> n'est effectué. Ouvrez l'état du filtre pour diagnostiquer et le réarmer si besoin.`
-
-Le firmware n'arme ces drapeaux que si la filtration tourne, que les mesures sont représentatives **et** que le filtre reste non prêt > 5 min : **aucun affichage** pendant une purge, un warmup ou une filtration à l'arrêt. La reprise se fait depuis le modal d'état filtre de la page concernée ([page-ph.md](page-ph.md#bouton--réarmer-le-filtre-ph--v2203), [page-orp.md](page-orp.md#bouton--réarmer-le-filtre-orp--v2203)).
-
-Une variante `regul-alert--inline` du même style est réutilisée dans la carte Régulation pH pour la bannière de bascule automatique en manuel.
+La variante `regul-alert--inline` (même style CSS) **survit** : elle est réutilisée dans la carte Régulation pH pour la bannière de bascule automatique en manuel (`#ph-auto-manual-banner`), mécanisme indépendant et non affecté par ce retrait.
 
 ## Bandeau « Chloration de secours active » (`#rescue-active-banner`, feature-140, v2.55.2)
 
-`<div class="rescue-active-banner" id="rescue-active-banner" role="status" aria-live="polite" hidden>`, juste **après** `#regul-alert` et **avant** `#dose-block-banner` — le secours **répond** au blocage, il ne s'y ajoute pas.
+`<div class="rescue-active-banner" id="rescue-active-banner" role="status" aria-live="polite" hidden>`, **première bannière en tête de page** (⚠️ avant la v2.68.0 elle suivait `#regul-alert`, retirée, voir ci-dessus), **avant** `#dose-block-banner` — le secours **répond** au blocage, il ne s'y ajoute pas.
 
 **Retour d'usage réel (v2.55.2)** : jusqu'alors, l'état et le bouton Arrêter du secours vivaient dans un sous-bloc du widget « Modes temporaires » (`#temp-mode-rescue`, masqué/affiché selon l'activité, v2.55.1). Motif utilisateur : un dosage à l'aveugle en cours est un état notable qui mérite le **haut de page**, pas un bloc qu'il faut aller regarder dans un widget — même rapprochement que le bandeau « Mesures non représentatives ».
 
@@ -124,7 +111,7 @@ Verdict sécurité chimique et conditions opposables : voir la section « Correc
 
 ## Bandeau « Dosage bloqué » (feature-138, v2.54.0)
 
-`<div class="dose-block-banner" id="dose-block-banner" hidden>`, juste **après** `#regul-alert` et avant la grille de cartes. Rend lisible, sans ouvrir le panneau développeur, **depuis combien de temps** le dosage est refusé et **pourquoi** — une ligne par voie (`#dose-block-row-ph` / `#dose-block-row-orp`), rendue par `updateDoseBlockBanner(json)`.
+`<div class="dose-block-banner" id="dose-block-banner" hidden>`, juste **après** `#rescue-active-banner` et avant la grille de cartes (⚠️ avant la v2.68.0, l'ordre était `#regul-alert` → `#dose-block-banner`, le premier retiré — voir ci-dessus). Rend lisible, sans ouvrir le panneau développeur, **depuis combien de temps** le dosage est refusé et **pourquoi** — une ligne par voie (`#dose-block-row-ph` / `#dose-block-row-orp`), rendue par `updateDoseBlockBanner(json)`.
 
 Motivation — incident du **2026-10-02** : après des pluies diluviennes, de la boue a couvert le fond du bassin, les deux voies ont été déclarées instables et **tout dosage automatique s'est arrêté**, chlore compris, au moment précis où la demande en chlore était maximale. Le code de refus (`phDoseBlockedCode` / `orpDoseBlockedCode`) existait déjà, mais sans durée ni affichage hors panneau dev — l'utilisateur a diagnostiqué à tort « le calcul de dispersion est bloqué » sur une valeur qui s'était en réalité déjà recalculée trois fois en deux minutes.
 
@@ -136,14 +123,14 @@ Motivation — incident du **2026-10-02** : après des pluies diluviennes, de la
 
 **Absent si rien n'est bloqué** — pas de bandeau permanent qui s'ignore : `box.hidden = true` dès que ni pH ni ORP n'ont de code de refus actif.
 
-**Non-duplication avec `#regul-alert`** : si cette bannière affiche déjà une voie (`phFilterAlarm` / `orpFilterAlarm`), la ligne correspondante de `#dose-block-banner` est supprimée pour cette voie — les deux bandeaux ne répètent jamais la même information.
+~~**Non-duplication avec `#regul-alert`**~~ — **sans objet depuis la v2.68.0** : `#regul-alert` et les drapeaux `phFilterAlarm`/`orpFilterAlarm` qu'il affichait sont retirés (feature-152, voir [Bannière « Régulation à l'arrêt »](#bannière--régulation-à-larrêt-v2203--retirée-feature-152-v2680)). `#dose-block-banner` reste la seule bannière de cause de blocage du tableau de bord.
 
 **Fusion en une seule ligne** « *cause* (pH et chlore) » **uniquement** si les deux voies partagent le **même code** ET le même ton `normal` ; **jamais** pour `fault` ou `unknown`, où une panne par voie doit rester lisible individuellement (deux pannes différentes qui tombent sur le même code resteraient deux pannes à traiter séparément).
 
 **Correctif production (2026-10-05, v2.55.0+, constaté juste après le redémarrage OTA)** : deux défauts corrigés sur la voie ORP.
 
 1. **Ton par voie manquant sur le code de garde 250.** `DOSE_BLOCK_CODES[250]` porte `tone: 'fault'` (pastille de dosage) et `toneOrp: 'normal'` (côté chlore, cette garde n'est que l'inhibition sur pH indisponible/haut — transitoire et bénigne, pas une panne). Avant correctif, `_doseBlockInfo()` ignorait `toneOrp` et codait `'fault'` en dur pour ce bandeau : un simple réamorçage de filtre affichait une ligne **rouge** d'alarme. `_doseBlockInfo()` lit désormais `toneOrp` quand `prefix === 'orp'`.
-2. **Deuxième règle de fusion, bornée strictement** (s'ajoute à celle ci-dessus, ne la remplace pas) : quand `orp.code === 250` (garde de sécurité pH/ORP) **ET** `ph.code` fait partie de la liste blanche `{3, 4, 15, 18, 19, 22}` (mesure pH non représentative), les deux lignes décrivent en réalité **une seule cause** — le pH indisponible suspend le pH *et* inhibe le chlore par conséquence — et sont fusionnées. Texte imposé mot à mot : « *label pH* — dosage pH et dosage chlore suspendus tous les deux. Reprise automatique dès que les mesures sont de nouveau représentatives. », ton `normal`. Toute autre cause ORP sous le code 250 (quota journalier, filtre ORP instable…) **reste sur sa propre ligne** : fusionner là masquerait un second problème réel.
+2. **Deuxième règle de fusion, bornée strictement** (s'ajoute à celle ci-dessus, ne la remplace pas) : quand `orp.code === 250` (garde de sécurité pH/ORP) **ET** `ph.code` fait partie de la liste blanche `DOSE_BLOCK_MEASURE_WAIT_CODES` — `{3, 15, 18}` depuis la v2.68.0 (feature-152, **réduite de six à trois codes** : `4`/`19`/`22` retirés avec la garde séparée « filtre non prêt » qu'ils qualifiaient ; ORP partage désormais les mêmes codes `15`/`18` que pH) — les deux lignes décrivent en réalité **une seule cause** — le pH indisponible suspend le pH *et* inhibe le chlore par conséquence — et sont fusionnées. Texte imposé mot à mot : « *label pH* — dosage pH et dosage chlore suspendus tous les deux. Reprise automatique dès que les mesures sont de nouveau représentatives. », ton `normal`. Toute autre cause ORP sous le code 250 (quota journalier, filtre ORP instable…) **reste sur sa propre ligne** : fusionner là masquerait un second problème réel.
    - **Durée affichée = la plus ancienne des deux** (celle de la cause racine pH, pas de la conséquence ORP) : afficher l'âge, plus court, de la conséquence sous-estimerait la durée réelle de suspension du chlore.
    - Le bouton « Activer la chloration de secours » (voir [chaînage B4](#chaînage-depuis-le-bandeau--dosage-bloqué--b4-feature-140)) et le libellé **L7** restent attachés à la ligne fusionnée — la fusion ne les fait pas disparaître.
 
@@ -187,7 +174,7 @@ cas de doute, il duplique** : un message perdu est jugé pire qu'un message rép
 
 ### Raccourci vers l'injection manuelle (B3)
 
-Chaque ligne **peut** porter un bouton secondaire « Ouvrir l'injection manuelle », **lien de navigation pur** (comme `#regul-alert-cta`) vers `#/ph` ou `#/orp` — **jamais** de présélection de volume/durée/produit, **jamais** de bascule du mode de régulation (basculer `ph_regulation_mode`/`orp_regulation_mode` persiste la config et **coupe** la régulation automatique : le raccourci ne touche à aucun des deux). Un clic ouvre d'abord une **confirmation explicite**, distincte de celle du bouton d'injection, avec des libellés qui rappellent — selon la voie — l'absence de garde de stabilité sur l'injection manuelle, l'exigence d'un contrôle au réactif, et pour le pH qu'une injection d'acide ne se reprend pas.
+Chaque ligne **peut** porter un bouton secondaire « Ouvrir l'injection manuelle », **lien de navigation pur** vers `#/ph` ou `#/orp` — **jamais** de présélection de volume/durée/produit, **jamais** de bascule du mode de régulation (basculer `ph_regulation_mode`/`orp_regulation_mode` persiste la config et **coupe** la régulation automatique : le raccourci ne touche à aucun des deux). Un clic ouvre d'abord une **confirmation explicite**, distincte de celle du bouton d'injection, avec des libellés qui rappellent — selon la voie — l'absence de garde de stabilité sur l'injection manuelle, l'exigence d'un contrôle au réactif, et pour le pH qu'une injection d'acide ne se reprend pas.
 
 Le raccourci n'est proposé que pour une **liste blanche** de causes — uniquement celles où le dosage automatique doute de la **mesure** elle-même (lecture NaN, filtre non prêt/instable, fenêtres de lissage ou de purge), jamais pour une **panne** (ton `fault`) ni pour la cause bénigne « filtration arrêtée » : sur ces causes, l'injection manuelle serait soit non pertinente, soit refusée par les mêmes gardes que le dosage automatique (elle ne contourne que l'absence de jugement de stabilité, pas les limites journalière/horaire/anti-rafale). Asymétrie voulue entre voies : proposé **par défaut sur l'ORP** (un excès de chlore se dissipe), uniquement sur le **pH** si le bandeau ne concerne que cette voie. Jamais présenté comme l'action recommandée (bouton secondaire, pas primaire).
 
@@ -416,8 +403,7 @@ La carte ORP lit :
 Les cartes pH et ORP lisent aussi (feature-061 ; **v2.34.0** feature-091 ; **v2.62.0** feature-139) :
 - `water_present`, `measures_valid`, `measures_stab_elapsed_s`, `measures_dose_available_in_s`, `filtration_state_stale` — segments d'état mesure + gate « Capteur indisponible » / « hors plage » + valeurs « `--` ». ⚠️ `measures_stab_remaining_s` **n'existe plus** depuis la v2.34.0 ; `measures_purge_count` **n'existe plus** depuis la v2.62.0.
 
-La bannière de tête lit (v2.20.3) :
-- `phFilterAlarm`, `orpFilterAlarm` — voir [Bannière « Régulation à l'arrêt »](#bannière--régulation-à-larrêt--v2203)
+~~La bannière de tête lit (v2.20.3) : `phFilterAlarm`, `orpFilterAlarm`~~ — **champs retirés en v2.68.0** (feature-152), voir [Bannière « Régulation à l'arrêt »](#bannière--régulation-à-larrêt-v2203--retirée-feature-152-v2680).
 
 La carte Température lit :
 - `temperature`
@@ -517,6 +503,8 @@ Les causes « armé mais non dosant » (L3/L4/L5) **n'entraient pas** dans cette
 Sur la **ligne ORP uniquement** du bandeau de blocage (voir [section dédiée](#bandeau--dosage-bloqué--feature-138-v2540)) — le secours ne concerne jamais le pH — un bouton `btn--primary` « Activer la chloration de secours » (libellé **L7**) est placé **avant** le bouton secondaire « Ouvrir l'injection manuelle » existant. Si le mode ORP effectif est `manual`, le bouton est remplacé par le texte **L8** (pas de bouton proposé pour une action refusée).
 
 > ⚠️ **Correctif gate `pool-chemistry` (2ᵉ passage, 2026-10-08, feature-139) — l'offre de secours RÉTRÉCIT, le raccourci d'injection manuelle N'EST PAS touché.** Avant ce lot, l'offre L7/L8 et le bouton « Ouvrir l'injection manuelle » (B3) partageaient la **même** liste blanche de causes `[3,4,15,18,19,22]` (`DOSE_BLOCK_SHORTCUT_CODES`). Les codes **18** (`ReadingNaNGateClosed`) et **22** (`FilterGateClosed`) — l'attente avant la première mesure jugée fiable après une coupure d'eau — sont désormais **retirés de l'offre de secours seule** (hint L7 et bouton). Motif chimique : cette attente est maintenant **bornée** (≤ 10 min, plus de plafond à 90 min) **et annoncée à l'écran** en clair (« Reprise automatique dans N min ») depuis le retrait de l'analyse de stabilité ([ADR-0092](../adr/0092-retrait-analyse-stabilite-porte-mesures.md)) : proposer un volume fixe de chlore pendant une attente déjà bornée et expliquée inviterait au surdosage manuel pour rien. **Le secours reste trouvable sur les vraies pannes de mesure** : codes **3** (mesure filtrée NaN), **4** (filtre non prêt), **15** et **19** (fenêtre de lissage en remplissage). Le bouton « Ouvrir l'injection manuelle » (B3), lui, **garde la liste complète** `[3,4,15,18,19,22]` — le gate distingue explicitement les deux usages : un volume fixe de secours n'est pas la même décision qu'ouvrir l'écran d'injection manuelle pour juger soi-même.
+>
+> ⚠️ **Historique dépassé par deux passages ultérieurs — ne pas s'y fier pour l'état courant.** (1) **3ᵉ passage pool-chemistry, 2026-10-09, feature-146** : la distinction ci-dessus entre « offre de secours » et « bouton B3 » est **abolie** — les deux partagent désormais la **même** liste restreinte (`DOSE_BLOCK_SHORTCUT_CODES`), au seul code **3** (état indéterminé, sans fin annoncée) ; `15`/`18` (transitoires bornés et annoncés) n'ouvrent plus **aucune** des deux offres. (2) **feature-152, v2.68.0** : les codes `4`/`19`/`22` sont **retirés** (garde séparée « filtre non prêt » disparue) — la liste de fusion pH→ORP (`DOSE_BLOCK_MEASURE_WAIT_CODES`, distincte de `DOSE_BLOCK_SHORTCUT_CODES`, voir ci-dessus) passe de six à trois codes `{3, 15, 18}`. État courant et constantes exactes : commentaires de `_doseBlockBannerPlan()` dans [`data/app.js`](../../data/app.js).
 
 > **v2.55.2 — fermeture d'une incohérence** : si le secours tourne **déjà**
 > (`rescue_until > 0`, paramètre `rescueActive` de `_renderDoseBlockRow()`),

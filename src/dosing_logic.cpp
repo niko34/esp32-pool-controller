@@ -73,11 +73,11 @@ DoseFilterState resolveFilterState(bool frozen, bool gateClosed, bool stale,
 }
 
 // -----------------------------------------------------------------------------
-// Qualification des causes des gardes 3 / 3b (v2.25.1) — OBSERVABILITÉ SEULE
+// Qualification de la cause de la garde 3 (v2.25.1) — OBSERVABILITÉ SEULE
 // -----------------------------------------------------------------------------
-// Ces deux helpers ne prennent AUCUNE décision : ils sont appelés DANS la branche
-// déjà prise par la garde correspondante et ne font que choisir le libellé/code
-// rendu. Le verdict (`allowed = false`) et l'ordre des gardes sont intouchés.
+// Ce helper ne prend AUCUNE décision : il est appelé DANS la branche déjà
+// prise par la garde et ne fait que choisir le libellé/code rendu. Le verdict
+// (`allowed = false`) et l'ordre des gardes sont intouchés.
 // `Unknown` et `Ready` (état incohérent avec le refus) → cause GÉNÉRIQUE : on
 // n'invente jamais une cause bénigne.
 static DoseRefusal qualifyReadingNaN(DoseFilterState st) {
@@ -93,21 +93,13 @@ static DoseRefusal qualifyReadingNaN(DoseFilterState st) {
   return DoseRefusal::ReadingNaN;
 }
 
-static DoseRefusal qualifyFilterNotReady(DoseFilterState st) {
-  switch (st) {
-    case DoseFilterState::Frozen:     return DoseRefusal::FilterFrozen;
-    case DoseFilterState::Stale:      return DoseRefusal::FilterStale;
-    case DoseFilterState::GateClosed: return DoseRefusal::FilterGateClosed;
-    case DoseFilterState::Warmup:     return DoseRefusal::FilterWarmup;
-    case DoseFilterState::Ready:
-    case DoseFilterState::Unknown:
-      break;
-  }
-  return DoseRefusal::FilterNotReady;
-}
+// feature-152 : qualifyFilterNotReady() a disparu — la garde 3b qu'elle
+// qualifiait (« filtre non prêt ») n'existe plus. La VALEUR OFFICIELLE de
+// sensor_filter est désormais NaN dans tous les cas qu'elle couvrait (warmup,
+// figé, périmé, porte fermée) : qualifyReadingNaN() ci-dessus suffit seule.
 
 // =============================================================================
-// evaluateDose — décision PURE, ordre des gardes 2→15 identique à canDose().
+// evaluateDose — décision PURE, ordre des gardes identique à canDose().
 // =============================================================================
 // IMPORTANT (pool-chemistry, feature-036) : NE PAS réordonner, NE PAS fusionner,
 // NE PAS court-circuiter les gardes. L'ordre et les seuils comparatifs doivent
@@ -125,23 +117,15 @@ DoseDecision evaluateDose(const DoseInputs& in) {
     return { false, DoseRefusal::FiltrationOff };
   }
 
-  // 3. Lecture filtrée non NaN (stale / bus I²C dégradé → fail-closed).
-  // v2.25.1 : la CONDITION est inchangée (isnan) ; seule la cause rendue est
-  // qualifiée par l'état de filtre reçu en ENTRÉE. Aucun test ajouté.
+  // 3. Valeur officielle non NaN (fail-closed). feature-152 : FUSION des
+  // anciennes gardes 3/3b/3c — la valeur officielle de sensor_filter est déjà
+  // NaN dans tous les cas qui bloquaient séparément auparavant (fenêtre
+  // incomplète, sonde figée, mesure périmée, porte fermée) ; la médiane
+  // écarte déjà les aberrations par construction, il n'y a donc plus de
+  // drapeau d'instabilité distinct à tester. Seule la cause rendue est
+  // qualifiée par l'état de filtre reçu en ENTRÉE.
   if (isnan(in.reading)) {
     return { false, qualifyReadingNaN(in.filterState) };
-  }
-
-  // 3b. Filtre capteur prêt (fail-closed). v2.25.1 : condition inchangée
-  // (!filterReady), cause qualifiée — le libellé unique « warmup / EZO
-  // injoignable » confondait un état normal et une panne matérielle.
-  if (!in.filterReady) {
-    return { false, qualifyFilterNotReady(in.filterState) };
-  }
-
-  // 3c. Capteur non instable (rejets consécutifs → fail-closed).
-  if (in.filterUnstable) {
-    return { false, DoseRefusal::FilterUnstable };
   }
 
   // 4. Calibration suffisante (pH ≥ 2 points, ORP ≥ 1 ; -1 si injoignable → bloqué).

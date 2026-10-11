@@ -309,11 +309,17 @@ private:
   // Les seuils CHIMIQUES portent sur le pH CORRIGÉ (brut + offset) : une fois
   // l'offset appliqué, la valeur EST le pH de l'eau, et un seuil chimique doit
   // porter sur le pH réel. Seules les deux BUTÉES de dernier recours portent sur
-  // le pH BRUT (getPhFilteredRaw()), pour rester valides si l'offset est FAUX.
-  // Le pH corrigé est RECALCULÉ ici — applyPhOffset(getPhFilteredRaw(), offset) —
-  // et non lu via getPhFiltered() : getPhFilteredRaw() est l'unique accesseur qui
-  // porte la garde d'âge du filtre (pool-chemistry P2). Aucune garde d'âge n'est
-  // ajoutée à getPhFiltered(), dont le contrat est celui de /data, du WS et de MQTT.
+  // le pH BRUT (getPhValueRaw()), pour rester valides si l'offset est FAUX.
+  // Le pH corrigé est RECALCULÉ ici — applyPhOffset(getPhValueRaw(), offset) —
+  // et non lu via getPhFiltered().
+  // ⚠️ CORRIGÉ PAR feature-152 (2026-10-11) : cette phrase affirmait que
+  // getPhValueRaw() était « l'unique accesseur qui porte la garde d'âge ».
+  // C'EST FAUX DEPUIS CE LOT — getPhFiltered() appelle lui aussi value(millis()),
+  // donc il porte la même garde. Le jumeau de ce commentaire, dans le .cpp, avait
+  // été corrigé ; cette copie-ci ne l'avait pas été (relevé en revue de code).
+  // LA VRAIE RAISON, inchangée : getPhValueRaw() rend l'ÉCHELLE BRUTE, et les
+  // butées de dernier recours comparent du brut à des seuils bruts pour rester
+  // valides quand l'offset est FAUX. Explication complète : pump_controller.cpp.
   // Appelées UNIQUEMENT depuis update() (loopTask) : état et logs sans mutex.
 
   // ===== SÉPARATION SURVEILLANCE / DÉCISION (contre-visite C1, v2.25.0) ======
@@ -331,11 +337,11 @@ private:
   // relâche, les logs warn/critical, les alertes MQTT et la cause exposée au WS.
   // Elles ne comptent RIEN et n'escaladent JAMAIS (un appareil laissé en manuel
   // s'auto-escaladerait sinon). Elles ne lisent que des CACHES capteur
-  // (getPhFilteredRaw / getPhOffset) : aucune transaction I²C supplémentaire.
+  // (getPhValueRaw / getPhOffset) : aucune transaction I²C supplémentaire.
 
   // Surveillance pH inconditionnelle — met à jour les 5 drapeaux d'hystérésis, le
   // verdict `_phGuardBlockingNow` et le latch `_phGuardRefusalPending`, journalise
-  // et alerte. Une mesure périmée (getPhFilteredRaw() == NaN, garde d'âge du
+  // et alerte. Une mesure périmée (getPhValueRaw() == NaN, garde d'âge du
   // filtre) ne produit NI refus NI alerte : tous les drapeaux sont réarmés.
   // D1 : la RELÂCHE (et le cas mesure périmée) EFFACE la cause de refus quand une
   // garde en est propriétaire — cf. _refusalCauseFromGuard.
@@ -1019,7 +1025,9 @@ public:
   // Tenue continue de mesures ORP fiables pendant la chloration de secours
   // (condition #3 du gate pool-chemistry) : lève le mode à SENS UNIQUE (termine,
   // ne le ré-arme jamais) après kRescueChlorineAutoLiftHoldMs de
-  // !isOrpFilterUnstable() && measureValidity.measuresValid() consécutives.
+  // isfinite(getOrpFiltered()) && measureValidity.measuresValid() consécutives
+  // (feature-152 : plus de drapeau d'instabilité distinct, la valeur officielle
+  // encapsule déjà le rejet des aberrations).
   // Appelé à CHAQUE tour d'update() ; no-op si le secours n'est pas actif (le
   // minuteur est alors maintenu à zéro, prêt pour une activation future).
   void tickRescueChlorineAutoLift(unsigned long nowMs);
@@ -1104,9 +1112,13 @@ public:
   // Ordre des gardes (validé pool-chemistry feature-021) — fail-closed strict :
   //   1. Watchdog actif
   //   2. Filtration en marche (ou mode continu)
-  //   3. Lecture pH/ORP FILTRÉE non NaN (feature-025 ; cond #1 stale + cond #5 bus dégradé)
-  //   3b. Filtre capteur prêt (feature-025 : warmup / EZO injoignable → fail-closed)
-  //   3c. Capteur non instable (feature-025 : rejets consécutifs → fail-closed)
+  //   3. Lecture pH/ORP FILTRÉE non NaN — feature-152 : garde UNIQUE. Les
+  //      anciennes 3b (filtre prêt) et 3c (capteur non instable) ont DISPARU,
+  //      strictement subsumées : la valeur officielle est déjà NaN dans tous les
+  //      cas qu'elles bloquaient séparément (fenêtre incomplète, sonde figée,
+  //      mesure périmée, porte fermée), et la médiane écarte les aberrations par
+  //      construction — il n'y a plus de drapeau d'instabilité à tester. Seule la
+  //      CAUSE rendue reste qualifiée, par l'état de filtre reçu en entrée.
   //   4. EZO calibré (cond #2 : pH ≥ 2 points, ORP ≥ 1 point ; -1 → bloqué)
   //   5. Pas de stabilisation post-cal en cours (cond #3)
   //   5b. Pas de pause mélange hydraulique active (feature-025 — gate indépendante)

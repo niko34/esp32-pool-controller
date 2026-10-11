@@ -636,9 +636,7 @@ static DoseInputs nominalPhInputs() {
   in.watchdogActive = true;
   in.waterPresent = true;
   in.reading = 7.35f;
-  in.filterReady = true;
   in.filterState = DoseFilterState::Ready;
-  in.filterUnstable = false;
   in.calPoints = 2;
   in.requiredPoints = 2;
   in.stabilizationActive = false;
@@ -690,10 +688,15 @@ void test_G_garde_filtration_absente(void) {
   gardeFermeAToutAge(in, DoseRefusal::FiltrationOff, "filtration absente");
 }
 
-void test_G_garde_capteur_instable(void) {
+// feature-152 : la garde séparée « capteur instable » (FilterUnstable) a
+// disparu avec le champ filterUnstable — la valeur officielle de sensor_filter
+// encapsule désormais directement cette famille de pannes dans reading=NaN,
+// qualifiée par filterState (ici Stale, une mesure officiellement absente).
+void test_G_garde_valeur_officielle_absente(void) {
   DoseInputs in = nominalPhInputs();
-  in.filterUnstable = true;
-  gardeFermeAToutAge(in, DoseRefusal::FilterUnstable, "capteur instable");
+  in.reading = NAN;
+  in.filterState = DoseFilterState::Stale;
+  gardeFermeAToutAge(in, DoseRefusal::ReadingNaNStale, "valeur officielle absente");
 }
 
 void test_G_garde_limite_horaire(void) {
@@ -1140,7 +1143,7 @@ int main(int, char**) {
   RUN_TEST(test_F_rearmement_remet_tous_les_champs_a_zero);
   // G — gardes
   RUN_TEST(test_G_garde_filtration_absente);
-  RUN_TEST(test_G_garde_capteur_instable);
+  RUN_TEST(test_G_garde_valeur_officielle_absente);
   RUN_TEST(test_G_garde_limite_horaire);
   RUN_TEST(test_G_garde_quota_journalier);
   RUN_TEST(test_G_garde_quota_de_cycles_par_jour);

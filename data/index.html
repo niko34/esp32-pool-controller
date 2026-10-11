@@ -177,19 +177,6 @@
             Sondes de température à identifier
           </button>
 
-          <!-- v2.20.3 (D5) : alerte « régulation à l'arrêt » — un filtre pH ou ORP
-               resté non prêt > 5 min alors que la filtration tourne. L'incident du
-               2026-08-16 est resté invisible 3 h : cette bannière est la surface
-               tableau de bord de l'alarme firmware (ph/orpFilterAlarm). -->
-          <div class="regul-alert" id="regul-alert" role="alert" hidden>
-            <span class="regul-alert__dot" aria-hidden="true"></span>
-            <div class="regul-alert__body">
-              <strong class="regul-alert__title" id="regul-alert-title">Régulation à l'arrêt</strong>
-              <span class="regul-alert__text" id="regul-alert-text"></span>
-            </div>
-            <a class="btn btn--secondary regul-alert__cta" id="regul-alert-cta" href="#/ph">Diagnostiquer</a>
-          </div>
-
           <!-- feature-140 (v2.55.3, gate pool-chemistry) : bandeau « chloration
                de secours active », affiché UNIQUEMENT quand rescue_until > 0.
                Placé AVANT #dose-block-banner : le secours RÉPOND au blocage,
@@ -206,9 +193,7 @@
           </div>
 
           <!-- feature-138 (B2) : bandeau d'état de blocage du dosage, hors du
-               panneau développeur — une ligne par voie, cause en clair + durée.
-               Non-duplication voulue avec #regul-alert ci-dessus : si celui-ci
-               est déjà visible pour une voie, ce bandeau ne la répète pas. -->
+               panneau développeur — une ligne par voie, cause en clair + durée. -->
           <div class="dose-block-banner" id="dose-block-banner" hidden>
             <div class="dose-block-banner__stale-note">Information non rafraîchie (connexion perdue)</div>
             <div class="dose-block-banner__row" id="dose-block-row-ph" hidden></div>
@@ -749,8 +734,8 @@
             <div class="ph-stats__col">
               <div class="readout__label" id="ph_current_label" style="font-size:0.8em;color:var(--text-secondary);margin-bottom:4px">Valeur pH actuelle</div>
               <div class="readout__value" id="ph_current_value" style="font-size:2rem;font-weight:700;line-height:1">--</div>
-              <!-- feature-025 : ligne brute discrète (brut · médiane · maj) -->
-              <div class="filter-sub" id="ph-filter-sub">brut -- · médiane -- · maj --</div>
+              <!-- feature-025 : ligne brute discrète (brut · maj) -->
+              <div class="filter-sub" id="ph-filter-sub">brut -- · maj --</div>
               <div class="muted small" style="margin-top:4px">MAJ auto toutes les 5 secondes</div>
               <div class="chip-row">
                 <button type="button" id="ph-probe-chip"
@@ -759,14 +744,6 @@
                         aria-label="État de la sonde pH, ouvrir les détails">
                   <span class="chip__dot" aria-hidden="true"></span>
                   <span class="chip__label" id="ph-probe-chip-label">Pente non disponible</span>
-                </button>
-                <!-- feature-025 : chip jumeau état filtre pH -->
-                <button type="button" id="ph-filter-chip"
-                        class="chip chip--probe chip--probe-unknown"
-                        aria-haspopup="dialog" aria-controls="ph-filter-modal"
-                        aria-label="État du filtre pH, ouvrir les détails">
-                  <span class="chip__dot" aria-hidden="true"></span>
-                  <span class="chip__label" id="ph-filter-chip-label">Filtre --</span>
                 </button>
                 <!-- feature-034 : chip calibration pH fusionné dans #ph-probe-chip -->
               </div>
@@ -1182,60 +1159,22 @@
               <span class="probe-modal__label">Vérifié</span>
               <span class="probe-modal__value" id="ph-probe-age">--</span>
             </div>
-            <div class="probe-modal__actions">
-              <button class="btn btn--ghost" type="button" id="ph-probe-refresh">Rafraîchir</button>
-              <button class="btn" type="button" id="ph-probe-close" autofocus>Fermer</button>
-            </div>
-          </dialog>
-
-          <!-- Modal détails filtre pH (feature-025) -->
-          <dialog id="ph-filter-modal" class="probe-modal" aria-labelledby="ph-filter-modal-title">
-            <h3 id="ph-filter-modal-title" class="probe-modal__title">État filtre pH</h3>
+            <!-- feature-152 : chaîne de mesure — valeur officielle (diagnostic) -->
             <div class="probe-modal__row">
-              <span class="probe-modal__label">Valeur brute (EZO)</span>
+              <span class="probe-modal__label">Valeur brute</span>
               <span class="probe-modal__value" id="ph-fm-raw">--</span>
             </div>
-            <!-- feature-067 : offset logiciel + valeur corrigée (diagnostic) -->
             <div class="probe-modal__row">
-              <span class="probe-modal__label">Offset appliqué</span>
-              <span class="probe-modal__value" id="ph-fm-offset">--</span>
-            </div>
-            <div class="probe-modal__row">
-              <span class="probe-modal__label">Valeur corrigée</span>
-              <span class="probe-modal__value" id="ph-fm-corrected">--</span>
-            </div>
-            <div class="probe-modal__row">
-              <span class="probe-modal__label">Médiane (corrigée)</span>
-              <span class="probe-modal__value" id="ph-fm-median">--</span>
-            </div>
-            <div class="probe-modal__row">
-              <span class="probe-modal__label">Valeur filtrée (corrigée)</span>
+              <span class="probe-modal__label">Valeur retenue</span>
               <span class="probe-modal__value" id="ph-fm-filtered">--</span>
-            </div>
-            <div class="probe-modal__row">
-              <span class="probe-modal__label">Pics rejetés</span>
-              <span class="probe-modal__value" id="ph-fm-rejected">--</span>
             </div>
             <div class="probe-modal__row">
               <span class="probe-modal__label">Dernière mesure</span>
               <span class="probe-modal__value" id="ph-fm-age">--</span>
             </div>
-            <div class="probe-modal__row">
-              <span class="probe-modal__label">Filtre prêt</span>
-              <span class="probe-modal__value" id="ph-fm-ready">--</span>
-            </div>
-            <div class="probe-modal__row" id="ph-fm-blocked-row" style="display:none">
-              <span class="probe-modal__label">Dosage bloqué</span>
-              <span class="probe-modal__value" id="ph-fm-blocked">--</span>
-            </div>
-            <!-- v2.20.3 (D3) : réarmement manuel du filtre pH (auth admin, 1/10 min) -->
-            <p class="probe-modal__hint" id="ph-fm-reset-hint">
-              Si le filtre reste bloqué, le réarmement vide la fenêtre de mesure et
-              repart de zéro (environ 1 minute avant reprise du dosage).
-            </p>
             <div class="probe-modal__actions">
-              <button class="btn btn--danger" type="button" id="ph-filter-reset">Réarmer le filtre pH</button>
-              <button class="btn" type="button" id="ph-filter-close" autofocus>Fermer</button>
+              <button class="btn btn--ghost" type="button" id="ph-probe-refresh">Rafraîchir</button>
+              <button class="btn" type="button" id="ph-probe-close" autofocus>Fermer</button>
             </div>
           </dialog>
 
@@ -1253,19 +1192,27 @@
             <div class="orp-stats__col">
               <div class="readout__label" id="orp_current_label" style="font-size:0.8em;color:var(--text-secondary);margin-bottom:4px">Valeur ORP actuelle</div>
               <div class="readout__value" id="orp_current_value" style="font-size:2rem;font-weight:700;line-height:1">--</div>
-              <!-- feature-025 : ligne brute discrète (brut · médiane · maj) -->
-              <div class="filter-sub" id="orp-filter-sub">brut -- · médiane -- · maj --</div>
+              <!-- feature-025 : ligne brute discrète (brut · maj) -->
+              <div class="filter-sub" id="orp-filter-sub">brut -- · maj --</div>
               <div class="muted small" style="margin-top:4px">MAJ auto toutes les 5 secondes</div>
               <div class="chip-row">
-                <!-- feature-034 itération 2 : chip d'état de calibration (NON cliquable) — 1ʳᵉ position (cohérent avec pH) -->
-                <span id="orp-cal-chip" class="chip chip--probe chip--cal chip--probe-unknown" role="status" aria-live="polite"><span class="chip__dot" aria-hidden="true"></span><span class="chip__label" id="orp-cal-chip-label">Calibration --</span></span>
-                <!-- feature-025 : chip état filtre ORP (« Mesure stable ») — 2ᵉ position -->
-                <button type="button" id="orp-filter-chip"
-                        class="chip chip--probe chip--probe-unknown"
+                <!-- feature-034 itération 2, convertie en bouton par feature-152 (asymétrie
+                     corrigée : la sonde ORP n'avait pas de modal cliquable comme pH) —
+                     réutilise le nœud #orp-filter-modal, retitré et réduit.
+                     ⚠️ `role="status"` / `aria-live` ont été PERDUS dans la conversion
+                     en <button>, et NE DOIVENT PAS être restaurés (relevé en revue de
+                     code feature-152, écarté sciemment) : (a) un <button> ne peut pas
+                     porter role="status" sans écraser son propre rôle ; (b) le jumeau
+                     #ph-probe-chip est un bouton sans live region depuis feature-034 ;
+                     (c) invariant ux-ui-designer consigné plus haut (carte pH) — UNE
+                     SEULE zone vocalisée par carte, et c'est la pastille du titre,
+                     #orp-dosing-pill, que cette carte possède déjà. -->
+                <button type="button" id="orp-cal-chip"
+                        class="chip chip--probe chip--cal chip--probe-unknown"
                         aria-haspopup="dialog" aria-controls="orp-filter-modal"
-                        aria-label="État du filtre ORP, ouvrir les détails">
+                        aria-label="État de la sonde ORP, ouvrir les détails">
                   <span class="chip__dot" aria-hidden="true"></span>
-                  <span class="chip__label" id="orp-filter-chip-label">Filtre --</span>
+                  <span class="chip__label" id="orp-cal-chip-label">Calibration --</span>
                 </button>
               </div>
               <!-- feature-034 itération 3 (volet A) : bouton Calibrer la sonde sous la rangée des badges -->
@@ -1505,44 +1452,22 @@
             </div>
           </div>
 
-          <!-- Modal détails filtre ORP (feature-025) -->
+          <!-- Modal détails sonde ORP (feature-025, réduit et retitré par feature-152) -->
           <dialog id="orp-filter-modal" class="probe-modal" aria-labelledby="orp-filter-modal-title">
-            <h3 id="orp-filter-modal-title" class="probe-modal__title">État filtre ORP</h3>
+            <h3 id="orp-filter-modal-title" class="probe-modal__title">État sonde ORP</h3>
             <div class="probe-modal__row">
               <span class="probe-modal__label">Valeur brute</span>
               <span class="probe-modal__value" id="orp-fm-raw">--</span>
             </div>
             <div class="probe-modal__row">
-              <span class="probe-modal__label">Médiane</span>
-              <span class="probe-modal__value" id="orp-fm-median">--</span>
-            </div>
-            <div class="probe-modal__row">
-              <span class="probe-modal__label">Valeur filtrée</span>
+              <span class="probe-modal__label">Valeur retenue</span>
               <span class="probe-modal__value" id="orp-fm-filtered">--</span>
-            </div>
-            <div class="probe-modal__row">
-              <span class="probe-modal__label">Pics rejetés</span>
-              <span class="probe-modal__value" id="orp-fm-rejected">--</span>
             </div>
             <div class="probe-modal__row">
               <span class="probe-modal__label">Dernière mesure</span>
               <span class="probe-modal__value" id="orp-fm-age">--</span>
             </div>
-            <div class="probe-modal__row">
-              <span class="probe-modal__label">Filtre prêt</span>
-              <span class="probe-modal__value" id="orp-fm-ready">--</span>
-            </div>
-            <div class="probe-modal__row" id="orp-fm-blocked-row" style="display:none">
-              <span class="probe-modal__label">Dosage bloqué</span>
-              <span class="probe-modal__value" id="orp-fm-blocked">--</span>
-            </div>
-            <!-- v2.20.3 (D3) : réarmement manuel du filtre ORP (auth admin, 1/10 min) -->
-            <p class="probe-modal__hint" id="orp-fm-reset-hint">
-              Si le filtre reste bloqué, le réarmement vide la fenêtre de mesure et
-              repart de zéro (environ 1 minute avant reprise du dosage).
-            </p>
             <div class="probe-modal__actions">
-              <button class="btn btn--danger" type="button" id="orp-filter-reset">Réarmer le filtre ORP</button>
               <button class="btn" type="button" id="orp-filter-close" autofocus>Fermer</button>
             </div>
           </dialog>
@@ -2428,17 +2353,17 @@ action:
                     <button class="btn btn--danger" type="button" id="trace_clear_btn">Vider le buffer</button>
                   </div>
 
-                  <!-- Dispersion instantanée (route /debug/sensor_filter_state) : hors de
-                       #trace_charts pour rester visible même si le buffer de trace est vide,
-                       et survivre à une panne de la trace (requêtes indépendantes). -->
+                  <!-- État du filtre de mesure (route /debug/sensor_filter_state, feature-152) :
+                       hors de #trace_charts pour rester visible même si le buffer de trace
+                       est vide, et survivre à une panne de la trace (requêtes indépendantes). -->
                   <div class="kv kv--compact" style="margin-bottom:12px;">
-                    <div class="kv__row"><span class="kv__k">Dispersion pH</span><span class="kv__v" id="trace_disp_ph">—</span></div>
-                    <div class="kv__row"><span class="kv__k">Dispersion ORP</span><span class="kv__v" id="trace_disp_orp">—</span></div>
+                    <div class="kv__row"><span class="kv__k">État filtre pH</span><span class="kv__v" id="trace_filter_ph">—</span></div>
+                    <div class="kv__row"><span class="kv__k">État filtre ORP</span><span class="kv__v" id="trace_filter_orp">—</span></div>
                   </div>
-                  <!-- feature-138 (B1) : la dispersion ci-dessus est un instantané —
-                       cette ligne porte sa date et se rafraîchit tant que l'onglet
-                       Avancé est visible (cf. _armDispersionRefresh dans app.js). -->
-                  <div class="muted small" id="trace_disp_age" style="margin:-6px 0 12px">—</div>
+                  <!-- feature-138 (B1) : l'état ci-dessus est un instantané — cette ligne
+                       porte sa date et se rafraîchit tant que l'onglet Avancé est visible
+                       (cf. _armFilterStateRefresh dans app.js). -->
+                  <div class="muted small" id="trace_filter_age" style="margin:-6px 0 12px">—</div>
 
                   <div class="muted small" id="trace_status" hidden>Aucune donnée dans le buffer.</div>
 
@@ -2451,17 +2376,6 @@ action:
                       <div class="chart-container trace-chart">
                         <div id="trace_ph_chart" class="chart-host"></div>
                       </div>
-                      <!-- Courbe de dispersion (feature-072) : fenêtre glissante de 13,
-                           reconstruction indicative — trous = fenêtres écartées -->
-                      <div class="trace-dispersion" id="trace_disp_ph_block" hidden>
-                        <div class="trace-legend">
-                          <span class="trace-legend__item"><span class="trace-legend__swatch" style="background:#d97706"></span>Dispersion pH (indicatif)</span>
-                          <span class="trace-legend__item"><span class="trace-legend__swatch trace-legend__swatch--dash"></span>Seuil <span id="trace_disp_ph_seuil">0,50</span></span>
-                        </div>
-                        <div class="chart-container trace-chart trace-chart--dispersion">
-                          <div id="trace_disp_ph_chart" class="chart-host"></div>
-                        </div>
-                      </div>
                     </div>
 
                     <div class="trace-block">
@@ -2472,17 +2386,6 @@ action:
                       <div class="chart-container trace-chart">
                         <div id="trace_orp_chart" class="chart-host"></div>
                       </div>
-                      <!-- Courbe de dispersion (feature-072) : fenêtre glissante de 13,
-                           reconstruction indicative — trous = fenêtres écartées -->
-                      <div class="trace-dispersion" id="trace_disp_orp_block" hidden>
-                        <div class="trace-legend">
-                          <span class="trace-legend__item"><span class="trace-legend__swatch" style="background:#d97706"></span>Dispersion ORP (indicatif)</span>
-                          <span class="trace-legend__item"><span class="trace-legend__swatch trace-legend__swatch--dash"></span>Seuil <span id="trace_disp_orp_seuil">100 mV</span></span>
-                        </div>
-                        <div class="chart-container trace-chart trace-chart--dispersion">
-                          <div id="trace_disp_orp_chart" class="chart-host"></div>
-                        </div>
-                      </div>
                     </div>
 
                     <div class="kv kv--compact" style="margin-top:16px;">
@@ -2491,15 +2394,6 @@ action:
                       <div class="kv__row"><span class="kv__k">ORP brut</span><span class="kv__v" id="trace_stats_orp_raw">—</span></div>
                       <div class="kv__row"><span class="kv__k">ORP lissé</span><span class="kv__v" id="trace_stats_orp_filtered">—</span></div>
                       <div class="kv__row"><span class="kv__k">T° eau</span><span class="kv__v" id="trace_stats_temp">—</span></div>
-                      <div class="kv__row"><span class="kv__k">Dispersion trace pH (indicatif)</span><span class="kv__v" id="trace_disp_recon_ph">—</span></div>
-                      <div class="kv__row"><span class="kv__k">Dispersion trace ORP (indicatif)</span><span class="kv__v" id="trace_disp_recon_orp">—</span></div>
-                    </div>
-                    <div class="muted small" style="margin-top:8px;">
-                      Reconstruction sur la trace complète : la fenêtre du firmware est gelée
-                      quand la circulation est arrêtée (la trace, non). Hors régime établi,
-                      la valeur instantanée ci-dessus fait foi. Un trou dans la courbe de
-                      dispersion signale une fenêtre écartée (transitoire rejeté), pas une
-                      absence de mesure.
                     </div>
                   </div>
                 </div>

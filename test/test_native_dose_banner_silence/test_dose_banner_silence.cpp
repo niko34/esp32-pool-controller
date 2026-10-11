@@ -22,12 +22,17 @@
 //        première passe : muter `{ ph: !!ph, orp: !!orp }` en
 //        `{ ph: true, orp: true }` dans data/app.js ne changeait RIEN à un
 //        miroir qui recalculait la même chose en C++ indépendamment du texte.
-//   F6 — présence de la garde `FilterAlarm` dans `_doseBlockRowData()`
-//        (`+ 'FilterAlarm'] === true) return null;`). Même défaut que F4 :
-//        la première passe codait cette exclusion en dur dans `rowExists()`,
-//        donc la supprimer côté source ne changeait rien au résultat du
-//        miroir. Désormais FACTUELLE : absente du texte ⇒ le miroir cesse
-//        d'exclure, et les tests qui en dépendent meurent.
+//   F6 — RETIRÉ (feature-152, seconde passe, 2026-10-11) : la garde
+//        `FilterAlarm` de `_doseBlockRowData()` protégeait `phFilterAlarm`/
+//        `orpFilterAlarm` et `#regul-alert`, des champs/éléments qui ONT
+//        DISPARU avec le mécanisme de filtre qu'ils signalaient (plus de
+//        verrou collant côté firmware ⇒ plus rien à alarmer côté interface).
+//        Les trois tests qui en dépendaient (F6 lui-même, et les deux
+//        scénarios FilterAlarm de la face B) sont RETIRÉS avec elle — un
+//        mécanisme qui n'existe plus n'a pas de comportement à verrouiller.
+//        La garde anti-retour du vocabulaire (D6/D7, tools/check_removed_
+//        measurement_vocabulary.sh) couvre désormais la non-réapparition de
+//        « FilterAlarm »/« regul-alert » dans data/.
 //
 // Ces faits alimentent un MIROIR pur (bannerPlan + badgePushesBlockLabel) qui
 // REJOUE le calcul de `_doseBlockBannerPlan()` / la garde de
@@ -252,9 +257,6 @@ static char g_tokFusionSamePh[8], g_tokFusionSameOrp[8];
 static char g_tokIndepPh[8], g_tokIndepOrp[8];
 static int g_f4Ok = -2;
 
-// F6 — la garde FilterAlarm de _doseBlockRowData() est-elle encore là ?
-static int g_filterAlarmGuardPresent = -2;
-
 static void ensureLoaded(void) {
   if (g_app != NULL) return;
   long len = 0;
@@ -303,9 +305,14 @@ static void ensureLoaded(void) {
     "F4 introuvable : un littéral carries:{...} d'une des 4 branches de "
     "_doseBlockBannerPlan() a disparu ou changé de forme dans data/app.js");
 
-  // F6 — garde FilterAlarm de _doseBlockRowData().
-  g_filterAlarmGuardPresent =
-    (strstr(g_app, "'FilterAlarm'] === true) return null;") != NULL) ? 1 : 0;
+  // F6 (garde FilterAlarm) retiré avec le mécanisme qu'il protégeait — voir
+  // le commentaire d'en-tête. Verrou de non-retour : la garde doit rester
+  // ABSENTE (sa réapparition romprait l'invariant « un seul endroit par
+  // mécanisme », couvert par ailleurs par la garde anti-retour D6/D7).
+  TEST_ASSERT_NULL_MESSAGE(strstr(g_app, "'FilterAlarm'] === true) return null;"),
+    "la garde FilterAlarm est de retour dans _doseBlockRowData() alors que le "
+    "mecanisme qu'elle protegeait (phFilterAlarm/orpFilterAlarm) a disparu — "
+    "verifier qu'il ne s'agit pas d'une reintroduction du filtre non pret");
 }
 
 static int inList(const int* lst, int n, int v) {
@@ -327,7 +334,6 @@ struct RowIn {
   int present;         // la voie existe-t-elle dans latestSensorData ?
   int code;
   const char* tone;    // "none" | "fault" | "normal" | "unknown" | "warning"
-  int filterAlarm;
 };
 
 struct Carries { int ph; int orp; };
@@ -346,13 +352,11 @@ static int evalCarriesToken(const char* tok, int phRow, int orpRow) {
   return 0;
 }
 
-// Mirroir de _doseBlockRowData() : null si tone === 'none', ou si FilterAlarm
-// === true ET QUE LA GARDE EXISTE ENCORE (F6) — si elle a disparu du texte, le
-// miroir cesse lui aussi de l'appliquer, pour rester fidèle à la source.
+// Mirroir de _doseBlockRowData() : null si tone === 'none'. (F6, la garde
+// FilterAlarm, est retirée avec le mécanisme qu'elle protégeait — voir
+// l'en-tête du fichier.)
 static int rowExists(const RowIn& r) {
-  if (!r.present || strcmp(r.tone, "none") == 0) return 0;
-  if (g_filterAlarmGuardPresent && r.filterAlarm) return 0;
-  return 1;
+  return r.present && strcmp(r.tone, "none") != 0;
 }
 
 // Mirroir de _doseBlockBannerPlan() — la sortie `carries` de chaque branche
@@ -400,7 +404,9 @@ static int badgePushesBlockLabel(const char* label, int code, int carriesForSens
 
 static void test_f1_contenu_attendu(void) {
   ensureLoaded();
-  const int expected[] = {2, 3, 4, 7, 8, 10, 11, 12, 15, 18, 19, 22};
+  // feature-152 (seconde passe) : 4, 19, 22 retirés (jamais recyclés) — la
+  // garde séparée « filtre non prêt »/qualifications associées a disparu.
+  const int expected[] = {2, 3, 7, 8, 10, 11, 12, 15, 18};
   const int n = (int)(sizeof(expected) / sizeof(expected[0]));
   char msg[200];
   snprintf(msg, sizeof(msg), "F1 attendu %d codes, lu %d", n, g_f1Count);
@@ -413,11 +419,14 @@ static void test_f1_contenu_attendu(void) {
 
 static void test_f3_contenu_attendu(void) {
   ensureLoaded();
-  const int expected[] = {3, 4, 15, 18, 19, 22};
+  // feature-152 (seconde passe) : réduite de SIX à TROIS codes — 4/19/22
+  // retirés, l'ORP partage désormais 15/18 avec le pH (plus de qualification
+  // séparée « garde filtre non prêt »).
+  const int expected[] = {3, 15, 18};
   const int n = (int)(sizeof(expected) / sizeof(expected[0]));
   char msg[220];
-  snprintf(msg, sizeof(msg), "F3 attendu %d codes, lu %d — une liste rétrécie (ex. [3,4]) "
-           "romprait la fusion pH->ORP sur 15/18/19/22 sans le dire", n, g_f3Count);
+  snprintf(msg, sizeof(msg), "F3 attendu %d codes, lu %d — une liste rétrécie (ex. [3]) "
+           "romprait la fusion pH->ORP sur 15/18 sans le dire", n, g_f3Count);
   TEST_ASSERT_EQUAL_INT_MESSAGE(n, g_f3Count, msg);
   for (int i = 0; i < n; ++i) {
     snprintf(msg, sizeof(msg), "F3 doit contenir le code %d (attente de mesure, fusion)", expected[i]);
@@ -449,17 +458,6 @@ static void test_f4_contenu_attendu(void) {
   TEST_ASSERT_EQUAL_STRING_MESSAGE("true", g_tokFusionSameOrp, "branche fusion même-code, orp");
   TEST_ASSERT_EQUAL_STRING_MESSAGE("!!ph", g_tokIndepPh, "branche lignes indépendantes, ph");
   TEST_ASSERT_EQUAL_STRING_MESSAGE("!!orp", g_tokIndepOrp, "branche lignes indépendantes, orp");
-}
-
-// Revue feature-148 — F6 : la garde FilterAlarm doit toujours être présente
-// dans _doseBlockRowData(). Sa disparition est le SECOND angle mort prouvé
-// par le relecteur (18/18 PASSED après suppression, sur la passe précédente).
-static void test_f6_garde_filter_alarm_presente(void) {
-  ensureLoaded();
-  TEST_ASSERT_EQUAL_INT_MESSAGE(1, g_filterAlarmGuardPresent,
-    "_doseBlockRowData() doit toujours exclure la voie quand "
-    "<prefix>FilterAlarm === true (`+ 'FilterAlarm'] === true) return null;`) — "
-    "sa disparition rendrait une panne de régulation silencieuse ET non portée par le bandeau");
 }
 
 // Revue feature-148 (point de robustesse signalé par le code-reviewer,
@@ -494,8 +492,8 @@ static void test_f7_bandeau_mis_a_jour_avant_les_badges(void) {
 
 static void test_tone_none_voie_non_couverte(void) {
   ensureLoaded();
-  RowIn ph = {1, 0, "none", 0};
-  RowIn orp = {1, 5, "fault", 0};
+  RowIn ph = {1, 0, "none"};
+  RowIn orp = {1, 5, "fault"};
   Carries c = bannerPlan(ph, orp);
   TEST_ASSERT_EQUAL_INT_MESSAGE(0, c.ph,
     "tone === 'none' : la voie n'existe pas pour le bandeau, carries doit rester FAUX "
@@ -503,24 +501,10 @@ static void test_tone_none_voie_non_couverte(void) {
   TEST_ASSERT_EQUAL_INT_MESSAGE(1, c.orp, "l'autre voie (fault) doit rester portée normalement");
 }
 
-static void test_filter_alarm_voie_non_couverte_quel_que_soit_le_code(void) {
-  ensureLoaded();
-  const int codes[] = {1, 5, 16, 250};
-  for (size_t i = 0; i < sizeof(codes) / sizeof(codes[0]); ++i) {
-    RowIn ph = {1, codes[i], "fault", 1};  // phFilterAlarm === true
-    RowIn orp = {0, 0, "none", 0};
-    Carries c = bannerPlan(ph, orp);
-    char msg[160];
-    snprintf(msg, sizeof(msg),
-      "FilterAlarm===true doit annuler la ligne quel que soit le code (code=%d)", codes[i]);
-    TEST_ASSERT_EQUAL_INT_MESSAGE(0, c.ph, msg);
-  }
-}
-
 static void test_rien_bloque_box_hidden_les_deux_voies_non_couvertes(void) {
   ensureLoaded();
-  RowIn ph = {1, 0, "none", 0};
-  RowIn orp = {1, 0, "none", 0};
+  RowIn ph = {1, 0, "none"};
+  RowIn orp = {1, 0, "none"};
   Carries c = bannerPlan(ph, orp);
   TEST_ASSERT_EQUAL_INT_MESSAGE(0, c.ph, "box.hidden global : ph non couvert");
   TEST_ASSERT_EQUAL_INT_MESSAGE(0, c.orp, "box.hidden global : orp non couvert");
@@ -528,10 +512,11 @@ static void test_rien_bloque_box_hidden_les_deux_voies_non_couvertes(void) {
 
 static void test_fusion_cause_racine_ph_vers_orp_couvre_les_deux_voies(void) {
   ensureLoaded();
-  // Les six codes de F3 côté pH, combinés au code-garde 250 côté ORP.
+  // Les TROIS codes de F3 côté pH (feature-152 : réduits de 6 à 3), combinés
+  // au code-garde 250 côté ORP.
   for (int i = 0; i < g_f3Count; ++i) {
-    RowIn ph = {1, g_f3[i], "normal", 0};
-    RowIn orp = {1, 250, "normal", 0};  // toneOrp du code 250 = 'normal'
+    RowIn ph = {1, g_f3[i], "normal"};
+    RowIn orp = {1, 250, "normal"};  // toneOrp du code 250 = 'normal'
     Carries c = bannerPlan(ph, orp);
     char msg[160];
     snprintf(msg, sizeof(msg),
@@ -543,8 +528,8 @@ static void test_fusion_cause_racine_ph_vers_orp_couvre_les_deux_voies(void) {
 
 static void test_fusion_meme_code_couvre_les_deux_voies(void) {
   ensureLoaded();
-  RowIn ph = {1, 9, "normal", 0};
-  RowIn orp = {1, 9, "normal", 0};
+  RowIn ph = {1, 9, "normal"};
+  RowIn orp = {1, 9, "normal"};
   Carries c = bannerPlan(ph, orp);
   TEST_ASSERT_EQUAL_INT_MESSAGE(1, c.ph, "fusion même-code : ph couvert");
   TEST_ASSERT_EQUAL_INT_MESSAGE(1, c.orp, "fusion même-code : orp couvert");
@@ -554,8 +539,8 @@ static void test_fusion_badge_muet_sur_les_deux_voies(void) {
   ensureLoaded();
   // Scénario de production (feature-148 §contexte) : ph bloqué en attente de
   // mesure (code 15), orp en garde (250) — fusionnés en UNE ligne.
-  RowIn ph = {1, 15, "normal", 0};
-  RowIn orp = {1, 250, "normal", 0};
+  RowIn ph = {1, 15, "normal"};
+  RowIn orp = {1, 250, "normal"};
   Carries c = bannerPlan(ph, orp);
   // Côté ORP, 250 n'est PAS dans F1 : seule `carries.orp` ferme le badge.
   TEST_ASSERT_FALSE_MESSAGE(
@@ -570,8 +555,8 @@ static void test_fusion_badge_muet_sur_les_deux_voies(void) {
 
 static void test_code_inconnu_porte_par_bandeau_donc_badge_muet(void) {
   ensureLoaded();
-  RowIn ph = {1, 999, "unknown", 0};  // « Cause inconnue (code 999) »
-  RowIn orp = {0, 0, "none", 0};
+  RowIn ph = {1, 999, "unknown"};  // « Cause inconnue (code 999) »
+  RowIn orp = {0, 0, "none"};
   Carries c = bannerPlan(ph, orp);
   TEST_ASSERT_EQUAL_INT_MESSAGE(1, c.ph, "un code inconnu, tone!=='none', doit être porté par le bandeau");
   TEST_ASSERT_FALSE_MESSAGE(
@@ -583,8 +568,8 @@ static void test_code_undefined_porte_par_bandeau_donc_badge_muet(void) {
   ensureLoaded();
   // code === undefined → _doseBlockInfo renvoie tone='unknown' si un texte
   // serveur existe. Sentinelle -1 : aucun code réel ne la percute.
-  RowIn ph = {1, -1, "unknown", 0};
-  RowIn orp = {0, 0, "none", 0};
+  RowIn ph = {1, -1, "unknown"};
+  RowIn orp = {0, 0, "none"};
   Carries c = bannerPlan(ph, orp);
   TEST_ASSERT_EQUAL_INT_MESSAGE(1, c.ph, "code===undefined avec texte serveur : porté par le bandeau");
   TEST_ASSERT_FALSE_MESSAGE(
@@ -625,21 +610,11 @@ static void test_couvert_par_le_bandeau_le_badge_se_tait(void) {
     "porté par le bandeau : le badge doit se taire, même hors F1");
 }
 
-static void test_silence_sans_porteur_badge_doit_parler_cas_filter_alarm(void) {
-  ensureLoaded();
-  // Reconstitue le scénario décrit par l'architecte (D2/m2) : phFilterAlarm
-  // === true avec code 250 → la ligne n'existe PAS dans le plan (carries
-  // faux) bien que le code soit le code-garde. Le badge doit alors afficher
-  // la cause — personne d'autre ne la montre.
-  RowIn ph = {1, 250, "fault", 1};  // filterAlarm===true
-  RowIn orp = {0, 0, "none", 0};
-  Carries c = bannerPlan(ph, orp);
-  TEST_ASSERT_EQUAL_INT_MESSAGE(0, c.ph, "FilterAlarm===true : la ligne n'existe pas dans le plan");
-  TEST_ASSERT_TRUE_MESSAGE(
-    badgePushesBlockLabel("Sécurité pH/ORP active", 250, c.ph),
-    "silence SANS porteur interdit : le bandeau ne montre pas cette cause (FilterAlarm), "
-    "le badge DOIT l'afficher");
-}
+// test_silence_sans_porteur_badge_doit_parler_cas_filter_alarm RETIRÉ
+// (feature-152, seconde passe) : le scénario FilterAlarm n'existe plus
+// (phFilterAlarm/orpFilterAlarm ont disparu de data/app.js avec le mécanisme
+// de filtre qu'ils signalaient). L'invariant qu'il protégeait (« silence SANS
+// porteur interdit ») reste couvert par les autres scénarios de la FACE C.
 
 // =============================================================================
 // FACE D — quotas (10/11/12) : exception, toujours dupliqués
@@ -733,11 +708,11 @@ int main(int, char**) {
   RUN_TEST(test_f3_contenu_attendu);
   RUN_TEST(test_f2_garde_est_negatee);
   RUN_TEST(test_f4_contenu_attendu);
-  RUN_TEST(test_f6_garde_filter_alarm_presente);
+  // test_f6_garde_filter_alarm_presente retiré (feature-152 : garde + FilterAlarm disparus).
   RUN_TEST(test_f7_bandeau_mis_a_jour_avant_les_badges);
 
   RUN_TEST(test_tone_none_voie_non_couverte);
-  RUN_TEST(test_filter_alarm_voie_non_couverte_quel_que_soit_le_code);
+  // test_filter_alarm_voie_non_couverte_quel_que_soit_le_code retiré (idem).
   RUN_TEST(test_rien_bloque_box_hidden_les_deux_voies_non_couvertes);
   RUN_TEST(test_fusion_cause_racine_ph_vers_orp_couvre_les_deux_voies);
   RUN_TEST(test_fusion_meme_code_couvre_les_deux_voies);
@@ -748,7 +723,7 @@ int main(int, char**) {
   RUN_TEST(test_deja_source_dans_F1_reste_muet_meme_non_couvert);
   RUN_TEST(test_non_couvert_le_badge_parle);
   RUN_TEST(test_couvert_par_le_bandeau_le_badge_se_tait);
-  RUN_TEST(test_silence_sans_porteur_badge_doit_parler_cas_filter_alarm);
+  // test_silence_sans_porteur_badge_doit_parler_cas_filter_alarm retiré (idem).
 
   RUN_TEST(test_quotas_bloc_unique_et_independant_de_carries);
   RUN_TEST(test_quota_code_11_reste_muet_sur_le_chemin_generique_meme_non_couvert);

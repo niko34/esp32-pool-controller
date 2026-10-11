@@ -886,9 +886,7 @@ static void test_dosing_decisions_take_no_temperature_input(void) {
   in.watchdogActive = true;
   in.waterPresent = true;
   in.reading = 7.40f;
-  in.filterReady = true;
   in.filterState = DoseFilterState::Ready;
-  in.filterUnstable = false;
   in.calPoints = 2;
   in.requiredPoints = 2;
   in.stabilizationActive = false;

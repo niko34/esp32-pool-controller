@@ -68,25 +68,18 @@ struct MqttTopics {
   String phSlopeAcidState;        // feature-024 : % pente acide pH (Slope,?)
   String phSlopeBaseState;        // feature-024 : % pente base pH (Slope,?)
   String phSlopeZeroState;        // feature-024 : décalage zéro pH (mV)
-  // feature-025 : chaîne de filtrage pH/ORP (médiane + EMA + rejet pics)
+  // feature-152 : chaîne de mesure pH/ORP, champs de DIAGNOSTIC seulement — la
+  // valeur officielle (publiée sur /ph et /orp, cf. topics.phState/orpState)
+  // encapsule déjà warmup/figé/périmé/porte fermée. Plus de topic *_filtered
+  // séparé (redondant avec /ph et /orp), ni *_filter_ready/*_filter_unstable/
+  // *_filter_stuck (mécanismes retirés — garde séparée « prêt »/« instable »,
+  // alarme « filtre non prêt durablement »).
   String phRawState;              // pH brut Atlas
   String phMedianState;           // pH médian
-  String phFilteredState;         // pH filtré (valeur PID)
-  String phFilterReadyState;      // ON/OFF filtre pH prêt
-  String phFilterUnstableState;   // ON/OFF capteur pH instable
   String phRejectedCountState;    // nb rejets pH
   String orpRawState;
   String orpMedianState;
-  String orpFilteredState;
-  String orpFilterReadyState;
-  String orpFilterUnstableState;
   String orpRejectedCountState;
-  // v2.20.3 (C3) : alarme « filtre non prêt durablement » (≥ 5 min avec eau et
-  // mesures représentatives) = régulation À L'ARRÊT. Distinct de *_filter_ready,
-  // qui passe légitimement à OFF à chaque warmup : ce topic-ci ne s'allume QUE
-  // sur une panne. ON/OFF retain, device_class `problem` côté HA.
-  String phFilterStuckState;
-  String orpFilterStuckState;
   // feature-068 (A5) : sonde de température d'EAU figée (run d'échantillons dans
   // une bande < ½ LSB du DS18B20). ON/OFF retain, device_class `problem` côté HA.
   // INFORMATIF : le verdict pool-chemistry du 07/09/2026 chiffre l'erreur de pH
