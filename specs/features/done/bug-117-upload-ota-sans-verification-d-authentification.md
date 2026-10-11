@@ -8,7 +8,7 @@
 | Priorité | **CRITIQUE** — à traiter avant tout autre bug de cette file |
 | Version livrée | **2.46.2** (`src/version.h`) |
 | Relevé par | `doc-writer`, 2026-09-07, en refusant de reprendre le verdict « sain » de l'audit ; confirmé par lecture directe |
-| Specs liées | `bug-save-config-applique-avant-authentification` (**même topologie**, corrigée en v2.46.1), `feature-026` (intégrité OTA), [`feature-118`](../todo/feature-118-authenticite-de-l-image-ota.md) (**suite** : authenticité de l'image), [`bug-112`](../todo/bug-112-journal-non-borne-sur-route-protegee.md) (journal non borné) |
+| Specs liées | `bug-save-config-applique-avant-authentification` (**même topologie**, corrigée en v2.46.1), `feature-026` (intégrité OTA), [`feature-118`](../doing/feature-118-authenticite-de-l-image-ota.md) (**suite** : authenticité de l'image), [`bug-112`](../todo/bug-112-journal-non-borne-sur-route-protegee.md) (journal non borné) |
 
 ## Domaines touchés
 - [x] OTA (`src/web_routes_ota.cpp`, `handleOtaUpdate()`)
@@ -98,7 +98,7 @@ n'est pas redondante — elle empêche l'effet de bord.
 - [ ] Décision tracée sur l'empreinte : rendue **obligatoire**, ou remplacée par une
       vraie signature, ou explicitement assumée comme contrôle d'intégrité seul (→ ADR)
       — **NON couvert par ce cycle**, renvoyé à
-      [`feature-118`](../todo/feature-118-authenticite-de-l-image-ota.md) : ce
+      [`feature-118`](../doing/feature-118-authenticite-de-l-image-ota.md) : ce
       correctif apporte l'**autorisation** de l'appelant, pas l'**authenticité** de
       l'image. Les deux sont indépendants et le second ne devait pas retarder le premier.
 - [x] `pio run` et `pio test -e native` sans régression
@@ -228,7 +228,7 @@ blocage sans savoir quel changement l'a causé.
 ## Hors périmètre
 - Le journal non borné (`bug-112`), le tamponnage JSON (`bug-113`).
 - La refonte du mécanisme d'intégrité en signature cryptographique : instruite
-  séparément, spec [`feature-118`](../todo/feature-118-authenticite-de-l-image-ota.md)
+  séparément, spec [`feature-118`](../doing/feature-118-authenticite-de-l-image-ota.md)
   (créée le 2026-09-07).
 
 ## Documentation produite

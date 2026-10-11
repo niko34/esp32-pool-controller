@@ -3534,6 +3534,17 @@ constexpr size_t kOtaSha256HexLen = 64;
 // Préfixe des digests d'assets GitHub (champ `digest` de l'API releases).
 constexpr const char* kOtaSha256Prefix = "sha256:";
 
+// feature-118 [C8] — PRÉPARÉ pour le lot B (empreinte obligatoire), lot A ne
+// l'utilise pas encore (il journalise sans refuser l'absence). Insiste
+// explicitement sur l'ORDRE des champs du formulaire : ESPAsyncWebServer ne
+// connaît un champ non-fichier qu'une fois sa partie du corps multipart
+// atteinte — un `sha256` placé APRÈS la partie fichier n'est pas encore lu à
+// index==0 et serait vu comme « absent » alors que le client l'a bien envoyé.
+constexpr const char* kOtaSha256MissingMessage =
+    "empreinte SHA-256 absente — le champ \"sha256\" doit PRÉCÉDER la partie "
+    "fichier dans le formulaire (upload refusé dès le premier octet, l'ordre "
+    "des champs multipart est déterminant)";
+
 // ============================================================================
 // NETWORK CONSTANTS - Paramètres réseau
 // ============================================================================

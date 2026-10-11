@@ -51,6 +51,27 @@ else
     AUTH_ARGS=(-u "admin:${password}")
 fi
 
+# feature-118 [O1] : empreinte SHA-256 du fichier, format "sha256:<64 hex
+# minuscule>" accepté par /update (lot A : journalisé côté serveur, pas
+# encore exigé — on l'envoie déjà pour que le journal affiche « conforme »
+# pour firmware ET filesystem avant l'ouverture du lot B, cf. spec feature-118
+# condition 4). Portabilité : `sha256sum` (coreutils GNU, présent sur Linux)
+# est tenté en premier ; `shasum -a 256` (Perl, c'est l'outil natif sur
+# macOS — `sha256sum` n'y existe PAS par défaut) en repli. Si ni l'un ni
+# l'autre n'est trouvé, échec SILENCIEUX côté empreinte uniquement (le champ
+# n'est simplement pas envoyé — lot A reste fail-open sur l'absence) mais
+# AVERTI côté console.
+compute_sha256() {
+    local file=$1
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$file" | awk '{print $1}'
+    elif command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 "$file" | awk '{print $1}'
+    else
+        return 1
+    fi
+}
+
 update_file() {
     local file=$1
     local name=$2
@@ -61,10 +82,22 @@ update_file() {
         return 1
     fi
 
+    # [O1] Champ "sha256" calculé AVANT l'envoi et placé AVANT "update" dans
+    # l'ordre des arguments curl (le serveur lit les champs non-fichier du
+    # multipart dans l'ordre d'arrivée — un sha256 envoyé APRÈS le fichier
+    # arriverait trop tard pour être vu à index==0).
+    local sha256_args=()
+    local digest
+    if digest=$(compute_sha256 "$file"); then
+        sha256_args=(-F "sha256=sha256:${digest}")
+    else
+        echo -e "${RED}⚠️  Ni sha256sum ni shasum disponibles — envoi de $name SANS empreinte${NC}"
+    fi
+
     echo -e "${BLUE}📤 Envoi de $name...${NC}"
     if ! response=$(curl -s --show-error --connect-timeout 10 --max-time 120 \
             -w "\n%{http_code}" -X POST "${AUTH_ARGS[@]}" \
-            -F "update_type=$type" -F "update=@$file" "$UPDATE_URL" 2>&1); then
+            -F "update_type=$type" "${sha256_args[@]}" -F "update=@$file" "$UPDATE_URL" 2>&1); then
         echo -e "${RED}❌ curl a échoué pour $name :${NC}"
         echo "$response"
         return 1
@@ -100,6 +133,13 @@ update_file() {
             echo -e "${RED}   Réponse du contrôleur : $body${NC}"
         else
             echo -e "${RED}   Réponse vide — consulter le Journal du contrôleur${NC}"
+        fi
+        # [O3] Indice ciblé quand le refus porte sur l'empreinte (feature-118) :
+        # le message brut du contrôleur ne précise pas que l'ORDRE des champs
+        # multipart est en cause si le sha256 a été envoyé mais arrive après
+        # le fichier (ce script l'envoie toujours AVANT — cf. [O1] ci-dessus).
+        if [ "$http_code" = "400" ] && printf '%s' "$body" | grep -qi "sha256\|empreinte"; then
+            echo -e "${RED}   → Vérifiez l'empreinte SHA-256 (sha256sum/shasum) et son format \"sha256:<64 hex>\"${NC}"
         fi
         return 1
     fi

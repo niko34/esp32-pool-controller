@@ -106,7 +106,11 @@ static OtaStreamHasher g_uploadHasher;          // Hachage incrémental du flux 
 static size_t g_uploadLastLog = 0;              // Throttle du log de progression (fix AC5)
 static uint8_t g_uploadExpected[32];            // Empreinte attendue (param sha256)
 static bool g_uploadHasExpected = false;        // Param sha256 fourni ET valide
-static bool g_uploadDigestInvalid = false;      // Param sha256 fourni mais malformé → refus au final
+// g_uploadDigestInvalid a été retiré (feature-118 lot A) : le refus
+// « empreinte malformée » est désormais tranché et appliqué à index==0,
+// AVANT `g_uploadOwner = request` (voir parseOtaSha256Param) — il n'atteint
+// plus jamais le bloc `final`, qui ne connaît donc plus que ABSENTE/CONFORME/
+// NON CONFORME via g_uploadHasExpected.
 static AsyncWebServerRequest* g_uploadOwner = nullptr;  // Requête propriétaire de la session d'upload
 
 // --- 2.20.1 : diagnostic d'échec (bug « journal noyé / cause écrasée ») ------
@@ -357,6 +361,28 @@ static void logUnauthorizedOtaUpload(AsyncWebServerRequest* request) {
   lastWarnMs = now;
 }
 
+// feature-118 lot A : trace, pour CHAQUE requête d'upload, le verdict que le
+// prédicat pur rend sur l'empreinte sha256 — SANS introduire de nouveau
+// refus (lot B transformera cette ligne en décision). « lot B aurait
+// refusé » vaut pour tout verdict différent de CONFORME, cf.
+// otaUploadWouldLotBReject. Niveau WARNING réservé aux anomalies (malformée :
+// déjà refusée indépendamment depuis ce lot ; non conforme : déjà refusée
+// depuis feature-026) — INFO sinon (absente : comportement actuel toléré,
+// lot A ne change rien ; conforme : rien à signaler).
+static void logOtaUploadIntegrityVerdict(OtaUploadIntegrityVerdict verdict) {
+  const bool wouldReject = otaUploadWouldLotBReject(verdict);
+  const String msg = String("[feature-118 lot A] Empreinte upload OTA : ") +
+                     otaUploadIntegrityVerdictLabel(verdict) +
+                     " — lot B aurait refusé : " + (wouldReject ? "oui" : "non") +
+                     " — observation, non bloquant";
+  if (verdict == OtaUploadIntegrityVerdict::kMalformed ||
+      verdict == OtaUploadIntegrityVerdict::kNonConform) {
+    systemLogger.warning(msg);
+  } else {
+    systemLogger.info(msg);
+  }
+}
+
 static void handleOtaUpdate(AsyncWebServerRequest* request, const String& filename, size_t index, uint8_t* data, size_t len, bool final) {
   // GARDE D'AUTHENTIFICATION — PREMIÈRE INSTRUCTION, avant tout effet de bord
   // (bug-117). Évaluée à CHAQUE fragment, pas seulement à index == 0 : un client
@@ -461,6 +487,53 @@ static void handleOtaUpdate(AsyncWebServerRequest* request, const String& filena
       }
     }
 
+    // ---- feature-118 lot A : paramètre `sha256` — parse + refus « malformée » (C1, C2, C3) --
+    // HORS du `if (len >= 1)` ci-dessus à dessein : un fichier VIDE produit un
+    // unique appel `len==0, final==true`, et le paramètre `sha256` (form-data)
+    // est déjà disponible à ce stade (en-têtes + champs non-fichier parsés
+    // avant le flux fichier, cf. le commentaire bug-117 plus haut) — il ne
+    // doit pas dépendre de la présence d'octets de fichier pour être contrôlé.
+    // `shaParamVerdict` est une variable LOCALE (pas de static requis : tout
+    // son usage — ici et dans le bloc de réarmement de g_uploadHasExpected
+    // plus bas — reste dans CETTE MÊME invocation à index==0) servant DEUX
+    // FOIS : ici (refus immédiat si malformé) et plus bas (armement de la
+    // comparaison de fin, cf. `final`).
+    const bool shaPresent = request->hasParam("sha256", true);
+    String shaProvided;
+    if (shaPresent) {
+      shaProvided = request->getParam("sha256", true)->value();
+    }
+    const OtaSha256ParamVerdict shaParamVerdict =
+        parseOtaSha256Param(shaPresent, shaPresent ? shaProvided.c_str() : nullptr,
+                            g_uploadExpected);
+
+    if (shaParamVerdict == OtaSha256ParamVerdict::kMalformed) {
+      // MÊME MOTIF que l'ancien refus de fin d'upload (feature-026), juste
+      // DÉPLACÉ plus tôt (condition C1, security-reviewer P1) : aucun
+      // Update.begin() n'a encore eu lieu à ce stade, donc aucun
+      // Update.abort() à faire ici — à la différence du refus final
+      // d'origine qu'il remplace.
+      logOtaUploadIntegrityVerdict(OtaUploadIntegrityVerdict::kMalformed);
+      // Refus AVANT `g_uploadOwner = request` (pas d'owner fantôme) et avant
+      // toute inhibition des pompes / démontage du filesystem.
+      // markUploadRejected : sans marqueur par requête, Update.hasError()
+      // serait faux → réponse "OK" et REDÉMARRAGE PARASITE.
+      markUploadRejected(request);
+      failOtaUpload(request, 400,
+                    "empreinte SHA-256 fournie invalide — flash refusé", true);
+      // Même nettoyage onDisconnect que le refus de type ci-dessus : ce
+      // chemin sort AVANT la prise de propriété, donc avant l'onDisconnect
+      // de session.
+      request->onDisconnect([request]() {
+        if (g_uploadVerdictOwner == request) {
+          g_uploadVerdictOwner = nullptr;
+          g_uploadVerdictStatus = 0;
+          g_uploadVerdictBody = String();
+        }
+      });
+      return;
+    }
+
     g_uploadOwner = request;
 
     // Si le client déconnecte en plein transfert, le bloc final n'arrive
@@ -499,7 +572,6 @@ static void handleOtaUpdate(AsyncWebServerRequest* request, const String& filena
     // terminal avait été raté.
     g_uploadLastLog = 0;
     g_uploadHasExpected = false;
-    g_uploadDigestInvalid = false;
     g_uploadErrorLogged = false;
     g_uploadVerdictOwner = nullptr;
     g_uploadVerdictStatus = 0;
@@ -511,22 +583,13 @@ static void handleOtaUpdate(AsyncWebServerRequest* request, const String& filena
     PumpController.setOtaInProgress(true);
 
     // Param POST `sha256` OPTIONNEL (upload manuel : l'utilisateur est
-    // physiquement présent). Accepté avec ou sans préfixe "sha256:".
-    // Présent mais malformé → refus explicite au final (fail-closed).
-    if (request->hasParam("sha256", true)) {
-      String provided = request->getParam("sha256", true)->value();
-      if (parseSha256Digest(provided.c_str(), g_uploadExpected)) {
-        g_uploadHasExpected = true;
-      } else {
-        String prefixed = String(kOtaSha256Prefix) + provided;
-        if (parseSha256Digest(prefixed.c_str(), g_uploadExpected)) {
-          g_uploadHasExpected = true;
-        } else {
-          g_uploadDigestInvalid = true;
-          systemLogger.critical("Intégrité OTA: empreinte sha256 fournie invalide — le flash sera refusé");
-        }
-      }
-    }
+    // physiquement présent). Déjà tranché et PARSÉ à index==0, AVANT la prise
+    // de propriété (shaParamVerdict, g_uploadExpected) : MALFORMED est déjà
+    // sorti par un `return` plus haut et ne peut plus être observé ici ;
+    // ABSENT laisse g_uploadHasExpected à false (comportement actuel,
+    // fail-OPEN — feature-118 lot A n'ajoute aucun refus) ; PARSED arme la
+    // comparaison de fin.
+    g_uploadHasExpected = (shaParamVerdict == OtaSha256ParamVerdict::kParsed);
 
     // Démonter LittleFS avant la mise à jour du filesystem
     if (cmd == U_SPIFFS) {
@@ -601,19 +664,16 @@ static void handleOtaUpdate(AsyncWebServerRequest* request, const String& filena
     sha256ToHex(computed, computedHex, sizeof(computedHex));
     systemLogger.info("Empreinte SHA-256 de l'image reçue: " + String(computedHex));
 
-    // Param sha256 fourni mais malformé → refus explicite (fail-closed).
-    // Update.abort() garantit hasError() == true → réponse "FAIL" au client.
-    if (g_uploadDigestInvalid) {
-      Update.abort();
-      failOtaUpload(request, 400,
-                    "empreinte SHA-256 fournie invalide — flash refusé", true);
-      // ORDRE IMPOSÉ : setOtaInProgress(false) AVANT LittleFS.begin().
-      // Le remontage est un no-op si la mise à jour visait le firmware
-      // (le filesystem n'a alors jamais été démonté).
-      PumpController.setOtaInProgress(false);
-      remountUploadFsIfNeeded();
-      g_uploadOwner = nullptr;  // Chemin terminal : libérer le verrou
-      return;
+    // feature-118 lot A : verdict d'authenticité JOURNALISÉ (observation, non
+    // bloquant) — AUCUN refus nouveau introduit ici. MALFORMED n'atteint
+    // JAMAIS ce point : il est refusé à index==0 (ci-dessus), AVANT même que
+    // `computed` existe. Seuls ABSENT et PARSED restent possibles ici, via
+    // g_uploadHasExpected.
+    {
+      const OtaSha256ParamVerdict paramVerdictAtFinal =
+          g_uploadHasExpected ? OtaSha256ParamVerdict::kParsed : OtaSha256ParamVerdict::kAbsent;
+      logOtaUploadIntegrityVerdict(
+          otaUploadIntegrityVerdict(paramVerdictAtFinal, g_uploadExpected, computed));
     }
 
     // Param sha256 fourni et valide → comparaison AVANT Update.end() :

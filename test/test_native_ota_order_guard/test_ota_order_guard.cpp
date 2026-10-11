@@ -1,0 +1,225 @@
+// =============================================================================
+// GARDE STRUCTURELLE — feature-118 lot A (condition 1 de l'audit security-reviewer)
+// =============================================================================
+// Ce n'est pas un test de comportement : c'est un test STRUCTUREL qui lit le
+// TEXTE des sources (patron test_native_ws_config_parity / test_native_dose_
+// banner_silence — aucun harnais JS/C++ exécutable n'existe pour ces deux
+// contrats). Il protège DEUX ordres impératifs, chacun documenté en commentaire
+// à la source, et chacun tel qu'une inversion silencieuse ferait tomber tout
+// le mécanisme d'authenticité de l'image OTA :
+//
+//   [G1] src/web_routes_ota.cpp : le contrôle du paramètre `sha256` (parse +
+//        refus « malformée ») doit s'exécuter AVANT `g_uploadOwner = request;`.
+//        Si on le déplace après, l'image a déjà été acceptée comme propriétaire
+//        de la session (et donc, plus loin dans le fichier, Update.begin() a pu
+//        démarrer) avant même d'avoir vérifié la forme de l'empreinte fournie —
+//        c'est EXACTEMENT le défaut qualifié de GRAVE par l'audit (condition 1).
+//
+//   [G2] data/app.js : le champ `sha256` doit être ajouté au FormData AVANT
+//        `update_file`. Le firmware (AsyncWebServer multipart) lit les champs
+//        PENDANT le parsing de la partie fichier : un champ placé après le
+//        fichier se lit comme ABSENT côté firmware (hasParam("sha256") rend
+//        false à index==0), ce qui désarme silencieusement toute la
+//        vérification — même si le code JS qui la calcule est parfaitement
+//        correct.
+//
+// LIMITE CONNUE (à ne pas masquer) : extraction TEXTUELLE. Un bloc remis en
+// COMMENTAIRE entre les marqueurs reste invisible — la garde protège contre la
+// distraction (un refactor qui déplace le bloc), pas contre un contournement
+// délibéré en revue.
+// =============================================================================
+
+#include <unity.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+void setUp(void) {}
+void tearDown(void) {}
+
+// -----------------------------------------------------------------------------
+// Lecture des sources du projet (patron test_native_dose_banner_silence)
+// -----------------------------------------------------------------------------
+static void stripComments(char* s) {
+  size_t i = 0;
+  while (s[i] != '\0') {
+    if (s[i] == '/' && s[i + 1] == '/') {
+      while (s[i] != '\0' && s[i] != '\n') s[i++] = ' ';
+    } else if (s[i] == '/' && s[i + 1] == '*') {
+      s[i++] = ' ';
+      s[i++] = ' ';
+      while (s[i] != '\0' && !(s[i] == '*' && s[i + 1] == '/')) {
+        if (s[i] != '\n') s[i] = ' ';
+        i++;
+      }
+      if (s[i] != '\0') { s[i++] = ' '; s[i++] = ' '; }
+    } else if (s[i] == '\'') {
+      i++;
+      if (s[i] == '\\' && s[i + 1] != '\0') i += 2;
+      else if (s[i] != '\0') i++;
+      if (s[i] == '\'') i++;
+    } else if (s[i] == '"') {
+      i++;
+      while (s[i] != '\0' && s[i] != '"') {
+        if (s[i] == '\\' && s[i + 1] != '\0') i++;
+        i++;
+      }
+      if (s[i] != '\0') i++;
+    } else {
+      i++;
+    }
+  }
+}
+
+static char* readProjectFile(const char* rel, long* outLen) {
+  char path[512];
+  char rooted[512];
+  const char* candidates[2];
+
+  rooted[0] = '\0';
+  {
+    const char* f = __FILE__;
+    const char* m = strstr(f, "test/test_native_ota_order_guard/");
+    if (m != NULL && (size_t)(m - f) < sizeof(rooted) - 256) {
+      const size_t n = (size_t)(m - f);
+      memcpy(rooted, f, n);
+      rooted[n] = '\0';
+      strncat(rooted, rel, sizeof(rooted) - strlen(rooted) - 1);
+    }
+  }
+  candidates[0] = rooted[0] ? rooted : NULL;
+  candidates[1] = rel;
+
+  const char* prefixes[3] = {"../", "../../", "../../../"};
+  for (int i = 0; i < 5; ++i) {
+    if (i >= 2) {
+      snprintf(path, sizeof(path), "%s%s", prefixes[i - 2], rel);
+    } else {
+      if (candidates[i] == NULL) continue;
+      snprintf(path, sizeof(path), "%s", candidates[i]);
+    }
+    FILE* fp = fopen(path, "rb");
+    if (fp == NULL) continue;
+    fseek(fp, 0, SEEK_END);
+    const long len = ftell(fp);
+    fseek(fp, 0, SEEK_SET);
+    if (len <= 0 || len > 4000000L) { fclose(fp); continue; }
+    char* buf = (char*)malloc((size_t)len + 1);
+    if (buf == NULL) { fclose(fp); continue; }
+    const size_t got = fread(buf, 1, (size_t)len, fp);
+    fclose(fp);
+    buf[got] = '\0';
+    stripComments(buf);
+    *outLen = (long)strlen(buf);
+    return buf;
+  }
+  return NULL;
+}
+
+static int countIn(const char* hay, const char* needle) {
+  int c = 0;
+  const size_t n = strlen(needle);
+  const size_t len = strlen(hay);
+  for (size_t i = 0; i + n <= len; ++i) {
+    if (memcmp(hay + i, needle, n) == 0) c++;
+  }
+  return c;
+}
+
+// Retourne l'offset de la PREMIÈRE occurrence de `needle` dans `hay`, ou -1.
+static long indexOf(const char* hay, const char* needle) {
+  const char* p = strstr(hay, needle);
+  if (p == NULL) return -1;
+  return (long)(p - hay);
+}
+
+// =============================================================================
+// [G1] web_routes_ota.cpp : contrôle sha256 AVANT g_uploadOwner = request;
+// =============================================================================
+void test_sha256_control_precedes_upload_owner_assignment(void) {
+  long len = 0;
+  char* src = readProjectFile("src/web_routes_ota.cpp", &len);
+  TEST_ASSERT_NOT_NULL_MESSAGE(
+      src, "src/web_routes_ota.cpp introuvable — la garde structurelle est aveugle");
+
+  // Marqueur du CALCUL du verdict (parseOtaSha256Param) — doit exister UNE
+  // seule fois dans le handler d'upload (index==0).
+  const int callCount = countIn(src, "parseOtaSha256Param(");
+  TEST_ASSERT_EQUAL_INT_MESSAGE(
+      1, callCount,
+      "parseOtaSha256Param( doit apparaitre EXACTEMENT une fois dans web_routes_ota.cpp");
+
+  // Marqueur de l'AFFECTATION de propriété (assignation, PAS une comparaison
+  // telle que `!= request` ou `request != g_uploadOwner`) — doit exister UNE
+  // seule fois (la prise de propriété réelle).
+  const char* ownerAssign = "g_uploadOwner = request;";
+  const int ownerAssignCount = countIn(src, ownerAssign);
+  TEST_ASSERT_EQUAL_INT_MESSAGE(
+      1, ownerAssignCount,
+      "g_uploadOwner = request; doit apparaitre EXACTEMENT une fois (prise de propriété)");
+
+  const long callIdx = indexOf(src, "parseOtaSha256Param(");
+  const long ownerIdx = indexOf(src, ownerAssign);
+  TEST_ASSERT_TRUE_MESSAGE(callIdx >= 0 && ownerIdx >= 0,
+                            "marqueurs introuvables dans web_routes_ota.cpp");
+  TEST_ASSERT_TRUE_MESSAGE(
+      callIdx < ownerIdx,
+      "REGRESSION feature-118 condition 1 : parseOtaSha256Param( doit precede "
+      "g_uploadOwner = request; — le controle d'authenticite doit s'executer "
+      "AVANT la prise de propriete de la session d'upload");
+
+  // Le refus « malformée » (le return effectif) doit, lui aussi, précéder la
+  // prise de propriété — sinon le bloc de calcul a pu être déplacé tout en
+  // laissant le refus s'exécuter trop tard (ou l'inverse).
+  const char* malformedCheck = "OtaSha256ParamVerdict::kMalformed)";
+  const long malformedIdx = indexOf(src, malformedCheck);
+  TEST_ASSERT_TRUE_MESSAGE(malformedIdx >= 0, "verification du verdict malforme introuvable");
+  TEST_ASSERT_TRUE_MESSAGE(
+      malformedIdx < ownerIdx,
+      "REGRESSION feature-118 condition 1 : le refus « malformee » doit precede "
+      "g_uploadOwner = request;");
+
+  free(src);
+}
+
+// =============================================================================
+// [G2] data/app.js : sha256 ajouté au FormData AVANT update_file
+// =============================================================================
+void test_formdata_sha256_precedes_update_file(void) {
+  long len = 0;
+  char* src = readProjectFile("data/app.js", &len);
+  TEST_ASSERT_NOT_NULL_MESSAGE(src, "data/app.js introuvable — la garde structurelle est aveugle");
+
+  const char* shaAppend = "formData.append(\"sha256\"";
+  const char* fileAppend = "formData.append(\"update_file\"";
+
+  const int shaCount = countIn(src, shaAppend);
+  const int fileCount = countIn(src, fileAppend);
+  TEST_ASSERT_EQUAL_INT_MESSAGE(1, shaCount,
+      "formData.append(\"sha256\" doit apparaitre EXACTEMENT une fois dans data/app.js");
+  TEST_ASSERT_EQUAL_INT_MESSAGE(1, fileCount,
+      "formData.append(\"update_file\" doit apparaitre EXACTEMENT une fois dans data/app.js");
+
+  const long shaIdx = indexOf(src, shaAppend);
+  const long fileIdx = indexOf(src, fileAppend);
+  TEST_ASSERT_TRUE_MESSAGE(shaIdx >= 0 && fileIdx >= 0, "marqueurs introuvables dans data/app.js");
+  TEST_ASSERT_TRUE_MESSAGE(
+      shaIdx < fileIdx,
+      "REGRESSION feature-118 : formData.append(\"sha256\", ...) doit precede "
+      "formData.append(\"update_file\", ...) — un champ place APRES le fichier se lit "
+      "comme ABSENT cote firmware (AsyncWebServer multipart)");
+
+  free(src);
+}
+
+// -----------------------------------------------------------------------------
+// Runner
+// -----------------------------------------------------------------------------
+int main(int argc, char** argv) {
+  (void)argc;
+  (void)argv;
+  UNITY_BEGIN();
+  RUN_TEST(test_sha256_control_precedes_upload_owner_assignment);
+  RUN_TEST(test_formdata_sha256_precedes_update_file);
+  return UNITY_END();
+}

@@ -163,3 +163,22 @@ jobs:
       # Même script en local (`./tools/check_acct_settle_single_point.sh`) et en CI.
       - name: Contrôle du point de passage unique
         run: ./tools/check_acct_settle_single_point.sh
+
+  # JOB 9 — les vecteurs SHA-256 du JS d'upload OTA tournent vraiment
+  # (feature-118, P2/security-reviewer condition 1). test/sha256_vectors.js
+  # était vert, versionné… et ORPHELIN : aucun workflow ne l'appelait, et
+  # `pio test -e native` ne voit pas un fichier `.js`. Il EXTRAIT désormais le
+  # texte réel de data/app.js (SHA256_K, createSha256) au lieu d'en tester une
+  # copie — toute divergence future entre le JS livré et ce qui est vérifié
+  # est donc structurellement impossible. Node est préinstallé sur
+  # ubuntu-latest : aucun actions/setup-node nécessaire.
+  sha256-vectors:
+    name: Vecteurs SHA-256 du JS d'upload OTA (feature-118)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # Même script en local (`./tools/check_sha256_vectors.sh`) et en CI.
+      - name: Contrôle des vecteurs SHA-256
+        run: ./tools/check_sha256_vectors.sh

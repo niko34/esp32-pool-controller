@@ -2,6 +2,40 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [2.66.0] - 2026-10-10
+
+### Firmware
+- **OTA — empreinte SHA-256 envoyée systématiquement, verdict journalisé (feature-118 lot
+  A, [ADR-0096](docs/adr/0096-empreinte-sha256-obligatoire-sur-post-update.md))** : la page
+  d'upload (`data/app.js`) calcule désormais l'empreinte SHA-256 de l'image **en JavaScript
+  pur** avant l'envoi (`crypto.subtle` est indisponible — l'appareil sert du HTTP en clair
+  sur une IP de LAN, un contexte non sécurisé) et `ota_update.sh` la calcule via
+  `sha256sum`/`shasum`. Le serveur **journalise** le verdict (absente / malformée /
+  conforme / non conforme) à chaque upload sur `POST /update` sans encore le transformer en
+  refus — sauf le cas **malformé**, dont le refus est désormais déclenché **avant tout
+  effet de bord** (avant `Update.begin()`, avant le démontage de LittleFS), alors qu'il
+  n'intervenait auparavant qu'en toute fin d'upload, après effacement **et réécriture** de
+  la partition. **Ce mécanisme prouve l'intégrité du transfert, pas l'authenticité
+  d'origine** — la règle de sécurité n° 6 de `CLAUDE.md` reste non satisfaite ; elle le sera
+  par une signature à clé publique, spec de suivi [feature-151](specs/features/todo/feature-151-signature-de-l-image-ota.md)
+  ouverte dans ce même lot.
+
+### Documentation
+- `docs/API.md`, `docs/subsystems/ota-manager.md` : section dédiée au lot A, formulation de
+  ce que l'empreinte prouve et ne prouve pas, nuance sur l'incohérence `/update` vs
+  `/download-update` (les deux routes sont au même niveau de preuve — appelant-fourni —
+  seule l'obligation diffère encore).
+- [ADR-0096](docs/adr/0096-empreinte-sha256-obligatoire-sur-post-update.md) : arbitrage des
+  trois issues (empreinte + JS embarqué retenue, exemption page web écartée car le firmware
+  ne peut pas distinguer son origine, signature reportée).
+- [ADR-0081](docs/adr/0081-recensement-du-tas-et-non-livraison-de-la-lecture-de-contenu.md) :
+  relecture du 2026-10-10 — le régime R2 reste conditionné, le déclencheur de réévaluation
+  se déplace vers feature-151 (signature), pas vers feature-118.
+- `specs/features/todo/feature-151-signature-de-l-image-ota.md` [nouveau] : spec de suivi,
+  signature à clé publique et plancher de version anti-retour en arrière.
+
+---
+
 ## [2.65.1] - 2026-10-10
 
 ### Firmware
