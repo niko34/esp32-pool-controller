@@ -148,6 +148,49 @@ réel · jeton seul pour les routes critiques tant que le transport est en clair
 Double champ `sha256` ⇒ la **première** occurrence est retenue (déterministe, à documenter) ·
 `sha256sum` n'existe pas sur macOS (`shasum -a 256`) si le script doit rester portable.
 
+
+## ✅ OBSERVATIONS ON-TARGET — 2026-10-11 (condition 2 du P2, levée)
+
+Relevées dans le journal persistant de l'appareil (v2.66.0), lignes citées **textuellement** :
+
+| Cas | Horodatage | Ligne |
+|---|---|---|
+| Script → **firmware** | 09:24:48 | `Empreinte upload OTA : conforme — lot B aurait refusé : non` |
+| Script → **filesystem** | 09:21:52 · 09:23:41 | `… : conforme — lot B aurait refusé : non` |
+| **Page web** → filesystem | 09:34:13 | `… : conforme — lot B aurait refusé : non` |
+| **Page web** → firmware | 09:35:49 | `… : conforme — lot B aurait refusé : non` |
+| **Envoi malformé** (`sha256=pasuneempreinte`) | 09:25:07 | `… : malformée — lot B aurait refusé : oui` puis `Mise à jour OTA refusée : empreinte SHA-256 fournie invalide — flash refusé` |
+
+**Preuve du placement de la garde, sur matériel réel** : après le refus de 09:25:07, la ligne
+`Début mise à jour OTA` **n'apparaît pas** (comptage à 0 sur le journal persistant). Le refus
+intervient donc bien **avant la prise de propriété** et avant tout effet de bord sur la
+partition — ce que la mutation m4 prouvait en théorie est constaté en production.
+Empreinte reçue à 09:35:49 = `11d4147d…`, identique au `sha256sum` local du `firmware.bin` :
+le calcul **JavaScript pur** du navigateur est exact (pas de `crypto.subtle`, indisponible en
+HTTP clair).
+
+### 🚨 TROUVAILLE DE L'ÉTAPE D'OBSERVATION — à traiter DANS le lot B
+```
+2026-10-11T09:33:17 INFO [feature-118 lot A] Empreinte upload OTA : absente — lot B aurait refusé : oui
+```
+Premier envoi depuis le navigateur : **aucune empreinte**. Cause : la page était **en cache**,
+chargée AVANT le déploiement du nouveau `data/app.js`. L'envoi a redémarré l'appareil, la page
+s'est rechargée, et l'envoi suivant (09:34:13) portait l'empreinte.
+
+⇒ **C'est exactement le risque que l'étape d'observation existait pour découvrir.** Avec un
+durcissement livré directement, l'utilisateur aurait vu son premier envoi **refusé** sans
+comprendre — et le message prévu (« le champ `sha256` doit précéder la partie fichier »)
+n'aide en rien quelqu'un dont la page ne l'envoie **pas du tout**.
+
+**À inscrire au périmètre du lot B** :
+1. Le message de refus « absente » doit couvrir **les deux** causes — champ placé après le
+   fichier **et** page obsolète en cache — et dire explicitement de **recharger la page**
+   (`Ctrl+Maj+R` / vider le cache du site).
+2. Évaluer une parade structurelle : en-têtes de cache sur `app.js`, ou numéro de version de la
+   page envoyé avec l'upload pour détecter l'obsolescence côté firmware.
+⚠️ Sans ce point, le lot B est livrable mais **hostile au premier usage** — chaque déploiement
+de FS créant une fenêtre où la page en cache est refusée.
+
 ## Comportement attendu
 À trancher par l'`architect` sur les trois issues, avec le coût de chacune chiffré —
 poids FS, complexité, et ce que chacune **prouve réellement**.
