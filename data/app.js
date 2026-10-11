@@ -2040,6 +2040,80 @@
     _phBounds = next;
   }
 
+  // ---------- feature-154 : seuils de SANTÉ pH servis, jamais codés en dur ----------
+  // classifyPhCriterion() est la SEULE fonction de jugement sain/hors/indisponible
+  // pour les trois critères pH (pente acide, pente base, décalage zéro) — miroir
+  // exact d'isPhProbeHealthy() (src/ph_guard_logic.h) : une pente ou un zéro HORS
+  // de [min, max] est rendu « hors », l'intérieur (bornes incluses) est « sain ».
+  // Les pentes s'évaluent sur (slopeMin, slopeMax), le zéro sur (-zeroMax,
+  // +zeroMax) : UNE SEULE fonction pour les deux, le zéro négatif devient un cas
+  // naturel (pas de Math.abs — les pentes sont déjà des pourcentages positifs).
+  //
+  // Rend 'indisponible' AVANT tout autre test si la valeur ou les bornes ne sont
+  // pas exploitables : le vert est structurellement INATTEIGNABLE sans seuils
+  // reçus du serveur (ADR-0100 : un seuil de santé est servi, jamais réécrit
+  // côté client — aucun repli ici, contrairement à PH_BOUNDS_FALLBACK ci-dessus,
+  // qui ne dégrade qu'une borne d'IHM ; un repli sur un seuil de santé
+  // INNOCENTE une sonde).
+  //
+  // Pure, nommée, sans DOM ni authFetch : extractible par ancre + profondeur
+  // d'accolades (ADR-0099). Aucun littéral numérique dans le corps hors 0 et 1 :
+  // c'est ce que le harnais de test assertera (feature-154, architect).
+  function classifyPhCriterion(value, minInclusive, maxInclusive) {
+    // isFinite couvre NaN ET les deux infinis. ⚠️ `isNaN` seul NE SUFFIT PAS :
+    // Infinity est un `number` qui n'est pas NaN, il passait donc la garde et
+    // finissait comparé normalement (Infinity > max ⇒ 'hors'). Pas un faux vert
+    // — une pastille rouge s'affichait quand même — mais un écart au contrat :
+    // une valeur non représentable n'est pas une mesure hors norme, c'est une
+    // mesure ABSENTE. Trouvé par le harnais de vecteurs, pas par la relecture.
+    if (value == null || typeof value !== "number" || !isFinite(value)) return 'indisponible';
+    if (!isFinite(minInclusive) || !isFinite(maxInclusive)) return 'indisponible';
+    if (minInclusive > maxInclusive) return 'indisponible';
+    if (value < minInclusive || value > maxInclusive) return 'hors';
+    return 'sain';
+  }
+
+  // Seuils de santé pH reçus de /get-config (ph_slope_healthy_min_pct,
+  // ph_slope_healthy_max_pct, ph_zero_healthy_max_mv — source constants.h,
+  // MÊMES constantes que isPhProbeHealthy() côté firmware).
+  // AUCUNE VALEUR INVENTÉE : tant qu'aucune réponse valide n'a jamais été
+  // reçue, le store reste null (jamais PH_BOUNDS_FALLBACK — un repli sur un
+  // seuil de SANTÉ innocenterait une sonde) et classifyPhCriterion() rend
+  // 'indisponible' pour les trois critères ET le chip global (condition C2 du
+  // gate pool-chemistry : vert seulement si les trois critères sont mesurés
+  // et dans la plage).
+  // ⚠️ Mais UNE FOIS une réponse valide reçue, un lot ABSENT ou INCOHÉRENT est
+  // ignoré EN BLOC et la DERNIÈRE borne connue est CONSERVÉE — même mécanique
+  // que _applyPhBounds ci-dessus. Ces trois clés sont HTTP-only
+  // (kHttpOnlyKeys, test_native_ws_config_parity : « app.js conserve la
+  // dernière borne reçue », texte normatif du test) : la trame WS "config" NE
+  // LES PORTE JAMAIS (budget de trame), y compris le push INITIAL envoyé par
+  // le serveur juste après que le client vient de faire un /get-config
+  // complet au démarrage. Réinitialiser à null à chaque frame WS ferait
+  // retomber les 3 pastilles sur « indisponible » quelques secondes après
+  // CHAQUE chargement de page — une régression, pas une prudence.
+  let _phHealth = null;
+
+  function _applyPhHealth(cfg) {
+    const slopeMin = _phNum(cfg?.ph_slope_healthy_min_pct);
+    const slopeMax = _phNum(cfg?.ph_slope_healthy_max_pct);
+    const zeroMax = _phNum(cfg?.ph_zero_healthy_max_mv);
+    if (isFinite(slopeMin) && isFinite(slopeMax) && isFinite(zeroMax)
+        && slopeMin < slopeMax && zeroMax > 0) {
+      _phHealth = { slopeMin, slopeMax, zeroMax };
+    }
+    // sinon : lot absent/incohérent → _phHealth INCHANGÉ (conserve la
+    // dernière valeur connue, ou reste null si aucune n'a jamais été reçue).
+    //
+    // Un modal déjà ouvert avant la réponse de /get-config affichait sinon
+    // trois pastilles "indisponible" figées jusqu'à la prochaine trame WS
+    // (jusqu'à 30 s) : re-rendre tout de suite si l'utilisateur regarde déjà
+    // l'écran, et rafraîchir le chip global avec les mêmes seuils.
+    const modal = $("#ph-probe-modal");
+    if (modal && modal.open) _renderPhProbeModalValues(latestSensorData || {});
+    updatePhProbeChip(latestSensorData || {});
+  }
+
   // ---------- feature-147 : jauges pH / ORP (représentation graphique) ----------
   // Gate pool-chemistry, condition C1 : l'échelle trace UNIQUEMENT le pH
   // CORRIGÉ (`data.ph`, déjà affiché en compact-value) — jamais un mélange
@@ -2849,6 +2923,9 @@
     _applyPhBounds(cfg);
     buildPhTargetSegments();
     renderPhTargetHint();
+    // feature-154 : seuils de SANTÉ pH (pente/zéro) — distincts des bornes de
+    // réglage ci-dessus. Alimente les 3 pastilles du modal + le chip global.
+    _applyPhHealth(cfg);
 
     // Consigne pH — écriture SILENCIEUSE (pas de dispatch) : lire la config ne
     // doit jamais marquer le formulaire modifié. B7 : consigne absente ou
@@ -6393,20 +6470,35 @@
       }
       return { cls: 'warn', label: 'Pente non disponible' };
     }
-    const min = Math.min(acidNum, baseNum);
-    const zeroAbs = (zero == null || isNaN(zero)) ? 0 : Math.abs(Number(zero));
-    // Sonde calibrée : préfixer « Calibré » pour uniformiser avec le chip ORP, tout en
-    // conservant l'info de santé (pente %). Cas « à remplacer » : l'alerte prime sur « Calibré ».
-    if (min < 85 || zeroAbs > 30) {
-      return { cls: 'bad', label: `Sonde à remplacer · ${Math.round(min)} %` };
+    // feature-154 (B4) : plus qu'UN SEUL jugement de santé dans l'application —
+    // classifyPhCriterion() contre les seuils SERVIS (_phHealth), plus aucun
+    // seuil recopié ici (85/90/95/15/30 disparus). B8 : un zéro null/NaN est
+    // 'indisponible', JAMAIS 0 mV — un module EZO qui ne rapporte que deux
+    // champs (atlas_ezo.cpp:271, condition C1 du gate) laisserait sinon un
+    // faux vert PERMANENT sur un critère jamais mesuré.
+    const zeroNum = (zero == null || isNaN(zero)) ? null : Number(zero);
+    const acidJudg = _phHealth
+      ? classifyPhCriterion(acidNum, _phHealth.slopeMin, _phHealth.slopeMax) : 'indisponible';
+    const baseJudg = _phHealth
+      ? classifyPhCriterion(baseNum, _phHealth.slopeMin, _phHealth.slopeMax) : 'indisponible';
+    const zeroJudg = _phHealth
+      ? classifyPhCriterion(zeroNum, -_phHealth.zeroMax, _phHealth.zeroMax) : 'indisponible';
+
+    // C3 (gate pool-chemistry, vocabulaire BLOQUANT) : « Sonde à remplacer »
+    // disparaît — il a accusé une sonde SAINE le 2026-08-25 (décalage externe)
+    // et récidivé le 2026-10-11 (jonction de référence, membrane intacte). Le
+    // libellé retenu par l'utilisateur n'accuse AUCUNE pièce et renvoie au
+    // détail (3 pastilles) pour savoir lequel des trois critères est en cause.
+    if (acidJudg === 'hors' || baseJudg === 'hors' || zeroJudg === 'hors') {
+      return { cls: 'bad', label: 'Calibré · critère hors norme' };
     }
-    if (min < 90) {
-      return { cls: 'warn2', label: `Calibré · sonde usée ${Math.round(min)} %` };
+    // C2 (gate, bloquant) : le chip ne peut être vert QUE si les TROIS
+    // critères sont mesurés ET dans la plage. Un seul 'indisponible' interdit
+    // le vert — jamais un faux vert sur un critère non mesuré.
+    if (acidJudg === 'indisponible' || baseJudg === 'indisponible' || zeroJudg === 'indisponible') {
+      return { cls: 'unknown', label: 'Calibré · critère indisponible' };
     }
-    if (min < 95 || zeroAbs > 15) {
-      return { cls: 'warn', label: `Calibré · sonde ${Math.round(min)} %` };
-    }
-    return { cls: 'good', label: `Calibré · sonde ${Math.round(min)} %` };
+    return { cls: 'good', label: 'Calibré · sain' };
   }
 
   // feature-138 (B1/B2) : helper d'âge PARTAGÉ — il était écrit deux fois
@@ -6455,9 +6547,12 @@
 
     const { cls, label } = classifyPhProbe({ acid, base, zero, calPoints, ageMs });
 
-    // Reset les classes de variantes uniquement
+    // Reset les classes de variantes uniquement. feature-154 (B4) : 'warn2'
+    // retiré — classifyPhProbe() ne le produit plus (dégradé 4 niveaux disparu
+    // pour la santé pH), mais la classe CSS .chip--probe-warn2 reste définie
+    // (sert au chip ORP / chip--cal).
     chip.classList.remove(
-      'chip--probe-good', 'chip--probe-warn', 'chip--probe-warn2',
+      'chip--probe-good', 'chip--probe-warn',
       'chip--probe-bad', 'chip--probe-unknown', 'chip--probe-stale'
     );
     chip.classList.add(`chip--probe-${cls}`);
@@ -6481,6 +6576,29 @@
     if (modal && modal.open) _renderPhProbeModalValues(json);
   }
 
+  // feature-154 (B1) : glyphe + libellé .sr-only par état de pastille. Glyphe
+  // en aria-hidden, le sens est porté par .sr-only (classe déjà présente,
+  // app.css:3424) — jamais la couleur seule (daltonisme rouge-vert).
+  const PH_PASTILLE_GLYPH = { sain: '✓', hors: '✕', indisponible: '–' };
+  const PH_PASTILLE_SR = { sain: 'sain', hors: 'hors norme', indisponible: 'indisponible' };
+
+  // Rend une pastille à partir d'un état classifyPhCriterion(), ou AUCUNE
+  // pastille (élément masqué via [hidden]) si state est null — cas « sonde
+  // non calibrée » : la valeur affiche déjà « -- ». Non interactive (pas de
+  // tabindex/role) : purement informative, ne conditionne aucun dosage (C6).
+  function _renderPhPastille(el, state) {
+    if (!el) return;
+    if (state == null) {
+      el.hidden = true;
+      el.className = 'probe-pastille';
+      el.innerHTML = '';
+      return;
+    }
+    el.hidden = false;
+    el.className = `probe-pastille probe-pastille--${state}`;
+    el.innerHTML = `<span aria-hidden="true">${PH_PASTILLE_GLYPH[state]}</span><span class="sr-only">${PH_PASTILLE_SR[state]}</span>`;
+  }
+
   function _renderPhProbeModalValues(json) {
     const acidEl = $("#ph-probe-acid");
     const baseEl = $("#ph-probe-base");
@@ -6497,14 +6615,35 @@
     const fmtPct = (v) => (v == null || isNaN(v)) ? '--' : `${Number(v).toFixed(1)} %`;
     const fmtMv = (v) => (v == null || isNaN(v)) ? '--' : `${Number(v).toFixed(2)} mV`;
 
+    const acidPastille = $("#ph-probe-acid-pastille");
+    const basePastille = $("#ph-probe-base-pastille");
+    const zeroPastille = $("#ph-probe-zero-pastille");
+
     if (calPoints != null && calPoints < 2) {
       acidEl.textContent = '--';
       baseEl.textContent = '--';
       zeroEl.textContent = '--';
+      // B1 (table ux-ui-designer) : sonde non calibrée → AUCUNE pastille.
+      _renderPhPastille(acidPastille, null);
+      _renderPhPastille(basePastille, null);
+      _renderPhPastille(zeroPastille, null);
     } else {
       acidEl.textContent = fmtPct(acid);
       baseEl.textContent = fmtPct(base);
       zeroEl.textContent = fmtMv(zero);
+
+      // feature-154 (B2/B8) : classement par critère contre les seuils SERVIS
+      // (_phHealth). Aucun repli : _phHealth null ⇒ 'indisponible' pour les
+      // trois (classifyPhCriterion le garantit structurellement).
+      const acidNum = (acid == null || isNaN(acid)) ? null : Number(acid);
+      const baseNum = (base == null || isNaN(base)) ? null : Number(base);
+      const zeroNum = (zero == null || isNaN(zero)) ? null : Number(zero);
+      _renderPhPastille(acidPastille, _phHealth
+        ? classifyPhCriterion(acidNum, _phHealth.slopeMin, _phHealth.slopeMax) : 'indisponible');
+      _renderPhPastille(basePastille, _phHealth
+        ? classifyPhCriterion(baseNum, _phHealth.slopeMin, _phHealth.slopeMax) : 'indisponible');
+      _renderPhPastille(zeroPastille, _phHealth
+        ? classifyPhCriterion(zeroNum, -_phHealth.zeroMax, _phHealth.zeroMax) : 'indisponible');
     }
     ageEl.textContent = formatProbeAge(ageMs);
 

@@ -225,3 +225,30 @@ jobs:
       # Même script en local (`./tools/check_trace_logic_vectors.sh`) et en CI.
       - name: Contrôle des vecteurs de logique de trace
         run: ./tools/check_trace_logic_vectors.sh
+
+  # JOB 12 — les vecteurs de santé pH tournent vraiment (feature-154,
+  # pastilles de santé par critère sonde pH). Patron des jobs 9 et 11
+  # (sha256-vectors, trace-logic-vectors) : une sentinelle que personne ne
+  # lance ne protège de rien. `classifyPhCriterion()` de `data/app.js` est le
+  # MIROIR exact d'`isPhProbeHealthy()` côté firmware (src/ph_guard_logic.h) —
+  # c'est elle qui juge les trois pastilles (pente acide, pente base, décalage
+  # zéro) de l'écran « État sonde pH ». Le script EXTRAIT le texte réel de
+  # cette fonction (ancre + comptage de profondeur, scanner désormais
+  # factorisé dans `test/js_extract.js`, ADR-0099 amendé) au lieu d'en tester
+  # une copie, puis l'évalue contre des vecteurs couvrant les bornes exactes
+  # (90,0/110,0/15,0, incluses comme saines), le faux vert historique
+  # (115 %), le zéro négatif, les valeurs non exploitables, et une assertion
+  # STRUCTURELLE : le code extrait ne contient aucun littéral numérique hors
+  # 0 et 1 (ADR-0100 — un seuil de santé est servi, jamais réécrit côté
+  # client). Node est préinstallé sur ubuntu-latest : aucun
+  # actions/setup-node nécessaire.
+  ph-health-vectors:
+    name: Vecteurs de santé pH par critère (feature-154)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # Même script en local (`./tools/check_ph_health_vectors.sh`) et en CI.
+      - name: Contrôle des vecteurs de santé pH
+        run: ./tools/check_ph_health_vectors.sh

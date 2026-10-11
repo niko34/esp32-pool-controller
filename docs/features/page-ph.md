@@ -405,23 +405,24 @@ Sous la valeur pH dans le bloc Statistiques, un **chip cliquable** affiche en pe
 
 ### Classification (UI)
 
-Source : champs WS `phSlopeAcid`, `phSlopeBase`, `phSlopeZero`, `phSlopeAgeMs`, `phCalPoints`. Les seuils sont **dans `data/app.js`** (constantes `PH_PROBE_*` + fonction `classifyPhProbe()`) — modifier sans reflasher le firmware.
+Source : champs WS `phSlopeAcid`, `phSlopeBase`, `phSlopeZero`, `phSlopeAgeMs`, `phCalPoints`. **Depuis la v2.70.0 (feature-154)**, les **seuils de santé** (plage des pentes, plafond du zéro) ne sont **plus** codés en dur dans `data/app.js` : ils viennent de `GET /get-config` (`ph_slope_healthy_min_pct`, `ph_slope_healthy_max_pct`, `ph_zero_healthy_max_mv` — voir [API.md](../API.md)), les **mêmes constantes** (`constants.h`) que celles consommées par `isPhProbeHealthy()` côté firmware (`src/ph_guard_logic.h`), qui décide la bascule de sécurité pH. Un seul jugement de santé existe désormais dans l'application.
 
 > **v2.21.2 (parité de transport)** : les 4 champs `phSlope*` sont désormais **aussi dans `GET /data`** (mêmes règles null/arrondi que le WS) — un client sans WebSocket voit la pente via le poll `/data`, voir [API.md](../API.md#get-data--write).
 
-> **feature-034 — chip unique sonde + calibration** : ce chip est désormais l'**unique** indicateur « sonde + calibration » du bloc Statistiques pH (le chip de calibration séparé `#ph-cal-chip` a été supprimé). Pour `phCalPoints < 2`, il affiche l'**état de calibration** ; pour `≥ 2`, il affiche le **diagnostic de pente** (santé sonde).
+> **feature-034 — chip unique sonde + calibration** : ce chip est désormais l'**unique** indicateur « sonde + calibration » du bloc Statistiques pH (le chip de calibration séparé `#ph-cal-chip` a été supprimé). Pour `phCalPoints < 2`, il affiche l'**état de calibration** ; pour `≥ 2`, il affiche le **diagnostic de pente** (santé sonde), résumé des **trois critères** détaillés dans le [modal](#modal-détails).
 
-| `phCalPoints` | min(acide, base) | \|zéro\| (mV) | Variante CSS | Libellé | Couleur |
-|---|---|---|---|---|---|
-| `null` ou `< 0` | — | — | `chip--probe-unknown` | « Sonde pH : lecture en cours… » | gris |
-| `0` | — | — | `chip--probe-bad` | « Calibration requise » | rouge |
-| `1` | — | — | `chip--probe-warn` | « Calibration 1/2 » | ambré |
-| `≥ 2` | NaN / `null` **et** `phSlopeAgeMs` `null` (jamais lu) | — | `chip--probe-unknown` | « Pente en cours de lecture… » | gris |
-| `≥ 2` | NaN / `null` **et** `phSlopeAgeMs` non-`null` (pente invalidée) | — | `chip--probe-warn` | « Pente non disponible » | ambré |
-| `≥ 2` | `≥ 95 %` | `≤ 15` | `chip--probe-good` | « Sonde excellente · 98 % » | vert (`var(--success)`) |
-| `≥ 2` | `90–95 %` | `≤ 30` | `chip--probe-warn` | « Sonde correcte · 92 % » | ambré clair (`var(--warn)`) |
-| `≥ 2` | `85–90 %` | `≤ 30` | `chip--probe-warn2` | « Sonde usée · 87 % » | ambré (`var(--warn)`) |
-| `≥ 2` | `< 85 %` OU `> 30` | — | `chip--probe-bad` | « Sonde à remplacer · 81 % » | rouge (`var(--danger)`, point pulsant) |
+`classifyPhCriterion(value, min, max)` rend l'un de trois états — `sain` / `hors` / `indisponible`, jamais un booléen — pour chacun des trois critères (pente acide, pente base, décalage zéro). Le chip agrège les trois :
+
+| `phCalPoints` | Agrégat des 3 critères | Variante CSS | Libellé | Couleur |
+|---|---|---|---|---|
+| `null` ou `< 0` | — | `chip--probe-unknown` | « Sonde pH : lecture en cours… » | gris |
+| `0` | — | `chip--probe-bad` | « Calibration requise » | rouge |
+| `1` | — | `chip--probe-warn` | « Calibration 1/2 » | ambré |
+| `≥ 2` | pentes NaN/`null` **et** `phSlopeAgeMs` `null` (jamais lu) | `chip--probe-unknown` | « Pente en cours de lecture… » | gris |
+| `≥ 2` | pentes NaN/`null` **et** `phSlopeAgeMs` non-`null` (pente invalidée) | `chip--probe-warn` | « Pente non disponible » | ambré |
+| `≥ 2` | au moins un des 3 critères **hors** de la fenêtre servie | `chip--probe-bad` | « Calibré · critère hors norme » | rouge (`var(--danger)`, point pulsant) |
+| `≥ 2` | aucun critère hors norme, mais au moins un **indisponible** (ex. zéro non rapporté par un module EZO ancien, ou seuils pas encore reçus) | `chip--probe-unknown` | « Calibré · critère indisponible » | gris |
+| `≥ 2` | **les trois** critères mesurés et dans la fenêtre (condition C2 du gate `pool-chemistry` : un seul « indisponible » interdit le vert) | `chip--probe-good` | « Calibré · sain » | vert (`var(--success)`) |
 
 > **v2.21.2 (bug-slope-boot-perdue) — 3 états au lieu du fourre-tout « EZO indisponible » / « Pente non disponible »** :
 >
@@ -429,7 +430,15 @@ Source : champs WS `phSlopeAcid`, `phSlopeBase`, `phSlopeZero`, `phSlopeAgeMs`, 
 > 2. **« Pente en cours de lecture… »** (`phSlopeAgeMs` `null`, classe neutre, **pas** warning) — la pente n'a **jamais** été lue depuis le boot. État transitoire attendu : le firmware **retente automatiquement** la `Slope,?` de boot ([sensors.md](../subsystems/sensors.md#retentative-bornée-de-la-slope-de-boot--v2212)) → se résout en **< 2 min**.
 > 3. **« Pente non disponible »** (`phSlope*` `null` **mais** `phSlopeAgeMs` non-`null`, classe `warn`) — la pente a déjà été lue **puis invalidée** après échecs répétés (`kEzoBusFailMaxConsecutive`) : **erreur réelle**, seul état d'échec des trois.
 >
-> Les états sonde excellente / correcte / usée / à remplacer et calibration requise / 1-2 sont inchangés.
+> Les états calibration requise / 1-2 sont inchangés. Les quatre derniers états (« Calibré · sain » et suivants) sont **nouveaux** en v2.70.0, voir ci-dessous.
+
+> ⚠️ **v2.70.0 (feature-154) — « Sonde à remplacer » a disparu** (vocabulaire retenu par le gate `pool-chemistry`, condition C3, **bloquante**). Ce libellé a accusé une sonde **saine** le 2026-08-25 (pentes 101/100 %, zéro −1,03 mV — cause réelle : un décalage de mesure **externe**, pas une pièce défaillante) et **récidivait** le 2026-10-11 sur des pentes à 100,2/100,0 % (zéro 128,16 mV — jonction de référence, membrane intacte). Les nouveaux libellés, **choisis par l'utilisateur**, « Calibré · sain » et « Calibré · critère hors norme », n'accusent **aucune pièce** et renvoient au [modal de détail](#modal-détails) pour savoir **lequel** des trois critères est en cause.
+>
+> **La borne HAUTE des pentes est désormais testée.** Avant cette feature, une pente de 115 % passait « Sonde excellente » (le chip ne regardait qu'un plancher `≥ 95 %`) alors qu'elle est **hors norme pour le firmware** (`isPhProbeHealthy()` refuse `> 110 %`) : l'utilisateur aurait vu du vert sur une sonde que l'appareil juge hors norme. Un zéro `null`/NaN — ce que rapporte un module EZO qui ne sert que deux valeurs (`atlas_ezo.cpp:271`) — n'est **plus jamais compté sain par défaut** : c'était un faux vert potentiellement **permanent** sur ce type de module (condition C1 du gate).
+>
+> ⚠️ **Aucune de ces pastilles ni le chip qui les résume ne conditionnent un dosage** (condition C6 du gate `pool-chemistry`, bloquante) — c'est un **affichage de diagnostic pur**. La seule décision de sécurité qui consomme la même fenêtre de seuils est `isPhProbeHealthy()` côté firmware, **inchangée** par cette feature : elle ne fait que nuancer le message de la bascule automatique (3 refus de garde pH / 24 h).
+>
+> **Nuance à ne pas perdre** : un zéro hors fenêtre (ex. 20 mV) reste **exploitable après recalibration** (trempage KCl, vérification de l'équipotentialité) — la pastille rouge dit « **hors fenêtre de diagnostic** », pas « sonde morte ».
 
 ### État stale (âge > 36 h)
 
@@ -437,18 +446,39 @@ Si `phSlopeAgeMs > 36 h` (`PH_PROBE_STALE_MS`), la classe `chip--probe-stale` es
 
 ### Modal détails
 
-Au clic (ou `Enter`/`Espace`), un `<dialog id="ph-probe-modal">` s'ouvre :
+Au clic (ou `Enter`/`Espace`), un `<dialog id="ph-probe-modal">` s'ouvre. **Depuis la v2.70.0 (feature-154)**, il est réorganisé en **deux groupes nommés** au lieu de sept lignes à plat (règle d'accumulation du 3ᵉ ajout, `ux-ui-designer` mandat complet sur l'écran entier) :
 
-- **Pente acide** — `<id="ph-probe-acid">` au format `99.7 %` (1 décimale). `--` si NaN ou `phCalPoints < 2`.
-- **Pente base** — `<id="ph-probe-base">` au format `100.3 %`.
-- **Décalage zéro** — `<id="ph-probe-zero">` au format `-0.89 mV` (2 décimales). `--` si firmware EZO ancien ne le rapporte pas.
-- **Vérifié** — `<id="ph-probe-age">` libellé lisible : « à l'instant », « il y a 14 h », « il y a 2 j 3 h », « jamais ».
-- ⚠️ **Trois lignes de diagnostic de la chaîne de mesure, absorbées ici depuis la v2.68.0** (feature-152 — plus de modal « filtre » séparé, voir [Ce qui a été retiré, fusionné, conservé](#ce-qui-a-été-retiré-fusionné-conservé-feature-152-v2680)) :
-  - **Valeur brute** — `<id="ph-fm-raw">` (`phRaw`, 2 décimales, sans offset).
-  - **Valeur retenue** — `<id="ph-fm-filtered">` (valeur officielle, médiane 9 + lissage, corrigée — identique au champ `ph`).
-  - **Dernière mesure** — `<id="ph-fm-age">` (âge de la dernière brute, même formatage que « Vérifié »).
-- **Bouton « Rafraîchir »** (`#ph-probe-refresh`) → `POST /debug/ph_slope_refresh`. Texte bascule en « Rafraîchissement… » jusqu'à ce que `phSlopeAgeMs` redescende sous 60 s (succès → toast « Pente sonde pH rafraîchie ») ou timeout 8 s (`PH_PROBE_REFRESH_TIMEOUT_MS` → toast « Sonde non joignable »).
-- **Bouton « Fermer »** (`#ph-probe-close`) ou clic backdrop ou `ESC`.
+**Groupe « Étalonnage »** — les trois critères qui décident `isPhProbeHealthy()` côté firmware, chacun suivi d'une **pastille** (voir [Les 4 états de pastille](#les-4-états-de-pastille-feature-154) ci-dessous) :
+
+- **Pente acide** — `<id="ph-probe-acid">` au format `99.7 %` (1 décimale). `--` si NaN ou `phCalPoints < 2`. Pastille `#ph-probe-acid-pastille`.
+- **Pente base** — `<id="ph-probe-base">` au format `100.3 %`. Pastille `#ph-probe-base-pastille`.
+- **Décalage zéro** — `<id="ph-probe-zero">` au format `-0.89 mV` (2 décimales). `--` si firmware EZO ancien ne le rapporte pas. Pastille `#ph-probe-zero-pastille`.
+
+Suivi de la légende **« Vérifié »** (`<p class="probe-modal__legend">`, `<id="ph-probe-age">`) : libellé lisible « à l'instant », « il y a 14 h », « il y a 2 j 3 h », « jamais ». ⚠️ **Ex-ligne pleine largeur, devenue légende** sous le groupe en v2.70.0 : elle faisait **doublon** avec « Dernière mesure » du second groupe, qui est un **autre âge** (celui de la mesure brute, pas de la pente).
+
+**Groupe « Mesure en direct »** — trois lignes de diagnostic de la chaîne de mesure, absorbées ici depuis la v2.68.0 (feature-152 — plus de modal « filtre » séparé, voir [Ce qui a été retiré, fusionné, conservé](#ce-qui-a-été-retiré-fusionné-conservé-feature-152-v2680)), **sans pastille** (ce ne sont pas des critères de santé, juste des valeurs de diagnostic) :
+
+- **Valeur brute** — `<id="ph-fm-raw">` (`phRaw`, 2 décimales, sans offset).
+- **Valeur retenue** — `<id="ph-fm-filtered">` (valeur officielle, médiane 9 + lissage, corrigée — identique au champ `ph`).
+- **Dernière mesure** — `<id="ph-fm-age">` (âge de la dernière brute, même formatage que « Vérifié »).
+
+**Bouton « Rafraîchir »** (`#ph-probe-refresh`) → `POST /debug/ph_slope_refresh`. Texte bascule en « Rafraîchissement… » jusqu'à ce que `phSlopeAgeMs` redescende sous 60 s (succès → toast « Pente sonde pH rafraîchie ») ou timeout 8 s (`PH_PROBE_REFRESH_TIMEOUT_MS` → toast « Sonde non joignable »).
+**Bouton « Fermer »** (`#ph-probe-close`) ou clic backdrop ou `ESC`.
+
+#### Les 4 états de pastille (feature-154)
+
+⚠️ **Aucune pastille ne conditionne un dosage** — c'est un affichage de diagnostic pur (condition C6 du gate `pool-chemistry`, **bloquante**). Chaque état se distingue par **forme ET couleur**, jamais la couleur seule (daltonisme rouge/vert — exactement la paire employée ici) :
+
+| État | Rendu | Condition | Lu par un lecteur d'écran |
+|---|---|---|---|
+| **Sain** | cercle **plein** vert, glyphe `✓` | valeur dans `[min, max]` **inclus** — seuils servis par `GET /get-config` | « sain » |
+| **Hors norme** | cercle **plein** rouge, glyphe `✕` | valeur hors de cette plage | « hors norme » |
+| **Indisponible** | cercle **CREUX**, contour pointillé gris, `–` | valeur non mesurée (`null`/NaN) **ou** seuils de santé pas encore reçus du firmware — **jamais compté sain** | « indisponible » |
+| **Non calibré** | **aucune pastille** | `phCalPoints < 2` — les pentes n'ont pas de sens tant que la sonde n'est pas calibrée, la valeur affiche déjà `--` | — |
+
+Le glyphe porte `aria-hidden="true"` ; le sens est porté par une classe `.sr-only` dédiée (`app.css:3424`), jamais par la couleur seule. La pastille est **non interactive** (pas de rôle bouton, pas de contrainte de cible tactile 44 px).
+
+**Responsive, vérifié à 390 px** : le modal est plafonné à 320 px de large, contenu utile ≈ 284 px ; le pire cas (« Décalage zéro » + « -128,16 mV » + pastille) occupe ≈ 207 px — tient avec ~77 px de marge. Le `flex-wrap` reste posé par prudence et ne doit jamais se déclencher en usage réel.
 
 ### Fallback `<dialog>` non supporté
 
@@ -550,6 +580,7 @@ L'ordre d'exécution est libre (mid puis low, ou inverse). En pratique, les util
 **Atteinte de la cible (feature-096, v2.37.0)** : `ph_ttt_state` (uint8 `0`-`3`, **4-255 réservés**), `ph_ttt_min` (uint16, **minutes de circulation** — ⚠️ **sens variable selon l'état**), `ph_ttt_e0` (float 2 décimales \| `null`), `ph_ttt_flag` (**champ de bits**). Servis **à l'identique** par `GET /data` (même passage des deux côtés). `ph_ttt_state` non numérique = firmware antérieur → bloc masqué. La mémoire 7 jours vient de [`GET /get-kpi`](../API.md#get-get-kpi--write), **jamais du WS**. Voir [Atteinte de la cible](#atteinte-de-la-cible-feature-096-v2370)
 **Limite d'actionneur (feature-086, v2.29.0)** : `ph_sustainable_ml_per_min` (float 2 décimales \| `null`), `ph_daily_max_ml` (int mL/j \| `null`), `ph_limited_by_hourly_budget` (bool), `ph_undersized` (bool). Servis **à l'identique** par `GET /data` (même passage des deux côtés — aucun clignotement possible). `ph_limited_by_hourly_budget` non booléen = firmware antérieur → capacités **et** bandeaux masqués. Voir [Capacités et bandeaux](#capacités-de-dosage-et-bandeaux-de-limite-dactionneur-feature-086-v2290)
 **Config** : `ph_target`, `ph_correction_type` (`ph_minus` / `ph_plus`), `max_ph_ml_per_day`, `ph_offset` (feature-067, message `config` — pas `sensor_data`)
+**Seuils de santé pH (feature-154, v2.70.0)** : `ph_slope_healthy_min_pct`, `ph_slope_healthy_max_pct`, `ph_zero_healthy_max_mv` — `GET /get-config` **uniquement**, jamais la trame WS (constantes de compilation, budget de trame) ; le client conserve la dernière valeur reçue entre deux appels. Voir [Classification (UI)](#classification-ui) et [API.md](../API.md).
 **Injection manuelle** : `ph_inject_remaining_s`
 **Stabilisation** : `stabilization_remaining_s`
 **Validité mesure (feature-061, v2.13.0 ; retrait de l'analyse de stabilité feature-139, v2.62.0)** : `water_present`, `measures_valid`, `measures_stab_elapsed_s`, `measures_purge_last_duration_s`, `measures_purge_last_end`, `measures_dose_available_in_s`, `filtration_state_stale` — badge `#ph-page-badge` + valeur `--` quand la mesure n'est pas représentative (voir [Badge d'état mesure](#badge-détat-mesure-ph-page-badge-feature-061-v2130)). Servis **à l'identique** par `GET /data` (parité obligatoire). ⚠️ `measures_stab_remaining_s` **n'existe plus** depuis la v2.34.0 ; `measures_purge_count` **n'existe plus** depuis la v2.62.0 ; le bandeau `#measures_purge_timeout_banner` est **retiré** depuis la v2.62.0 (voir section dédiée plus haut).

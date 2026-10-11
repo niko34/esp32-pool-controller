@@ -1772,11 +1772,17 @@ static_assert(numfmt::isRoundedToTenth(kPhFloorCorrected) &&
               "securite FAUX. Corriger la marge, ou repasser la cause a deux "
               "decimales via pool-chemistry.");
 
-// --- Diagnostic EZO : fenêtre de « sonde saine » (v2.25.0) ---
-// Sert UNIQUEMENT à nuancer le message d'escalade (3 refus / 24 h) : une sonde
-// dans cette fenêtre n'est pas en cause, il faut chercher un décalage de
-// référence externe (courants de fuite de la pompe de filtration, campagne de
-// bruit 22-23/08/2026). Aucune décision de dosage ne dépend de ces bornes.
+// --- Diagnostic EZO : fenêtre de « sonde saine » (v2.25.0, élargi feature-154) ---
+// Fenêtre de diagnostic EZO. (1) nuance le message d'escalade (3 refus / 24 h) :
+// une sonde dans cette fenêtre n'est pas en cause, il faut chercher un décalage
+// de référence externe (courants de fuite de la pompe de filtration, campagne
+// de bruit 22-23/08/2026) ; (2) depuis feature-154, AFFICHÉE CRITÈRE PAR
+// CRITÈRE à l'utilisateur (pastille par pente et par zéro, écran « État sonde
+// pH »), servie au navigateur par GET /get-config.
+// AUCUNE DÉCISION DE DOSAGE N'EN DÉPEND — NE JAMAIS EN FAIRE UNE GARDE.
+// Toute modification de ces bornes change un texte VISIBLE (message
+// d'escalade + pastilles) : doc (`docs/API.md`, `docs/features/page-ph.md`) +
+// CHANGELOG + passage `pool-chemistry` obligatoires.
 // Pentes : ±10 % autour du Nernst théorique (tolérance Atlas Scientific pour une
 // sonde en bon état). Zéro : 15 mV ≈ 0,25 pH, sous le plus petit décalage
 // INTERNE qui justifierait une recalibration.

@@ -2,6 +2,82 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [2.70.0] - 2026-10-11
+
+### Fonctionnalités
+
+- **Trois pastilles de santé par critère sur l'écran « État sonde pH » (feature-154)** —
+  au lieu d'un verdict global qui amalgamait pente acide, pente base et décalage
+  de zéro en un seul chiffre, chacune des trois lignes du modal de détail porte
+  désormais sa propre pastille **verte (sain) / rouge (hors norme) / creuse
+  (indisponible)**. Déclencheur : un verdict « sonde à remplacer · 100 % »
+  affiché le 2026-10-11 sur une sonde dont les deux pentes étaient parfaites
+  (100,2 % / 100,0 %) — seul le zéro (128,16 mV, jonction de référence) était en
+  cause. Trois pastilles séparées disent immédiatement **vert · vert · rouge**.
+  - ⚠️ **Le verdict du chip global change de CRITÈRES — à ne pas confondre avec
+    un simple changement de libellé.** Le libellé **« Sonde à remplacer »
+    disparaît** : il avait accusé une sonde **saine** le 2026-08-25 (pentes
+    101 % / 100 %, zéro −1,03 mV — cause réelle : un décalage **externe**, pas
+    une pièce défaillante) et **récidivait** le 2026-10-11 sur des pentes à
+    100 % (jonction de référence, membrane intacte). Nouveaux libellés,
+    **choisis par l'utilisateur** : « **Calibré · sain** » et « **Calibré ·
+    critère hors norme** » — aucun des deux n'accuse de pièce, ils renvoient au
+    détail pour savoir lequel des trois critères est en cause.
+  - **La borne HAUTE des pentes est enfin testée** : une pente de **115 %**
+    passait « Sonde excellente » (seul un plancher `≥ 95 %` était regardé) alors
+    qu'elle est hors norme pour le firmware (`isPhProbeHealthy()` refuse
+    `> 110 %`). Elle est désormais classée « hors norme ».
+  - **Un critère jamais mesuré n'est plus compté comme sain.** Un module EZO
+    qui ne rapporte que deux valeurs (pentes, sans zéro) ne produit plus de
+    faux vert — potentiellement **permanent** sur ce type de module : un critère
+    non mesuré est « indisponible », jamais « sain » par défaut.
+  - **Source unique des seuils** : les trois bornes (90-110 % pour les
+    pentes, ±15 mV pour le zéro) sont servies par le firmware (`GET
+    /get-config`) et consommées à l'identique par l'interface — plus aucun
+    seuil recopié en dur côté client, plus de second jugement de santé
+    divergent de celui qui nuance le message d'escalade de la bascule de
+    sécurité pH.
+  - ⚠️ **Aucune pastille, ni le chip qui les résume, ne conditionnent un
+    dosage** : affichage de diagnostic pur. Un zéro hors fenêtre reste
+    **exploitable après recalibration** — la pastille rouge dit « hors fenêtre
+    de diagnostic », pas « sonde morte ».
+  - **Modal réorganisé en deux groupes** (« Étalonnage » / « Mesure en
+    direct ») au lieu de sept lignes à plat ; la ligne « Vérifié » devient une
+    légende sous le premier groupe (elle faisait doublon avec « Dernière
+    mesure »).
+
+### Firmware
+
+- **`GET /get-config`** sert trois nouveaux champs lecture seule :
+  `ph_slope_healthy_min_pct` (90), `ph_slope_healthy_max_pct` (110),
+  `ph_zero_healthy_max_mv` (15) — dérivés des mêmes constantes (`constants.h`)
+  que celles utilisées par `isPhProbeHealthy()`. Volontairement absents de la
+  trame WebSocket (constantes de compilation, marge de trame serrée — voir
+  [docs/API.md](docs/API.md)).
+
+### Documentation
+
+- `docs/API.md` : les trois champs de seuils ajoutés à `GET /get-config`, la
+  note sur la divergence d'arrondi bornée (< 0,05 % / < 0,005 mV) et la
+  référence à [ADR-0100](docs/adr/0100-un-seuil-de-sante-est-servi-jamais-reecrit-cote-client.md).
+- `docs/features/page-ph.md` : les trois pastilles, leurs quatre états
+  (sain / hors norme / indisponible / non calibré), le vocabulaire retenu, et
+  la réorganisation du modal en deux groupes.
+- `docs/user/src/guide-utilisation.html` : vocabulaire de la FAQ « une
+  pastille annonce… » mis à jour (« Sonde à remplacer » retiré).
+- `docs/BUILD.md` : douzième job CI `ph-health-vectors`.
+- `docs/adr/0100-un-seuil-de-sante-est-servi-jamais-reecrit-cote-client.md` —
+  **nouvel ADR** : un seuil de santé affiché est servi par le firmware, jamais
+  réécrit côté client ; contrainte mécanique (aucun littéral numérique hors 0
+  et 1 dans le texte extrait de `classifyPhCriterion`).
+- [ADR-0099](docs/adr/0099-tester-par-extraction-de-texte-jamais-par-duplication.md)
+  **amendé** (section « Mise à jour 2026-10-11 ») : le scanner d'extraction est
+  factorisé dans `test/js_extract.js`, requis par les trois harnais de
+  vecteurs — l'alternative « généraliser le patron » qu'il écartait pour
+  feature-153 est retenue.
+
+---
+
 ## [2.69.0] - 2026-10-11
 
 ### Fonctionnalités

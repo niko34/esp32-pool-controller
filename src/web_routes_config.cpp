@@ -136,6 +136,11 @@ static void handleGetConfig(AsyncWebServerRequest* request) {
   // marge 3776 l'absorbe sans ajustement (StaticJson<N> n'est que documentaire
   // ici, sérialisation dans une String croissante via sendJsonResponse, aucun
   // plafond dur contrairement au buffer WS).
+  // feature-154 : +3 bornes de santé EZO (ph_slope_healthy_min_pct/_max_pct,
+  // ph_zero_healthy_max_mv) — MESURÉ (ArduinoJson 7, pas une estimation) :
+  // 90 o de JSON pour les trois paires clé/valeur (floats ronds sérialisés
+  // sans décimale, ex. "90" et non "90.0") + 1 o de virgule de jonction =
+  // 91 o. La marge 3776 l'absorbe largement, sans ajustement.
   StaticJson<3776> doc;
   // >>> PARITE-CONFIG:DEBUT
   // CONVENTION NORMATIVE (lue telle quelle par la sentinelle
@@ -259,6 +264,23 @@ static void handleGetConfig(AsyncWebServerRequest* request) {
   doc["ph_offset_min"]  = kPhOffsetMin;
   doc["ph_offset_max"]  = kPhOffsetMax;
   doc["ph_offset_step"] = kPhOffsetStep;
+
+  // feature-154 — FENÊTRE DE SANTÉ EZO servie au navigateur (constants.h).
+  // Source UNIQUE : `isPhProbeHealthy()` (ph_guard_logic.h) consomme les MÊMES
+  // constantes côté firmware. L'écran « État sonde pH » calcule ses trois
+  // pastilles (pente acide, pente base, décalage zéro) à partir de CES bornes
+  // reçues — classifyPhCriterion() ne recopie plus 90/110/15 en dur côté client.
+  // C6 (gate pool-chemistry) : AUCUNE PASTILLE NE CONDITIONNE UN DOSAGE. Ces
+  // trois valeurs sont purement diagnostiques/affichage ; la seule décision de
+  // sécurité qui les consomme est `isPhProbeHealthy()`, qui reste INCHANGÉE
+  // (ni appelée ni modifiée ici) et ne nuance qu'un message d'escalade.
+  // Lecture seule : HTTP-only dans kHttpOnlyKeys (test_ws_config_parity), comme
+  // ph_target_min/_max/_step ci-dessus — constantes de compilation, jamais
+  // réémises en WS (budget de trame). Route /get-config publique : ces 3
+  // seuils sont déjà documentés publiquement (docs/API.md), aucune fuite.
+  doc["ph_slope_healthy_min_pct"] = kPhSlopeHealthyMinPct;
+  doc["ph_slope_healthy_max_pct"] = kPhSlopeHealthyMaxPct;
+  doc["ph_zero_healthy_max_mv"]   = kPhZeroHealthyMaxMv;
 
   // v2.20.3 (C5) : bascule AUTOMATIQUE de la régulation pH en manuel, persistée.
   // `ph_auto_manual_epoch` == 0 → aucune bascule automatique en attente

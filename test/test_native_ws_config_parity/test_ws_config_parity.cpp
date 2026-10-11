@@ -69,6 +69,12 @@ static const HttpOnlyKey kHttpOnlyKeys[] = {
   {"ph_offset_min",  "Constante de compilation (kPhOffsetMin) : immuable a l'execution, app.js conserve la derniere borne recue."},
   {"ph_offset_max",  "Constante de compilation (kPhOffsetMax) : immuable a l'execution, app.js conserve la derniere borne recue."},
   {"ph_offset_step", "Constante de compilation (kPhOffsetStep) : immuable a l'execution, app.js conserve le dernier pas recu."},
+  // feature-154 : fenetre de sante EZO (constants.h) servie pour les 3
+  // pastilles de l'ecran "Etat sonde pH" (classifyPhCriterion cote client).
+  // Memes regles que les bornes ph_target_*/ph_offset_* ci-dessus.
+  {"ph_slope_healthy_min_pct", "Constante de compilation (kPhSlopeHealthyMinPct) : immuable a l'execution, app.js conserve la derniere borne recue."},
+  {"ph_slope_healthy_max_pct", "Constante de compilation (kPhSlopeHealthyMaxPct) : immuable a l'execution, app.js conserve la derniere borne recue."},
+  {"ph_zero_healthy_max_mv",   "Constante de compilation (kPhZeroHealthyMaxMv) : immuable a l'execution, app.js conserve la derniere borne recue."},
   {"regulation_defaults_by_size",
    "Table de compilation (kRegulationDefaultsBySize, 3 colonnes) : immuable a l'execution et ~525 o de trame par push."},
   // Dérivable côté client : `pool_size` EST dans la trame WS depuis bug-089 et

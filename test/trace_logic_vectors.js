@@ -18,6 +18,12 @@
 // donc structurellement impossible : ce qui tourne ICI est le code qui
 // tourne dans le navigateur.
 //
+// Le scanner d'extraction (`findMatchingClose` / `extractBalancedFromAnchor`)
+// vit désormais dans `test/js_extract.js` (feature-154, amendement ADR-0099) :
+// ce fichier le REQUIERT au lieu d'en garder une copie locale — il en
+// possédait une, strictement identique (au commentaire près) à celle de
+// `test/sha256_vectors.js`, jusqu'à ce que ce doublon soit factorisé.
+//
 // Exécution : `node test/trace_logic_vectors.js` (zéro dépendance npm, sort
 // avec un code non nul si un vecteur échoue — utilisable en CI et en
 // pre-commit local via `./tools/check_trace_logic_vectors.sh`).
@@ -35,6 +41,7 @@
 const assert = require("assert");
 const fs = require("fs");
 const path = require("path");
+const { extractBalancedFromAnchor } = require("./js_extract");
 
 // ---------------------------------------------------------------------
 // Extraction du code RÉELLEMENT livré depuis data/app.js (voir commentaire
@@ -43,68 +50,6 @@ const path = require("path");
 
 const APP_JS_PATH = path.join(__dirname, "..", "data", "app.js");
 const appJsSource = fs.readFileSync(APP_JS_PATH, "utf8");
-
-// Retourne l'index du caractère de FERMETURE correspondant à `openChar` situé
-// à `openIdx` dans `src` (qui doit être `openChar`), en ignorant tout
-// `openChar`/`closeChar` situé à l'intérieur d'une chaîne ('...'/"..."/`...`)
-// ou d'un commentaire (// ou /* */) — un texte extrait doit rester du CODE,
-// jamais une citation en commentaire (même piège que bug-098 / check_fopen_
-// guard.sh / sha256_vectors.js).
-function findMatchingClose(src, openIdx, openChar, closeChar) {
-  if (src[openIdx] !== openChar) {
-    throw new Error(`findMatchingClose: src[${openIdx}] n'est pas '${openChar}'`);
-  }
-  let depth = 0;
-  let i = openIdx;
-  while (i < src.length) {
-    const c = src[i];
-    if (c === '"' || c === "'" || c === "`") {
-      const quote = c;
-      i++;
-      while (i < src.length && src[i] !== quote) {
-        i += src[i] === "\\" ? 2 : 1;
-      }
-      i++;
-      continue;
-    }
-    if (c === "/" && src[i + 1] === "/") {
-      i += 2;
-      while (i < src.length && src[i] !== "\n") i++;
-      continue;
-    }
-    if (c === "/" && src[i + 1] === "*") {
-      i += 2;
-      while (i < src.length && !(src[i] === "*" && src[i + 1] === "/")) i++;
-      i += 2;
-      continue;
-    }
-    if (c === openChar) {
-      depth++;
-    } else if (c === closeChar) {
-      depth--;
-      if (depth === 0) return i;
-    }
-    i++;
-  }
-  throw new Error(`findMatchingClose: aucune fermeture '${closeChar}' trouvée pour l'ouverture à l'index ${openIdx}`);
-}
-
-// Localise `anchorText` dans `src`, exige UNE SEULE occurrence (sinon
-// l'extraction serait ambiguë), et retourne la portion de `src` depuis le
-// début de l'ancre jusqu'au caractère `closeChar` correspondant au
-// `openChar` qui termine l'ancre (inclus).
-function extractBalancedFromAnchor(src, anchorText, openChar, closeChar) {
-  const firstIdx = src.indexOf(anchorText);
-  if (firstIdx === -1) {
-    throw new Error(`Ancre introuvable dans data/app.js : ${JSON.stringify(anchorText)}`);
-  }
-  if (src.indexOf(anchorText, firstIdx + 1) !== -1) {
-    throw new Error(`Ancre AMBIGUË (plusieurs occurrences) dans data/app.js : ${JSON.stringify(anchorText)}`);
-  }
-  const openIdx = firstIdx + anchorText.length - 1;
-  const closeIdx = findMatchingClose(src, openIdx, openChar, closeChar);
-  return { text: src.slice(firstIdx, closeIdx + 1), closeIdx };
-}
 
 const groupHistoryPointsSource = extractBalancedFromAnchor(
   appJsSource,

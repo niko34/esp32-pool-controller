@@ -543,6 +543,8 @@ Le latch de refus est **consommé** par la décision et non relu comme une trans
 
 Ces seuils de diagnostic servent **uniquement** à formuler le message : **aucune décision de dosage n'en dépend**.
 
+**v2.70.0 (feature-154)** : ces mêmes trois constantes sont désormais **servies au navigateur** (`GET /get-config` : `ph_slope_healthy_min_pct`, `ph_slope_healthy_max_pct`, `ph_zero_healthy_max_mv`) et consomées par l'écran « État sonde pH » pour afficher **une pastille par critère** (pente acide, pente base, décalage zéro) — voir [page-ph.md](../features/page-ph.md#classification-ui) et [API.md](../API.md). `isPhProbeHealthy()` reste la **seule** fonction qui décide, inchangée par cette feature ; l'affichage ne fait que la rendre lisible critère par critère. Principe verrouillé par [ADR-0100](../adr/0100-un-seuil-de-sante-est-servi-jamais-reecrit-cote-client.md) : un seuil de santé affiché est servi par le firmware, jamais réécrit côté client.
+
 > ℹ️ Ces messages dépassent la charge utile MQTT (`kMaxPayloadLen` = 128 o) : `publishAlert()` les tronque proprement (frontière UTF-8 + suffixe `... (voir journal)`) pour que le JSON reste valide côté Home Assistant. Texte intégral dans le journal système et dans `ph_auto_manual_reason`.
 
 **Effacement de la cause exposée.** La **relâche** d'une garde (et le cas mesure indisponible) efface la cause de refus quand une garde en est propriétaire — y compris le message « régulation pH basculée en manuel », qui ne décrit plus un refus en cours. C'est le seul point du firmware qui tourne à chaque tick **quel que soit le mode** : `canDose(0)` ne le ferait qu'en mode `automatic`, donc en `manual` la chaîne restait figée sur un blocage révolu — précisément le mode où l'UI expose l'injection manuelle. La trace de l'escalade est conservée à part (`setPhAutoManualTrace` + bannière d'acquittement).
@@ -714,8 +716,8 @@ Une injection **en cours** n'est pas interrompue par un changement d'offset : le
 | `kPhOrpInhibit` | `7.60` pH | Seuil d'inhibition du dosage ORP — **sur le pH CORRIGÉ** depuis la v2.25.0 |
 | `kPhLowWarn` | `7.00` pH | **v2.25.0** — Avertissement d'eau acide **NON BLOQUANT** sur le pH CORRIGÉ (ne compte ni ne bloque rien) |
 | `kPhGuardReleaseHysteresis` | `0.05` pH | **v2.25.0** — Hystérésis de relâche **commune à toutes** les gardes pH (basses, hautes, butées brutes, inhibition ORP) |
-| `kPhSlopeHealthyMinPct` / `kPhSlopeHealthyMaxPct` | `90` / `110` % | **v2.25.0** — Fenêtre de pente « sonde saine » (message d'escalade uniquement) |
-| `kPhZeroHealthyMaxMv` | `15` mV | **v2.25.0** — \|zéro\| maximal d'une sonde saine (≈ 0,25 pH) |
+| `kPhSlopeHealthyMinPct` / `kPhSlopeHealthyMaxPct` | `90` / `110` % | **v2.25.0** — Fenêtre de pente « sonde saine » (message d'escalade) ; **v2.70.0** : servie au navigateur ([ADR-0100](../adr/0100-un-seuil-de-sante-est-servi-jamais-reecrit-cote-client.md)), affichée critère par critère sur [page-ph.md](../features/page-ph.md) |
+| `kPhZeroHealthyMaxMv` | `15` mV | **v2.25.0** — \|zéro\| maximal d'une sonde saine (≈ 0,25 pH) ; **v2.70.0** : idem, servie et affichée |
 | `kPhGuardRefusalMax` | `3` | Refus tolérés dans la fenêtre avant bascule en manuel (mode `automatic` **seul**) |
 | `kPhGuardRefusalWindowMs` | `86 400 000` ms (24 h) | Fenêtre glissante du compteur de refus |
 | `kPhGuardScheduledAlertIntervalMs` | `3 600 000` ms (1 h) | **v2.25.0** — Débit maximal de réémission de l'alerte `ph_guard_scheduled` (le mode programmé n'escalade pas) |

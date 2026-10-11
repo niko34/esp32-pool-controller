@@ -98,3 +98,36 @@ l'extraction et ferait échouer le job CI au lieu de faire échouer silencieusem
 - Précédent généralisé : [`test/sha256_vectors.js`](../../test/sha256_vectors.js), [`tools/check_sha256_vectors.sh`](../../tools/check_sha256_vectors.sh) (feature-118)
 - CI : job `trace-logic-vectors` de [`.github/workflows/hygiene-specs.yml`](../../.github/workflows/hygiene-specs.yml), documenté dans [BUILD.md](../BUILD.md#intégration-continue-github-actions)
 - Spec : [`specs/features/done/feature-153-signaux-capteurs-medianne-et-deux-cadences.md`](../../specs/features/done/feature-153-signaux-capteurs-medianne-et-deux-cadences.md)
+
+## Mise à jour 2026-10-11 (feature-154) — AMENDEMENT, pas supersession
+
+**La décision centrale est inchangée** : la logique pure de `data/app.js` se
+teste en extrayant et en exécutant son texte réel, jamais en le recopiant.
+Ce qui change : l'alternative listée ci-dessus comme « non retenue pour ce
+lot » — *« généraliser le patron `sha256_vectors.js` à un harnais unique
+réutilisable… mais c'est la direction naturelle si un troisième cas
+apparaît »* — **est désormais retenue**.
+
+**Le troisième cas est arrivé** : `feature-154` (pastilles de santé par
+critère sur l'écran sonde pH) a besoin d'extraire `classifyPhCriterion()` de
+`data/app.js` pour son harnais `test/ph_health_vectors.js`. Avant ce lot,
+`test/sha256_vectors.js` (feature-118) et `test/trace_logic_vectors.js`
+(feature-153) contenaient chacun une copie **strictement identique** (au
+commentaire près, vérifié par `diff`) de `findMatchingClose()` et
+`extractBalancedFromAnchor()`. Un troisième harnais aurait fait trois copies
+du même code — exactement ce que cette décision existe pour éviter, appliqué
+cette fois au harnais lui-même plutôt qu'à la logique testée.
+
+**Ce qui a changé concrètement** : les deux fonctions d'extraction sont
+factorisées dans [`test/js_extract.js`](../../test/js_extract.js), qui
+n'exécute rien par lui-même — il est `require()`-é par les trois harnais
+(`sha256_vectors.js`, `trace_logic_vectors.js`, `ph_health_vectors.js`), qui
+conservent chacun leurs propres ancres et leurs propres vecteurs. Le CI
+compte désormais un douzième job, `ph-health-vectors` (voir
+[BUILD.md](../BUILD.md#intégration-continue-github-actions)), suivant le
+même patron `check_*.sh` que les deux précédents.
+
+**Conséquence sur la section « Alternatives considérées » ci-dessus** :
+l'item « non retenue pour ce lot » est donc historique — il décrit l'état au
+2026-10-11 avant ce troisième cas, laissé tel quel par discipline (on ne
+réécrit pas un ADR accepté), la levée étant actée ici.

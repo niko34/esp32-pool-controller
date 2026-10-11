@@ -3743,6 +3743,10 @@ h1, h2, h3 {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  /* feature-154 (B6) : flex-wrap posé PAR PRUDENCE — vérifié à 390 px (pire
+     cas « Décalage zéro » + valeur + pastille ≈ 207 px sur 284 disponibles,
+     marge ~77 px) : ne doit jamais se déclencher en usage réel. */
+  flex-wrap: wrap;
   padding: 8px 0;
   border-bottom: 1px solid var(--stroke);
   font-size: 13px;
@@ -3753,6 +3757,67 @@ h1, h2, h3 {
   color: var(--text);
   font-variant-numeric: tabular-nums;
   font-weight: 600;
+}
+/* feature-154 : regroupe valeur + pastille côté droit de la ligne */
+.probe-modal__row-right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+/* feature-154 (ux-ui-designer) : titre de groupe — copie exacte du pattern
+   .readout__label (12px / 700 / uppercase / --muted). */
+.probe-modal__group-label {
+  margin: 14px 0 4px;
+  color: var(--muted);
+  font-weight: 750;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.probe-modal__group-label:first-of-type { margin-top: 0; }
+/* Légende sous le groupe « Étalonnage » — remplace l'ex-ligne « Vérifié »
+   pleine largeur (doublon avec « Dernière mesure », un AUTRE âge). */
+.probe-modal__legend {
+  margin: 0;
+  padding: 4px 0 10px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* ---------- feature-154 : pastilles de santé par critère (pH) ----------
+   Design ARRÊTÉ (ux-ui-designer) : forme ET couleur, jamais la couleur
+   seule — un cercle PLEIN (sain/hors) ne se confond pas avec un cercle
+   CREUX pointillé (indisponible), un ✓ ne se confond pas avec un ✕, même
+   sans distinguer rouge et vert (daltonisme). Glyphe aria-hidden, le sens
+   est porté par .sr-only. Non interactive (pas de tabindex/role, pas de
+   contrainte 44 px). Pas d'animation sur la pastille rouge — réservée au
+   chip fermé. ⚠️ Aucune pastille ne conditionne un dosage : affichage de
+   diagnostic pur (C6 du gate pool-chemistry, feature-154). */
+.probe-pastille {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  font-size: 10px;
+  line-height: 1;
+  box-sizing: border-box;
+}
+.probe-pastille[hidden] { display: none; }
+.probe-pastille--sain {
+  background: var(--success);
+  color: #fff;
+}
+.probe-pastille--hors {
+  background: var(--danger);
+  color: #fff;
+}
+.probe-pastille--indisponible {
+  background: transparent;
+  border: 1px dashed var(--muted);
+  color: var(--muted);
 }
 /* v2.25.1 : ligne « Dosage bloqué » d'un modal filtre quand la cause est une
    PANNE (code 16/17/20/21 : sonde figée, sonde muette). Les causes normales

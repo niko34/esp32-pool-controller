@@ -143,7 +143,8 @@ docs/
 │   ├── 0096-empreinte-sha256-obligatoire-sur-post-update.md
 │   ├── 0097-le-filtre-lisse-le-dosage-juge.md
 │   ├── 0098-toute-constante-de-mesure-declare-sa-source.md
-│   └── 0099-tester-par-extraction-de-texte-jamais-par-duplication.md
+│   ├── 0099-tester-par-extraction-de-texte-jamais-par-duplication.md
+│   └── 0100-un-seuil-de-sante-est-servi-jamais-reecrit-cote-client.md
 │
 ├── API.md               ← Référence REST + WebSocket
 ├── MQTT.md              ← Topics MQTT + auto-discovery Home Assistant

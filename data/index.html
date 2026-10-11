@@ -1140,25 +1140,40 @@
             </div>
           </div>
 
-          <!-- Modal détails sonde pH (feature-024) -->
+          <!-- Modal détails sonde pH (feature-024, réorganisé feature-154 B1 :
+               2 groupes nommés au lieu de 7 lignes à plat — règle d'accumulation,
+               3e ajout. feature-154 : aucune pastille ne conditionne un dosage,
+               c'est un AFFICHAGE DE DIAGNOSTIC pur, cf. C6 du gate pool-chemistry. -->
           <dialog id="ph-probe-modal" class="probe-modal" aria-labelledby="ph-probe-modal-title">
             <h3 id="ph-probe-modal-title" class="probe-modal__title">État sonde pH</h3>
+
+            <p class="probe-modal__group-label">Étalonnage</p>
             <div class="probe-modal__row">
               <span class="probe-modal__label">Pente acide</span>
-              <span class="probe-modal__value" id="ph-probe-acid">--</span>
+              <span class="probe-modal__row-right">
+                <span class="probe-modal__value" id="ph-probe-acid">--</span>
+                <span class="probe-pastille" id="ph-probe-acid-pastille" hidden></span>
+              </span>
             </div>
             <div class="probe-modal__row">
               <span class="probe-modal__label">Pente base</span>
-              <span class="probe-modal__value" id="ph-probe-base">--</span>
+              <span class="probe-modal__row-right">
+                <span class="probe-modal__value" id="ph-probe-base">--</span>
+                <span class="probe-pastille" id="ph-probe-base-pastille" hidden></span>
+              </span>
             </div>
             <div class="probe-modal__row">
               <span class="probe-modal__label">Décalage zéro</span>
-              <span class="probe-modal__value" id="ph-probe-zero">--</span>
+              <span class="probe-modal__row-right">
+                <span class="probe-modal__value" id="ph-probe-zero">--</span>
+                <span class="probe-pastille" id="ph-probe-zero-pastille" hidden></span>
+              </span>
             </div>
-            <div class="probe-modal__row">
-              <span class="probe-modal__label">Vérifié</span>
-              <span class="probe-modal__value" id="ph-probe-age">--</span>
-            </div>
+            <!-- feature-154 : ex-ligne « Vérifié » pleine largeur → légende sous le
+                 groupe (faisait doublon avec « Dernière mesure », un AUTRE âge). -->
+            <p class="probe-modal__legend">Vérifié <span id="ph-probe-age">--</span></p>
+
+            <p class="probe-modal__group-label">Mesure en direct</p>
             <!-- feature-152 : chaîne de mesure — valeur officielle (diagnostic) -->
             <div class="probe-modal__row">
               <span class="probe-modal__label">Valeur brute</span>
