@@ -45,8 +45,18 @@ inline float applyPhOffset(float raw, float offset) {
 
 // True si l'offset est exploitable : numérique ET dans la plage autorisée
 // [kPhOffsetMin, kPhOffsetMax]. Bornes arbitrées avec pool-chemistry : au-delà
-// de ±0,50 pH, c'est la sonde ou la calibration EZO qui est en cause, pas
-// l'implantation — et l'écart entre pH régulé et pH réel deviendrait dangereux.
+// de ±0,50 pH, l'écart ne s'explique plus par l'implantation, et l'écart entre
+// pH régulé et pH réel deviendrait dangereux.
+// ⚠️ FORMULATION CORRIGÉE (feature-155) : cette phrase disait « c'est la sonde
+// ou la calibration EZO qui est en cause ». ÇA MET LA SONDE EN CAUSE, et c'est
+// très exactement le travers de l'incident du 2026-08-25 — une sonde SAINE
+// (pente 101/100, zéro −1,03) déclarée à remplacer alors que la cause était un
+// décalage EXTERNE (courants de fuite de la pompe de filtration). Un écart de
+// plus de 0,5 pH a d'AUTRES causes au moins aussi probables : test de référence
+// périmé, lecture à la mauvaise échelle, étalonnage à refaire. Ne pas désigner
+// un coupable qu'on n'a pas identifié — ni ici, ni dans un message dérivé.
+// Le jumeau de cette phrase (web_routes_config.cpp) a été corrigé dans le même
+// lot ; celui-ci avait été signalé par l'implémenteur comme hors périmètre.
 inline bool isPhOffsetValid(float offset) {
   if (isnan(offset)) return false;
   return (offset >= kPhOffsetMin) && (offset <= kPhOffsetMax);

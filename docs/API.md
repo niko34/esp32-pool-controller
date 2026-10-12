@@ -246,6 +246,7 @@ curl -u admin:monmotdepasse http://poolcontroller.local/data
   "phRaw": 7.241,
   "phMedian": 7.236,
   "phFiltered": 7.234,
+  "phValueRaw": 7.241,
   "phRejectedCount": 0,
   "orpRaw": 722,
   "orpMedian": 720,
@@ -421,6 +422,8 @@ curl -u admin:monmotdepasse http://poolcontroller.local/data
 > | `phRaw` | dernière mesure **brute Atlas EZO** | ❌ non |
 >
 > Règle mnémotechnique côté firmware comme côté JSON : **seuls les champs suffixés `Raw` sont bruts**. Le filtre pH continue de travailler sur le signal brut ; l'offset est appliqué **en sortie**, donc un changement est visible immédiatement — cette règle de composition **survit telle quelle** à la refonte de la chaîne de mesure (feature-152, v2.68.0), seuls les étages internes du filtre ont changé. `NaN` en entrée ⇒ `null` en sortie : l'offset ne fabrique jamais une mesure. Voir [ADR-0039](adr/0039-offset-ph-applique-en-sortie-des-accesseurs.md) et [`docs/subsystems/sensors.md`](subsystems/sensors.md#offset-logiciel-de-mesure-ph--feature-067).
+
+> **feature-155 (v2.71.0) — champ `phValueRaw` ajouté.** Nouveau champ, **échelle brute**, arrondi à 3 décimales, `null` si NaN : `sensors.getPhValueRaw()`, c'est-à-dire la valeur **officielle** issue du filtre pH (médiane + lissage) mais **sans** l'offset logiciel. ⚠️ **Ce n'est pas un synonyme de `phRaw`** : `phRaw` est la dernière mesure Atlas EZO **instantanée** (dispersion ~0,36 sur un bassin typique de ce projet, jusqu'à ±0,18 d'écart avec la valeur lissée — deux pas de réglage), alors que `phValueRaw` porte le **même lissage** que `ph`/`phMedian`/`phFiltered`, simplement **avant** l'application de l'offset. C'est la valeur que [`POST /tune-ph-offset`](#post-tune-ph-offset--critical) utilise comme référence pour calculer l'écart d'un accord sur test manuel — servie ici pour que l'aperçu côté client utilise la **même** référence que le calcul serveur, et jamais `ph`/`phFiltered`/`phMedian` (déjà corrigés : partir de l'un d'eux ajouterait l'écart à un écart déjà appliqué). Même champ, mêmes règles, servi à l'identique par la trame WebSocket `sensor_data` — voir [docs/subsystems/ws-manager.md](subsystems/ws-manager.md#champ-sensor_data-ajouté-en-feature-155--phvalueraw-référence-de-laccord-ph-v2710).
 
 > ~~**v2.20.3 — alarme « filtre bloqué »** (`phFilterAlarm`/`orpFilterAlarm`)~~ — **RETIRÉS en
 > v2.68.0** (feature-152) : le mécanisme « filtre non prêt durablement » et son verrou ont
@@ -975,6 +978,8 @@ curl -u admin:monmotdepasse http://poolcontroller.local/get-config
   "ph_offset_min": -0.5,
   "ph_offset_max": 0.5,
   "ph_offset_step": 0.1,
+  "ph_cal_points_min": 2,
+  "ph_tune_min_filtration_ms": 600000,
   "boost_active": false,
   "boost_until": 0,
   "rescue_ml": 1500,
@@ -1012,7 +1017,9 @@ Champs notables de la réponse :
 | `pool_size` | string | **v2.32.0 (feature-090)** — **Taille du bassin** : `"small"` (< 20 m³) / `"medium"` (20-60 m³) / `"large"` (> 60 m³). Sert **uniquement à présélectionner** les défauts de régulation ([ADR-0057](adr/0057-taille-bassin-preselection-jamais-entree-de-calcul.md) : elle n'entre **jamais** dans un calcul de dosage, débit ou quota). Persisté NVS (`pool_size`) ; clé absente ou illisible ⇒ **`medium`**, la colonne des défauts v2.30.0 — **migration sans effet** pour la flotte existante (aucun réglage modifié par la mise à jour seule). Champ absent sur un firmware < 2.32.0 : le client masque le sélecteur et ré-affiche la vitesse. Pas de nouvelle entité HA. |
 | `regulation_defaults_by_size` | object | **v2.32.0 (feature-090)** — Les **trois colonnes** de défauts (`small` / `medium` / `large`), mêmes clés que `regulation_defaults` (**7 depuis la v2.34.0**, `stabilization_delay_min` retiré), sérialisées depuis la table unique [`src/regulation_defaults.h`](../src/regulation_defaults.h) (`kRegulationDefaultsBySize`). Lecture seule. Sert au **dialogue avant/après du changement de taille** — l'UI n'a jamais à deviner une colonne côté JS. |
 | `ph_target_min` / `ph_target_max` / `ph_target_step` | float | **v2.25.0** — Plage et pas de la **consigne pH**, dérivés de `kPhTargetMin` / `kPhTargetMax` / `kPhTargetStep` ([`constants.h`](../src/constants.h)). **Lecture seule**, jamais acceptés en écriture. Servis pour que le frontend construise son contrôle segmenté **sans coder aucune borne en dur** : élargir la plage ou passer de 4 à 5 positions se fait côté firmware seul. Un lot incohérent ou absent est ignoré **en bloc** par le client, qui conserve les bornes déjà connues. |
-| `ph_offset_min` / `ph_offset_max` / `ph_offset_step` | float | **v2.25.0** — Idem pour l'**offset pH** (`kPhOffsetMin` / `kPhOffsetMax` / `kPhOffsetStep`). Alimentent l'incrémenteur `−` / valeur / `+` de la carte « Correction de la mesure pH ». |
+| `ph_offset_min` / `ph_offset_max` / `ph_offset_step` | float | **v2.25.0** — Idem pour l'**offset pH** (`kPhOffsetMin` / `kPhOffsetMax` / `kPhOffsetStep`). Alimentent le pas-à-pas `−` / valeur / `+` de la carte « Correction manuelle de la mesure » (réaffecté en v2.71.0, feature-155 — il n'affiche plus un écart mais la valeur amenée par l'utilisateur). |
+| `ph_cal_points_min` | integer | **v2.71.0 (feature-155)** — Nombre minimal de points de calibration pH requis pour accepter un accord sur test manuel (`kPhTuneCalPointsMin`, défaut **2**). Consommé par l'aperçu client de `POST /tune-ph-offset` — un offset est une constante, une erreur d'étalonnage est proportionnelle : sans 2ᵉ point, elle serait figée dans la correction. **Lecture seule**, **absent de la trame WebSocket** (constante de compilation, même règle que les six bornes ci-dessus). |
+| `ph_tune_min_filtration_ms` | integer | **v2.71.0 (feature-155)** — Délai minimal (ms) de filtration continue avant qu'un accord sur test manuel soit accepté (`kPhTuneMinFiltrationMs`, défaut **600000** = 10 min) : le temps nécessaire pour que l'eau testée soit celle qui passe devant la sonde. **Lecture seule**, **absent de la trame WebSocket**. Alimente le décompte affiché par la carte « Correction manuelle de la mesure » pendant le refus « filtration pas encore établie ». |
 | `ph_slope_healthy_min_pct` / `ph_slope_healthy_max_pct` / `ph_zero_healthy_max_mv` | float | **v2.70.0 (feature-154)** — Fenêtre de **diagnostic** EZO (défauts `90` / `110` / `15`), dérivée de `kPhSlopeHealthyMinPct` / `kPhSlopeHealthyMaxPct` / `kPhZeroHealthyMaxMv` ([`constants.h`](../src/constants.h)) — **mêmes constantes** que celles consommées par `isPhProbeHealthy()` côté firmware, qui nuance le message d'escalade de la bascule de sécurité pH. **Lecture seule**, jamais acceptées en écriture. Servies pour que l'écran « État sonde pH » calcule ses **trois pastilles** (pente acide, pente base, décalage zéro) **sans coder aucun seuil en dur** côté client — plus aucun littéral `85`/`90`/`95`/`15`/`30` dans `data/app.js` (vérifié par grep, et par un harnais de test qui assertit l'absence de tout littéral numérique hors `0`/`1` dans le texte extrait de `classifyPhCriterion()`, voir [ADR-0100](adr/0100-un-seuil-de-sante-est-servi-jamais-reecrit-cote-client.md)). ⚠️ **Purement diagnostiques — aucune de ces trois valeurs ne conditionne un dosage** : la seule décision de sécurité qui s'appuie sur cette fenêtre est `isPhProbeHealthy()`, inchangée par cette feature. **VOLONTAIREMENT ABSENTES de la trame WebSocket** (même motif que les six bornes ci-dessus) : ce sont des constantes de compilation, et `kWsFrameBufBytes` (3584 o) n'a que ~571 o de marge au pire cas — un pire cas qui **coïncide précisément** avec l'escalade de sécurité pH (trace de bascule automatique + raison en texte). Le client conserve donc les dernières bornes reçues entre deux appels à `/get-config`, sans jamais retomber sur un défaut inventé (un repli sur un seuil de *santé* innocenterait une sonde — contrairement au repli d'IHM des six bornes ci-dessus). ⚠️ **Divergence d'arrondi, bornée et non fermée davantage** (condition C4 du gate `pool-chemistry`) : la pastille juge la valeur **arrondie SERVIE** par `/data` (pentes à 1 décimale, zéro à 2 décimales — `web_routes_data.cpp`), **pas** la valeur interne lue par `querySlope()` (parsée par `strtof`, sans arrondi). Divergence théorique bornée à **< 0,05 %** (pentes) et **< 0,005 mV** (zéro) — à ces ordres de grandeur, un verdict ne peut basculer qu'à une fraction de poil du seuil exact. Ce qui a été **vérifié** : le chemin de parsing (`atlas_ezo.cpp:239-294`), le point d'arrondi unique (`web_routes_data.cpp:345-347`), le format documenté (1/2 décimales, conforme aux valeurs réelles relevées). Ce qui **ne l'a pas été** : la fiche technique Atlas Scientific, et une trame brute à d'autres ordres de grandeur. Fermeture retenue : vecteurs de test aux bornes exactes (89,9 / 90,0 / 110,0 / 110,1) sur la valeur **servie**, pas une preuve théorique supplémentaire. |
 | `ph_limit_minutes` | integer | Durée max d'injection pH par fenêtre glissante d'1 h (minutes, 1–60) |
 | `orp_limit_minutes` | integer | Durée max d'injection ORP par fenêtre glissante d'1 h (minutes, 1–60) |
@@ -1222,6 +1229,72 @@ curl -u admin:monmotdepasse -X POST -H "Content-Type: application/json" \
 ```
 
 > Cette route journalise l'**IP d'origine** de tout changement du mode de régulation pH, sur les deux issues (accepté / refusé en 409).
+
+---
+
+### POST /tune-ph-offset — CRITICAL
+
+**v2.71.0 (feature-155)** — Accorde l'appareil sur un test manuel (bandelette, PoolLab, pH-mètre) : remplace le geste « régler un écart » par « amener un nombre à la valeur lue sur son test ». Corps :
+
+```json
+{ "ph_reference": 7.45 }
+```
+
+`ph_reference` est la **valeur amenée** par l'utilisateur — **jamais un écart déjà calculé**. C'est le **firmware** qui calcule l'écart, avec **sa propre mesure** (`sensors.getPhValueRaw()`) à l'**instant de la réception** de la requête :
+
+```
+offset = roundPhOffsetToStep(ph_reference − getPhValueRaw())
+```
+
+#### Pourquoi une route dédiée plutôt qu'un champ de plus dans `POST /save-config`
+
+1. **Sémantique différente** du champ `ph_offset` existant, qui reste le contrat de **stockage** (déjà calculé, écrit directement, par `POST /save-config`). Fusionner les deux sous la même clé ferait dériver le sens du champ selon l'appelant, invérifiable en lecture de code.
+2. **Quatre refus ordonnés**, avec des textes **imposés mot pour mot**, incompatibles avec le patron différé de `/save-config` (une erreur parmi N champs, réponse posée par la complétion) : ici la réponse est **immédiate** et porte exactement le texte du refus qui s'applique.
+3. **Aucun appel** à `requestReset()` / `resetDosingStates()` / `resetPhPauseGuard()` sur ce chemin : l'offset ne touche aucun compteur de dosage, aucune limite journalière ou horaire n'est contournable par des accords répétés.
+
+#### ⚠️ Pourquoi le calcul se fait côté firmware, jamais côté navigateur
+
+Le plan initial prévoyait un calcul côté client (`écart = ph_reference − valeur_affichée`), le navigateur envoyant directement `ph_offset`. **Refusé par le gate `pool-chemistry`** : un écart calculé par le navigateur sur une référence qui a **vieilli pendant le geste** (l'utilisateur regarde l'écran, compare à sa bandelette, hésite, clique) est **inauditable** — impossible de savoir, après coup, quelle mesure a réellement servi de base au calcul. En calculant côté serveur avec `getPhValueRaw()` lu à l'instant de la réception, le calcul est **reproductible** et sa trace de journal fait foi. L'affichage côté client (les trois nombres de la carte « Correction manuelle de la mesure ») n'est donc qu'un **APERÇU**, jamais la décision — voir [docs/features/page-ph.md](features/page-ph.md#enregistrement--post-tune-ph-offset).
+
+⚠️ **Piège fermé par ce choix** : `ph`, `phFiltered` et `phMedian` (servis par `/data` et le WebSocket) sont **déjà corrigés** de l'offset courant. Un calcul qui partirait de l'une de ces valeurs ajouterait l'écart à un écart déjà appliqué — défaut **invisible à offset 0,00**, faux dès que l'offset ne l'est plus. Le firmware part donc exclusivement de `getPhValueRaw()` (voir le champ `phValueRaw` ci-dessous), **jamais** de `ph`/`phFiltered`/`phMedian`.
+
+#### Les quatre refus, dans l'ordre d'évaluation (jamais réordonnés)
+
+| Ordre | Condition | Code | Corps de la réponse |
+|---:|---|---|---|
+| 1 | `isnan(getPhValueRaw())` — mesure de référence indisponible (remplissage de fenêtre, sonde figée, porte fermée, péremption) | `400` | `"L'appareil n'a pas de mesure assez récente. Attendez qu'une valeur s'affiche, puis recommencez."` |
+| 2 | Filtration arrêtée, **ou** en marche depuis moins de `kPhTuneMinFiltrationMs` = **600 000 ms (10 min)** | `400` | `"La filtration doit tourner depuis 10 minutes pour que l'eau testée soit celle qui passe devant la sonde. Possible dans N min."` (N = minutes restantes, arrondi supérieur) |
+| 3 | `calPoints < kPhTuneCalPointsMin` (2) — sonde non étalonnée | `400` | `"La sonde n'a pas encore ses deux points de référence. Faites d'abord l'étalonnage (tampon 7 puis tampon 4), puis revenez ici."` |
+| 4 | Écart **demandé** (avant arrondi) hors `[kPhOffsetMin ; kPhOffsetMax]` = `[−0,50 ; +0,50]` | `400` | `"Trop loin de ce que l'appareil mesure. Refaites le test (bandelettes non périmées, lecture à la bonne échelle) et vérifiez l'étalonnage de la sonde avant de recommencer."` |
+
+Aucune mise en cause de la sonde dans ces textes pour un écart excessif (refus 4) : le message oriente vers le test ou l'étalonnage, jamais vers un remplacement de pièce (leçon de l'incident du 2026-08-25, voir [docs/features/page-ph.md](features/page-ph.md#chip-détat-sonde-feature-024)).
+
+⚠️ **Le refus 4 porte sur l'écart DEMANDÉ, pas sur l'écart arrondi** : `roundPhOffsetToStep()` **clampe avant d'arrondir**, donc tester la borne sur sa sortie la rendrait structurellement toujours vraie — un écart de +0,80 serait alors **silencieusement écrêté à +0,50 et appliqué** au lieu d'être refusé. Le test de borne doit porter sur `ph_reference − getPhValueRaw()` **avant** tout arrondi.
+
+#### Réponse `200` (accordé)
+
+```json
+{
+  "success": true,
+  "ph_offset": 0.3,
+  "ph_value_raw": 7.13,
+  "ph_reference": 7.45,
+  "ph_reached": 7.43
+}
+```
+
+`ph_offset` est l'écart **réellement appliqué** (après arrondi au pas de `kPhOffsetStep` = 0,10) — pas l'écart brut demandé. `ph_reached` est la valeur que l'appareil va **réellement** atteindre (`ph_value_raw + ph_offset`), **jamais** `ph_reference` : amener le nombre à 7,45 quand l'appareil lit 7,13 donne un écart brut de 0,32, arrondi à 0,30 — l'appareil atteint **7,43**, pas 7,45.
+
+Effet immédiat (ADR-0039, inchangé) : l'offset est appliqué en sortie des accesseurs, sans attendre le remplissage d'une fenêtre de mesure. Journalisé en `info` à l'acceptation (valeur amenée, lecture brute, offset avant/après) et en `warning` à chaque refus.
+
+#### Authentification
+
+Même garde que `POST /save-config` : le corps est vérifié **en première instruction** du handler (`saveConfigBodyAuthorized`) — un corps non authentifié n'applique **rien**, même si le `401` global n'est émis qu'à la complétion.
+
+#### Voir aussi
+
+- [ADR-0101](adr/0101-la-correction-nait-d-une-mesure-jamais-d-un-ecart.md) — pourquoi l'utilisateur indique une mesure plutôt qu'un écart, et pourquoi le calcul part de la valeur brute servie par le firmware.
+- [docs/features/page-ph.md](features/page-ph.md#carte--correction-manuelle-de-la-mesure--ph-card-tune-feature-155-v2710) — la carte côté interface.
 
 ---
 

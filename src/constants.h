@@ -1535,6 +1535,48 @@ constexpr size_t kSensorTraceHeapMarginBytes     = kHttpHeapMarginBytes;
 constexpr float kPhOffsetMin = -0.50f;
 constexpr float kPhOffsetMax =  0.50f;
 
+// --- Accord de la mesure sur un test manuel (feature-155) ---
+// L'utilisateur AMÈNE un nombre affiché à la valeur qu'il a relevée sur son
+// test (bandelette, PoolLab, pH-mètre) : le firmware en déduit l'offset, il ne
+// le reçoit jamais tout fait (condition 1 du gate pool-chemistry — calcul
+// SERVEUR, jamais navigateur, cf. web_routes_config.cpp::handleTunePhOffset).
+//
+// kPhTuneMinFiltrationMs — condition 3 du gate : la mesure brute qui sert de
+// référence n'est fiable que si le régime hydraulique qui l'a produite est
+// celui où l'offset compense réellement les courants de fuite de la pompe de
+// FILTRATION (mécanisme établi, campagne de bruit 22-23/08/2026). Un accord
+// posé filtration à l'arrêt enregistrerait un régime où ce biais n'existe PAS,
+// puis l'appliquerait au seul régime où l'on dose.
+// Plancher INSTRUMENTAL après démarrage : médiane 9 échantillons × 5 s = 45 s
+// + 3τ (τ = 45 s, filtre pH) ≈ 180 s. Valeur RETENUE par l'utilisateur
+// (2026-10-11 ; l'option « 3 min » lui a été proposée et explicitement
+// écartée) : 10 min, strictement au-dessus du plancher instrumental ET des 2/3
+// de kPhMixingDelayMs (15 min). ⇒ Un DÉCOMPTE est affiché pendant l'attente,
+// jamais un refus sec (docs/features/page-ph.md).
+constexpr unsigned long kPhTuneMinFiltrationMs = 600000UL;  // 10 min
+// ⚠️ VERROU DE COHÉRENCE TEXTE ↔ CONSTANTE (recommandation du gate 2,
+// feature-155). Les messages de refus imposés MOT POUR MOT par pool-chemistry
+// écrivent « 10 minutes » EN TOUTES LETTRES, des deux côtés :
+//   src/web_routes_config.cpp (refus serveur) et data/app.js (bandeau client).
+// Les rendre dynamiques casserait une formulation validée par le gate ; on
+// verrouille donc la constante à la place. Si elle change, CE static_assert
+// casse la compilation et force à relire LES DEUX textes — au lieu de les
+// laisser mentir en silence, ce qui est très exactement le défaut que ce lot a
+// corrigé trois fois (refus mort, aperçu divergent, journal écrêté).
+static_assert(kPhTuneMinFiltrationMs == 600000UL,
+              "kPhTuneMinFiltrationMs a changé : les messages de refus de "
+              "web_routes_config.cpp ET de data/app.js écrivent « 10 minutes » "
+              "en toutes lettres. Mettre les DEUX à jour, puis repasser par "
+              "pool-chemistry (les textes sont imposés par le gate).");
+
+// kPhTuneCalPointsMin — condition 4 du gate (réponse d) : un offset est une
+// CONSTANTE, une erreur d'étalonnage est PROPORTIONNELLE (pente). Sans un 2ᵉ
+// point de calibration, une pente dégradée serait figée dans l'offset au seul
+// point d'accord, et fausse partout ailleurs sur l'échelle pH. Comparé à
+// sensors.getPhCalibrationPointsCached() (0..3 ; -1 = bus EZO down, refusé
+// aussi par la même garde `<`).
+constexpr uint8_t kPhTuneCalPointsMin = 2;
+
 // ============================================================================
 // SEUILS DE SÉCURITÉ pH — SOURCE UNIQUE + SEUILS DÉRIVÉS (v2.25.0)
 // ============================================================================

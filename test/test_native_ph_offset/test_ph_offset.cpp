@@ -196,7 +196,15 @@ void test_absurd_offsets_are_invalid(void) {
 }
 
 // Verrou de régression sur les bornes elles-mêmes : elles ont été arbitrées avec
-// pool-chemistry (au-delà de ±0,50, c'est la sonde/calibration EZO en cause).
+// pool-chemistry — au-delà de ±0,50, l'écart ne s'explique plus par
+// l'implantation, et l'écart entre pH régulé et pH réel deviendrait dangereux.
+// ⚠️ FORMULATION CORRIGÉE (feature-155, gate 2) : cette phrase disait « c'est la
+// sonde/calibration EZO en cause » — 3e jumeau du texte qui DÉSIGNE LA SONDE
+// sans preuve (incident du 2026-08-25 : sonde SAINE déclarée à remplacer, cause
+// réelle = décalage EXTERNE). Un écart > 0,5 pH a d'autres causes au moins aussi
+// probables : test de référence périmé, lecture à la mauvaise échelle,
+// étalonnage à refaire. Les deux autres jumeaux (web_routes_config.cpp,
+// ph_offset.h) ont été corrigés dans le même lot.
 // Tout élargissement doit casser ce test et repasser par pool-chemistry.
 void test_offset_bounds_constants(void) {
   TEST_ASSERT_FLOAT_WITHIN(1e-6f, -0.50f, kPhOffsetMin);

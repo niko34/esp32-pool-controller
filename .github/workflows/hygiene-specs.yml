@@ -252,3 +252,19 @@ jobs:
       # Même script en local (`./tools/check_ph_health_vectors.sh`) et en CI.
       - name: Contrôle des vecteurs de santé pH
         run: ./tools/check_ph_health_vectors.sh
+
+  ph-tune-vectors:
+    name: Vecteurs de correction manuelle de la mesure pH (feature-155)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # Même script en local (`./tools/check_ph_tune_vectors.sh`) et en CI.
+      # Au-delà des bornes et des refus, ces vecteurs verrouillent la COHÉRENCE
+      # entre l'aperçu du navigateur et le verdict du firmware : c'est cet écart
+      # qui a révélé DEUX défauts de ce lot — un refus structurellement
+      # inatteignable côté firmware, et un bouton actif menant à un refus 400.
+      # Les deux moitiés étaient justes séparément.
+      - name: Contrôle des vecteurs de correction manuelle pH
+        run: ./tools/check_ph_tune_vectors.sh

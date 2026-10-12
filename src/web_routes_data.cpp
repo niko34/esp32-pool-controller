@@ -280,6 +280,14 @@ static void handleGetData(AsyncWebServerRequest* request) {
   // tout nouvel ajout à cette trame exige désormais un retrait compensatoire
   // OU un relèvement de kWsFrameBufBytes (décision d'ADR, pas de routine).
   //
+  // feature-155 (A1) : +1 champ `phValueRaw` (parité /data ↔ WS, même passage,
+  // mêmes règles de null — cf. src/ws_manager.cpp pour le décompte détaillé) :
+  //   "phValueRaw":14.000, → 10+6+4 = 20 o.
+  // Charge pire cas : 3102 (décompte ci-dessus) + 20 = 3122 o, SOUS le
+  // gabarit 3200 (marge 78 o). Rappel : ce chemin n'a aucun plafond dur ; le
+  // budget CONTRAIGNANT reste celui de la trame WS (kWsFrameBufBytes),
+  // décompté dans src/ws_manager.cpp : marge portée de 228 à 208 o.
+  //
   // BLOQUANT 1 (code-reviewer, 2e passage) : le champ est OMIS (filtration à
   // l'arrêt, délai indéterminé) plutôt que mis à 0 ou `null` — l'OMISSION ne
   // peut que RÉDUIRE la taille réelle, jamais l'augmenter : le pire cas
@@ -321,6 +329,14 @@ static void handleGetData(AsyncWebServerRequest* request) {
   if (!isnan(phRaw)) doc["phRaw"] = round(phRaw * 1000.0f) / 1000.0f; else doc["phRaw"] = nullptr;
   if (!isnan(phMed)) doc["phMedian"] = round(phMed * 1000.0f) / 1000.0f; else doc["phMedian"] = nullptr;
   if (!isnan(phFil)) doc["phFiltered"] = round(phFil * 1000.0f) / 1000.0f; else doc["phFiltered"] = nullptr;
+  // feature-155 (A1) : valeur OFFICIELLE pH, échelle BRUTE (sensors.cpp,
+  // getPhValueRaw — réservée aux butées de dernier recours). PAS `phRaw`
+  // (instantané EZO, dispersion ~0,36 sur ce bassin, jusqu'à ±0,18 d'écart
+  // avec le lissé — deux pas de réglage) : c'est CETTE valeur que le firmware
+  // utilise comme référence pour calculer l'écart d'un accord sur test manuel
+  // (POST /tune-ph-offset), l'affichage client n'en étant qu'un APERÇU.
+  float phValueRaw = sensors.getPhValueRaw();
+  if (!isnan(phValueRaw)) doc["phValueRaw"] = round(phValueRaw * 1000.0f) / 1000.0f; else doc["phValueRaw"] = nullptr;
   doc["phRejectedCount"]  = sensors.getPhRejectedCount();
   if (!isnan(orpRaw)) doc["orpRaw"] = round(orpRaw); else doc["orpRaw"] = nullptr;
   if (!isnan(orpMed)) doc["orpMedian"] = round(orpMed); else doc["orpMedian"] = nullptr;

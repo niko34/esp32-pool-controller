@@ -116,6 +116,14 @@ public:
   bool isRunning() const { return state.running; }
   bool getRelayState() const { return relayState; }
 
+  // feature-155 : instant millis() de démarrage du cycle de filtration COURANT
+  // — sert aux gardes qui exigent un régime hydraulique établi depuis un délai
+  // minimal (ex. accord de la mesure pH sur un test manuel,
+  // kPhTuneMinFiltrationMs). 0 si la filtration est à l'arrêt (cf. isRunning()) :
+  // NE PAS l'interpréter comme « démarrée à l'epoch », toujours tester
+  // isRunning() avant de calculer une durée écoulée.
+  unsigned long filtrationStartedAtMs() const { return state.startedAtMs; }
+
   // feature-056 : signal d'état de la filtration externe. setExternalState est
   // NON bloquant (spinlock, horodatage millis() interne) — sûr depuis un handler
   // HTTP ou un callback MQTT async. getExternalState copie le triplet sous lock.

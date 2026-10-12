@@ -18,7 +18,7 @@ En mode nominal, six zones :
    - **Programmée** : volume quotidien en mL (borné par `max_ph_ml_per_day`) + bouton Sauvegarder. Depuis la v2.8.0 (feature-011) : ligne « **Débit calculé : X,X mL/min** » (`#ph_scheduled_flow_line` / `#ph_scheduled_flow_value`, alimentée par le champ WS `ph_scheduled_flow_ml_per_min` ; affiche « — » avec `title` « Hors plage de filtration ou données indisponibles » quand la valeur est `null`) + hint statique « Le volume non injecté avant minuit est perdu (pas de report au lendemain). ». Volontairement **pas** de « sur Y h restantes » côté client : l'horloge du navigateur peut différer de celle de l'ESP32, seul le débit (source firmware) est affiché.
    - **Manuelle** : bloc Injection manuelle (volume + bouton ▶ Injecter / ⏹ Stopper).
    - Le bloc « Rattrapage accumulé » qui vivait en pied de cette carte (`#ph-integral-section`, v2.26.0) est **retiré** depuis la v2.46.0 : son contenu est passé dans la carte « Débit d'injection pH ».
-4. **Carte Correction de la mesure pH** (`#ph-card-offset`, feature-067, v2.20.0) — offset logiciel appliqué à la mesure. Voir [Carte « Correction de la mesure pH »](#carte--correction-de-la-mesure-ph--feature-067-v2200).
+4. **Carte Correction manuelle de la mesure** (`#ph-card-tune`, feature-155, v2.71.0 — remplace feature-067) — l'utilisateur **amène un nombre** jusqu'à la valeur lue sur son test, l'appareil en déduit la correction. Voir [Carte « Correction manuelle de la mesure »](#carte--correction-manuelle-de-la-mesure--ph-card-tune-feature-155-v2710).
 5. **Carte Historique** — graphique uPlot (feature-043, ex-Chart.js), plages `Tout` / `30j` / `7j` / `24h`. Depuis la **v2.28.1** (feature-083) : bande fixe **7,2-7,6** (plage idéale de l'eau) + **ligne de consigne pointillée** à `ph_target` — voir [Repères du graphique d'historique](#repères-du-graphique-dhistorique-feature-083-v2281). Ce graphique trace la mesure **brute** et le reste en v2.38.0 — voir [Le graphique d'historique de cette page reste brut](#le-graphique-dhistorique-de-cette-page-reste-brut-feature-095-v2380).
 6. **Carte Calibration** — **remplace** Régulation + Historique pendant une session de calibration. Écran **guidé par stepper** (feature-034) — voir [Workflow calibration](#workflow-calibration).
 
@@ -53,7 +53,7 @@ brut 7.24 · maj à l'instant
 
 ⚠️ **Depuis la refonte de la chaîne de mesure (feature-152, v2.68.0)** : la **médiane a disparu de cette ligne** — « étape interne du lissage, pas un fait à lire en permanence sur l'écran principal » (commentaire du code). La médiane reste consultable en diagnostic dans le modal sonde (cf. [Chip d'état sonde](#chip-détat-sonde-feature-024)) et via [`GET /debug/sensor_filter_state`](../API.md#get-debugsensor_filter_state--pas-dauth-cohérent-avec-autres-debug).
 
-> **feature-067 (v2.20.0)** : la valeur affichée en grand (`ph`), la médiane et la valeur filtrée intègrent l'**offset logiciel** `ph_offset` ; seul `phRaw` reste brut. Voir [Carte « Correction de la mesure pH »](#carte--correction-de-la-mesure-ph--feature-067-v2200).
+> **feature-067 (v2.20.0)** : la valeur affichée en grand (`ph`), la médiane et la valeur filtrée intègrent l'**offset logiciel** `ph_offset` ; seul `phRaw` reste brut. **feature-155 (v2.71.0)** ne change pas cette composition — seul le **geste** qui définit `ph_offset` change. Voir [Carte « Correction manuelle de la mesure »](#carte--correction-manuelle-de-la-mesure--ph-card-tune-feature-155-v2710).
 
 `--` est affiché si la valeur est `null` (montée en régime, sonde figée ou mesure périmée — **plus de repli silencieux** sur une autre valeur, feature-152).
 
@@ -291,9 +291,85 @@ Présent de la v2.34.0 à la v2.61.x (`#measures_purge_timeout_banner`), ce band
 
 L'ancien doublon ORP (`#measures_purge_timeout_banner_orp`) est retiré pour la même raison — voir [page-orp.md](page-orp.md). L'alerte MQTT `measures_purge_timeout` qui accompagnait ce bandeau est également retirée ([MQTT.md](../MQTT.md#alertes)).
 
-## Carte « Correction de la mesure pH » (feature-067, v2.20.0)
+## Carte « Correction manuelle de la mesure » (`#ph-card-tune`, feature-155, v2.71.0)
 
-Carte `#ph-card-offset`, placée **entre la carte Régulation et la carte Historique**. Elle est **toujours visible**, quel que soit le mode de régulation : elle corrige la **mesure**, pas la régulation. Elle est **distincte de la calibration EZO**, qui reste dans sa propre carte.
+Carte `#ph-card-tune` (**ex-`#ph-card-offset`**, feature-067), **même emplacement** qu'avant : entre la carte Régulation et la carte Historique, **toujours visible** quel que soit le mode de régulation — elle corrige la **mesure**, pas la régulation. Elle reste **distincte de la calibration EZO** (sa propre carte, plus bas sur la page) : deux gestes différents, deux effets différents, rappelés par `#ph_tune_calib_note`.
+
+> ⚠️ **Le geste a changé de nature.** Jusqu'en v2.70.0, l'utilisateur réglait un **écart abstrait** (« offset ») entre −0,50 et +0,50 pH. Depuis la v2.71.0, il **amène un nombre** jusqu'à la valeur qu'il a lue sur son propre test (bandelette, PoolLab, pH-mètre) : c'est l'appareil qui en déduit la correction à appliquer. **Le mot « offset » a disparu de l'interface** ; le vocabulaire retenu est **ajuster**, **amener à**, **indiquer**, **corriger** — jamais « saisir » (il n'y a pas de champ, pas de clavier : rien n'est saisi).
+
+### Ce qui a disparu (et ce qui ne l'a pas)
+
+Quatre éléments de l'ancienne carte sont **retirés**, pas déplacés :
+
+- le libellé **« Offset pH »** ;
+- le bouton **« Remettre à zéro »** (`#ph_offset_reset`, masqué par défaut) ;
+- le **texte d'aide permanent** (`#ph_offset_help`, « Correction logicielle de la mesure pH… pH corrigé = pH brut + offset ») ;
+- l'**avertissement à deux paliers** `#ph_offset_warning` (0,15 / 0,30 pH, callout ambré qui recalculait un pH réel probable côté client).
+
+Le **pas-à-pas n'est pas supprimé : il est réaffecté.** Même composant visuel (`−` / valeur / `+`), mais il n'affiche plus un écart signé — il affiche **la valeur que vous amenez**, celle que vous avez lue sur votre test.
+
+### Le pas-à-pas : `#ph-tune-stepper`
+
+| Élément | Détail |
+|---|---|
+| `#ph_tune_value` (`role="spinbutton"`) | Affiche la **valeur amenée**, au dixième. Position de départ : la mesure **officielle courante** (`ph`, échelle corrigée) arrondie au dixième — zéro appui = aucun changement proposé. Dès le premier appui `+`/`−`, la valeur n'est plus resynchronisée automatiquement sur la lecture vivante. |
+| `#ph_tune_dec` / `#ph_tune_inc` | Pas de **0,10** (`ph_offset_step`, servi par `GET /get-config` — même source que l'ancien incrémenteur). **Désactivés aux bornes de l'excursion affichée**, pas d'auto-répétition sur appui long : chaque cran reste un acte délibéré. Flèches clavier (haut/droite/bas/gauche), `Home`/`End` pour les extrêmes. |
+| Excursion affichée | **±1,00** autour de la **lecture brute courante de l'appareil** (`phValueRaw`), écrêtée à l'échelle physique `[0 ; 14]`. C'est une **plage d'ergonomie**, pas un seuil de sécurité : seule sa **moitié centrale** (±0,50) est effectivement acceptée par le serveur — le reste de l'excursion existe pour que l'utilisateur **voie** qu'il s'éloigne trop, au lieu de buter sans explication sur un bouton désactivé. |
+
+⚠️ **Les bornes de sécurité ±0,50 (`ph_offset_min`/`_max`, servies par `GET /get-config`) sont INCHANGÉES** : `kPhFloorRawHard` et `kPhCeilingRawHard` en dérivent toujours ([ADR-0048](../adr/0048-seuils-ph-fixes-derives-de-la-plage-de-consigne.md)). Seule l'**interaction** change, pas ce qui est accepté.
+
+### Les trois nombres, avant validation
+
+`#ph_tune_result` affiche : « **Mesure actuelle : 7,15 → après validation : 7,45** ». Le premier nombre est ce que l'appareil **annonce aujourd'hui** (échelle corrigée, offset courant compris — le même nombre que la valeur en grand du bloc Statistiques) ; le second est la **valeur réellement atteinte après arrondi au dixième** — **jamais** la valeur demandée. Amener le nombre pile à 7,45 quand l'appareil lit en réalité 7,13 donne un écart de 0,32, arrondi à 0,30 : l'appareil **atteindra 7,43, pas 7,45** — et c'est ce second nombre qui le dit, pour ne jamais promettre une valeur que l'arrondi au dixième ne permettra pas d'atteindre.
+
+### Avant le geste : le geste, puis l'enjeu — un seul bloc, deux paragraphes
+
+`#ph_tune_stakes` (callout d'information, toujours visible, **avant** le pas-à-pas) porte **les deux textes**, en deux paragraphes, le second en **gras**.
+
+Le premier dit le **geste** et le **pourquoi** de l'écart, sans jamais mettre la sonde en cause :
+
+> Si votre test donne une valeur différente de celle affichée, indiquez-la ici : l'appareil corrigera sa mesure. L'écart vient de l'installation, pas de la sonde.
+
+Le second dit l'**enjeu** — texte **imposé mot pour mot ET ponctuation pour ponctuation** par le gate `pool-chemistry` (condition B4) :
+
+> **Ce réglage ne vaut que ce que vaut votre test. La valeur que vous indiquez ne change pas que l'affichage : c'est elle qui décidera des injections d'acide.**
+
+⚠️ **POURQUOI UN SEUL BLOC, ET POURQUOI EN GRAS.** Les deux textes vivaient dans deux blocs séparés (`#ph_tune_explain` et `#ph_tune_stakes`). La carte comptait alors **6 blocs visibles contre 3 avant la refonte**, alors que la consigne utilisateur était de **simplifier** — chaque ajout justifié, le total contredisant la demande, c'est le travers que décrit la règle d'accumulation. Décision utilisateur : **fusionner** (6 → 5 blocs).
+⚠️ Le gate a alors relevé que la fusion **affaiblissait** l'avertissement : noyé dans quatre lignes de prose continue, il perdait sa force. Et qu'une tentative de liaison par virgule **rétrogradait** la clause finale — le deux-points de « *l'affichage : c'est elle qui décidera* » est un deux-points **de conséquence**, qui met en position focale l'affirmation la plus importante. ⇒ **Deux paragraphes dans le même bloc, le second en `<strong>`** : on garde les 5 blocs **et** la ponctuation d'origine. ⚠️ Ne pas re-fusionner en un seul paragraphe, ne pas retirer le gras.
+
+⚠️ **Cette phrase n'est pas un avertissement de confort : la valeur indiquée sert au dosage, pas seulement à l'affichage.** Elle entre dans `getPhFiltered()` ([`sensors.cpp`](../../src/sensors.cpp)), la valeur que lisent **à la fois** la régulation et les gardes de sécurité pH. Une valeur mal amenée **déplace le pH réel du bassin tel que l'appareil le perçoit** — indiquer 7,4 au lieu de 6,4 ferait croire l'eau plus basique qu'elle n'est, et ferait injecter de l'acide dans une eau déjà acide.
+
+### Les cinq états — prêt, ou l'un des quatre refus
+
+Un seul callout `#ph_tune_blocked` (ambré, `role="status"`, `aria-live="polite"`), évalué dans le **même ordre** que le serveur (`src/ph_tune_logic.h`, `evaluatePhTune()`) : un même jeu de conditions produit toujours le même verdict côté aperçu et côté serveur.
+
+| Ordre | Condition | Texte affiché |
+|---:|---|---|
+| 1 | Mesure de référence indisponible (`phValueRaw` NaN) | « L'appareil n'a pas de mesure assez récente. Attendez qu'une valeur s'affiche, puis recommencez. » |
+| 2 | Filtration arrêtée, ou démarrée depuis moins de **10 minutes** | « La filtration doit tourner depuis 10 minutes pour que l'eau testée soit celle qui passe devant la sonde. Possible dans N min. » — **avec décompte vivant**, jamais un refus sec |
+| 3 | Sonde non étalonnée (`phCalPoints < 2`) | « La sonde n'a pas encore ses deux points de référence. Faites d'abord l'étalonnage (tampon 7 puis tampon 4), puis revenez ici. » + bouton **« Aller à l'étalonnage »** (`#ph_tune_goto_cal_btn`), qui ouvre la carte Calibration |
+| 4 | Écart demandé hors **±0,50** | « Trop loin de ce que l'appareil mesure. Refaites le test (bandelettes non périmées, lecture à la bonne échelle) et vérifiez l'étalonnage de la sonde avant de recommencer. » |
+| — | Aucun refus | Callout masqué, bouton « Corriger » actif |
+
+⚠️ **Aucun de ces textes ne met la sonde en cause.** Un écart hors fenêtre dit « hors fenêtre de diagnostic », jamais « sonde morte » (même nuance que le [chip de santé sonde](#chip-détat-sonde-feature-024)) : un écart de plus de 0,5 pH signale le plus souvent un test périmé ou une lecture à la mauvaise échelle, pas une pièce défaillante.
+
+Les **10 minutes** de filtration (`kPhTuneMinFiltrationMs`, servi en lecture seule par `ph_tune_min_filtration_ms`) couvrent le temps nécessaire pour que l'eau testée soit celle qui passe réellement devant la sonde — le plancher instrumental calculé par `pool-chemistry` est de ~180 s (médiane 9×5 s + 3τ), mais l'utilisateur a explicitement écarté cette option plus courte le 2026-10-11 : les 10 minutes sont confirmées, avec décompte visible.
+
+### Distinction avec l'étalonnage de la sonde
+
+`#ph_tune_calib_note` (texte discret, toujours visible) :
+
+> Cela n'étalonne pas la sonde : pour cela, utilisez la carte « Calibration de la sonde pH » plus bas.
+
+Les deux gestes ne doivent jamais être confondus : cette carte **corrige une mesure** (une constante ajoutée en sortie du filtre), l'étalonnage **recalcule la pente et le zéro de la sonde** elle-même. Accorder l'appareil sur un test avant d'avoir étalonné la sonde (< 2 points) est un contresens — refus 3 ci-dessus — car un offset est une **constante** alors qu'une erreur d'étalonnage est **proportionnelle** : sans 2ᵉ point, une pente dégradée serait figée dans la correction, au seul point d'accord, et fausse partout ailleurs.
+
+### Enregistrement : `POST /tune-ph-offset`
+
+Le bouton **« Corriger »** (`#ph_tune_submit_btn`) envoie `{"ph_reference": <valeur amenée>}` à `POST /tune-ph-offset` — **jamais** un écart déjà calculé (voir [API.md](../API.md#post-tune-ph-offset--critical)). C'est le **firmware** qui calcule l'écart, avec **sa** mesure brute (`getPhValueRaw()`) à l'instant où il reçoit la requête : l'aperçu de cette carte (les trois nombres, l'état bloqué) n'est qu'une **prévision**, jamais la décision — un clic sur « Corriger » encore trop tôt aux yeux du firmware affiche son propre message, avec son propre décompte, qui fait toujours foi.
+
+Bouton désactivé tant qu'aucun appui `+`/`−` n'a eu lieu (zéro appui = aucune correction envoyée, jamais un cran appliqué par accident) ou qu'un refus est affiché. Succès : bouton « Corrigé » 2 s puis retour à la lecture vivante (`loadConfig()` resynchronise la config). Échec : message serveur affiché **tel quel** (jamais réécrit), bouton « Erreur » 2 s.
+
+La correction s'applique **immédiatement** (ADR-0039 inchangé : appliquée en sortie des accesseurs, sans attendre le remplissage d'une fenêtre). Voir [ADR-0101](../adr/0101-la-correction-nait-d-une-mesure-jamais-d-un-ecart.md) pour l'arbitrage qui sous-tend ce geste.
 
 ### Consigne pH : contrôle segmenté (v2.25.0)
 
@@ -306,34 +382,9 @@ Le champ `<input type="number">` est remplacé par un **contrôle segmenté** `#
 
 > ⚠️ **Pourquoi pas un `input[type=range]`** : sur mobile, un curseur n'affiche pas sa valeur, n'a pas de cran tactile et se déclenche au premier contact — y compris pendant un scroll. Voir [ADR-0048](../adr/0048-seuils-ph-fixes-derives-de-la-plage-de-consigne.md).
 
-### Offset pH : incrémenteur (v2.25.0)
+### ~~Offset pH : incrémenteur~~ et ~~deux paliers d'avertissement~~ — RETIRÉS (feature-155, v2.71.0)
 
-| Élément | Détail |
-|---|---|
-| `#ph-offset-stepper` | **Incrémenteur** `−` / valeur / `+` (`#ph_offset_dec`, `#ph_offset_inc`). Remplace le champ numérique libre. Pas de **0,10** (était 0,01), plage `[−0,50 ; +0,50]` → 11 positions. Les boutons sont **désactivés aux bornes** ; **pas d'auto-répétition** sur appui long — chaque cran est un acte délibéré, sur le réglage le plus sensible de la page (un cran = 0,10 pH de décalage sur toute la régulation). Un `<input type="hidden" id="ph_offset">` porte la valeur. |
-| `#ph_offset_help` | Texte d'aide **permanent** : « Correction logicielle de la mesure pH. Ne remplace pas la calibration du module EZO : à n'utiliser que pour compenser un écart lié à l'implantation de la sonde, après comparaison avec une mesure de référence (trousse DPD ou photomètre). pH corrigé = pH brut + offset. » |
-| `#ph_offset_save_btn` | Bouton « Sauvegarder », suivi de `trackDirtyState` (actif seulement si la valeur diffère de la config enregistrée). |
-| `#ph_offset_error` | Message d'erreur (`role="alert"`, rouge) : **refus serveur affiché tel quel**. |
-
-Bornes et pas viennent de `ph_offset_min` / `ph_offset_max` / `ph_offset_step` (`GET /get-config`), même règle que la consigne : rien n'est codé en dur.
-
-### Deux paliers d'avertissement (`#ph_offset_warning`)
-
-Callout ambré (`role="status"`, `aria-live="polite"`) calculé par `renderPhOffsetWarning()` sur la **valeur en cours de saisie** (pas sur la valeur enregistrée) : l'utilisateur est prévenu **avant** d'enregistrer. La consigne utilisée est le contrôle segmenté s'il est initialisé, sinon `window._config.ph_target`, sinon la borne basse de la plage servie.
-
-| \|offset\| | Affichage |
-|---|---|
-| `< 0,15` (`PH_OFFSET_WARN1`) | callout masqué |
-| `0,15` à `< 0,30` | « Attention : cet offset décale la régulation. Avec une consigne de **7,20** et cet offset, le système régulera l'eau à un pH réel de **7,00**. Un offset erroné entraîne un surdosage d'acide et une eau agressive. Vérifiez votre mesure de référence avant d'enregistrer. » |
-| `≥ 0,30` (`PH_OFFSET_WARN2`) | « Offset élevé (**+0,30** pH). Si cet offset est erroné, l'eau réelle s'établira autour de **6,90** au lieu de **7,20**. Au-delà de 0,30, la sonde doit être recalibrée plutôt que compensée. **Les seuils de sécurité du dosage portent sur le pH affiché (offset compris)** : un offset faux les déplace d'autant sur l'eau réelle. » |
-
-Formatage français : virgule décimale, 2 décimales, signe explicite sur l'offset.
-
-> **v2.25.0 — plus AUCUN seuil de sécurité n'est annoncé ni recalculé côté client.** L'ancien message citait un plancher brut calculé par une réplique JS de `phRawFloorFor(offset)` : ce miroir de constante firmware est **supprimé**, avec la fonction qu'il répliquait. Les seuils sont désormais fixes et portent sur le pH affiché — il n'y a plus rien à recalculer, donc plus rien à maintenir en double. Le palier `0,30` reste une règle **purement ergonomique** (à partir de quand insister sur la recalibration) : il ne correspond à aucun seuil firmware.
-
-### Enregistrement
-
-`POST /save-config` avec le seul champ `{"ph_offset": <valeur>}` (via `sendConfigDetailed`), puis `loadConfig()`. L'incrémenteur ne produisant que des multiples du pas dans la plage, il n'y a plus de pré-contrôle de saisie à faire : la validation qui fait foi est côté serveur, qui **refuse en HTTP 400** hors bornes (jamais d'écrêtage) et **arrondit au pas** dans la plage (voir [API.md](../API.md#bornes-de-la-consigne-ph-et-de-loffset-v2250)). En cas de refus, le message serveur est affiché tel quel et le bouton passe en « Erreur » 2 s — l'UI ne laisse jamais croire qu'une valeur refusée a été enregistrée.
+Présents de la v2.25.0 à la v2.70.x : un incrémenteur `#ph-offset-stepper` réglant un **écart signé** `[−0,50 ; +0,50]`, un texte d'aide permanent (`#ph_offset_help`), et un callout ambré à **deux paliers** (`#ph_offset_warning`, 0,15 / 0,30 pH) recalculant côté client le pH réel probable en cas d'offset erroné. Les trois ont **disparu** avec le changement de geste décrit ci-dessus — voir [Ce qui a disparu (et ce qui ne l'a pas)](#ce-qui-a-disparu-et-ce-qui-ne-la-pas). L'enregistrement ne passe plus par `POST /save-config {"ph_offset": …}` depuis cette carte (route toujours valide pour un appel API direct, voir [API.md](../API.md#post-save-config--critical)), mais par [`POST /tune-ph-offset`](#enregistrement--post-tune-ph-offset) — voir la section ci-dessus.
 
 ### Diagnostic dans le modal sonde pH
 
@@ -345,7 +396,7 @@ Formatage français : virgule décimale, 2 décimales, signe explicite sur l'off
 | Valeur retenue | `#ph-fm-filtered` | **valeur officielle** (médiane 9 + lissage, **corrigée**) — identique au champ `ph` |
 | Dernière mesure | `#ph-fm-age` | âge de la dernière brute reçue côté UI |
 
-L'offset, la valeur « corrigée » intermédiaire et la médiane en tant que ligne séparée **ne sont plus affichés** : il n'y a plus qu'une seule valeur officielle à lire (fin du repli silencieux, feature-152), et l'offset se consulte sur la [carte Correction de la mesure pH](#carte--correction-de-la-mesure-ph--feature-067-v2200). Les **pics rejetés**, l'état **« filtre prêt »** et la **raison de blocage dosage** ne sont plus affichés dans ce modal non plus : la raison de blocage se lit sur la [pastille d'état dosage](#pastille-détat-ph-dosing-pill--5-priorités-3-couleurs), et il n'y a plus d'état « prêt » distinct de la valeur (`isnan(ph)` suffit).
+L'offset, la valeur « corrigée » intermédiaire et la médiane en tant que ligne séparée **ne sont plus affichés** : il n'y a plus qu'une seule valeur officielle à lire (fin du repli silencieux, feature-152), et la correction se consulte sur la [carte Correction manuelle de la mesure](#carte--correction-manuelle-de-la-mesure--ph-card-tune-feature-155-v2710). Les **pics rejetés**, l'état **« filtre prêt »** et la **raison de blocage dosage** ne sont plus affichés dans ce modal non plus : la raison de blocage se lit sur la [pastille d'état dosage](#pastille-détat-ph-dosing-pill--5-priorités-3-couleurs), et il n'y a plus d'état « prêt » distinct de la valeur (`isnan(ph)` suffit).
 
 ### L'écran de calibration reste sur le BRUT
 

@@ -75,6 +75,12 @@ static const HttpOnlyKey kHttpOnlyKeys[] = {
   {"ph_slope_healthy_min_pct", "Constante de compilation (kPhSlopeHealthyMinPct) : immuable a l'execution, app.js conserve la derniere borne recue."},
   {"ph_slope_healthy_max_pct", "Constante de compilation (kPhSlopeHealthyMaxPct) : immuable a l'execution, app.js conserve la derniere borne recue."},
   {"ph_zero_healthy_max_mv",   "Constante de compilation (kPhZeroHealthyMaxMv) : immuable a l'execution, app.js conserve la derniere borne recue."},
+  // feature-155 : constantes de l'accord pH sur un test manuel, consommees par
+  // la fonction PURE du navigateur (apercu seulement, cf. condition 1 du gate
+  // pool-chemistry -- le calcul qui compte est serveur, POST /tune-ph-offset).
+  // Memes regles que les bornes ph_target_*/ph_offset_* ci-dessus.
+  {"ph_cal_points_min",         "Constante de compilation (kPhTuneCalPointsMin) : immuable a l'execution, app.js conserve la derniere borne recue."},
+  {"ph_tune_min_filtration_ms", "Constante de compilation (kPhTuneMinFiltrationMs) : immuable a l'execution, app.js conserve la derniere borne recue."},
   {"regulation_defaults_by_size",
    "Table de compilation (kRegulationDefaultsBySize, 3 colonnes) : immuable a l'execution et ~525 o de trame par push."},
   // Dérivable côté client : `pool_size` EST dans la trame WS depuis bug-089 et

@@ -1991,11 +1991,6 @@
     updatePhModeControls();
   }
 
-  // ---------- feature-067 : offset logiciel de mesure pH ----------
-  // pH corrigé = pH brut EZO + offset.
-  const PH_OFFSET_WARN1 = 0.15;  // palier 1 : avertissement de décalage de régulation
-  const PH_OFFSET_WARN2 = 0.30;  // palier 2 : offset élevé, recalibration recommandée
-
   // ---------- v2.25.0 (B1) : bornes SERVIES PAR LE SERVEUR ----------
   // `/get-config` publie ph_target_min/_max/_step et ph_offset_min/_max/_step,
   // dérivés des constantes firmware (constants.h). Le client n'en code AUCUNE en
@@ -2038,6 +2033,335 @@
       next.offsetMin = oMin; next.offsetMax = oMax; next.offsetStep = oStep;
     }
     _phBounds = next;
+  }
+
+  // ---------- feature-155 : accord de la mesure pH sur un test manuel ----------
+  // Remplace l'ancien réglage d'un offset abstrait (feature-067) : l'utilisateur
+  // AMÈNE un nombre affiché (le pas-à-pas est RÉAFFECTÉ, pas supprimé) à la
+  // valeur relevée sur son test. Condition 1 du gate pool-chemistry : c'est le
+  // FIRMWARE qui calcule l'écart, avec SA mesure à l'instant de la réception
+  // (POST /tune-ph-offset) — tout ce qui suit ici n'est qu'un APERÇU, jamais la
+  // décision. Le mot « offset » ne doit apparaître dans AUCUN texte visible.
+
+  // Repli de secours (firmware antérieur qui ne servirait pas encore ces deux
+  // champs) : jamais une autorité, même convention que PH_BOUNDS_FALLBACK.
+  const PH_TUNE_CONFIG_FALLBACK = Object.freeze({
+    calPointsMin: 2,
+    minFiltrationMs: 600000,  // 10 min — kPhTuneMinFiltrationMs (constants.h)
+  });
+  let _phTuneCalPointsMin = PH_TUNE_CONFIG_FALLBACK.calPointsMin;
+  let _phTuneMinFiltrationMs = PH_TUNE_CONFIG_FALLBACK.minFiltrationMs;
+
+  // ph_cal_points_min / ph_tune_min_filtration_ms : HTTP-seules (comme
+  // ph_offset_min/_max/_step ci-dessus) — absentes des trames WS, jamais
+  // retombées sur le repli entre deux /get-config.
+  function _applyPhTuneConfig(cfg) {
+    const cpm = _phNum(cfg?.ph_cal_points_min);
+    if (isFinite(cpm) && cpm >= 1) _phTuneCalPointsMin = cpm;
+    const mfm = _phNum(cfg?.ph_tune_min_filtration_ms);
+    if (isFinite(mfm) && mfm >= 0) _phTuneMinFiltrationMs = mfm;
+  }
+
+  // Excursion du pas-à-pas autour de la lecture appareil (ergonomie — PAS un
+  // seuil de sécurité, celui-ci reste ph_offset_min/_max, servi par le serveur
+  // et utilisé dans evaluatePhTunePreview ci-dessous). ±1,00 autour de la
+  // lecture, la zone acceptable (±0,50) en étant la moitié centrale ; au-delà
+  // le pas-à-pas continue mais l'écran passe en refus expliqué. Écrêtée à
+  // l'échelle physique universelle du pH [0, 14].
+  const PH_TUNE_RANGE = 1.00;
+  const PH_TUNE_SCALE_FLOOR = 0;
+  const PH_TUNE_SCALE_CEIL = 14;
+
+  // Aperçu PUR de l'accord — ADR-0099 : pure, nommée, SANS DOM ni authFetch,
+  // extractible par ancre + profondeur d'accolades. AUCUN littéral numérique
+  // hors 0 et 1 dans ce corps : les seuils (pas, bornes) viennent des
+  // PARAMÈTRES, jamais recopiés en dur (ADR-0100) — ils sont servis par
+  // /get-config (ph_offset_step, ph_offset_min, ph_offset_max).
+  //
+  // ⚠️ `phValueRaw` DOIT être la valeur OFFICIELLE pH, échelle BRUTE (champ
+  // `phValueRaw` de /data et du WS, cf. sensors.getPhValueRaw()) — JAMAIS
+  // `ph`/`phFiltered`/`phMedian`, déjà CORRIGÉS de l'offset courant (Piège 2,
+  // spec feature-155) : partir d'une valeur déjà corrigée ajouterait l'écart à
+  // un écart déjà appliqué, défaut invisible à offset 0,00.
+  //
+  // Travaille en NOMBRE DE PAS ENTIER (et non en comparaison flottante sur une
+  // borne exacte) : ±0,50 étant un multiple du pas, cela règle le même piège
+  // que l'arrondi firmware (roundPhOffsetToStep) sans epsilon arbitraire.
+  //
+  // Retour :
+  //   - mesureIndisponible : true si phValueRaw n'est pas un nombre fini —
+  //     aucun autre champ n'est alors signifiant ;
+  //   - ecart : (valeurAmenee − phValueRaw) arrondi au pas le plus proche,
+  //     SANS bornage (un dépassement doit être VISIBLE, pas absorbé) ;
+  //   - horsBornes : true si `ecart` sort de [offsetMin, offsetMax] ;
+  //   - valeurAtteinte : phValueRaw + ecart — la valeur que l'appareil va
+  //     RÉELLEMENT atteindre après arrondi (Piège 1), jamais `valeurAmenee`.
+  function evaluatePhTunePreview(valeurAmenee, phValueRaw, offsetStep, offsetMin, offsetMax) {
+    if (typeof phValueRaw !== "number" || !isFinite(phValueRaw)) {
+      return { mesureIndisponible: true, ecart: null, horsBornes: false, valeurAtteinte: null };
+    }
+    const pas = (typeof offsetStep === "number" && isFinite(offsetStep) && offsetStep > 0) ? offsetStep : 1;
+    // ⚠️ LE TEST DE BORNE PORTE SUR L'ÉCART **DEMANDÉ**, PAS SUR L'ÉCART ARRONDI.
+    // C'est le MÊME contrat que le firmware (src/ph_tune_logic.h) : il compare
+    // `phReference - phValueRaw` aux bornes AVANT tout arrondi.
+    // 🔴 CORRIGÉ : la version précédente comparait des NOMBRES DE PAS ENTIERS
+    // (`Math.round(ecart/pas)` contre `Math.round(offsetMax/pas)`). Pour tout
+    // écart demandé dans ]0,50 ; 0,55], l'aperçu arrondissait à 5 pas, concluait
+    // « dans la plage » et ACTIVAIT le bouton — pendant que le serveur, lui,
+    // refusait en 400. Un bouton actif qui mène à un refus est un bouton qui
+    // ment. Trouvé par le vecteur de COHÉRENCE APERÇU ↔ SERVEUR, pas par la
+    // relecture : les deux moitiés étaient justes séparément.
+    const ecartDemande = valeurAmenee - phValueRaw;
+    const horsBornes = (ecartDemande > offsetMax) || (ecartDemande < offsetMin);
+    // L'arrondi ne sert qu'à PRÉDIRE la valeur atteinte, jamais à juger la borne.
+    // ⚠️ `Math.round` NE REPRODUIT PAS `roundf` du firmware sur les NÉGATIFS :
+    // JS arrondit les demis vers +∞ (Math.round(-3.5) === -3), le C les arrondit
+    // À L'OPPOSÉ DE ZÉRO (roundf(-3.5f) === -4). Un écart négatif tombant pile
+    // à mi-pas (ex. −0,35) aurait donc donné −0,30 à l'écran et −0,40 dans
+    // l'appareil. Encore le même défaut : l'aperçu et le verdict qui divergent.
+    // On reproduit explicitement la règle du C.
+    const enPas = ecartDemande / pas;
+    const enPasArrondi = (enPas < 0) ? -Math.round(-enPas) : Math.round(enPas);
+    const ecart = enPasArrondi * pas;
+    const valeurAtteinte = phValueRaw + ecart;
+    return { mesureIndisponible: false, ecart, horsBornes, valeurAtteinte };
+  }
+
+  // Seul endroit, hors de la fonction pure ci-dessus, où l'arrondi au dixième
+  // est fait (affichage de la position de départ — livrable #3).
+  function _phTuneRoundTenth(v) {
+    return Math.round(v * 10) / 10;
+  }
+
+  let _phTuneValue = null;              // valeur AMENÉE par l'utilisateur (ex. 7.4)
+  let _phTuneTouched = false;           // true dès le 1er appui +/- : plus de resynchronisation auto (#3)
+  let _phTuneFiltrationSinceMs = null;  // ancre LOCALE — cf. limitation documentée dans renderPhTuneCard()
+  let _phTuneSubmitBusy = false;        // requête POST en cours : renderPhTuneCard() ne touche plus au bouton
+
+  function _phTuneLiveRaw() {
+    const v = latestSensorData?.phValueRaw;
+    return (typeof v === "number" && isFinite(v)) ? v : NaN;
+  }
+
+  // Rendu complet de la carte — appelé à CHAQUE trame (#4, référence vivante)
+  // depuis updateDetailSections(), et après chaque appui +/- ou fin de requête.
+  //
+  // ⚠️ LIMITATION DOCUMENTÉE (filtration) : le firmware ne sert (encore) nulle
+  // part l'instant RÉEL de démarrage du cycle de filtration courant — seule la
+  // route POST /tune-ph-offset le connaît, côté serveur, au moment même de la
+  // décision (filtration.filtrationStartedAtMs(), web_routes_config.cpp). Cet
+  // écran n'a donc qu'une ANCRE LOCALE : le premier instant où CE client a vu
+  // filtration_running passer à true. Cette ancre ne peut que SOUS-ESTIMER le
+  // temps réel écoulé (jamais le sur-estimer) : l'aperçu ne peut donc jamais
+  // annoncer « prêt » avant que le firmware ne le soit réellement — seul le
+  // sens inverse (annoncer « pas encore » alors que c'est déjà bon, borné à la
+  // durée depuis l'ouverture de cet onglet) est possible. La décision RÉELLE
+  // reste de toute façon côté serveur (condition 1 du gate) : un clic sur
+  // « Corriger » encore trop tôt aux yeux du firmware affichera son message
+  // exact, avec son décompte EXACT à lui.
+  function renderPhTuneCard() {
+    const valueEl = $("#ph_tune_value");
+    if (!valueEl) return;  // carte absente de cette vue : rien à faire
+
+    const data = latestSensorData || {};
+    const phValueRaw = _phTuneLiveRaw();
+
+    // Ce que l'appareil ANNONCE aujourd'hui (même nombre que la carte
+    // « Lecture pH », #ph_current_value — échelle CORRIGÉE, offset courant
+    // compris) : sert à la fois de position de départ du pas-à-pas (#3, zéro
+    // appui = aucun changement) ET de terme de comparaison de la ligne de
+    // résultat ci-dessous (#2). Repli sur phValueRaw si `ph` est indisponible
+    // (offset courant alors inconnu, raw est le seul nombre qui reste vrai).
+    const announced = (typeof data.ph === "number" && isFinite(data.ph)) ? data.ph
+                     : (isFinite(phValueRaw) ? phValueRaw : NaN);
+    if (!_phTuneTouched) {
+      _phTuneValue = isFinite(announced) ? _phTuneRoundTenth(announced) : null;
+    }
+
+    // Suivi LOCAL de la filtration (cf. limitation documentée en en-tête).
+    const running = data.filtration_running === true;
+    if (running) {
+      if (_phTuneFiltrationSinceMs == null) _phTuneFiltrationSinceMs = Date.now();
+    } else {
+      _phTuneFiltrationSinceMs = null;
+    }
+    const filtrationElapsedMs = (running && _phTuneFiltrationSinceMs != null)
+      ? Math.max(0, Date.now() - _phTuneFiltrationSinceMs) : 0;
+
+    const calPoints = (typeof data.phCalPoints === "number") ? data.phCalPoints : null;
+
+    const preview = evaluatePhTunePreview(
+      _phTuneValue != null ? _phTuneValue : 0,
+      phValueRaw,
+      _phBounds.offsetStep, _phBounds.offsetMin, _phBounds.offsetMax
+    );
+
+    // --- Pas-à-pas : affichage + bornes d'excursion.
+    const dispValue = _phTuneValue != null ? _phTuneValue : phValueRaw;
+    const hasDisp = isFinite(dispValue);
+    valueEl.textContent = hasDisp ? _fmtPh(dispValue, false) : "--";
+    const rangeMin = isFinite(phValueRaw) ? Math.max(PH_TUNE_SCALE_FLOOR, phValueRaw - PH_TUNE_RANGE) : PH_TUNE_SCALE_FLOOR;
+    const rangeMax = isFinite(phValueRaw) ? Math.min(PH_TUNE_SCALE_CEIL, phValueRaw + PH_TUNE_RANGE) : PH_TUNE_SCALE_CEIL;
+    valueEl.setAttribute("aria-valuemin", String(rangeMin));
+    valueEl.setAttribute("aria-valuemax", String(rangeMax));
+    valueEl.setAttribute("aria-valuenow", hasDisp ? String(dispValue) : String(rangeMin));
+    valueEl.setAttribute("aria-valuetext", hasDisp ? (_fmtPh(dispValue, false) + " pH") : "mesure indisponible");
+
+    const dec = $("#ph_tune_dec"), inc = $("#ph_tune_inc");
+    const pas = _fmtPh(_phBounds.offsetStep, false);
+    if (dec) { dec.disabled = !hasDisp || dispValue <= rangeMin + PH_EPS; dec.setAttribute("aria-label", `Diminuer de ${pas}`); }
+    if (inc) { inc.disabled = !hasDisp || dispValue >= rangeMax - PH_EPS; inc.setAttribute("aria-label", `Augmenter de ${pas}`); }
+
+    // --- Ligne de résultat (#2) : « Mesure actuelle » = ce que l'appareil
+    // ANNONCE aujourd'hui (même échelle corrigée que #ph_current_value, pas
+    // phValueRaw — sinon un offset déjà non nul ferait croire à un changement
+    // là où il n'y en a aucun, à l'exact endroit où zéro appui doit afficher
+    // zéro changement). « après validation » reste TOUJOURS la valeur
+    // RÉELLEMENT atteinte après arrondi, jamais la valeur demandée (Piège 1).
+    const resultEl = $("#ph_tune_result");
+    if (resultEl) {
+      if (!isFinite(announced) || !isFinite(phValueRaw) || _phTuneValue == null) {
+        resultEl.textContent = "";
+      } else {
+        resultEl.textContent = `Mesure actuelle : ${_fmtPh(announced, false)} → `
+          + `après validation : ${_fmtPh(preview.valeurAtteinte, false)}`;
+      }
+    }
+
+    // --- Les cinq états (design arrêté) : prêt + 4 refus, dans le MÊME ORDRE
+    // qu'evaluatePhTune (src/ph_tune_logic.h) pour qu'un même jeu d'entrées
+    // produise TOUJOURS le même verdict ici et côté serveur. Textes IMPOSÉS
+    // par le gate, mot pour mot.
+    let blockedText = "";
+    if (!isFinite(phValueRaw)) {
+      blockedText = "L'appareil n'a pas de mesure assez récente. Attendez qu'une valeur "
+        + "s'affiche, puis recommencez.";
+    } else if (!running || filtrationElapsedMs < _phTuneMinFiltrationMs) {
+      const remainingMin = Math.ceil((_phTuneMinFiltrationMs - filtrationElapsedMs) / 60000);
+      blockedText = "La filtration doit tourner depuis 10 minutes pour que l'eau testée "
+        + "soit celle qui passe devant la sonde. Possible dans " + remainingMin + " min.";
+    } else if (calPoints == null || calPoints < _phTuneCalPointsMin) {
+      blockedText = "La sonde n'a pas encore ses deux points de référence. Faites d'abord "
+        + "l'étalonnage (tampon 7 puis tampon 4), puis revenez ici.";
+    } else if (preview.horsBornes) {
+      blockedText = "Trop loin de ce que l'appareil mesure. Refaites le test (bandelettes non "
+        + "périmées, lecture à la bonne échelle) et vérifiez l'étalonnage de la "
+        + "sonde avant de recommencer.";
+    }
+
+    const blockedEl = $("#ph_tune_blocked");
+    if (blockedEl) {
+      if (blockedText) { blockedEl.textContent = blockedText; blockedEl.hidden = false; }
+      else { blockedEl.textContent = ""; blockedEl.hidden = true; }
+    }
+    const submitBtn = $("#ph_tune_submit_btn");
+    // ⚠️ `!_phTuneTouched` EST UNE GARDE, PAS UN CONFORT (relevé en revue).
+    // Sans lui, « zéro appui » pouvait DÉPLACER l'offset d'un pas : la position
+    // de départ est `round10(data.ph)` — la valeur ANNONCÉE, arrondie au
+    // dixième — alors que l'écart se calcule contre `phValueRaw`, la valeur
+    // BRUTE non arrondie. Quand l'annoncée tombe sur un demi-dixième (brut
+    // 7,150 + offset 0,30 = 7,450 → départ affiché 7,5), l'écart demandé vaut
+    // 0,35 → 0,40 appliqué : +0,10 d'offset SANS AUCUNE ACTION de
+    // l'utilisateur, et une réécriture NVS à chaque clic.
+    // C'est le même défaut que les trois autres de ce lot : confondre la valeur
+    // AFFICHÉE (arrondie) avec la valeur qui SERT AU CALCUL (brute).
+    if (submitBtn && !_phTuneSubmitBusy) submitBtn.disabled = !!blockedText || !_phTuneTouched;
+    const gotoCalBtn = $("#ph_tune_goto_cal_btn");
+    if (gotoCalBtn) gotoCalBtn.hidden = !(calPoints != null && calPoints < _phTuneCalPointsMin);
+  }
+
+  // Un appui = un acte (#2 du gate, hérité de feature-067) : pas d'auto-répétition.
+  function stepPhTune(direction) {
+    _phTuneTouched = true;
+    const phValueRaw = _phTuneLiveRaw();
+    const base = _phTuneValue != null ? _phTuneValue
+               : (isFinite(phValueRaw) ? _phTuneRoundTenth(phValueRaw) : 0);
+    let next = _phRound(base + direction * _phBounds.offsetStep);
+    const lo = isFinite(phValueRaw) ? Math.max(PH_TUNE_SCALE_FLOOR, phValueRaw - PH_TUNE_RANGE) : PH_TUNE_SCALE_FLOOR;
+    const hi = isFinite(phValueRaw) ? Math.min(PH_TUNE_SCALE_CEIL, phValueRaw + PH_TUNE_RANGE) : PH_TUNE_SCALE_CEIL;
+    _phTuneValue = clamp(next, lo, hi);
+    renderPhTuneCard();
+  }
+
+  function bindPhTuneStepper() {
+    $("#ph_tune_dec")?.addEventListener("click", () => stepPhTune(-1));
+    $("#ph_tune_inc")?.addEventListener("click", () => stepPhTune(+1));
+    $("#ph_tune_value")?.addEventListener("keydown", (e) => {
+      const k = e.key;
+      if (k === "ArrowUp" || k === "ArrowRight" || k === "PageUp") {
+        e.preventDefault(); stepPhTune(+1);
+      } else if (k === "ArrowDown" || k === "ArrowLeft" || k === "PageDown") {
+        e.preventDefault(); stepPhTune(-1);
+      } else if (k === "Home" || k === "End") {
+        e.preventDefault();
+        _phTuneTouched = true;
+        const phValueRaw = _phTuneLiveRaw();
+        const lo = isFinite(phValueRaw) ? Math.max(PH_TUNE_SCALE_FLOOR, phValueRaw - PH_TUNE_RANGE) : PH_TUNE_SCALE_FLOOR;
+        const hi = isFinite(phValueRaw) ? Math.min(PH_TUNE_SCALE_CEIL, phValueRaw + PH_TUNE_RANGE) : PH_TUNE_SCALE_CEIL;
+        _phTuneValue = (k === "Home") ? lo : hi;
+        renderPhTuneCard();
+      }
+    });
+  }
+
+  // POST /tune-ph-offset : porte la VALEUR AMENÉE, jamais un écart déjà
+  // calculé (condition 1 du gate — cf. en-tête de ce bloc). Le message du
+  // serveur fait AUTORITÉ sur un refus (#9) : affiché tel quel, jamais réécrit.
+  function bindPhTuneSubmit() {
+    const btn = $("#ph_tune_submit_btn");
+    const errEl = $("#ph_tune_error");
+    if (!btn) return;
+
+    const setBtn = (label, spinner, disabled, status) => {
+      btn.disabled = disabled;
+      btn.classList.remove("btn--primary", "btn--ok", "btn--danger");
+      btn.classList.add(status === "success" ? "btn--ok" : status === "error" ? "btn--danger" : "btn--primary");
+      btn.innerHTML = spinner ? `<span class="btn__spinner"></span><span>${label}</span>` : label;
+    };
+    const showErr = (msg) => {
+      if (!errEl) return;
+      if (msg) { errEl.textContent = msg; errEl.style.display = ""; }
+      else { errEl.textContent = ""; errEl.style.display = "none"; }
+    };
+    const idle = () => { _phTuneSubmitBusy = false; setBtn("Corriger", false, false, "default"); renderPhTuneCard(); };
+
+    btn.addEventListener("click", async () => {
+      if (btn.disabled || _phTuneValue == null) return;
+      _phTuneSubmitBusy = true;
+      showErr("");
+      setBtn("Correction...", true, true, "default");
+      try {
+        const res = await authFetch("/tune-ph-offset", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ph_reference: _phTuneValue }),
+        });
+        if (res.ok) {
+          setBtn("Corrigé", false, true, "success");
+          _phTuneTouched = false;  // reprend la lecture vivante au prochain rendu
+          loadConfig();
+          setTimeout(idle, 2000);
+        } else {
+          let msg = "Correction refusée.";
+          try { const j = await res.json(); if (j && j.error) msg = String(j.error); } catch (e) { /* corps non JSON */ }
+          showErr(msg);
+          setBtn("Erreur", false, false, "error");
+          setTimeout(idle, 2000);
+        }
+      } catch (e) {
+        showErr("Contrôleur injoignable — correction non appliquée.");
+        setBtn("Erreur", false, false, "error");
+        setTimeout(idle, 2000);
+      }
+    });
+
+    $("#ph_tune_goto_cal_btn")?.addEventListener("click", () => {
+      $("#ph_cal_trigger_btn")?.click();
+      $("#ph-card-calibration")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+
+    bindPhTuneStepper();
+    renderPhTuneCard();
   }
 
   // ---------- feature-154 : seuils de SANTÉ pH servis, jamais codés en dur ----------
@@ -2387,46 +2711,6 @@
     return (v < 0 ? "−" : "") + s;
   }
 
-  // Avertissements imposés par la revue de sécurité chimique. Calculés sur la
-  // valeur EN COURS DE SAISIE (pas sur la config enregistrée) : l'utilisateur doit
-  // être prévenu AVANT d'enregistrer.
-  function renderPhOffsetWarning() {
-    const box = $("#ph_offset_warning");
-    if (!box) return;
-    const raw = $("#ph_offset")?.value;
-    const off = parseFloat(raw);
-    if (raw === "" || !isFinite(off) || Math.abs(off) < PH_OFFSET_WARN1) {
-      box.style.display = "none";
-      box.textContent = "";
-      return;
-    }
-    // Consigne réelle de l'utilisateur : contrôle segmenté s'il est initialisé,
-    // sinon valeur enregistrée, sinon borne basse de la plage servie.
-    const fieldTarget = parseFloat($("#ph_target")?.value);
-    const cfgTarget = window._config?.ph_target;
-    const target = isFinite(fieldTarget) ? fieldTarget
-                 : ((typeof cfgTarget === "number" && isFinite(cfgTarget))
-                      ? cfgTarget : _phBounds.targetMin);
-    const regulated = target - off;
-    if (Math.abs(off) >= PH_OFFSET_WARN2) {
-      // v2.25.0 : plus AUCUN seuil annoncé ici. Les seuils de sécurité sont
-      // désormais FIXES et portent sur le pH AFFICHÉ (offset compris) : ils ne
-      // dépendent plus de l'offset, il n'y a donc plus rien à recalculer côté
-      // client — et donc plus de miroir de constante firmware à maintenir.
-      box.textContent = `Offset élevé (${_fmtPh(off, true)} pH). Si cet offset est erroné, l'eau réelle `
-        + `s'établira autour de ${_fmtPh(regulated, false)} au lieu de ${_fmtPh(target, false)}. `
-        + `Au-delà de 0,30, la sonde doit être recalibrée plutôt que compensée. `
-        + `Les seuils de sécurité du dosage portent sur le pH affiché (offset compris) : `
-        + `un offset faux les déplace d'autant sur l'eau réelle.`;
-    } else {
-      box.textContent = `Attention : cet offset décale la régulation. Avec une consigne de `
-        + `${_fmtPh(target, false)} et cet offset, le système régulera l'eau à un pH réel de `
-        + `${_fmtPh(regulated, false)}. Un offset erroné entraîne un surdosage d'acide et une eau agressive. `
-        + `Vérifiez votre mesure de référence avant d'enregistrer.`;
-    }
-    box.style.display = "";
-  }
-
   // v2.25.0 — Aide sous le contrôle « pH cible ». La saisie hors plage étant
   // devenue IMPOSSIBLE (contrôle segmenté), ce texte n'est plus un avertissement
   // de validation : il rappelle la plage servie par le firmware et le référentiel
@@ -2529,7 +2813,6 @@
     input.value = best.dataset.value;
     renderPhTargetHint();
     renderPhTargetWarning();
-    renderPhOffsetWarning();  // la consigne entre dans le calcul de l'avertissement
     if (!silent) {
       // Les consommateurs historiques (trackDirtyState, updatePhControls) écoutent
       // `input`/`change` sur #ph_target : une écriture `.value =` ne les déclenche
@@ -2578,105 +2861,6 @@
     });
   }
 
-  // ---------- v2.25.0 : offset pH (incrémenteur) ----------
-  function _phOffsetFromField() {
-    const v = parseFloat($("#ph_offset")?.value);
-    return isFinite(v) ? v : 0;
-  }
-
-  // Arrondi au pas + bornage. Sert à la MIGRATION (B6) : une configuration
-  // antérieure a pu enregistrer 0,47 ; on affiche 0,50 sans marquer le formulaire
-  // modifié — l'arrondi persistant est fait côté firmware.
-  function _phSnapOffset(v) {
-    if (typeof v !== "number" || !isFinite(v)) return 0;  // B7 : absent → 0,00
-    const { offsetMin, offsetMax, offsetStep } = _phBounds;
-    const snapped = _phRound(Math.round(v / offsetStep) * offsetStep);
-    return clamp(snapped, offsetMin, offsetMax);
-  }
-
-  // Écrit l'offset dans le porteur caché et rafraîchit tout l'incrémenteur.
-  // `silent` : voir setPhTarget().
-  function setPhOffset(value, silent) {
-    const input = $("#ph_offset");
-    if (!input) return;
-    const { offsetMin, offsetMax, offsetStep } = _phBounds;
-    const raw = (typeof value === "number" && isFinite(value)) ? value : 0;
-    const v = _phRound(clamp(raw, offsetMin, offsetMax)) || 0;  // `|| 0` neutralise -0
-    input.value = v.toFixed(2);  // format machine : 2 décimales, point décimal
-
-    const valueEl = $("#ph_offset_value");
-    if (valueEl) {
-      const txt = _fmtPh(v, true);
-      valueEl.textContent = txt;
-      valueEl.classList.toggle("is-neutral", v === 0);  // B7 : 0,00 = aucune correction
-      valueEl.setAttribute("aria-valuemin", String(offsetMin));
-      valueEl.setAttribute("aria-valuemax", String(offsetMax));
-      valueEl.setAttribute("aria-valuenow", String(v));
-      valueEl.setAttribute("aria-valuetext", txt + " pH");
-    }
-
-    const dec = $("#ph_offset_dec");
-    const inc = $("#ph_offset_inc");
-    const pas = _fmtPh(offsetStep, false);
-    if (dec) {
-      dec.disabled = (v <= offsetMin + PH_EPS);
-      dec.setAttribute("aria-label", `Diminuer l'offset de ${pas}`);
-    }
-    if (inc) {
-      inc.disabled = (v >= offsetMax - PH_EPS);
-      inc.setAttribute("aria-label", `Augmenter l'offset de ${pas}`);
-    }
-    // `.btn:disabled` porte `pointer-events:none` : un bouton désactivé SOUS le
-    // focus le laisserait retomber sur <body> et la navigation clavier serait
-    // perdue. On rapatrie donc le focus sur la valeur (elle-même focusable).
-    if (valueEl && document.activeElement &&
-        ((dec && dec.disabled && document.activeElement === dec) ||
-         (inc && inc.disabled && document.activeElement === inc))) {
-      valueEl.focus();
-    }
-
-    const reset = $("#ph_offset_reset");
-    if (reset) reset.hidden = (v === 0);
-
-    renderPhOffsetWarning();
-    if (!silent) {
-      input.dispatchEvent(new Event("input", { bubbles: true }));
-      input.dispatchEvent(new Event("change", { bubbles: true }));
-    }
-  }
-
-  // Incrément d'un pas. L'arrondi au centième est fait AVANT le bornage pour
-  // éviter la dérive flottante cumulée (−0,5 + 0,1 × 5 ≠ 0 sans lui).
-  function stepPhOffset(direction) {
-    setPhOffset(_phRound(_phOffsetFromField() + direction * _phBounds.offsetStep), false);
-  }
-
-  // Boutons + clavier de l'incrémenteur. PAS d'auto-répétition à l'appui long :
-  // l'offset est un réglage de sécurité chimique, chaque pas doit être un acte.
-  function bindPhOffsetStepper() {
-    // État initial cohérent (0,00 neutre, boutons armés) avant la première
-    // réponse de /get-config.
-    setPhOffset(_phOffsetFromField(), true);
-    $("#ph_offset_dec")?.addEventListener("click", () => stepPhOffset(-1));
-    $("#ph_offset_inc")?.addEventListener("click", () => stepPhOffset(+1));
-    $("#ph_offset_reset")?.addEventListener("click", () => {
-      setPhOffset(0, false);
-      $("#ph_offset_value")?.focus();  // le bouton disparaît : ne pas perdre le focus
-    });
-    $("#ph_offset_value")?.addEventListener("keydown", (e) => {
-      const k = e.key;
-      if (k === "ArrowUp" || k === "ArrowRight" || k === "PageUp") {
-        e.preventDefault(); stepPhOffset(+1);
-      } else if (k === "ArrowDown" || k === "ArrowLeft" || k === "PageDown") {
-        e.preventDefault(); stepPhOffset(-1);
-      } else if (k === "Home") {
-        e.preventDefault(); setPhOffset(_phBounds.offsetMin, false);
-      } else if (k === "End") {
-        e.preventDefault(); setPhOffset(_phBounds.offsetMax, false);
-      }
-    });
-  }
-
   // Un contrôle est « occupé » si l'utilisateur y a le focus OU si son bouton
   // Sauvegarder est actif (modification non enregistrée). Dans les deux cas, la
   // trame de config poussée par le WebSocket ne doit RIEN y écraser.
@@ -2691,54 +2875,6 @@
     if (container && active && container.contains(active)) return true;
     const btn = $(saveBtnSelector);
     return !!(btn && !btn.disabled);
-  }
-
-  function bindPhOffsetSave() {
-    const input = $("#ph_offset");
-    const btn = $("#ph_offset_save_btn");
-    const errEl = $("#ph_offset_error");
-    if (!input || !btn) return;
-
-    const setBtn = (label, spinner, disabled, status) => {
-      btn.disabled = disabled;
-      btn.classList.remove("btn--primary", "btn--ok", "btn--danger");
-      btn.classList.add(status === "success" ? "btn--ok" : status === "error" ? "btn--danger" : "btn--primary");
-      btn.innerHTML = spinner ? `<span class="btn__spinner"></span><span>${label}</span>` : label;
-    };
-    const showErr = (msg) => {
-      if (!errEl) return;
-      if (msg) { errEl.textContent = msg; errEl.style.display = ""; }
-      else { errEl.textContent = ""; errEl.style.display = "none"; }
-    };
-
-    trackDirtyState("#ph_offset_save_btn", ["ph_offset"]);
-    input.addEventListener("input", () => { showErr(""); renderPhOffsetWarning(); });
-    input.addEventListener("change", renderPhOffsetWarning);
-    bindPhOffsetStepper();  // v2.25.0 : incrémenteur (± 0,10) + clavier + remise à zéro
-
-    btn.addEventListener("click", async () => {
-      if (btn.disabled) return;
-      // v2.25.0 : plus aucune validation locale de plage. L'incrémenteur ne peut
-      // produire qu'un multiple du pas dans les bornes servies par le serveur ;
-      // une valeur illisible dans le porteur caché retombe sur 0,00 (neutre).
-      const value = _phOffsetFromField();
-      showErr("");
-      setBtn("Sauvegarde...", true, true, "default");
-      const res = await sendConfigDetailed({ ph_offset: _phRound(value) });
-      if (res.ok) {
-        setBtn("Sauvegarde réussie", false, true, "success");
-        loadConfig();
-        setTimeout(() => setBtn("Sauvegarder", false, true, "default"), 2000);
-      } else {
-        // B5 — Ce message ne signale plus qu'un ÉCHEC DE SAUVEGARDE (contrôleur
-        // injoignable, refus serveur) : ne JAMAIS laisser croire que la valeur
-        // affichée est enregistrée.
-        showErr((res.message || res.error || "Enregistrement refusé.") +
-                " L'offset affiché n'a pas été enregistré.");
-        setBtn("Erreur", false, false, "error");
-        setTimeout(() => setBtn("Sauvegarder", false, false, "default"), 2000);
-      }
-    });
   }
 
   function updateOrpModeControls() {
@@ -2921,6 +3057,9 @@
     // v2.25.0 (B1) : bornes de réglage servies par le serveur, JAMAIS codées côté
     // client. À appliquer AVANT de (re)construire les positions de la consigne.
     _applyPhBounds(cfg);
+    // feature-155 : constantes de l'accord pH sur un test manuel (calPoints
+    // minimal, délai minimal de filtration) — même convention que ci-dessus.
+    _applyPhTuneConfig(cfg);
     buildPhTargetSegments();
     renderPhTargetHint();
     // feature-154 : seuils de SANTÉ pH (pente/zéro) — distincts des bornes de
@@ -2934,17 +3073,6 @@
       setPhTarget(typeof cfg.ph_target === "number" ? cfg.ph_target : _phBounds.targetMin, true);
     }
     $("#orp_target").value = typeof cfg.orp_target === "number" ? cfg.orp_target : 650;
-
-    // feature-067 : offset de mesure pH. Ne jamais écraser une modification en
-    // cours (la config est aussi poussée par le WebSocket toutes les quelques
-    // secondes) — cf. _phControlBusy() pour le correctif du test de focus.
-    // B6 : un offset hérité hors pas (0,47) est affiché arrondi au plus proche,
-    // SANS activer le bouton Sauvegarder (l'arrondi persistant est déjà fait
-    // côté firmware). B7 : offset absent → 0,00 (état neutre).
-    if (!_phControlBusy("#ph-offset-stepper", "#ph_offset_save_btn")) {
-      setPhOffset(_phSnapOffset(cfg.ph_offset), true);
-    }
-    renderPhOffsetWarning();
 
     setSegmented("ph_regulation_mode", cfg.ph_regulation_mode || "automatic");
     updatePhModeControls();
@@ -6156,6 +6284,10 @@
     // feature-091 : durée/motif de la dernière pause — même source
     // (latestSensorData : /data ET WS), même précaution try/catch.
     try { updateMeasuresPurgeDisplay(latestSensorData); } catch (e) { console.error('[purge] rendu:', e); }
+
+    // feature-155 : carte « Correction manuelle de la mesure » — référence
+    // VIVANTE (#4), rafraîchie à chaque trame comme les rendus ci-dessus.
+    try { renderPhTuneCard(); } catch (e) { console.error('[ph-tune] rendu:', e); }
 
     // === FILTRATION ===
     // feature-147 : le texte de mode ("Mode Auto"/.../"Hors gel") est géré par
@@ -10667,7 +10799,7 @@
             + ` L’eau n’est donc pas forcément à ce pH.`
             + ` Lancer une injection manuelle contournera cette sécurité et injectera quand même.`
             + ` Avant de continuer, contrôlez le pH au réactif (trousse DPD ou photomètre)`
-            + ` et vérifiez l’offset pH${product === "ph" ? " (carte « Correction de la mesure pH »)"
+            + ` et vérifiez l’offset pH${product === "ph" ? " (carte « Correction manuelle de la mesure »)"
                                                           : " sur la page pH"}.`;
         }
         box.hidden = false;
@@ -11602,10 +11734,8 @@
     ["orp_target", "orp_limit", "orp_daily_limit"].forEach((id) => $(`#${id}`)?.addEventListener("change", () => updateOrpControls()));
     bindRegulationSave("ph",  "#ph_regulation_save_btn");
     bindRegulationSave("orp", "#orp_regulation_save_btn");
-    bindPhOffsetSave();  // feature-067 : carte « Correction de la mesure pH »
+    bindPhTuneSubmit();  // feature-155 : carte « Correction manuelle de la mesure »
     bindPhTargetControl();  // v2.25.0 : contrôle segmenté de la consigne pH
-    // La consigne pH entre dans le calcul de l'avertissement d'offset → resynchroniser.
-    $("#ph_target")?.addEventListener("input", renderPhOffsetWarning);
     // v2.25.0 : rappel de la plage sous le contrôle.
     $("#ph_target")?.addEventListener("input", renderPhTargetHint);
     // Onglet Régulation : initialisation segmented + save dédié

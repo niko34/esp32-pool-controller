@@ -1070,3 +1070,29 @@ Décompte **vérifié par mesure** et non supposé : les **20** clés WS-seules 
 **Angle mort assumé** (identique à l'axe config) : l'extraction est **textuelle**. Une clé mise en **commentaire** entre les marqueurs reste comptée comme présente. La sentinelle vise **la distraction, pas la malveillance**.
 
 **Que faire quand elle casse** : ajouter la clé du côté manquant **entre les marqueurs** (en vérifiant la **marge courante de 67 o**), ou l'inscrire dans la table adéquate avec un motif écrit. Jamais la désactiver.
+
+## Champ `sensor_data` ajouté en feature-155 — `phValueRaw`, référence de l'accord pH (v2.71.0)
+
+| Champ | Type | Description |
+|---|---|---|
+| `phValueRaw` | float \| null | Valeur **officielle** pH (même lissage que `ph`/`phMedian`/`phFiltered` — médiane + EMA), mais en **échelle BRUTE** : `sensors.getPhValueRaw()`, **avant** l'offset logiciel. Arrondi ×1000, `null` si NaN. |
+
+⚠️ **Ce n'est pas `phRaw`.** `phRaw` est la dernière mesure Atlas EZO **instantanée**, non lissée (dispersion ~0,36 pH sur ce bassin, jusqu'à ±0,18 d'écart avec la valeur lissée — deux pas de réglage). `phValueRaw` porte le **même lissage** que `ph`, simplement sans la correction en sortie. C'est la valeur que le firmware utilise comme référence pour calculer l'écart d'un accord sur test manuel ([`POST /tune-ph-offset`](../API.md#post-tune-ph-offset--critical)) — servie ici pour que l'**aperçu client** (`evaluatePhTunePreview()`, `data/app.js`) travaille sur la **même** référence que le calcul serveur, jamais sur `ph`/`phFiltered`/`phMedian` (déjà corrigés de l'offset courant : partir de l'un d'eux ajouterait l'écart demandé à un écart déjà appliqué — défaut invisible à offset 0,00, cf. [ADR-0101](../adr/0101-la-correction-nait-d-une-mesure-jamais-d-un-ecart.md)).
+
+**Parité stricte avec `GET /data`** (même passage, mêmes règles de null — voir [`src/web_routes_data.cpp`](../../src/web_routes_data.cpp) et [`src/ws_manager.cpp`](../../src/ws_manager.cpp)) : un champ servi d'un seul côté ne disparaîtrait pas, il **clignoterait** (3 récidives déjà documentées de ce défaut sur cette trame — voir la section « La sentinelle a attrapé un défaut RÉEL… » plus haut).
+
+#### Budget de payload — méthode ([ADR-0073](../adr/0073-chiffre-consigne-porte-sa-methode.md))
+
+Borne **structurelle** de la plage physique de la sonde EZO pH (0,001–14,000 — 6 caractères de valeur, jamais plus), `null` (4 o) étant plus court et donc jamais dimensionnant. Clé de 10 caractères :
+
+| Fragment sérialisé | Décompte | Octets |
+|---|---|---:|
+| `"phValueRaw":14.000,` | 1+10+1+1+6+1 | **20** |
+
+Pire cas de trame WS porté à **3376 o**, sous `kWsFrameBufBytes = 3584` o — marge résiduelle **208 o** (était 228 o avant ce champ). Côté `/data` (gabarit documentaire, pas de plafond dur) : charge portée à **3122 o**, sous le gabarit `StaticJson<3200>` — marge **78 o**.
+
+## Deux nouvelles clés HTTP-seules — `ph_cal_points_min` / `ph_tune_min_filtration_ms` (feature-155, v2.71.0)
+
+`GET /get-config` sert deux nouveaux champs lecture seule consommés par l'**aperçu** de l'accord pH sur un test manuel (`data/app.js`) : `ph_cal_points_min` (`kPhTuneCalPointsMin`, défaut 2) et `ph_tune_min_filtration_ms` (`kPhTuneMinFiltrationMs`, défaut 600000). **Volontairement absents de la trame WebSocket** — même règle, et même motif, que les six bornes `ph_target_*`/`ph_offset_*` et les trois seuils de santé pH (v2.70.0) : ce sont des **constantes de compilation**, invariantes pour un firmware donné, et la marge de trame (208 o, cf. ci-dessus) est mieux dépensée ailleurs. Inscrites dans `kHttpOnlyKeys` de la sentinelle de parité (`test/test_native_ws_config_parity/test_ws_config_parity.cpp`), avec un motif écrit — même traitement que les clés qui les précèdent dans cette table.
+
+Le client conserve la dernière valeur connue entre deux appels à `/get-config`, sans jamais retomber sur un défaut inventé : un repli trop permissif sur ces deux seuils affaiblirait un refus de sécurité (filtration insuffisamment établie, sonde non étalonnée), pas seulement un affichage.

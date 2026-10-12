@@ -13,6 +13,7 @@
 #include "ph_offset.h"     // feature-067 : isPhOffsetValid (validation serveur de ph_offset)
 #include "temp_compensation_logic.h"  // bug-114 : clampTempCalOffset (écrêtage serveur de l'offset T°)
 #include "ph_guard_logic.h"  // v2.25.0 : phModeChangeNeedsAck (gate fail-closed du mode pH)
+#include "ph_tune_logic.h"   // feature-155 : evaluatePhTune (accord pH sur un test manuel)
 #include "logger.h"
 #include "version.h"
 #include "json_compat.h"
@@ -141,6 +142,10 @@ static void handleGetConfig(AsyncWebServerRequest* request) {
   // 90 o de JSON pour les trois paires clé/valeur (floats ronds sérialisés
   // sans décimale, ex. "90" et non "90.0") + 1 o de virgule de jonction =
   // 91 o. La marge 3776 l'absorbe largement, sans ajustement.
+  // feature-155 (A6) : +2 constantes de l'accord pH sur un test manuel —
+  // "ph_cal_points_min":2, (18+1+4=23 o) + "ph_tune_min_filtration_ms":600000,
+  // (25+6+4=35 o) → 58 o. La marge 3776 l'absorbe sans ajustement (chemin
+  // documentaire, aucun plafond dur ici contrairement au buffer WS).
   StaticJson<3776> doc;
   // >>> PARITE-CONFIG:DEBUT
   // CONVENTION NORMATIVE (lue telle quelle par la sentinelle
@@ -264,6 +269,15 @@ static void handleGetConfig(AsyncWebServerRequest* request) {
   doc["ph_offset_min"]  = kPhOffsetMin;
   doc["ph_offset_max"]  = kPhOffsetMax;
   doc["ph_offset_step"] = kPhOffsetStep;
+
+  // feature-155 (livrable A6) — constantes consommées par la fonction PURE du
+  // navigateur qui calcule l'APERÇU d'écart avant validation (ADR-0099/0100) :
+  // sans elles, cette fonction porterait des littéraux non vérifiables côté
+  // serveur. Le calcul qui COMPTE reste serveur (condition 1 du gate) ; cet
+  // aperçu n'est jamais la décision. Constantes de compilation, comme les
+  // bornes ph_offset_* ci-dessus : HTTP-seules (kHttpOnlyKeys).
+  doc["ph_cal_points_min"]         = kPhTuneCalPointsMin;
+  doc["ph_tune_min_filtration_ms"] = kPhTuneMinFiltrationMs;
 
   // feature-154 — FENÊTRE DE SANTÉ EZO servie au navigateur (constants.h).
   // Source UNIQUE : `isPhProbeHealthy()` (ph_guard_logic.h) consomme les MÊMES
@@ -1047,11 +1061,16 @@ static void handleSaveConfig(AsyncWebServerRequest* request, uint8_t* data, size
       // Drapeau + message : c'est le lambda de complétion qui répondra (voir le
       // commentaire de g_configErrorMessages). Ne PAS répondre ni purger ici.
       (*g_configErrors)[request] = true;
+      // feature-155 (condition 6 du gate pool-chemistry) : l'ancien texte
+      // affirmait « c'est la sonde ou sa calibration EZO qui est en cause » —
+      // exactement le malentendu de l'incident du 2026-08-25 (sonde SAINE
+      // déclarée à remplacer). Un écart hors plage peut venir d'ailleurs
+      // (valeur mal amenée, échelle de lecture confondue) ; le message ne
+      // désigne plus la sonde.
       g_configErrorMessages[request] =
         String("{\"error\":\"Offset pH hors plage autoris\\u00e9e\",\"message\":\""
                "Offset pH hors plage autoris\\u00e9e (") + oMinStr + " \\u00e0 +" + oMaxStr +
-        " pH). Au-del\\u00e0, c'est la sonde ou sa calibration EZO qui est en cause, "
-        "pas son implantation.\"}";
+        " pH). V\\u00e9rifiez la valeur avant de recommencer.\"}";
       return;
     }
     // v2.25.0 (B2) — Alignement sur kPhOffsetStep par la MÊME fonction que la
@@ -1254,6 +1273,162 @@ static void handleSaveConfig(AsyncWebServerRequest* request, uint8_t* data, size
 
   systemLogger.info("Configuration mise à jour via interface web");
   // La réponse sera envoyée par le handler principal
+}
+
+// =============================================================================
+// POST /tune-ph-offset — feature-155 : accorder l'appareil sur un test manuel
+// =============================================================================
+// Contrat : le corps porte la VALEUR AMENÉE par l'utilisateur sur son écran
+// ({"ph_reference": <float>}), JAMAIS un offset déjà calculé. Condition 1 du
+// gate pool-chemistry (change l'arbitrage initial de l'architect) : c'est le
+// FIRMWARE qui calcule l'écart, avec SA mesure à l'INSTANT DE LA RÉCEPTION —
+// jamais le navigateur, qui travaillerait sur une référence ayant vieilli
+// pendant le geste (inauditable). Calcul :
+//   offset = roundPhOffsetToStep(ph_reference − sensors.getPhValueRaw())
+// getPhValueRaw() et NON ph/phFiltered/phMedian : ces trois derniers sont déjà
+// CORRIGÉS de l'offset courant (sensors.cpp) — partir d'eux ajouterait l'écart
+// à un écart déjà appliqué, défaut INVISIBLE à offset 0,00 (celui de
+// l'utilisateur aujourd'hui) et faux dès que l'offset ne l'est plus (piège
+// identifié par l'orchestrator avant codage, vérifié par un vecteur de test
+// dédié : offset déjà à +0,30).
+//
+// ROUTE DÉDIÉE plutôt qu'un champ de plus dans /save-config (A2, justifié) :
+//   - sémantique DIFFÉRENTE du champ `ph_offset` existant, qui reste le
+//     contrat de STOCKAGE (écrit directement, déjà calculé, par /save-config
+//     — cf. plus haut) : fusionner les deux sous la même clé ferait dériver le
+//     sens du champ selon l'appelant, invérifiable en lecture de code ;
+//   - 4 refus ORDONNÉS avec des textes IMPOSÉS mot pour mot par le gate,
+//     incompatibles avec le patron différé de /save-config (une erreur parmi N
+//     champs, réponse posée par la complétion) : ici la réponse est IMMÉDIATE
+//     et porte exactement le texte du refus qui s'applique — patron repris de
+//     /calibrate_ph (web_routes_calibration.cpp).
+//   - AUCUN appel à requestReset()/resetDosingStates()/resetPhPauseGuard() sur
+//     ce chemin (A7 / condition 5 du gate, interdiction déjà écrite plus haut
+//     pour /save-config) : l'offset ne touche aucun compteur de dosage.
+static void handleTunePhOffset(AsyncWebServerRequest* req, uint8_t* data, size_t len,
+                                size_t index, size_t total) {
+  // Garde en PREMIÈRE instruction (même motif que saveConfigBodyAuthorized/
+  // calibrationBodyAuthorized) : un corps non authentifié ne doit RIEN
+  // appliquer, même si REQUIRE_AUTH (posé dans le lambda de requête) s'exécute
+  // après ce handler de corps.
+  if (!saveConfigBodyAuthorized(req)) {
+    if (index == 0) {
+      systemLogger.warning("[pH] /tune-ph-offset NON AUTHENTIFIÉ depuis " +
+                           clientIpOf(req) + " — corps ignoré (aucun offset modifié)");
+    }
+    return;
+  }
+
+  // Payload minuscule : pas de support chunké, comme /calibrate_ph/_orp.
+  if (index != 0 || len != total) {
+    sendErrorResponse(req, 400, "payload too large or chunked");
+    return;
+  }
+
+  StaticJson<128> body;
+  DeserializationError err = deserializeJson(body, data, len);
+  if (err || !body["ph_reference"].is<float>()) {
+    sendErrorResponse(req, 400, "ph_reference manquant ou invalide");
+    return;
+  }
+  const float phReference = body["ph_reference"].as<float>();
+
+  // Rassemblement des entrées, puis délégation à la logique PURE (évaluation
+  // des 4 refus ORDONNÉS + calcul, src/ph_tune_logic.h) : testable en natif
+  // (ADR-0017), indépendamment de cette route et sans matériel. Ce handler ne
+  // fait plus que traduire le verdict en texte, journal et effet de bord.
+  const float phValueRaw = sensors.getPhValueRaw();
+  const bool filtrationRunning = filtration.isRunning();
+  const unsigned long elapsedMs = filtrationRunning
+      ? (millis() - filtration.filtrationStartedAtMs())
+      : 0UL;
+  const int calPoints = sensors.getPhCalibrationPointsCached();
+
+  const PhTuneResult tune = evaluatePhTune(phReference, phValueRaw,
+                                           filtrationRunning, elapsedMs, calPoints);
+
+  switch (tune.refusal) {
+    case PhTuneRefusal::MeasureUnavailable:
+      systemLogger.warning("[pH] Accord refusé (mesure indisponible) depuis " + clientIpOf(req));
+      sendErrorResponse(req, 400,
+        "L'appareil n'a pas de mesure assez récente. Attendez qu'une valeur "
+        "s'affiche, puis recommencez.");
+      return;
+    case PhTuneRefusal::FiltrationNotEstablished: {
+      // Arrondi SUPÉRIEUR : annoncer moins que le temps réellement nécessaire
+      // inviterait à réessayer trop tôt et à re-essuyer le même refus.
+      const unsigned long remainingMin = (tune.remainingFiltrationMs + 59999UL) / 60000UL;
+      systemLogger.warning("[pH] Accord refusé (filtration < 10 min, reste " +
+                           String(remainingMin) + " min) depuis " + clientIpOf(req));
+      sendErrorResponse(req, 400,
+        "La filtration doit tourner depuis 10 minutes pour que l'eau testée "
+        "soit celle qui passe devant la sonde. Possible dans " +
+        String(remainingMin) + " min.");
+      return;
+    }
+    case PhTuneRefusal::ProbeNotCalibrated:
+      systemLogger.warning("[pH] Accord refusé (calPoints=" + String(calPoints) +
+                           ") depuis " + clientIpOf(req));
+      sendErrorResponse(req, 400,
+        "La sonde n'a pas encore ses deux points de référence. Faites d'abord "
+        "l'étalonnage (tampon 7 puis tampon 4), puis revenez ici.");
+      return;
+    case PhTuneRefusal::OutOfRange: {
+      // offsetApplied n'est pas peuplé sur ce refus : l'écart DEMANDÉ est
+      // recalculé pour le seul besoin du journal.
+      // 🔴 CORRIGÉ (gate 2) : cette ligne passait par roundPhOffsetToStep(),
+      // qui ÉCRÊTE. Une tentative à +0,80 était donc tracée « écart 0,50 hors
+      // plage » — un journal qui MASQUE l'ampleur de la demande, et qui aurait
+      // rendu le diagnostic impossible précisément dans le cas où il sert.
+      // C'est le MÊME défaut que celui corrigé dans ph_tune_logic.h, une
+      // troisième fois, ici dans la trace. On loggue l'écart BRUT demandé.
+      const float attemptedOffset = phReference - phValueRaw;
+      systemLogger.warning("[pH] Accord refusé (écart demandé " + String(attemptedOffset, 2) +
+                           " hors plage) depuis " + clientIpOf(req));
+      sendErrorResponse(req, 400,
+        "Trop loin de ce que l'appareil mesure. Refaites le test (bandelettes "
+        "non périmées, lecture à la bonne échelle) et vérifiez l'étalonnage de "
+        "la sonde avant de recommencer.");
+      return;
+    }
+    case PhTuneRefusal::None:
+      break;  // accordé — suite ci-dessous
+  }
+
+  const float oldOffset = mqttCfg.phOffset;
+  const float offsetRounded = tune.offsetApplied;
+
+  // --- Acceptation : écriture sous configMutex (même protocole que
+  // /save-config), prise en compte IMMÉDIATE (ADR-0039 : offset appliqué en
+  // sortie des accesseurs). AUCUN requestReset()/resetDosingStates()/
+  // resetPhPauseGuard() ici (A7).
+  if (xSemaphoreTakeRecursive(configMutex, pdMS_TO_TICKS(kConfigMutexTimeoutMs)) != pdTRUE) {
+    systemLogger.error("Timeout acquisition configMutex dans handleTunePhOffset");
+    sendErrorResponse(req, 503, "Appareil occupé — réessayez dans un instant.");
+    return;
+  }
+  mqttCfg.phOffset = offsetRounded;
+  saveMqttConfig();
+  xSemaphoreGiveRecursive(configMutex);
+  sensors.refreshPhOffsetCache();
+
+  // --- Journal (condition 7 du gate) : traçabilité complète de tout ce qui
+  // entre dans la décision de dosage pH.
+  systemLogger.info("[pH] Accord sur test manuel : valeur amenée=" + String(phReference, 2) +
+                    " lecture brute=" + String(phValueRaw, 3) +
+                    " offset ancien=" + String(oldOffset, 2) +
+                    " offset nouveau=" + String(offsetRounded, 2) +
+                    " depuis " + clientIpOf(req));
+
+  // Réponse : un APERÇU côté client ne devient jamais la décision (condition 1
+  // du gate) — cette charge confirme ce qui a été RÉELLEMENT appliqué.
+  StaticJson<192> resp;
+  resp["success"] = true;
+  resp["ph_offset"] = offsetRounded;
+  resp["ph_value_raw"] = round(phValueRaw * 1000.0f) / 1000.0f;
+  resp["ph_reference"] = phReference;
+  resp["ph_reached"] = round((phValueRaw + offsetRounded) * 1000.0f) / 1000.0f;
+  sendJsonResponse(req, resp);
 }
 
 static void handleTimeNow(AsyncWebServerRequest* request) {
@@ -1950,6 +2125,19 @@ void setupConfigRoutes(AsyncWebServer* server, bool* restartApRequested, unsigne
     },
     nullptr,
     handleSaveConfig
+  );
+
+  // Route /tune-ph-offset — feature-155 : accorder l'appareil sur un test
+  // manuel. PROTÉGÉE (CRITICAL, le niveau de /save-config : même pouvoir
+  // d'écriture sur une entrée de la régulation pH). Réponse IMMÉDIATE posée
+  // par le corps (patron /calibrate_ph) : pas de buffer différé, le lambda de
+  // requête ne fait que poser la garde d'authentification.
+  server->on("/tune-ph-offset", HTTP_POST,
+    [](AsyncWebServerRequest *req) {
+      REQUIRE_AUTH(req, RouteProtection::CRITICAL);
+    },
+    nullptr,
+    handleTunePhOffset
   );
 
   // Route /reset-regulation-defaults — PROTÉGÉE (CRITICAL, le niveau de

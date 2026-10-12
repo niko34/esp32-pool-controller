@@ -365,8 +365,15 @@ void FiltrationManager::update() {
 
   bool wasRunning = state.running;
   if (!wasRunning && runTarget) {
-    state.running = true;
+    // ⚠️ ORDRE SIGNIFICATIF (relevé en revue, feature-155) : l'horodatage est
+    // publié AVANT le drapeau. Dans l'ordre inverse, une requête
+    // POST /tune-ph-offset intercalée entre les deux lisait `running = true`
+    // avec `startedAtMs` encore à 0 ⇒ `elapsed = millis()`, donc la garde des
+    // 10 minutes FRANCHIE au moment même où la filtration démarre. Fenêtre
+    // microscopique, correctif gratuit : ne jamais annoncer « ça tourne » avant
+    // de pouvoir dire « depuis quand ».
     state.startedAtMs = millis();
+    state.running = true;
     systemLogger.info("Démarrage filtration");
     // feature-091 (v2.34.0) : l'arming du timer de stabilisation au démarrage de
     // la filtration est RETIRÉ. La stabilisation après reprise de circulation est

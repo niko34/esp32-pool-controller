@@ -844,6 +844,14 @@ size_t WsManager::_buildSensorJson(char* buf, size_t cap) const {
   //   Total retiré : 141 o.
   // Pire cas de trame : 3497 (décompte ci-dessus) − 141 = 3356 o, SOUS
   // kWsFrameBufBytes = 3584 o. MARGE RÉSIDUELLE : 3584 − 3356 = 228 o.
+  //
+  // feature-155 (A1) : +1 champ `phValueRaw` (parité /data ↔ WS, même passage).
+  // Octet SÉRIALISÉ au pire cas (clé 10 car. + valeur bornée par la plage de
+  // la sonde EZO pH, 0,001-14,000 — borne STRUCTURELLE du matériel, pas du
+  // type ; `null` = 4 o, plus court, jamais dimensionnant) :
+  //   "phValueRaw":14.000, → 10+6+4 = 20 o.
+  // Pire cas de trame : 3356 (décompte ci-dessus) + 20 = 3376 o, SOUS
+  // kWsFrameBufBytes = 3584 o. MARGE RÉSIDUELLE : 3584 − 3376 = 208 o.
   StaticJson<3584> doc;
   doc["type"] = "sensor_data";
   JsonObject d = doc["data"].to<JsonObject>();
@@ -879,6 +887,15 @@ size_t WsManager::_buildSensorJson(char* buf, size_t cap) const {
   if (!isnan(phRaw))      d["phRaw"] = round(phRaw * 1000.0f) / 1000.0f;        else d["phRaw"] = nullptr;
   if (!isnan(phMedian))   d["phMedian"] = round(phMedian * 1000.0f) / 1000.0f;  else d["phMedian"] = nullptr;
   if (!isnan(phFiltered)) d["phFiltered"] = round(phFiltered * 1000.0f) / 1000.0f; else d["phFiltered"] = nullptr;
+  // feature-155 (A1, parité OBLIGATOIRE avec /data — web_routes_data.cpp) :
+  // valeur OFFICIELLE pH, échelle BRUTE (getPhValueRaw — réservée aux butées de
+  // dernier recours), PAS `phRaw` (instantané EZO, dispersion ~0,36 sur ce
+  // bassin, jusqu'à ±0,18 d'écart avec le lissé — deux pas de réglage). C'est
+  // cette valeur que le firmware utilise comme référence pour calculer l'écart
+  // d'un accord sur test manuel (POST /tune-ph-offset) ; un champ WS-seul ne
+  // disparaîtrait pas, il CLIGNOTERAIT (3 récidives documentées de ce défaut).
+  float phValueRaw = sensors.getPhValueRaw();
+  if (!isnan(phValueRaw)) d["phValueRaw"] = round(phValueRaw * 1000.0f) / 1000.0f; else d["phValueRaw"] = nullptr;
   d["phRejectedCount"]  = sensors.getPhRejectedCount();
   if (!isnan(orpRaw))      d["orpRaw"] = round(orpRaw);                          else d["orpRaw"] = nullptr;
   if (!isnan(orpMedian))   d["orpMedian"] = round(orpMedian);                    else d["orpMedian"] = nullptr;

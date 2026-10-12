@@ -2,6 +2,87 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [2.71.0] - 2026-10-11
+
+### Fonctionnalités
+
+- **Le geste de correction de la mesure pH change complètement (feature-155)** —
+  sur la page pH, l'utilisateur ne règle plus un écart abstrait (« offset »).
+  Il **amène un nombre**, avec les boutons `+`/`−`, jusqu'à la valeur qu'il a
+  lue sur son propre test (bandelette, PoolLab, pH-mètre) : c'est l'appareil
+  qui en déduit seul la correction à appliquer. Le mot « offset » a disparu de
+  l'interface ; le vocabulaire est désormais **ajuster**, **amener à**,
+  **indiquer**, **corriger**.
+  - La carte s'appelle maintenant **« Correction manuelle de la mesure »**
+    (bouton **« Corriger »**), au même emplacement que l'ancienne carte
+    « Correction de la mesure pH ».
+  - Avant de valider, trois nombres sont montrés côte à côte : la mesure
+    actuelle de l'appareil, la valeur amenée, et **la valeur qu'il va
+    réellement atteindre** après validation — qui peut différer de quelques
+    centièmes de la valeur demandée (la correction reste arrondie au dixième de
+    pH, comme avant).
+  - **Dix minutes de filtration continue sont désormais exigées** avant
+    d'accepter la correction, avec un **décompte visible** pendant l'attente :
+    le temps nécessaire pour que l'eau testée soit celle qui passe devant la
+    sonde.
+  - Quatre cas de refus sont expliqués en clair : mesure pas assez récente,
+    filtration pas encore établie (avec le décompte), sonde pas encore
+    étalonnée, écart trop important. **Aucun de ces messages ne met la sonde en
+    cause** — un écart trop grand oriente vers le test ou l'étalonnage, jamais
+    vers un remplacement de pièce.
+  - L'écran compte **moins d'éléments qu'avant** : le bouton « Remettre à
+    zéro », le texte d'aide permanent et l'avertissement à deux paliers
+    disparaissent, remplacés par une explication courte et un rappel de
+    l'enjeu (« cette valeur décidera des injections d'acide »).
+  - ⚠️ **Cette valeur sert au dosage, pas seulement à l'affichage** : elle
+    entre dans la mesure que lisent la régulation et les gardes de sécurité
+    pH. Les bornes de sécurité (±0,50 pH) sont **inchangées**.
+
+### Firmware
+
+- **Nouvelle route `POST /tune-ph-offset`** — reçoit la valeur **amenée** par
+  l'utilisateur (`ph_reference`), jamais un écart déjà calculé : c'est le
+  firmware qui calcule la correction, avec sa propre mesure à l'instant de la
+  réception. Quatre refus ordonnés (mesure indisponible, filtration pas
+  établie, sonde non étalonnée, écart hors ±0,50 pH), textes validés par le
+  gate `pool-chemistry`.
+- **`GET /data` et la trame WebSocket** servent un nouveau champ
+  `phValueRaw` : la valeur officielle pH en échelle brute (avant la
+  correction), utilisée comme référence par la nouvelle route et par
+  l'aperçu de la carte.
+- **`GET /get-config`** sert deux nouveaux champs lecture seule :
+  `ph_cal_points_min` (2) et `ph_tune_min_filtration_ms` (600000 ms = 10 min).
+- Nouvelle constante `kPhTuneMinFiltrationMs` (10 min), verrouillée à la
+  compilation : les messages de refus l'écrivent en toutes lettres des deux
+  côtés (serveur et client), toute modification doit relire les deux textes et
+  repasser par `pool-chemistry`.
+
+### Documentation
+
+- `docs/API.md` : la nouvelle route `POST /tune-ph-offset` (contrat, quatre
+  refus ordonnés, pourquoi le calcul est fait côté firmware), le champ
+  `phValueRaw` de `GET /data`, les deux nouveaux champs de `GET /get-config`.
+- `docs/features/page-ph.md` : réécriture de la carte « Correction manuelle de
+  la mesure » — ce qui a disparu (ancien incrémenteur d'offset, bouton de
+  remise à zéro, aide permanente, avertissement à deux paliers) et ce qui le
+  remplace.
+- `docs/subsystems/ws-manager.md` : le champ `phValueRaw` et sa parité
+  `/data` ↔ WebSocket, les deux nouvelles clés HTTP-seules.
+- `docs/user/src/guide-utilisation.html` : nouvelle section « Corriger la
+  mesure pH » décrivant le geste côté utilisateur. **Capture d'écran à
+  refaire** : `screenshots/07_pH.jpg` (la carte affiche désormais
+  « Correction manuelle de la mesure » et le bouton « Corriger »).
+- [ADR-0101](docs/adr/0101-la-correction-nait-d-une-mesure-jamais-d-un-ecart.md)
+  — **nouvel ADR** : l'utilisateur indique une mesure, jamais un écart ; le
+  calcul part de la valeur officielle en échelle brute servie par le firmware,
+  jamais d'une valeur pré-calculée par le navigateur. Documente aussi les
+  quatre défauts trouvés pendant ce lot (tous partageant la même racine :
+  confondre la valeur affichée avec la valeur qui sert au calcul) et le job CI
+  `ph-tune-vectors` qui verrouille la cohérence entre l'aperçu client et le
+  verdict serveur.
+
+---
+
 ## [2.70.0] - 2026-10-11
 
 ### Fonctionnalités

@@ -1013,44 +1013,76 @@
             </div>
           </div>
 
-          <!-- feature-067 : offset logiciel de mesure pH. Toujours visible (quel que
-               soit le mode de régulation) car il corrige la MESURE, pas la régulation.
-               Distinct de la calibration EZO, qui reste dans la carte dédiée. -->
-          <div class="card" id="ph-card-offset">
+          <!-- feature-155 : accorder l'appareil sur un test manuel. Toujours visible
+               (quel que soit le mode de régulation) car elle corrige la MESURE, pas la
+               régulation. Distincte de la calibration EZO (carte dédiée plus bas) : deux
+               gestes différents, deux effets différents — cf. #ph_tune_calib_note.
+               Remplace l'ancien réglage d'un offset abstrait (feature-067) : l'écran
+               demande une VALEUR LUE, jamais un écart ; le mot « offset » n'y figure
+               plus. Le pas-à-pas existant est RÉAFFECTÉ (pas supprimé). -->
+          <div class="card" id="ph-card-tune">
             <div class="card__head">
-              <h2 class="card__title">Correction de la mesure pH</h2>
+              <h2 class="card__title">Correction manuelle de la mesure</h2>
             </div>
             <div class="card__body">
-              <!-- v2.25.0 — Offset pH : INCRÉMENTEUR (pas de 0,10). Comme pour la
-                   consigne, une valeur hors plage n'est plus saisissable ; les
-                   bornes et le pas viennent de /get-config (ph_offset_min / _max /
-                   _step). L'<input type="hidden"> reste le porteur de valeur
-                   (format machine, 2 décimales, point décimal). -->
-              <div class="field" style="max-width:280px">
-                <span class="field__label" id="ph_offset_label">Offset pH</span>
-                <div class="stepper" id="ph-offset-stepper">
-                  <button class="btn btn--ghost stepper__btn" type="button" id="ph_offset_dec"
-                          aria-label="Diminuer l'offset de 0,10">−</button>
-                  <div class="stepper__value" id="ph_offset_value" role="spinbutton" tabindex="0"
-                       aria-labelledby="ph_offset_label">+0,00</div>
-                  <button class="btn btn--ghost stepper__btn" type="button" id="ph_offset_inc"
-                          aria-label="Augmenter l'offset de 0,10">+</button>
-                </div>
-                <input type="hidden" id="ph_offset" />
+              <!-- UN SEUL BLOC, décision utilisateur du 2026-10-11 : la carte était
+                   passée de 3 blocs visibles à 6, alors que la consigne était de
+                   SIMPLIFIER. L'explication du geste et l'enjeu se suivaient et
+                   parlaient du même sujet — ils sont fusionnés. 6 blocs -> 5.
+                   ⚠️ LES DEUX PHRASES DU GATE pool-chemistry (B4) SONT PRÉSERVÉES
+                   MOT POUR MOT, seule la ponctuation de liaison change (point ->
+                   deux-points). Ne pas les reformuler sans repasser par le gate :
+                   elles disent que cette valeur ENGAGE LE DOSAGE, pas l'affichage. -->
+              <div class="callout callout--info" id="ph_tune_stakes" role="note" style="margin:0 0 16px">
+                <p style="margin:0 0 8px">
+                  Si votre test donne une valeur différente de celle affichée, indiquez-la ici :
+                  l'appareil corrigera sa mesure. L'écart vient de l'installation, pas de la sonde.
+                </p>
+                <p style="margin:0"><strong>
+                  Ce réglage ne vaut que ce que vaut votre test. La valeur que vous indiquez
+                  ne change pas que l'affichage : c'est elle qui décidera des injections d'acide.
+                </strong></p>
               </div>
-              <button class="btn btn--ghost" type="button" id="ph_offset_reset" hidden>Remettre à zéro</button>
-              <p class="muted small" id="ph_offset_help" style="margin:8px 0 0">
-                Correction logicielle de la mesure pH. Ne remplace pas la calibration du module EZO :
-                à n'utiliser que pour compenser un écart lié à l'implantation de la sonde, après
-                comparaison avec une mesure de référence (trousse DPD ou photomètre).
-                pH corrigé = pH brut + offset.
+
+              <!-- Pas-à-pas RÉAFFECTÉ (ex-#ph-offset-stepper, feature-067) : affiche
+                   désormais une MESURE (la valeur lue sur le test), jamais un écart.
+                   Pas de clavier, pas de champ libre — décision utilisateur du
+                   2026-10-11 : « il n'y a pas de saisie ». Plage et pas servis par
+                   /get-config (ph_offset_step), excursion totale ± PH_TUNE_RANGE. -->
+              <div class="field" style="max-width:280px">
+                <span class="field__label" id="ph_tune_label">Valeur lue sur votre test</span>
+                <div class="stepper" id="ph-tune-stepper">
+                  <button class="btn btn--ghost stepper__btn" type="button" id="ph_tune_dec"
+                          aria-label="Diminuer de 0,10">−</button>
+                  <div class="stepper__value" id="ph_tune_value" role="spinbutton" tabindex="0"
+                       aria-labelledby="ph_tune_label">--</div>
+                  <button class="btn btn--ghost stepper__btn" type="button" id="ph_tune_inc"
+                          aria-label="Augmenter de 0,10">+</button>
+                </div>
+              </div>
+
+              <!-- B2 : les trois nombres avant validation — ici, 2 des 3 (lu sur le
+                   test = la valeur du pas-à-pas ci-dessus ; lu par l'appareil → valeur
+                   atteinte). Le 3e (valeur atteinte) est l'ÉCART RÉELLEMENT APPLIQUÉ
+                   après arrondi (Piège 1), jamais la valeur demandée. -->
+              <p class="small" id="ph_tune_result" style="margin:12px 0 0"></p>
+
+              <!-- Les CINQ états (prêt + 4 refus) — un seul callout, textes IMPOSÉS mot
+                   pour mot par le gate, jamais de mise en cause de la sonde. -->
+              <div class="callout callout--warn" id="ph_tune_blocked" role="status" aria-live="polite"
+                   hidden style="margin-top:12px"></div>
+
+              <p class="muted small" id="ph_tune_calib_note" style="margin:10px 0 0">
+                Cela n'étalonne pas la sonde : pour cela, utilisez la carte
+                « Calibration de la sonde pH » plus bas.
               </p>
-              <div class="callout callout--warn" id="ph_offset_warning" role="status" aria-live="polite"
-                   style="display:none;margin-top:12px"></div>
-              <p class="small" id="ph_offset_error" role="alert"
+
+              <p class="small" id="ph_tune_error" role="alert"
                  style="display:none;margin:10px 0 0;color:var(--danger)"></p>
+
               <div class="detail-actions" style="margin-top:12px">
-                <button class="btn btn--primary" type="button" id="ph_offset_save_btn">Sauvegarder</button>
+                <button class="btn btn--primary" type="button" id="ph_tune_submit_btn">Corriger</button>
+                <button class="btn btn--secondary" type="button" id="ph_tune_goto_cal_btn" hidden>Aller à l'étalonnage</button>
               </div>
             </div>
           </div>
