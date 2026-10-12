@@ -1358,9 +1358,11 @@ static void handleTunePhOffset(AsyncWebServerRequest* req, uint8_t* data, size_t
   // fait plus que traduire le verdict en texte, journal et effet de bord.
   const float phValueRaw = sensors.getPhValueRaw();
   const bool filtrationRunning = filtration.isRunning();
-  const unsigned long elapsedMs = filtrationRunning
-      ? (millis() - filtration.filtrationStartedAtMs())
-      : 0UL;
+  // feature-158 (A4, condition 7 du gate) : ACCESSEUR UNIQUE — le ternaire
+  // isRunning() vit désormais DANS filtrationElapsedMs(), plus ici. C'est ce
+  // même accesseur qui porte le report crédité par une reprise après
+  // redémarrage (condition 7 : « le troisième site décide du dosage »).
+  const unsigned long elapsedMs = filtration.filtrationElapsedMs();
   const int calPoints = sensors.getPhCalibrationPointsCached();
 
   const PhTuneResult tune = evaluatePhTune(phReference, phValueRaw,

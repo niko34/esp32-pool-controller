@@ -1096,3 +1096,26 @@ Pire cas de trame WS porté à **3376 o**, sous `kWsFrameBufBytes = 3584` o — 
 `GET /get-config` sert deux nouveaux champs lecture seule consommés par l'**aperçu** de l'accord pH sur un test manuel (`data/app.js`) : `ph_cal_points_min` (`kPhTuneCalPointsMin`, défaut 2) et `ph_tune_min_filtration_ms` (`kPhTuneMinFiltrationMs`, défaut 600000). **Volontairement absents de la trame WebSocket** — même règle, et même motif, que les six bornes `ph_target_*`/`ph_offset_*` et les trois seuils de santé pH (v2.70.0) : ce sont des **constantes de compilation**, invariantes pour un firmware donné, et la marge de trame (208 o, cf. ci-dessus) est mieux dépensée ailleurs. Inscrites dans `kHttpOnlyKeys` de la sentinelle de parité (`test/test_native_ws_config_parity/test_ws_config_parity.cpp`), avec un motif écrit — même traitement que les clés qui les précèdent dans cette table.
 
 Le client conserve la dernière valeur connue entre deux appels à `/get-config`, sans jamais retomber sur un défaut inventé : un repli trop permissif sur ces deux seuils affaiblirait un refus de sécurité (filtration insuffisamment établie, sonde non étalonnée), pas seulement un affichage.
+
+## Champ `sensor_data` documenté a posteriori — `filtration_elapsed_s` (dette soldée, feature-157/feature-158)
+
+| Champ | Type | Description |
+|---|---|---|
+| `filtration_elapsed_s` | uint32 | Durée écoulée du cycle de filtration courant, en secondes. `0` si à l'arrêt. |
+
+⚠️ **Ce champ existe depuis la v2.73.0 (feature-157), mais n'avait jamais été
+documenté** ni ici ni dans [API.md](../API.md#get-data--write) — né dans un
+correctif post-livraison sans passage `doc-writer`. Servi à l'identique par
+`GET /data` (même accesseur `FiltrationManager::filtrationElapsedS()`, même
+valeur — parité par construction, puisque les deux routes lisent le **même**
+getter).
+
+**Ce n'est pas l'uptime de l'appareil**, même si avant la v2.74.0
+(feature-158) il s'y confondait de fait : la durée repartait de zéro à chaque
+redémarrage logiciel, y compris quand la pompe n'avait jamais cessé de
+tourner (1 619 s annoncés contre 1 644 s d'uptime mesurés en production, pour
+~5 h de circulation réelle). Depuis la v2.74.0, la durée **persiste à travers
+un redémarrage logiciel court** pendant lequel l'eau n'a pas cessé de
+circuler — voir [filtration.md](filtration.md#reprise-de-la-durée-de-filtration-à-travers-un-redémarrage-feature-158-v2740)
+et [ADR-0104](../adr/0104-la-continuite-de-l-eau-a-un-producteur-unique-et-des-consommateurs.md).
+Alimente la garde des 10 minutes de [`POST /tune-ph-offset`](../API.md#post-tune-ph-offset--critical) (refus n°2).

@@ -73,6 +73,31 @@ Un arrêt d'eau court (nettoyage rapide du bassin, redémarrage logiciel de quel
 
 Si accordée, la coquille pré-sème `waterStopMs`/`haveWaterStop` du module pur dans le référentiel `millis()` post-boot : la **même** comparaison « durée < `kWaterStopGraceS` » s'applique ensuite, qu'il y ait eu reboot ou non — ce n'est **pas** une branche de décision séparée (arbitrage `pool-chemistry`). La porte s'ouvre au premier tick, motif `kWaived` (durée 0), et `isCirculationSettled()` est vrai pour tout le cycle d'eau. Les filtres pH/ORP repartent quand même de zéro (ré-amorçage ~65 s).
 
+### Un second consommateur du verdict — `filtration` (feature-158, v2.74.0)
+
+> Décision architecturale associée : [ADR-0104](../adr/0104-la-continuite-de-l-eau-a-un-producteur-unique-et-des-consommateurs.md) — la continuité de l'eau a un producteur unique et des consommateurs.
+
+`FiltrationManager::begin()` lit ce **même** verdict, déjà calculé, via
+`bootContinuityVerdict()` — pour décider si la durée de filtration mesurée
+avant la coupure (`filtration_elapsed_s`, en réalité l'uptime avant ce lot,
+voir [filtration.md](filtration.md#reprise-de-la-durée-de-filtration-à-travers-un-redémarrage-feature-158-v2740))
+peut être **recréditée**. `measure_validity` reste le **producteur unique** :
+`filtration.*` ne calcule **jamais** une seconde comparaison « durée de
+coupure < grâce » — elle **consomme** `verdict.waive` tel quel, et persiste de
+son côté une **donnée** propre (des secondes de filtration réellement
+mesurées, dans son propre enregistrement RTC scellé `FiltrationRtcRecord`,
+distinct de `OutageRtcRecord` ci-dessus). L'invariant « un seul chemin de
+dispense » posé par feature-139 s'étend donc à ce second consommateur sans
+exception : **ajouter un consommateur n'ajoute jamais un calcul**.
+
+⚠️ **Dépendance d'ordre dans `main.cpp`** : `measureValidity.begin()` doit
+rester appelé **avant** `filtration.begin()` — c'est cet appel qui produit le
+verdict que `filtration.begin()` consomme. Un réordonnancement de `setup()`
+qui inverserait ces deux appels ne fait **pas** deviner un verdict : le
+drapeau « verdict produit » (`_bootVerdictReady`) reste `false`,
+`bootContinuityVerdict()` rend `false`, et `filtration.begin()` refuse tout
+recrédit en journalisant un `critical` bruyant.
+
 ### Circulation établie (C4) — `isCirculationSettled()`
 
 `measureValidityCirculationSettled()` : eau absente → `false` ; cycle dispensé → `true` ; sinon `now − waterRiseMs ≥ kPurgeFloorMs`. C'est la condition d'autorisation de la branche **Programmée** (aveugle aux mesures) : le produit injecté doit être emporté au bassin par une conduite dont l'eau a été renouvelée. Elle **ne dit rien** de la validité des mesures. Inchangée par feature-139.
@@ -119,6 +144,14 @@ MeasureValiditySnapshot getSnapshot() const;  // snapshot cohérent (1 section c
 bool waterPresent() const;                    // getters unitaires (cohérence non garantie ENTRE eux)
 bool measuresValid() const;
 bool isCirculationSettled() const;            // C4 : eau présente ≥ kPurgeFloorMs, ou cycle dispensé
+
+// feature-158 (condition 13 du gate pool-chemistry) : EXPOSE en lecture seule le
+// verdict de continuité déjà calculé par begin() — measure_validity reste le
+// PRODUCTEUR UNIQUE, cette méthode ne fait que le RETENIR pour un consommateur
+// (filtration.begin()). Rend `false` tant que begin() n'a pas tourné (drapeau
+// « verdict produit » explicite — un appel trop précoce ne doit jamais faire
+// deviner un verdict). Appelable depuis setup() uniquement, aucun mutex.
+bool bootContinuityVerdict(OutageContinuityVerdict& out) const;
 ```
 
 ```cpp
@@ -157,6 +190,7 @@ Le cache est lu depuis **deux contextes** : `loopTask` (history, push WS, pump_c
 | UI (WS + `/data`) | textes déterministes « Reprise automatique dans N min » (remplace les anciens badges « Stabilisation depuis N min » / « Re-stabilisation depuis N min », vocabulaire jugé incompréhensible par l'utilisateur) ; ligne « Dernière purge » (Réglages) |
 | `pump_controller` | `measuresValid()` : intégrale pH, feedforward, alertes système pH/ORP ; `isCirculationSettled()` : branche Programmée (C4) ; `getDoseAvailableInS()` : délai annoncé |
 | `sensor_filter` (v2.20.3 ; simplifiée v2.68.0, feature-152) | porte d'alimentation des filtres pH/ORP (`setContext()`) ; `value(nowMs)` renvoie `NaN` porte fermée (fenêtre vidée) |
+| `filtration` (feature-158, v2.74.0) | `bootContinuityVerdict()`, **au boot uniquement** : décide si la durée de filtration mesurée avant une coupure peut être recréditée (garde des 10 min de la correction manuelle pH) — voir [filtration.md](filtration.md#reprise-de-la-durée-de-filtration-à-travers-un-redémarrage-feature-158-v2740) et [ADR-0104](../adr/0104-la-continuite-de-l-eau-a-un-producteur-unique-et-des-consommateurs.md) |
 
 ### La porte d'alimentation des filtres (v2.20.3, durcie en v2.34.0, simplifiée en v2.68.0)
 
@@ -204,5 +238,6 @@ Eau présente au premier `update()` → front montant vu au boot → **attente c
 - [`src/dose_available_logic.h`](../../src/dose_available_logic.h) — délai avant dosage, module pur (feature-139)
 - [`src/ws_manager.cpp`](../../src/ws_manager.cpp), [`src/web_routes_data.cpp`](../../src/web_routes_data.cpp) — publication des champs
 - [`test/test_native_measure_validity/`](../../test/test_native_measure_validity/), [`test/test_native_dose_available/`](../../test/test_native_dose_available/)
-- [filtration.md](filtration.md) — `resolveWaterPresence()`, source unique ([ADR-0026](../adr/0026-mode-installation.md))
+- [filtration.md](filtration.md) — `resolveWaterPresence()`, source unique ([ADR-0026](../adr/0026-mode-installation.md)) ; consomme `bootContinuityVerdict()` pour la reprise de la durée de filtration (feature-158)
 - [ADR-0059](../adr/0059-purge-adaptative-fenetre-de-medianes.md) — purge adaptative d'origine, **superseded by** [ADR-0092](../adr/0092-retrait-analyse-stabilite-porte-mesures.md) — retrait de l'analyse de stabilité
+- [ADR-0104](../adr/0104-la-continuite-de-l-eau-a-un-producteur-unique-et-des-consommateurs.md) — la continuité de l'eau a un producteur unique (`measure_validity`) et des consommateurs (`filtration`), feature-158, v2.74.0

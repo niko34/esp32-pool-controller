@@ -397,9 +397,9 @@ static void handleGetData(AsyncWebServerRequest* request) {
   // ⚠️ 5e occurrence dans ce projet du même motif : un client qui RECALCULE ce que
   // le firmware sait déjà. Cf. ADR-0100 et les quatre défauts de feature-155.
   // 0 quand la filtration est à l'arrêt (aucune durée à compter).
-  doc["filtration_elapsed_s"] = filtration.isRunning()
-      ? (uint32_t)(((uint32_t)millis() - (uint32_t)filtration.filtrationStartedAtMs()) / 1000UL)
-      : 0;
+  // feature-158 (A4, condition 7 du gate) : ACCESSEUR UNIQUE — le ternaire
+  // isRunning() vit désormais DANS filtrationElapsedS(), plus ici.
+  doc["filtration_elapsed_s"] = filtration.filtrationElapsedS();
 
   // feature-061 : validité des mesures pH/ORP — lue depuis le CACHE de
   // measure_validity (snapshot cohérent sous spinlock). NE JAMAIS appeler

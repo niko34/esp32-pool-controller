@@ -2,6 +2,58 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [2.74.0] - 2026-10-12
+
+### Firmware
+
+- **Filtration : la durée servie (`filtration_elapsed_s`) n'est enfin plus
+  l'uptime de l'appareil (feature-158)** — relevé en production : 1 619 s de
+  durée annoncée contre 1 644 s d'uptime, pour environ 5 h de circulation
+  réelle. La durée repartait de zéro à chaque redémarrage logiciel (mise à
+  jour OTA, auto-guérison mémoire), y compris quand la pompe de filtration
+  n'avait jamais cessé de tourner. Conséquence directe : la garde des
+  10 minutes de la carte « Correction manuelle de la mesure » pH se réarmait
+  à tort à chaque déploiement.
+- **La garde des 10 minutes ne se réarme plus après un redémarrage logiciel
+  court, si l'eau n'a pas cessé de circuler** — le firmware recrédite
+  désormais la durée réellement mesurée avant la coupure, en s'appuyant sur
+  le verdict de continuité de l'eau déjà produit par `measure_validity`
+  (feature-139). Ce verdict reste calculé à un seul endroit : la filtration
+  le **consomme**, elle ne le recalcule jamais. Comportement **inchangé**
+  après une coupure secteur ou un arrêt d'eau de 3 minutes ou plus : la garde
+  s'applique alors pleinement, comme avant.
+- Trois nouvelles lignes de journal (préfixe `[Filtration]`) permettent de
+  constater *a posteriori* la décision prise à chaque redémarrage et son
+  motif.
+
+⚠️ **Piège de recette, à ne pas lire comme un échec** : le **premier**
+redémarrage qui suit le déploiement de cette version ne peut structurellement
+pas bénéficier du correctif — la mémoire qui porte le report est neuve, donc
+absente/invalide à ce moment précis, et le firmware applique alors (à juste
+titre) le comportement d'avant ce lot. La vérification du correctif se fait
+au **second** redémarrage.
+
+### Documentation
+
+- `docs/subsystems/filtration.md` : sémantique de `filtration_elapsed_s`
+  (n'est plus l'uptime), nouveaux accesseurs publics `filtrationElapsedMs()`
+  / `filtrationElapsedS()`, mécanisme de reprise après redémarrage, logs.
+- `docs/subsystems/measure-validity.md` : nouvelle méthode publique
+  `bootContinuityVerdict()`, deuxième consommateur du verdict de continuité.
+- `docs/API.md`, `docs/subsystems/ws-manager.md` : `filtration_elapsed_s`
+  documenté — ce champ, servi depuis la v2.73.0, n'avait jamais été
+  documenté (dette soldée).
+- `docs/features/page-ph.md` : mise à jour de la table des refus de la carte
+  « Correction manuelle de la mesure » et de ce qui réarme encore la garde.
+- `docs/user/src/guide-regulation.html` : nouvelle section utilisateur sur ce
+  que le redémarrage de l'appareil ne remet plus à zéro.
+- **[ADR-0104](docs/adr/0104-la-continuite-de-l-eau-a-un-producteur-unique-et-des-consommateurs.md)**
+  créé : la continuité de l'eau a un producteur unique (`measure_validity`)
+  et des consommateurs (`filtration`) — persister une donnée n'est pas
+  produire un verdict.
+
+---
+
 ## [2.73.0] - 2026-10-12
 
 ### Fonctionnalités

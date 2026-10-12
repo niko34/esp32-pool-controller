@@ -64,6 +64,16 @@ public:
   // cycle dispensé). Ne dit RIEN de la validité des mesures.
   bool isCirculationSettled() const;
 
+  // feature-158 (condition 13 du gate pool-chemistry) : expose en LECTURE
+  // SEULE le verdict de continuité de l'eau déjà calculé par begin() — measure_validity
+  // reste le PRODUCTEUR UNIQUE de ce verdict, cette méthode ne fait que le
+  // RETENIR pour un consommateur (filtration.begin()). Rend `false` tant que
+  // begin() n'a pas tourné (drapeau « verdict produit » explicite : un appel
+  // trop précoce ne doit jamais faire deviner un verdict). Appelable depuis
+  // setup() uniquement (même contexte single-thread que begin()), aucun
+  // mutex : pas de concurrence à ce stade du boot.
+  bool bootContinuityVerdict(OutageContinuityVerdict& out) const;
+
 private:
   void logPurgeEnd(uint32_t nowMs);
   void refreshRtcRecord(bool water);
@@ -71,6 +81,11 @@ private:
   // --- État interne (loopTask uniquement) ---
   MeasureValidityState _state = {};       // machine d'état pure (zéro = boot)
   uint32_t _lastRtcRefreshMs = 0;         // cadence de rafraîchissement RTC
+
+  // feature-158 (condition 13) : verdict de continuité mémorisé par begin(),
+  // et le drapeau qui dit s'il a déjà été produit.
+  OutageContinuityVerdict _bootVerdict = {};
+  bool _bootVerdictReady = false;
 
   // --- Cache des sorties (partagé loopTask / async_tcp) ---
   mutable portMUX_TYPE _mux = portMUX_INITIALIZER_UNLOCKED;

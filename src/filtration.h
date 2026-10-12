@@ -4,11 +4,19 @@
 #include <Arduino.h>
 #include "config.h"
 #include "schedule_logic.h"
+#include "filtration_resume_logic.h"
 
 struct FiltrationRuntime {
   bool running = false;
   unsigned long startedAtMs = 0;
   unsigned long lastStoppedAtMs = 0;   // Horodatage du dernier arrêt (0 = jamais arrêtée)
+  // feature-158 : secondes CRÉDITÉES par une reprise après redémarrage
+  // (condition 4 du gate pool-chemistry — ordres d'écriture imposés, voir
+  // filtration.cpp). Posée UNIQUEMENT par begin() (condition 3 : consommation
+  // UNE SEULE FOIS) ; tout démarrage ultérieur du même uptime (Boost compris)
+  // la remet à 0. Additionnée à l'écoulé par filtrationElapsedMs() — jamais
+  // fusionnée dans startedAtMs, pour que l'ordre d'écriture reste observable.
+  unsigned long carryMs = 0;
 };
 
 // bug-126 — planning calculé à l'ARRÊT d'un cycle, promu au passage de minuit.
@@ -109,6 +117,16 @@ private:
   int timeStringToMinutes(const String& value);
   bool isMinutesInRange(int now, int start, int end);
 
+  // feature-158 : rafraîchit l'enregistrement RTC scellé qui porte la durée
+  // MESURÉE du cycle de filtration courant à travers un reboot (patron
+  // OutageRtcRecord de measure_validity.cpp). Appelé aux transitions
+  // marche/arrêt et périodiquement (throttle _lastFiltrationRtcRefreshMs)
+  // pendant la marche — JAMAIS de décision ici, une simple photo de l'état
+  // courant (condition 2 du gate : filtrationRunning + installMode PROPRES à
+  // la filtration, rien de déduit d'un verdict de continuité).
+  void refreshFiltrationRtcRecord();
+  unsigned long _lastFiltrationRtcRefreshMs = 0;  // cadence du rafraîchissement RTC
+
 public:
   void begin();
   void update();
@@ -123,6 +141,27 @@ public:
   // NE PAS l'interpréter comme « démarrée à l'epoch », toujours tester
   // isRunning() avant de calculer une durée écoulée.
   unsigned long filtrationStartedAtMs() const { return state.startedAtMs; }
+
+  // feature-158 (condition 7 du gate pool-chemistry, A4) : ACCESSEUR UNIQUE de
+  // la durée écoulée du cycle courant — 0 si à l'arrêt. Remplace le ternaire
+  // `isRunning() ? (millis() - filtrationStartedAtMs()) : 0` recopié jusque-là
+  // aux trois sites consommateurs (web_routes_data.cpp, ws_manager.cpp,
+  // web_routes_config.cpp) : le ternaire vit ICI, et ICI seulement. Additionne
+  // l'écoulé en RAM (wrap-safe, soustraction non signée 32 bits) et le report
+  // crédité par une reprise après redémarrage (state.carryMs, feature-158) —
+  // jamais fusionné dans startedAtMs pour garder observables les deux grandeurs.
+  // Arithmétique (wrap-safe à 2^32 ms) extraite dans computeFiltrationElapsedMs()
+  // (filtration_resume_logic.{h,cpp}, module pur, prouvée par vecteurs natifs) —
+  // seule la sentinelle `!running` reste ici, c'est de l'état, pas du calcul.
+  unsigned long filtrationElapsedMs() const {
+    if (!state.running) return 0;
+    return (unsigned long)computeFiltrationElapsedMs(
+        (uint32_t)millis(), (uint32_t)state.startedAtMs, (uint32_t)state.carryMs);
+  }
+  // Même accesseur, en secondes (consommateurs `/data` et WebSocket).
+  uint32_t filtrationElapsedS() const {
+    return (uint32_t)(filtrationElapsedMs() / 1000UL);
+  }
 
   // feature-056 : signal d'état de la filtration externe. setExternalState est
   // NON bloquant (spinlock, horodatage millis() interne) — sûr depuis un handler

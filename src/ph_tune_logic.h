@@ -24,6 +24,15 @@
 //   3. sonde non étalonnée (calPoints insuffisants)
 //   4. écart hors bornes APRÈS calcul (arrondi au pas, kPhOffsetMin/Max)
 //
+// ⚠️ LOAD-BEARING depuis feature-158 (condition 8 du gate pool-chemistry) :
+// le refus n°1 (isnan) DOIT rester STRICTEMENT AVANT le refus n°2
+// (filtration). Depuis que la durée de filtration peut survivre à un
+// redémarrage (feature-158), le refus n°2 peut être franchi dès les toutes
+// premières secondes après un boot — c'est désormais le refus n°1, et LUI
+// SEUL, qui protège la fenêtre de médiane pH (~45 s) tant qu'elle n'est pas
+// remplie. Réordonner ces deux tests ouvrirait une fenêtre où une mesure pH
+// non représentative pourrait servir de référence à un accord.
+//
 // PIÈGE FERMÉ ICI (identifié par l'orchestrator avant codage) : l'appelant
 // DOIT passer `phValueRaw` — la valeur OFFICIELLE échelle BRUTE
 // (sensors.getPhValueRaw()) — jamais `ph`/`phFiltered`/`phMedian`, qui sont

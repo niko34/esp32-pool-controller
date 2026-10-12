@@ -463,6 +463,26 @@ l'heure en cours était déjà partiellement consommé avant la coupure. C'est
 précisément l'effet recherché&nbsp;: la limite horaire protège contre un
 sur-dosage, elle ne doit pas s'effacer à chaque redémarrage.</p>
 
+<h3>Un redémarrage ne remet (presque) plus à zéro le décompte de la
+filtration non plus</h3>
+
+<p>La carte «&nbsp;Correction manuelle de la mesure&nbsp;» pH impose un
+délai&nbsp;: la filtration doit tourner depuis <strong>dix
+minutes</strong> avant d'accepter une correction, le temps que l'eau testée
+soit bien celle qui passe devant la sonde. Jusqu'à cette version, ce
+décompte repartait de zéro à chaque redémarrage de l'appareil — même quand
+la pompe n'avait jamais cessé de tourner. Un simple redémarrage lors d'une
+mise à jour imposait donc d'attendre de nouveau dix minutes avant de pouvoir
+corriger la mesure, alors que rien, physiquement, ne le justifiait.</p>
+
+<p>Le décompte reprend désormais là où il en était si la circulation d'eau
+n'a pas été interrompue pendant la coupure (redémarrage de quelques secondes,
+mise à jour logicielle). <strong>Ce qui continue de remettre ce décompte à
+zéro</strong>&nbsp;: une coupure de courant, un arrêt réel de la filtration
+d'au moins trois minutes, ou toute situation où l'appareil ne peut pas
+garantir que l'eau a continué de circuler. Le message affiché sur la carte
+ne change pas&nbsp;; seul ce qui alimente son décompte devient plus juste.</p>
+
 <!-- ══════════════════ 4. Le latch / disjoncteur ══════════════════ -->
 <h2 class="page-break"><span class="num">3</span>Le disjoncteur de la dose de base</h2>
 

@@ -66,6 +66,14 @@ void MeasureValidityManager::begin() {
   in.graceS = kWaterStopGraceS;
   const OutageContinuityVerdict v = evaluateOutageContinuity(in);
 
+  // feature-158 (condition 13 du gate) : mémorise le verdict déjà calculé
+  // pour qu'un consommateur (filtration.begin()) puisse le LIRE sans qu'un
+  // second calcul n'existe nulle part. Le drapeau est posé ICI, dans begin(),
+  // AVANT tout appel à filtration.begin() (voir l'ordre commenté des deux
+  // côtés dans main.cpp).
+  _bootVerdict = v;
+  _bootVerdictReady = true;
+
   // Ré-initialisation de la mémoire si elle n'était pas intacte (power-on).
   if (!outageRecordIntact(before)) {
     memset(&sOutageRtc, 0, sizeof(sOutageRtc));
@@ -227,4 +235,13 @@ bool MeasureValidityManager::isCirculationSettled() const {
   const bool v = _cache.circulationSettled;
   portEXIT_CRITICAL(&_mux);
   return v;
+}
+
+// feature-158 (condition 13) : pas de section critique — appelée uniquement
+// pendant setup(), avant que loopTask/async_tcp n'existent (même contexte que
+// begin()), donc sans concurrence possible à ce stade.
+bool MeasureValidityManager::bootContinuityVerdict(OutageContinuityVerdict& out) const {
+  if (!_bootVerdictReady) return false;
+  out = _bootVerdict;
+  return true;
 }

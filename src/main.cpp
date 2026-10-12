@@ -394,6 +394,11 @@ void setup() {
   // après une coupure COURTE (mémoire RTC + esp_reset_reason). APRÈS
   // rtcManager.applyToSystem() (l'heure système doit être valide pour mesurer la
   // coupure), AVANT le premier measureValidity.update() de la loop.
+  // ⚠️ feature-158 (condition 13 du gate pool-chemistry) : DOIT rester AVANT
+  // filtration.begin() ci-dessous — c'est cet appel qui produit le verdict de
+  // continuité que filtration.begin() consomme (measureValidity.bootContinuityVerdict()).
+  // Si cet ordre est un jour inversé par erreur, le drapeau « verdict produit »
+  // fait refuser la reprise et journalise un `critical` — jamais un report deviné.
   measureValidity.begin();
 
   // feature-136 (gate pool-chemistry du 2026-10-08) : résout l'état restauré du
@@ -408,6 +413,11 @@ void setup() {
   // feature-091 : l'arming legacy du timer de stabilisation au boot (mode Powered)
   // est RETIRÉ — la stabilisation après reprise de circulation est portée par la
   // purge adaptative de measureValidity (plancher + stabilité de la mesure).
+  // ⚠️ feature-158 (condition 13 du gate pool-chemistry) : DOIT rester APRÈS
+  // measureValidity.begin() ci-dessus — filtration.begin() y consomme le
+  // verdict de continuité (bootContinuityVerdict()) pour décider d'une reprise
+  // de la durée de filtration. Un réordonnancement futur de setup() ne doit
+  // JAMAIS rapprocher ces deux appels sans vérifier ce commentaire des deux côtés.
   filtration.begin();
   lighting.begin();
 

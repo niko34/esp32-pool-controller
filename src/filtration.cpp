@@ -8,7 +8,30 @@
 #include "measure_validity.h"
 #include "dosing_logic.h"  // shouldRolloverByDate (bug-126)
 #include "schedule_logic.h"
+#include "filtration_resume_logic.h"  // feature-158 : reprise de la durée de filtration
 #include <time.h>
+
+// =============================================================================
+// feature-158 — mémoire RTC de la durée de filtration (patron OutageRtcRecord,
+// measure_validity.cpp) : survit à un reset logiciel/panic/watchdog, PAS à une
+// coupure secteur (RAM RTC aléatoire ⇒ magic/CRC faux ⇒ fail-closed, cf.
+// filtrationRtcIntact).
+//
+// ⚠️ LA FRONTIÈRE (verdict pool-chemistry, feature-158), à répéter ici :
+// `measure_validity` est le PRODUCTEUR UNIQUE du verdict de continuité de
+// l'eau. Ce fichier (filtration.*) en est un CONSOMMATEUR : il persiste une
+// DONNÉE (les secondes mesurées ci-dessous), jamais un verdict, et n'en
+// recalcule aucun — toute la décision « ce report est-il recevable ? » vit
+// dans filtration_resume_logic.cpp, hors de ce fichier.
+// =============================================================================
+namespace {
+RTC_NOINIT_ATTR FiltrationRtcRecord sFiltrationRtc;
+
+// Cadence de rafraîchissement de la mémoire RTC pendant la marche (même ordre
+// de grandeur que kOutageRtcRefreshMs, measure_validity.cpp : pas un seuil de
+// continuité, une simple cadence d'écriture).
+constexpr unsigned long kFiltrationRtcRefreshMs = 1000UL;
+}  // namespace
 
 // bug-126 (arbitrage B) — selectFiltrationRefTemp() encode les rôles de sonde
 // en uint8_t (0=Unknown, 1=Water, 2=Circuit) pour rester dans un module pur
@@ -78,13 +101,90 @@ void FiltrationManager::begin() {
 
   digitalWrite(kFiltrationRelayPin, initialState ? HIGH : LOW);
   relayState = initialState;
-  state.running = initialState;
+  // ⚠️ CONDITION 4 DU GATE — ORDRE SIGNIFICATIF, TROISIÈME SITE.
+  // `running` reste FAUX tant que le couple (carryMs, startedAtMs) n'est pas
+  // posé : un lecteur de filtrationElapsedMs() qui verrait `running == true`
+  // avec `startedAtMs == 0` obtiendrait `millis() - 0`, c'est-à-dire L'UPTIME —
+  // une SUR-ESTIMATION, la seule direction que le gate interdit (« sous-estimer
+  // est sans danger, sur-estimer lève une garde de dosage »).
+  // ⚠️ Ce défaut EXACT a déjà été relevé en revue sur le site voisin
+  // (feature-155, démarrage dans update()). Il avait été corrigé là-bas et
+  // reproduit ici : les TROIS sites suivent désormais le même ordre. La fenêtre
+  // était inatteignable aujourd'hui — aucune tâche ni serveur web n'existe
+  // encore à cet instant de setup() — mais s'en remettre à l'ordre de setup()
+  // est exactement ce que la condition 13 refuse de laisser silencieux.
+  state.running = false;
+  // feature-158 (A1) : le journal ne prétend plus « maintenue active » avant
+  // d'avoir regardé si une reprise s'applique — la ligne ci-dessous reste
+  // neutre, la décision de continuité est journalisée séparément juste après.
+  systemLogger.info(initialState ? "Gestionnaire de filtration initialisé (filtration active)"
+                                  : "Gestionnaire de filtration initialisé");
+
   if (initialState) {
+    // =========================================================================
+    // feature-158 — consommation UNIQUE du verdict de continuité de l'eau
+    // (condition 3 du gate pool-chemistry) : ICI, et nulle part ailleurs. Un
+    // démarrage ultérieur du même uptime (Boost compris) ne repasse jamais
+    // par begin() — il ne peut donc jamais consommer le report une seconde
+    // fois (par construction, pas par un garde-fou ajouté).
+    // =========================================================================
+    OutageContinuityVerdict verdict;
+    const bool verdictReady = measureValidity.bootContinuityVerdict(verdict);
+
+    FiltrationResumeInputs resumeIn;
+    resumeIn.record = filtrationRtcIntact(sFiltrationRtc) ? &sFiltrationRtc : nullptr;
+    resumeIn.verdict = verdictReady ? &verdict : nullptr;
+    resumeIn.installMode = mqttCfg.installMode;
+    resumeIn.initialState = true;
+    const FiltrationResumeResult resume = evaluateFiltrationResume(resumeIn);
+
+    // Condition 13 du gate — l'ordre d'initialisation ne doit pas devenir une
+    // dépendance silencieuse : si measureValidity.begin() n'a pas encore
+    // tourné (setup() réordonné par erreur), on le dit BRUYAMMENT plutôt que
+    // de laisser filtrationRunning paraître neuf par hasard.
+    if (!verdictReady) {
+      systemLogger.critical("[Filtration] Ordre d'initialisation invalide : measureValidity.begin() "
+                             "n'a pas encore produit son verdict de continuité — reprise refusée (0 s recrédités)");
+    }
+
+    state.carryMs = resume.carryS * 1000UL;
     state.startedAtMs = millis();
-    systemLogger.info("Gestionnaire de filtration initialisé (filtration maintenue active)");
+    // A8 (gate) : protège la sentinelle "arrêt" (startedAtMs == 0, filtration.h)
+    // — si l'ancre tombe PILE sur 0, on force 1 ms (sous-estimation sans danger).
+    if (state.startedAtMs == 0) state.startedAtMs = 1;
+    // Condition 4 : le couple est posé, SEULEMENT MAINTENANT on annonce la
+    // marche. Ne jamais remonter cette ligne au-dessus des deux précédentes.
+    state.running = true;
+
+    if (resume.motif == FiltrationResumeMotif::kResumed) {
+      // Condition 9 du gate — IMPOSÉ, les DEUX nombres à chaque fois.
+      systemLogger.info("[Filtration] Reprise après redémarrage : " + String(resume.carryS) +
+                         " s de filtration recréditées (coupure " + String(resume.coupureDureeS) +
+                         " s, dispensée) — garde pH de 10 min NON réarmée");
+    } else {
+      systemLogger.info("[Filtration] Reprise à zéro (" +
+                         String(filtrationResumeMotifLabel(resume.motif)) +
+                         ") — la garde pH de 10 min s'applique");
+    }
+
+    refreshFiltrationRtcRecord();
   } else {
-    systemLogger.info("Gestionnaire de filtration initialisé");
+    // Filtration à l'arrêt au boot : aucun cycle en cours à porter à travers
+    // un reboot ultérieur — le record reflète cet état (invalidation).
+    refreshFiltrationRtcRecord();
   }
+}
+
+// feature-158 — photographie l'état COURANT (pas une décision) dans la
+// mémoire RTC scellée : carryMs/startedAtMs/running viennent d'être posés par
+// begin() ou update(), ce getter se contente de les refléter. Condition 2 du
+// gate : filtrationRunning et installMode sont PROPRES à la filtration — rien
+// n'est déduit d'un verdict de continuité d'un autre module.
+void FiltrationManager::refreshFiltrationRtcRecord() {
+  sFiltrationRtc.carryS = (uint32_t)filtrationElapsedS();
+  sFiltrationRtc.filtrationRunning = state.running ? 1 : 0;
+  sFiltrationRtc.installMode = static_cast<uint8_t>(mqttCfg.installMode);
+  filtrationRtcSeal(sFiltrationRtc);
 }
 
 void FiltrationManager::ensureTimesValid() {
@@ -294,8 +394,15 @@ void FiltrationManager::update() {
       }
     }
     if (state.running || relayState) {
+      // Condition 4 du gate pool-chemistry (ordres d'écriture imposés, lecture
+      // déchirée en async_tcp) : running → false AVANT de remettre à zéro
+      // startedAtMs/carryMs — un lecteur concurrent qui voit encore
+      // running==true doit toujours lire un couple qui SOUS-estime, jamais un
+      // couple incohérent.
       state.running = false;
       state.startedAtMs = 0;
+      state.carryMs = 0;
+      refreshFiltrationRtcRecord();  // invalidation du record (feature-158)
       if (relayState) {
         digitalWrite(kFiltrationRelayPin, LOW);
         relayState = false;
@@ -372,8 +479,15 @@ void FiltrationManager::update() {
     // 10 minutes FRANCHIE au moment même où la filtration démarre. Fenêtre
     // microscopique, correctif gratuit : ne jamais annoncer « ça tourne » avant
     // de pouvoir dire « depuis quand ».
+    // feature-158 (condition 3 du gate) : ce démarrage-ci n'est PAS begin() —
+    // la consommation du report est UNIQUE et vit exclusivement là-bas (exclut
+    // le Boost et tout redémarrage forcé par construction). carryMs posé à 0
+    // AVANT startedAtMs (condition 4 : ordre d'écriture imposé).
+    state.carryMs = 0;
     state.startedAtMs = millis();
+    if (state.startedAtMs == 0) state.startedAtMs = 1;  // A8 : sentinelle "arrêt" protégée
     state.running = true;
+    refreshFiltrationRtcRecord();
     systemLogger.info("Démarrage filtration");
     // feature-091 (v2.34.0) : l'arming du timer de stabilisation au démarrage de
     // la filtration est RETIRÉ. La stabilisation après reprise de circulation est
@@ -396,11 +510,25 @@ void FiltrationManager::update() {
   // (writePendingSchedule) et ne s'applique qu'à minuit (promotePendingScheduleIfDue).
   if (runNow) {
     sampleCycleTemperature(millis(), haveTime, nowMinutes, startMin, endMin);
+    // feature-158 : rafraîchit la mémoire RTC (cadence ~1 s, patron
+    // measure_validity.cpp) pour que les secondes mesurées du cycle courant
+    // restent à jour si un reboot survient PENDANT la marche.
+    unsigned long nowMs = millis();
+    if (_lastFiltrationRtcRefreshMs == 0 ||
+        (uint32_t)(nowMs - _lastFiltrationRtcRefreshMs) >= kFiltrationRtcRefreshMs) {
+      refreshFiltrationRtcRecord();
+      _lastFiltrationRtcRefreshMs = nowMs;
+    }
   }
 
   if (runNow && !runTarget) {
+    // Condition 4 du gate (même ordre que la branche Powered/External
+    // ci-dessus) : running → false, PUIS startedAtMs/carryMs à zéro, PUIS
+    // invalidation du record — un arrêt réel ne doit JAMAIS se reprendre.
     state.running = false;
     state.startedAtMs = 0;
+    state.carryMs = 0;
+    refreshFiltrationRtcRecord();  // invalidation du record (feature-158)
     systemLogger.info("Arrêt filtration");
     state.lastStoppedAtMs = millis();
     // bug-126 (A2/A5) — fige la moyenne du cycle qui vient de se terminer

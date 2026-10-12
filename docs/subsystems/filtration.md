@@ -42,6 +42,17 @@ void computeAutoSchedule(); // mise en service uniquement (bascule vers "auto") 
 void ensureTimesValid();
 void publishState();
 
+// feature-155 : instant millis() de démarrage du cycle courant, 0 si à l'arrêt.
+unsigned long filtrationStartedAtMs() const;
+
+// feature-158 (condition 7 du gate pool-chemistry) : ACCESSEUR UNIQUE de la durée
+// écoulée du cycle courant — inclut le report recrédité après redémarrage
+// (voir « Reprise de la durée de filtration » ci-dessous). 0 si à l'arrêt.
+// Les TROIS sites consommateurs (web_routes_data.cpp, ws_manager.cpp,
+// web_routes_config.cpp) appellent CET accesseur, aucun ne recalcule le ternaire.
+unsigned long filtrationElapsedMs() const;
+uint32_t filtrationElapsedS() const;  // même accesseur, en secondes (/data, WebSocket)
+
 // feature-056 — mode d'installation ExternalFiltration
 void setExternalState(bool running);                              // signal externe (HTTP/MQTT) — non bloquant (portMUX)
 void getExternalState(bool& on, uint32_t& lastMs, bool& known) const;  // copie le triplet sous lock
@@ -109,10 +120,175 @@ struct FiltrationRuntime {
   bool running = false;
   unsigned long startedAtMs = 0;
   unsigned long lastStoppedAtMs = 0;   // 0 si jamais arrêtée
+  unsigned long carryMs = 0;           // feature-158 : secondes CRÉDITÉES par une reprise après redémarrage
 };
 ```
 
-`scheduleComputedThisCycle` (recalcul en marche) est **retiré** de cette structure par bug-126 — devenu sans objet, le recalcul en marche ayant disparu. `forceOnStartMs`/`forceOffStartMs` sont **retirés** par feature-146 avec le reste de l'ordre direct (v2.63.0).
+`scheduleComputedThisCycle` (recalcul en marche) est **retiré** de cette structure par bug-126 — devenu sans objet, le recalcul en marche ayant disparu. `forceOnStartMs`/`forceOffStartMs` sont **retirés** par feature-146 avec le reste de l'ordre direct (v2.63.0). `carryMs` est **ajouté** par feature-158 (v2.74.0) — voir la section dédiée ci-dessous.
+
+## Reprise de la durée de filtration à travers un redémarrage (feature-158, v2.74.0)
+
+> Décision architecturale associée : [ADR-0104](../adr/0104-la-continuite-de-l-eau-a-un-producteur-unique-et-des-consommateurs.md) — la continuité de l'eau a un producteur unique et des consommateurs.
+
+### ⚠️ `filtration_elapsed_s` N'EST PLUS (et n'a jamais dû être) l'uptime
+
+Avant ce lot, `state.startedAtMs = millis()` était reposé **sans condition** au
+boot dès que la filtration devait rester active, y compris quand la pompe
+n'avait jamais cessé de tourner — la durée servie (`filtrationElapsedS()`,
+exposée par `/data` et la trame WebSocket sous `filtration_elapsed_s`)
+**mesurait alors l'appareil, pas la filtration**. Mesuré en production le
+2026-10-12 : 1 619 s de durée annoncée contre 1 644 s d'**uptime** — un écart
+de 25 s (le délai d'init), pour une circulation réelle d'environ **5 h**.
+Conséquence chimique directe : la garde des 10 minutes de la carte
+« Correction manuelle de la mesure » pH ([page-ph.md](../features/page-ph.md#carte--correction-manuelle-de-la-mesure--ph-card-tune-feature-155-v2710),
+`kPhTuneMinFiltrationMs`) se réarmait à chaque déploiement OTA, même après des
+heures de filtration continue.
+
+**Depuis ce lot**, `filtrationElapsedMs()`/`filtrationElapsedS()` additionnent
+l'écoulé mesuré en RAM depuis le dernier démarrage (`millis() − startedAtMs`,
+wrap-safe) **et** un report (`state.carryMs`) crédité **si et seulement si**
+le redémarrage qui vient de se produire est un redémarrage logiciel court
+pendant lequel l'eau n'a pas cessé de circuler. `carryMs` n'est **jamais**
+fusionné dans `startedAtMs` : les deux grandeurs restent observables
+séparément (arithmétique extraite dans `computeFiltrationElapsedMs()`,
+[`src/filtration_resume_logic.{h,cpp}`](../../src/filtration_resume_logic.h),
+module pur, prouvée par vecteurs natifs).
+
+### La frontière
+
+`measure_validity` reste le **producteur unique** du verdict de continuité de
+l'eau (`OutageContinuityVerdict`, feature-139/[ADR-0089](../adr/0089-ce-qu-un-redemarrage-a-le-droit-doublier.md)) —
+voir [measure-validity.md](measure-validity.md#dispense-de-purge-après-arrêt-deau-court-c3).
+`filtration` en est un **consommateur** : elle persiste sa propre **donnée**
+(des secondes **réellement mesurées** de filtration), jamais un second
+verdict, et ne recalcule **aucune** comparaison de durée de coupure.
+**Test de non-régression de cette frontière** : un `grep` de `kWaterStopGraceS`,
+`outageS` et `graceS` dans `src/filtration.*` doit rendre **zéro occurrence**
+hors commentaire explicatif.
+
+### Mémoire RTC scellée propre à la filtration — `FiltrationRtcRecord`
+
+Même patron que `OutageRtcRecord` (`measure_validity.cpp`) : `RTC_NOINIT_ATTR`,
+16 o, magic **`"FLTR"`** (⚠️ distinct de `"PURG"` : deux enregistrements, deux
+producteurs), scellement FNV-1a. Survit à un reset logiciel/panic/watchdog,
+**pas** à une coupure secteur (RAM RTC aléatoire ⇒ magic/CRC faux ⇒
+fail-closed).
+
+```cpp
+struct FiltrationRtcRecord {
+  uint32_t magic;              // kFiltrationRtcMagic ("FLTR")
+  uint32_t carryS;              // secondes RÉELLEMENT mesurées, pompe commandée ON, appareil vivant — JAMAIS la durée de la coupure
+  uint8_t  filtrationRunning;   // 1 = pompe COMMANDÉE ON au dernier rafraîchissement — PROPRE à la filtration, jamais déduit de waterPresent
+  uint8_t  installMode;         // InstallMode au dernier rafraîchissement
+  uint8_t  reserved[2];
+  uint32_t crc;                 // FNV-1a
+};
+```
+
+Rafraîchi (`refreshFiltrationRtcRecord()`) aux transitions marche/arrêt et à
+une cadence ~1 s pendant la marche (`kFiltrationRtcRefreshMs`) — une simple
+photo de l'état courant, **jamais une décision**.
+
+### Décision de recrédit — `evaluateFiltrationResume()`
+
+Fonction pure (`src/filtration_resume_logic.{h,cpp}`, [ADR-0017](../adr/0017-logique-metier-pure-humble-object-testabilite.md)),
+consommée **une seule fois** par `FiltrationManager::begin()`, et seulement si
+ce boot vient de décider de redémarrer la filtration (`initialState == true`)
+— c'est cette condition qui **exclut le Boost par construction** : il ne
+repasse jamais par `begin()`. Motifs (`FiltrationResumeMotif`) et refus, dans
+l'ordre évalué :
+
+| Motif | Condition | `carryS` recrédité |
+|---|---|---:|
+| `kVerdictNotReady` | `measureValidity.bootContinuityVerdict()` n'a pas encore produit son verdict (ordre d'initialisation invalide) | 0 |
+| `kNoRecord` | mémoire RTC absente ou corrompue (démarrage à froid) | 0 |
+| `kNotRunning` | la pompe n'était pas commandée ON avant la coupure | 0 |
+| `kNotManaged` | mode d'installation (mémorisé ou courant) non géré | 0 |
+| `kNotInitialRun` | ce n'est pas le tout premier démarrage de l'uptime (protège un futur appelant — inatteignable depuis `begin()` aujourd'hui) | 0 |
+| `kDenied` | `measure_validity` a refusé la dispense (`verdict.waive == false`) | 0 |
+| `kImplausible` | report au-delà de `kFiltrationResumeMaxPlausibleS` (24 h — **retour à ZÉRO, jamais écrêtage** : un report dont on doute n'est pas réduit, il est jeté) | 0 |
+| `kResumed` | toutes les conditions réunies | `record.carryS` |
+
+⚠️ **La coupure n'est JAMAIS créditée** : `carryS` ne porte que des secondes
+réellement mesurées — `evaluateFiltrationResume()` ne fait **jamais**
+`carryS + verdict.outageS`. Sous-estimer est sans danger, sur-estimer lève une
+garde de dosage.
+
+### Ordre d'écriture dans `begin()` — pourquoi il compte
+
+```cpp
+state.carryMs = resume.carryS * 1000UL;
+state.startedAtMs = millis();
+if (state.startedAtMs == 0) state.startedAtMs = 1;  // protège la sentinelle "arrêt"
+state.running = true;  // SEULEMENT MAINTENANT
+```
+
+Un lecteur concurrent (handler HTTP async) qui verrait `running == true` avant
+que `carryMs`/`startedAtMs` ne soient posés obtiendrait `millis() − 0`, soit
+**l'uptime** — exactement le défaut corrigé par ce lot, revenu par la petite
+porte. Même ordre aux trois sites qui touchent ce triplet (`begin()`,
+démarrage en `update()`, arrêt en `update()` — les deux chemins d'arrêt,
+`managed` et non-`managed`) : écrire `running` **en dernier** au démarrage,
+**en premier** à l'arrêt.
+
+### ⚠️ Dépendance d'ordre dans `main.cpp` — `measureValidity.begin()` AVANT `filtration.begin()`
+
+`filtration.begin()` consomme le verdict produit par `measureValidity.begin()`
+— cet ordre est commenté **des deux côtés** dans `main.cpp`. Si inversé par
+erreur, le drapeau « verdict produit » de `MeasureValidityManager` reste
+`false` : `filtration.begin()` refuse le recrédit et journalise un
+`critical`, plutôt que de deviner un verdict. Voir [measure-validity.md](measure-validity.md#api-publique).
+
+### Logs (préfixe `[Filtration]`, feature-158)
+
+| Événement | Niveau | Message (forme) |
+|---|---|---|
+| Reprise accordée | INFO | `[Filtration] Reprise après redémarrage : N s de filtration recréditées (coupure M s, dispensée) — garde pH de 10 min NON réarmée` |
+| Reprise refusée | INFO | `[Filtration] Reprise à zéro (<motif>) — la garde pH de 10 min s'applique` |
+| Ordre d'initialisation invalide | CRITICAL | `[Filtration] Ordre d'initialisation invalide : measureValidity.begin() n'a pas encore produit son verdict de continuité — reprise refusée (0 s recrédités)` |
+
+Une succession de lignes « Reprise après redémarrage » au journal est un
+**signal à regarder** (boucle de redémarrages rapprochés), pas une garde
+automatique — le gate `pool-chemistry` a **examiné et refusé** un plafond du
+nombre de reports consécutifs : il bloquerait le cas légitime (plusieurs OTA
+dans le même cycle de filtration), même travers que le quota « une dispense
+par heure » retiré par feature-139.
+
+### Dépendance *load-bearing* côté garde pH
+
+Depuis ce lot, le refus n°2 (« filtration pas encore établie ») de
+`evaluatePhTune()` peut être franchi dès les premières secondes après un boot
+si un report est accordé. Le refus n°1 (`isnan(phValueRaw)`, mesure
+indisponible) devient donc la **seule** protection des ~45 premières secondes
+d'un boot pour cette garde — l'ordre des deux refus dans
+[`src/ph_tune_logic.h`](../../src/ph_tune_logic.h) est **load-bearing** et ne
+doit jamais être inversé. Voir [page-ph.md](../features/page-ph.md#les-cinq-états--prêt-ou-lun-des-quatre-refus).
+
+### Cas limites
+
+- **Modes « Marche » (forcé) et Boost** : la reprise **s'applique** aussi —
+  tranché **contre** la proposition initiale de la spec par le gate
+  `pool-chemistry` : « l'enregistrement porte une durée **mesurée** de
+  circulation, pas une inférence administrative ; la physique ne lit pas le
+  libellé du mode. » Mais le Boost, lui, ne peut **jamais** consommer de
+  report : il ne repasse pas par `begin()` (condition 3, `kNotInitialRun`).
+- **Démarrage à froid** (coupure secteur, mémoire RTC absente) ou **arrêt
+  d'eau plus long que la grâce** (`kWaterStopGraceS`) : comportement
+  **inchangé** — la durée repart de zéro, la garde pH s'applique pleinement.
+- **Modes Powered/External** : aucun crédit (`kNotManaged`), que le mode
+  mémorisé ou le mode courant ait changé.
+- **Repliement de `millis()` à 2³² ms (~49,7 jours)** : `computeFiltrationElapsedMs()`
+  reste wrap-safe par soustraction non signée 32 bits — jamais protégée par un
+  `if (nowMs < startedAtMs)`, qui détruirait le repliement au lieu de le
+  gérer.
+
+### ⚠️ Piège de recette — le premier redémarrage après l'OTA ne peut pas bénéficier du correctif
+
+La zone `RTC_NOINIT_ATTR` de `FiltrationRtcRecord` est **neuve** à la livraison
+de ce lot : au premier redémarrage qui suit le déploiement, magic/CRC sont
+invalides ⇒ `kNoRecord` ⇒ fail-closed, « Reprise à zéro (mémoire de
+filtration absente ou corrompue) ». **Ce n'est pas un échec, c'est la preuve
+du fail-closed** — la vérification se fait au **second** redémarrage.
 
 ## Interaction avec les autres composants
 
@@ -220,11 +396,14 @@ Voir [`web_routes_control.cpp`](../../src/web_routes_control.cpp) (`/filtration/
 ## Fichiers liés
 
 - [`src/filtration.h`](../../src/filtration.h), [`src/filtration.cpp`](../../src/filtration.cpp)
+- [`src/filtration_resume_logic.h`](../../src/filtration_resume_logic.h), [`src/filtration_resume_logic.cpp`](../../src/filtration_resume_logic.cpp) — reprise de la durée de filtration, logique pure (feature-158)
 - [`src/constants.h`](../../src/constants.h) — `kFiltrationRelayPin = 26` (PCB v2)
 - [`src/constants.h:78`](../../src/constants.h:78) — `kFiltrationPivotHour`
 - [`src/schedule_logic.h`](../../src/schedule_logic.h), [`src/schedule_logic.cpp`](../../src/schedule_logic.cpp) — logique d'horaire pure (feature-038), générique filtration/éclairage
 - [`src/dosing_logic.h`](../../src/dosing_logic.h), [`src/dosing_logic.cpp`](../../src/dosing_logic.cpp) — `InstallMode`, `resolveWaterPresent`, `migrateInstallMode` (feature-056)
+- [`src/ph_tune_logic.h`](../../src/ph_tune_logic.h) — ordre des refus de la correction pH, *load-bearing* depuis feature-158
 - [`src/constants.h`](../../src/constants.h) — `kExternalFiltrationStaleMs = 180000` (fraîcheur signal externe)
+- [ADR-0104](../adr/0104-la-continuite-de-l-eau-a-un-producteur-unique-et-des-consommateurs.md) — la continuité de l'eau a un producteur unique (measure_validity) et des consommateurs (filtration), feature-158, v2.74.0
 - [ADR-0093](../adr/0093-le-mode-de-filtration-est-la-seule-autorite.md) — le mode de filtration est la seule autorité (feature-146, v2.63.0, remplace l'ADR-0025 Mode Boost)
 - [ADR-0026](../adr/0026-mode-installation.md) — mode d'installation (3 archétypes) + résolution de la présence d'eau
 - [ADR-0012](../adr/0012-mapping-gpio-pcb-v2.md) — mapping GPIO PCB v2
@@ -232,4 +411,7 @@ Voir [`web_routes_control.cpp`](../../src/web_routes_control.cpp) (`/filtration/
 - [ADR-0079](../adr/0079-planning-filtration-fige-a-l-arret-promu-a-minuit.md) — planning auto figé à l'arrêt du cycle, promu à minuit (bug-126)
 - [ADR-0074](../adr/0074-temperature-figee-statu-quo-instrumente.md) — sonde de température figée, statu quo instrumenté (amendé par bug-126)
 - [page-filtration.md](../features/page-filtration.md) — UI correspondante
+- [page-ph.md](../features/page-ph.md) — carte « Correction manuelle de la mesure », garde des 10 min consommant `filtrationElapsedMs()`
 - [pump-controller.md](pump-controller.md) — interaction régulation (`canDose()` requiert filtration active)
+- [measure-validity.md](measure-validity.md) — producteur du verdict de continuité de l'eau consommé par `filtration.begin()`
+- [`test/test_native_filtration_resume/`](../../test/test_native_filtration_resume/) — tests natifs de `filtration_resume_logic`
