@@ -3217,6 +3217,16 @@ input.is-computed:disabled {
   animation: slideIn 0.3s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
+/* feature-157 : une action destructive ne se place pas au contact de l'action
+   principale. En vue large, `margin-left:auto` la REJETTE à l'opposé ; en vue
+   étroite les boutons s'empilent et `margin-left` n'opère plus — d'où la marge
+   verticale dans la requête média 768 px plus bas. Classe LOCALE : `.detail-actions`
+   sert sur tout le produit, lui imposer cet écart déplacerait des écrans
+   hors périmètre. */
+.detail-actions .action-destructive {
+  margin-left: auto;
+}
+
 /* feature-140 : sous-blocs du widget « Modes temporaires » (Boost + Chloration
    de secours) — en-têtes internes sans le padding latéral du
    card__status-header top-level (déjà fourni par le card__body englobant).
@@ -3302,6 +3312,14 @@ input.is-computed:disabled {
 
   .detail-actions {
     flex-direction: column;
+  }
+
+  /* Empilés et en pleine largeur : seul un écart VERTICAL sépare encore le
+     bouton destructif de l'action principale. 8 px de `gap` ne suffisent pas
+     pour un pouce. */
+  .detail-actions .action-destructive {
+    margin-left: 0;
+    margin-top: 12px;
   }
 
   .btn {

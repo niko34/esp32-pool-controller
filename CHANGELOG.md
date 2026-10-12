@@ -2,6 +2,51 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [2.73.0] - 2026-10-12
+
+### Fonctionnalités
+
+- **Correction manuelle du pH : affichage à une décimale, et bouton de
+  suppression (feature-157)** — sur la carte « Correction manuelle de la
+  mesure », toutes les valeurs de pH (mesure actuelle, valeur amenée, valeur
+  atteinte) s'affichent désormais avec un seul chiffre après la virgule,
+  cohérent avec le reste de l'application ; les calculs internes et la valeur
+  envoyée à l'appareil restent inchangés, seul l'affichage change. La
+  correction en vigueur est **enfin visible** sur la carte (« Correction
+  actuelle : X pH ») et peut désormais être **retirée directement**, par un
+  bouton « Supprimer la correction » — jusqu'ici, ce n'était possible que
+  juste après un nouvel étalonnage de la sonde. Aucune confirmation n'est
+  demandée : le geste est réversible et ramène la mesure affichée à celle de
+  la sonde, sans aucune interprétation. ⚠️ Retirer une correction positive
+  peut abaisser le pH affiché sous le seuil d'inhibition du chlore (7,60) et
+  donc permettre au dosage ORP de reprendre — comportement voulu, la mesure
+  nue de la sonde fait foi.
+- L'écran « Consigne pH » affiche désormais lui aussi une seule décimale
+  (ex. « 7,2 » au lieu de « 7,20 »), par cohérence avec la règle ci-dessus.
+
+### Corrections
+
+- **Un échec d'enregistrement de la correction pH dit enfin POURQUOI** — les
+  trois boutons qui modifient la correction (« Supprimer la correction », et
+  « Annuler »/« Garder » de l'avertissement « correction à revoir ») se
+  contentaient d'afficher « réessayez ». Quand l'appareil est injoignable,
+  c'est une invitation à répéter un geste qui échouera à l'identique : le
+  message du contrôleur est désormais affiché tel quel.
+- Le bouton « Supprimer la correction » est séparé de l'action principale —
+  collé à 8 px sur téléphone, il s'atteignait par erreur.
+- Accessibilité : les boutons − et + annonçaient un pas de « 0,10 » alors que
+  le réglage est au dixième, et le bouton de suppression n'annonçait que la
+  valeur retirée, jamais sa conséquence.
+
+### Documentation
+
+- `docs/features/page-ph.md` : format d'affichage à une décimale (frontière
+  affichage/calcul), nouveau bouton de suppression et sa condition
+  d'affichage, masquage mutuel avec la bannière « correction à revoir »,
+  effet de bord sur l'inhibition ORP.
+
+---
+
 ## [2.72.0] - 2026-10-12
 
 ### Fonctionnalités

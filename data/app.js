@@ -2111,15 +2111,17 @@
     const stale = (cfg?.ph_offset_stale === true) && (offset !== 0);
     if (!stale) { banner.hidden = true; return; }
     const valueEl = $("#ph_tune_stale_value");
-    if (valueEl) valueEl.textContent = (offset > 0 ? "+" : "") + offset.toFixed(2);
+    // feature-157 : seul le format du nombre change (une décimale) — le texte
+    // figé autour (imposé par le gate) reste intact.
+    if (valueEl) valueEl.textContent = _fmtPh(offset, true);
     banner.hidden = false;
   }
 
   function bindPhOffsetStaleBanner() {
     $("#ph_tune_stale_cancel_btn")?.addEventListener("click", async () => {
-      const ok = await sendConfig({ ph_offset: 0 });
-      if (ok) { showToast("Correction annulée", "success"); loadConfig(); }
-      else showToast("Échec de l'annulation — réessayez.", "error");
+      const res = await sendConfigDetailed({ ph_offset: 0 });
+      if (res.ok) { showToast("Correction annulée", "success"); loadConfig(); }
+      else showToast("Échec de l'annulation — " + (res.message || res.error), "error");
     });
     $("#ph_tune_stale_keep_btn")?.addEventListener("click", async () => {
       const current = (typeof window._config?.ph_offset === "number") ? window._config.ph_offset : 0;
@@ -2132,12 +2134,56 @@
       // ⛔ Ne PAS passer par /tune-ph-offset : il exige 10 min de filtration et
       // une sonde déjà étalonnée — absurde pour RETIRER une correction, et
       // cette route n'a jamais à s'appliquer ici puisque la valeur ne change pas.
-      const ok = await sendConfig({ ph_offset: current });
+      const res = await sendConfigDetailed({ ph_offset: current });
       // Condition mineure du gate pool-chemistry : « conservée » seul laisserait
       // croire que le sujet est clos. La correction a été posée AVANT l'étalonnage
       // et n'a pas été revérifiée — le toast le rappelle au moment du choix.
-      if (ok) { showToast("Correction conservée — vérifiez-la par un test fiable", "success"); loadConfig(); }
-      else showToast("Échec — réessayez.", "error");
+      if (res.ok) { showToast("Correction conservée — vérifiez-la par un test fiable", "success"); loadConfig(); }
+      else showToast("Échec — " + (res.message || res.error), "error");
+    });
+  }
+
+  // feature-157 : bouton « Supprimer la correction », distinct du pas-à-pas.
+  // MASQUAGE MUTUEL avec la bannière « correction caduque » ci-dessus : si
+  // elle est affichée, elle seule agit (ses deux boutons couvrent déjà le cas
+  // de la suppression) — pas de doublon visuel (B3).
+  function renderPhTuneRemoveRow(cfg) {
+    const label = $("#ph_tune_remove_label");
+    const btn = $("#ph_tune_remove_btn");
+    const hint = $("#ph_tune_remove_hint");
+    const valueEl = $("#ph_tune_remove_value");
+    if (!label || !btn || !hint) return;
+    // Offset absent ou non numérique => traité comme 0 => ligne et bouton
+    // masqués (jamais un bouton qui supprimerait une correction inconnue).
+    const offset = (typeof cfg?.ph_offset === "number" && isFinite(cfg.ph_offset)) ? cfg.ph_offset : 0;
+    const staleBannerShown = (cfg?.ph_offset_stale === true) && (offset !== 0);
+    const show = (offset !== 0) && !staleBannerShown;
+    label.hidden = !show;
+    btn.hidden = !show;
+    hint.hidden = !show;
+    if (valueEl) valueEl.textContent = _fmtPh(offset, true);
+  }
+
+  // ⛔ Ne PAS passer par /tune-ph-offset : il exige 10 min de filtration et une
+  // sonde étalonnée — absurde pour RETIRER une correction. /save-config est le
+  // contrat de stockage, déjà validé (gate pool-chemistry, gate 2 feature-156).
+  // ⛔ Aucune confirmation (verdict du gate) : geste réversible qui va vers le
+  // défaut sûr (mesure nue de la sonde).
+  function bindPhTuneRemoveRow() {
+    $("#ph_tune_remove_btn")?.addEventListener("click", async () => {
+      // sendConfigDetailed et PAS sendConfig : « réessayez » invite à répéter un
+      // geste qui échouera à l'identique si le contrôleur est injoignable. Le
+      // refus de PLAGE est hors d'atteinte ici (0 est toujours valide), mais la
+      // panne de liaison, elle, arrive — et elle doit être NOMMÉE.
+      const res = await sendConfigDetailed({ ph_offset: 0 });
+      // Échec : la correction reste, aucun message de succès (B7/tests exigés
+      // par le gate).
+      if (res.ok) {
+        showToast("Correction supprimée — la mesure affichée est celle de la sonde.", "success");
+        loadConfig();
+      } else {
+        showToast("Échec de la suppression — " + (res.message || res.error), "error");
+      }
     });
   }
 
@@ -2787,9 +2833,15 @@
     return out;
   }
 
-  // Formatage français : virgule décimale, 2 décimales, signe explicite si demandé.
+  // Formatage français : virgule décimale, 1 décimale (règle produit du
+  // 2026-10-10), signe explicite si demandé.
+  // ⚠️ feature-157 : la frontière est l'AFFICHAGE. Cette fonction n'arrondit
+  // QUE la représentation textuelle — elle ne doit JAMAIS être utilisée pour
+  // produire une valeur réinjectée dans un calcul ou envoyée au serveur.
+  // La fenêtre d'état du filtre est EXCLUE de cette règle : elle utilise
+  // _fmtFilterVal(), une fonction distincte, non touchée ici.
   function _fmtPh(v, signed) {
-    const s = Math.abs(v).toFixed(2).replace(".", ",");
+    const s = Math.abs(v).toFixed(1).replace(".", ",");
     if (signed) return (v < 0 ? "−" : "+") + s;
     return (v < 0 ? "−" : "") + s;
   }
@@ -3145,6 +3197,8 @@
     _applyPhTuneConfig(cfg);
     // feature-156 (B11/A2) : bannière persistante « correction caduque ».
     renderPhOffsetStaleBanner(cfg);
+    // feature-157 : ligne + bouton « Supprimer la correction ».
+    renderPhTuneRemoveRow(cfg);
     buildPhTargetSegments();
     renderPhTargetHint();
     // feature-154 : seuils de SANTÉ pH (pente/zéro) — distincts des bornes de
@@ -11897,6 +11951,7 @@
     bindRegulationSave("orp", "#orp_regulation_save_btn");
     bindPhTuneSubmit();  // feature-155 : carte « Correction manuelle de la mesure »
     bindPhOffsetStaleBanner();  // feature-156 (B11) : bannière « correction caduque »
+    bindPhTuneRemoveRow();  // feature-157 : bouton « Supprimer la correction »
     bindPhTargetControl();  // v2.25.0 : contrôle segmenté de la consigne pH
     // v2.25.0 : rappel de la plage sous le contrôle.
     $("#ph_target")?.addEventListener("input", renderPhTargetHint);

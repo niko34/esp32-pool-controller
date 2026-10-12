@@ -1218,11 +1218,11 @@
                 <span class="field__label" id="ph_tune_label">Valeur lue sur votre test</span>
                 <div class="stepper" id="ph-tune-stepper">
                   <button class="btn btn--ghost stepper__btn" type="button" id="ph_tune_dec"
-                          aria-label="Diminuer de 0,10">−</button>
+                          aria-label="Diminuer de 0,1">−</button>
                   <div class="stepper__value" id="ph_tune_value" role="spinbutton" tabindex="0"
                        aria-labelledby="ph_tune_label">--</div>
                   <button class="btn btn--ghost stepper__btn" type="button" id="ph_tune_inc"
-                          aria-label="Augmenter de 0,10">+</button>
+                          aria-label="Augmenter de 0,1">+</button>
                 </div>
               </div>
 
@@ -1246,12 +1246,28 @@
                 « Calibration de la sonde pH » ci-dessus.
               </p>
 
+              <!-- feature-157 : bouton de SUPPRESSION de la correction, distinct du
+                   pas-à-pas ci-dessus. Masqué si la correction est nulle OU si la
+                   bannière « correction caduque » est affichée (elle couvre déjà le
+                   cas avec ses deux boutons — pas de doublon visuel, B3). -->
+              <p class="muted small" id="ph_tune_remove_label" hidden style="margin:10px 0 0">
+                Correction actuelle : <strong id="ph_tune_remove_value">—</strong> pH
+              </p>
+
               <p class="small" id="ph_tune_error" role="alert"
                  style="display:none;margin:10px 0 0;color:var(--danger)"></p>
 
               <div class="detail-actions" style="margin-top:12px">
                 <button class="btn btn--primary" type="button" id="ph_tune_submit_btn">Corriger</button>
+                <!-- ⚠️ TEXTE IMPOSÉ MOT POUR MOT par le gate pool-chemistry
+                     (feature-157) : ne pas écrire « vous pouvez en poser une
+                     nouvelle » — piège symétrique de celui évité sur « Garder ». -->
+                <button class="btn btn--danger action-destructive" type="button" id="ph_tune_remove_btn" hidden
+                        aria-describedby="ph_tune_remove_label ph_tune_remove_hint">Supprimer la correction</button>
               </div>
+              <p class="muted small" id="ph_tune_remove_hint" hidden style="margin:6px 0 0">
+                Sans correction, l'appareil régule sur la mesure de la sonde telle quelle.
+              </p>
             </div>
           </div>
 

@@ -335,6 +335,8 @@ L'ancien doublon ORP (`#measures_purge_timeout_banner_orp`) est retiré pour la 
 
 Carte `#ph-card-tune` (**ex-`#ph-card-offset`**, feature-067). ⚠️ **Depuis la v2.72.0 (feature-156), elle a quitté l'état courant de la page** : elle ne vit plus en permanence entre Régulation et Historique, mais dans le [mode réglage](#mode-réglage-calibration--correction-feature-156-v2720), **juste sous** la carte Calibration. Le geste n'est pas moins accessible pour autant — il est désormais atteint via le point d'entrée « Calibration et correction de la mesure » plutôt que d'être toujours visible. Elle reste **distincte de la calibration EZO** (la carte juste au-dessus, dans le même mode) : deux gestes différents, deux effets différents, rappelés par `#ph_tune_calib_note`.
 
+⚠️ **Depuis la v2.73.0 (feature-157)** : toutes les valeurs de pH de cette carte s'affichent avec **une seule décimale**, et un bouton permet de **supprimer** la correction en vigueur sans attendre un étalonnage. Voir [Une décimale, et un geste de suppression](#une-décimale-et-un-geste-de-suppression-feature-157-v2730) plus bas.
+
 > ⚠️ **Le geste a changé de nature.** Jusqu'en v2.70.0, l'utilisateur réglait un **écart abstrait** (« offset ») entre −0,50 et +0,50 pH. Depuis la v2.71.0, il **amène un nombre** jusqu'à la valeur qu'il a lue sur son propre test (bandelette, PoolLab, pH-mètre) : c'est l'appareil qui en déduit la correction à appliquer. **Le mot « offset » a disparu de l'interface** ; le vocabulaire retenu est **ajuster**, **amener à**, **indiquer**, **corriger** — jamais « saisir » (il n'y a pas de champ, pas de clavier : rien n'est saisi).
 
 ### Ce qui a disparu (et ce qui ne l'a pas)
@@ -353,14 +355,16 @@ Le **pas-à-pas n'est pas supprimé : il est réaffecté.** Même composant visu
 | Élément | Détail |
 |---|---|
 | `#ph_tune_value` (`role="spinbutton"`) | Affiche la **valeur amenée**, au dixième. Position de départ : la mesure **officielle courante** (`ph`, échelle corrigée) arrondie au dixième — zéro appui = aucun changement proposé. Dès le premier appui `+`/`−`, la valeur n'est plus resynchronisée automatiquement sur la lecture vivante. |
-| `#ph_tune_dec` / `#ph_tune_inc` | Pas de **0,10** (`ph_offset_step`, servi par `GET /get-config` — même source que l'ancien incrémenteur). **Désactivés aux bornes de l'excursion affichée**, pas d'auto-répétition sur appui long : chaque cran reste un acte délibéré. Flèches clavier (haut/droite/bas/gauche), `Home`/`End` pour les extrêmes. |
+| `#ph_tune_dec` / `#ph_tune_inc` | Pas de **0,10** (`ph_offset_step`, servi par `GET /get-config` — même source que l'ancien incrémenteur). **Désactivés aux bornes de l'excursion affichée**, pas d'auto-répétition sur appui long : chaque cran reste un acte délibéré. Flèches clavier (haut/droite/bas/gauche), `Home`/`End` pour les extrêmes. `aria-label` statique aligné sur « 0,1 » (v2.73.0, correctif de revue) — il disait « 0,10 » alors que le rendu dynamique écrit déjà « 0,1 » (règle une décimale) : un lecteur d'écran atteignant la carte avant ce rendu annonçait un pas périmé. |
 | Excursion affichée | **±1,00** autour de la **lecture brute courante de l'appareil** (`phValueRaw`), écrêtée à l'échelle physique `[0 ; 14]`. C'est une **plage d'ergonomie**, pas un seuil de sécurité : seule sa **moitié centrale** (±0,50) est effectivement acceptée par le serveur — le reste de l'excursion existe pour que l'utilisateur **voie** qu'il s'éloigne trop, au lieu de buter sans explication sur un bouton désactivé. |
 
 ⚠️ **Les bornes de sécurité ±0,50 (`ph_offset_min`/`_max`, servies par `GET /get-config`) sont INCHANGÉES** : `kPhFloorRawHard` et `kPhCeilingRawHard` en dérivent toujours ([ADR-0048](../adr/0048-seuils-ph-fixes-derives-de-la-plage-de-consigne.md)). Seule l'**interaction** change, pas ce qui est accepté.
 
 ### Les trois nombres, avant validation
 
-`#ph_tune_result` affiche : « **Mesure actuelle : 7,15 → après validation : 7,45** ». Le premier nombre est ce que l'appareil **annonce aujourd'hui** (échelle corrigée, offset courant compris — le même nombre que la valeur en grand du bloc Statistiques) ; le second est la **valeur réellement atteinte après arrondi au dixième** — **jamais** la valeur demandée. Amener le nombre pile à 7,45 quand l'appareil lit en réalité 7,13 donne un écart de 0,32, arrondi à 0,30 : l'appareil **atteindra 7,43, pas 7,45** — et c'est ce second nombre qui le dit, pour ne jamais promettre une valeur que l'arrondi au dixième ne permettra pas d'atteindre.
+`#ph_tune_result` affiche : « **Mesure actuelle : 7,2 → après validation : 7,4** ». Le premier nombre est ce que l'appareil **annonce aujourd'hui** (échelle corrigée, offset courant compris — le même nombre que la valeur en grand du bloc Statistiques) ; le second est la **valeur réellement atteinte après arrondi au dixième** — **jamais** la valeur demandée. Amener le nombre pile à 7,45 quand l'appareil lit en réalité 7,13 donne un écart de 0,32, arrondi à 0,30 : l'appareil atteindra en réalité 7,43 (valeur **interne**, inchangée) — et c'est ce nombre qui **s'affiche arrondi à 7,4** (`_fmtPh`), pour ne jamais promettre une valeur que l'arrondi au dixième ne permettra pas d'atteindre.
+
+⚠️ **Depuis la v2.73.0 (feature-157), ce sont les DEUX seuls nombres affichés à une décimale ici** — la valeur `valeurAtteinte` reste calculée en interne sans arrondi supplémentaire (voir [frontière affichage/calcul](#une-décimale-et-un-geste-de-suppression-feature-157-v2730)) ; seule sa représentation textuelle change.
 
 ### Avant le geste : le geste, puis l'enjeu — un seul bloc, deux paragraphes
 
@@ -431,7 +435,42 @@ Deux issues explicites (`#ph_tune_stale_cancel_btn` / `#ph_tune_stale_keep_btn`)
 - **« Annuler la correction »** — remet `ph_offset` à 0 via `POST /save-config`, **sans** les gardes de `/tune-ph-offset` (10 min de filtration, sonde étalonnée…) : exiger une attente pour **retirer** une correction serait une garde qui bloque plus qu'elle ne protège (verdict `pool-chemistry`).
 - **« Garder la correction »** — ré-envoie la valeur courante par la **même route** `POST /save-config` : ce ré-envoi **re-estampille** la correction (`setPhOffsetStamped()`) et **éteint durablement** le verdict de caducité — c'est la manière dont l'utilisateur confirme qu'il assume la valeur après l'avoir vue signalée comme périmée. Message de confirmation : « Correction conservée — **vérifiez-la par un test fiable** » (condition mineure du gate).
 
+⚠️ **Échec du POST sur ces deux boutons** (correctif de revue, v2.73.0) : même traitement que le bouton « Supprimer la correction » ci-dessous — `sendConfigDetailed` plutôt que `sendConfig`, message du contrôleur affiché tel quel au lieu de « réessayez ». Même nuance : les deux n'écrivent que `0` ou la valeur **déjà en vigueur**, le refus de plage est hors d'atteinte ; seul un contrôleur injoignable produit un échec réel.
+
 **Rétrocompatibilité assumée** : sur un appareil mis à jour depuis une version antérieure (compteurs d'horodatage à `0` des deux côtés), une correction héritée n'est **jamais** signalée caduque tant qu'aucun étalonnage n'a eu lieu depuis la mise à jour — pas de fausse alerte sur tout le parc au premier démarrage. Elle le sera au **prochain** étalonnage.
+
+### Une décimale, et un geste de suppression (feature-157, v2.73.0)
+
+#### Une seule décimale — et seulement à l'affichage
+
+Toutes les valeurs de pH de cette carte (mesure actuelle, valeur amenée, valeur atteinte, le pas) s'affichent désormais avec **une seule décimale**, conformément à la règle produit du 2026-10-10. ⚠️ **La frontière est l'AFFICHAGE, pas le CALCUL** (précision de l'utilisateur, 2026-10-12) : la règle porte sur ce qui **se voit** et sur ce que l'utilisateur **choisit** (le pas-à-pas est déjà au dixième, aucun changement là) — **pas** sur ce qui se calcule. La valeur envoyée à `POST /tune-ph-offset`, l'écart calculé par `evaluatePhTunePreview()` et la valeur `phValueRaw` restent **inchangés, précis, non arrondis** : seule la fonction de formatage `_fmtPh()` a changé (`toFixed(2)` → `toFixed(1)`), jamais une valeur réinjectée dans un calcul. Un arrondi qui remonterait dans la logique serait une **erreur réelle**, pas un confort de lecture.
+
+`_fmtPh()` est une fonction **partagée** ; tous ses appelants ont été vérifiés avant le changement. Elle est exclue d'un seul endroit : **la fenêtre d'état du filtre**, qui utilise `_fmtFilterVal()` (fonction distincte, non touchée) et reste à 2 décimales pour un diagnostic fin (ligne `brut 7.24 · maj à l'instant`, voir [Affichage mesure filtrée / brute](#affichage-mesure-filtrée--brute-feature-025)). **L'écran « Consigne pH » change aussi de format** (contrôle segmenté, hint de plage, avertissement de borne haute — voir [Consigne pH : contrôle segmenté](#consigne-ph--contrôle-segmenté-v2250) ci-dessous) : il affichait « 7,20 » là où « 7,2 » suffit — **mise en conformité** avec la règle produit, pas un élargissement du périmètre du lot. **L'écran de calibration EZO garde deux décimales** (`#cal-ph-mid-readout` / `#cal-ph-low-readout`, lecture brute d'étalonnage où la précision compte) : ⚠️ **point soumis à l'utilisateur, non tranché** — ce n'est pas une décision acquise, à rouvrir si demandé.
+
+Un onzième site de formatage pH existait **hors** de `_fmtPh()` : la bannière « correction à revoir » (`#ph_tune_stale_value`) formatait l'offset en dur. Elle passe désormais par la même fonction commune.
+
+#### Bouton « Supprimer la correction »
+
+Jusqu'à ce lot, la correction en vigueur n'était **affichée nulle part** sur la carte en dehors du pas-à-pas lui-même, et le seul moyen de la retirer était le bouton « Annuler la correction » de la bannière « correction caduque » (visible **uniquement** après un étalonnage). Une ligne **« Correction actuelle : {valeur} pH »** (`#ph_tune_remove_label` / `#ph_tune_remove_value`) et un bouton **« Supprimer la correction »** (`#ph_tune_remove_btn`, `btn--danger`) couvrent désormais ce cas en permanence :
+
+- **Visible** si et seulement si la correction en vigueur (`ph_offset`) est **non nulle** — pas de bouton inerte sur une carte qu'on vient d'alléger.
+- **Masquage mutuel avec la bannière « correction à revoir »** (`#ph_tune_stale_banner`) : les deux **ne coexistent jamais**. Quand la bannière est affichée, elle seule agit — ses deux boutons (« Annuler » / « Garder ») couvrent déjà le cas de la suppression ; afficher les deux aurait créé un doublon visuel disant la même chose deux fois.
+- Écrit `ph_offset: 0` par `POST /save-config` — **pas** `/tune-ph-offset` : le chemin était déjà validé au gate 2 de feature-156 (les gardes de `/tune-ph-offset` — 10 min de filtration, sonde étalonnée — protègent l'**ajout** d'une interprétation, pas son **retrait**).
+- **Aucune confirmation** avant suppression (verdict `pool-chemistry`) : le geste est **réversible** (on peut re-corriger) et va vers le **défaut sûr** (plus de correction = mesure nue de la sonde). *« Les gardes de `/tune-ph-offset` protègent l'AJOUT d'une interprétation, pas son RETRAIT. »*
+- **Échec du POST** (correctif de revue, v2.73.0) : la correction reste en vigueur, **aucun** toast de succès n'est émis, et le message montré est désormais celui du **contrôleur** (`res.message || res.error`, via `sendConfigDetailed` plutôt que `sendConfig`) au lieu du générique « réessayez » — qui invitait à répéter un geste voué à échouer à l'identique. ⚠️ **Le refus de plage est hors d'atteinte sur ce bouton** : il n'écrit que `0`, toujours valide ; le cas réel est le **contrôleur injoignable**, d'où l'intérêt de voir le vrai motif plutôt qu'une invitation à réessayer.
+- **Accessibilité** : `#ph_tune_remove_btn` porte `aria-describedby="ph_tune_remove_label ph_tune_remove_hint"` — la **valeur** retirée et sa **conséquence** (« Sans correction, l'appareil régule sur la mesure de la sonde telle quelle. »), dans l'ordre de lecture, pas la valeur seule.
+- **Placement** : classe locale `.action-destructive` qui écarte ce bouton de l'action principale de la carte — `margin-left: auto` en vue large (rejeté à l'opposé), `margin-top: 12px` sous 768 px (les boutons s'empilent en pleine largeur et le `gap` de 8 px ne suffisait pas pour une cible tactile). Classe **locale**, pas une règle sur `.detail-actions` (ce conteneur sert sur tout le produit).
+
+Textes imposés par le gate `pool-chemistry`, à ne pas reformuler :
+
+- Sous le bouton (`#ph_tune_remove_hint`) : « **Sans correction, l'appareil régule sur la mesure de la sonde telle quelle.** »
+- Message de succès après suppression (toast) : « **Correction supprimée — la mesure affichée est celle de la sonde.** » ⛔ **Sans** invitation à en reposer une — ce serait le piège symétrique de celui déjà évité sur le bouton « Garder » de la bannière caduque : encourager un geste risqué quand l'instrument de référence de l'utilisateur est une bandelette (±0,5 pH).
+
+⚠️ **Effet de bord à connaître** : retirer un offset **positif** abaisse le pH corrigé et peut le faire **repasser sous le seuil d'inhibition ORP** (`kPhOrpInhibit`, 7,60) — donc **lever l'inhibition** du dosage chlore, qui peut reprendre. Comportement **correct** (la mesure nue de la sonde fait foi), mais à savoir avant de cliquer : **cas réel du 2026-10-12**, correction de **+0,50** en vigueur, pH affiché **7,66** (chlore inhibé) — supprimer la correction ramène l'affichage à **~7,15**, sous le seuil de 7,60, ce qui lève l'inhibition ORP.
+
+#### Un défaut réparé
+
+Le bouton « Remettre à zéro » (`#ph_offset_reset`) avait été retiré en feature-156 (v2.72.0) au motif que revenir à zéro n'était « qu'une position du pas-à-pas » — **ce motif était faux** : supprimer une correction est un **geste distinct**, pas une valeur parmi d'autres. Conséquence constatée en production : une correction devenue inutile restait en vigueur, sans aucun moyen direct de la retirer en dehors d'un étalonnage. Ce lot répare ce défaut, sous une forme différente (bouton dédié « Supprimer la correction », masqué par défaut et par la bannière caduque) plutôt qu'en ressuscitant l'ancien bouton.
 
 ### Consigne pH : contrôle segmenté (v2.25.0)
 
