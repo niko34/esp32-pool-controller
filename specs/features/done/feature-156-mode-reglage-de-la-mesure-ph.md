@@ -2,9 +2,13 @@
 - **ID** : feature-156
 - **Slug** : mode-reglage-de-la-mesure-ph
 - **Type** : feature
-- **Statut** : doing — implémentation et documentation livrées, deux critères d'acceptation
-  restent ouverts (jugement utilisateur sur la findabilité du point d'entrée ; contrôle visuel
-  390 px sur appareil réel)
+- **Statut** : **livré et clôturé** — implémentation, tests et documentation livrés en v2.72.0.
+  Les deux critères qui exigeaient un jugement humain ont été rendus par l'utilisateur le
+  2026-10-12, **après** le déploiement de la v2.73.0 : le libellé du point d'entrée est trouvé
+  par qui cherche à corriger sa mesure, et le rendu à 390 px est conforme sur appareil réel.
+  ⚠️ Ces deux cases sont restées ouvertes 1 jour **volontairement** : aucun agent ne pouvait les
+  cocher — c'est l'utilisateur qui avait signalé le malentendu d'origine, et le CSS ne prouve
+  pas un rendu.
 - **Priorité** : normale
 - **Version cible** : 2.72.0
 - **Dernière mise à jour** : 2026-10-12
@@ -313,10 +317,18 @@ ORP/Température, ni l'accessibilité/responsive.
       `style.display`/`visibility` — sort aussi de l'ordre de tabulation et de l'arbre
       d'accessibilité), changement d'état annoncé (région `role="status" aria-live="polite"`),
       ordre de tabulation cohérent (DOM réordonné physiquement).
-- [ ] B9 — Responsive **vérifié à 390 px**, caractères comptés. ⚠️ **Vérifié par lecture de code**
-      (`.maintenance-back-link` : `width: 100%`, jamais partagée avec un autre élément sur la
-      même ligne — donc aucun `flex-wrap` possible), **pas par capture d'écran sur appareil réel**
-      — case laissée ouverte tant que ce contrôle visuel n'a pas eu lieu.
+- [x] B9 — Responsive **vérifié à 390 px**, caractères comptés. Vérifié d'abord par lecture de
+      code (`.maintenance-back-link` : `width: 100%`, jamais partagée avec un autre élément sur
+      la même ligne — donc aucun `flex-wrap` possible).
+      ✅ **CONTRÔLE VISUEL SUR APPAREIL RÉEL FAIT PAR L'UTILISATEUR LE 2026-10-12**, après le
+      déploiement de la v2.73.0. Quatre points regardés sur la page pH en mode entretien :
+      atteignabilité du lien de retour BAS sous les deux cartes empilées, tenue du pas-à-pas sur
+      une ligne, **séparation effective du bouton destructif** d'avec « Corriger » (les 12 px de
+      `.action-destructive` livrés en feature-157), et absence de débordement ou de coupure de
+      texte. Verdict : conforme.
+      ⚠️ Conditions du contrôle, pour que la portée soit lisible : correction `ph_offset` = +0,50
+      en vigueur, donc le bouton destructif **était** affiché — le point le plus récent est bien
+      celui qui a été vu, pas supposé.
 - [x] B13 — **MÊME MODE DÉDIÉ SUR LA PAGE TEMPÉRATURE** (`#temperature-card-calibration`,
       `#temp_cal_trigger_btn`). Point d'entrée **« Calibrer la sonde » conservé**. Mécanisme
       **GÉNÉRIQUE** livré : une seule classe (`is-flow-maintenance`), une seule paire de
@@ -379,11 +391,16 @@ ORP/Température, ni l'accessibilité/responsive.
 ## Critères d'acceptation
 
 - [x] Sur la page pH courante, **aucune** des deux cartes n'est visible.
-- [ ] Le point d'entrée contient « calibration »/« calibrer » **et** un utilisateur qui cherche
+- [x] Le point d'entrée contient « calibration »/« calibrer » **et** un utilisateur qui cherche
       à corriger sa mesure le trouve. ⚠️ **À faire juger par l'utilisateur**, pas par un agent :
-      c'est lui qui a signalé le malentendu d'origine. **Reste ouvert** — le nom choisi
-      (« Calibration et correction de la mesure ») est implémenté, le jugement utilisateur n'a
-      pas encore eu lieu.
+      c'est lui qui a signalé le malentendu d'origine.
+      ✅ **VALIDÉ PAR L'UTILISATEUR LE 2026-10-12.** Question posée telle quelle : « sur la page
+      pH, en lisant *Calibration et correction de la mesure*, est-ce que vous iriez cliquer là
+      pour corriger votre mesure ? » — réponse : « *Oui, c'est ok pour moi.* »
+      ⇒ Le libellé est **confirmé**, et le risque identifié en conception (le mot « Calibration »
+      en tête qui ferait chercher ailleurs la correction) **ne s'est pas matérialisé**. C'est un
+      jugement de lecture, pas un test d'usage prolongé : si un malentendu apparaissait plus
+      tard, c'est ce libellé qu'il faudrait rouvrir en premier.
 - [x] Dans l'état réglage, les deux cartes sont visibles **dans l'ordre** calibration puis
       correction, avec un lien de retour **en haut et en bas**.
 - [x] ~~Le titre de la correction porte « Recommandé » dans la forme validée par le gate.~~
@@ -398,8 +415,8 @@ ORP/Température, ni l'accessibilité/responsive.
 - [x] Le retour ne perd pas le contexte de la page (défilement restauré).
 - [x] Rien de masqué n'est atteignable au clavier (`hidden` natif, retiré de l'ordre de
       tabulation et de l'arbre d'accessibilité).
-- [ ] Vérifié **à 390 px**. Vérifié par lecture de code (CSS), **pas** par contrôle visuel sur
-      appareil réel — laissé ouvert, voir B9 de la check-list ci-dessus.
+- [x] Vérifié **à 390 px** — lecture du CSS **puis** contrôle visuel sur appareil réel par
+      l'utilisateur le 2026-10-12 (détail et portée exacte du contrôle : B9 ci-dessus).
 - [x] `./build_fs.sh` dans les 512 Ko · `pio test -e native` zéro régression. Référence mesurée
       au moment de cette documentation : `pio run` SUCCESS (Flash 50,0 %), **68 suites / 2 121
       cas**, 14 contrôles d'hygiène (ADR-0073 : à re-mesurer, ne pas recopier ce chiffre tel

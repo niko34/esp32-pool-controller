@@ -3,7 +3,7 @@
 - **Statut** : Accepté
 - **Date** : 2026-10-12
 - **Décideurs** : `architect` (feature-156), proposition initiale de l'utilisateur, confirmée par `ux-ui-designer` (mandat complet)
-- **Spec(s) liée(s)** : [`feature-156`](../../specs/features/doing/feature-156-mode-reglage-de-la-mesure-ph.md)
+- **Spec(s) liée(s)** : [`feature-156`](../../specs/features/done/feature-156-mode-reglage-de-la-mesure-ph.md)
 
 ## Contexte
 
@@ -131,5 +131,5 @@ aurait **annulé un arbitrage de sécurité**.
   `requestExitMaintenance()`), [`data/index.html`](../../data/index.html)
   (sections `#view-ph`, `#view-orp`, `#view-temperature`), [`data/app.css`](../../data/app.css)
   (`.is-flow-maintenance`, `.flow-maintenance`)
-- Spec : [`specs/features/doing/feature-156-mode-reglage-de-la-mesure-ph.md`](../../specs/features/doing/feature-156-mode-reglage-de-la-mesure-ph.md)
+- Spec : [`specs/features/done/feature-156-mode-reglage-de-la-mesure-ph.md`](../../specs/features/done/feature-156-mode-reglage-de-la-mesure-ph.md)
 - Doc externe : [docs/features/page-ph.md](../features/page-ph.md), [docs/features/page-orp.md](../features/page-orp.md), [docs/features/page-temperature.md](../features/page-temperature.md)

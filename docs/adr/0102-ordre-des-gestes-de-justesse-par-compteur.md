@@ -3,7 +3,7 @@
 - **Statut** : Accepté
 - **Date** : 2026-10-12
 - **Décideurs** : `architect` (feature-156), confirmé par le gate `pool-chemistry`
-- **Spec(s) liée(s)** : [`feature-156`](../../specs/features/doing/feature-156-mode-reglage-de-la-mesure-ph.md)
+- **Spec(s) liée(s)** : [`feature-156`](../../specs/features/done/feature-156-mode-reglage-de-la-mesure-ph.md)
 
 ## Contexte
 
@@ -106,5 +106,5 @@ un verdict qui engage le dosage est servi, pas reconstruit).
   (`setPhOffsetStamped()`, `markPhCalibrationStamped()`)
 - Test : [`test/test_native_ph_offset/test_ph_offset.cpp`](../../test/test_native_ph_offset/test_ph_offset.cpp)
   (section D4)
-- Spec : [`specs/features/doing/feature-156-mode-reglage-de-la-mesure-ph.md`](../../specs/features/doing/feature-156-mode-reglage-de-la-mesure-ph.md)
+- Spec : [`specs/features/done/feature-156-mode-reglage-de-la-mesure-ph.md`](../../specs/features/done/feature-156-mode-reglage-de-la-mesure-ph.md)
 - Doc externe : [API.md](../API.md), [sensors.md](../subsystems/sensors.md)
