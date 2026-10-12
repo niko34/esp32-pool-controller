@@ -2214,7 +2214,6 @@
 
   let _phTuneValue = null;              // valeur AMENÉE par l'utilisateur (ex. 7.4)
   let _phTuneTouched = false;           // true dès le 1er appui +/- : plus de resynchronisation auto (#3)
-  let _phTuneFiltrationSinceMs = null;  // ancre LOCALE — cf. limitation documentée dans renderPhTuneCard()
   let _phTuneSubmitBusy = false;        // requête POST en cours : renderPhTuneCard() ne touche plus au bouton
 
   function _phTuneLiveRaw() {
@@ -2259,13 +2258,21 @@
 
     // Suivi LOCAL de la filtration (cf. limitation documentée en en-tête).
     const running = data.filtration_running === true;
-    if (running) {
-      if (_phTuneFiltrationSinceMs == null) _phTuneFiltrationSinceMs = Date.now();
-    } else {
-      _phTuneFiltrationSinceMs = null;
-    }
-    const filtrationElapsedMs = (running && _phTuneFiltrationSinceMs != null)
-      ? Math.max(0, Date.now() - _phTuneFiltrationSinceMs) : 0;
+    // 🔴 CORRECTIF POST-LIVRAISON : la durée écoulée est SERVIE par le firmware
+    // (`filtration_elapsed_s`), elle n'est plus devinée ici.
+    // L'ancienne version posait un repère LOCAL au premier rendu où elle voyait la
+    // filtration tourner (`_phTuneFiltrationSinceMs = Date.now()`) : elle supposait
+    // donc qu'elle VENAIT de démarrer. Conséquence constatée en production — pompe
+    // en marche depuis 2 h 30, écran affichant « encore 10 min », bouton désactivé,
+    // et décompte qui REPARTAIT À ZÉRO À CHAQUE CHARGEMENT DE PAGE. Le serveur,
+    // lui, aurait accepté : il lit `filtrationStartedAtMs()`.
+    // ⚠️ 5e occurrence du même motif dans ce projet : un client qui RECALCULE ce
+    // que le firmware sait déjà (ADR-0100, et les quatre défauts de feature-155).
+    // Champ absent (firmware antérieur) ⇒ 0 ⇒ l'écran reste prudent et bloque,
+    // jamais l'inverse : on ne débloque pas sur une information qu'on n'a pas.
+    const elapsedS = data.filtration_elapsed_s;
+    const filtrationElapsedMs = (running && typeof elapsedS === "number" && isFinite(elapsedS))
+      ? Math.max(0, elapsedS * 1000) : 0;
 
     const calPoints = (typeof data.phCalPoints === "number") ? data.phCalPoints : null;
 

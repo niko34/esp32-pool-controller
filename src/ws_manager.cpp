@@ -971,6 +971,22 @@ size_t WsManager::_buildSensorJson(char* buf, size_t cap) const {
   else                        d["phSlopeAgeMs"] = slopeAge;
 
   d["filtration_running"]  = filtration.isRunning();
+  // 🔴 CORRECTIF POST-LIVRAISON (feature-156) : la DURÉE écoulée de filtration est
+  // SERVIE, elle n'est plus devinée par le navigateur.
+  // Le client posait son propre repère au premier rendu où il VOYAIT la filtration
+  // tourner (`_phTuneFiltrationSinceMs = Date.now()`), donc il croyait qu'elle
+  // venait de démarrer — et le décompte des 10 minutes de la carte « Correction
+  // manuelle de la mesure » REPARTAIT À ZÉRO À CHAQUE CHARGEMENT DE PAGE.
+  // Symptôme réel : pompe en marche depuis 2 h 30, écran affichant « encore 10 min »
+  // et bouton désactivé — alors que le SERVEUR, lui, aurait ACCEPTÉ : il lit
+  // filtrationStartedAtMs(). Un écran qui bloque sur une information qu'il a
+  // inventée, pendant que l'appareil connaît la vraie.
+  // ⚠️ 5e occurrence dans ce projet du même motif : un client qui RECALCULE ce que
+  // le firmware sait déjà. Cf. ADR-0100 et les quatre défauts de feature-155.
+  // 0 quand la filtration est à l'arrêt (aucune durée à compter).
+  d["filtration_elapsed_s"] = filtration.isRunning()
+      ? (uint32_t)(((uint32_t)millis() - (uint32_t)filtration.filtrationStartedAtMs()) / 1000UL)
+      : 0;
   d["ph_dosing"]           = PumpController.isPhDosing();
   d["orp_dosing"]         = PumpController.isOrpDosing();
   // Itération 3 (bug-dosage-fantome, défaut n°3) : calendrier d'impulsion —
