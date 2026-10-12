@@ -2107,7 +2107,13 @@
   function renderPhOffsetStaleBanner(cfg) {
     const banner = $("#ph_tune_stale_banner");
     if (!banner) return;
-    const offset = (typeof cfg?.ph_offset === "number") ? cfg.ph_offset : 0;
+    // ⚠️ `isFinite` N'EST PAS REDONDANT avec `typeof === "number"` : en
+    // JavaScript, `typeof NaN === "number"`. Sans lui, un `ph_offset` non fini
+    // passerait la garde, et comme `NaN !== 0` est VRAI la bannière
+    // s'afficherait en annonçant « NaN pH ». Garde alignée sur celle de
+    // renderPhTuneRemoveRow(), qui lit le MÊME champ (2026-10-12) — deux
+    // lectures d'une même donnée ne doivent pas avoir deux forces de garde.
+    const offset = (typeof cfg?.ph_offset === "number" && isFinite(cfg.ph_offset)) ? cfg.ph_offset : 0;
     const stale = (cfg?.ph_offset_stale === true) && (offset !== 0);
     if (!stale) { banner.hidden = true; return; }
     const valueEl = $("#ph_tune_stale_value");

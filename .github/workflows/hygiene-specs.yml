@@ -268,3 +268,20 @@ jobs:
       # Les deux moitiés étaient justes séparément.
       - name: Contrôle des vecteurs de correction manuelle pH
         run: ./tools/check_ph_tune_vectors.sh
+
+  ph-tune-remove-vectors:
+    name: Vecteurs du bouton « Supprimer la correction » (feature-157)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # Même script en local (`./tools/check_ph_tune_remove_vectors.sh`) et en CI.
+      # Couvre deux éléments qu'aucun harnais ne protégeait avant ce lot :
+      # `_fmtPh()` (une décimale, virgule française — PARTAGÉE par plusieurs
+      # écrans, donc vulnérable à une régression silencieuse introduite par un
+      # autre écran) et `renderPhTuneRemoveRow()` (masquage mutuel avec la
+      # bannière « correction caduque », offset inconnu jamais exposé à un
+      # bouton de suppression).
+      - name: Contrôle des vecteurs du bouton de suppression de correction pH
+        run: ./tools/check_ph_tune_remove_vectors.sh
