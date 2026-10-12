@@ -11,14 +11,25 @@ Afficher la température courante de l'eau et son historique, et offrir une cali
 
 Depuis feature-035, l'écran adopte le **même agencement que pH/ORP** : un bloc « stats » en haut visible en permanence, et une carte de calibration masquée qui s'affiche au clic.
 
-En mode nominal, trois zones :
+⚠️ **Depuis la v2.72.0 (feature-156), la page a DEUX états** — voir [Mode réglage](#mode-réglage-calibration-seule-feature-156-v2720), même mécanisme que les pages [pH](page-ph.md#mode-réglage-calibration--correction-feature-156-v2720) et [ORP](page-orp.md#mode-réglage-calibration-seule-feature-156-v2720). Ce qui suit décrit l'**état courant**.
 
-1. **Bloc Statistiques** (`#temperature-card-stats`, sans titre) — **valeur de température courante** en grand (1 décimale, ex. `25.4 °C`), une rangée de chips contenant **un seul chip d'état de calibration** (`#temp-cal-chip`, non cliquable), un **badge d'état de la sonde** (`#temperature-page-badge`, v2.47.1 — masqué par défaut) et **sous la rangée** un bouton **« Calibrer la sonde »** (`#temp_cal_trigger_btn`) toujours accessible.
+En état courant, deux zones :
+
+1. **Bloc Statistiques** (`#temperature-card-stats`, sans titre) — **valeur de température courante** en grand (1 décimale, ex. `25.4 °C`), une rangée de chips contenant **un seul chip d'état de calibration** (`#temp-cal-chip`, non cliquable), un **badge d'état de la sonde** (`#temperature-page-badge`, v2.47.1 — masqué par défaut) et **sous la rangée** un bouton **« Calibrer la sonde »** (`#temp_cal_trigger_btn`) toujours accessible — voir [Mode réglage](#mode-réglage-calibration-seule-feature-156-v2720).
    - Il n'y a **pas de chip filtre/mesure** ni de chip sonde : la température n'a ni filtre médiane/EMA ni diagnostic de pente (contrairement à pH/ORP).
 2. **Carte Activation** (`#temperature-card-enable`) — toggle `temperature_enabled` pour masquer la fonctionnalité si aucune sonde n'est installée.
-3. **Carte Historique** (`#temperature-card-history`) — graphique uPlot (feature-043, ex-Chart.js), plages `Tout` / `30j` / `7j` / `24h`.
 
-La **carte Calibration** (`#temperature-card-calibration`) **remplace** les cartes Activation + Historique pendant une session de calibration (le bloc Statistiques reste visible).
+⚠️ **La carte Historique (`#temperature-card-history`) n'est plus une zone distincte en permanence** : elle reste présente et visible, mais **masquée en mode réglage** (cf. ci-dessous), comme avant son contenu n'a pas changé (graphique uPlot, plages `Tout` / `30j` / `7j` / `24h`).
+
+## Mode réglage (calibration seule, feature-156, v2.72.0)
+
+**Même mécanisme** que les pages [pH](page-ph.md#mode-réglage-calibration--correction-feature-156-v2720) et [ORP](page-orp.md#mode-réglage-calibration-seule-feature-156-v2720) ([ADR-0103](../adr/0103-gestes-d-entretien-quittent-la-vue-courante.md)) : au clic sur « Calibrer la sonde », les cartes Activation et Historique sont masquées, et on voit, dans cet ordre : un lien de retour (« ← Retour à la page Température »), la carte **Calibration de la sonde de température** (`#temperature-card-calibration`, contenu inchangé, cf. [Carte de calibration](#carte-de-calibration-offset-1-point)), un second lien de retour. Le bloc Statistiques reste visible en permanence.
+
+⚠️ **Le point d'entrée reste « Calibrer la sonde »** — une seule destination (pas de carte de correction manuelle pour la température), même raison que l'ORP : le nom suit le contenu.
+
+Avant la v2.72.0, l'entrée dans la carte de calibration passait par `showTempCalibrationCard()` / `hideTempCalibrationCard()`, deux fonctions **spécifiques** à cette page qui posaient `style.display = "none"` directement sur les cartes. Elles sont **remplacées** par les fonctions génériques `enterMaintenance("temperature")` / `exitMaintenance("temperature")`, partagées avec pH et ORP (table `MAINTENANCE_PAGES`, voir [page-ph.md](page-ph.md#mécanisme--entermaintenance--exitmaintenance)).
+
+⚠️ **Piège corrigé en revue** : avant ce lot, désactiver la sonde (toggle `temperature_enabled`) pendant que la carte de calibration était affichée posait `calCard.style.display = "none"` directement — un style inline qui (1) écrase silencieusement la règle CSS du mode réglage, et (2) n'était **jamais retiré** à la réactivation de la sonde, rendant la carte de calibration définitivement inaccessible. Depuis la v2.72.0, désactiver la sonde pendant qu'on est en mode réglage **en sort proprement** (`exitMaintenance("temperature", false)`) au lieu de masquer la carte par un style qui ne sait pas se retirer lui-même.
 
 ## Chip d'état de calibration
 
@@ -51,7 +62,7 @@ Calqué sur `#ph-page-badge` (aucune classe CSS nouvelle) et alimenté par **exa
 
 ## Carte de calibration (offset 1 point)
 
-Affichée **au clic** sur « Calibrer la sonde » (`showTempCalibrationCard()` masque Activation + Historique et désactive le bouton déclencheur), elle propose :
+Affichée **au clic** sur « Calibrer la sonde » — depuis la v2.72.0, `enterMaintenance("temperature")` masque Activation + Historique derrière le [mode réglage](#mode-réglage-calibration-seule-feature-156-v2720) et désactive le bouton déclencheur (avant cette version : `showTempCalibrationCard()`, fonction spécifique retirée) —, elle propose :
 
 - une **lecture live** de la température (`#temp_cal_live_value`, alimentée par le champ WS `temperature` à chaque message, pour juger la stabilité avant de calibrer — **pas d'indicateur de stabilité** car la température évolue lentement) ;
 - un **stepper 3 étapes** (`#temp_step1/2/3`, classes `.calibration-steps` / `.step`, états `is-active` / `is-completed`) piloté par `updateTempCalibrationSteps()` :
@@ -62,7 +73,7 @@ Affichée **au clic** sur « Calibrer la sonde » (`showTempCalibrationCard()` m
 | 2 | Attendre la stabilisation + saisir la température connue (`#temp_reference_value`) | bouton « Étape suivante » |
 | 3 | Calibrer | bouton « Calibrer » |
 
-- boutons **« Commencer la calibration » / « Étape suivante » / « Calibrer »** (`#temp_cal_start_btn`, libellé adapté à l'étape), **« Annuler »** (`#temp_cal_cancel_btn`, revient à l'idle sans modifier l'offset), et **« Fermer »** (`#temp_cal_close_btn`, `hideTempCalibrationCard()` restaure l'écran nominal et redonne le focus au bouton déclencheur).
+- boutons **« Commencer la calibration » / « Étape suivante » / « Calibrer »** (`#temp_cal_start_btn`, libellé adapté à l'étape), **« Annuler »** (`#temp_cal_cancel_btn`, revient à l'idle sans modifier l'offset), et **« Fermer »** (`#temp_cal_close_btn`, `requestExitMaintenance("temperature")` depuis la v2.72.0 — quitte le mode réglage et redonne le focus au bouton déclencheur).
 
 ### Calcul de l'offset (inchangé, côté client)
 
@@ -76,7 +87,7 @@ offset = température de référence saisie − temperature_raw
 
 > ⚠️ **Depuis la v2.47.1 (`bug-114`), l'offset est ÉCRÊTÉ à ±5 °C côté firmware.** Une référence saisie très loin de la mesure (les bornes de saisie du champ `#temp_reference_value` vont de −10 à 50 °C) produit donc un offset **ramené à ±5 °C**, sans message d'erreur dans la réponse mais avec un `warning` au journal nommant la valeur demandée, la valeur retenue et l'IP cliente. Motif : un DS18B20 dérive de **dixièmes** de degré ; et cet offset alimente la commande `RT,<tempC>` de compensation de l'EZO pH, où un offset de +1000 vaut **≈ +0,15 pH** d'erreur et un offset très négatif une erreur **non bornée**. Détail des quatre points d'écrêtage : [`sensors.md`](../subsystems/sensors.md#les-quatre-points-de-clamp-de-loffset-de-calibration).
 
-Après succès, l'UI met à jour optimiste la valeur affichée, recharge la config (`loadConfig()`), passe le chip à « Calibré », puis revient à l'écran nominal (`hideTempCalibrationCard()`).
+Après succès, l'UI met à jour optimiste la valeur affichée, recharge la config (`loadConfig()`), passe le chip à « Calibré », puis quitte le mode réglage (`exitMaintenance("temperature")`).
 
 ## Données consommées (WebSocket `/ws`)
 
@@ -117,12 +128,14 @@ Après succès, l'UI met à jour optimiste la valeur affichée, recharge la conf
 - **Calibration aberrante** : bornes UI sur `#temp_reference_value` (`min=-10`, `max=50`) **et**, depuis la v2.47.1, **écrêtage firmware de l'offset à ±5 °C** aux quatre points de la chaîne (écriture, chargement NVS, émission de la mesure, émission `RT`) — une NVS déjà polluée par une version antérieure est donc également corrigée au boot, ce qui garantit que `/get-config` expose la valeur **réellement appliquée**.
 - **Sonde figée** : badge « Sonde température figée », valeur **conservée** (plausible, seulement immobile), aucun effet dosage ; le planning de filtration n'est plus recalculé tant que l'épisode dure (bug-142).
 - **Aucun rôle « eau » identifié** : badge « Sonde eau non identifiée » — jamais « eau figée ».
+- **Désactiver la sonde (`temperature_enabled`) pendant le mode réglage (feature-156, v2.72.0)** : sortie propre du mode (`exitMaintenance("temperature", false)`) au lieu de l'ancien `calCard.style.display = "none"`, qui écrasait la règle CSS et restait collé — la carte de calibration aurait sinon été **définitivement** inaccessible après la première désactivation.
+- **Quitter le mode réglage par le menu (feature-156, v2.72.0)** : identique à pH/ORP — voir [le détail](page-ph.md#cas-limites) et [ADR-0103](../adr/0103-gestes-d-entretien-quittent-la-vue-courante.md).
 
 ## Fichiers
 
-- [`data/index.html`](../../data/index.html) — section `#view-temperature` (bloc stats + carte calibration masquée)
-- [`data/app.js`](../../data/app.js) — `updateTempCalChip()`, `showTempCalibrationCard()` / `hideTempCalibrationCard()`, `updateTempCalibrationSteps()`, `bindTempCalibration()`
-- [`data/app.css`](../../data/app.css) — `.ph-stats--single`, `.chip--cal`, `.cal-trigger-row` (réutilisés de feature-034)
+- [`data/index.html`](../../data/index.html) — section `#view-temperature` (bloc stats + mode réglage : carte calibration, feature-156)
+- [`data/app.js`](../../data/app.js) — `updateTempCalChip()`, `updateTempCalibrationSteps()`, `bindTempCalibration()` ; `MAINTENANCE_PAGES["temperature"]`, `enterMaintenance()`/`exitMaintenance()`/`requestExitMaintenance()` (feature-156, mécanisme partagé — remplacent les anciennes `showTempCalibrationCard()` / `hideTempCalibrationCard()`, retirées)
+- [`data/app.css`](../../data/app.css) — `.ph-stats--single`, `.chip--cal`, `.cal-trigger-row` (réutilisés de feature-034) ; `.is-flow-maintenance`/`.flow-maintenance` (feature-156)
 - [`src/sensors.h`](../../src/sensors.h), [`src/sensors.cpp`](../../src/sensors.cpp) — `DallasTemperature`
 - [`src/config.h`](../../src/config.h) — champs `tempCalibrationOffset`, `tempCalibrationDate`, `temperatureEnabled`
 - [`src/web_routes_config.cpp`](../../src/web_routes_config.cpp) — persistance `/save-config`
@@ -133,4 +146,5 @@ Après succès, l'UI met à jour optimiste la valeur affichée, recharge la conf
 - bug-114 — écrêtage de l'offset de calibration à ±5 °C, fenêtre et cascade de la compensation `RT` (v2.47.1).
 - feature-035 — uniformisation de l'écran Température avec pH/ORP (bloc stats + chip + carte de calibration masquée).
 - feature-034 — patterns réutilisés (chip, carte masquée, bouton « Calibrer la sonde » sous les chips). Voir [page-ph.md](page-ph.md) / [page-orp.md](page-orp.md).
+- feature-156 (v2.72.0) — le geste de calibration quitte la vue courante (mode réglage dédié), mécanisme générique partagé avec pH et ORP. Voir [ADR-0103](../adr/0103-gestes-d-entretien-quittent-la-vue-courante.md).
 - [ADR-0003](../adr/0003-calibration-orp-cote-client.md) — calcul de calibration côté client.

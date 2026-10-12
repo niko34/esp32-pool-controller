@@ -2,6 +2,73 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [2.72.0] - 2026-10-12
+
+### Fonctionnalités
+
+- **Les gestes d'entretien quittent les pages pH, ORP et Température
+  (feature-156)** — sur ces trois pages, le chemin pour atteindre
+  l'étalonnage de la sonde (et, sur le pH, la correction manuelle de la
+  mesure) change. Un clic sur le point d'entrée masque le reste de la page et
+  affiche uniquement le ou les gestes d'entretien, avec un lien de retour en
+  haut **et** en bas. Sur la page pH, le bouton s'appelle désormais
+  **« Calibration et correction de la mesure »** (il ouvrait auparavant « Calibrer
+  la sonde », qui ne laissait pas deviner que la correction manuelle était
+  aussi derrière) et ouvre **deux** cartes dans l'ordre calibration puis
+  correction ; sur l'ORP et la Température, le bouton reste **« Calibrer la
+  sonde »** (une seule destination, pas de carte de correction sur ces deux
+  capteurs).
+- **L'appareil signale une correction manuelle du pH devenue caduque après un
+  étalonnage** — un étalonnage change le zéro et la pente de la sonde : une
+  correction posée avant ne compense plus un état qui existe encore. Une
+  bannière apparaît sur la carte de correction, avec la valeur en vigueur et
+  deux choix explicites : l'annuler, ou la garder (avec un rappel à la
+  vérifier par un nouveau test). **Aucune remise à zéro automatique** : la
+  valeur engage le dosage, le choix reste à l'utilisateur. Ce verdict survit à
+  un rechargement de page et à un redémarrage de l'appareil.
+- Après un étalonnage réussi de la sonde pH, un conseil s'affiche
+  désormais : vérifier avec un test fiable (gouttes ou testeur électronique,
+  pas une bandelette) avant de corriger, et seulement si l'écart se confirme
+  deux fois à des moments différents.
+
+### Firmware
+
+- **Deux horodatages de justesse, persistés en NVS** : l'instant où une
+  correction manuelle du pH est posée, et l'instant où un étalonnage de la
+  sonde est validé (y compris un effacement de calibration, qui rend la
+  correction tout aussi caduque qu'un étalonnage classique). L'ordre entre
+  les deux est décidé par un **compteur**, pas par l'horloge — voir
+  [ADR-0102](docs/adr/0102-ordre-des-gestes-de-justesse-par-compteur.md).
+- **`GET /get-config` et la trame WebSocket `config`** servent trois nouveaux
+  champs : `ph_offset_epoch`, `ph_cal_epoch` (affichage seul) et
+  `ph_offset_stale` (le verdict, calculé par le firmware, jamais recalculé
+  côté client).
+- 7 nouveaux tests natifs (`isPhOffsetStale`, `nextJustnessSeq`), suite
+  `test_native_ph_offset`.
+
+### Documentation
+
+- `docs/features/page-ph.md`, `docs/features/page-orp.md`,
+  `docs/features/page-temperature.md` : les deux états des trois pages, le
+  nouveau point d'entrée, les liens de retour, l'ordre des cartes en mode
+  réglage.
+- `docs/API.md` : les trois nouveaux champs de `/get-config` et de la trame
+  WebSocket.
+- `docs/subsystems/sensors.md` : les quatre champs persistés, les deux
+  écrivains uniques, les trois points d'estampillage de l'étalonnage.
+- `docs/user/src/guide-utilisation.html` : mise à jour du chemin pour
+  atteindre l'étalonnage et la correction sur les trois pages concernées —
+  captures à refaire (voir note ci-dessous), aucun PDF régénéré pour cette
+  seule mise à jour de source.
+- [ADR-0102](docs/adr/0102-ordre-des-gestes-de-justesse-par-compteur.md) —
+  l'ordre des gestes de justesse se décide par compteur, jamais par
+  l'horloge.
+- [ADR-0103](docs/adr/0103-gestes-d-entretien-quittent-la-vue-courante.md) —
+  les gestes d'entretien quittent la vue courante, mécanisme générique
+  partagé par les trois pages.
+
+---
+
 ## [2.71.0] - 2026-10-11
 
 ### Fonctionnalités

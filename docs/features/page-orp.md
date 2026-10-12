@@ -9,7 +9,9 @@ Point d'entrée unique pour **tout** ce qui concerne l'ORP (potentiel redox, pil
 
 ## Structure
 
-En mode nominal, cinq zones :
+⚠️ **Depuis la v2.72.0 (feature-156), la page a DEUX états** — voir [Mode réglage](#mode-réglage-calibration-seule-feature-156-v2720), même mécanisme que la page [pH](page-ph.md#mode-réglage-calibration--correction-feature-156-v2720). Ce qui suit décrit l'**état courant**.
+
+En état courant, quatre zones :
 
 1. **Bloc Statistiques** (bandeau compact, sans titre) — valeur ORP **officielle** courante en grand (mV) + **ligne brute discrète** « brut · maj » + **rangée de chips** : **chip d'état de calibration** (cf. [Chip d'état de calibration](#chip-détat-de-calibration-feature-034)) + dosage du jour (barre de progression, borne `max_orp_ml_per_day`). ⚠️ **Depuis la refonte de la chaîne de mesure (feature-152, v2.68.0)**, il n'existe plus de chip ni de modal d'état du **filtre** distincts — voir [Ce qui a été retiré, fusionné, conservé](#ce-qui-a-été-retiré-fusionné-conservé-feature-152-v2680). Depuis la **v2.37.0** (feature-096), ce bloc se termine par « **Atteinte de la cible** » (`#orp-ttt-block`) — voir [Atteinte de la cible](#atteinte-de-la-cible-feature-096-v2370).
 2. **Carte Débit d'injection ORP** (`#orp-card-dosing`, feature-092, v2.46.0) — insérée **entre** le bloc Statistiques et la carte Régulation, visible **en mode automatique uniquement** : **deux** lignes (écart courant, **Demande** en total) et une pastille d'état. Voir [Carte « Débit d'injection ORP »](#carte--débit-dinjection-orp--orp-card-dosing-feature-092-v2460).
@@ -18,11 +20,20 @@ En mode nominal, cinq zones :
    - **Programmée** : volume quotidien de chlore en mL + bouton Sauvegarder. Depuis la v2.8.0 (feature-011) : ligne « **Débit calculé : X,X mL/min** » (`#orp_scheduled_flow_line` / `#orp_scheduled_flow_value`, alimentée par le champ WS `orp_scheduled_flow_ml_per_min` ; affiche « — » avec `title` « Hors plage de filtration ou données indisponibles » quand la valeur est `null`) + hint statique « Le volume non injecté avant minuit est perdu (pas de report au lendemain). ». Volontairement **pas** de « sur Y h restantes » côté client : l'horloge du navigateur peut différer de celle de l'ESP32, seul le débit (source firmware) est affiché.
    - **Manuelle** : bloc Injection manuelle.
 4. **Carte Historique** — graphique uPlot (feature-043, ex-Chart.js), plages `Tout` / `30j` / `7j` / `24h`. Depuis la **v2.28.1** (feature-083) : **plus de zone ombrée** — **ligne de consigne pointillée** à `orp_target`, voir [Repère du graphique d'historique](#repère-du-graphique-dhistorique-feature-083-v2281). Ce graphique trace la mesure **brute** et le reste en v2.38.0 — voir [Le graphique d'historique de cette page reste brut](#le-graphique-dhistorique-de-cette-page-reste-brut-feature-095-v2380).
-5. **Carte Calibration** — **remplace** Régulation + Historique pendant une session. Écran **guidé par stepper** (feature-034), 1 seul point de calibration (architecture symétrique de la page pH) — voir [Workflow calibration](#workflow-calibration).
+
+Le point d'entrée du mode réglage (« **Calibrer la sonde** », `#orp_cal_trigger_btn`) est rendu **sous la rangée de chips** du bloc Statistiques — voir [Mode réglage](#mode-réglage-calibration-seule-feature-156-v2720). ⚠️ **La carte Calibration n'est plus visible dans l'état courant** depuis la v2.72.0 (avant cette version, elle s'affichait au clic **au milieu** des autres cartes de la page, sans les masquer).
 
 Le bloc Statistiques reste visible en permanence.
 
-> **Calibration accessible dans tous les modes (feature-034)** : le bouton « Calibrer la sonde » (`#orp_cal_trigger_btn`) est désormais affiché et fonctionnel en **automatique, programmée et manuelle**. Depuis l'itération 3, ce bouton est placé **sous la rangée de chips** du bloc Statistiques (et non plus en bas de la carte de régulation dans `#orp-calibration-info`, supprimé). La session de calibration ne modifie pas `orp_regulation_mode` : à la fermeture, on **revient au mode précédemment sélectionné**.
+> **Calibration accessible dans tous les modes (feature-034)** : le bouton « Calibrer la sonde » (`#orp_cal_trigger_btn`) est désormais affiché et fonctionnel en **automatique, programmée et manuelle**. Depuis l'itération 3, ce bouton est placé **sous la rangée de chips** du bloc Statistiques (et non plus en bas de la carte de régulation dans `#orp-calibration-info`, supprimé). Le mode réglage ne modifie pas `orp_regulation_mode` : à la sortie, on **revient au mode précédemment sélectionné**.
+
+## Mode réglage (calibration seule, feature-156, v2.72.0)
+
+**Même mécanisme** que la page [pH](page-ph.md#mode-réglage-calibration--correction-feature-156-v2720) ([ADR-0103](../adr/0103-gestes-d-entretien-quittent-la-vue-courante.md)) : au clic sur « Calibrer la sonde », le reste de la page (débit d'injection, régulation, historique) est masqué, et on voit, dans cet ordre : un lien de retour (« ← Retour à la page ORP »), la carte **Calibration de la sonde ORP** (inchangée dans son contenu, cf. [Workflow calibration](#workflow-calibration)), un second lien de retour.
+
+⚠️ **Pourquoi le point d'entrée reste « Calibrer la sonde », à la différence de la page pH** : l'ORP n'a **qu'une seule destination** derrière ce bouton — pas de carte de correction manuelle, le module Atlas EZO ORP n'expose ni pente ni zéro, il se calibre en 1 point. Le nom suit le **contenu** : deux destinations sur le pH (« Calibration et correction de la mesure »), une seule ici. Ce n'est pas une incohérence, c'est l'asymétrie assumée entre les deux capteurs (cf. [Hors périmètre de feature-156](../../specs/features/doing/feature-156-mode-reglage-de-la-mesure-ph.md)).
+
+Mécanisme technique, liens de retour, accessibilité, responsive, comportement à la navigation par le menu et pendant une calibration en vol : **identiques** à la page pH — voir [le détail complet](page-ph.md#mécanisme--entermaintenance--exitmaintenance) plutôt que de le dupliquer ici.
 
 ## Badge d'état mesure (`#orp-page-badge`, feature-061, v2.13.0)
 
@@ -152,6 +163,7 @@ Depuis l'itération 2 de feature-034, l'état de calibration EZO n'est plus pré
 - Le **libellé du bouton est fixe** (« Calibrer la sonde ») quel que soit l'état (itération 3) ; le bouton est **sous la rangée de chips** (`#orp_cal_trigger_btn`), **toujours accessible** dans tous les modes — y compris une fois la sonde calibrée (recalibration possible).
 - Tant que les données ne sont pas reçues (`orpCalPoints == null`) et hors EZO injoignable, le chip affiche « Calibration — » et le bouton reste **actif**.
 - **Garde injection prioritaire** : le bouton « Calibrer la sonde » est forcé **désactivé** pendant une injection ORP en cours, indépendamment de l'état de calibration (cf. [Cas limites](#cas-limites)).
+- ⚠️ **Depuis la v2.72.0 (feature-156)**, le clic ouvre le [mode réglage](#mode-réglage-calibration-seule-feature-156-v2720) (`enterMaintenance("orp")`) au lieu d'afficher la carte Calibration à sa place d'avant, au milieu des autres cartes.
 
 ## Workflow calibration
 
@@ -282,6 +294,7 @@ Encart `#orp_inject_raw_guard_warning` (titre `#orp_inject_raw_guard_title`, tex
 - **Reboot inattendu** : toast à la première réception WS si `reset_reason` ∈ {`WATCHDOG`, `BROWNOUT`, `PANIC`, `EXTERNAL`, `UNKNOWN`}.
 - **Mode Programmée sans sonde** : fonctionne — c'est justement un cas d'usage (utilisateur sans sonde ORP). Aucune dépendance sur `orpCalPoints` dans cette branche.
 - **Injection ORP en cours (feature-034)** : le clic sur « Calibrer » (`#orp_cal_trigger_btn`) est **bloqué** si une injection ORP est active — condition `(orp_inject_remaining_s > 0) || (orp_dosing === true)`, toast « Calibration impossible pendant une injection ORP ».
+- **Quitter le mode réglage par le menu, ou pendant une calibration en vol (feature-156, v2.72.0)** : identique à la page pH, mécanisme partagé — voir [le détail](page-ph.md#cas-limites) et [ADR-0103](../adr/0103-gestes-d-entretien-quittent-la-vue-courante.md).
 
 ## Interaction MQTT
 
@@ -302,8 +315,8 @@ Encart `#orp_inject_raw_guard_warning` (titre `#orp_inject_raw_guard_title`, tex
 
 ## Fichiers
 
-- [`data/index.html`](../../data/index.html) — structure HTML (carte Régulation + carte Calibration 1 bloc)
-- [`data/app.js`](../../data/app.js) — logique mode / calibration EZO (POST + polling) / injection manuelle
+- [`data/index.html`](../../data/index.html) — structure HTML (carte Régulation + mode réglage : carte Calibration 1 bloc, feature-156)
+- [`data/app.js`](../../data/app.js) — logique mode / calibration EZO (POST + polling) / injection manuelle ; `MAINTENANCE_PAGES["orp"]` (feature-156, mécanisme partagé avec la page pH)
 - [`data/app.css`](../../data/app.css) — classe `.cal-point-block` réutilisée
 - [`src/pump_controller.h`](../../src/pump_controller.h), [`src/pump_controller.cpp`](../../src/pump_controller.cpp) — `canDose(1)` 10 garde-fous
 - [`src/sensors.h`](../../src/sensors.h), [`src/sensors.cpp`](../../src/sensors.cpp) — pilotage Atlas EZO ORP
@@ -327,3 +340,4 @@ Encart `#orp_inject_raw_guard_warning` (titre `#orp_inject_raw_guard_title`, tex
 - [ADR-0008](../adr/0008-persistance-cumuls-journaliers-nvs.md) — persistance NVS du cumul journalier.
 - [ADR-0014](../adr/0014-migration-atlas-ezo.md) — migration Atlas EZO (supersedes ADR-0001).
 - [ADR-0021](../adr/0021-repartition-scheduled.md) — répartition scheduled par fenêtres de 15 min (feature-011, v2.8.0).
+- [ADR-0103](../adr/0103-gestes-d-entretien-quittent-la-vue-courante.md) — les gestes d'entretien quittent la vue courante, mécanisme partagé avec le pH et la Température (feature-156, v2.72.0).

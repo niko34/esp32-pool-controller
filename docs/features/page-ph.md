@@ -9,7 +9,9 @@ Point d'entrée unique pour **tout** ce qui concerne le pH : mesure, mode de ré
 
 ## Structure
 
-En mode nominal, six zones :
+⚠️ **Depuis la v2.72.0 (feature-156), la page a DEUX états** — voir [Mode réglage](#mode-réglage-calibration--correction-feature-156-v2720) pour le détail complet. Ce qui suit décrit l'**état courant** (le seul visible par défaut).
+
+En état courant, cinq zones :
 
 1. **Bloc Statistiques** (bandeau compact, sans titre) — valeur pH **officielle** courante en grand (1 décimale, cohérent avec le tableau de bord) + **ligne brute discrète** « brut · maj » + **rangée de chips** : **chip unique sonde + calibration** cliquable (cf. [Chip d'état sonde](#chip-détat-sonde-feature-024)) + dosage du jour (barre de progression). Depuis feature-034, le chip de calibration distinct est **supprimé** : son information est fusionnée dans le chip sonde. ⚠️ **Depuis la refonte de la chaîne de mesure (feature-152, v2.68.0)**, il n'existe plus de chip ni de modal d'état du **filtre** distincts : voir [Ce qui a été retiré, fusionné, conservé](#ce-qui-a-été-retiré-fusionné-conservé-feature-152-v2680). Depuis la **v2.37.0** (feature-096), ce bloc se termine par « **Atteinte de la cible** » (`#ph-ttt-block`) : ligne de valeur + bande de 7 pastilles — voir [Atteinte de la cible](#atteinte-de-la-cible-feature-096-v2370).
 2. **Carte Débit d'injection pH** (`#ph-card-dosing`, feature-092, v2.46.0) — insérée **entre** le bloc Statistiques et la carte Régulation, visible **en mode automatique uniquement** : quatre lignes (dose de base apprise, écart courant, rattrapage accumulé, **Demande** en total) et une pastille d'état à 5 priorités. Voir [Carte « Débit d'injection pH »](#carte--débit-dinjection-ph--ph-card-dosing-feature-092-v2460).
@@ -18,13 +20,51 @@ En mode nominal, six zones :
    - **Programmée** : volume quotidien en mL (borné par `max_ph_ml_per_day`) + bouton Sauvegarder. Depuis la v2.8.0 (feature-011) : ligne « **Débit calculé : X,X mL/min** » (`#ph_scheduled_flow_line` / `#ph_scheduled_flow_value`, alimentée par le champ WS `ph_scheduled_flow_ml_per_min` ; affiche « — » avec `title` « Hors plage de filtration ou données indisponibles » quand la valeur est `null`) + hint statique « Le volume non injecté avant minuit est perdu (pas de report au lendemain). ». Volontairement **pas** de « sur Y h restantes » côté client : l'horloge du navigateur peut différer de celle de l'ESP32, seul le débit (source firmware) est affiché.
    - **Manuelle** : bloc Injection manuelle (volume + bouton ▶ Injecter / ⏹ Stopper).
    - Le bloc « Rattrapage accumulé » qui vivait en pied de cette carte (`#ph-integral-section`, v2.26.0) est **retiré** depuis la v2.46.0 : son contenu est passé dans la carte « Débit d'injection pH ».
-4. **Carte Correction manuelle de la mesure** (`#ph-card-tune`, feature-155, v2.71.0 — remplace feature-067) — l'utilisateur **amène un nombre** jusqu'à la valeur lue sur son test, l'appareil en déduit la correction. Voir [Carte « Correction manuelle de la mesure »](#carte--correction-manuelle-de-la-mesure--ph-card-tune-feature-155-v2710).
-5. **Carte Historique** — graphique uPlot (feature-043, ex-Chart.js), plages `Tout` / `30j` / `7j` / `24h`. Depuis la **v2.28.1** (feature-083) : bande fixe **7,2-7,6** (plage idéale de l'eau) + **ligne de consigne pointillée** à `ph_target` — voir [Repères du graphique d'historique](#repères-du-graphique-dhistorique-feature-083-v2281). Ce graphique trace la mesure **brute** et le reste en v2.38.0 — voir [Le graphique d'historique de cette page reste brut](#le-graphique-dhistorique-de-cette-page-reste-brut-feature-095-v2380).
-6. **Carte Calibration** — **remplace** Régulation + Historique pendant une session de calibration. Écran **guidé par stepper** (feature-034) — voir [Workflow calibration](#workflow-calibration).
+4. **Carte Historique** — graphique uPlot (feature-043, ex-Chart.js), plages `Tout` / `30j` / `7j` / `24h`. Depuis la **v2.28.1** (feature-083) : bande fixe **7,2-7,6** (plage idéale de l'eau) + **ligne de consigne pointillée** à `ph_target` — voir [Repères du graphique d'historique](#repères-du-graphique-dhistorique-feature-083-v2281). Ce graphique trace la mesure **brute** et le reste en v2.38.0 — voir [Le graphique d'historique de cette page reste brut](#le-graphique-dhistorique-de-cette-page-reste-brut-feature-095-v2380).
+5. **Point d'entrée du mode réglage** (`#ph_cal_trigger_btn`, « **Calibration et correction de la mesure** ») — sous la rangée de chips. **Ni la carte Calibration ni la carte Correction manuelle de la mesure ne sont visibles dans cet état** (changement v2.72.0 — avant cette version, la carte de correction était **toujours affichée** entre Régulation et Historique).
 
-Le bloc Statistiques reste visible **en permanence**, y compris pendant la calibration.
+Le bloc Statistiques reste visible **en permanence**, y compris en mode réglage.
 
-> **Calibration accessible dans tous les modes (feature-034)** : le bouton « Calibrer la sonde » (`#ph_cal_trigger_btn`) est désormais affiché et fonctionnel quel que soit le mode de régulation — **automatique, programmée et manuelle**. Depuis l'itération 3, ce bouton est placé **sous la rangée de chips** du bloc Statistiques (et non plus en bas de la carte de régulation dans `#ph-calibration-info`, supprimé). La session de calibration ne modifie pas `ph_regulation_mode` : à la fermeture (`#ph_cal_close_btn`), on **revient au mode précédemment sélectionné** (aucune bascule forcée en automatique).
+> **Calibration accessible dans tous les modes (feature-034)** : le point d'entrée du mode réglage est désormais affiché et fonctionnel quel que soit le mode de régulation — **automatique, programmée et manuelle**. Depuis l'itération 3 de feature-034, ce bouton est placé **sous la rangée de chips** du bloc Statistiques (et non plus en bas de la carte de régulation dans `#ph-calibration-info`, supprimé). Le mode réglage ne modifie pas `ph_regulation_mode` : à la sortie, on **revient au mode précédemment sélectionné** (aucune bascule forcée en automatique).
+
+## Mode réglage (calibration + correction, feature-156, v2.72.0)
+
+Les **deux seuls gestes qui touchent à la justesse de la mesure** — étalonnage de la sonde et correction manuelle — ont quitté l'état courant pour un **mode réglage** dédié, atteint depuis un point d'entrée unique. Voir [ADR-0103](../adr/0103-gestes-d-entretien-quittent-la-vue-courante.md) pour l'arbitrage (mécanisme générique, partagé avec les pages [ORP](page-orp.md#mode-réglage-calibration-seule-feature-156-v2720) et [Température](page-temperature.md#mode-réglage-calibration-seule-feature-156-v2720)).
+
+### Pourquoi le point d'entrée s'appelle « Calibration et correction de la mesure »
+
+Avant ce lot, le bouton s'appelait « Calibrer la sonde » et n'ouvrait que la carte de calibration — la correction manuelle restait **toujours visible** sur la page. En la faisant entrer dans le même mode réglage, un bouton resté « Calibrer la sonde » aurait rendu la correction **introuvable** : personne ne clique sur « Calibrer » pour corriger une mesure sur une bandelette. Le titre doit **à la fois** contenir « calibration »/« calibrer » (contrainte utilisateur) **et** laisser deviner que la correction est derrière — d'où le nom à deux destinations, arbitré par `ux-ui-designer`. Sur l'ORP et la Température, le bouton reste « Calibrer la sonde » : il n'y a **qu'une seule** destination (pas de carte de correction pour ces deux capteurs), le nom suit le contenu.
+
+### Les deux états de la page
+
+**État courant** (par défaut) : les cinq zones listées ci-dessus. **Ni** la carte Calibration **ni** la carte Correction ne sont visibles.
+
+**État réglage** (après clic sur le point d'entrée) : le reste de la page (débit d'injection, régulation, historique) est masqué, et on voit, dans cet ordre :
+
+1. un **lien de retour** (« ← Retour à la page pH ») ;
+2. la carte **Calibration de la sonde pH** (inchangée dans son contenu, cf. [Workflow calibration](#workflow-calibration)) ;
+3. la carte **Correction manuelle de la mesure** (inchangée dans son contenu, cf. [Carte « Correction manuelle de la mesure »](#carte--correction-manuelle-de-la-mesure--ph-card-tune-feature-155-v2710)) ;
+4. un second **lien de retour**, identique au premier.
+
+L'ordre **calibration puis correction** n'est pas arbitraire : dans le cas « sonde non étalonnée » (refus n°3 de la carte Correction), le geste à faire d'abord est **juste au-dessus**, sans qu'aucun texte supplémentaire n'ait à l'expliquer.
+
+Le sous-titre d'en-tête de la page (`<p class="settingsHead__sub">`, normalement « Calibration et régulation du pH ») est **réécrit** en mode réglage : « Calibration de la sonde et correction de la mesure » — et **restauré** à la sortie. L'en-tête lui-même (titre, bloc Statistiques) reste visible dans les deux états : la page reste conceptuellement la page pH, en vue resserrée.
+
+### Mécanisme — `enterMaintenance()` / `exitMaintenance()`
+
+Générique, partagé avec l'ORP et la Température ([`data/app.js`](../../data/app.js), table `MAINTENANCE_PAGES`) : une classe CSS unique (`is-flow-maintenance`) posée sur la vue (`#view-ph`), qui masque tout enfant direct **non** marqué `.flow-maintenance` (les cartes Calibration et Correction, les liens de retour et la région d'annonce `sr-only` portent cette classe). **Aucun style inline** (`hidden` natif uniquement) : un `el.style.display` écraserait la règle CSS du mode sans effet visible — piège déjà rencontré par l'ancien `hidePhCalibrationCard()`.
+
+### Liens de retour et accessibilité
+
+- Deux boutons identiques (`#ph-maintenance-back-top` / `#ph-maintenance-back-bottom`, texte « ← Retour à la page pH »), en haut et en bas de l'état réglage.
+- Une région `role="status" aria-live="polite"` (`#ph-maintenance-announce`, `sr-only`) annonce le changement d'état à l'entrée comme à la sortie — aucun contenu visuel, vocal uniquement.
+- Le retour restaure la **position de défilement** mémorisée à l'entrée (`requestAnimationFrame` après le repaint, le temps que les cartes redeviennent `hidden` et que la page retrouve sa hauteur normale) et redonne le focus au point d'entrée.
+- **Quitter par le menu** (sans cliquer un lien de retour) ramène automatiquement toute page restée en mode réglage à son état normal (`_exitAllMaintenanceModes()`, appelée depuis `showView()`) — correctif d'un défaut trouvé en test (voir [ADR-0103](../adr/0103-gestes-d-entretien-quittent-la-vue-courante.md#leçon--généraliser-un-mécanisme-en-oubliant-ce-quune-version-spécifique-faisait-en-plus)).
+- **Calibration en cours** : le lien de retour reste actif, mais demande confirmation (« Une calibration est en cours — la quitter maintenant ? ») si une calibration pH/ORP est en vol côté client — la commande déjà envoyée à l'EZO n'est pas annulable, seule l'attente du client (minuteur, polling) l'est.
+
+### Responsive
+
+Conçu **mobile d'abord** (390 px) : `.maintenance-back-link` est `width: 100%`, jamais partagée avec un autre élément sur la même ligne — donc aucun `flex-wrap` « en repli » possible (règle responsive permanente, `CLAUDE.md`). Marge dédiée sous chaque lien pour ne jamais le coller au dernier élément de la carte qui précède. Sur un écran court, le lien du bas n'est atteint qu'après avoir fait défiler les deux cartes — c'est **voulu** (c'est sa raison d'être). ⚠️ Vérifié par lecture de `data/app.css` (largeur, absence de partage de ligne) — pas par capture d'écran sur appareil.
 
 ## Badge d'état mesure (`#ph-page-badge`, feature-061, v2.13.0)
 
@@ -293,7 +333,7 @@ L'ancien doublon ORP (`#measures_purge_timeout_banner_orp`) est retiré pour la 
 
 ## Carte « Correction manuelle de la mesure » (`#ph-card-tune`, feature-155, v2.71.0)
 
-Carte `#ph-card-tune` (**ex-`#ph-card-offset`**, feature-067), **même emplacement** qu'avant : entre la carte Régulation et la carte Historique, **toujours visible** quel que soit le mode de régulation — elle corrige la **mesure**, pas la régulation. Elle reste **distincte de la calibration EZO** (sa propre carte, plus bas sur la page) : deux gestes différents, deux effets différents, rappelés par `#ph_tune_calib_note`.
+Carte `#ph-card-tune` (**ex-`#ph-card-offset`**, feature-067). ⚠️ **Depuis la v2.72.0 (feature-156), elle a quitté l'état courant de la page** : elle ne vit plus en permanence entre Régulation et Historique, mais dans le [mode réglage](#mode-réglage-calibration--correction-feature-156-v2720), **juste sous** la carte Calibration. Le geste n'est pas moins accessible pour autant — il est désormais atteint via le point d'entrée « Calibration et correction de la mesure » plutôt que d'être toujours visible. Elle reste **distincte de la calibration EZO** (la carte juste au-dessus, dans le même mode) : deux gestes différents, deux effets différents, rappelés par `#ph_tune_calib_note`.
 
 > ⚠️ **Le geste a changé de nature.** Jusqu'en v2.70.0, l'utilisateur réglait un **écart abstrait** (« offset ») entre −0,50 et +0,50 pH. Depuis la v2.71.0, il **amène un nombre** jusqu'à la valeur qu'il a lue sur son propre test (bandelette, PoolLab, pH-mètre) : c'est l'appareil qui en déduit la correction à appliquer. **Le mot « offset » a disparu de l'interface** ; le vocabulaire retenu est **ajuster**, **amener à**, **indiquer**, **corriger** — jamais « saisir » (il n'y a pas de champ, pas de clavier : rien n'est saisi).
 
@@ -347,7 +387,7 @@ Un seul callout `#ph_tune_blocked` (ambré, `role="status"`, `aria-live="polite"
 |---:|---|---|
 | 1 | Mesure de référence indisponible (`phValueRaw` NaN) | « L'appareil n'a pas de mesure assez récente. Attendez qu'une valeur s'affiche, puis recommencez. » |
 | 2 | Filtration arrêtée, ou démarrée depuis moins de **10 minutes** | « La filtration doit tourner depuis 10 minutes pour que l'eau testée soit celle qui passe devant la sonde. Possible dans N min. » — **avec décompte vivant**, jamais un refus sec |
-| 3 | Sonde non étalonnée (`phCalPoints < 2`) | « La sonde n'a pas encore ses deux points de référence. Faites d'abord l'étalonnage (tampon 7 puis tampon 4), puis revenez ici. » + bouton **« Aller à l'étalonnage »** (`#ph_tune_goto_cal_btn`), qui ouvre la carte Calibration |
+| 3 | Sonde non étalonnée (`phCalPoints < 2`) | « La sonde n'a pas encore ses deux points de référence. Faites d'abord l'étalonnage (tampon 7 puis tampon 4), puis revenez ici. » — ⚠️ **le bouton « Aller à l'étalonnage » (`#ph_tune_goto_cal_btn`) a disparu en v2.72.0** (B10) : il faisait défiler vers une carte Calibration lointaine, désormais **juste au-dessus** dans le même mode réglage, le geste à faire est déjà sous les yeux |
 | 4 | Écart demandé hors **±0,50** | « Trop loin de ce que l'appareil mesure. Refaites le test (bandelettes non périmées, lecture à la bonne échelle) et vérifiez l'étalonnage de la sonde avant de recommencer. » |
 | — | Aucun refus | Callout masqué, bouton « Corriger » actif |
 
@@ -359,7 +399,9 @@ Les **10 minutes** de filtration (`kPhTuneMinFiltrationMs`, servi en lecture seu
 
 `#ph_tune_calib_note` (texte discret, toujours visible) :
 
-> Cela n'étalonne pas la sonde : pour cela, utilisez la carte « Calibration de la sonde pH » plus bas.
+> Cela n'étalonne pas la sonde : pour cela, utilisez la carte « Calibration de la sonde pH » ci-dessus.
+
+⚠️ Le texte disait « plus bas » avant la v2.72.0 (la calibration vivait après l'historique) ; depuis ce lot, elle est **juste au-dessus** dans le mode réglage — texte corrigé en conséquence, sinon la phrase devient fausse.
 
 Les deux gestes ne doivent jamais être confondus : cette carte **corrige une mesure** (une constante ajoutée en sortie du filtre), l'étalonnage **recalcule la pente et le zéro de la sonde** elle-même. Accorder l'appareil sur un test avant d'avoir étalonné la sonde (< 2 points) est un contresens — refus 3 ci-dessus — car un offset est une **constante** alors qu'une erreur d'étalonnage est **proportionnelle** : sans 2ᵉ point, une pente dégradée serait figée dans la correction, au seul point d'accord, et fausse partout ailleurs.
 
@@ -370,6 +412,26 @@ Le bouton **« Corriger »** (`#ph_tune_submit_btn`) envoie `{"ph_reference": <v
 Bouton désactivé tant qu'aucun appui `+`/`−` n'a eu lieu (zéro appui = aucune correction envoyée, jamais un cran appliqué par accident) ou qu'un refus est affiché. Succès : bouton « Corrigé » 2 s puis retour à la lecture vivante (`loadConfig()` resynchronise la config). Échec : message serveur affiché **tel quel** (jamais réécrit), bouton « Erreur » 2 s.
 
 La correction s'applique **immédiatement** (ADR-0039 inchangé : appliquée en sortie des accesseurs, sans attendre le remplissage d'une fenêtre). Voir [ADR-0101](../adr/0101-la-correction-nait-d-une-mesure-jamais-d-un-ecart.md) pour l'arbitrage qui sous-tend ce geste.
+
+### Correction devenue caduque après un étalonnage (`#ph_tune_stale_banner`, feature-156, v2.72.0)
+
+Un étalonnage modifie le zéro **et** la pente de la sonde : une correction manuelle posée **avant** le dernier étalonnage réussi compensait un état de la sonde qui **n'existe plus** — elle est **caduque**. Le firmware le détecte (champ `ph_offset_stale`, voir [API.md](../API.md#get-get-config--write)) et le signale par une bannière **persistante**, en tout premier dans `#ph-card-tune`, avant même `#ph_tune_stakes` : elle engage le dosage, elle pèse plus lourd que le conseil transitoire de la carte Calibration.
+
+Condition d'affichage : `ph_offset_stale === true` **et** la correction en vigueur est non nulle (`renderPhOffsetStaleBanner()`, [`data/app.js`](../../data/app.js)). Ce verdict est calculé **par le firmware** et **jamais recalculé côté client** — voir [ADR-0102](../adr/0102-ordre-des-gestes-de-justesse-par-compteur.md) — et il **survit** à un rechargement de page et à un redémarrage de l'appareil, contrairement au conseil transitoire de la carte Calibration (`#ph_cal_final_advice`, voir [Workflow calibration](#workflow-calibration)).
+
+⚠️ **Texte imposé mot pour mot par le gate `pool-chemistry`, après un premier brouillon refusé** (« Correction désactivée par l'étalonnage » — **faux** : `applyPhOffset` continue d'ajouter la correction à chaque lecture tant que l'utilisateur n'a pas tranché, un utilisateur rassuré par « désactivée » aurait pu laisser la bannière des semaines pendant que la correction périmée orientait les injections d'acide) :
+
+> **Correction à revoir après l'étalonnage**
+> Une correction de **{valeur} pH** **reste appliquée à la mesure** : elle continue d'orienter le dosage tant que vous n'avez pas choisi. Elle a été posée **avant** l'étalonnage qui vient d'avoir lieu et compensait un réglage de sonde qui a changé — elle n'est peut-être plus justifiée.
+
+⛔ « **reste appliquée** » et « **continue d'orienter le dosage** » sont **non négociables** — ne pas les reformuler.
+
+Deux issues explicites (`#ph_tune_stale_cancel_btn` / `#ph_tune_stale_keep_btn`), **pas** de remise à zéro automatique (« rien dans le dos de l'utilisateur sur une valeur qui engage le dosage ») :
+
+- **« Annuler la correction »** — remet `ph_offset` à 0 via `POST /save-config`, **sans** les gardes de `/tune-ph-offset` (10 min de filtration, sonde étalonnée…) : exiger une attente pour **retirer** une correction serait une garde qui bloque plus qu'elle ne protège (verdict `pool-chemistry`).
+- **« Garder la correction »** — ré-envoie la valeur courante par la **même route** `POST /save-config` : ce ré-envoi **re-estampille** la correction (`setPhOffsetStamped()`) et **éteint durablement** le verdict de caducité — c'est la manière dont l'utilisateur confirme qu'il assume la valeur après l'avoir vue signalée comme périmée. Message de confirmation : « Correction conservée — **vérifiez-la par un test fiable** » (condition mineure du gate).
+
+**Rétrocompatibilité assumée** : sur un appareil mis à jour depuis une version antérieure (compteurs d'horodatage à `0` des deux côtés), une correction héritée n'est **jamais** signalée caduque tant qu'aucun étalonnage n'a eu lieu depuis la mise à jour — pas de fausse alerte sur tout le parc au premier démarrage. Elle le sera au **prochain** étalonnage.
 
 ### Consigne pH : contrôle segmenté (v2.25.0)
 
@@ -541,13 +603,13 @@ Si `dialog.showModal` est absent (vieux navigateur), le chip est rendu non cliqu
 - **EZO pH débranché en runtime** : après 2 échecs consécutifs (`kEzoBusFailMaxConsecutive`), les champs `phSlope*` passent à `null` mais `phSlopeAgeMs` reste connu (`_phSlopeQueriedMs` non remis à zéro) → chip ambré « Pente non disponible » (erreur réelle, v2.21.2) — pas de crash, pas de toast.
 - **Refresh en cours et payload WS qui apporte une nouvelle valeur** : si `phSlopeAgeMs < 60 s`, l'état refresh est résolu en succès (toast).
 
-## État de calibration & bouton « Calibrer la sonde » (feature-034)
+## État de calibration & bouton « Calibration et correction de la mesure » (feature-034 ; renommé feature-156, v2.72.0)
 
 Depuis l'itération 2 de feature-034, l'état de calibration EZO n'est plus présenté par trois callouts noyés dans la carte Régulation (supprimés). L'itération suivante a **fusionné** le chip de calibration séparé (`#ph-cal-chip`, supprimé) dans le **chip unique sonde + calibration** `#ph-probe-chip` (cf. [Chip d'état sonde](#chip-détat-sonde-feature-024)) : pour `phCalPoints < 2`, ce chip affiche directement l'état de calibration. Il ne reste donc plus qu'**un seul chip** côté sonde/calibration pH.
 
-Le **bouton de calibration** (`#ph_cal_trigger_btn`) est rendu **sous la rangée de chips** avec un **libellé fixe « Calibrer la sonde »**, accompagné d'un **hint** texte (`#ph_cal_hint`). Le bouton/hint sont pilotés par `renderCalibrationStatus()` ([`data/app.js`](../../data/app.js)) à partir de `phCalPoints` (WebSocket / `GET /data`, voir [API.md](../API.md)) :
+Le **bouton point d'entrée** (`#ph_cal_trigger_btn`) est rendu **sous la rangée de chips** avec un **libellé fixe « Calibration et correction de la mesure »** (était « Calibrer la sonde » avant la v2.72.0 — voir [Pourquoi le point d'entrée s'appelle ainsi](#pourquoi-le-point-dentrée-sappelle--calibration-et-correction-de-la-mesure-)), accompagné d'un **hint** texte (`#ph_cal_hint`). Le clic ouvre désormais le [mode réglage](#mode-réglage-calibration--correction-feature-156-v2720) (`enterMaintenance("ph")`), au lieu d'afficher directement la carte Calibration à sa place d'avant. Le bouton/hint sont pilotés par `renderCalibrationStatus()` ([`data/app.js`](../../data/app.js)) à partir de `phCalPoints` (WebSocket / `GET /data`, voir [API.md](../API.md)) :
 
-| `phCalPoints` | Bouton « Calibrer la sonde » | Hint | Régulation auto |
+| `phCalPoints` | Bouton | Hint | Régulation auto |
 |---------------|---------------------|------|-----------------|
 | `null` (avant données) | actif | — | — |
 | `-1` | **désactivé** | « EZO pH injoignable — vérifiez le câblage I²C et l'alimentation. » | Inhibée (cond #5 pool-chemistry) |
@@ -555,7 +617,7 @@ Le **bouton de calibration** (`#ph_cal_trigger_btn`) est rendu **sous la rangée
 | `1` | actif | « Régulation auto inhibée (1/2 point). » | Inhibée |
 | `≥ 2` | actif | — | Active |
 
-- Le **libellé du bouton est fixe** (« Calibrer la sonde ») quel que soit l'état (itération 3) ; le bouton est **sous la rangée de chips** (`#ph_cal_trigger_btn`), **toujours accessible** dans tous les modes — y compris quand la sonde est calibrée (recalibration possible).
+- Le **libellé du bouton est fixe** (« Calibration et correction de la mesure ») quel que soit l'état (itération 3, renommé v2.72.0) ; le bouton est **sous la rangée de chips** (`#ph_cal_trigger_btn`), **toujours accessible** dans tous les modes — y compris quand la sonde est calibrée (recalibration possible).
 - On ne désactive le bouton que sur **preuve d'EZO injoignable** (`phCalPoints < 0`). Le garde « injection en cours » reste **prioritaire** et peut le désactiver indépendamment.
 - L'état de calibration ORP, lui, conserve son **chip dédié** `#orp-cal-chip` (l'ORP n'a pas de chip sonde) piloté par `setCalChip('orp', …)`.
 - ⚠️ Quand `phCalPoints == 1`, le chip ne distingue pas mid seul de low seul (l'EZO ne renvoie que le compteur via `Cal,?`). Risque résiduel mineur — l'utilisateur sait normalement quel point il vient d'effectuer.
@@ -589,7 +651,17 @@ Le focus est déplacé sur le contrôle de l'étape active (`focusActiveStep()`)
 
 **Indicateur de stabilité Δ60 s** (purement **indicatif**) : `renderStability()` calcule l'amplitude `max − min` de la mesure **brute** sur une fenêtre glissante de ~60 s (`CAL_STAB_WINDOW_MS`) et affiche `Δ60 s : <valeur> — stable/en cours`. Seuils cosmétiques `CAL_STAB_THRESHOLD = { ph: 0.05, orp: 5 }`. La fenêtre est réinitialisée à chaque changement de solution (avance de stepper / calibration réussie).
 
-Après une calibration EZO réussie, `completeCalStep()` marque l'étape « calibrer » comme faite (✓) et avance le stepper. La fermeture de la carte (`#ph_cal_close_btn`) annule toute minuterie en cours et restaure la carte Régulation dans le mode initial.
+Après une calibration EZO réussie, `completeCalStep()` marque l'étape « calibrer » comme faite (✓) et avance le stepper. Le bouton « Fermer » (`#ph_cal_close_btn`) appelle `requestExitMaintenance("ph")` : annule toute minuterie en cours et **quitte le mode réglage** (voir [Mode réglage](#mode-réglage-calibration--correction-feature-156-v2720)) — avant la v2.72.0, il restaurait seulement la carte Régulation masquée à sa place.
+
+### Conseil post-étalonnage (`#ph_cal_final_advice`, feature-156, v2.72.0)
+
+À l'étape finale du stepper (idx 4, « Calibration terminée »), un encart **transitoire** (`callout--info`, `role="note"`) invite à vérifier l'étalonnage avant de corriger — il n'est **jamais persisté** et disparaît dès qu'on quitte cette étape (nouvelle calibration, sortie du mode réglage). Texte **imposé mot pour mot** par le gate `pool-chemistry`, en remplacement du mot « Recommandé » initialement proposé pour le titre de la carte Correction (refusé — voir [Carte « Correction manuelle de la mesure »](#carte--correction-manuelle-de-la-mesure--ph-card-tune-feature-155-v2710)) :
+
+> Étalonnage terminé. Vérifiez avec un test **fiable** (gouttes ou testeur électronique) : si un écart **≥ 0,3 pH** se confirme sur **deux mesures** à des moments différents, corrigez ci-dessous. Une **bandelette (±0,5)** ne suffit pas à justifier une correction.
+
+⚠️ **Pourquoi ce texte et pas un simple badge « Recommandé »** : un étalonnage EZO sur tampons est l'opération la plus juste de la chaîne (±0,01-0,02 pH) ; le vérifier à la bandelette (±0,5, l'amplitude **complète** de `kPhOffsetMax`) revient à arbitrer une référence avec un instrument 25× plus grossier. Une correction de bruit de +0,3 fait viser au régulateur un pH réel de 7,5-7,8 au lieu de 7,20-7,50 : à pKa 7,5, HOCl passe de 52 % à 41 %, la boucle ORP compense par surdosage puis `kPhOrpInhibit` coupe le chlore — un mot d'interface déplace la chimie du bassin. La condition **double** (moment ET résultat confirmé deux fois) est délibérée : ne pas en retirer une.
+
+**Côté ORP et Température** : pas d'équivalent — il n'y a pas de carte de correction derrière leur calibration.
 
 > **Readout de calibration = valeur brute.** `updateCalibrationReadouts()` alimente `#cal-ph-mid-readout` et `#cal-ph-low-readout` avec la mesure **brute** (`json.phRaw` **uniquement** — le repli sur `json.ph` a été **supprimé** en v2.20.0, ce champ portant désormais la valeur corrigée par l'offset ; cf. [L'écran de calibration reste sur le BRUT](#lécran-de-calibration-reste-sur-le-brut)), **pas** la valeur officielle affichée ailleurs dans l'UI. Raison : en changeant de solution étalon (ex. pH 7 → pH 4, saut ≈ 3.0), la valeur officielle — médiane (**9** échantillons ≈ **45 s**, était 13 ≈ 65 s avant la refonte feature-152, v2.68.0) puis lissage exponentiel (τ = 45 s) — met plusieurs dizaines de secondes à converger vers la nouvelle valeur ; la médiane absorbe seule le saut initial, sans seuil de rejet dédié (le rejet de spike isolé a disparu avec la refonte : voir [ADR-0097](../adr/0097-le-filtre-lisse-le-dosage-juge.md)). Le brut suit immédiatement le potentiel réel de l'électrode, indispensable pour juger la stabilité avant de calibrer. Le reste de l'UI (dashboard, valeur principale pH, MQTT) continue d'afficher la valeur officielle.
 
@@ -631,6 +703,7 @@ L'ordre d'exécution est libre (mid puis low, ou inverse). En pratique, les util
 **Atteinte de la cible (feature-096, v2.37.0)** : `ph_ttt_state` (uint8 `0`-`3`, **4-255 réservés**), `ph_ttt_min` (uint16, **minutes de circulation** — ⚠️ **sens variable selon l'état**), `ph_ttt_e0` (float 2 décimales \| `null`), `ph_ttt_flag` (**champ de bits**). Servis **à l'identique** par `GET /data` (même passage des deux côtés). `ph_ttt_state` non numérique = firmware antérieur → bloc masqué. La mémoire 7 jours vient de [`GET /get-kpi`](../API.md#get-get-kpi--write), **jamais du WS**. Voir [Atteinte de la cible](#atteinte-de-la-cible-feature-096-v2370)
 **Limite d'actionneur (feature-086, v2.29.0)** : `ph_sustainable_ml_per_min` (float 2 décimales \| `null`), `ph_daily_max_ml` (int mL/j \| `null`), `ph_limited_by_hourly_budget` (bool), `ph_undersized` (bool). Servis **à l'identique** par `GET /data` (même passage des deux côtés — aucun clignotement possible). `ph_limited_by_hourly_budget` non booléen = firmware antérieur → capacités **et** bandeaux masqués. Voir [Capacités et bandeaux](#capacités-de-dosage-et-bandeaux-de-limite-dactionneur-feature-086-v2290)
 **Config** : `ph_target`, `ph_correction_type` (`ph_minus` / `ph_plus`), `max_ph_ml_per_day`, `ph_offset` (feature-067, message `config` — pas `sensor_data`)
+**Horodatage de justesse (feature-156, v2.72.0)** : `ph_offset_epoch`, `ph_cal_epoch` (uint32, secondes Unix | `0` = date inconnue — **affichage seul**, jamais utilisés pour décider un ordre), `ph_offset_stale` (bool, **verdict** calculé par le firmware — correction non nulle et antérieure au dernier étalonnage réussi). Servis **à l'identique** par `GET /get-config` et la trame WS `config` ; jamais recalculés côté client (ADR-0100, [ADR-0102](../adr/0102-ordre-des-gestes-de-justesse-par-compteur.md)). Pilote [la bannière « Correction à revoir »](#correction-devenue-caduque-après-un-étalonnage-ph_tune_stale_banner-feature-156-v2720). Voir [API.md](../API.md).
 **Seuils de santé pH (feature-154, v2.70.0)** : `ph_slope_healthy_min_pct`, `ph_slope_healthy_max_pct`, `ph_zero_healthy_max_mv` — `GET /get-config` **uniquement**, jamais la trame WS (constantes de compilation, budget de trame) ; le client conserve la dernière valeur reçue entre deux appels. Voir [Classification (UI)](#classification-ui) et [API.md](../API.md).
 **Injection manuelle** : `ph_inject_remaining_s`
 **Stabilisation** : `stabilization_remaining_s`
@@ -734,14 +807,17 @@ Encart `#ph_inject_raw_guard_warning` (titre `#ph_inject_raw_guard_title`, texte
 ## Cas limites
 
 - **Filtration arrêtée / purge post-reprise (feature-061)** : valeur pH « actuelle » à `--`, badge `#ph-page-badge` bleu « Filtration arrêtée » ou « Stabilisation depuis N min », trous dans le graphique d'historique. Ligne brute et calibration non gatées.
-- **EZO pH injoignable** : hint `#ph_cal_hint` « EZO pH injoignable — vérifiez le câblage I²C et l'alimentation. » sous le bouton « Calibrer la sonde », et header de la carte Calibration « EZO pH injoignable ». Régulation auto inhibée (cond #5).
+- **EZO pH injoignable** : hint `#ph_cal_hint` « EZO pH injoignable — vérifiez le câblage I²C et l'alimentation. » sous le point d'entrée du mode réglage, et header de la carte Calibration « EZO pH injoignable ». Régulation auto inhibée (cond #5).
 - **Lecture pH stale > 20 s** : valeur du bloc Statistiques en `is-stale` (opacité 0.5). Régulation auto inhibée (cond #1) + alerte MQTT `pool/alerts/sensor_stale`.
 - **Calibration en cours et utilisateur clique 2× sur le même bouton** : queue à 4 slots accepte sans erreur les 4 premières mises en file. Au-delà : 503 + toast « Calibration en cours, réessayer dans 1 seconde ».
 - **WebSocket déconnecté** : éléments dépendants des données capteur taggés `.is-stale` (transition 300 ms). Reset automatique à la reconnexion.
 - **Reboot inattendu** : à la première réception WS après un reboot dont `reset_reason` ∈ {`WATCHDOG`, `BROWNOUT`, `PANIC`, `EXTERNAL`, `UNKNOWN`}, un toast d'alerte est affiché une seule fois par session.
 - **Limite journalière atteinte** : message « Limite atteinte — dosage suspendu jusqu'à minuit », barre en rouge.
 - **Pendant la calibration** : le bouton « Calibrer le point » de l'étape concernée affiche un spinner. Les autres actions UI restent disponibles.
-- **Injection pH en cours (feature-034)** : le clic sur « Calibrer » (`#ph_cal_trigger_btn`) est **bloqué** si une injection pH est active — condition `(ph_inject_remaining_s > 0) || (ph_dosing === true)`, toast « Calibration impossible pendant une injection pH ». Ce garde existait déjà côté ORP ; il est désormais ajouté côté pH (symétrie de sécurité). Depuis la **v2.21.1**, la **désactivation proactive** du bouton (`_updateInjectButtons`) applique la même condition (elle n'incluait pas `ph_dosing` avant — le clic était bloqué mais le bouton restait cliquable pendant une séance auto).
+- **Injection pH en cours (feature-034)** : le clic sur le point d'entrée (`#ph_cal_trigger_btn`) est **bloqué** si une injection pH est active — condition `(ph_inject_remaining_s > 0) || (ph_dosing === true)`, toast « Calibration impossible pendant une injection pH ». Ce garde existait déjà côté ORP ; il est désormais ajouté côté pH (symétrie de sécurité). Depuis la **v2.21.1**, la **désactivation proactive** du bouton (`_updateInjectButtons`) applique la même condition (elle n'incluait pas `ph_dosing` avant — le clic était bloqué mais le bouton restait cliquable pendant une séance auto).
+- **Quitter le mode réglage par le menu, sans cliquer un lien de retour (feature-156, v2.72.0)** : défaut trouvé en test — la page revenait **amputée** (débit d'injection, régulation, historique restaient masqués). Corrigé par `_exitAllMaintenanceModes()`, appelée depuis `showView()` à chaque changement de vue. Voir [ADR-0103](../adr/0103-gestes-d-entretien-quittent-la-vue-courante.md#leçon--généraliser-un-mécanisme-en-oubliant-ce-quune-version-spécifique-faisait-en-plus).
+- **Quitter par le menu pendant une calibration en vol (feature-156, v2.72.0)** : même défaut, une couche plus bas — le minuteur de calibration (`_calPollTimer`) continuait de tourner après la sortie. `_exitAllMaintenanceModes()` annule désormais aussi l'attente client (`_calEndAwait()`) dans ce cas.
+- **Correction manuelle devenue caduque après un étalonnage (feature-156, v2.72.0)** : bannière persistante sur la carte Correction (voir [section dédiée](#correction-devenue-caduque-après-un-étalonnage-ph_tune_stale_banner-feature-156-v2720)), avec deux choix explicites. Survit au rechargement et au redémarrage.
 
 ## Interaction MQTT
 
@@ -766,22 +842,24 @@ Encart `#ph_inject_raw_guard_warning` (titre `#ph_inject_raw_guard_title`, texte
 
 ## Fichiers
 
-- [`data/index.html`](../../data/index.html) — structure HTML (carte Régulation + carte Calibration 2 sous-blocs)
-- [`data/app.js`](../../data/app.js) — logique mode / sauvegarde / injection manuelle / calibration EZO (POST + polling)
-- [`data/app.css`](../../data/app.css) — classe `.cal-point-block` introduite pour les sous-blocs parallèles
+- [`data/index.html`](../../data/index.html) — structure HTML (carte Régulation + mode réglage : carte Calibration 2 sous-blocs + carte Correction, feature-156)
+- [`data/app.js`](../../data/app.js) — logique mode / sauvegarde / injection manuelle / calibration EZO (POST + polling) ; `MAINTENANCE_PAGES`, `enterMaintenance()`/`exitMaintenance()` (feature-156)
+- [`data/app.css`](../../data/app.css) — classe `.cal-point-block` introduite pour les sous-blocs parallèles ; `.is-flow-maintenance`/`.flow-maintenance` (feature-156)
 - [`src/pump_controller.h`](../../src/pump_controller.h), [`src/pump_controller.cpp`](../../src/pump_controller.cpp) — `canDose(0)` 10 garde-fous + stabilisation par pompe
-- [`src/sensors.h`](../../src/sensors.h), [`src/sensors.cpp`](../../src/sensors.cpp) — pilotage Atlas EZO pH + queue commandes
+- [`src/sensors.h`](../../src/sensors.h), [`src/sensors.cpp`](../../src/sensors.cpp) — pilotage Atlas EZO pH + queue commandes ; `markPhCalibrationStamped()` appelée aux trois points d'estampillage (feature-156)
 - [`src/atlas_ezo.h`](../../src/atlas_ezo.h), [`src/atlas_ezo.cpp`](../../src/atlas_ezo.cpp) — mini-classe pilote EZO
+- [`src/ph_offset.h`](../../src/ph_offset.h) — logique pure `isPhOffsetStale()` / `nextJustnessSeq()` (feature-156)
+- [`src/config.h`](../../src/config.h), [`src/config.cpp`](../../src/config.cpp) — champs `phOffset*`/`phCal*`, écrivains uniques `setPhOffsetStamped()` / `markPhCalibrationStamped()` (feature-156)
 - [`src/web_routes_calibration.cpp`](../../src/web_routes_calibration.cpp) — endpoints `/calibrate_ph`, `/calibrate_clear`
 - [`src/web_routes_control.cpp`](../../src/web_routes_control.cpp) — endpoints `/ph/inject/*` (coquille des gardes : collecte + 409 JSON, feature-006)
 - [`src/dosing_logic.h`](../../src/dosing_logic.h), [`src/dosing_logic.cpp`](../../src/dosing_logic.cpp) — `evaluateManualInject()` : gardes d'injection manuelle pures (feature-006)
-- [`src/ws_manager.cpp`](../../src/ws_manager.cpp) — diffusion `ph` (= valeur officielle) + `phRaw`/`phMedian`/`phFiltered`/`phRejectedCount` (feature-025 ; `phFilterReady`/`phFilterUnstable`/`phFilterAlarm` retirés en v2.68.0, feature-152)
+- [`src/ws_manager.cpp`](../../src/ws_manager.cpp) — diffusion `ph` (= valeur officielle) + `phRaw`/`phMedian`/`phFiltered`/`phRejectedCount` (feature-025 ; `phFilterReady`/`phFilterUnstable`/`phFilterAlarm` retirés en v2.68.0, feature-152) + `ph_offset_epoch`/`ph_cal_epoch`/`ph_offset_stale` (feature-156)
 - [`src/sensor_filter.h`](../../src/sensor_filter.h), [`src/sensor_filter.cpp`](../../src/sensor_filter.cpp) — chaîne de mesure à 5 étages, médiane 9 + lissage exponentiel (feature-152, v2.68.0 ; ex-feature-025)
 
 ## Documentation liée
 
 - [docs/subsystems/pump-controller.md](../subsystems/pump-controller.md) — règles de régulation, garde-fous `canDose`, anti-rafale, pause mélange.
-- [docs/subsystems/sensors.md](../subsystems/sensors.md) — lecture EZO pH, queue, cache cal_points, chaîne de filtrage.
+- [docs/subsystems/sensors.md](../subsystems/sensors.md) — lecture EZO pH, queue, cache cal_points, chaîne de filtrage, horodatage de justesse (feature-156).
 - [ADR-0002](../adr/0002-mode-programmee-volume-quotidien.md) — mode `scheduled` aveugle au capteur.
 - [ADR-0004](../adr/0004-mode-regulation-enum-3-valeurs.md) — enum à 3 valeurs et booléen miroir `ph_enabled`.
 - [ADR-0008](../adr/0008-persistance-cumuls-journaliers-nvs.md) — persistance NVS du cumul journalier.
@@ -789,3 +867,6 @@ Encart `#ph_inject_raw_guard_warning` (titre `#ph_inject_raw_guard_title`, texte
 - [ADR-0016](../adr/0016-regulation-p-temporisee-vs-pid.md) — régulation P temporisée sur mesure filtrée (feature-025).
 - [ADR-0021](../adr/0021-repartition-scheduled.md) — répartition scheduled par fenêtres de 15 min (feature-011, v2.8.0).
 - [ADR-0039](../adr/0039-offset-ph-applique-en-sortie-des-accesseurs.md) — offset logiciel pH appliqué en sortie des accesseurs (feature-067, v2.20.0).
+- [ADR-0101](../adr/0101-la-correction-nait-d-une-mesure-jamais-d-un-ecart.md) — la correction naît d'une mesure, jamais d'un écart (feature-155, v2.71.0).
+- [ADR-0102](../adr/0102-ordre-des-gestes-de-justesse-par-compteur.md) — l'ordre des gestes de justesse se décide par compteur, jamais par l'horloge (feature-156, v2.72.0).
+- [ADR-0103](../adr/0103-gestes-d-entretien-quittent-la-vue-courante.md) — les gestes d'entretien quittent la vue courante (feature-156, v2.72.0).

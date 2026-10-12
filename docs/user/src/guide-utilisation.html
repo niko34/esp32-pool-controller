@@ -558,8 +558,9 @@ N&nbsp;j&nbsp;», ou «&nbsp;Non calibré&nbsp;»), et l'historique complet
 
 <p><strong>Ce que vous pouvez faire</strong> — si la sonde mesure
 légèrement à côté d'un thermomètre de confiance, le bouton
-<strong>«&nbsp;Calibrer la sonde&nbsp;»</strong> ouvre un petit assistant
-en trois étapes&nbsp;: plonger la sonde dans un liquide dont vous
+<strong>«&nbsp;Calibrer la sonde&nbsp;»</strong> ouvre, comme sur les pages
+pH et ORP, un écran dédié (lien de retour en haut et en bas) avec un petit
+assistant en trois étapes&nbsp;: plonger la sonde dans un liquide dont vous
 connaissez la température, attendre la stabilisation, saisir la valeur de
 référence. L'appareil retient l'écart et corrige toutes les mesures
 suivantes. C'est la calibration la plus simple de l'appareil — pas de
@@ -713,33 +714,49 @@ régulation&nbsp;:</p>
   d'observer le nouveau produit.</p>
 </div>
 
-<h4>Calibrer la sonde pH</h4>
+<h4>Calibration et correction de la mesure pH</h4>
 
 <figure>
-  <img class="capture" src="../../../screenshots/07_pH_Calibration.jpg" alt="Écran de calibration pH">
-  <figcaption class="capture-legende">La calibration pH guidée&nbsp;: deux points, avec minuterie de stabilisation.</figcaption>
+  <img class="capture" src="../../../screenshots/07_pH_Calibration.jpg" alt="Écran de calibration et de correction pH">
+  <figcaption class="capture-legende">Le mode réglage pH&nbsp;: calibration guidée puis, juste en dessous, correction manuelle de la mesure.</figcaption>
 </figure>
 
-<p>La sonde pH se calibre avec <strong>deux solutions étalon</strong>
-(pH&nbsp;7,00 puis pH&nbsp;4,00). Le bouton «&nbsp;Calibrer la
-sonde&nbsp;» — toujours accessible, quel que soit le mode — ouvre un écran
-guidé&nbsp;: rincer la sonde à l'eau distillée, la plonger dans la première
-solution, attendre la stabilisation (une minuterie de 60&nbsp;secondes vous
-aide, et la valeur lue s'affiche en direct), calibrer, puis recommencer avec
-la seconde solution. Tant que la calibration n'est pas complète (2&nbsp;points),
-la régulation automatique du pH reste volontairement inactive. À refaire en
-début de saison, ou quand l'indicateur de santé de la sonde le suggère.</p>
+<p>Le bouton «&nbsp;<strong>Calibration et correction de la mesure</strong>&nbsp;»
+— toujours accessible, quel que soit le mode — ouvre un écran dédié qui
+rassemble les <strong>deux seuls gestes qui touchent à la justesse de la
+mesure</strong> : l'étalonnage de la sonde et la correction manuelle. Le reste
+de la page pH (débit d'injection, régulation, historique) est masqué le temps
+de ce réglage ; un lien «&nbsp;← Retour à la page pH&nbsp;», placé en haut
+<strong>et</strong> en bas de l'écran, vous ramène à la page normale, exactement
+où vous l'aviez laissée.</p>
 
-<h4>Corriger la mesure pH</h4>
+<h5>Calibrer la sonde</h5>
+
+<p>La sonde pH se calibre avec <strong>deux solutions étalon</strong>
+(pH&nbsp;7,00 puis pH&nbsp;4,00)&nbsp;: rincer la sonde à l'eau distillée, la
+plonger dans la première solution, attendre la stabilisation (une minuterie de
+60&nbsp;secondes vous aide, et la valeur lue s'affiche en direct), calibrer,
+puis recommencer avec la seconde solution. Tant que la calibration n'est pas
+complète (2&nbsp;points), la régulation automatique du pH reste volontairement
+inactive. À refaire en début de saison, ou quand l'indicateur de santé de la
+sonde le suggère.</p>
+
+<p>Une fois l'étalonnage terminé, l'appareil rappelle qu'une bandelette
+(±&nbsp;0,5&nbsp;pH) ne suffit pas à remettre en cause un étalonnage bien fait
+(±&nbsp;0,01-0,02) : seul un test fiable (gouttes ou testeur électronique),
+confirmé sur deux mesures à des moments différents, justifie de corriger.</p>
+
+<h5>Corriger la mesure</h5>
 
 <p>Contrôlez de temps en temps votre eau avec une <strong>bandelette</strong>,
 un PoolLab ou un pH-mètre. Si la valeur affichée par l'appareil ne correspond
 pas à votre test, la carte «&nbsp;<strong>Correction manuelle de la
-mesure</strong>&nbsp;» vous permet de la corriger&nbsp;: avec les boutons
-<strong>−</strong> et <strong>+</strong>, <strong>amenez le nombre affiché
-jusqu'à la valeur lue sur votre test</strong>, puis appuyez sur
-«&nbsp;<strong>Corriger</strong>&nbsp;». L'appareil calcule lui-même l'écart et
-l'applique — vous n'avez rien à calculer, rien à saisir au clavier.</p>
+mesure</strong>&nbsp;», juste en dessous de la calibration, vous permet de la
+corriger&nbsp;: avec les boutons <strong>−</strong> et <strong>+</strong>,
+<strong>amenez le nombre affiché jusqu'à la valeur lue sur votre test</strong>,
+puis appuyez sur «&nbsp;<strong>Corriger</strong>&nbsp;». L'appareil calcule
+lui-même l'écart et l'applique — vous n'avez rien à calculer, rien à saisir au
+clavier.</p>
 
 <p>Avant de valider, trois nombres sont affichés côte à côte&nbsp;: ce que
 l'appareil mesure actuellement, la valeur que vous avez amenée, et la valeur
@@ -753,12 +770,24 @@ défaillante — c'est l'objet même de cette correction.</p>
 <p>Quatre cas empêchent la correction, et l'appareil vous dit lequel&nbsp;:
 la mesure n'est pas assez récente, la <strong>filtration doit tourner depuis
 10&nbsp;minutes</strong> (un décompte s'affiche le temps d'attendre), la sonde
-n'a pas encore ses deux points d'étalonnage, ou l'écart demandé est trop
-important (au-delà, refaites votre test ou vérifiez l'étalonnage de la sonde).
-Cette correction est <strong>différente de la calibration</strong>
-ci-dessus&nbsp;: la calibration règle la sonde elle-même, la correction
-compense un écart de mesure propre à votre installation. Les deux vivent sur
-le même écran, mais ce sont deux gestes distincts.</p>
+n'a pas encore ses deux points d'étalonnage (dans ce cas, le geste à faire est
+juste au-dessus), ou l'écart demandé est trop important (au-delà, refaites
+votre test ou vérifiez l'étalonnage de la sonde). Cette correction est
+<strong>différente de la calibration</strong> ci-dessus&nbsp;: la calibration
+règle la sonde elle-même, la correction compense un écart de mesure propre à
+votre installation. Les deux vivent sur le même écran, mais ce sont deux
+gestes distincts.</p>
+
+<div class="box-alerte">
+  <span class="box-title">Correction à revoir après un étalonnage</span>
+  <p>Étalonner la sonde change son zéro et sa pente&nbsp;: une correction
+  posée <strong>avant</strong> ne compense plus un réglage qui a changé.
+  Si une correction était en vigueur, l'appareil l'affiche désormais
+  <strong>après</strong> chaque étalonnage avec deux choix clairs&nbsp;:
+  l'annuler, ou la garder. Rien n'est effacé automatiquement — c'est à vous
+  de décider, parce que cette valeur engage le dosage. Tant que vous n'avez
+  pas choisi, la correction continue de s'appliquer.</p>
+</div>
 
 <h3>Le chlore (ORP)</h3>
 
@@ -782,10 +811,13 @@ cible dépend de votre eau.</p>
 pH&nbsp;: <strong>Automatique</strong> (l'appareil tient votre cible en
 millivolts), <strong>Programmée</strong> (volume quotidien de chlore réparti
 sur la filtration, sans regarder la mesure) et <strong>Manuelle</strong>
-(injections à la demande). La calibration de la sonde se fait en
-<strong>un seul point</strong>, avec une solution étalon dont vous saisissez
-la valeur (les kits courants&nbsp;: 225 ou 470&nbsp;mV) — même écran guidé
-que le pH, minuterie comprise.</p>
+(injections à la demande). Le bouton «&nbsp;<strong>Calibrer la
+sonde</strong>&nbsp;» ouvre, comme sur la page pH, un écran dédié qui masque
+le reste de la page le temps du réglage (lien de retour en haut et en bas) —
+mais ici une seule carte, car l'ORP n'a pas de correction manuelle de mesure.
+La calibration se fait en <strong>un seul point</strong>, avec une solution
+étalon dont vous saisissez la valeur (les kits courants&nbsp;: 225 ou
+470&nbsp;mV) — même écran guidé que le pH, minuterie comprise.</p>
 
 <h4>La carte «&nbsp;Débit d'injection ORP&nbsp;»</h4>
 

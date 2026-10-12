@@ -660,6 +660,19 @@
 
   function showView(routeObj) {
     const perf = debugStart(`showView ${routeObj.view}`);
+    // 🔴 CORRIGÉ APRÈS TESTS (feature-156) : toute page encore en mode réglage est
+    // RAMENÉE À SON ÉTAT NORMAL avant de changer de vue.
+    // Sans ça : entrer en mode sur pH, partir par le MENU (sans cliquer le lien de
+    // retour), revenir sur pH ⇒ la page restait AMPUTÉE — `is-flow-maintenance`
+    // n'était jamais retirée, donc débit/régulation/historique restaient masqués.
+    // Et deux pages pouvaient rester en mode SIMULTANÉMENT, chaque vue portant sa
+    // classe indépendamment, aucune n'étant nettoyée.
+    // ⚠️ On appelle exitMaintenance(page, false) — silencieux, SANS restauration du
+    // défilement ni du focus — et NON requestExitMaintenance() :
+    // ce dernier ouvre une confirmation si une calibration est en vol, et une
+    // modale qui s'ouvre pendant un changement de route piégerait l'utilisateur
+    // dans une page qu'il est déjà en train de quitter.
+    _exitAllMaintenanceModes();
     $$(".view").forEach((v) => v.classList.remove("is-active"));
 
     if (routeObj.view === "/settings") {
@@ -1956,8 +1969,21 @@
         if (el) el.style.display = enabled ? "" : "none";
       });
       if (!enabled) {
-        const calCard = $("#temperature-card-calibration");
-        if (calCard) calCard.style.display = "none";
+        // ⚠️ CORRIGÉ (feature-156) : cette branche posait
+        // `calCard.style.display = "none"`. Deux défauts.
+        // (1) Un style inline ÉCRASE la règle CSS du mode réglage — le piège même
+        //     que ce lot a éliminé partout ailleurs.
+        // (2) Il était COLLANT : aucune branche ne le retirait à la réactivation
+        //     de la sonde, donc la carte d'étalonnage n'aurait PLUS JAMAIS pu
+        //     s'afficher, mode réglage compris.
+        // La visibilité de cette carte appartient désormais au mode seul. Si la
+        // sonde est désactivée alors qu'on est dedans, on en SORT proprement —
+        // rester dans un écran d'étalonnage pour une sonde qu'on vient d'éteindre
+        // n'a pas de sens.
+        const tempView = $("#view-temperature");
+        if (tempView && tempView.classList.contains("is-flow-maintenance")) {
+          exitMaintenance("temperature", false);
+        }
       }
       return;
     }
@@ -2060,6 +2086,59 @@
     if (isFinite(cpm) && cpm >= 1) _phTuneCalPointsMin = cpm;
     const mfm = _phNum(cfg?.ph_tune_min_filtration_ms);
     if (isFinite(mfm) && mfm >= 0) _phTuneMinFiltrationMs = mfm;
+  }
+
+  // feature-156 (B11/A2) : bannière PERSISTANTE « Correction À REVOIR après
+  // l'étalonnage » — pilotée par le champ firmware `ph_offset_stale` (servi par
+  // /get-config ET la trame WS "config", donc lu ici depuis `cfg`, jamais
+  // recalculé côté client, ADR-0100). Verdict : correction antérieure au dernier
+  // étalonnage ET non nulle — survit à un rechargement ET à un redémarrage,
+  // contrairement au conseil transitoire de la carte Calibration
+  // (#ph_cal_final_advice).
+  // ⚠️ DEUX CORRECTIONS DE CE COMMENTAIRE (revue de code) :
+  //  1. il citait « correction DÉSACTIVÉE par l'étalonnage », le libellé que le
+  //     gate pool-chemistry a BANNI : la correction n'est pas désactivée, elle
+  //     RESTE APPLIQUÉE et continue d'orienter le dosage tant que l'utilisateur
+  //     n'a pas tranché. Ne pas le ressusciter, même en commentaire ;
+  //  2. il affirmait que `ph_offset_stale` « n'existe pas encore côté firmware » —
+  //     c'était vrai pendant quelques heures, ça ne l'est plus : le champ est
+  //     servi des deux côtés. Un firmware ANTÉRIEUR rendra `undefined`, et la
+  //     bannière restera masquée : compatible en avant, rien à changer.
+  function renderPhOffsetStaleBanner(cfg) {
+    const banner = $("#ph_tune_stale_banner");
+    if (!banner) return;
+    const offset = (typeof cfg?.ph_offset === "number") ? cfg.ph_offset : 0;
+    const stale = (cfg?.ph_offset_stale === true) && (offset !== 0);
+    if (!stale) { banner.hidden = true; return; }
+    const valueEl = $("#ph_tune_stale_value");
+    if (valueEl) valueEl.textContent = (offset > 0 ? "+" : "") + offset.toFixed(2);
+    banner.hidden = false;
+  }
+
+  function bindPhOffsetStaleBanner() {
+    $("#ph_tune_stale_cancel_btn")?.addEventListener("click", async () => {
+      const ok = await sendConfig({ ph_offset: 0 });
+      if (ok) { showToast("Correction annulée", "success"); loadConfig(); }
+      else showToast("Échec de l'annulation — réessayez.", "error");
+    });
+    $("#ph_tune_stale_keep_btn")?.addEventListener("click", async () => {
+      const current = (typeof window._config?.ph_offset === "number") ? window._config.ph_offset : 0;
+      // ⚠️ RE-ENVOYER LA VALEUR COURANTE N'EST PAS UNE REDONDANCE, NE PAS
+      // « SIMPLIFIER » EN UN SIMPLE MASQUAGE CLIENT : ce POST re-estampille
+      // côté firmware l'instant de pose de la correction et ÉTEINT DURABLEMENT
+      // le verdict « caduque » (cf. feature-156, A1/A2). Sans lui, « Garder »
+      // ne ferait que fermer la bannière dans cet onglet — elle réapparaîtrait
+      // au prochain rechargement, ou sur un autre appareil connecté.
+      // ⛔ Ne PAS passer par /tune-ph-offset : il exige 10 min de filtration et
+      // une sonde déjà étalonnée — absurde pour RETIRER une correction, et
+      // cette route n'a jamais à s'appliquer ici puisque la valeur ne change pas.
+      const ok = await sendConfig({ ph_offset: current });
+      // Condition mineure du gate pool-chemistry : « conservée » seul laisserait
+      // croire que le sujet est clos. La correction a été posée AVANT l'étalonnage
+      // et n'a pas été revérifiée — le toast le rappelle au moment du choix.
+      if (ok) { showToast("Correction conservée — vérifiez-la par un test fiable", "success"); loadConfig(); }
+      else showToast("Échec — réessayez.", "error");
+    });
   }
 
   // Excursion du pas-à-pas autour de la lecture appareil (ergonomie — PAS un
@@ -2266,8 +2345,6 @@
     // C'est le même défaut que les trois autres de ce lot : confondre la valeur
     // AFFICHÉE (arrondie) avec la valeur qui SERT AU CALCUL (brute).
     if (submitBtn && !_phTuneSubmitBusy) submitBtn.disabled = !!blockedText || !_phTuneTouched;
-    const gotoCalBtn = $("#ph_tune_goto_cal_btn");
-    if (gotoCalBtn) gotoCalBtn.hidden = !(calPoints != null && calPoints < _phTuneCalPointsMin);
   }
 
   // Un appui = un acte (#2 du gate, hérité de feature-067) : pas d'auto-répétition.
@@ -2355,10 +2432,9 @@
       }
     });
 
-    $("#ph_tune_goto_cal_btn")?.addEventListener("click", () => {
-      $("#ph_cal_trigger_btn")?.click();
-      $("#ph-card-calibration")?.scrollIntoView({ behavior: "smooth", block: "start" });
-    });
+    // feature-156 (B10) : #ph_tune_goto_cal_btn est SUPPRIMÉ — la carte visée
+    // (#ph-card-calibration) est désormais juste au-dessus dans le même mode
+    // réglage, plus besoin d'un bouton pour y faire défiler.
 
     bindPhTuneStepper();
     renderPhTuneCard();
@@ -3060,6 +3136,8 @@
     // feature-155 : constantes de l'accord pH sur un test manuel (calPoints
     // minimal, délai minimal de filtration) — même convention que ci-dessus.
     _applyPhTuneConfig(cfg);
+    // feature-156 (B11/A2) : bannière persistante « correction caduque ».
+    renderPhOffsetStaleBanner(cfg);
     buildPhTargetSegments();
     renderPhTargetHint();
     // feature-154 : seuils de SANTÉ pH (pente/zéro) — distincts des bornes de
@@ -7860,37 +7938,6 @@
     if (header) header.textContent = headerText;
   }
 
-  // feature-035 : show/hide de la carte de calibration température (calqué sur showOrp/hideOrpCalibrationCard)
-  function showTempCalibrationCard() {
-    const enable = $("#temperature-card-enable");
-    const hist = $("#temperature-card-history");
-    const cal = $("#temperature-card-calibration");
-    const calBtn = $("#temp_cal_trigger_btn");
-    if (enable) enable.style.display = "none";
-    if (hist) hist.style.display = "none";
-    if (cal) cal.style.display = "";
-    if (calBtn) calBtn.disabled = true;
-    tempCalibrationStep = 0;
-    const refInput = $("#temp_reference_value");
-    if (refInput) refInput.value = "";
-    updateTempCalibrationSteps();
-  }
-  function hideTempCalibrationCard() {
-    const enable = $("#temperature-card-enable");
-    const hist = $("#temperature-card-history");
-    const cal = $("#temperature-card-calibration");
-    const calBtn = $("#temp_cal_trigger_btn");
-    if (enable) enable.style.display = "";
-    if (hist) hist.style.display = "";
-    if (cal) cal.style.display = "none";
-    if (calBtn) calBtn.disabled = false;
-    tempCalibrationStep = 0;
-    const refInput = $("#temp_reference_value");
-    if (refInput) refInput.value = "";
-    updateTempCalibrationSteps();
-    calBtn?.focus();
-  }
-
   function updateTempCalibrationSteps() {
     const steps = [$("#temp_step1"), $("#temp_step2"), $("#temp_step3")];
     const startBtn = $("#temp_cal_start_btn");
@@ -7929,13 +7976,13 @@
     const cancelBtn = $("#temp_cal_cancel_btn");
     const refInput = $("#temp_reference_value");
 
-    // feature-035 : déclencheur / fermeture de la carte de calibration
+    // feature-156 : déclencheur / fermeture du mode réglage (ex-carte de
+    // calibration seule) — cf. enterMaintenance/requestExitMaintenance.
     $("#temp_cal_trigger_btn")?.addEventListener("click", () => {
-      showTempCalibrationCard();
-      $("#temp_step1")?.scrollIntoView?.({ behavior: "smooth", block: "nearest" });
+      enterMaintenance("temperature");
     });
     $("#temp_cal_close_btn")?.addEventListener("click", () => {
-      hideTempCalibrationCard();
+      requestExitMaintenance("temperature");
     });
 
     cancelBtn?.addEventListener("click", async () => {
@@ -8038,7 +8085,7 @@
           updateTempCalibrationSteps();
           // feature-035 : chip « Calibré » + retour à l'état nominal
           updateTempCalChip();
-          hideTempCalibrationCard();
+          exitMaintenance("temperature");
 
           // Recharger les données après un court délai pour se resynchroniser avec le backend
           setTimeout(async () => {
@@ -8301,6 +8348,15 @@
         li.classList.add("is-upcoming");
       }
     });
+    // feature-156 : conseil post-étalonnage — TRANSITOIRE, accroché à l'étape
+    // finale du pas-à-pas pH (idx 4). Seul point de décision de sa visibilité :
+    // jamais persisté, disparaît dès qu'on quitte cette étape (reset, sortie du
+    // mode réglage). ORP/Température n'ont pas ce conseil (pas de carte de
+    // correction derrière).
+    if (product === "ph") {
+      const advice = $("#ph_cal_final_advice");
+      if (advice) advice.hidden = (idx !== 4);
+    }
   }
 
   function resetCalStepper(product) {
@@ -8335,10 +8391,6 @@
     const btn = active ? active.querySelector("button, input") : null;
     if (btn) { try { btn.focus(); } catch (_) {} }
   }
-  function focusFirstStep(product) {
-    // léger délai pour laisser la carte s'afficher avant de déplacer le focus
-    setTimeout(() => focusActiveStep(product), 60);
-  }
 
   function bindStepperControls(product) {
     $$(`#${product}-cal-stepper .cal-step-advance`).forEach(btn => {
@@ -8346,67 +8398,173 @@
     });
   }
 
-  function showPhCalibrationCard() {
-    const reg = $("#ph-card-regulation");
-    const hist = $("#ph-card-history");
-    // feature-092 : la carte « Débit d'injection » s'efface pendant la
-    // calibration comme les deux autres. Elle vivait AVANT dans la carte
-    // Régulation (bloc rattrapage) : la masquer ici PRÉSERVE ce comportement au
-    // lieu de le changer. `style.display` prime sur l'attribut `hidden`, donc la
-    // remise à "" rend la main à updatePhDosingCard/updateOrpDosingCard.
-    const dose = $("#ph-card-dosing");
-    const cal = $("#ph-card-calibration");
-    const calBtn = $("#ph_cal_trigger_btn");
-    if (reg) reg.style.display = "none";
-    if (hist) hist.style.display = "none";
-    if (dose) dose.style.display = "none";
-    if (cal) cal.style.display = "";
-    if (calBtn) calBtn.disabled = true;
+  // ==========================================================================
+  // feature-156 : mode réglage (calibration + correction), mécanisme GÉNÉRIQUE
+  // ==========================================================================
+  // Remplace show/hide{Ph,Orp,Temp}CalibrationCard (style inline qui écrasait
+  // silencieusement la règle CSS `.is-flow-maintenance` — SUPPRIMÉS, pas
+  // doublés). Une seule paire de fonctions, paramétrée par page : pas trois
+  // implémentations jumelles. La règle CSS générique (app.css) masque déjà
+  // tout enfant direct de la vue non marqué `.flow-maintenance` dès que la
+  // classe `is-flow-maintenance` est posée sur la vue — ici on ne fait que (a)
+  // sortir les cartes/liens `.flow-maintenance` de leur `hidden` par défaut,
+  // (b) gérer scroll/focus/sous-titre/annonce, (c) les hooks par page.
+  const MAINTENANCE_PAGES = {
+    ph: {
+      viewId: "view-ph", triggerBtnId: "ph_cal_trigger_btn",
+      backTopId: "ph-maintenance-back-top", backBottomId: "ph-maintenance-back-bottom",
+      announceId: "ph-maintenance-announce", label: "pH",
+      cardIds: ["ph-card-calibration", "ph-card-tune"],
+      subMaintenance: "Calibration de la sonde et correction de la mesure",
+      onEnter: () => { resetCalStepper("ph"); renderCalibrationStatus(); },
+      onExit: () => { phCalibrationActive = false; updatePhModeControls(); },
+    },
+    orp: {
+      viewId: "view-orp", triggerBtnId: "orp_cal_trigger_btn",
+      backTopId: "orp-maintenance-back-top", backBottomId: "orp-maintenance-back-bottom",
+      announceId: "orp-maintenance-announce", label: "ORP",
+      cardIds: ["orp-card-calibration"],
+      subMaintenance: null,
+      onEnter: () => { resetCalStepper("orp"); renderCalibrationStatus(); },
+      onExit: () => { orpCalibrationActive = false; updateOrpModeControls(); },
+    },
+    temperature: {
+      viewId: "view-temperature", triggerBtnId: "temp_cal_trigger_btn",
+      backTopId: "temperature-maintenance-back-top", backBottomId: "temperature-maintenance-back-bottom",
+      announceId: "temperature-maintenance-announce", label: "Température",
+      cardIds: ["temperature-card-calibration"],
+      subMaintenance: null,
+      onEnter: () => {
+        tempCalibrationStep = 0;
+        const r = $("#temp_reference_value"); if (r) r.value = "";
+        updateTempCalibrationSteps();
+      },
+      onExit: () => {
+        tempCalibrationStep = 0;
+        const r = $("#temp_reference_value"); if (r) r.value = "";
+        updateTempCalibrationSteps();
+      },
+    },
+  };
+  const _maintenanceScrollY = {};   // page -> window.scrollY mémorisé à l'entrée (B7)
+  const _maintenanceSubSaved = {};  // page -> texte normal du sous-titre, restauré au retour
+
+  function _maintenanceSubEl(page) {
+    const view = $("#" + MAINTENANCE_PAGES[page].viewId);
+    return view ? view.querySelector(".settingsHead__sub") : null;
   }
-  function hidePhCalibrationCard() {
-    _calEndAwait(); // annuler une attente de calibration en cours
-    const reg = $("#ph-card-regulation");
-    const hist = $("#ph-card-history");
-    const dose = $("#ph-card-dosing");
-    const cal = $("#ph-card-calibration");
-    const calBtn = $("#ph_cal_trigger_btn");
-    if (reg) reg.style.display = "";
-    if (hist) hist.style.display = "";
-    if (dose) dose.style.display = "";
-    if (cal) cal.style.display = "none";
-    if (calBtn) calBtn.disabled = false;
-    updatePhModeControls();
+
+  function enterMaintenance(page) {
+    const cfg = MAINTENANCE_PAGES[page];
+    if (!cfg) return;
+    const view = $("#" + cfg.viewId);
+    if (!view || view.classList.contains("is-flow-maintenance")) return;
+
+    _maintenanceScrollY[page] = window.scrollY;
+    cfg.cardIds.forEach(id => { const el = $("#" + id); if (el) el.hidden = false; });
+    const backTop = $("#" + cfg.backTopId);
+    const backBottom = $("#" + cfg.backBottomId);
+    if (backTop) backTop.hidden = false;
+    if (backBottom) backBottom.hidden = false;
+    if (cfg.subMaintenance) {
+      const sub = _maintenanceSubEl(page);
+      if (sub) { _maintenanceSubSaved[page] = sub.textContent; sub.textContent = cfg.subMaintenance; }
+    }
+    cfg.onEnter?.();
+    view.classList.add("is-flow-maintenance");
+
+    const announce = $("#" + cfg.announceId);
+    if (announce) announce.textContent = `Mode réglage — ${cfg.label}`;
+
+    window.scrollTo(0, 0);
+    backTop?.focus();
   }
-  function showOrpCalibrationCard() {
-    const reg = $("#orp-card-regulation");
-    const hist = $("#orp-card-history");
-    // feature-092 : la carte « Débit d'injection » s'efface pendant la
-    // calibration comme les deux autres. Elle vivait AVANT dans la carte
-    // Régulation (bloc rattrapage) : la masquer ici PRÉSERVE ce comportement au
-    // lieu de le changer. `style.display` prime sur l'attribut `hidden`, donc la
-    // remise à "" rend la main à updatePhDosingCard/updateOrpDosingCard.
-    const dose = $("#orp-card-dosing");
-    const cal = $("#orp-card-calibration");
-    const calBtn = $("#orp_cal_trigger_btn");
-    if (reg) reg.style.display = "none";
-    if (hist) hist.style.display = "none";
-    if (dose) dose.style.display = "none";
-    if (cal) cal.style.display = "";
-    if (calBtn) calBtn.disabled = true;
+
+  // `restoreView` (défaut true) : replace le défilement et rend le focus au point
+  // d'entrée. On le passe à FALSE quand la sortie est provoquée par un CHANGEMENT
+  // DE VUE (cf. _exitAllMaintenanceModes) : on s'en va ailleurs, replacer le
+  // défilement de la page quittée se verrait comme un soubresaut, et lui rendre le
+  // focus le VOLERAIT à la page d'arrivée.
+  function exitMaintenance(page, restoreView = true) {
+    const cfg = MAINTENANCE_PAGES[page];
+    if (!cfg) return;
+    const view = $("#" + cfg.viewId);
+    if (!view) return;
+
+    view.classList.remove("is-flow-maintenance");
+    cfg.cardIds.forEach(id => { const el = $("#" + id); if (el) el.hidden = true; });
+    const backTop = $("#" + cfg.backTopId);
+    const backBottom = $("#" + cfg.backBottomId);
+    if (backTop) backTop.hidden = true;
+    if (backBottom) backBottom.hidden = true;
+    if (cfg.subMaintenance) {
+      const sub = _maintenanceSubEl(page);
+      if (sub && _maintenanceSubSaved[page] != null) { sub.textContent = _maintenanceSubSaved[page]; delete _maintenanceSubSaved[page]; }
+    }
+    cfg.onExit?.();
+
+    const triggerBtn = $("#" + cfg.triggerBtnId);
+    const y = _maintenanceScrollY[page] || 0;
+    // Les cartes redeviennent `hidden` → la page n'a pas encore retrouvé sa
+    // hauteur normale au moment de cet appel : restaurer le scroll APRÈS le
+    // prochain repaint (B7), sinon la position cible n'existe pas encore.
+    if (restoreView) {
+      requestAnimationFrame(() => window.scrollTo(0, y));
+      triggerBtn?.focus();
+    }
   }
-  function hideOrpCalibrationCard() {
-    _calEndAwait(); // annuler une attente de calibration en cours
-    const reg = $("#orp-card-regulation");
-    const hist = $("#orp-card-history");
-    const dose = $("#orp-card-dosing");
-    const cal = $("#orp-card-calibration");
-    const calBtn = $("#orp_cal_trigger_btn");
-    if (reg) reg.style.display = "";
-    if (hist) hist.style.display = "";
-    if (dose) dose.style.display = "";
-    if (cal) cal.style.display = "none";
-    if (calBtn) calBtn.disabled = false;
-    updateOrpModeControls();
+
+  // Ramène TOUTES les pages encore en mode réglage à leur état normal. Appelée à
+  // chaque changement de vue (cf. showView), car on peut quitter une page par le
+  // MENU sans passer par son lien de retour.
+  // Idempotente, et `restoreView=false` : on part ailleurs.
+  function _exitAllMaintenanceModes() {
+    let left = false;
+    Object.keys(MAINTENANCE_PAGES).forEach(page => {
+      const cfg = MAINTENANCE_PAGES[page];
+      const view = cfg && $("#" + cfg.viewId);
+      if (view && view.classList.contains("is-flow-maintenance")) { exitMaintenance(page, false); left = true; }
+    });
+    // 🔴 LE FRÈRE DU DÉFAUT DE NAVIGATION (trouvé en revue de code).
+    // `_calEndAwait()` n'était appelé que par requestExitMaintenance() — le lien
+    // de retour. Quitter par le MENU pendant une calibration en vol (exactement
+    // le scénario du premier défaut, une couche plus bas) laissait donc
+    // `_calPollTimer` TOURNER et `_calAwait` posé ; au retour, `onEnter →
+    // resetCalStepper()` s'exécutait pendant qu'une attente périmée possédait
+    // encore le bouton. L'ancien hidePhCalibrationCard() l'annulait — la
+    // généralisation avait perdu ce geste en chemin.
+    if (left) _calEndAwait();
+  }
+
+  // Sortie demandée (lien de retour ou bouton « Fermer ») — reste TOUJOURS
+  // actif pendant une calibration pH/ORP en vol (_calAwait), mais demande
+  // confirmation : la sonde est alors dans un état intermédiaire. Sortir
+  // n'annule QUE l'attente CLIENT (_calEndAwait()), jamais la commande déjà
+  // envoyée à l'EZO (impossible à annuler côté matériel). Retourne `true` si
+  // la sortie a eu lieu (permet aux appelants de n'agir qu'en cas de succès).
+  async function requestExitMaintenance(page) {
+    if (_calAwait && _calAwait.product === page) {
+      const leave = await confirmDialog({
+        title: "Calibration en cours",
+        message: "Une calibration est en cours — la quitter maintenant ?",
+        confirmLabel: "Quitter quand même",
+        cancelLabel: "Continuer",
+        danger: true,
+      });
+      if (!leave) return false;
+      _calEndAwait();
+    }
+    exitMaintenance(page);
+    return true;
+  }
+
+  function bindMaintenanceMode() {
+    Object.keys(MAINTENANCE_PAGES).forEach((page) => {
+      const cfg = MAINTENANCE_PAGES[page];
+      const back = () => { requestExitMaintenance(page); };
+      $("#" + cfg.backTopId)?.addEventListener("click", back);
+      $("#" + cfg.backBottomId)?.addEventListener("click", back);
+    });
   }
 
   // ---------- feature-034 : calibration ÉVÉNEMENTIELLE (remplace le polling bloquant) ----------
@@ -8472,8 +8630,14 @@
       const detail = a.product === "ph" ? " (" + pts + "/2 points)"
                    : (a.reference != null ? " (référence " + a.reference + " mV)" : "");
       showToast("Calibration " + a.stepLabel + " réussie" + detail, "success");
-      if (a.product === "ph") completeCalStep("ph", a.step === "mid" ? 1 : 3);
-      else completeCalStep("orp", 2);
+      if (a.product === "ph") {
+        completeCalStep("ph", a.step === "mid" ? 1 : 3);
+        // feature-156 (A2/B11) : un étalonnage réussi peut rendre la correction
+        // en vigueur CADUQUE côté firmware (ph_offset_stale) — recharger la
+        // config fait apparaître la bannière sans attendre un rechargement de
+        // page. Pas nécessaire côté ORP (pas de correction).
+        loadConfig();
+      } else completeCalStep("orp", 2);
       _calEndAwait();
       return;
     }
@@ -8558,18 +8722,13 @@
                         || (latestSensorData?.ph_dosing === true);
       if (phInjecting) { showToast("Calibration impossible pendant une injection pH", "error"); return; }
       phCalibrationActive = true;
-      showPhCalibrationCard();
-      resetCalStepper("ph");
-      renderCalibrationStatus();
-      focusFirstStep("ph");
+      enterMaintenance("ph"); // feature-156 : ouvre le mode réglage (calibration + correction)
     });
 
-    // Bouton "Fermer" → revient à la carte Régulation
+    // Bouton "Fermer" → quitte le mode réglage (feature-156)
     const closeBtn = $("#ph_cal_close_btn");
     closeBtn?.addEventListener("click", () => {
-      phCalibrationActive = false;
-      hidePhCalibrationCard();
-      $("#ph_cal_trigger_btn")?.focus();
+      requestExitMaintenance("ph");
     });
 
     // Boutons de calibration
@@ -8591,17 +8750,12 @@
                         || (latestSensorData?.orp_dosing === true);
       if (orpInjecting) { showToast("Calibration impossible pendant une injection ORP", "error"); return; }
       orpCalibrationActive = true;
-      showOrpCalibrationCard();
-      resetCalStepper("orp");
-      renderCalibrationStatus();
-      focusFirstStep("orp");
+      enterMaintenance("orp"); // feature-156 : ouvre le mode réglage (calibration seule, pas de correction ORP)
     });
 
     const closeBtn = $("#orp_cal_close_btn");
     closeBtn?.addEventListener("click", () => {
-      orpCalibrationActive = false;
-      hideOrpCalibrationCard();
-      $("#orp_cal_trigger_btn")?.focus();
+      requestExitMaintenance("orp");
     });
 
     $("#btn-cal-orp")?.addEventListener("click", () => {
@@ -11735,6 +11889,7 @@
     bindRegulationSave("ph",  "#ph_regulation_save_btn");
     bindRegulationSave("orp", "#orp_regulation_save_btn");
     bindPhTuneSubmit();  // feature-155 : carte « Correction manuelle de la mesure »
+    bindPhOffsetStaleBanner();  // feature-156 (B11) : bannière « correction caduque »
     bindPhTargetControl();  // v2.25.0 : contrôle segmenté de la consigne pH
     // v2.25.0 : rappel de la plage sous le contrôle.
     $("#ph_target")?.addEventListener("input", renderPhTargetHint);
@@ -12230,6 +12385,7 @@
     bindOrpCalChip();
     bindOrpCalibration();
     bindTempCalibration();
+    bindMaintenanceMode();  // feature-156 : liens de retour (haut/bas) des trois pages
     bindWifi();
     bindMqttManualSave();
     bindFiltrationManualSave();

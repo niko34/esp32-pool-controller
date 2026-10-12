@@ -62,4 +62,31 @@ inline bool isPhOffsetValid(float offset) {
   return (offset >= kPhOffsetMin) && (offset <= kPhOffsetMax);
 }
 
+// =============================================================================
+// feature-156 — HORODATAGE DE JUSTESSE (correction manuelle vs étalonnage)
+// =============================================================================
+// Un étalonnage EZO modifie le zéro ET la pente de la sonde : une correction
+// manuelle posée AVANT ce dernier étalonnage compensait un état de la sonde
+// qui n'existe plus — elle est CADUQUE. `seq` (pas `epoch`) fait foi pour cet
+// ordre : voir config.h (champs phOffset*/phCal*) pour la justification
+// complète (indépendance à l'horloge et au redémarrage).
+
+// True ssi une correction non nulle en vigueur est ANTÉRIEURE au dernier
+// étalonnage réussi — donc caduque. `offset` est la valeur APPLIQUÉE
+// (mqttCfg.phOffset), `offsetSeq`/`calSeq` les séquences des deux écrivains
+// uniques (config.h). Une correction nulle (0,00 = inerte) n'est jamais
+// caduque : il n'y a rien à annuler. Deux séquences ÉGALES (aucun des deux
+// événements ne s'est jamais produit après l'autre, y compris 0 == 0 au
+// premier démarrage) ne sont PAS une préséance de l'étalonnage : faux.
+inline bool isPhOffsetStale(float offset, uint32_t offsetSeq, uint32_t calSeq) {
+  return (offset != 0) && (offsetSeq < calSeq);
+}
+
+// Prochaine séquence « justesse », toujours strictement supérieure aux deux
+// séquences passées en argument — insensible à l'ordre des arguments
+// (monotone quel que soit celui des deux événements qui vient de se produire).
+inline uint32_t nextJustnessSeq(uint32_t a, uint32_t b) {
+  return (a > b ? a : b) + 1;
+}
+
 #endif // PH_OFFSET_H

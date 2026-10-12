@@ -9,6 +9,7 @@
 #include "heap_metrics.h"  // heapLargestFreeBlock8Bit — sans log ni alloc (bug-080)
 #include "config.h"
 #include "constants.h"
+#include "ph_offset.h"  // feature-156 : isPhOffsetStale() (logique pure)
 #include "sensors.h"
 #include "filtration.h"
 #include "measure_validity.h"
@@ -1429,11 +1430,17 @@ size_t WsManager::_buildConfigJson(char* buf, size_t cap) const {
   //   → +17 o au pire cas (entier à 4 chiffres, plafond dur 2000).
   //   (`rescue_ml` fait 9 caractères, pas 10 : un décompte à 18 figurait ici et
   //    contredisait celui, juste, du registre plus bas — corrigé à la livraison.)
-  // TAILLE SÉRIALISÉE de la trame complète (84 clés, format compact) : 2118 o en
-  // nominal, ≈ 3013 o au PIRE CAS (chaînes libres à 64 caractères, uint32
-  // saturés, flottants à 9 chiffres, raison de bascule à 427 o) → MARGE ≈ 571 o
+  // feature-156 : +3 clés, horodatage de justesse pH (deux epochs uint32 servis
+  // à l'affichage seul + un verdict booléen calculé par le firmware) :
+  //   "ph_offset_epoch":4294967295,            → 1+16+1+1+10+1 =  30 o
+  //   "ph_cal_epoch":4294967295,                → 1+13+1+1+10+1 =  27 o
+  //   "ph_offset_stale":false,                  → 1+16+1+1+ 5+1 =  25 o
+  //   → +82 o au pire cas (uint32 saturés + booléen).
+  // TAILLE SÉRIALISÉE de la trame complète (87 clés, format compact) : ≈ 2180 o
+  // en nominal, ≈ 3095 o au PIRE CAS (chaînes libres à 64 caractères, uint32
+  // saturés, flottants à 9 chiffres, raison de bascule à 427 o) → MARGE ≈ 489 o
   // sous le seul plafond DUR, sWsFrameBuf (kWsFrameBufBytes = 3584 o,
-  // constants.h). Gabarit documentaire porté 2944 → 3008 → 3072.
+  // constants.h). Gabarit documentaire porté 2944 → 3008 → 3072 → 3200.
   // POURQUOI CE CHIFFRE COMPTE : c'est lui que lira le prochain contributeur pour
   // arbitrer son ajout. Avec l'ancienne valeur, il aurait cru disposer de 285 o
   // qui n'existent pas. Et le pire cas de longueur coïncide avec l'ESCALADE DE
@@ -1448,7 +1455,7 @@ size_t WsManager::_buildConfigJson(char* buf, size_t cap) const {
   // RÉSERVE CONNUE : `server`, `topic`, `username` et `wifi_ssid` ne sont bornés
   // NULLE PART (/save-config ne valide aucune longueur) ; la marge est prouvée
   // sous l'hypothèse d'environ 64 o par champ. Surveiller oversizedFrameCount().
-  StaticJson<3072> doc;
+  StaticJson<3200> doc;
   doc["type"] = "config";
   JsonObject d = doc["data"].to<JsonObject>();
 
@@ -1535,6 +1542,12 @@ size_t WsManager::_buildConfigJson(char* buf, size_t cap) const {
   d["orp_cal_points"]   = sensors.getOrpCalibrationPointsCached();
   // feature-067 : offset logiciel de mesure pH (distinct de la calibration EZO).
   d["ph_offset"]        = mqttCfg.phOffset;
+  // feature-156 : horodatage de justesse — PARITÉ OBLIGATOIRE avec /get-config
+  // (mutable à l'exécution, un étalonnage ou une correction peut survenir à
+  // tout moment). Voir le commentaire jumeau de web_routes_config.cpp.
+  d["ph_offset_epoch"]  = mqttCfg.phOffsetEpoch;
+  d["ph_cal_epoch"]     = mqttCfg.phCalEpoch;
+  d["ph_offset_stale"]  = isPhOffsetStale(mqttCfg.phOffset, mqttCfg.phOffsetSeq, mqttCfg.phCalSeq);
   d["temp_calibration_offset"]   = mqttCfg.tempCalibrationOffset;
   d["temp_calibration_date"]     = mqttCfg.tempCalibrationDate;
   d["temperature_enabled"]       = mqttCfg.temperatureEnabled;

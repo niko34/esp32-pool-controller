@@ -146,6 +146,9 @@ static void handleGetConfig(AsyncWebServerRequest* request) {
   // "ph_cal_points_min":2, (18+1+4=23 o) + "ph_tune_min_filtration_ms":600000,
   // (25+6+4=35 o) → 58 o. La marge 3776 l'absorbe sans ajustement (chemin
   // documentaire, aucun plafond dur ici contrairement au buffer WS).
+  // feature-156 : +3 clés, horodatage de justesse pH (~82 o au pire cas, voir
+  // le décompte jumeau de ws_manager.cpp/_buildConfigJson). La marge 3776
+  // l'absorbe sans ajustement.
   StaticJson<3776> doc;
   // >>> PARITE-CONFIG:DEBUT
   // CONVENTION NORMATIVE (lue telle quelle par la sentinelle
@@ -253,6 +256,17 @@ static void handleGetConfig(AsyncWebServerRequest* request) {
   // feature-067 : offset logiciel de mesure pH (pH corrigé = pH brut EZO + offset).
   // Ne remplace PAS la calibration EZO (ph_cal_points ci-dessus) — champ distinct.
   doc["ph_offset"] = mqttCfg.phOffset;
+
+  // feature-156 : horodatage de justesse — epochs SERVIS À L'AFFICHAGE SEUL
+  // (0 = date inconnue, patron ph_auto_manual_epoch) ; `ph_offset_stale` est le
+  // VERDICT, calculé ICI par le firmware à partir des deux séquences
+  // (phOffsetSeq/phCalSeq, jamais exposées — ce sont elles qui font foi pour
+  // l'ordre, mais aucun client n'a besoin de les comparer lui-même). Condition
+  // 1 du gate pool-chemistry / ADR-0100 (feature-155) : le verdict qui engage
+  // le dosage n'est JAMAIS recalculé côté client.
+  doc["ph_offset_epoch"] = mqttCfg.phOffsetEpoch;
+  doc["ph_cal_epoch"]    = mqttCfg.phCalEpoch;
+  doc["ph_offset_stale"] = isPhOffsetStale(mqttCfg.phOffset, mqttCfg.phOffsetSeq, mqttCfg.phCalSeq);
 
   // v2.25.0 (B1) — BORNES DE RÉGLAGE pH servies au client.
   // L'interface construit ses contrôles (positions de la consigne, pas de
@@ -1085,7 +1099,12 @@ static void handleSaveConfig(AsyncWebServerRequest* request, uint8_t* data, size
                         " : " + String(requestedPhOffset, 2) + " → " +
                         String(snappedPhOffset, 2));
     }
-    mqttCfg.phOffset = snappedPhOffset;
+    // feature-156 : écrivain UNIQUE (setPhOffsetStamped) — mute la RAM et
+    // horodate (phOffsetEpoch/phOffsetSeq), configMutex déjà détenu ici. La
+    // persistance a lieu plus bas, au saveMqttConfig() commun de fin de route
+    // (patron inchangé : AUCUN appel à requestReset()/resetDosingStates()/
+    // resetPhPauseGuard() sur ce chemin, A7).
+    setPhOffsetStamped(snappedPhOffset, "save-config");
     sensors.refreshPhOffsetCache();  // journalise ancien/nouveau si changement
   }
 
@@ -1407,7 +1426,9 @@ static void handleTunePhOffset(AsyncWebServerRequest* req, uint8_t* data, size_t
     sendErrorResponse(req, 503, "Appareil occupé — réessayez dans un instant.");
     return;
   }
-  mqttCfg.phOffset = offsetRounded;
+  // feature-156 : écrivain UNIQUE (setPhOffsetStamped) — mute la RAM et
+  // horodate (phOffsetEpoch/phOffsetSeq) avant la persistance de cette route.
+  setPhOffsetStamped(offsetRounded, "tune-ph-offset");
   saveMqttConfig();
   xSemaphoreGiveRecursive(configMutex);
   sensors.refreshPhOffsetCache();

@@ -619,7 +619,12 @@
 
         <!-- Temperature View -->
         <section class="view" id="view-temperature" data-view="/temperature" aria-labelledby="heading-temperature">
-          <div class="settingsHead">
+          <!-- .flow-maintenance : l'en-tête RESTE visible en mode réglage (intention
+               ux-ui-designer : « la page reste conceptuellement la page X, en vue
+               resserrée »). Sans cette marque, la règle CSS le masquait et le
+               sous-titre réécrit par subMaintenance n'était JAMAIS vu — code mort
+               relevé en revue. -->
+          <div class="settingsHead flow-maintenance">
             <h1 class="settingsHead__title" id="heading-temperature">Température</h1>
             <p class="settingsHead__sub">Calibration et surveillance de la température de l'eau</p>
           </div>
@@ -676,8 +681,19 @@
             </div>
           </div>
 
-          <!-- Carte Calibration (masquée par défaut, s'affiche au clic sur « Calibrer la sonde ») -->
-          <div class="card" id="temperature-card-calibration" style="display:none">
+          <!-- feature-156 : mode réglage — région sr-only (annonce le changement de
+               contexte, cf. commentaire jumeau page pH) + lien de retour HAUT. -->
+          <div class="sr-only flow-maintenance" id="temperature-maintenance-announce" role="status" aria-live="polite"></div>
+          <button class="btn btn--ghost flow-maintenance maintenance-back-link" type="button"
+                  id="temperature-maintenance-back-top" hidden>
+            <span aria-hidden="true">←</span> Retour à la page Température
+          </button>
+
+          <!-- Carte Calibration — quitte la vue courante pour le mode réglage
+               (feature-156, même mécanisme générique). `hidden` remplace
+               `style="display:none"` — ⚠️ ne jamais réintroduire de `el.style.display`
+               ici, cf. commentaire jumeau page pH. -->
+          <div class="card flow-maintenance" id="temperature-card-calibration" hidden>
             <div class="card__head">
               <h2 class="card__title">Calibration de la sonde de température</h2>
               <div class="muted small" id="temp_cal_status_header">Non calibré</div>
@@ -721,11 +737,22 @@
             </div>
           </div>
 
+          <!-- feature-156 : lien de retour BAS, identique au lien haut. -->
+          <button class="btn btn--ghost flow-maintenance maintenance-back-link" type="button"
+                  id="temperature-maintenance-back-bottom" hidden>
+            <span aria-hidden="true">←</span> Retour à la page Température
+          </button>
+
         </section>
 
         <!-- pH View -->
         <section class="view" id="view-ph" data-view="/ph" aria-labelledby="heading-ph">
-          <div class="settingsHead">
+          <!-- .flow-maintenance : l'en-tête RESTE visible en mode réglage (intention
+               ux-ui-designer : « la page reste conceptuellement la page X, en vue
+               resserrée »). Sans cette marque, la règle CSS le masquait et le
+               sous-titre réécrit par subMaintenance n'était JAMAIS vu — code mort
+               relevé en revue. -->
+          <div class="settingsHead flow-maintenance">
             <h1 class="settingsHead__title" id="heading-ph">pH</h1>
             <p class="settingsHead__sub">Calibration et régulation du pH</p>
           </div>
@@ -749,7 +776,7 @@
               </div>
               <!-- feature-034 itération 3 (volet A) : bouton Calibrer la sonde sous la rangée des badges -->
               <div class="cal-trigger-row">
-                <button class="btn btn--secondary" type="button" id="ph_cal_trigger_btn">Calibrer la sonde</button>
+                <button class="btn btn--secondary" type="button" id="ph_cal_trigger_btn">Calibration et correction de la mesure</button>
                 <span class="muted small" id="ph_cal_hint"></span>
               </div>
               <!-- feature-061 : état mesure (filtration arrêtée / stabilisation) -->
@@ -1013,98 +1040,32 @@
             </div>
           </div>
 
-          <!-- feature-155 : accorder l'appareil sur un test manuel. Toujours visible
-               (quel que soit le mode de régulation) car elle corrige la MESURE, pas la
-               régulation. Distincte de la calibration EZO (carte dédiée plus bas) : deux
-               gestes différents, deux effets différents — cf. #ph_tune_calib_note.
-               Remplace l'ancien réglage d'un offset abstrait (feature-067) : l'écran
-               demande une VALEUR LUE, jamais un écart ; le mot « offset » n'y figure
-               plus. Le pas-à-pas existant est RÉAFFECTÉ (pas supprimé). -->
-          <div class="card" id="ph-card-tune">
-            <div class="card__head">
-              <h2 class="card__title">Correction manuelle de la mesure</h2>
-            </div>
-            <div class="card__body">
-              <!-- UN SEUL BLOC, décision utilisateur du 2026-10-11 : la carte était
-                   passée de 3 blocs visibles à 6, alors que la consigne était de
-                   SIMPLIFIER. L'explication du geste et l'enjeu se suivaient et
-                   parlaient du même sujet — ils sont fusionnés. 6 blocs -> 5.
-                   ⚠️ LES DEUX PHRASES DU GATE pool-chemistry (B4) SONT PRÉSERVÉES
-                   MOT POUR MOT, seule la ponctuation de liaison change (point ->
-                   deux-points). Ne pas les reformuler sans repasser par le gate :
-                   elles disent que cette valeur ENGAGE LE DOSAGE, pas l'affichage. -->
-              <div class="callout callout--info" id="ph_tune_stakes" role="note" style="margin:0 0 16px">
-                <p style="margin:0 0 8px">
-                  Si votre test donne une valeur différente de celle affichée, indiquez-la ici :
-                  l'appareil corrigera sa mesure. L'écart vient de l'installation, pas de la sonde.
-                </p>
-                <p style="margin:0"><strong>
-                  Ce réglage ne vaut que ce que vaut votre test. La valeur que vous indiquez
-                  ne change pas que l'affichage : c'est elle qui décidera des injections d'acide.
-                </strong></p>
-              </div>
+          <!-- feature-156 : mode réglage — région sr-only qui annonce le changement
+               de contexte à l'entrée (role=status, mise à jour par enterMaintenance()).
+               Marquée .flow-maintenance : la règle générique #view-ph.is-flow-maintenance
+               > :not(.flow-maintenance) ne la masque donc jamais, dans aucun des deux
+               états. Toujours .sr-only : elle n'a pas de rendu visuel, seulement vocal. -->
+          <div class="sr-only flow-maintenance" id="ph-maintenance-announce" role="status" aria-live="polite"></div>
 
-              <!-- Pas-à-pas RÉAFFECTÉ (ex-#ph-offset-stepper, feature-067) : affiche
-                   désormais une MESURE (la valeur lue sur le test), jamais un écart.
-                   Pas de clavier, pas de champ libre — décision utilisateur du
-                   2026-10-11 : « il n'y a pas de saisie ». Plage et pas servis par
-                   /get-config (ph_offset_step), excursion totale ± PH_TUNE_RANGE. -->
-              <div class="field" style="max-width:280px">
-                <span class="field__label" id="ph_tune_label">Valeur lue sur votre test</span>
-                <div class="stepper" id="ph-tune-stepper">
-                  <button class="btn btn--ghost stepper__btn" type="button" id="ph_tune_dec"
-                          aria-label="Diminuer de 0,10">−</button>
-                  <div class="stepper__value" id="ph_tune_value" role="spinbutton" tabindex="0"
-                       aria-labelledby="ph_tune_label">--</div>
-                  <button class="btn btn--ghost stepper__btn" type="button" id="ph_tune_inc"
-                          aria-label="Augmenter de 0,10">+</button>
-                </div>
-              </div>
+          <!-- feature-156 : lien de retour HAUT — masqué par défaut (hidden), affiché
+               par enterMaintenance("ph") en même temps que les deux cartes ci-dessous.
+               Flèche dans un span aria-hidden pour que le lecteur d'écran n'énonce que
+               « Retour à la page pH ». -->
+          <button class="btn btn--ghost flow-maintenance maintenance-back-link" type="button"
+                  id="ph-maintenance-back-top" hidden>
+            <span aria-hidden="true">←</span> Retour à la page pH
+          </button>
 
-              <!-- B2 : les trois nombres avant validation — ici, 2 des 3 (lu sur le
-                   test = la valeur du pas-à-pas ci-dessus ; lu par l'appareil → valeur
-                   atteinte). Le 3e (valeur atteinte) est l'ÉCART RÉELLEMENT APPLIQUÉ
-                   après arrondi (Piège 1), jamais la valeur demandée. -->
-              <p class="small" id="ph_tune_result" style="margin:12px 0 0"></p>
-
-              <!-- Les CINQ états (prêt + 4 refus) — un seul callout, textes IMPOSÉS mot
-                   pour mot par le gate, jamais de mise en cause de la sonde. -->
-              <div class="callout callout--warn" id="ph_tune_blocked" role="status" aria-live="polite"
-                   hidden style="margin-top:12px"></div>
-
-              <p class="muted small" id="ph_tune_calib_note" style="margin:10px 0 0">
-                Cela n'étalonne pas la sonde : pour cela, utilisez la carte
-                « Calibration de la sonde pH » plus bas.
-              </p>
-
-              <p class="small" id="ph_tune_error" role="alert"
-                 style="display:none;margin:10px 0 0;color:var(--danger)"></p>
-
-              <div class="detail-actions" style="margin-top:12px">
-                <button class="btn btn--primary" type="button" id="ph_tune_submit_btn">Corriger</button>
-                <button class="btn btn--secondary" type="button" id="ph_tune_goto_cal_btn" hidden>Aller à l'étalonnage</button>
-              </div>
-            </div>
-          </div>
-
-          <div class="card card--detail-chart" id="ph-card-history">
-            <div class="card__head">
-              <h2 class="card__title">Historique</h2>
-              <div class="detail-chart-ranges" data-chart="ph">
-                <button class="range-btn range-btn--active" data-range="all">Tout</button>
-                <button class="range-btn" data-range="30d">30j</button>
-                <button class="range-btn" data-range="7d">7j</button>
-                <button class="range-btn" data-range="24h">24h</button>
-              </div>
-            </div>
-            <div class="card__body">
-              <div class="chart-container">
-                <div id="phChart" class="chart-host"></div>
-              </div>
-            </div>
-          </div>
-
-          <div class="card" id="ph-card-calibration" style="display:none">
+          <!-- feature-156 : la carte Calibration quitte la vue courante pour le mode
+               réglage, dédié aux deux SEULS gestes qui touchent à la justesse de la
+               mesure (calibration + correction, cf. feature-156). DOM réordonné
+               PHYSIQUEMENT avant #ph-card-tune (pas d'`order` CSS) : l'ordre visuel
+               reste l'ordre de tabulation. `hidden` remplace `style="display:none"` —
+               ⚠️ NE JAMAIS réintroduire un `el.style.display` sur cette carte : un
+               style inline écraserait la règle CSS générique du mode
+               (#view-ph.is-flow-maintenance > :not(.flow-maintenance)) sans effet
+               visible, piège déjà rencontré par l'ancien show/hidePhCalibrationCard(). -->
+          <div class="card flow-maintenance" id="ph-card-calibration" hidden>
             <div class="card__head">
               <h2 class="card__title">Calibration de la sonde pH</h2>
               <div class="muted small" id="ph_cal_status_header">Aucun point calibré</div>
@@ -1161,6 +1122,17 @@
                     <span class="step__number">✓</span>
                     <div class="step__content">
                       <div class="step__title">Calibration terminée</div>
+                      <!-- feature-156 : conseil post-étalonnage — TRANSITOIRE (accroché à
+                           cette étape finale, jamais persisté), texte IMPOSÉ mot pour mot
+                           par le gate pool-chemistry. Visibilité pilotée par
+                           setCalStepState("ph", 4) dans app.js, pas par CSS. -->
+                      <div class="callout callout--info" id="ph_cal_final_advice" role="note"
+                           hidden style="margin-top:10px">
+                        Étalonnage terminé. Vérifiez avec un test fiable (gouttes ou testeur
+                        électronique)&nbsp;: si un écart ≥&nbsp;0,3&nbsp;pH se confirme sur deux
+                        mesures à des moments différents, corrigez ci-dessous. Une bandelette
+                        (±&nbsp;0,5) ne suffit pas à justifier une correction.
+                      </div>
                     </div>
                   </li>
                 </ol>
@@ -1168,6 +1140,140 @@
 
               <div class="row row--gap" style="margin-top:16px">
                 <button class="btn btn--secondary" type="button" id="ph_cal_close_btn">Fermer</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- feature-155 : accorder l'appareil sur un test manuel. Toujours visible
+               (quel que soit le mode de régulation) car elle corrige la MESURE, pas la
+               régulation. Distincte de la calibration EZO (carte juste au-dessus) : deux
+               gestes différents, deux effets différents — cf. #ph_tune_calib_note.
+               Remplace l'ancien réglage d'un offset abstrait (feature-067) : l'écran
+               demande une VALEUR LUE, jamais un écart ; le mot « offset » n'y figure
+               plus. Le pas-à-pas existant est RÉAFFECTÉ (pas supprimé).
+               feature-156 : quitte elle aussi la vue courante pour le mode réglage —
+               cf. commentaire de #ph-card-calibration ci-dessus (même piège style
+               inline à éviter). -->
+          <div class="card flow-maintenance" id="ph-card-tune" hidden>
+            <div class="card__head">
+              <h2 class="card__title">Correction manuelle de la mesure</h2>
+            </div>
+            <div class="card__body">
+              <!-- feature-156 (B11/A2) : alerte PERSISTANTE « correction caduque »,
+                   pilotée par le champ firmware ph_offset_stale (servi par /get-config
+                   ET la trame WS "config", lu via renderPhOffsetStaleBanner()). Place EN
+                   TOUT PREMIER du card__body, avant #ph_tune_stakes : elle engage le
+                   dosage, elle pèse plus lourd que le conseil transitoire de la carte
+                   Calibration. Deux issues explicites, jamais de fermeture silencieuse. -->
+              <div class="callout callout--warn" id="ph_tune_stale_banner" role="status" aria-live="polite"
+                   hidden style="margin:0 0 16px">
+                <!-- ⚠️ TEXTE IMPOSÉ MOT POUR MOT par le gate pool-chemistry (contre-visite
+                     feature-156). Le brouillon s'intitulait « Correction DÉSACTIVÉE par
+                     l'étalonnage » — C'ÉTAIT FAUX, et faux sur une valeur qui engage le
+                     dosage : `applyPhOffset` continue d'ajouter la correction à CHAQUE
+                     lecture tant que l'utilisateur n'a pas tranché. Un utilisateur rassuré
+                     par « désactivée » pouvait laisser la bannière des SEMAINES pendant que
+                     la correction périmée orientait les injections d'acide.
+                     ⛔ « reste appliquée » et « continue d'orienter le dosage » sont les deux
+                     fragments NON NÉGOCIABLES : ne pas les reformuler. -->
+                <p style="margin:0 0 8px"><strong>Correction à revoir après l'étalonnage</strong></p>
+                <p style="margin:0 0 10px">
+                  Une correction de <strong id="ph_tune_stale_value">—</strong> pH
+                  <strong>reste appliquée à la mesure</strong> : elle continue d'orienter le dosage
+                  tant que vous n'avez pas choisi. Elle a été posée <strong>avant</strong>
+                  l'étalonnage qui vient d'avoir lieu et compensait un réglage de sonde qui a
+                  changé — elle n'est peut-être plus justifiée.
+                </p>
+                <div class="detail-actions">
+                  <button class="btn btn--danger" type="button" id="ph_tune_stale_cancel_btn">Annuler la correction</button>
+                  <button class="btn btn--secondary" type="button" id="ph_tune_stale_keep_btn">Garder la correction</button>
+                </div>
+              </div>
+
+              <!-- UN SEUL BLOC, décision utilisateur du 2026-10-11 : la carte était
+                   passée de 3 blocs visibles à 6, alors que la consigne était de
+                   SIMPLIFIER. L'explication du geste et l'enjeu se suivaient et
+                   parlaient du même sujet — ils sont fusionnés. 6 blocs -> 5.
+                   ⚠️ LES DEUX PHRASES DU GATE pool-chemistry (B4) SONT PRÉSERVÉES
+                   MOT POUR MOT, seule la ponctuation de liaison change (point ->
+                   deux-points). Ne pas les reformuler sans repasser par le gate :
+                   elles disent que cette valeur ENGAGE LE DOSAGE, pas l'affichage. -->
+              <div class="callout callout--info" id="ph_tune_stakes" role="note" style="margin:0 0 16px">
+                <p style="margin:0 0 8px">
+                  Si votre test donne une valeur différente de celle affichée, indiquez-la ici :
+                  l'appareil corrigera sa mesure. L'écart vient de l'installation, pas de la sonde.
+                </p>
+                <p style="margin:0"><strong>
+                  Ce réglage ne vaut que ce que vaut votre test. La valeur que vous indiquez
+                  ne change pas que l'affichage : c'est elle qui décidera des injections d'acide.
+                </strong></p>
+              </div>
+
+              <!-- Pas-à-pas RÉAFFECTÉ (ex-#ph-offset-stepper, feature-067) : affiche
+                   désormais une MESURE (la valeur lue sur le test), jamais un écart.
+                   Pas de clavier, pas de champ libre — décision utilisateur du
+                   2026-10-11 : « il n'y a pas de saisie ». Plage et pas servis par
+                   /get-config (ph_offset_step), excursion totale ± PH_TUNE_RANGE. -->
+              <div class="field" style="max-width:280px">
+                <span class="field__label" id="ph_tune_label">Valeur lue sur votre test</span>
+                <div class="stepper" id="ph-tune-stepper">
+                  <button class="btn btn--ghost stepper__btn" type="button" id="ph_tune_dec"
+                          aria-label="Diminuer de 0,10">−</button>
+                  <div class="stepper__value" id="ph_tune_value" role="spinbutton" tabindex="0"
+                       aria-labelledby="ph_tune_label">--</div>
+                  <button class="btn btn--ghost stepper__btn" type="button" id="ph_tune_inc"
+                          aria-label="Augmenter de 0,10">+</button>
+                </div>
+              </div>
+
+              <!-- B2 : les trois nombres avant validation — ici, 2 des 3 (lu sur le
+                   test = la valeur du pas-à-pas ci-dessus ; lu par l'appareil → valeur
+                   atteinte). Le 3e (valeur atteinte) est l'ÉCART RÉELLEMENT APPLIQUÉ
+                   après arrondi (Piège 1), jamais la valeur demandée. -->
+              <p class="small" id="ph_tune_result" style="margin:12px 0 0"></p>
+
+              <!-- Les CINQ états (prêt + 4 refus) — un seul callout, textes IMPOSÉS mot
+                   pour mot par le gate, jamais de mise en cause de la sonde. -->
+              <div class="callout callout--warn" id="ph_tune_blocked" role="status" aria-live="polite"
+                   hidden style="margin-top:12px"></div>
+
+              <!-- feature-156 : la carte visée est désormais JUSTE AU-DESSUS (DOM
+                   réordonné) — texte corrigé en conséquence (« plus bas » → « ci-dessus »),
+                   sinon la phrase devient fausse. #ph_tune_goto_cal_btn est SUPPRIMÉ : plus
+                   besoin de défiler vers une carte qui est déjà adjacente. -->
+              <p class="muted small" id="ph_tune_calib_note" style="margin:10px 0 0">
+                Cela n'étalonne pas la sonde : pour cela, utilisez la carte
+                « Calibration de la sonde pH » ci-dessus.
+              </p>
+
+              <p class="small" id="ph_tune_error" role="alert"
+                 style="display:none;margin:10px 0 0;color:var(--danger)"></p>
+
+              <div class="detail-actions" style="margin-top:12px">
+                <button class="btn btn--primary" type="button" id="ph_tune_submit_btn">Corriger</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- feature-156 : lien de retour BAS, identique au lien haut. -->
+          <button class="btn btn--ghost flow-maintenance maintenance-back-link" type="button"
+                  id="ph-maintenance-back-bottom" hidden>
+            <span aria-hidden="true">←</span> Retour à la page pH
+          </button>
+
+          <div class="card card--detail-chart" id="ph-card-history">
+            <div class="card__head">
+              <h2 class="card__title">Historique</h2>
+              <div class="detail-chart-ranges" data-chart="ph">
+                <button class="range-btn range-btn--active" data-range="all">Tout</button>
+                <button class="range-btn" data-range="30d">30j</button>
+                <button class="range-btn" data-range="7d">7j</button>
+                <button class="range-btn" data-range="24h">24h</button>
+              </div>
+            </div>
+            <div class="card__body">
+              <div class="chart-container">
+                <div id="phChart" class="chart-host"></div>
               </div>
             </div>
           </div>
@@ -1229,7 +1335,12 @@
 
         <!-- ORP View -->
         <section class="view" id="view-orp" data-view="/orp" aria-labelledby="heading-orp">
-          <div class="settingsHead">
+          <!-- .flow-maintenance : l'en-tête RESTE visible en mode réglage (intention
+               ux-ui-designer : « la page reste conceptuellement la page X, en vue
+               resserrée »). Sans cette marque, la règle CSS le masquait et le
+               sous-titre réécrit par subMaintenance n'était JAMAIS vu — code mort
+               relevé en revue. -->
+          <div class="settingsHead flow-maintenance">
             <h1 class="settingsHead__title" id="heading-orp">ORP</h1>
             <p class="settingsHead__sub">Calibration et régulation du potentiel redox</p>
           </div>
@@ -1438,8 +1549,19 @@
             </div>
           </div>
 
-          <!-- Carte Calibration (masquée par défaut, remplace Régulation + Historique pendant le protocole) -->
-          <div class="card" id="orp-card-calibration" style="display:none">
+          <!-- feature-156 : mode réglage — région sr-only (annonce le changement de
+               contexte, cf. commentaire jumeau sur la page pH) + lien de retour HAUT. -->
+          <div class="sr-only flow-maintenance" id="orp-maintenance-announce" role="status" aria-live="polite"></div>
+          <button class="btn btn--ghost flow-maintenance maintenance-back-link" type="button"
+                  id="orp-maintenance-back-top" hidden>
+            <span aria-hidden="true">←</span> Retour à la page ORP
+          </button>
+
+          <!-- Carte Calibration — quitte la vue courante pour le mode réglage
+               (feature-156, même mécanisme générique que la page pH). `hidden`
+               remplace `style="display:none"` — ⚠️ ne jamais réintroduire de
+               `el.style.display` ici, cf. commentaire jumeau page pH. -->
+          <div class="card flow-maintenance" id="orp-card-calibration" hidden>
             <div class="card__head">
               <h2 class="card__title">Calibration de la sonde ORP</h2>
               <div class="muted small" id="orp_cal_status_header">Non calibré</div>
@@ -1498,6 +1620,12 @@
               </div>
             </div>
           </div>
+
+          <!-- feature-156 : lien de retour BAS, identique au lien haut. -->
+          <button class="btn btn--ghost flow-maintenance maintenance-back-link" type="button"
+                  id="orp-maintenance-back-bottom" hidden>
+            <span aria-hidden="true">←</span> Retour à la page ORP
+          </button>
 
           <!-- Modal détails sonde ORP (feature-025, réduit et retitré par feature-152) -->
           <dialog id="orp-filter-modal" class="probe-modal" aria-labelledby="orp-filter-modal-title">

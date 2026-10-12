@@ -33,6 +33,11 @@
 //        couvertes par test_native_ph_guard ; ici on ne teste QUE ce qui met
 //        l'offset en jeu.
 //
+//   D4 — HORODATAGE DE JUSTESSE (feature-156) : isPhOffsetStale(offset,
+//        offsetSeq, calSeq) et nextJustnessSeq(a, b). Verdict « correction
+//        caduque » (antérieure au dernier étalonnage réussi, et non nulle) et
+//        monotonie de la séquence quel que soit l'ordre des deux événements.
+//
 // Chaîne de production reproduite (src/sensors.cpp + pump_controller.cpp,
 // feature-152) :
 //   EZO → _lastPh (brut) → _phFilter.addSample(brut, now) → value(now)
@@ -517,6 +522,69 @@ void test_dosing_window_is_never_empty_whatever_the_offset(void) {
   }
 }
 
+// =============================================================================
+// D4 — HORODATAGE DE JUSTESSE (feature-156) : isPhOffsetStale / nextJustnessSeq
+// =============================================================================
+// Le verdict « correction caduque » engage le dosage (feature-155) : une
+// correction NON NULLE posée AVANT le dernier étalonnage réussi compense un
+// état de sonde qui n'existe plus. C'est `seq` (entier croissant), PAS
+// `epoch`, qui fait foi pour l'ordre — voir config.h pour la justification
+// (indépendance à l'horloge non synchronisée et au redémarrage).
+
+void test_stale_offset_null_and_anterior_is_false(void) {
+  // Offset nul (inerte) : rien à annuler, jamais caduc, même antérieur.
+  TEST_ASSERT_FALSE(isPhOffsetStale(0.0f, 1, 5));
+}
+
+void test_stale_offset_nonzero_and_anterior_is_true(void) {
+  // Correction posée (seq=1) avant un étalonnage plus récent (seq=5) : caduque.
+  TEST_ASSERT_TRUE(isPhOffsetStale(0.30f, 1, 5));
+  TEST_ASSERT_TRUE(isPhOffsetStale(-0.10f, 2, 3));
+}
+
+void test_stale_offset_nonzero_and_posterior_is_false(void) {
+  // Correction posée APRÈS le dernier étalonnage : toujours à jour.
+  TEST_ASSERT_FALSE(isPhOffsetStale(0.30f, 9, 5));
+}
+
+void test_stale_equal_sequences_is_false(void) {
+  // Séquences ÉGALES : aucune préséance de l'étalonnage sur la correction —
+  // pas caduque. Cas limite explicitement exigé (ni l'un ni l'autre n'est
+  // strictement postérieur).
+  TEST_ASSERT_FALSE(isPhOffsetStale(0.30f, 4, 4));
+}
+
+void test_stale_both_zero_is_false(void) {
+  // Aucun des deux événements ne s'est jamais produit (appareil neuf, ou
+  // config antérieure à feature-156 sans ces clés NVS) : jamais caduc, même
+  // avec un offset non nul hérité d'une ancienne version.
+  TEST_ASSERT_FALSE(isPhOffsetStale(0.20f, 0, 0));
+}
+
+void test_stale_first_calibration_after_update_with_inherited_offset(void) {
+  // RÉTROCOMPATIBILITÉ (feature-156) : une installation EXISTANTE avant cette
+  // version a ses 4 champs à 0 (offsetSeq=0, calSeq=0), y compris avec une
+  // correction non nulle en vigueur depuis des mois — test_stale_both_zero_is_false
+  // couvre déjà ce premier redémarrage : pas de fausse alerte.
+  // Ici : l'étape SUIVANTE, le premier étalonnage posé APRÈS la mise à jour.
+  // nextJustnessSeq(0, 0) = 1 (cf. test_next_justness_seq_is_max_plus_one) :
+  // calSeq passe à 1, strictement > offsetSeq resté à 0 (la correction n'a pas
+  // été retouchée). La correction héritée devient caduque — c'est EXACT et
+  // c'est le comportement voulu (la spec le dit explicitement).
+  TEST_ASSERT_TRUE(isPhOffsetStale(0.30f, 0, 1));
+  // Et si la correction héritée était nulle, elle reste jamais caduque (rien
+  // à annuler), même avec le même franchissement de séquence.
+  TEST_ASSERT_FALSE(isPhOffsetStale(0.0f, 0, 1));
+}
+
+void test_next_justness_seq_is_max_plus_one(void) {
+  TEST_ASSERT_EQUAL_UINT32(6, nextJustnessSeq(5, 3));
+  TEST_ASSERT_EQUAL_UINT32(6, nextJustnessSeq(3, 5));  // monotone quel que soit l'ordre
+  TEST_ASSERT_EQUAL_UINT32(1, nextJustnessSeq(0, 0));  // premier événement de l'appareil
+  TEST_ASSERT_EQUAL_UINT32(101, nextJustnessSeq(100, 0));
+  TEST_ASSERT_EQUAL_UINT32(101, nextJustnessSeq(0, 100));
+}
+
 void test_refusal_counter_constants(void) {
   TEST_ASSERT_EQUAL_UINT8(3, kPhGuardRefusalMax);
   TEST_ASSERT_EQUAL_UINT32(86400000UL, kPhGuardRefusalWindowMs);  // 24 h
@@ -582,5 +650,13 @@ int main(int, char**) {
   RUN_TEST(test_wrong_negative_offset_is_bounded_by_the_raw_hard_ceiling);
   RUN_TEST(test_dosing_window_is_never_empty_whatever_the_offset);
   RUN_TEST(test_refusal_counter_constants);
+  // D4 — horodatage de justesse (feature-156)
+  RUN_TEST(test_stale_offset_null_and_anterior_is_false);
+  RUN_TEST(test_stale_offset_nonzero_and_anterior_is_true);
+  RUN_TEST(test_stale_offset_nonzero_and_posterior_is_false);
+  RUN_TEST(test_stale_equal_sequences_is_false);
+  RUN_TEST(test_stale_both_zero_is_false);
+  RUN_TEST(test_stale_first_calibration_after_update_with_inherited_offset);
+  RUN_TEST(test_next_justness_seq_is_max_plus_one);
   return UNITY_END();
 }

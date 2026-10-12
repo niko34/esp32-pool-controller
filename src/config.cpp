@@ -150,6 +150,57 @@ void clearPhAutoManualTrace() {
   mqttCfg.phAutoManualReason = "";
 }
 
+// =============================================================================
+// feature-156 — horodatage de justesse (correction manuelle pH vs étalonnage)
+// =============================================================================
+// setPhOffsetStamped() : écrivain UNIQUE de phOffset/phOffsetEpoch/phOffsetSeq.
+// Mute la RAM seulement — l'APPELANT persiste (même protocole que
+// setPhAutoManualTrace ci-dessus). Appelée avec configMutex DÉJÀ détenu par les
+// deux routes concernées (handleTunePhOffset, branche ph_offset de
+// /save-config) : ne le reprend pas, un mutex récursif le permettrait mais ce
+// n'est pas le contrat voulu ici (symétrie avec le patron existant).
+// « Garder la correction » (B11, écran de réglage) ré-envoie la MÊME route
+// avec la valeur COURANTE : ce ré-envoi re-estampille (phOffsetSeq devient
+// > phCalSeq) et ÉTEINT le verdict de caducité durablement — c'est voulu, pas
+// une redondance à simplifier : c'est la manière dont l'utilisateur confirme
+// qu'il assume la valeur après l'avoir vue signalée comme périmée.
+void setPhOffsetStamped(float offset, const char* source) {
+  const time_t now = time(nullptr);
+  const float oldOffset = mqttCfg.phOffset;
+  mqttCfg.phOffset = offset;
+  // Patron EXACT de setPhAutoManualTrace : epoch = 0 si l'heure n'est pas
+  // synchronisée (« date inconnue » plutôt qu'un 1970 trompeur). Sert à
+  // L'AFFICHAGE SEUL — c'est phOffsetSeq qui fait foi pour l'ordre.
+  mqttCfg.phOffsetEpoch = (now >= kMinValidEpoch) ? (uint32_t)now : 0;
+  mqttCfg.phOffsetSeq = nextJustnessSeq(mqttCfg.phOffsetSeq, mqttCfg.phCalSeq);
+  systemLogger.info("[pH] Offset re-estampillé (" + String(source) + ") : " +
+                    String(oldOffset, 2) + " → " + String(offset, 2) +
+                    " (seq=" + String(mqttCfg.phOffsetSeq) + ")");
+}
+
+// markPhCalibrationStamped() : écrivain UNIQUE de phCalEpoch/phCalSeq. Appelée
+// depuis loopTask (sensors.cpp, _executeEzoCmd, branches CalibratePhMid/Low
+// ET ClearPhCal, cf. sensors.cpp), donc HORS section critique : elle prend
+// configMutex elle-même et persiste dans la même transaction. Sur timeout :
+// error journalisé, AUCUNE mutation — ne jamais laisser un seq posé sans sa
+// persistance (un redémarrage perdrait alors un étalonnage « plus récent » que
+// ce qu'il est réellement, et un verdict de caducité pourrait rester figé à
+// tort).
+void markPhCalibrationStamped() {
+  if (configMutex && xSemaphoreTakeRecursive(configMutex, pdMS_TO_TICKS(kConfigMutexTimeoutMs)) != pdTRUE) {
+    systemLogger.error("[pH] markPhCalibrationStamped: timeout mutex — étalonnage NON horodaté");
+    return;
+  }
+  const time_t now = time(nullptr);
+  mqttCfg.phCalEpoch = (now >= kMinValidEpoch) ? (uint32_t)now : 0;
+  mqttCfg.phCalSeq = nextJustnessSeq(mqttCfg.phOffsetSeq, mqttCfg.phCalSeq);
+  saveMqttConfig();  // mutex récursif : persistance dans la même section critique
+  // Garde symétrique de la prise : si configMutex est nul, on n'a rien pris —
+  // donner un sémaphore nul est un comportement indéfini (relevé en revue).
+  if (configMutex) xSemaphoreGiveRecursive(configMutex);
+  systemLogger.info("[pH] Étalonnage horodaté (seq=" + String(mqttCfg.phCalSeq) + ")");
+}
+
 void saveMqttConfig() {
   // feature-027 : prise bornée (miroir de saveDailyCounters). Timeout → config RAM
   // appliquée mais persistance NVS perdue — signalé en error (throttlé 1/min).
@@ -216,6 +267,12 @@ void saveMqttConfig() {
 
   // feature-067 : offset logiciel de mesure pH (clé ≤ 15 caractères)
   prefs.putFloat("ph_offset", mqttCfg.phOffset);
+  // feature-156 : horodatage de justesse (clés ≤ 15 caractères). Défauts 0 sur
+  // une NVS existante sans ces clés → rétrocompatible (cf. config.h).
+  prefs.putULong("ph_offset_ep", mqttCfg.phOffsetEpoch);
+  prefs.putULong("ph_offset_sq", mqttCfg.phOffsetSeq);
+  prefs.putULong("ph_cal_ep", mqttCfg.phCalEpoch);
+  prefs.putULong("ph_cal_sq", mqttCfg.phCalSeq);
 
   // Temps
   prefs.putBool("time_use_ntp", mqttCfg.timeUseNtp);
@@ -536,6 +593,16 @@ void loadMqttConfig() {
                          String(mqttCfg.phOffset, 2) + ") — remis à 0.00");
     mqttCfg.phOffset = 0.0f;
   }
+  // feature-156 : horodatage de justesse. Clés absentes (config antérieure à
+  // 2.72.0) → 0 partout = « aucun événement connu », verdict de caducité
+  // toujours faux par construction (isPhOffsetStale). AUCUN estampillage
+  // n'a lieu ici — seule une LECTURE brute des valeurs NVS (cf. contrainte
+  // écrite sur setPhOffsetStamped/markPhCalibrationStamped : ne jamais
+  // écrire ces 4 champs dans loadConfig()).
+  mqttCfg.phOffsetEpoch = prefs.getULong("ph_offset_ep", 0);
+  mqttCfg.phOffsetSeq   = prefs.getULong("ph_offset_sq", 0);
+  mqttCfg.phCalEpoch    = prefs.getULong("ph_cal_ep", 0);
+  mqttCfg.phCalSeq      = prefs.getULong("ph_cal_sq", 0);
   // v2.25.0 — MIGRATION : l'offset devient un curseur au pas de kPhOffsetStep
   // (0,1 pH). Une installation existante a pu enregistrer une valeur libre
   // (0,47 saisie au clavier) : on l'arrondit au plus proche multiple du pas, ce

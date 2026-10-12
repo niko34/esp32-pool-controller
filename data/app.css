@@ -4247,3 +4247,32 @@ h1, h2, h3 {
 #view-settings.is-flow-wizard .settingsPanels {
   display: none;
 }
+
+/* feature-156 : mode réglage (calibration + correction) — RÈGLE GÉNÉRIQUE
+   partagée par les trois pages pH / ORP / Température, même motif que
+   #view-settings.is-flow-wizard ci-dessus. Masque tout enfant DIRECT de la vue
+   qui n'est pas explicitement marqué .flow-maintenance (lien de retour, carte
+   de calibration, carte de correction pH). `display:none` sort aussi ces
+   enfants de l'ordre de tabulation et de l'arbre d'accessibilité — B8 gratuit,
+   aucun piège clavier à gérer en plus.
+   ⚠️ Les éléments .flow-maintenance eux-mêmes sont `hidden` par défaut dans le
+   HTML et affichés/masqués par enterMaintenance()/exitMaintenance() (app.js) —
+   PAS par cette règle, qui ne fait QUE masquer le reste. Ne jamais réintroduire
+   un `el.style.display` sur une carte de calibration/correction : un style
+   inline écraserait cette règle sans effet visible. */
+#view-ph.is-flow-maintenance > :not(.flow-maintenance),
+#view-orp.is-flow-maintenance > :not(.flow-maintenance),
+#view-temperature.is-flow-maintenance > :not(.flow-maintenance) {
+  display: none;
+}
+
+/* feature-156 : liens de retour (haut/bas) des trois pages — pleine largeur et
+   texte centré, mobile D'ABORD (390 px) : un bouton isolé en largeur de
+   contenu serait un petit cadran peu commode au bord du bassin. Standalone
+   (jamais partagé avec un autre élément sur la même ligne), donc aucun risque
+   de `flex-wrap` « en repli » (règle responsive permanente, CLAUDE.md). */
+.maintenance-back-link {
+  display: flex;
+  width: 100%;
+  margin: 4px 0 16px;
+}

@@ -849,6 +849,14 @@ void SensorManager::_executeEzoCmd(const EzoCmdRequest& req) {
         systemLogger.info("EZO pH : calibration mid OK (points=" + String(_phCalCachedPoints) + ")");
         // feature-024 : refresh pente post-calibration.
         enqueuePhSlopeQuery();
+        // feature-156 : horodatage de l'étalonnage — point d'exécution RÉEL
+        // (asynchrone), pas la route HTTP.
+        // ⚠️ `ClearPhCal` estampille AUSSI (cf. le bloc ClearPhCal plus bas). Le
+        // lot ne le faisait pas, au motif qu'« un effacement est toujours suivi
+        // d'un étalonnage » — le gate pool-chemistry a REFUSÉ ce raisonnement :
+        // c'est une hypothèse sur le comportement de l'utilisateur, pas une
+        // garantie. NE PAS « réconcilier » en retirant l'estampillage du clear.
+        markPhCalibrationStamped();
       } else {
         systemLogger.error("EZO pH : calibration mid échouée");
       }
@@ -864,6 +872,14 @@ void SensorManager::_executeEzoCmd(const EzoCmdRequest& req) {
         systemLogger.info("EZO pH : calibration low OK (points=" + String(_phCalCachedPoints) + ")");
         // feature-024 : refresh pente post-calibration.
         enqueuePhSlopeQuery();
+        // feature-156 : horodatage de l'étalonnage — point d'exécution RÉEL
+        // (asynchrone), pas la route HTTP.
+        // ⚠️ `ClearPhCal` estampille AUSSI (cf. le bloc ClearPhCal plus bas). Le
+        // lot ne le faisait pas, au motif qu'« un effacement est toujours suivi
+        // d'un étalonnage » — le gate pool-chemistry a REFUSÉ ce raisonnement :
+        // c'est une hypothèse sur le comportement de l'utilisateur, pas une
+        // garantie. NE PAS « réconcilier » en retirant l'estampillage du clear.
+        markPhCalibrationStamped();
       } else {
         systemLogger.error("EZO pH : calibration low échouée");
       }
@@ -891,6 +907,17 @@ void SensorManager::_executeEzoCmd(const EzoCmdRequest& req) {
       if (ok) {
         _phCalCachedPoints = _phEzo.queryCalPoints();
         resetPhFilter();  // feature-025 : warmup obligatoire après clear réussi
+        // ⚠️ ESTAMPILLAGE AJOUTÉ APRÈS CONTRE-VISITE pool-chemistry (feature-156).
+        // Le lot ne marquait QUE CalibratePhMid/Low, au motif qu'« un effacement
+        // est toujours suivi d'un étalonnage qui estampille ». Le gate a refusé ce
+        // raisonnement : c'est une HYPOTHÈSE, pas une garantie — rien n'oblige
+        // l'utilisateur à enchaîner, et un effacement seul laisserait la sonde sans
+        // points ET la correction périmée NON SIGNALÉE.
+        // Or après un Cal,clear, zéro et pente ONT changé (l'EZO repart sur ses
+        // valeurs d'usine, typiquement 100/100/0) : la correction est caduque au
+        // sens chimique, exactement comme après un étalonnage. Estampiller ici ne
+        // peut que rendre le verdict PLUS CONSERVATEUR — jamais moins.
+        markPhCalibrationStamped();
         systemLogger.info("EZO pH : calibration effacée (points=" + String(_phCalCachedPoints) + ")");
         // feature-024 : la pente n'a plus de sens après un Cal,clear — refresh
         // pour récupérer les valeurs par défaut EZO (typiquement 100/100/0).

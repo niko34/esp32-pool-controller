@@ -153,6 +153,37 @@ struct MqttConfig {
   // la calibration électrochimique du module Atlas EZO n'est PAS touchée.
   // Toute écriture doit être suivie de sensors.refreshPhOffsetCache().
   float phOffset = 0.0f;              // Offset de mesure pH (défaut 0.00 = inerte)
+
+  // feature-156 : HORODATAGE DE JUSTESSE — deux événements indépendants, posés
+  // de la correction manuelle (phOffset*) et de l'étalonnage de la sonde
+  // (phCal*), chacun porteur d'un {epoch, seq}. But : savoir si la correction
+  // en vigueur est ANTÉRIEURE au dernier étalonnage réussi — donc CADUQUE,
+  // puisqu'un étalonnage change le zéro ET la pente de la sonde, l'état qu'elle
+  // compensait n'existe plus. Logique PURE : src/ph_offset.h
+  // (isPhOffsetStale/nextJustnessSeq), testée en natif (ADR-0017).
+  //   * epoch : time(nullptr) au moment de l'événement, 0 si l'heure n'était
+  //     pas synchronisée (patron EXACT de phAutoManualEpoch ci-dessus — « date
+  //     inconnue » plutôt qu'un 1970 trompeur). SERT À L'AFFICHAGE SEUL.
+  //   * seq   : entier croissant, nextJustnessSeq(phOffsetSeq, phCalSeq) =
+  //     max(a,b)+1. C'EST LUI QUI FAIT FOI POUR L'ORDRE — insensible à une
+  //     horloge non synchronisée (epoch = 0 des deux côtés serait indécidable)
+  //     et au redémarrage (contrairement à millis(), qui se replie à 24,8 j et
+  //     repart de zéro à chaque boot : un étalonnage d'avant-reboot paraîtrait
+  //     postérieur à une correction d'après-reboot).
+  // Défauts 0/0/0/0 = « aucun événement connu » ⇒ rétrocompatible (appareil
+  // existant sans ces clés NVS : verdict de caducité toujours faux par
+  // construction, cf. isPhOffsetStale).
+  // Écrivains UNIQUES : setPhOffsetStamped() (phOffset*, appelée avec
+  // configMutex déjà détenu par l'appelant) et markPhCalibrationStamped()
+  // (phCal*, prend configMutex elle-même — appelée depuis loopTask, hors
+  // section critique). NE JAMAIS écrire ces 4 champs ailleurs, ni dans
+  // loadConfig() (la migration d'arrondi du pas y réécrit phOffset — estampiller
+  // là rajeunirait une correction périmée et effacerait silencieusement le
+  // verdict).
+  uint32_t phOffsetEpoch = 0;  // 0 = date inconnue (heure non synchro à la pose)
+  uint32_t phOffsetSeq   = 0;  // 0 = aucune correction horodatée
+  uint32_t phCalEpoch    = 0;  // 0 = date inconnue (heure non synchro à l'étalonnage)
+  uint32_t phCalSeq      = 0;  // 0 = aucun étalonnage horodaté
 };
 
 struct FiltrationConfig {
@@ -587,6 +618,20 @@ bool restoreRegulationDefaults();  // false = timeout mutex, RIEN modifié
 // décrit que la DERNIÈRE bascule automatique non acquittée.
 void setPhAutoManualTrace(const String& reason);
 void clearPhAutoManualTrace();
+
+// feature-156 — écrivains uniques des horodatages de justesse (cf. commentaire
+// des champs phOffset*/phCal* ci-dessus).
+// setPhOffsetStamped() : mute phOffset/phOffsetEpoch/phOffsetSeq en RAM
+// uniquement — l'APPELANT persiste (saveMqttConfig()), comme setPhAutoManualTrace.
+// À appeler avec configMutex DÉJÀ détenu par l'appelant (ne le reprend pas).
+void setPhOffsetStamped(float offset, const char* source);
+// markPhCalibrationStamped() : à appeler depuis loopTask (hors section
+// critique) JUSTE APRÈS un étalonnage pH réussi (CalibratePhMid/CalibratePhLow
+// ET ClearPhCal — un effacement rend la correction caduque tout autant,
+// verdict du gate pool-chemistry). Prend configMutex elle-même
+// et persiste. Sur timeout : error journalisé, AUCUNE mutation (jamais un seq
+// posé sans sa persistance).
+void markPhCalibrationStamped();
 void applyMqttConfig();
 void sanitizePumpSelection();
 int sanitizePumpNumber(int pumpNumber, int defaultValue);

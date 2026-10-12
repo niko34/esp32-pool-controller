@@ -537,6 +537,79 @@ La méthode revalide la valeur (`isPhOffsetValid`) et neutralise à 0,00 si beso
 | Trace `/debug/sensor_trace` | `phRaw` et `phFiltered` **bruts**, `phCorrected` = brut + offset |
 | Écran de calibration (UI) | **brut** exclusivement ([page-ph.md](../features/page-ph.md#lécran-de-calibration-reste-sur-le-brut)) |
 
+## Horodatage de justesse — feature-156, v2.72.0
+
+Un étalonnage EZO modifie le zéro **et** la pente de la sonde : une correction manuelle
+(`phOffset`) posée **avant** le dernier étalonnage réussi compensait un état de la sonde qui
+**n'existe plus** — elle est **caduque**. Le firmware le détecte en comparant deux événements
+indépendants, chacun porteur d'un `{epoch, seq}`.
+
+### Les quatre champs persistés (`MqttConfig`, [`config.h`](../../src/config.h))
+
+| Champ | Type | NVS | Rôle |
+|---|---|---|---|
+| `phOffsetEpoch` | `uint32_t` | `ph_offset_ep` | `time(nullptr)` à la pose de la correction. `0` = date inconnue (horloge non synchronisée). **Affichage seul.** |
+| `phOffsetSeq` | `uint32_t` | `ph_offset_sq` | Séquence de la correction, posée par `nextJustnessSeq()`. **Fait foi pour l'ordre.** |
+| `phCalEpoch` | `uint32_t` | `ph_cal_ep` | `time(nullptr)` au dernier étalonnage réussi (ou effacement). `0` = date inconnue. **Affichage seul.** |
+| `phCalSeq` | `uint32_t` | `ph_cal_sq` | Séquence du dernier étalonnage, posée par `nextJustnessSeq()`. **Fait foi pour l'ordre.** |
+
+Défauts `0/0/0/0` = « aucun événement connu » ⇒ **rétrocompatible** : une installation existante
+mise à jour sans ces clés NVS ne déclenche jamais un faux verdict de caducité au premier
+démarrage (voir [ADR-0102](../adr/0102-ordre-des-gestes-de-justesse-par-compteur.md)).
+
+### Deux écrivains uniques, et eux seuls
+
+- **`setPhOffsetStamped(float offset, const char* source)`** ([`config.cpp`](../../src/config.cpp))
+  — mute `phOffset`/`phOffsetEpoch`/`phOffsetSeq` **en RAM seulement**, l'appelant persiste
+  (`saveMqttConfig()`). Appelée avec `configMutex` **déjà détenu par l'appelant** (ne le
+  reprend pas) depuis les deux routes qui écrivent `ph_offset` :
+  [`handleTunePhOffset`](../API.md#post-tune-ph-offset--critical) et la branche `ph_offset` de
+  [`/save-config`](../API.md#post-save-config--critical).
+- **`markPhCalibrationStamped()`** ([`config.cpp`](../../src/config.cpp)) — mute
+  `phCalEpoch`/`phCalSeq` **et persiste dans la même transaction** (prend `configMutex`
+  elle-même, mutex récursif). Appelée depuis `loopTask` (hors section critique), **jamais**
+  depuis une route HTTP directement. Sur timeout : `error` journalisé, **aucune mutation** —
+  ne jamais laisser une séquence posée sans sa persistance.
+
+⚠️ **Ne jamais écrire ces quatre champs ailleurs**, y compris dans `loadMqttConfig()` : la
+migration d'arrondi du pas y réécrit déjà `phOffset` — estampiller à cet endroit rajeunirait
+une correction périmée et effacerait silencieusement le verdict.
+
+### Les trois points d'estampillage de l'étalonnage (`sensors.cpp`, `_executeEzoCmd`)
+
+`markPhCalibrationStamped()` est appelée après chacune des **trois** commandes EZO qui changent
+le zéro ou la pente de la sonde :
+
+| Commande | Point d'appel |
+|---|---|
+| `CalibratePhMid` (`Cal,mid,7.00`) | après succès, juste après `enqueuePhSlopeQuery()` |
+| `CalibratePhLow` (`Cal,low,4.00`) | après succès, juste après `enqueuePhSlopeQuery()` |
+| `ClearPhCal` (`Cal,clear`) | après succès, juste après `resetPhFilter()` |
+
+⚠️ **`ClearPhCal` estampille aussi**, contre-visite du gate `pool-chemistry` (feature-156) : le
+lot n'estampillait au départ que `CalibratePhMid`/`Low`, au motif qu'« un effacement est
+toujours suivi d'un étalonnage ». Refusé — c'est une **hypothèse**, pas une garantie, et après
+un `Cal,clear` le zéro et la pente **ont changé** (l'EZO repart sur ses valeurs d'usine) : la
+correction est caduque au sens chimique, exactement comme après un étalonnage. Un effacement
+seul laisserait sinon la sonde sans points **et** la correction périmée **non signalée**.
+Estampiller ici ne peut rendre le verdict que **plus conservateur**, jamais moins.
+
+### Logique pure et verdict servi
+
+`src/ph_offset.h` (testé en natif, suite `test_native_ph_offset`, section D4) :
+
+- **`isPhOffsetStale(float offset, uint32_t offsetSeq, uint32_t calSeq)`** — `true` ssi
+  `offset != 0` **et** `offsetSeq < calSeq`. Deux séquences égales (y compris `0 == 0` au
+  premier démarrage) ne sont **pas** une préséance de l'étalonnage — `false`.
+- **`nextJustnessSeq(uint32_t a, uint32_t b)`** — `max(a, b) + 1`, monotone quel que soit
+  l'ordre des arguments.
+
+Le verdict (`ph_offset_stale`) est **calculé par le firmware** et servi par `GET /get-config` et
+la trame WS `config` — **jamais recalculé côté client** (ADR-0100, [ADR-0102](../adr/0102-ordre-des-gestes-de-justesse-par-compteur.md)).
+Les deux séquences internes (`phOffsetSeq`/`phCalSeq`) **ne sont exposées nulle part** : seuls
+le verdict et les deux epochs (affichage) le sont. Voir [API.md](../API.md#get-get-config--write)
+et [page-ph.md](../features/page-ph.md#correction-devenue-caduque-après-un-étalonnage-ph_tune_stale_banner-feature-156-v2720).
+
 ## Trace des signaux capteurs — feature-057
 
 Ring buffer de trace **haute cadence** des signaux capteurs (pH & ORP, brut, **médiane** et lissé), réintroduction fidèle de l'outil retiré en feature-045 (v2.5.0), **étendue à l'ORP** (feature-057) puis à la **médiane** (feature-153, v2.69.0). Objectif : diagnostiquer bruit / oscillation de la chaîne de mesure en comparant les trois étages sur une fenêtre continue, à cadence bien supérieure à l'échantillonnage WS. Alimente la card « Signaux capteurs » de l'onglet Avancé ([page-settings.md](../features/page-settings.md#card-signaux-capteurs-feature-153-v2690)) et les routes `GET /debug/sensor_trace` / `POST /debug/sensor_trace_clear` ([API.md](../API.md#trace-des-signaux-capteurs-feature-057-v270)).
