@@ -690,7 +690,31 @@ Le focus est déplacé sur le contrôle de l'étape active (`focusActiveStep()`)
 
 **Minuterie de stabilisation** (aide **non bloquante**) : chaque étape d'attente propose un bouton « Démarrer la minuterie de stabilisation (60 s) » (`.cal-timer-start`). Le compte à rebours est géré **côté client** par timestamp (`startCalTimer()`, constante `CAL_STAB_DURATION_S = 60`), affiche `mm:ss` + une barre de progression dans `#ph-cal-timer` (`role="timer" aria-live="polite"`), et bascule en « Stabilisation atteinte, vous pouvez calibrer » à 0. L'utilisateur **peut calibrer avant la fin** — la minuterie n'inhibe pas le bouton « Calibrer ». Annulation par « Annuler » (`.cal-timer-cancel`).
 
-**Indicateur de stabilité Δ60 s** (purement **indicatif**) : `renderStability()` calcule l'amplitude `max − min` de la mesure **brute** sur une fenêtre glissante de ~60 s (`CAL_STAB_WINDOW_MS`) et affiche `Δ60 s : <valeur> — stable/en cours`. Seuils cosmétiques `CAL_STAB_THRESHOLD = { ph: 0.05, orp: 5 }`. La fenêtre est réinitialisée à chaque changement de solution (avance de stepper / calibration réussie).
+### Les cinq états de l'indicateur de stabilité (`renderStability()`, feature-159, v2.75.0)
+
+Avant la v2.75.0, l'état d'arrivée sur une étape était **muet** : `Δ60 s : --`, un libellé purement numérique, sans un mot, pendant les 10 à 45 premières secondes (le temps de remplir la fenêtre glissante à 3 échantillons). C'était le **premier contact** de l'utilisateur avec l'étape. `renderStability()` affiche désormais toujours l'un de **cinq états**, distincts par **icône et texte** (jamais la seule couleur, daltonisme) :
+
+| État | Icône | Texte |
+|------|-------|-------|
+| Lecture en cours (< 3 échantillons) | ⏳ | « Lecture de la sonde en cours — ne calibrez pas encore » |
+| Mesure instable | ○ | « La mesure bouge encore — attendez (écart *X* sur *N* s) » |
+| Stable | ● | « Stable — vous pouvez calibrer » |
+| Calibration en cours | ↻ | « Calibration en cours — ne retirez pas la sonde du tampon » |
+| Échec **persistant** | ✕ | voir [Échec persistant](#échec-persistant-cal-failure-feature-159-v2750) |
+
+Priorité d'affichage, un seul message à la fois : calibration en vol (↻) **>** échec persistant (✕) **>** lecture/stabilité (⏳ ○ ●).
+
+⚠️ **Le bouton « Calibrer » n'est jamais désactivé pour cause d'instabilité** — ce lot ne touche **ni** les seuils (`CAL_STAB_THRESHOLD`), **ni** la fenêtre (`CAL_STAB_WINDOW_MS`, toujours 20 s malgré le libellé historique « Δ60 s » qu'il a remplacé), **ni** une éventuelle confirmation sur mesure instable : ces trois sujets sont **hors périmètre**, reportés à `bug-160` (le gate `pool-chemistry` a établi que l'indicateur annonce « stable » alors que l'écart réel à l'équilibre peut atteindre 0,8 à 1,1 pH — un défaut réel, mais indépendant de ce lot). **Le nombre affiché est bien celui qui décide** (même `delta` que la comparaison au seuil), en virgule française (`0,42`).
+
+Le calcul (amplitude `max − min` de la mesure **brute** sur la fenêtre glissante) et la réinitialisation à chaque changement de solution sont **inchangés**.
+
+### Échec persistant (`_calFailure`, feature-159, v2.75.0)
+
+Avant la v2.75.0, un échec (EZO injoignable, délai de 20 s dépassé, erreur HTTP/réseau) n'était signalé que par un **toast volatile** : une fois disparu, l'étape redevenait visuellement identique à « pas encore tentée », sans dire s'il fallait recommencer.
+
+Depuis, l'échec est **mémorisé par étape** (`_calFailure`) et reste affiché (état ✕) tant qu'un nouvel essai ou un succès ne l'a pas remplacé. Causes distinguées dans le texte : EZO injoignable, délai dépassé, erreur HTTP, erreur réseau — toujours accompagnées de « Vérifiez le câblage, puis réessayez. ».
+
+⚠️ **Aucun de ces textes n'affirme que la sonde est hors service, ni que la calibration précédente est intacte.** Sur un délai dépassé en particulier, l'appareil **ne sait pas** si l'EZO a exécuté la commande ou non — ce n'est pas le silence qui déciderait à sa place.
 
 Après une calibration EZO réussie, `completeCalStep()` marque l'étape « calibrer » comme faite (✓) et avance le stepper. Le bouton « Fermer » (`#ph_cal_close_btn`) appelle `requestExitMaintenance("ph")` : annule toute minuterie en cours et **quitte le mode réglage** (voir [Mode réglage](#mode-réglage-calibration--correction-feature-156-v2720)) — avant la v2.72.0, il restaurait seulement la carte Régulation masquée à sa place.
 
@@ -706,7 +730,33 @@ Après une calibration EZO réussie, `completeCalStep()` marque l'étape « cali
 
 > **Readout de calibration = valeur brute.** `updateCalibrationReadouts()` alimente `#cal-ph-mid-readout` et `#cal-ph-low-readout` avec la mesure **brute** (`json.phRaw` **uniquement** — le repli sur `json.ph` a été **supprimé** en v2.20.0, ce champ portant désormais la valeur corrigée par l'offset ; cf. [L'écran de calibration reste sur le BRUT](#lécran-de-calibration-reste-sur-le-brut)), **pas** la valeur officielle affichée ailleurs dans l'UI. Raison : en changeant de solution étalon (ex. pH 7 → pH 4, saut ≈ 3.0), la valeur officielle — médiane (**9** échantillons ≈ **45 s**, était 13 ≈ 65 s avant la refonte feature-152, v2.68.0) puis lissage exponentiel (τ = 45 s) — met plusieurs dizaines de secondes à converger vers la nouvelle valeur ; la médiane absorbe seule le saut initial, sans seuil de rejet dédié (le rejet de spike isolé a disparu avec la refonte : voir [ADR-0097](../adr/0097-le-filtre-lisse-le-dosage-juge.md)). Le brut suit immédiatement le potentiel réel de l'électrode, indispensable pour juger la stabilité avant de calibrer. Le reste de l'UI (dashboard, valeur principale pH, MQTT) continue d'afficher la valeur officielle.
 
-L'ordre d'exécution est libre (mid puis low, ou inverse). En pratique, les utilisateurs commencent par le milieu (référence neutre) puis enchaînent avec le bas.
+⚠️ **L'ordre d'exécution est IMPOSÉ par le capteur, pas libre** (corrigé en v2.75.0 — feature-159 ; l'affirmation inverse, « parallèles : ordre libre », figurait à tort dans `data/index.html` et [`docs/UPDATE_GUIDE.md`](../UPDATE_GUIDE.md), **deux endroits corrigés**). D'abord le point **milieu (7.00)**, puis le point **bas (4.00)** : `Cal,mid` sur l'EZO Atlas Scientific **efface tous les autres points enregistrés**, y compris le 4.00 déjà fait (datasheet Atlas, cf. [sensors.md](../subsystems/sensors.md#portée-chimique--deux-régimes-opposés-tous-deux-graves)). Recalibrer le milieu oblige donc à refaire les deux points — voir [Le geste « Recommencer »](#le-geste--recommencer--feature-159-v2750) ci-dessous.
+
+### Figeage des points déjà calibrés (`_calFrozen`, feature-159, v2.75.0)
+
+**Défaut corrigé, reproduit avant correction** : `resetCalStepper()`, appelée à chaque (ré)ouverture de l'écran de calibration, réactivait **inconditionnellement** tous les boutons « Calibrer » et remettait le stepper à l'étape 0 — **sans jamais consulter** `phCalPoints`/`orpCalPoints`, la seule vérité firmware sur ce qui est réellement acquis. Un point déjà calibré redevenait donc cliquable à la moindre fermeture/réouverture de l'écran.
+
+Le figeage repose désormais sur une variable dédiée, `_calFrozen` (`{ ph: { mid, low }, orp: { orp } }`), peuplée **à chaque ouverture** depuis le compteur firmware :
+
+- `phCalPoints >= 1` ⇒ `_calFrozen.ph.mid = true` ; `>= 2` ⇒ `_calFrozen.ph.low = true` également (idem `orpCalPoints >= 1` côté ORP).
+- `phCalPoints === -1` (EZO **injoignable**) ⇒ **aucun bouton n'est armé** (ni « Calibrer » ni « Recommencer ») : un compteur inconnu n'autorise rien, le bouton reste désactivé jusqu'à la prochaine ouverture.
+- `_calFrozen` est **distinct** de `_calActiveIdx` (la position du stepper **dans la session courante**, qui reste remise à 0 à chaque réouverture) : le premier **survit** à la fermeture de l'écran, le second non. C'est précisément ce qui manquait.
+- `_calRefreshFrozenButtons()` ne fait **que désactiver** un bouton (jamais le réactiver) ; c'est `resetCalStepper()` et les gestes « Recommencer » qui portent explicitement la réactivation.
+- La réouverture de l'écran **reste systématiquement à l'étape visuelle 0** (rinçage), **même si les 2 points sont déjà acquis** : elle ne saute jamais directement à l'étape « terminé », qui réveillerait sans raison le [conseil post-étalonnage transitoire](#conseil-post-étalonnage-ph_cal_final_advice-feature-156-v2720) alors qu'aucun étalonnage n'a eu lieu dans la session.
+
+### Le geste « Recommencer » (feature-159, v2.75.0)
+
+Avant ce lot, recommencer un point déjà calibré n'avait **aucun geste dédié** — le seul moyen était la réouverture de l'écran, c'est-à-dire **le défaut** décrit ci-dessus. Il est remplacé par un lien « **Recommencer** », visible uniquement quand `_calFrozen` indique un point **réellement** acquis (pas une simple étape dépassée dans la session) :
+
+| Point | Bouton | Comportement |
+|-------|--------|--------------|
+| 7.0 (milieu) | `#btn-recal-ph-mid` (« Recommencer l'étalonnage (2 points) ») | **Confirmation obligatoire** (`confirmDialog`, `danger: true`) : « Recalibrer ce point efface aussi le point 4.00 sur la sonde : les deux seront à refaire. Il n'existe pas de retour en arrière. » → bouton « Refaire les 2 points ». Remet **les deux** points à l'état non figé et ramène le stepper à l'étape 0. |
+| 4.0 (bas) | `#btn-recal-ph-low` (« Recommencer ce point ») | **Lien simple**, sans confirmation : refaire ce point seul n'efface pas le point milieu (datasheet Atlas). Ramène uniquement l'étape 4.0 (idx 2) à refaire. |
+| ORP | `#btn-recal-orp` (« Recommencer ce point ») | **Lien simple**, identique au point 4.0 : un seul point sur l'EZO ORP, rien d'autre à effacer. |
+
+⚠️ **L'asymétrie entre le 7.0 et les deux autres est un FAIT MATÉRIEL, pas un choix d'interface** : elle découle directement de l'effacement en cascade de `Cal,mid` documenté ci-dessus. Les liens 4.0/ORP portent par ailleurs la mention statique « Le nouvel étalonnage remplace l'ancien. Il n'existe pas de retour en arrière. ».
+
+Techniquement, les trois boutons appellent la même fonction générique `_calRestartPoint(product, step, targetIdx)` (dégèle le point, vide la fenêtre de stabilité, réarme le bouton « Calibrer », replace le stepper) — seul le point milieu l'enrobe d'une confirmation et d'un dégel supplémentaire du point bas avant de l'appeler.
 
 ### Workflow temporel
 
@@ -727,6 +777,8 @@ L'ordre d'exécution est libre (mid puis low, ou inverse). En pratique, les util
 | 400 `step must be 'mid' or 'low'` | « Erreur : payload invalide » (bug client) |
 | 503 `calibration queue saturée — réessayer dans 1s` | « Calibration en cours, réessayer dans 1 seconde » |
 | Erreur réseau | « Erreur de communication, vérifier le réseau » |
+
+⚠️ **Depuis la v2.75.0 (feature-159), chacun de ces cas pose en plus l'[état d'échec persistant](#échec-persistant-_calfailure-feature-159-v2750)** sur l'étape concernée (icône ✕, message qui reste affiché) — le toast seul ne suffisait plus à dire, une fois évanoui, qu'il fallait recommencer.
 
 ## Données consommées (WebSocket `/ws`)
 

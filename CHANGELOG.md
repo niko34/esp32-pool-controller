@@ -2,6 +2,59 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [2.75.0] - 2026-10-12
+
+### Fonctionnalités
+
+- **Calibration pH/ORP : l'écran dit enfin quand attendre (feature-159)**
+  — sur chaque point (pH 7.00, pH 4.00, ORP), l'arrivée sur l'étape affiche
+  désormais un message en clair (« Lecture de la sonde en cours — ne
+  calibrez pas encore ») au lieu d'un `Δ60 s : --` purement numérique et
+  muet pendant les 10 à 45 premières secondes. Cinq états distincts par
+  icône et texte (lecture, instable, stable, calibration en cours, échec) —
+  jamais la seule couleur.
+- **Un point déjà calibré ne propose plus son bouton « Calibrer »** — y
+  compris après fermeture puis réouverture de l'écran, cas qui le
+  réactivait **inconditionnellement** jusqu'ici. Si la sonde est
+  injoignable, **aucun** bouton (ni « Calibrer » ni « Recommencer ») n'est
+  armé.
+- **Un geste « Recommencer »** remplace la réouverture de l'écran comme
+  seul moyen de refaire un point. Sur le pH 7.00, il est **asymétrique** et
+  demande confirmation : recalibrer ce point efface aussi le 4.00 sur la
+  sonde (comportement matériel de l'EZO Atlas Scientific) — les deux sont
+  alors à refaire. Sur le pH 4.00 et l'ORP, lien simple, sans confirmation.
+- **Un échec de calibration (sonde injoignable, délai dépassé, erreur
+  réseau) reste affiché** tant qu'un nouvel essai ou un succès ne l'a pas
+  remplacé — avant, le toast disparaissait et l'étape redevenait identique
+  à « pas encore tentée ». Le message ne prétend jamais que la sonde est
+  hors service ni que la calibration précédente est intacte.
+- ⚠️ **Ce lot rend l'attente LISIBLE, il ne rend pas l'indicateur JUSTE.**
+  Le seuil qui décide d'afficher « Stable — vous pouvez calibrer » reste
+  celui d'avant, et il est trop permissif : il peut annoncer « stable »
+  alors que la sonde est encore loin de son équilibre. **Attendez un peu
+  au-delà du feu vert plutôt que de cliquer dès qu'il s'allume.** C'est
+  l'objet de `bug-160`, ouvert en priorité haute, avec la statistique de
+  détection, une confirmation en cas de calibration sur mesure instable, et
+  la journalisation d'un étalonnage non stabilisé.
+- ⚠️ **Et pendant une calibration, l'appareil continue de réguler sur ce que
+  lisent les sondes** — c'est-à-dire sur le contenu des béchers, pas sur
+  l'eau du bassin. **Mettez les régulations pH et ORP sur Arrêt avant de
+  commencer.** Également suivi dans `bug-160`.
+
+### Documentation
+
+- `docs/features/page-ph.md` : les cinq états de l'indicateur de
+  stabilité, l'état d'échec persistant, le figeage par `_calFrozen` (seule
+  vérité : `phCalPoints`/`orpCalPoints`), le geste « Recommencer » et son
+  asymétrie, correction de « ordre libre » en ordre imposé.
+- `docs/subsystems/sensors.md` : note sur l'usage de `phCalPoints` /
+  `orpCalPoints` comme source de vérité du figeage côté frontend.
+- `docs/UPDATE_GUIDE.md` : correction de la même erreur (« ordre libre ») —
+  le point milieu doit être calibré **avant** le point bas, sous peine
+  d'effacer ce dernier.
+
+---
+
 ## [2.74.0] - 2026-10-12
 
 ### Firmware
@@ -51,8 +104,6 @@ au **second** redémarrage.
   créé : la continuité de l'eau a un producteur unique (`measure_validity`)
   et des consommateurs (`filtration`) — persister une donnée n'est pas
   produire un verdict.
-
----
 
 ## [2.73.0] - 2026-10-12
 

@@ -8219,15 +8219,20 @@
     const phUnreachable = (phPts === -1);
     const phComplete = (phPts != null && phPts >= 2);
     const phPartial = (phPts === 1);
+    // feature-159 (code-reviewer, correctif bloquant) : `pts` INCONNU
+    // (/data pas encore répondu, ou hors ligne) n'est PAS la même chose que
+    // « non calibré » — fail-CLOSED, pas fail-open. Distinct de
+    // `phUnreachable` (-1, EZO explicitement injoignable).
+    const phKnown = _calIsPtsKnown(phPts);
 
-    // Bouton + hint pH (priorité : EZO injoignable > état calibration).
+    // Bouton + hint pH (priorité : EZO injoignable > état inconnu > état calibration).
     // Le garde injection est appliqué après (prioritaire).
-    const phEzoDown = (phPts != null && phPts < 0);
     const phBtn = $("#ph_cal_trigger_btn");
-    if (phBtn) phBtn.disabled = phEzoDown;
+    if (phBtn) phBtn.disabled = !phKnown;
     const phHint = $("#ph_cal_hint");
     if (phHint) {
-      if (phEzoDown) phHint.textContent = "EZO pH injoignable — vérifiez le câblage I²C et l'alimentation.";
+      if (phUnreachable) phHint.textContent = "EZO pH injoignable — vérifiez le câblage I²C et l'alimentation.";
+      else if (!phKnown) phHint.textContent = "État de calibration inconnu — données non reçues";
       else if (phPartial) phHint.textContent = "Régulation auto inhibée (1/2 point).";
       else if (phPts === 0) phHint.textContent = "Régulation auto inhibée tant que non calibré.";
       else phHint.textContent = "";
@@ -8236,7 +8241,12 @@
     // Status header de la carte Calibration pH
     const phHeader = $("#ph_cal_status_header");
     if (phHeader) {
+      // feature-159 (contre-visite, règle C9 du gate) : « Aucun point calibré »
+      // était affirmé alors que le compteur est INCONNU (pas encore reçu). Le
+      // hint disait déjà « inconnu » pendant que l'en-tête, lui, assertait.
+      // Dire ce qu'on a vérifié, jamais un jugement.
       if (phUnreachable) phHeader.textContent = "EZO pH injoignable";
+      else if (!_calIsPtsKnown(phPts)) phHeader.textContent = "État de calibration inconnu";
       else if (phComplete) phHeader.textContent = "Calibré 2 points ✓";
       else if (phPartial) phHeader.textContent = "1 point calibré sur 2";
       else phHeader.textContent = "Aucun point calibré";
@@ -8249,11 +8259,16 @@
     // Chip d'état de calibration ORP (1 point, pas d'état warn).
     if (orpPts == null || orpPts < 0 || orpRaw == null) {
       const ezoDown = (orpPts != null && orpPts < 0);
+      // feature-159 (code-reviewer, correctif bloquant) : même défaut que pH —
+      // `orpPts` inconnu (null/undefined) armait le bouton à tort (seul `-1`
+      // désactivait). `_calIsPtsKnown` traite les deux comme non autorisants.
+      const orpKnown = _calIsPtsKnown(orpPts);
       setCalChip("orp", {
         cls: "chip--probe-unknown",
         label: ezoDown ? "EZO indisponible" : "Calibration —",
-        btnDisabled: ezoDown,
-        hint: ezoDown ? "EZO ORP injoignable — vérifiez le câblage I²C." : "",
+        btnDisabled: !orpKnown,
+        hint: ezoDown ? "EZO ORP injoignable — vérifiez le câblage I²C."
+            : (!orpKnown ? "État de calibration inconnu — données non reçues" : ""),
       });
     } else if (orpCalibrated) {
       setCalChip("orp", { cls: "chip--probe-good", label: "Calibré", btnDisabled: false, hint: "" });
@@ -8309,6 +8324,25 @@
     const orpRaw = (typeof json.orpRaw === "number" && !isNaN(json.orpRaw)) ? json.orpRaw
                  : (typeof json.orp === "number" && !isNaN(json.orp)) ? json.orp : null;
 
+    // feature-159 (code-reviewer, correctif bloquant, partie b) : auto-
+    // réparation UNE SEULE FOIS — voir le commentaire de `_calPtsKnownOnce`.
+    // Si l'écran a été ouvert pendant que `/data` n'avait pas encore répondu
+    // (ou hors ligne), `resetCalStepper()` a désactivé tous les boutons du
+    // stepper (fail-closed) ; dès que `pts` devient numérique pour la
+    // première fois, on recalcule l'acquisition réelle et on réarme les
+    // boutons avant de laisser `_calRefreshFrozenButtons()` (ci-dessous)
+    // refigure ceux réellement déjà calibrés.
+    if (!_calPtsKnownOnce.ph && typeof json.phCalPoints === "number") {
+      _calPtsKnownOnce.ph = true;
+      Object.assign(_calFrozen.ph, _calPointsAcquired("ph", json.phCalPoints));
+      ["btn-cal-ph-mid", "btn-cal-ph-low"].forEach(id => { const b = $("#" + id); if (b) b.disabled = false; });
+    }
+    if (!_calPtsKnownOnce.orp && typeof json.orpCalPoints === "number") {
+      _calPtsKnownOnce.orp = true;
+      Object.assign(_calFrozen.orp, _calPointsAcquired("orp", json.orpCalPoints));
+      { const b = $("#btn-cal-orp"); if (b) b.disabled = false; }
+    }
+
     // Alimenter d'abord la fenêtre glissante (sert au lissage ET à la stabilité).
     if (phCalibrationActive && phRaw != null) pushStabilitySample("ph", phRaw);
     if (orpCalibrationActive && orpRaw != null) pushStabilitySample("orp", orpRaw);
@@ -8363,6 +8397,70 @@
   const _calStab = { ph: [], orp: [] };      // [{t, v}] fenêtre glissante
   const _calActiveIdx = { ph: 0, orp: 0 };   // index de l'étape active (pour figer les étapes franchies)
 
+  // feature-159 (code-reviewer, correctif bloquant) : SEULE définition de
+  // « pts est-il une mesure exploitable ? ». Un `pts` non numérique
+  // (undefined/null — /data pas encore répondu, ou hors ligne) ou négatif
+  // (-1, EZO injoignable) ne vaut PAS « non calibré » : c'est un INCONNU,
+  // qui ne doit RIEN autoriser (fail-closed, jamais fail-open). Utilisée par
+  // `_calPointsAcquired` ci-dessous ET par `renderCalibrationStatus` (bouton
+  // + hint du déclencheur, hors stepper) — une SEULE expression, jamais
+  // dupliquée, pour qu'un futur élargissement de cette frontière (ex. un
+  // malheureux `>= -1`) soit visible aux DEUX appelants et tué par le même
+  // harnais.
+  function _calIsPtsKnown(pts) {
+    return (typeof pts === "number") && pts >= 0;
+  }
+
+  // feature-159 (code-reviewer, correctif bloquant) : fonction PURE, sans DOM,
+  // qui décide quels points sont RÉELLEMENT acquis d'après le firmware
+  // (`phCalPoints`/`orpCalPoints`). Extraite pour que `resetCalStepper()` et
+  // l'auto-réparation de `updateCalibrationReadouts()` partagent la MÊME
+  // décision — et pour être couverte par un harnais
+  // (`test/cal_points_acquired_vectors.js`, ADR-0099 : le texte est EXTRAIT
+  // de ce fichier, jamais recopié).
+  function _calPointsAcquired(product, pts) {
+    const known = _calIsPtsKnown(pts);
+    if (product === "ph") {
+      return { mid: known && pts >= 1, low: known && pts >= 2 };
+    }
+    return { orp: known && pts >= 1 };
+  }
+
+  // feature-159 (C5) : SEULE source de vérité pour « ce point est déjà calibré »,
+  // peuplée depuis le firmware (phCalPoints/orpCalPoints) à resetCalStepper() et
+  // mise à jour à chaque succès. Contrairement à `_calActiveIdx` (position du
+  // stepper DANS CETTE SESSION, remise à 0 à chaque réouverture), `_calFrozen`
+  // survit à la réouverture de l'écran — c'est exactement ce qui manquait : le
+  // figeage ne dépendait que de `_calActiveIdx`, remis à zéro par
+  // resetCalStepper() sans consulter le firmware.
+  const _calFrozen = { ph: { mid: false, low: false }, orp: { orp: false } };
+  // feature-159 (code-reviewer, correctif bloquant, partie b) : auto-réparation
+  // de l'état « inconnu » fixé ci-dessus par `resetCalStepper()`, au PREMIER
+  // `pts` numérique reçu après l'ouverture de l'écran — et seulement là.
+  // Sans ceci, un écran ouvert pendant que `/data` n'avait pas encore répondu
+  // restait bloqué (tous les boutons désactivés) pour toute la session, même
+  // une fois la donnée arrivée : une impasse. ⚠️ Ne JAMAIS recalculer au-delà
+  // de la première fois : après un clic « Recommencer », le firmware annonce
+  // ENCORE le point comme calibré le temps que l'EZO exécute le nouveau `Cal`
+  // — un recalcul permanent re-figerait le bouton aussitôt et annulerait le
+  // geste que ce lot fournit.
+  const _calPtsKnownOnce = { ph: false, orp: false };
+  // État d'ÉCHEC persistant par étape (feature-159, C9) : un message tant qu'un
+  // nouvel essai ou un succès ne l'a pas remplacé/effacé — jamais un simple
+  // toast volatile. `null` = pas d'échec en attente.
+  const _calFailure = { ph: { mid: null, low: null }, orp: { orp: null } };
+
+  function _calSetFailure(product, step, message) {
+    _calFailure[product][step] = message;
+    renderStability(product);
+  }
+  // `step` omis → efface TOUTES les étapes du produit (nouvelle session).
+  function _calClearFailure(product, step) {
+    if (step) { _calFailure[product][step] = null; }
+    else { Object.keys(_calFailure[product]).forEach(k => { _calFailure[product][k] = null; }); }
+    renderStability(product);
+  }
+
   function pushStabilitySample(product, value) {
     const now = Date.now();
     const arr = _calStab[product];
@@ -8374,25 +8472,55 @@
   function renderStability(product) {
     // Cible UNIQUEMENT le libellé de stabilité de l'étape calibrer ACTIVE (mid=1, low=3, ORP=2).
     // Les étapes franchies gardent leur libellé figé (comme leur lecture).
-    let el = null;
+    let el = null, step = null;
     if (product === "ph") {
-      if (_calActiveIdx.ph === 1) el = $("#cal-ph-mid-stability");
-      else if (_calActiveIdx.ph === 3) el = $("#cal-ph-low-stability");
+      if (_calActiveIdx.ph === 1) { el = $("#cal-ph-mid-stability"); step = "mid"; }
+      else if (_calActiveIdx.ph === 3) { el = $("#cal-ph-low-stability"); step = "low"; }
     } else if (_calActiveIdx.orp === 2) {
-      el = $("#cal-orp-stability");
+      el = $("#cal-orp-stability"); step = "orp";
     }
     if (!el) return;
+
+    // feature-159 : CINQ états, pour la LISIBILITÉ — jamais comme support d'un
+    // verrou (le bouton n'est jamais `disabled` pour instabilité, cf. bug-160).
+    // Priorité d'affichage, un seul message à la fois : calibration en vol (T4)
+    // > échec persistant (T5) > lecture/stabilité (T1-T3). Icônes TOUTES
+    // différentes (⏳ ○ ● ↻ ✕) : la distinction ne repose jamais sur la seule
+    // couleur (daltonisme).
+    if (_calAwait && _calAwait.product === product && _calAwait.step === step) {
+      el.textContent = "↻ Calibration en cours — ne retirez pas la sonde du tampon";
+      el.classList.remove("is-stable", "is-failed");
+      el.classList.add("is-busy");
+      return;
+    }
+    const failMsg = step && _calFailure[product][step];
+    if (failMsg) {
+      el.textContent = "✕ " + failMsg;
+      el.classList.remove("is-stable", "is-busy");
+      el.classList.add("is-failed");
+      return;
+    }
+    el.classList.remove("is-busy", "is-failed");
+
     const arr = _calStab[product];
-    let txt = "○ Stabilisation…", stable = false;
+    // T1 — état MUET corrigé : avant le 3ᵉ échantillon (10 à 45 s selon la
+    // cadence), c'est le PREMIER contact de l'utilisateur avec l'étape ; il ne
+    // doit plus lire un nombre brut mais une phrase qui dit d'attendre.
+    let txt = "⏳ Lecture de la sonde en cours — ne calibrez pas encore", stable = false;
     if (arr.length >= 3) {
       let min = arr[0].v, max = arr[0].v;
       for (const s of arr) { if (s.v < min) min = s.v; if (s.v > max) max = s.v; }
       const delta = max - min;
       stable = delta <= CAL_STAB_THRESHOLD[product];
-      const fmt = product === "ph" ? delta.toFixed(2) : Math.round(delta) + " mV";
+      // C4 : le nombre affiché EST celui qui décide (même `delta`/seuil que la
+      // comparaison ci-dessus), virgule française (`.replace(".", ",")` — motif
+      // déjà en usage ailleurs dans ce fichier).
+      const fmt = product === "ph"
+        ? delta.toFixed(2).replace(".", ",") + " pH"
+        : Math.round(delta) + " mV";
       txt = stable
         ? "● Stable — vous pouvez calibrer"
-        : "○ Stabilisation… (Δ" + CAL_STAB_WINDOW_S + "s " + fmt + ")";
+        : "○ La mesure bouge encore — attendez (écart " + fmt + " sur " + CAL_STAB_WINDOW_S + " s)";
     }
     el.textContent = txt;
     el.classList.toggle("is-stable", stable);
@@ -8426,13 +8554,39 @@
     }
   }
 
+  // feature-159 (C5) : défaut REPRODUIT puis corrigé — cette fonction réactivait
+  // INCONDITIONNELLEMENT tous les boutons « Calibrer » et remettait
+  // `_calActiveIdx` à 0 sans jamais consulter `phCalPoints`/`orpCalPoints` (la
+  // seule vérité firmware). Un point déjà calibré redevenait donc cliquable à
+  // chaque réouverture de l'écran. Reste toujours à l'étape visuelle 0 (jamais
+  // de saut direct à l'étape « terminé ») : ⚠️ ne JAMAIS en déduire un saut vers
+  // l'étape 4 quand les 2 points sont déjà faits — ça réveillerait le conseil
+  // transitoire #ph_cal_final_advice (feature-156) alors qu'aucun étalonnage
+  // n'a eu lieu dans CETTE session.
   function resetCalStepper(product) {
     _calStab[product] = [];
-    renderStability(product);
+    _calClearFailure(product); // nouvelle session : pas d'échec persistant d'une ouverture passée
     setCalStepState(product, 0);
-    // Ré-armer les boutons « Calibrer » figés d'une session précédente (réouverture).
+
+    const pts = product === "ph" ? latestSensorData?.phCalPoints : latestSensorData?.orpCalPoints;
+    // feature-159 (code-reviewer, correctif bloquant) : `pts` inconnu
+    // (undefined/null — /data pas encore répondu, ou hors ligne) ne doit PAS
+    // se comporter comme « non calibré » (fail-open découvert en revue) : la
+    // même décision pure que l'auto-réparation ci-dessous (`_calPointsAcquired`).
+    Object.assign(_calFrozen[product], _calPointsAcquired(product, pts));
+    const known = _calIsPtsKnown(pts);
+
     const btnIds = product === "ph" ? ["btn-cal-ph-mid", "btn-cal-ph-low"] : ["btn-cal-orp"];
-    btnIds.forEach(id => { const b = $("#" + id); if (b) b.disabled = false; });
+    // EZO injoignable (T13) OU état INCONNU (ni l'un ni l'autre n'autorise un
+    // geste) : n'armer AUCUN bouton — un geste qui échouerait à coup sûr, ou
+    // dont on ne sait même pas s'il écraserait un point déjà fait, n'est pas
+    // un recours. Sinon, repartir de « non figé » : le figeage réel des points
+    // déjà acquis est appliqué juste après par `_calRefreshFrozenButtons()`,
+    // qui lui ne fait QUE désactiver (jamais réactiver) — d'où la remise à
+    // `false` explicite ici.
+    btnIds.forEach(id => { const b = $("#" + id); if (b) b.disabled = !known; });
+    _calRefreshFrozenButtons();
+    renderStability(product);
   }
 
   // Avance manuelle (boutons « C'est fait → »).
@@ -8654,11 +8808,26 @@
     loadSensorData({ force: true, source: "cal-await" }); // refresh immédiat
   }
 
-  // Désactive les boutons « Calibrer » des étapes déjà franchies (figeage). Idempotent.
+  // Désactive les boutons « Calibrer » des étapes déjà franchies (figeage) : soit
+  // dépassées DANS CETTE SESSION (`_calActiveIdx`), soit déjà acquises d'après le
+  // firmware (`_calFrozen`, cf. resetCalStepper — feature-159/C5). N'ACTIVE
+  // jamais : ce côté reste porté explicitement par les appelants (resetCalStepper,
+  // _calEndAwait, les liens « Recommencer ») pour ne jamais réactiver un bouton
+  // dont l'attente réseau est encore en vol.
+  // Gère aussi la visibilité des liens « Recommencer » (A3) : affichés
+  // uniquement pour un point RÉELLEMENT acquis (`_calFrozen`), jamais pour une
+  // simple étape dépassée dans la session (la friction d'une confirmation n'a de
+  // sens que si le point est vraiment calibré).
   function _calRefreshFrozenButtons() {
-    { const b = $("#btn-cal-ph-mid"); if (b && _calActiveIdx.ph > 1) b.disabled = true; }
-    { const b = $("#btn-cal-ph-low"); if (b && _calActiveIdx.ph > 3) b.disabled = true; }
-    { const b = $("#btn-cal-orp");    if (b && _calActiveIdx.orp > 2) b.disabled = true; }
+    const phMidFrozen = _calActiveIdx.ph > 1 || _calFrozen.ph.mid;
+    const phLowFrozen = _calActiveIdx.ph > 3 || _calFrozen.ph.low;
+    const orpFrozen   = _calActiveIdx.orp > 2 || _calFrozen.orp.orp;
+    { const b = $("#btn-cal-ph-mid"); if (b && phMidFrozen) b.disabled = true; }
+    { const b = $("#btn-cal-ph-low"); if (b && phLowFrozen) b.disabled = true; }
+    { const b = $("#btn-cal-orp");    if (b && orpFrozen) b.disabled = true; }
+    { const l = $("#cal-recal-ph-mid"); if (l) l.hidden = !_calFrozen.ph.mid; }
+    { const l = $("#cal-recal-ph-low"); if (l) l.hidden = !_calFrozen.ph.low; }
+    { const l = $("#cal-recal-orp");    if (l) l.hidden = !_calFrozen.orp.orp; }
   }
 
   function _calEndAwait() {
@@ -8682,7 +8851,13 @@
     const pts = a.product === "ph" ? latestSensorData?.phCalPoints : latestSensorData?.orpCalPoints;
     if (pts === -1) {
       showToast("Calibration " + a.stepLabel + " : EZO injoignable", "error");
+      // feature-159 (C9) : _calEndAwait() D'ABORD — il libère `_calAwait`, sans
+      // quoi renderStability() (appelé par _calSetFailure) verrait encore
+      // l'attente en vol et afficherait T4 au lieu de T5. ⚠️ Ne jamais affirmer
+      // que la sonde est hors service : à ce stade, l'appareil sait seulement
+      // qu'elle ne répond pas MAINTENANT.
       _calEndAwait();
+      _calSetFailure(a.product, a.step, "Calibration non confirmée — sonde injoignable. Vérifiez le câblage, puis réessayez.");
       return;
     }
     const elapsed = Date.now() - a.startMs;
@@ -8697,6 +8872,11 @@
       const detail = a.product === "ph" ? " (" + pts + "/2 points)"
                    : (a.reference != null ? " (référence " + a.reference + " mV)" : "");
       showToast("Calibration " + a.stepLabel + " réussie" + detail, "success");
+      // feature-159 : ce point devient une vérité PERSISTANTE (survit à une
+      // réouverture de l'écran, cf. resetCalStepper/C5) — et tout échec
+      // antérieur sur cette étape est caduc.
+      _calFrozen[a.product][a.step] = true;
+      _calClearFailure(a.product, a.step);
       if (a.product === "ph") {
         completeCalStep("ph", a.step === "mid" ? 1 : 3);
         // feature-156 (A2/B11) : un étalonnage réussi peut rendre la correction
@@ -8710,7 +8890,11 @@
     }
     if (elapsed > CAL_AWAIT_TIMEOUT_MS) {
       showToast("Calibration " + a.stepLabel + " : délai dépassé — vérifier la sonde", "warning");
+      // feature-159 (C9) : ⚠️ ne jamais affirmer que la calibration précédente
+      // est intacte — sur un délai dépassé, l'appareil NE SAIT PAS si l'EZO a
+      // exécuté la commande ou non.
       _calEndAwait();
+      _calSetFailure(a.product, a.step, "Calibration non confirmée — délai dépassé. Vérifiez le câblage, puis réessayez.");
     }
   }
 
@@ -8723,7 +8907,11 @@
     const stepLabel = step === "mid" ? "pH 7.0" : "pH 4.0";
     const btn = $("#" + btnId);
     const originalLabel = btn ? btn.textContent : "Calibrer";
-    const baseline = (typeof latestSensorData?.phCalPoints === "number" && latestSensorData.phCalPoints >= 0)
+    // feature-159 (contre-visite) : passe par _calIsPtsKnown — c'était la
+    // TROISIÈME écriture de la même règle, et le commentaire de cette fonction
+    // promettait « une seule expression, jamais dupliquée ». Une garantie écrite
+    // plus forte que le code est pire que pas de garantie du tout.
+    const baseline = _calIsPtsKnown(latestSensorData?.phCalPoints)
                    ? latestSensorData.phCalPoints : 0;
     try {
       const res = await authFetch("/calibrate_ph", {
@@ -8733,6 +8921,9 @@
         let errMsg = "HTTP " + res.status;
         try { const j = await res.json(); if (j?.error) errMsg = j.error; } catch (_) {}
         showToast("Erreur calibration " + stepLabel + " : " + errMsg, "error");
+        // feature-159 (C9) : échec persistant même quand la requête échoue
+        // AVANT toute attente réseau (_calAwait n'a jamais existé ici).
+        _calSetFailure("ph", step, "Calibration non confirmée — " + errMsg + ". Vérifiez le câblage, puis réessayez.");
         return;
       }
       showToast("Calibration " + stepLabel + " envoyée — exécution EZO en cours…", "info");
@@ -8740,9 +8931,11 @@
       const other = $("#" + otherBtnId); if (other) other.disabled = true;
       const ro = $("#" + roId); if (ro) ro.classList.add("is-pulsing");
       _calAwait = { product: "ph", step, baseline, startMs: Date.now(), btnId, otherBtnId, roId, originalLabel, stepLabel };
+      renderStability("ph"); // T4 immédiat, sans attendre le prochain /data
       _calStartPolling();
     } catch (e) {
       showToast("Erreur réseau : " + (e?.message || e), "error");
+      _calSetFailure("ph", step, "Calibration non confirmée — erreur réseau. Vérifiez le câblage, puis réessayez.");
     }
   }
 
@@ -8754,7 +8947,8 @@
     const stepLabel = "ORP";
     const btn = $("#" + btnId);
     const originalLabel = btn ? btn.textContent : "Calibrer";
-    const baseline = (typeof latestSensorData?.orpCalPoints === "number" && latestSensorData.orpCalPoints >= 0)
+    // feature-159 (contre-visite) : idem pH — quatrième site de la même règle.
+    const baseline = _calIsPtsKnown(latestSensorData?.orpCalPoints)
                    ? latestSensorData.orpCalPoints : 0;
     try {
       const res = await authFetch("/calibrate_orp", {
@@ -8764,16 +8958,37 @@
         let errMsg = "HTTP " + res.status;
         try { const j = await res.json(); if (j?.error) errMsg = j.error; } catch (_) {}
         showToast("Erreur calibration ORP : " + errMsg, "error");
+        _calSetFailure("orp", "orp", "Calibration non confirmée — " + errMsg + ". Vérifiez le câblage, puis réessayez.");
         return;
       }
       showToast("Calibration ORP envoyée — exécution EZO en cours…", "info");
       if (btn) { btn.disabled = true; btn.textContent = "Calibration en cours…"; }
       const ro = $("#" + roId); if (ro) ro.classList.add("is-pulsing");
       _calAwait = { product: "orp", step: "orp", baseline, startMs: Date.now(), btnId, otherBtnId: null, roId, originalLabel, stepLabel, reference };
+      renderStability("orp"); // T4 immédiat, sans attendre le prochain /data
       _calStartPolling();
     } catch (e) {
       showToast("Erreur réseau : " + (e?.message || e), "error");
+      _calSetFailure("orp", "orp", "Calibration non confirmée — erreur réseau. Vérifiez le câblage, puis réessayez.");
     }
+  }
+
+  // feature-159 (A3/C11) : geste « Recommencer », MÉCANISME GÉNÉRIQUE — dégèle un
+  // point déjà calibré et replace le stepper à l'étape de rinçage/réglage qui le
+  // précède, pour repartir proprement (fenêtre de stabilité vidée, bouton
+  // réarmé). Utilisé par pH 4.0 et ORP (points « simples », C3) ; le point pH
+  // 7.0 ne le réutilise PAS tel quel car il doit en plus emporter le point 4.0
+  // avec lui (asymétrie matérielle — cf. bindPhCalibration).
+  function _calRestartPoint(product, step, targetIdx) {
+    _calFrozen[product][step] = false;
+    _calClearFailure(product, step);
+    _calStab[product] = [];
+    setCalStepState(product, targetIdx);
+    const btnId = product === "ph" ? (step === "mid" ? "btn-cal-ph-mid" : "btn-cal-ph-low") : "btn-cal-orp";
+    const b = $("#" + btnId); if (b) b.disabled = false;
+    _calRefreshFrozenButtons();
+    renderStability(product);
+    focusActiveStep(product);
   }
 
   function bindPhCalibration() {
@@ -8801,6 +9016,27 @@
     // Boutons de calibration
     $("#btn-cal-ph-mid")?.addEventListener("click", () => calibratePh("mid"));
     $("#btn-cal-ph-low")?.addEventListener("click", () => calibratePh("low"));
+
+    // feature-159 (A3/C3) : « Recommencer » — ASYMÉTRIQUE. Le 7.0 efface aussi
+    // le 4.0 sur l'EZO (datasheet Atlas, docs/subsystems/sensors.md:202) : fait
+    // matériel, pas une préférence d'interface → confirmation franche avant de
+    // reperdre un point qu'on ne voulait pas toucher. Le 4.0 n'a pas cet effet
+    // de bord → lien simple (_calRestartPoint), pas de confirmation.
+    $("#btn-recal-ph-mid")?.addEventListener("click", async () => {
+      const ok = await confirmDialog({
+        title: "Recalibrer le point 7.0",
+        message: "Recalibrer ce point efface aussi le point 4.00 sur la sonde : les deux seront à refaire. Il n'existe pas de retour en arrière.",
+        confirmLabel: "Refaire les 2 points",
+        cancelLabel: "Annuler",
+        danger: true,
+      });
+      if (!ok) return;
+      _calFrozen.ph.low = false; // emporté par Cal,mid (C3)
+      _calClearFailure("ph", "low");
+      { const b = $("#btn-cal-ph-low"); if (b) b.disabled = false; }
+      _calRestartPoint("ph", "mid", 0);
+    });
+    $("#btn-recal-ph-low")?.addEventListener("click", () => _calRestartPoint("ph", "low", 2));
 
     bindStepperControls("ph");
     renderCalibrationStatus();
@@ -8834,6 +9070,10 @@
       }
       calibrateOrp(reference);
     });
+
+    // feature-159 (A3/A5) : ORP traité IDENTIQUEMENT à pH 4.0 — un seul point,
+    // donc rien d'autre à effacer (C3) : lien simple, pas de confirmation.
+    $("#btn-recal-orp")?.addEventListener("click", () => _calRestartPoint("orp", "orp", 1));
 
     bindStepperControls("orp");
     renderCalibrationStatus();

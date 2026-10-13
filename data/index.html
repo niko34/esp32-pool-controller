@@ -1072,8 +1072,9 @@
             </div>
             <div class="card__body">
               <p class="muted small" style="margin-bottom:16px">
-                La sonde pH Atlas Scientific EZO nécessite 2 points de calibration (pH 7.00 et pH 4.00).
-                Calibrez chaque point indépendamment dans n'importe quel ordre. La régulation pH
+                La sonde pH Atlas Scientific EZO se calibre dans un ordre imposé par le capteur :
+                d'abord le point 7.00, puis le point 4.00. Recalibrer le point 7.00 efface aussi
+                le point 4.00 sur la sonde — les deux seront alors à refaire. La régulation pH
                 ne sera activée qu'une fois les 2 points calibrés.
               </p>
 
@@ -1094,9 +1095,18 @@
                       <div class="readout cal-step-readout" data-readout="ph-mid">
                         <span class="readout__label">Lecture pH (stabilisée)</span>
                         <div class="readout__value" id="cal-ph-mid-readout">--</div>
-                        <div class="cal-stability small" id="cal-ph-mid-stability">Δ60 s : --</div>
+                        <div class="cal-stability small" id="cal-ph-mid-stability">⏳ Lecture de la sonde en cours — ne calibrez pas encore</div>
                       </div>
                       <button class="btn btn--primary" type="button" id="btn-cal-ph-mid">Calibrer le point 7.0</button>
+                      <!-- feature-159 (A3/C3) : point déjà calibré → geste de RECOMMENCER plutôt
+                           qu'un bouton figé sans issue. Asymétrique : recalibrer le milieu efface
+                           aussi le point bas sur la sonde (datasheet Atlas) → confirmation franche
+                           (via confirmDialog — pas d'avertissement inline, contrairement aux deux
+                           autres points). Conteneur `.cal-recal` aligné sur `cal-recal-ph-low` /
+                           `cal-recal-orp` (code-reviewer, correctif mineur feature-159). -->
+                      <div class="cal-recal" id="cal-recal-ph-mid" hidden>
+                        <button class="btn btn--link" type="button" id="btn-recal-ph-mid">Recommencer l'étalonnage (2 points)</button>
+                      </div>
                     </div>
                   </li>
                   <li class="step is-upcoming" data-step="2">
@@ -1113,9 +1123,16 @@
                       <div class="readout cal-step-readout" data-readout="ph-low">
                         <span class="readout__label">Lecture pH (stabilisée)</span>
                         <div class="readout__value" id="cal-ph-low-readout">--</div>
-                        <div class="cal-stability small" id="cal-ph-low-stability">Δ60 s : --</div>
+                        <div class="cal-stability small" id="cal-ph-low-stability">⏳ Lecture de la sonde en cours — ne calibrez pas encore</div>
                       </div>
                       <button class="btn btn--primary" type="button" id="btn-cal-ph-low">Calibrer le point 4.0</button>
+                      <!-- feature-159 (A3/C3) : point déjà calibré → geste de RECOMMENCER, lien
+                           simple (contrairement au point 7.0) : refaire ce point seul n'efface
+                           pas le point milieu (datasheet Atlas). -->
+                      <div class="cal-recal" id="cal-recal-ph-low" hidden>
+                        <button class="btn btn--link" type="button" id="btn-recal-ph-low">Recommencer ce point</button>
+                        <p class="muted small cal-recal__warn">Le nouvel étalonnage remplace l'ancien. Il n'existe pas de retour en arrière.</p>
+                      </div>
                     </div>
                   </li>
                   <li class="step is-upcoming" data-step="4">
@@ -1617,9 +1634,15 @@
                       <div class="readout cal-step-readout" data-readout="orp">
                         <span class="readout__label">Lecture ORP (stabilisée)</span>
                         <div class="readout__value" id="cal-orp-readout">--</div>
-                        <div class="cal-stability small" id="cal-orp-stability">Δ60 s : --</div>
+                        <div class="cal-stability small" id="cal-orp-stability">⏳ Lecture de la sonde en cours — ne calibrez pas encore</div>
                       </div>
                       <button class="btn btn--primary" type="button" id="btn-cal-orp">Calibrer</button>
+                      <!-- feature-159 (A3/A5/C3) : ORP traité identiquement à pH 4.0 — même
+                           mécanisme générique, lien simple (un seul point, rien d'autre à effacer). -->
+                      <div class="cal-recal" id="cal-recal-orp" hidden>
+                        <button class="btn btn--link" type="button" id="btn-recal-orp">Recommencer ce point</button>
+                        <p class="muted small cal-recal__warn">Le nouvel étalonnage remplace l'ancien. Il n'existe pas de retour en arrière.</p>
+                      </div>
                     </div>
                   </li>
                   <li class="step is-upcoming" data-step="3">

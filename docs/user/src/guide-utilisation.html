@@ -732,14 +732,31 @@ où vous l'aviez laissée.</p>
 
 <h5>Calibrer la sonde</h5>
 
-<p>La sonde pH se calibre avec <strong>deux solutions étalon</strong>
-(pH&nbsp;7,00 puis pH&nbsp;4,00)&nbsp;: rincer la sonde à l'eau distillée, la
-plonger dans la première solution, attendre la stabilisation (une minuterie de
-60&nbsp;secondes vous aide, et la valeur lue s'affiche en direct), calibrer,
-puis recommencer avec la seconde solution. Tant que la calibration n'est pas
-complète (2&nbsp;points), la régulation automatique du pH reste volontairement
+<p>La sonde pH se calibre avec <strong>deux solutions étalon, dans un ordre
+imposé</strong> : d'abord pH&nbsp;7,00, puis pH&nbsp;4,00. Rincez la sonde à
+l'eau distillée, plongez-la dans la première solution. Tant que la mesure
+bouge encore, l'écran vous le dit clairement (« la mesure bouge encore —
+attendez ») au lieu de vous laisser deviner ; dès que c'est stable, il vous
+invite à calibrer. Une minuterie de 60&nbsp;secondes peut vous aider à
+patienter, et la valeur lue s'affiche en direct. Calibrez, puis recommencez
+avec la seconde solution. Tant que la calibration n'est pas complète
+(2&nbsp;points), la régulation automatique du pH reste volontairement
 inactive. À refaire en début de saison, ou quand l'indicateur de santé de la
 sonde le suggère.</p>
+
+<p>Une fois un point calibré, son bouton disparaît : impossible de le
+recalibrer par erreur en rouvrant l'écran. Pour le refaire volontairement, un
+lien «&nbsp;<strong>Recommencer</strong>&nbsp;» apparaît à sa place.
+⚠️ Sur le point 7,00 uniquement, l'appareil demande une confirmation
+avant d'agir&nbsp;: recalibrer ce point efface <strong>aussi</strong> le
+point 4,00 déjà fait (c'est ainsi que fonctionne la sonde) — les deux
+seront alors à refaire. Sur le point 4,00, le lien agit simplement, sans
+effet sur l'autre point.</p>
+
+<p>En cas d'échec (sonde injoignable, délai dépassé), le message reste
+affiché tant que vous n'avez pas recommencé&nbsp;: contrairement à un
+simple message temporaire, vous ne pouvez pas le manquer en revenant plus
+tard sur l'écran.</p>
 
 <p>Une fois l'étalonnage terminé, l'appareil rappelle qu'une bandelette
 (±&nbsp;0,5&nbsp;pH) ne suffit pas à remettre en cause un étalonnage bien fait
@@ -817,7 +834,10 @@ le reste de la page le temps du réglage (lien de retour en haut et en bas) —
 mais ici une seule carte, car l'ORP n'a pas de correction manuelle de mesure.
 La calibration se fait en <strong>un seul point</strong>, avec une solution
 étalon dont vous saisissez la valeur (les kits courants&nbsp;: 225 ou
-470&nbsp;mV) — même écran guidé que le pH, minuterie comprise.</p>
+470&nbsp;mV) — même écran guidé que le pH, minuterie comprise, avec le
+même message clair pendant la stabilisation. Une fois le point calibré, un
+lien «&nbsp;<strong>Recommencer</strong>&nbsp;» permet de le refaire sans
+confirmation (un seul point, rien d'autre à effacer).</p>
 
 <h4>La carte «&nbsp;Débit d'injection ORP&nbsp;»</h4>
 

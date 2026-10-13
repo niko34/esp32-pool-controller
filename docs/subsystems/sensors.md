@@ -171,6 +171,8 @@ Les chemins chauds (PID 100 Hz, broadcast WS 5 s, MQTT 10 s) ne peuvent pas tol�
 
 `getPhCalibrationPointsCached()` / `getOrpCalibrationPointsCached()` retournent **toujours** ces caches (sans toucher au bus). `getPhCalibrationPoints()` / `getOrpCalibrationPoints()` (sans suffixe) déclenchent un appel I²C live et sont réservés aux routes HTTP de diagnostic + `mqttTask`.
 
+⚠️ **Depuis la v2.75.0 (feature-159), `phCalPoints`/`orpCalPoints` (champs WS) sont aussi la SEULE source de vérité côté frontend pour figer les boutons « Calibrer » d'un point déjà acquis** — à la (ré)ouverture de l'écran de calibration, et pas seulement pendant la session en cours. `-1` (EZO injoignable) y désarme tout bouton, y compris « Recommencer ». Voir [page-ph.md — Figeage des points déjà calibrés](../features/page-ph.md#figeage-des-points-déjà-calibrés-_calfrozen-feature-159-v2750).
+
 ## Queue FreeRTOS `_ezoQueue`
 
 - **Capacité** : `kEzoQueueLen = 4` slots (`QueueHandle_t`).

@@ -876,7 +876,10 @@ Si une sonde est remplacée physiquement (adresse ROM différente), un warning e
 
 #### Workflow pH (2 points)
 
-Pages **pH → carte Calibration**. Les 2 sous-blocs (point milieu + point bas) sont **parallèles** : ordre libre.
+Pages **pH → carte Calibration**. Les 2 sous-blocs (point milieu + point bas) doivent être
+calibrés **dans l'ordre imposé par le capteur** : d'abord le point milieu (7.00), puis le point
+bas (4.00). Recalibrer le point milieu efface aussi le point bas sur la sonde (datasheet Atlas
+EZO) — les deux sont alors à refaire (feature-159).
 
 1. Rincer la sonde à l'eau distillée, sécher à la lingette douce.
 2. Plonger dans le tampon **pH 7.00**, attendre 1 min.

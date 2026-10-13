@@ -285,3 +285,22 @@ jobs:
       # bouton de suppression).
       - name: Contrôle des vecteurs du bouton de suppression de correction pH
         run: ./tools/check_ph_tune_remove_vectors.sh
+
+  cal-points-acquired-vectors:
+    name: Vecteurs « point de calibration acquis » (feature-159, correctif bloquant)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # Même script en local (`./tools/check_cal_points_acquired_vectors.sh`)
+      # et en CI. Couvre la fonction PURE `_calPointsAcquired(product, pts)`
+      # qui corrige un défaut fail-open relevé par le code-reviewer :
+      # `pts` non numérique (undefined/null — `/data` pas encore répondu, ou
+      # hors ligne) se comportait comme « non calibré » au lieu de
+      # « inconnu », armant à tort tous les boutons « Calibrer » du pas-à-pas
+      # pour un point déjà étalonné. Vecteurs : -1 (EZO injoignable),
+      # undefined/null (inconnu), 0 (connu, rien calibré), 1 et 2 côté pH
+      # (asymétrie mid/low), seuil `>= 1` côté ORP.
+      - name: Contrôle des vecteurs d'acquisition de calibration
+        run: ./tools/check_cal_points_acquired_vectors.sh

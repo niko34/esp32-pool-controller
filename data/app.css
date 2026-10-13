@@ -2011,6 +2011,23 @@ input.is-computed:disabled {
   color: var(--ok);
   font-weight: 650;
 }
+/* feature-159 : états « calibration en vol » et « échec persistant » — jamais
+   la seule couleur qui distingue (icône + texte différents à chaque fois,
+   cf. app.js renderStability), la couleur est un renfort. */
+.cal-stability.is-busy {
+  color: var(--accent);
+  font-weight: 650;
+}
+.cal-stability.is-failed {
+  color: var(--danger);
+  font-weight: 650;
+}
+.cal-recal {
+  margin-top: 8px;
+}
+.cal-recal__warn {
+  margin: 4px 0 0;
+}
 
 @media (max-width: 500px) {
   .cal-stepper .cal-step-readout .readout__value { font-size: 22px; }
