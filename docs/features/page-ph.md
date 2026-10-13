@@ -757,10 +757,24 @@ bail/plafond/réfractaire) a été conçu puis **abandonné avant tout déploiem
 [ADR-0107](../adr/0107-etat-visible-et-persistant-plutot-que-suspension-invisible.md).
 
 À l'entrée dans l'écran de calibration (pH ou ORP), le firmware bascule la régulation **pH ET
-ORP en `manual`** (détail firmware :
+ORP en `manual`** — mais **seulement si elle ne l'est pas déjà** (correctif du 2026-10-13,
+v2.76.2 ; détail firmware :
 [pump-controller.md](../subsystems/pump-controller.md#bascule-de-régulation-en-manuel-pendant-une-calibration-bug-160-volet-2)).
-Un bandeau unique, placé juste après le lien de retour haut (hors des cartes), en rend compte en
-un **seul état** — texte **imposé mot pour mot** (gate 5), aucune icône, aucune reformulation :
+⚠️ **Avant ce correctif**, la décision ne regardait que le verrou de sécurité pH — jamais le mode
+courant — et côté ORP aucune condition n'existait du tout : la bascule était **toujours**
+déclarée appliquée, même pour un utilisateur **déjà** en Manuel par choix. Trois affirmations
+fausses en découlaient : bandeau « a été mise en Manuel » alors qu'elle l'était déjà, bouton/liens
+« rétablir la régulation » alors que rien n'avait changé, et une **alerte de rappel** (2 h puis
+6 h) réclamant de rétablir un mode jamais quitté. Ce cas était pourtant **spécifié** par le gate 5
+(« entrée alors que la régulation est déjà en `manual` → aucune bascule ») — non vérifié avant que
+l'utilisateur, dans sa propre configuration (ses deux boucles en Manuel), ne pose la question.
+
+**Règle, par voie (pH et ORP évalués indépendamment)** : aucune bascule si **soit** la boucle est
+déjà en `manual`, **soit** (pH seulement) un verrou de sécurité `phAutoManual*` l'y maintient
+déjà. Si **aucune des deux voies** ne bascule, aucune session de bascule ne s'ouvre : pas de
+bandeau, bouton « Fermer » simple, aucune alerte de rappel. Un bandeau unique, placé juste après
+le lien de retour haut (hors des cartes), rend compte de la session **quand elle existe** — texte
+**imposé mot pour mot** (gate 5), aucune icône, aucune reformulation :
 
 > La régulation pH et chlore a été mise en Manuel : aucun dosage pendant l'étalonnage. Elle ne
 > repartira pas toute seule. Utilisez le bouton ci-dessous pour la rétablir.
@@ -793,7 +807,8 @@ basculé :
 | Cas | Libellé |
 |---|---|
 | Une bascule a eu lieu (pH et/ou ORP) | **« Fermer et rétablir la régulation »** |
-| Aucune bascule (cas d'exception de sécurité — pH déjà verrouillé par une escalade de plancher acide, feature-067) | **« Fermer »** |
+| Aucune bascule — pH déjà verrouillé par une escalade de plancher acide, feature-067 | **« Fermer »** |
+| Aucune bascule — la voie (ou les deux) était **déjà** en `manual` par choix de l'utilisateur, hors tout verrou de sécurité (correctif 2026-10-13, v2.76.2) | **« Fermer »** |
 
 La **même action** (`POST /calibration/exit`) est appelée par le bouton et par les deux liens de
 retour (haut et bas) — ⛔ pas deux chemins différents. Idempotente : appelée deux fois, ou sans

@@ -321,47 +321,67 @@ void setupCalibrationRoutes(AsyncWebServer* server) {
     if (!mqttCfg.calSwitchActive) {
       const bool phSafetyTraceActive = (mqttCfg.phAutoManualReason.length() > 0) ||
                                        (mqttCfg.phAutoManualEpoch != 0);
-      const bool applyPh = calSwitchShouldApplyEnter(phSafetyTraceActive);
-      // ORP : aucun verrou de sécurité équivalent → toujours appliqué.
-      const bool applyOrp = calSwitchShouldApplyEnter(false);
+      const bool phAlreadyManual = (mqttCfg.phRegulationMode == "manual");
+      const bool orpAlreadyManual = (mqttCfg.orpRegulationMode == "manual");
+      const bool applyPh = calSwitchShouldApplyEnter(phSafetyTraceActive, phAlreadyManual);
+      // ORP : aucun verrou de sécurité équivalent → seul le mode courant compte.
+      const bool applyOrp = calSwitchShouldApplyEnter(false, orpAlreadyManual);
 
-      const time_t nowEpoch = time(nullptr);
-      mqttCfg.calSwitchActive = true;
-      mqttCfg.calSwitchEpoch = (nowEpoch >= kMinValidEpoch) ? (uint32_t)nowEpoch : 0;
-      mqttCfg.calSwitchLastAlertEpoch = 0;
-      mqttCfg.calSwitchAlertCount = 0;
+      // bug-160 (correctif 2026-10-13 v2) : si NI le pH NI l'ORP ne basculent
+      // (les deux étaient déjà en "manual"), aucune session de bascule ne
+      // s'ouvre — ⛔ sinon calSwitchActive=true armerait l'alerte d'oubli C4
+      // (tickCalSwitchAlert) pour un état que l'utilisateur avait lui-même
+      // choisi, et le bandeau/`/data` afficheraient une session « active »
+      // qui n'a rien basculé.
+      if (applyPh || applyOrp) {
+        const time_t nowEpoch = time(nullptr);
+        mqttCfg.calSwitchActive = true;
+        mqttCfg.calSwitchEpoch = (nowEpoch >= kMinValidEpoch) ? (uint32_t)nowEpoch : 0;
+        mqttCfg.calSwitchLastAlertEpoch = 0;
+        mqttCfg.calSwitchAlertCount = 0;
 
-      mqttCfg.phCalSwitchApplied = applyPh;
-      if (applyPh) {
-        mqttCfg.phCalSwitchPrevMode = mqttCfg.phRegulationMode;
-        mqttCfg.phRegulationMode = "manual";
-        mqttCfg.phEnabled = false;
-      }
-
-      mqttCfg.orpCalSwitchApplied = applyOrp;
-      if (applyOrp) {
-        mqttCfg.orpCalSwitchPrevMode = mqttCfg.orpRegulationMode;
-        mqttCfg.orpRegulationMode = "manual";
-        mqttCfg.orpEnabled = false;
-        // feature-140 (condition #5 du gate pool-chemistry) : bascule en
-        // Manuel pendant la chloration de secours => désarmement AUTOMATIQUE
-        // (sinon double dosage : l'étalonnage ET le secours). Même patron que
-        // /save-config (web_routes_config.cpp).
-        if (isRescueChlorineActive(time(nullptr))) {
-          stopRescueChlorine(RescueLiftReason::Manual);
-          mqttManager.publishRescueState();
-          systemLogger.warning("[Secours] Désarmée : entrée en étalonnage (bascule Manuel)");
+        mqttCfg.phCalSwitchApplied = applyPh;
+        if (applyPh) {
+          mqttCfg.phCalSwitchPrevMode = mqttCfg.phRegulationMode;
+          mqttCfg.phRegulationMode = "manual";
+          mqttCfg.phEnabled = false;
         }
+
+        mqttCfg.orpCalSwitchApplied = applyOrp;
+        if (applyOrp) {
+          mqttCfg.orpCalSwitchPrevMode = mqttCfg.orpRegulationMode;
+          mqttCfg.orpRegulationMode = "manual";
+          mqttCfg.orpEnabled = false;
+          // feature-140 (condition #5 du gate pool-chemistry) : bascule en
+          // Manuel pendant la chloration de secours => désarmement AUTOMATIQUE
+          // (sinon double dosage : l'étalonnage ET le secours). Même patron que
+          // /save-config (web_routes_config.cpp).
+          if (isRescueChlorineActive(time(nullptr))) {
+            stopRescueChlorine(RescueLiftReason::Manual);
+            mqttManager.publishRescueState();
+            systemLogger.warning("[Secours] Désarmée : entrée en étalonnage (bascule Manuel)");
+          }
+        }
+
+        phSwitched = applyPh;
+        orpSwitched = applyOrp;
+
+        systemLogger.info("[Etalonnage] Entrée dans l'écran de calibration depuis " +
+                          clientIpOf(req) + " : régulation pH " +
+                          (applyPh ? "basculée en Manuel"
+                                   : (phSafetyTraceActive
+                                          ? "déjà verrouillée en Manuel (sécurité), inchangée"
+                                          : "déjà en Manuel, inchangée")) +
+                          " ; ORP " +
+                          (applyOrp ? "basculée en Manuel" : "déjà en Manuel, inchangée"));
+        saveMqttConfig();
+      } else {
+        phSwitched = false;
+        orpSwitched = false;
+        systemLogger.info("[Etalonnage] Entrée dans l'écran de calibration depuis " +
+                          clientIpOf(req) +
+                          " : pH et ORP déjà en Manuel, aucune bascule");
       }
-
-      phSwitched = applyPh;
-      orpSwitched = applyOrp;
-
-      systemLogger.info("[Etalonnage] Entrée dans l'écran de calibration depuis " +
-                        clientIpOf(req) + " : régulation pH " +
-                        (applyPh ? "basculée en Manuel" : "déjà verrouillée en Manuel (sécurité), inchangée") +
-                        " ; ORP basculée en Manuel");
-      saveMqttConfig();
     }
 
     xSemaphoreGiveRecursive(configMutex);

@@ -1,7 +1,7 @@
 #include "cal_manual_switch_logic.h"
 
-bool calSwitchShouldApplyEnter(bool safetyTraceActive) {
-  return !safetyTraceActive;
+bool calSwitchShouldApplyEnter(bool safetyTraceActive, bool alreadyManual) {
+  return !safetyTraceActive && !alreadyManual;
 }
 
 bool calSwitchShouldRestore(bool wasApplied, bool safetyTraceActiveNow) {

@@ -15,6 +15,12 @@
 // « On échange un oubli qu'on VOIT (mode Manuel affiché au tableau de bord)
 // contre une panne qu'on ne voit PAS (minuterie coincée, invisible). »
 //
+// Correctif 2026-10-13 (v2.76.2, bug-160 suite) : l'entrée en calibration
+// alors qu'une boucle était DÉJÀ en "manual" (choix utilisateur) annonçait à
+// tort « mise en Manuel » et proposait de « rétablir la régulation » — sans
+// qu'aucune bascule n'ait eu lieu. calSwitchShouldApplyEnter() prend
+// désormais le mode courant en compte.
+//
 // ⚠️ C2 (piège central, gate 5) : cette logique ne doit JAMAIS pouvoir
 // acquitter la trace de sécurité phAutoManualEpoch/phAutoManualReason
 // (feature-067, escalade de plancher acide). Elle n'a d'ailleurs AUCUN moyen
@@ -28,14 +34,20 @@
 // =============================================================================
 
 // Dois-je appliquer la bascule pH à l'ENTRÉE dans l'écran de calibration ?
-// (gate 5, C3) : ⛔ JAMAIS si une trace de sécurité phAutoManualEpoch/Reason
-// est DÉJÀ active — le pH est alors DÉJÀ "manual" sous VERROU DE SÉCURITÉ, et
-// ce lot ne doit ni le toucher ni mémoriser ce "manual" comme un "mode
-// antérieur" à restaurer plus tard (ce qui effacerait l'escalade réelle).
-// Toujours vrai côté ORP (aucun verrou équivalent — vérifié le 2026-10-13 :
-// zéro résultat sur `grep -r "orp_am_\|orpAutoManual" src/`), donc appelée
-// côté ORP avec `safetyTraceActive=false` au site d'appel.
-bool calSwitchShouldApplyEnter(bool safetyTraceActive);
+// (gate 5, C3 + bug-160 correctif 2026-10-13 v2) : ⛔ JAMAIS si une trace de
+// sécurité phAutoManualEpoch/Reason est DÉJÀ active — le pH est alors DÉJÀ
+// "manual" sous VERROU DE SÉCURITÉ, et ce lot ne doit ni le toucher ni
+// mémoriser ce "manual" comme un "mode antérieur" à restaurer plus tard (ce
+// qui effacerait l'escalade réelle).
+// ⛔ JAMAIS non plus si la boucle est DÉJÀ en "manual" (choix utilisateur,
+// hors verrou de sécurité) : « rien n'a changé » ne doit ni s'afficher comme
+// "a été mise en Manuel", ni armer l'alerte d'oubli C4, ni mémoriser ce
+// "manual" comme mode antérieur (il n'y a rien à restaurer).
+// Côté ORP (aucun verrou de sécurité équivalent — vérifié le 2026-10-13 :
+// zéro résultat sur `grep -r "orp_am_\|orpAutoManual" src/`), le site d'appel
+// passe `safetyTraceActive=false` mais PASSE le mode courant réel dans
+// `alreadyManual`.
+bool calSwitchShouldApplyEnter(bool safetyTraceActive, bool alreadyManual);
 
 // Dois-je restaurer le mode ANTÉRIEUR à la FERMETURE de l'écran ? (gate 5, C3)
 //   wasApplied          : CETTE session avait-elle réellement basculé cette

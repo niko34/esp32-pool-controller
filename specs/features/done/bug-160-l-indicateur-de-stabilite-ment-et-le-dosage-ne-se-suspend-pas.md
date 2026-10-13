@@ -708,3 +708,39 @@ dans `data/`.
 
 ⚠️ **CAPTURES À REFAIRE (seule étape humaine)** : `screenshots/07_pH_Calibration.jpg` et
 `08_ORP_Calibration.jpg` — bandeau **ambre** et bouton « Fermer et rétablir la régulation ».
+
+## Correctif du 2026-10-13 (v2.76.2) — le cas « déjà en Manuel » n'avait pas été honoré
+
+**Trouvé par l'utilisateur**, dans sa propre configuration (ses deux boucles pH et ORP sont
+**déjà** en `manual`) : *« pourquoi mettre un message "Rétablir la régulation" si la régulation
+était en manuel ? »*. La décision d'entrée (`calSwitchShouldApplyEnter`) ne regardait que le
+verrou de sécurité `phAutoManual*` — jamais le mode courant — et côté ORP aucune condition
+n'existait : la bascule était **toujours** déclarée appliquée. Trois affirmations fausses pour qui
+calibre déjà en Manuel : bandeau « a été mise en Manuel », bouton/liens « rétablir la
+régulation », et — le plus gênant — une **alerte de rappel** (2 h puis toutes les 6 h) réclamant
+de rétablir un mode jamais quitté.
+
+⚠️ **Ce cas figurait pourtant noir sur blanc dans le verdict du gate 5** ci-dessus (section « C5 »
+: *« Libellé dynamique … ou simplement "Fermer" si aucune bascule n'a eu lieu »* implique
+directement le cas « déjà en `manual` » — distinct de l'exception de sécurité C3, qui ne couvre
+que le pH verrouillé). **Personne ne l'a honoré** : ni le développeur au moment d'écrire
+`calSwitchShouldApplyEnter(safetyTraceActive)` à un seul paramètre, ni la revue de code, ni
+`doc-writer` en consignant le comportement, ni les tests natifs (qui ne testaient que
+`safetyTraceActive`). Il a fallu que l'utilisateur ouvre l'écran **dans sa propre configuration**
+pour que le défaut remonte.
+
+**LEÇON, qui dépasse ce lot** : un cas de test **écrit** par un gate de revue n'est **pas** un cas
+de test **exécuté**. Une condition de gate formulée en prose (« si X alors Y ») doit se traduire
+en un test natif nommé explicitement sur ce X — sinon elle reste une phrase, pas une garantie.
+Voir la vérification correspondante désormais en place dans
+[`test/test_native_cal_manual_switch/test_cal_manual_switch.cpp`](../../../test/test_native_cal_manual_switch/test_cal_manual_switch.cpp)
+(`test_enter_deja_manual_sans_verrou_ne_bascule_pas`) et le détail firmware dans
+[`docs/subsystems/pump-controller.md`](../../../docs/subsystems/pump-controller.md#post-calibrationenter--à-lentrée-dans-lécran).
+
+**Correctif** : `calSwitchShouldApplyEnter()` prend désormais un second paramètre `alreadyManual`,
+évalué **par voie** (pH et ORP indépendamment) ; aucune session de bascule ne s'arme si ni l'une
+ni l'autre n'a réellement basculé. Fichiers touchés : `src/cal_manual_switch_logic.{h,cpp}`,
+`src/web_routes_calibration.cpp`, `test/test_native_cal_manual_switch/test_cal_manual_switch.cpp`.
+Pas d'ADR : correctif de comportement dans un mécanisme déjà tranché par
+[ADR-0107](../../../docs/adr/0107-etat-visible-et-persistant-plutot-que-suspension-invisible.md),
+sans alternative crédible ni nouvelle contrainte structurante.

@@ -2,6 +2,59 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [2.76.2] - 2026-10-13
+
+### Fonctionnalités
+
+- **Calibration pH/ORP : la bascule en Manuel tient compte du mode déjà en
+  cours** — question de l'utilisateur, dans sa propre configuration (ses deux
+  régulations sont **déjà** en Manuel) : *« pourquoi mettre un message
+  "Rétablir la régulation" si la régulation était en manuel ? »*. À l'entrée
+  dans l'écran de calibration, la décision de basculer ne regardait **que** le
+  verrou de sécurité pH (feature-067) — jamais le mode courant ; côté ORP
+  aucune condition n'existait, la bascule était **toujours** déclarée
+  appliquée. Pour quiconque étalonne en étant déjà en Manuel, cela produisait
+  **trois affirmations fausses** : (1) le bandeau annonçait « a été mise en
+  Manuel » — elle l'était déjà ; (2) le bouton et les liens de retour
+  proposaient de « rétablir la régulation » — rien n'avait changé ; (3) ⚠️ **au
+  bout de 2 h, puis toutes les 6 h, une alerte réclamait de rétablir un mode
+  que l'utilisateur avait choisi lui-même** — la conséquence la plus
+  gênante : un rappel insistant, pour rien. La décision prend désormais le
+  mode courant en compte, **par voie** (pH et ORP séparément) : aucune
+  bascule si la régulation est déjà en `manual`. Si **aucune** des deux voies
+  n'a basculé, la session de bascule ne s'arme plus du tout — donc plus
+  d'alerte de rappel pour une session qui n'a rien touché.
+
+### Firmware
+
+- **Journal d'entrée en calibration** : la mention « ORP basculée en Manuel »
+  était **codée en dur**, quelle que soit la réalité — un diagnostic futur y
+  aurait lu une bascule qui n'avait jamais eu lieu. Elle est devenue
+  conditionnelle, comme elle l'était déjà côté pH.
+
+### Documentation
+
+- `docs/API.md` : `POST /calibration/enter` — `orp_switched` n'est plus
+  toujours `true`, la condition par voie documentée.
+- `docs/features/page-ph.md` : la règle exacte de bascule (par voie, sous
+  condition du mode courant), ce que voient le bandeau, le bouton et les
+  liens de retour quand rien n'a basculé.
+- `docs/subsystems/pump-controller.md` : condition d'armement de la session
+  et de l'alerte d'oubli ; leçon consignée — un cas de test écrit par un gate
+  n'est pas un cas de test exécuté (le gate 5 avait bien listé le cas « déjà
+  en manual », personne ne l'a honoré avant que l'utilisateur ne le
+  rapporte).
+- `docs/user/src/guide-utilisation.html` : les deux paragraphes affirmant une
+  bascule inconditionnelle (pH et ORP) sont nuancés — aucune capture neuve
+  requise pour ce correctif, le comportement illustré (sonde en mode
+  automatique avant calibration) reste inchangé ; `07_pH_Calibration.jpg` est
+  périmée pour une autre raison, antérieure à ce lot.
+- `specs/features/done/bug-160-l-indicateur-de-stabilite-ment-et-le-dosage-ne-se-suspend-pas.md` :
+  note de correctif ajoutée (ce cas avait été spécifié par le gate 5 et non
+  vérifié).
+
+---
+
 ## [2.76.1] - 2026-10-13
 
 ### Fonctionnalités

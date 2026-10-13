@@ -2067,20 +2067,42 @@ coquille dans [`src/web_routes_calibration.cpp`](../../src/web_routes_calibratio
 Appelée par `onEnter` de l'écran de calibration (`data/app.js`, `_calSwitchEnter`). Sous
 `configMutex` :
 
-1. Mémorise le mode **antérieur** de chaque boucle (`phCalSwitchPrevMode` /
+1. **Décision par voie, indépendante pH/ORP**, déléguée à la fonction pure
+   `calSwitchShouldApplyEnter(safetyTraceActive, alreadyManual)`
+   ([`src/cal_manual_switch_logic.h`](../../src/cal_manual_switch_logic.h) /
+   [`.cpp`](../../src/cal_manual_switch_logic.cpp)) : `true` seulement si **ni** un verrou de
+   sécurité **ni** le mode courant ne vaut déjà `manual`.
+   - **Exception de sécurité (gate 5, C3)**, pH uniquement : si `phAutoManualEpoch`/
+     `phAutoManualReason` (feature-067, escalade de plancher acide) est **déjà** active, le pH
+     n'est **pas** touché — il est déjà verrouillé en Manuel pour une raison plus grave, et cette
+     bascule ne mémorise jamais ce `manual`-là comme un mode à restaurer (l'effacer serait un
+     nouveau trou de sécurité). Aucun verrou équivalent n'existe côté ORP (vérifié : zéro résultat
+     sur `grep -r "orp_am_\|orpAutoManual" src/`).
+   - ⚠️ **Mode courant déjà `manual`, hors tout verrou** (correctif 2026-10-13, v2.76.2,
+     `bug-160` suite) : aucune bascule non plus, **par voie**. Avant ce correctif, seule
+     l'exception de sécurité ci-dessus était vérifiée — une boucle en Manuel **par choix de
+     l'utilisateur** (ni verrou pH, ni équivalent ORP, qui n'en a jamais eu) était tout de même
+     déclarée « basculée » : bandeau « a été mise en Manuel », bouton « rétablir la régulation »,
+     et alerte d'oubli armée, alors que **rien n'avait changé**. Ce cas était pourtant **spécifié
+     par le gate 5** (« entrée alors que l'utilisateur était déjà en `manual` → aucune bascule,
+     bouton "Fermer" simple ») — non vérifié par personne (ni développeur, ni revue, ni doc) avant
+     qu'un utilisateur dont les deux boucles étaient en Manuel ne le signale. **Leçon** : un cas de
+     test écrit noir sur blanc dans un verdict de gate n'est pas un cas de test exécuté — s'assurer
+     qu'il a un test natif dédié (voir `test/test_native_cal_manual_switch/`) et pas seulement une
+     ligne de spec.
+2. Si **applicable**, mémorise le mode **antérieur** de la boucle (`phCalSwitchPrevMode` /
    `orpCalSwitchPrevMode`) et bascule `phRegulationMode` / `orpRegulationMode` → `"manual"`
    (`phEnabled`/`orpEnabled` → `false`, miroir habituel du mode).
-2. **Exception de sécurité (gate 5, C3)** : si `phAutoManualEpoch`/`phAutoManualReason`
-   (feature-067, escalade de plancher acide) est **déjà** active, le pH n'est **pas** touché — il
-   est déjà verrouillé en Manuel pour une raison plus grave, et cette bascule ne mémorise jamais
-   ce `manual`-là comme un mode à restaurer (l'effacer serait un nouveau trou de sécurité). Aucun
-   verrou équivalent n'existe côté ORP (vérifié : zéro résultat sur
-   `grep -r "orp_am_\|orpAutoManual" src/`) — la boucle ORP bascule toujours.
-3. **Chloration de secours** (feature-140) : si active, elle est désarmée (même patron que
-   `/save-config`) — sinon un double dosage serait possible (étalonnage **et** secours).
+3. **Chloration de secours** (feature-140) : si l'ORP bascule effectivement et qu'elle est active,
+   elle est désarmée (même patron que `/save-config`) — sinon un double dosage serait possible
+   (étalonnage **et** secours).
 4. **Idempotente** : un second appel pendant une session déjà ouverte ne réécrit **pas** le mode
    antérieur mémorisé (sinon un second appel capturerait `"manual"` lui-même comme mode à
    restaurer).
+5. ⚠️ **Armement de la session** (`calSwitchActive`), correctif 2026-10-13 : seulement si **au
+   moins une** des deux voies a réellement basculé (`applyPh || applyOrp`). Si **les deux**
+   étaient déjà en `manual`, aucune session ne s'ouvre — pas de bandeau, pas d'alerte d'oubli pour
+   un état que personne n'a changé. Journal : « pH et ORP déjà en Manuel, aucune bascule ».
 
 Hors `configMutex` (même patron que `/ph|orp/inject/stop`) : **interrompt immédiatement** toute
 injection **manuelle** en cours sur les deux pompes (⚠️ gate 5, C6 — « le seul trou que le bail
@@ -2090,7 +2112,8 @@ que cette interruption remplace). Demande aussi l'interruption **one-shot** d'un
 automatique/programmée déjà ouverte, consommée au tour suivant de `update()`
 (`_calEntryInterruptRequested` / `requestCalibrationEntryInterrupt()`).
 
-Réponse : `{ "success": true, "ph_switched": bool, "orp_switched": true }`.
+Réponse : `{ "success": true, "ph_switched": bool, "orp_switched": bool }` — `orp_switched` n'est
+**plus** inconditionnellement `true` depuis le correctif 2026-10-13.
 
 ### `POST /calibration/exit` — à la fermeture de l'écran
 
@@ -2127,7 +2150,7 @@ fermeture n'acquitte **jamais** `phAutoManual*`.
 | `calSwitchActive` | une session de bascule est **ouverte** (pas encore restaurée). **Persisté** : survit à un redémarrage survenu pendant une calibration — le bandeau et l'alerte d'oubli restent vrais après reboot. |
 | `calSwitchEpoch` | epoch UNIX de l'**entrée** (`0` = heure inconnue, patron `phAutoManualEpoch` — jamais un 1970 trompeur). Sert aussi de garde fail-safe pour l'alerte d'oubli. |
 | `phCalSwitchApplied` / `phCalSwitchPrevMode` | pH a-t-il été réellement basculé par **cette** session ? Si oui, mode à restaurer à la fermeture. |
-| `orpCalSwitchApplied` / `orpCalSwitchPrevMode` | miroirs ORP — toujours appliqué (aucun verrou de sécurité équivalent côté ORP). |
+| `orpCalSwitchApplied` / `orpCalSwitchPrevMode` | miroirs ORP — appliqué sauf si l'ORP était **déjà** en `manual` à l'entrée (correctif 2026-10-13, v2.76.2 ; aucun verrou de sécurité équivalent côté ORP, mais le mode courant compte désormais). |
 | `calSwitchLastAlertEpoch` / `calSwitchAlertCount` | échéance de l'alerte d'oubli (ci-dessous), remises à zéro à chaque **nouvelle** session. |
 
 ### Alerte d'oubli (gate 5, C4 — BLOQUANTE)

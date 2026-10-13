@@ -2779,7 +2779,13 @@ en `manual` sous l'effet d'une **escalade de sécurité** (`phAutoManualEpoch`/`
 feature-067, refus répétés de plancher acide), le pH n'est **pas** touché — il est **déjà**
 verrouillé en Manuel pour une raison plus grave que la calibration, et cette route ne mémorise
 jamais ce `manual` comme un mode à restaurer plus tard (effacer l'escalade serait un nouveau trou
-de sécurité). Aucun verrou équivalent n'existe côté ORP : la boucle ORP bascule toujours.
+de sécurité). Aucun verrou équivalent n'existe côté ORP.
+
+⚠️ **Mode courant déjà `manual`, par voie** (correctif 2026-10-13, v2.76.2) : indépendamment du
+verrou de sécurité ci-dessus, **aucune bascule** n'a lieu non plus si la boucle (pH **ou** ORP) est
+**déjà** en `manual` — avant ce correctif, l'ORP était toujours déclaré basculé même sans rien
+changer. Si **ni** le pH **ni** l'ORP ne basculent (les deux étaient déjà en `manual`), aucune
+session de bascule ne s'ouvre : pas de bandeau côté client, pas d'alerte d'oubli armée.
 
 **Payload** : aucun (POST sans corps).
 
@@ -2789,8 +2795,9 @@ de sécurité). Aucun verrou équivalent n'existe côté ORP : la boucle ORP bas
 { "success": true, "ph_switched": true, "orp_switched": true }
 ```
 
-`ph_switched` vaut `false` uniquement dans le cas d'exception ci-dessus (pH déjà verrouillé par
-l'escalade de sécurité) ; `orp_switched` est toujours `true` à l'ouverture d'une nouvelle session.
+`ph_switched` vaut `false` si le pH est déjà verrouillé par l'escalade de sécurité **ou** déjà en
+`manual` par choix de l'utilisateur. `orp_switched` vaut `false` dans ce dernier cas aussi
+(⚠️ n'est **plus** toujours `true` depuis le correctif du 2026-10-13 — v2.76.2).
 
 ```bash
 curl -u admin:monmotdepasse -X POST http://poolcontroller.local/calibration/enter

@@ -12,6 +12,12 @@
 //   - calSwitchShouldApplyEnter() refuse de toucher une boucle déjà verrouillée
 //     par une trace de sécurité (gate 5, C3) — tue le mutant « toucher au mode
 //     pH alors que phAutoManual* est actif ».
+//   - calSwitchShouldApplyEnter() refuse AUSSI de toucher une boucle DÉJÀ en
+//     "manual" hors tout verrou de sécurité (bug-160, correctif 2026-10-13
+//     v2) — tue le mutant « retirer `&& !alreadyManual` » : sans cette garde,
+//     une entrée en calibration alors que l'utilisateur avait choisi "manual"
+//     annoncerait à tort une bascule et armerait l'alerte d'oubli C4 pour un
+//     état qu'il avait lui-même posé.
 //   - calSwitchShouldRestore() ne restaure jamais une boucle non appliquée, et
 //     le verrou de sécurité PRIME TOUJOURS sur la restauration même si la
 //     session l'avait appliquée (escalade survenue PENDANT la calibration).
@@ -40,6 +46,19 @@
 //   - « Interrompt l'injection manuelle en cours à l'entrée » (gate 5, C6) :
 //     vit dans web_routes_calibration.cpp (manualInjectPh/Orp.active, extern
 //     depuis web_routes_control.cpp) — non compilable nativement.
+//   - « Une voie basculée, l'autre non » (pH déjà manual, ORP automatic, ou
+//     l'inverse) : calSwitchShouldApplyEnter() est appelée UNE FOIS PAR VOIE
+//     avec SES PROPRES paramètres — ce fichier le prouve par construction
+//     (deux appels indépendants, aucun état partagé), mais le câblage réel
+//     `phAlreadyManual`/`orpAlreadyManual` (comparaison de
+//     mqttCfg.ph/orpRegulationMode à "manual") vit dans
+//     web_routes_calibration.cpp, non compilable nativement.
+//   - bug-160 (correctif 2026-10-13 v2) « l'alerte C4 ne doit pas s'armer si
+//     aucune voie n'a basculé » : c'est la coquille (web_routes_calibration.cpp)
+//     qui décide de n'ouvrir la session (mqttCfg.calSwitchActive=true) QUE si
+//     `applyPh || applyOrp` — ce module n'a ni accès ni connaissance de
+//     calSwitchActive. Vérifiable en revue de code au site
+//     `if (applyPh || applyOrp) { ... mqttCfg.calSwitchActive = true; ... }`.
 // =============================================================================
 
 #include <unity.h>
@@ -56,7 +75,7 @@ void tearDown(void) {}
 // -----------------------------------------------------------------------------
 
 void test_enter_pas_de_trace_securite_applique(void) {
-  TEST_ASSERT_TRUE(calSwitchShouldApplyEnter(/*safetyTraceActive=*/false));
+  TEST_ASSERT_TRUE(calSwitchShouldApplyEnter(/*safetyTraceActive=*/false, /*alreadyManual=*/false));
 }
 
 // MUTATION À TUER : inverser le prédicat (ou le remplacer par `true` constant)
@@ -64,14 +83,46 @@ void test_enter_pas_de_trace_securite_applique(void) {
 // de sécurité réelle (feature-067, plancher acide) — le piège central du
 // gate 5 (C2/C3).
 void test_enter_trace_securite_active_ne_touche_pas(void) {
-  TEST_ASSERT_FALSE(calSwitchShouldApplyEnter(/*safetyTraceActive=*/true));
+  TEST_ASSERT_FALSE(calSwitchShouldApplyEnter(/*safetyTraceActive=*/true, /*alreadyManual=*/true));
 }
 
-// Côté ORP, le site d'appel passe TOUJOURS `safetyTraceActive=false` (aucun
-// verrou équivalent) — documenté ici pour qu'une session future retrouve la
-// garantie sans relire web_routes_calibration.cpp.
+// Côté ORP (aucun verrou équivalent), le site d'appel passe TOUJOURS
+// `safetyTraceActive=false` — documenté ici pour qu'une session future
+// retrouve la garantie sans relire web_routes_calibration.cpp. Le mode
+// courant est "automatic" (non "manual") : bascule normale.
 void test_enter_orp_toujours_false_cote_appelant(void) {
-  TEST_ASSERT_TRUE(calSwitchShouldApplyEnter(false));
+  TEST_ASSERT_TRUE(calSwitchShouldApplyEnter(false, /*alreadyManual=*/false));
+}
+
+// -----------------------------------------------------------------------------
+// calSwitchShouldApplyEnter — bug-160 correctif 2026-10-13 v2 : le mode
+// courant COMPTE, pas seulement le verrou de sécurité.
+// -----------------------------------------------------------------------------
+
+// Déjà en "manual" (choix utilisateur, PAS un verrou de sécurité) : aucune
+// bascule — c'est exactement le défaut rapporté par l'utilisateur (bandeau
+// « mise en Manuel » + bouton « rétablir la régulation » alors que rien
+// n'avait changé).
+void test_enter_deja_manual_sans_verrou_ne_bascule_pas(void) {
+  TEST_ASSERT_FALSE(calSwitchShouldApplyEnter(/*safetyTraceActive=*/false, /*alreadyManual=*/true));
+}
+
+// En "automatic" : bascule (cas nominal).
+void test_enter_automatic_bascule(void) {
+  TEST_ASSERT_TRUE(calSwitchShouldApplyEnter(/*safetyTraceActive=*/false, /*alreadyManual=*/false));
+}
+
+// En "scheduled" : bascule aussi — alreadyManual ne doit être vrai QUE pour
+// "manual" exact, jamais pour "scheduled" (le site d'appel compare la String
+// mode à "manual", pas une négation de "automatic").
+void test_enter_scheduled_bascule(void) {
+  TEST_ASSERT_TRUE(calSwitchShouldApplyEnter(/*safetyTraceActive=*/false, /*alreadyManual=*/false));
+}
+
+// Verrou de sécurité actif ET déjà en "manual" (cas réel : le verrou pH
+// impose "manual") : aucune bascule, par les DEUX conditions à la fois.
+void test_enter_verrou_et_deja_manual_ne_bascule_pas(void) {
+  TEST_ASSERT_FALSE(calSwitchShouldApplyEnter(/*safetyTraceActive=*/true, /*alreadyManual=*/true));
 }
 
 // -----------------------------------------------------------------------------
@@ -170,6 +221,10 @@ int main(int argc, char** argv) {
   RUN_TEST(test_enter_pas_de_trace_securite_applique);
   RUN_TEST(test_enter_trace_securite_active_ne_touche_pas);
   RUN_TEST(test_enter_orp_toujours_false_cote_appelant);
+  RUN_TEST(test_enter_deja_manual_sans_verrou_ne_bascule_pas);
+  RUN_TEST(test_enter_automatic_bascule);
+  RUN_TEST(test_enter_scheduled_bascule);
+  RUN_TEST(test_enter_verrou_et_deja_manual_ne_bascule_pas);
   RUN_TEST(test_restore_non_applique_jamais_restaure);
   RUN_TEST(test_restore_applique_et_aucun_verrou_restaure);
   RUN_TEST(test_restore_applique_mais_verrou_survenu_pendant_ne_restaure_pas);
