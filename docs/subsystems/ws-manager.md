@@ -1110,6 +1110,65 @@ correctif post-livraison sans passage `doc-writer`. Servi à l'identique par
 valeur — parité par construction, puisque les deux routes lisent le **même**
 getter).
 
+## Champs `sensor_data` — bascule de calibration (bug-160)
+
+⚠️ **REFONTE du 2026-10-13 (décision utilisateur)** : un premier mécanisme (bail de suspension,
+trois champs `cal_hold_remaining_s` / `cal_hold_product` / `cal_hold_refractory_remaining_s`,
+piloté par `POST /calibration/hold`) a été conçu puis **abandonné avant tout déploiement**, au
+profit d'une bascule explicite de régulation en `manual` — voir
+[pump-controller.md](pump-controller.md#bascule-de-régulation-en-manuel-pendant-une-calibration-bug-160-volet-2)
+et [ADR-0107](../adr/0107-etat-visible-et-persistant-plutot-que-suspension-invisible.md). Les
+trois champs `cal_hold_*` ci-dessus n'ont **jamais existé** dans une trame servie — ils
+disparaissent de cette doc sans jamais avoir eu besoin d'une dépréciation.
+
+**Deux champs NEUFS**, à parité stricte `/data` ↔ WebSocket (même accesseur `mqttCfg.calSwitch*`
+des deux côtés — `src/web_routes_data.cpp` et `src/ws_manager.cpp`) :
+
+| Champ | Type | Description |
+|---|---|---|
+| `cal_switch_active` | boolean | Une session de bascule est **ouverte** : la régulation pH et/ou ORP a été mise en `manual` à l'entrée d'un écran de calibration et n'a pas encore été restaurée par `POST /calibration/exit`. |
+| `cal_switch_epoch` | integer (epoch) | Instant de l'entrée qui a ouvert la session courante. `0` si inactive, ou si l'horloge n'était pas synchronisée à l'entrée (jamais un 1970 trompeur — patron `phAutoManualEpoch`). |
+
+Pilotés par [`POST /calibration/enter`](../API.md#post-calibrationenter--write) /
+[`POST /calibration/exit`](../API.md#post-calibrationexit--write). Le mode `manual` lui-même est
+**déjà** visible via `phRegulationMode`/`orpRegulationMode` (champs existants) — ces deux champs
+ne font que dater et qualifier la bascule.
+
+#### Budget de payload — dette de discipline (le décompte avait décroché pendant quatre lots)
+
+⚠️ **Ce qui s'est réellement passé, à écrire comme un défaut de process, pas comme un détail de
+dimensionnement.** La dernière marge **vérifiée dans le code source**
+([`src/ws_manager.cpp`](../../src/ws_manager.cpp), commentaires « MARGE RÉSIDUELLE ») datait de
+la feature-155 (v2.71.0, 208 o restants sous l'ancien `kWsFrameBufBytes` = 3584 o). **Sept champs
+ont été ajoutés à la trame depuis, sans qu'aucun ne soit recompté** : trois pour feature-156
+(`ph_offset_epoch`, `ph_cal_epoch`, `ph_offset_stale`), un pour feature-158
+(`filtration_elapsed_s`), et les trois `cal_hold_*` envisagés pour `bug-160` (ci-dessus, jamais
+livrés). Recomptés **a posteriori**, caractère par caractère
+([ADR-0073](../adr/0073-chiffre-consigne-porte-sa-methode.md)) : +213 o au total — soit un pire
+cas de trame à **3589 o, 5 octets AU-DESSUS** de l'ancien plafond de 3584.
+
+**Un dépassement ne tronque pas, il fait SAUTER le push en silence** (garde
+`measureJson(doc) + 1 > cap` en fin de fonction) : le temps réel aurait cessé de fonctionner
+**sans aucune erreur visible**, avec pour seul signe un avertissement throttlé noyé dans le
+journal. Cinq octets ont suffi à frôler cet incident, et rien dans le processus de revue des
+quatre lots précédents ne l'a intercepté — le commentaire « MARGE RÉSIDUELLE » existe précisément
+pour empêcher ça, et il a été **ignoré**, pas absent.
+
+⇒ `kWsFrameBufBytes` porté 3584 → **4096** (`constants.h`) — une marge large, délibérément, pour
+ne pas reproduire ce schéma au prochain champ oublié.
+
+**Puis la refonte du même jour** a retiré les trois `cal_hold_*` (jamais servis) au profit des
+deux `cal_switch_*` ci-dessus : delta net −100 + 58 = **−42 o**. Pire cas de trame final :
+3589 − 42 = **3547 o**, sous les 4096 o (marge résiduelle **549 o**, confortable après le
+relèvement — mais la prochaine fois que ce commentaire ne sera plus tenu à jour, la marge réelle
+sera à nouveau inconnue, pas forcément confortable).
+
+**La leçon à retenir n'est pas la valeur de la constante** — elle est déjà correcte. C'est que
+**« recompter au prochain ajout » n'a pas tenu quatre lots de suite**, en dépit d'un avertissement
+explicite dans le code lui-même. Tout ajout futur à cette trame doit relire le commentaire
+« MARGE RÉSIDUELLE » le plus récent de [`src/ws_manager.cpp`](../../src/ws_manager.cpp) **et
+vérifier sa date/version de référence** avant de supposer qu'il est à jour.
+
 **Ce n'est pas l'uptime de l'appareil**, même si avant la v2.74.0
 (feature-158) il s'y confondait de fait : la durée repartait de zéro à chaque
 redémarrage logiciel, y compris quand la pompe n'avait jamais cessé de

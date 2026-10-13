@@ -358,6 +358,30 @@ curl -u admin:monmotdepasse http://poolcontroller.local/data
 | `rescue_lift` | integer (0-3) | Raison de **fin récente** du mode, fenêtre de visibilité glissante de 90 s (`kRescueLiftReasonVisibleMs`) : `0` = aucune fin récente, `1` = levée automatique (30 min de mesures ORP de nouveau fiables — **seul** cas où l'annonce « les mesures sont redevenues fiables » est vraie), `2` = expiration naturelle des 48 h (la régulation automatique a déjà repris, rien ne prouve que l'eau est fiable — contrôle au réactif DPD recommandé), `3` = arrêt manuel. Retombe à `0` de lui-même, **pas** un événement à acquitter. |
 
 **Le pH n'est jamais dosé par ce mode** (condition #11 du gate `pool-chemistry`) : aucun champ pH n'est affecté par la Chloration de secours. Voir [MQTT.md](MQTT.md#topic-et-entité-ajoutés-en-feature-140-chloration-de-secours-v2550) pour les topics MQTT équivalents, et [pump-controller.md](subsystems/pump-controller.md#chloration-de-secours-feature-140) pour le détail firmware. Buffer `/data` porté à **3200** octets (chemin sans plafond dur, gabarit purement documentaire — le seul plafond dur du projet reste `kWsFrameBufBytes` côté WebSocket, voir [ws-manager.md](subsystems/ws-manager.md#champs-sensor_data-ajoutés-en-v2550--chloration-de-secours-feature-140-et-migration-de-filtration_state_sourcefiltration_ext_on-vers-data-seul)).
+
+#### Champs ajoutés en bug-160 (bascule de régulation en Manuel pendant une calibration, volet 2)
+
+⚠️ **REFONTE du 2026-10-13 (décision utilisateur)** : le mécanisme initialement documenté ici
+(bail auto-expirant, trois champs `cal_hold_*`, `POST /calibration/hold`) a été **ABANDONNÉ avant
+tout déploiement** — remplacé par une bascule explicite de la régulation pH+ORP en `manual` à
+l'entrée de l'écran de calibration, restaurée par un geste humain (bouton « Fermer »). Voir
+[ADR-0107](adr/0107-etat-visible-et-persistant-plutot-que-suspension-invisible.md) et
+[pump-controller.md](subsystems/pump-controller.md#bascule-de-régulation-en-manuel-pendant-une-calibration-bug-160-volet-2).
+
+**Deux champs NEUFS**, à parité stricte `/data` ↔ WebSocket (accesseur unique côté firmware,
+mêmes clés, même calcul — voir [ws-manager.md](subsystems/ws-manager.md#champs-sensor_data--bascule-de-calibration-bug-160)) :
+
+| Champ | Type | Description |
+|-------|------|-------------|
+| `cal_switch_active` | boolean | Une session de bascule est **ouverte** : la régulation pH et/ou ORP a été mise en `manual` à l'entrée d'un écran de calibration et n'a **pas encore** été restaurée par `POST /calibration/exit`. |
+| `cal_switch_epoch` | integer (epoch) | Instant de l'**entrée** dans l'écran de calibration qui a ouvert la session courante. `0` si inactive, ou si l'horloge n'était pas synchronisée à l'entrée (jamais un 1970 trompeur — même patron que `phAutoManualEpoch`). |
+
+Pilotés par [`POST /calibration/enter`](#post-calibrationenter--write) et
+[`POST /calibration/exit`](#post-calibrationexit--write) — ⛔ **ni bail ni minuteur de relâche** :
+la session reste ouverte tant que `/calibration/exit` n'a pas été appelé, **y compris si le
+navigateur est fermé** — c'est la restauration qui dépend d'un geste humain, pas la suspension
+du dosage (coupée dès l'entrée, et le restant immédiatement visible via `phRegulationMode` /
+`orpRegulationMode` = `"manual"`, déjà servis par `/data`).
 >
 > ⚠️ **Corrigé en v2.47.1 (`bug-082`) — la mention d'origine « pas de champ WS » était un défaut, pas un choix.** `flow_assist` était servi par `/data` **seul** alors que la trame `sensor_data` **remplace `latestSensorData` en entier** toutes les 5 s : ses champs repassaient donc à `undefined` en quelques secondes. **Deux** champs sont désormais servis **des deux côtés**, avec les mêmes règles null/arrondi : **`aborted`** et **`flow255`** (tableau de 2, jamais un scalaire). Les **sept** autres restent `/data`-seuls — ils ne pilotent l'écran de l'assistant que **pendant** une session, et le client force un `GET /data` à son ouverture. Parité **assertée en CI** (sentinelle `test_native_ws_data_parity`, second axe imbriqué — [ADR-0071](adr/0071-parite-data-trame-capteurs.md)) ; budget de trame et méthode de chiffrage : [ws-manager.md](subsystems/ws-manager.md#champs-sensor_data-ajoutés-en-v2471--parité-de-flow_assist-bug-082).
 >
@@ -2735,6 +2759,76 @@ Efface complètement la calibration EZO mémorisée dans le module (`Cal,clear`)
 curl -u admin:monmotdepasse -X POST -H "Content-Type: application/json" \
   -d '{"sensor":"ph"}' \
   http://poolcontroller.local/calibrate_clear
+```
+
+---
+
+### POST /calibration/enter — WRITE
+
+Bascule la régulation **pH ET ORP en `manual`** à l'entrée dans l'écran de calibration (bug-160,
+volet 2, REFONTE du 2026-10-13 — voir
+[pump-controller.md](subsystems/pump-controller.md#bascule-de-régulation-en-manuel-pendant-une-calibration-bug-160-volet-2)
+et [ADR-0107](adr/0107-etat-visible-et-persistant-plutot-que-suspension-invisible.md)). Mémorise
+le mode **antérieur** de chaque boucle (pour une restauration fidèle par
+`POST /calibration/exit`), interrompt **immédiatement** toute injection manuelle en cours, et
+demande l'interruption d'une session automatique/programmée déjà ouverte. Idempotente : un
+second appel pendant une session déjà ouverte ne réécrit pas le mode antérieur mémorisé.
+
+⚠️ **Exception de sécurité (gate `pool-chemistry`, condition C3)** : si la régulation pH est déjà
+en `manual` sous l'effet d'une **escalade de sécurité** (`phAutoManualEpoch`/`phAutoManualReason`,
+feature-067, refus répétés de plancher acide), le pH n'est **pas** touché — il est **déjà**
+verrouillé en Manuel pour une raison plus grave que la calibration, et cette route ne mémorise
+jamais ce `manual` comme un mode à restaurer plus tard (effacer l'escalade serait un nouveau trou
+de sécurité). Aucun verrou équivalent n'existe côté ORP : la boucle ORP bascule toujours.
+
+**Payload** : aucun (POST sans corps).
+
+**Réponse 200** :
+
+```json
+{ "success": true, "ph_switched": true, "orp_switched": true }
+```
+
+`ph_switched` vaut `false` uniquement dans le cas d'exception ci-dessus (pH déjà verrouillé par
+l'escalade de sécurité) ; `orp_switched` est toujours `true` à l'ouverture d'une nouvelle session.
+
+```bash
+curl -u admin:monmotdepasse -X POST http://poolcontroller.local/calibration/enter
+```
+
+---
+
+### POST /calibration/exit — WRITE
+
+Restaure le mode **antérieur** de chaque boucle (pH, ORP), mémorisé par
+`POST /calibration/enter` — ⛔ jamais `"automatic"` en dur : un mode `"scheduled"` redevient
+`"scheduled"`. C'est l'action du bouton **« Fermer et rétablir la régulation »** de l'écran de
+calibration (libellé dynamique : simplement **« Fermer »** si aucune bascule n'a eu lieu à
+l'entrée — cas de l'exception de sécurité ci-dessus).
+
+⚠️ **N'acquitte jamais** `phAutoManualEpoch`/`phAutoManualReason` (gate `pool-chemistry`,
+condition C2, piège central de la refonte) : si cette trace de sécurité est active — qu'elle
+l'ait déjà été à l'entrée, ou qu'elle soit apparue **pendant** la session de calibration (par
+exemple une escalade de plancher acide déclenchée pendant que l'écran était ouvert) — le pH reste
+en Manuel et seul l'ORP est restauré.
+
+**Payload** : aucun (POST sans corps). Idempotente : appelée sans session ouverte (double clic,
+session jamais ouverte), répond 200 sans rien muter.
+
+**Réponse 200** (session ouverte, restauration effectuée) :
+
+```json
+{ "success": true, "restored": true, "ph_mode": "scheduled", "orp_mode": "manual" }
+```
+
+**Réponse 200** (aucune session ouverte) :
+
+```json
+{ "success": true, "restored": false }
+```
+
+```bash
+curl -u admin:monmotdepasse -X POST http://poolcontroller.local/calibration/exit
 ```
 
 > **Routes legacy supprimées** (404 désormais) : `POST /calibrate_ph_neutral`, `POST /calibrate_ph_acid`, `POST /clear_ph_calibration`. Remplacées par les 3 routes ci-dessus. Voir [ADR-0014](adr/0014-migration-atlas-ezo.md).

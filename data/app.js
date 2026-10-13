@@ -8383,19 +8383,212 @@
     return recent.length % 2 ? recent[mid] : (recent[mid - 1] + recent[mid]) / 2;
   }
 
-  // ---------- feature-034 : moteur stepper + stabilité ----------
-  const CAL_STAB_WINDOW_MS = 20000;          // fenêtre glissante d'analyse de stabilité (~20 s)
-  // Seuils INDICATIFS au-dessus du bruit de lecture (~0,07 pH observé) pour distinguer
-  // « sonde stabilisée (bruit seul) » de « encore en dérive ». Cosmétiques (non bloquants).
-  const CAL_STAB_THRESHOLD = { ph: 0.9, orp: 10 };
-  const CAL_STAB_WINDOW_S = Math.round(CAL_STAB_WINDOW_MS / 1000);
+  // ---------- feature-034 / bug-160 : moteur stepper + statistique de stabilité ----------
+  // ⚠️ DÉFAUT CORRIGÉ (bug-160, chiffrage gate pool-chemistry) : l'ancien seuil
+  // (0,9 pH / fenêtre 20 s, `max - min`) annonçait « Stable » à 0,8-1,1 pH de
+  // l'équilibre réel. `max - min` est une ÉTENDUE : elle CROÎT avec le nombre
+  // d'échantillons et mélange bruit et dérive — LA STATISTIQUE CHANGE, pas
+  // seulement le nombre : dérive MÉDIANE moitié récente / moitié ancienne,
+  // gardée par un garde-fou `G` sur les temps RÉELLEMENT observés (pas la
+  // fenêtre nominale). Voir `_calStabilityVerdict` ci-dessous.
+  //
+  // Table CHAQUE constante déclare sa SOURCE et son ARITHMÉTIQUE (ADR-0098),
+  // pour qu'une session future RECONTRÔLE au lieu de CROIRE — verdict
+  // pool-chemistry GO/17 conditions (C1-C8) puis GATE 2. Getters : DÉRIVÉS,
+  // jamais un second nombre à tenir synchronisé à la main.
+  const CAL_STAB = {
+    // Cadence DÉGRADÉE, sans WebSocket (cf. loadSensorData, section C9) : 30 s.
+    SLOW_CADENCE_MS: 30000,
+    // Pente de Nernst à 25 °C : S = 2,303·R·T/F ≈ 59,16 mV/pH (ADR-0074).
+    NERNST_MV_PER_PH: 59.16,
+    // Produit — lot B (lecture/stabilité) : nombre MINIMAL d'échantillons
+    // avant qu'un verdict puisse seulement être ENVISAGÉ (coupure au
+    // COMPTAGE, cf. _calStabilityVerdict ; distincte du garde-fou temporel
+    // `G ≥ G_MIN`, qui protège un autre régime — gate P2). SOURCE UNIQUE :
+    // référencée ici ET par la purge souple de `pushStabilitySample` — avant
+    // ce correctif (revue bloquante), le même « 6 » vivait en DEUX littéraux
+    // indépendants, susceptibles de diverger silencieusement.
+    MIN_SAMPLES: 6,
+    // Produit — lot B : facteur de marge du plafond d'âge DUR (HARD_AGE_MS),
+    // au-delà du simple WINDOW_MS. Valeur ARBITRAIRE mais DÉCLARÉE (ADR-0098
+    // exige une source, pas nécessairement une dérivation physique) : assez
+    // large pour ne jamais purger prématurément une sonde lente avant que la
+    // purge SOUPLE (qui, elle, protège n ≥ MIN_SAMPLES) n'ait eu l'occasion
+    // d'agir ; borné quand même pour éviter une fuite mémoire/pertinence si
+    // une session reste ouverte des heures.
+    HARD_AGE_FACTOR: 4,
+    ph: {
+      // Produit — kPhGuardReleaseHysteresis (constants.h) : hystérésis de
+      // relâche de garde DÉJÀ choisie pour ce projet, pas un nombre neuf.
+      THRESHOLD: 0.05,
+      // Produit — kPhHighMargin (constants.h).
+      RESIDUAL_MAX: 0.10,
+      // Matériel — Atlas EZO pH, 1-2 min avant `Cal` ; ⚠️ majoration de
+      // conception NON relevée sur datasheet (cf. constants.h,
+      // CAL_STAB_TAU_MAX_MS_PH) — SURESTIMER est fail-safe (agrandit WINDOW,
+      // donc DURCIT le critère) ; TOUTE BAISSE exige un relevé fabricant.
+      TAU_MAX_MS: 120000,
+      // Dérivée : réserve de rétention = τmax moins la cadence dégradée, pour
+      // écarter les échantillons trop anciens pour appartenir au MÊME
+      // transitoire d'électrode sans black-outer la cadence la plus lente.
+      get WINDOW_MS() { return this.TAU_MAX_MS - CAL_STAB.SLOW_CADENCE_MS; },
+      // Plafond d'âge DUR (section 2, lot B) : jamais un échantillon plus
+      // vieux que HARD_AGE_FACTOR × WINDOW, quel que soit le nombre restant.
+      get HARD_AGE_MS() { return this.WINDOW_MS * CAL_STAB.HARD_AGE_FACTOR; },
+      // Dérivé — AUCUN degré de liberté : G_MIN = SEUIL / RÉSIDUEL_MAX, PAR
+      // PRODUIT (revue bloquante : une version antérieure dérivait le G_MIN
+      // PARTAGÉ depuis `ph` SEUL — un futur changement du ratio ORP ne
+      // l'aurait pas suivi). Si un vecteur échoue, ce n'est JAMAIS ce seuil
+      // qu'il faut assouplir (⛔ ADR-0098) : c'est `G ≥ G_MIN` qui est
+      // violée — seule issue : allonger la fenêtre ou la cadence, toutes
+      // deux PLUS STRICTES.
+      get G_MIN() { return this.THRESHOLD / this.RESIDUAL_MAX; },
+    },
+    orp: {
+      // Physique — 0,05 × pente de Nernst. ⚠️ ÉCRIRE L'EXPRESSION, jamais un
+      // littéral (3.0 REFUSÉ par le gate — « exactement le mouvement
+      // qu'ADR-0098 interdit, et la même faute que celle qu'on corrige »).
+      get THRESHOLD() { return 0.05 * CAL_STAB.NERNST_MV_PER_PH; },
+      get RESIDUAL_MAX() { return 0.10 * CAL_STAB.NERNST_MV_PER_PH; },
+      // Matériel — majoration de conception (non relevée sur datasheet,
+      // idem pH) ; plus courte que la pose normale d'une sonde redox.
+      TAU_MAX_MS: 180000,
+      get WINDOW_MS() { return this.TAU_MAX_MS - CAL_STAB.SLOW_CADENCE_MS; },
+      get HARD_AGE_MS() { return this.WINDOW_MS * CAL_STAB.HARD_AGE_FACTOR; },
+      // PROPRE au produit (même raison que ph.G_MIN ci-dessus) — par
+      // construction IDENTIQUE à ph.G_MIN (le facteur de Nernst s'annule) ;
+      // `test/cal_stability_vectors.js` épingle cette égalité EXPLICITEMENT,
+      // pas seulement par coïncidence de lecture.
+      get G_MIN() { return this.THRESHOLD / this.RESIDUAL_MAX; },
+    },
+  };
+  // Borné en NOMBRE (section 2) : indépendant de la cadence/fenêtre, évite
+  // une fuite mémoire si une session reste ouverte des heures.
+  const CAL_STAB_MAX_SAMPLES = 256;
+  // Diagnostic (section 4, verdict ergonome, P3 du gate) — produit :
+  // kStabilizationDurationPhMs (constants.h), appliqué aux DEUX produits par
+  // décision du gate : kStabilizationDurationOrpMs (180 000 ms) serait PLUS
+  // COURTE que la pose normale d'une sonde redox, donc inadaptée ici.
+  const CAL_STAB_DIAG_MS = 300000;
+  // Dérivé de CAL_STAB_DIAG_MS — jamais un second littéral « 5 » découplé
+  // (revue bloquante) : si la durée de diagnostic change un jour, le texte
+  // T-D1/T-D2 (verbatim ci-dessous) la reflète automatiquement. AUJOURD'HUI,
+  // vaut exactement 5 — le verbatim imposé reste donc inchangé.
+  const CAL_STAB_DIAG_MIN = CAL_STAB_DIAG_MS / 60000;
+  // Textes T-D1 (pH) / T-D2 (ORP) — VERBATIM (coordinateur, correctif du
+  // 2026-10-13 : la première rédaction de ce lot était une PARAPHRASE, pas
+  // une recopie de la spec). DEUX LIGNES dans le MÊME bloc — jamais de renvoi
+  // vers une pente côté ORP (étalonnage à un seul point, pas de pente
+  // possible : les deux textes NE SONT PAS symétriques). ⛔ L'icône ⚠ N'EST
+  // PAS dans le texte (tranché par ux-ui-designer) — posée par CSS/classe
+  // `.is-diag` comme pour les autres états, jamais concaténée à la chaîne.
+  // ⚠️ `D`/`S` dans la ligne 1 sont les valeurs RÉALISÉES du verdict COURANT
+  // (C5) — jamais un exemple recopié en dur (0,12 pH/45 s et 4 mV/75 s dans la
+  // spec sont des gabarits de FORMAT, pas des littéraux à reprendre).
+  function _calDiagLines(product, verdict) {
+    const fmtD = product === "ph"
+      ? verdict.D.toFixed(2).replace(".", ",") + " pH"
+      : Math.round(verdict.D) + " mV";
+    const sSec = Math.max(0, Math.round(verdict.S / 1000));
+    const line1 = "Toujours instable après " + CAL_STAB_DIAG_MIN + " min (écart " + fmtD + " sur " + sSec + " s).";
+    const line2 = product === "ph"
+      ? "Vous pouvez calibrer quand même. Une dérive qui dure est aussi un signe d'usure de la sonde : vérifiez la pente dans « État sonde pH » après l'étalonnage."
+      : "Vous pouvez calibrer quand même. Une dérive qui dure est aussi un signe d'usure de la sonde redox.";
+    return [line1, line2];
+  }
+
+  // Verdict de stabilité — fonction PURE (ADR-0017/0099) : aucun DOM, aucune
+  // horloge interne (`nowMs` fourni par l'appelant — `performance.now()` côté
+  // navigateur, un nombre arbitraire dans les vecteurs natifs). `samples`
+  // DOIT être trié par `t` croissant (invariant tenu par pushStabilitySample,
+  // pas revérifié ici : une fonction pure ne masque pas un appelant qui le
+  // romprait).
+  //
+  // Coupure en DEUX moitiés PAR COMPTAGE (floor(n/2), médian écarté si
+  // impair) ET garde-fou `G` sur les temps RÉELLEMENT observés : les DEUX
+  // sont imposés, ils tuent des mutants différents (gate, P2) — une coupure
+  // au comptage SANS `G` laisserait passer une RAFALE (beaucoup
+  // d'échantillons en peu de temps) ; une coupure au temps SANS `G`
+  // laisserait passer une cadence MIXTE.
+  //
+  // D = |médiane(moitié récente) − médiane(moitié ancienne)|
+  // S = séparation RÉALISÉE des temps médians (pas la fenêtre nominale)
+  // a = âge RÉALISÉ de la médiane récente (pas la cadence nominale)
+  // G = e^(a/τmax) · (e^(S/τmax) − 1) ⇒ résiduel garanti R = D/G
+  //
+  // Verdict RENDU seulement si n ≥ 6 ET G ≥ G_MIN ; sinon MUET. `stable` ⟺
+  // `D ≤ SEUIL`.
+  function _calStabilityVerdict(product, samples, nowMs) {
+    const cfg = CAL_STAB[product];
+    const n = samples.length;
+    if (n < CAL_STAB.MIN_SAMPLES) return { state: "muted", D: null, S: null, G: null, n };
+
+    const half = Math.floor(n / 2);
+    const oldHalf = samples.slice(0, half);
+    const recentHalf = samples.slice(n - half);
+
+    const median = (arr, key) => {
+      const vals = arr.map(key).sort((a, b) => a - b);
+      const mid = Math.floor(vals.length / 2);
+      return vals.length % 2 ? vals[mid] : (vals[mid - 1] + vals[mid]) / 2;
+    };
+
+    const oldMedianV = median(oldHalf, (s) => s.v);
+    const recentMedianV = median(recentHalf, (s) => s.v);
+    const oldMedianT = median(oldHalf, (s) => s.t);
+    const recentMedianT = median(recentHalf, (s) => s.t);
+
+    const D = Math.abs(recentMedianV - oldMedianV);
+    const S = recentMedianT - oldMedianT; // séparation RÉALISÉE
+    const a = nowMs - recentMedianT;      // âge RÉALISÉ de la médiane récente
+
+    const tau = cfg.TAU_MAX_MS;
+    const G = Math.exp(a / tau) * (Math.exp(S / tau) - 1);
+
+    if (G < cfg.G_MIN) return { state: "muted", D, S, G, n };
+
+    const stable = D <= cfg.THRESHOLD;
+    return { state: stable ? "stable" : "unstable", D, S, G, n };
+  }
+
+  // Vide le tampon de stabilité ET son compagnon de session (section 2/4) —
+  // SEUL point qui les remet à zéro ENSEMBLE, pour qu'aucun site d'appel ne
+  // puisse oublier l'un des deux (c'était exactement le risque d'une remise
+  // à zéro dupliquée quatre fois).
+  function _calResetStabBuffer(product) {
+    _calStab[product] = [];
+    _calStabSessionStart[product] = null;
+  }
+
+  // Affiche `text` (chaîne OU tableau de lignes, cf. diagnostic T-D1/T-D2)
+  // dans `el` SANS jamais aplatir un retour à la ligne via `textContent` sur
+  // plusieurs lignes (section 3/4 du lot) — un enfant par ligne.
+  function _calRenderStabilityLines(el, text) {
+    if (Array.isArray(text)) {
+      el.textContent = "";
+      text.forEach((line) => {
+        const div = document.createElement("div");
+        div.textContent = line;
+        el.appendChild(div);
+      });
+    } else {
+      el.textContent = text;
+    }
+  }
 
   // Indices d'étapes du stepper que l'utilisateur fait avancer manuellement.
   const CAL_MANUAL_STEPS = { ph: [0, 2], orp: [0, 1] };
   const CAL_STEP_COUNT   = { ph: 5, orp: 4 };
 
-  const _calStab = { ph: [], orp: [] };      // [{t, v}] fenêtre glissante
+  const _calStab = { ph: [], orp: [] };      // [{t, v}] fenêtre glissante (t = performance.now(), monotone)
   const _calActiveIdx = { ph: 0, orp: 0 };   // index de l'étape active (pour figer les étapes franchies)
+  // bug-160 (section 4) : instant du PREMIER échantillon du tampon courant —
+  // `null` tant qu'aucun échantillon n'a encore été poussé depuis le dernier
+  // reset. Compagnon DÉDIÉ de `_calStab` (se remet à zéro AVEC lui, cf. tous
+  // les sites qui vident `_calStab[product]`) : NE DOIT PAS dépendre de
+  // `_calStab[product][0].t`, que la purge de rétention fait avancer en
+  // continu (sans quoi le diagnostic ne se déclencherait jamais, cf. gate).
+  const _calStabSessionStart = { ph: null, orp: null };
 
   // feature-159 (code-reviewer, correctif bloquant) : SEULE définition de
   // « pts est-il une mesure exploitable ? ». Un `pts` non numérique
@@ -8462,11 +8655,37 @@
   }
 
   function pushStabilitySample(product, value) {
-    const now = Date.now();
+    // ⚠️ Horloge MONOTONE (section 2) : `performance.now()`, PAS `Date.now()`
+    // — un recalage NTP ou un changement de fuseau cassait la purge dans les
+    // DEUX sens (bug-160, gate P2).
+    const now = performance.now();
     const arr = _calStab[product];
+    // Premier échantillon du tampon courant : amorce le minuteur de
+    // diagnostic (section 4) — compagnon DÉDIÉ, jamais réutilisé depuis
+    // `arr[0].t` (cf. commentaire de `_calStabSessionStart`).
+    if (_calStabSessionStart[product] == null) _calStabSessionStart[product] = now;
     arr.push({ t: now, v: value });
-    const cutoff = now - CAL_STAB_WINDOW_MS;
-    while (arr.length && arr[0].t < cutoff) arr.shift();
+
+    // Borné en NOMBRE (section 2), indépendant de l'âge.
+    while (arr.length > CAL_STAB_MAX_SAMPLES) arr.shift();
+
+    const cfg = CAL_STAB[product];
+    // Plafond d'âge DUR : jamais un échantillon plus vieux que
+    // HARD_AGE_FACTOR × WINDOW, quel que soit le nombre restant (contrairement
+    // à la purge souple ci-dessous).
+    const hardCutoff = now - cfg.HARD_AGE_MS;
+    while (arr.length && arr[0].t < hardCutoff) arr.shift();
+
+    // Purge SOUPLE : au-delà de WINDOW, SAUF s'il resterait moins de
+    // MIN_SAMPLES échantillons — une cadence dégradée (30 s sans WebSocket)
+    // doit pouvoir s'accumuler au-delà de WINDOW le temps d'atteindre
+    // n ≥ MIN_SAMPLES, sinon : état MUET PERMANENT, le pire résultat
+    // (contraintes techniques de la spec). SOURCE UNIQUE avec le seuil
+    // utilisé par `_calStabilityVerdict` (CAL_STAB.MIN_SAMPLES) — avant ce
+    // correctif (revue bloquante), le même « 6 » vivait ici en second
+    // littéral indépendant.
+    const softCutoff = now - cfg.WINDOW_MS;
+    while (arr.length > CAL_STAB.MIN_SAMPLES && arr[0].t < softCutoff) arr.shift();
   }
 
   function renderStability(product) {
@@ -8481,49 +8700,73 @@
     }
     if (!el) return;
 
-    // feature-159 : CINQ états, pour la LISIBILITÉ — jamais comme support d'un
-    // verrou (le bouton n'est jamais `disabled` pour instabilité, cf. bug-160).
-    // Priorité d'affichage, un seul message à la fois : calibration en vol (T4)
-    // > échec persistant (T5) > lecture/stabilité (T1-T3). Icônes TOUTES
-    // différentes (⏳ ○ ● ↻ ✕) : la distinction ne repose jamais sur la seule
-    // couleur (daltonisme).
+    // bug-160 : SIX états, pour la LISIBILITÉ — jamais comme support d'un
+    // verrou (le bouton n'est jamais `disabled` pour instabilité). Priorité
+    // d'affichage, un seul message à la fois, codée EXPLICITEMENT : en cours
+    // (T4) > échec persistant (T5) > diagnostic (section 4) >
+    // muet/instable/stable (T1-T3). Icônes TOUTES différentes
+    // (⏳ ○ ● ↻ ✕ ⚠) : la distinction ne repose jamais sur la seule couleur
+    // (daltonisme).
+    el.classList.remove("is-busy", "is-failed", "is-diag", "is-stable");
+
     if (_calAwait && _calAwait.product === product && _calAwait.step === step) {
-      el.textContent = "↻ Calibration en cours — ne retirez pas la sonde du tampon";
-      el.classList.remove("is-stable", "is-failed");
+      _calRenderStabilityLines(el, "↻ Calibration en cours — ne retirez pas la sonde du tampon");
       el.classList.add("is-busy");
       return;
     }
     const failMsg = step && _calFailure[product][step];
     if (failMsg) {
-      el.textContent = "✕ " + failMsg;
-      el.classList.remove("is-stable", "is-busy");
+      _calRenderStabilityLines(el, "✕ " + failMsg);
       el.classList.add("is-failed");
       return;
     }
-    el.classList.remove("is-busy", "is-failed");
 
     const arr = _calStab[product];
-    // T1 — état MUET corrigé : avant le 3ᵉ échantillon (10 à 45 s selon la
-    // cadence), c'est le PREMIER contact de l'utilisateur avec l'étape ; il ne
-    // doit plus lire un nombre brut mais une phrase qui dit d'attendre.
-    let txt = "⏳ Lecture de la sonde en cours — ne calibrez pas encore", stable = false;
-    if (arr.length >= 3) {
-      let min = arr[0].v, max = arr[0].v;
-      for (const s of arr) { if (s.v < min) min = s.v; if (s.v > max) max = s.v; }
-      const delta = max - min;
-      stable = delta <= CAL_STAB_THRESHOLD[product];
-      // C4 : le nombre affiché EST celui qui décide (même `delta`/seuil que la
-      // comparaison ci-dessus), virgule française (`.replace(".", ",")` — motif
-      // déjà en usage ailleurs dans ce fichier).
-      const fmt = product === "ph"
-        ? delta.toFixed(2).replace(".", ",") + " pH"
-        : Math.round(delta) + " mV";
-      txt = stable
-        ? "● Stable — vous pouvez calibrer"
-        : "○ La mesure bouge encore — attendez (écart " + fmt + " sur " + CAL_STAB_WINDOW_S + " s)";
+    const nowMs = performance.now();
+    const verdict = _calStabilityVerdict(product, arr, nowMs);
+
+    // Diagnostic (section 4, verdict ergonome P3) : 5 min après le PREMIER
+    // échantillon du TAMPON COURANT, et seulement si l'étalonnage n'est
+    // TOUJOURS pas confirmé stable — cède la priorité dès que « Stable »
+    // redevient vrai (le mécanisme GARDE RAISON sur une sonde dégradée, seule
+    // la NATURE du message change, jamais le critère, cf. gate P3).
+    // ⚠️ `verdict.D != null` EXCLUT le seul cas muet où D/S n'existent pas
+    // (n < 6 — réseau dégradé au point de ne pas avoir 6 échantillons après
+    // 5 min) : le texte T-D1/T-D2 cite un écart RÉALISÉ (C5), jamais une
+    // valeur absente. Ce cas rarissime retombe sur T1 (« lecture en cours »),
+    // qui reste honnête (on n'a toujours pas assez de données).
+    const sessionStart = _calStabSessionStart[product];
+    const diagDue = sessionStart != null
+      && (nowMs - sessionStart) >= CAL_STAB_DIAG_MS
+      && verdict.state !== "stable"
+      && verdict.D != null;
+    if (diagDue) {
+      _calRenderStabilityLines(el, _calDiagLines(product, verdict));
+      el.classList.add("is-diag");
+      return;
     }
-    el.textContent = txt;
-    el.classList.toggle("is-stable", stable);
+
+    if (verdict.state === "muted") {
+      // T1 — état MUET : TEXTE INCHANGÉ pour TOUS les cas muets (n < 6 OU
+      // G < G_MIN, gate) — l'utilisateur n'a pas besoin de distinguer trop
+      // tôt de cadence dégradée, l'action est la même (attendre).
+      _calRenderStabilityLines(el, "⏳ Lecture de la sonde en cours — ne calibrez pas encore");
+      return;
+    }
+    if (verdict.state === "stable") {
+      _calRenderStabilityLines(el, "● Stable — vous pouvez calibrer");
+      el.classList.add("is-stable");
+      return;
+    }
+    // instable (section 3) : le nombre affiché EST celui qui décide, DURÉE
+    // COMPRISE — les deux valeurs viennent du MÊME objet verdict, jamais une
+    // seconde valeur recalculée pour l'affichage (⛔ C5 : ce serait
+    // exactement le défaut Δ60 s/Δ20 s reconstitué sous une autre forme).
+    const fmt = product === "ph"
+      ? verdict.D.toFixed(2).replace(".", ",") + " pH"
+      : Math.round(verdict.D) + " mV";
+    const sSec = Math.max(0, Math.round(verdict.S / 1000));
+    _calRenderStabilityLines(el, "○ La mesure bouge encore — attendez (écart " + fmt + " sur " + sSec + " s)");
   }
 
   // --- progression du stepper ---
@@ -8552,6 +8795,12 @@
       const advice = $("#ph_cal_final_advice");
       if (advice) advice.hidden = (idx !== 4);
     }
+    // bug-160 (section 7, C9) : cadence /data GARANTIE à 5 s UNIQUEMENT
+    // pendant une étape « Calibrer » ACTIVE (mid=1/low=3 pH, orp=2) — le
+    // pouvoir de rejet du bruit de la statistique de stabilité est en 1/√n,
+    // une cadence dégradée (30 s) le prive de données pendant de longues
+    // minutes. Revient à la cadence normale dès qu'on quitte cette étape.
+    _calStabSyncPolling();
   }
 
   // feature-159 (C5) : défaut REPRODUIT puis corrigé — cette fonction réactivait
@@ -8564,7 +8813,7 @@
   // transitoire #ph_cal_final_advice (feature-156) alors qu'aucun étalonnage
   // n'a eu lieu dans CETTE session.
   function resetCalStepper(product) {
-    _calStab[product] = [];
+    _calResetStabBuffer(product);
     _calClearFailure(product); // nouvelle session : pas d'échec persistant d'une ouverture passée
     setCalStepState(product, 0);
 
@@ -8594,7 +8843,7 @@
     const active = $$(`#${product}-cal-steps .step.is-active`)[0];
     if (!active || parseInt(active.dataset.step, 10) !== fromIdx) return;
     setCalStepState(product, fromIdx + 1);
-    _calStab[product] = []; // repartir d'une fenêtre propre à chaque changement de solution
+    _calResetStabBuffer(product); // repartir d'une fenêtre propre à chaque changement de solution
     renderStability(product);
     focusActiveStep(product);
   }
@@ -8602,7 +8851,7 @@
   // Marque une étape « calibrer » comme faite après succès EZO et passe à la suivante.
   function completeCalStep(product, idx) {
     setCalStepState(product, idx + 1);
-    _calStab[product] = [];
+    _calResetStabBuffer(product);
     renderStability(product);
     focusActiveStep(product);
   }
@@ -8620,6 +8869,130 @@
   }
 
   // ==========================================================================
+  // bug-160 (section 7, C9) : cadence /data GARANTIE pendant une étape
+  // « Calibrer » active — le pouvoir de rejet du bruit de la statistique de
+  // stabilité est en 1/√n ; une cadence dégradée (30 s sans WebSocket) prive
+  // la fenêtre de données pendant de longues minutes. ⚠️ Budget
+  // `kMaxRequestsPerMinute` (constants.h) = 120 req/min/IP : ce ticker coûte
+  // au plus 60000/kCalStabPollMs = 12 req/min, moins d'un dixième du quota —
+  // DIT, pas supposé.
+  // ==========================================================================
+  const kCalStabPollMs = 5000;
+  let _calStabPollTimer = null;
+
+  function _calStabActiveStepNow() {
+    return _calActiveIdx.ph === 1 || _calActiveIdx.ph === 3 || _calActiveIdx.orp === 2;
+  }
+
+  function _calStabSyncPolling() {
+    const shouldPoll = _calStabActiveStepNow();
+    if (shouldPoll && !_calStabPollTimer) {
+      _calStabPollTimer = setInterval(() => {
+        // Pendant l'attente de confirmation d'un `Cal` (_calAwait), le ticker
+        // 1,5 s de `_calStartPolling()` prend déjà le relais — éviter de
+        // doubler le trafic.
+        if (_calAwait) return;
+        loadSensorData({ force: true, source: "cal-stability" });
+      }, kCalStabPollMs);
+    } else if (!shouldPoll && _calStabPollTimer) {
+      clearInterval(_calStabPollTimer);
+      _calStabPollTimer = null;
+    }
+  }
+
+  function _calStabStopPolling() {
+    if (_calStabPollTimer) { clearInterval(_calStabPollTimer); _calStabPollTimer = null; }
+  }
+
+  // ==========================================================================
+  // bug-160 (volet 2, REFONTE 2026-10-13) — bascule de la régulation en
+  // Manuel à l'entrée en calibration, rétablie par un GESTE HUMAIN (bouton
+  // « Fermer » ou liens de retour). Remplace ENTIÈREMENT l'ancien mécanisme de
+  // bail auto-expirant (battement de cœur 60 s, plafond 30 min, période
+  // réfractaire — abandonnés, gate pool-chemistry GATE 5 : « le bail n'est pas
+  // regretté, il échouait en silence du mauvais côté »).
+  // Contrat firmware (web_routes_calibration.cpp) :
+  //   POST /calibration/enter → { success, ph_switched, orp_switched }
+  //   POST /calibration/exit  → { success, restored, ph_mode?, orp_mode? }
+  // ⛔ AUCUNE ROUTE DE RELÂCHE : /calibration/exit est le SEUL chemin de sortie
+  // (appelé par le bouton de fermeture ET par les deux liens de retour, gate
+  // 5/C5 — « même action »). Idempotentes des deux côtés.
+  // ==========================================================================
+  let _calSwitchOccurred = false; // bascule réalisée (pH et/ou ORP) pour la session ouverte
+
+  function _calSwitchCloseLabel() {
+    return _calSwitchOccurred ? "Fermer et rétablir la régulation" : "Fermer";
+  }
+
+  function _calSwitchSetCloseBtnLabel(page, label) {
+    const cfg = MAINTENANCE_PAGES[page];
+    const btn = cfg && $("#" + cfg.closeBtnId);
+    if (btn) btn.textContent = label;
+  }
+
+  // Appelé par onEnter (geste humain, seul capable d'ouvrir une session côté
+  // firmware). Best-effort : si le réseau est indisponible, on ne PEUT PAS
+  // savoir si le firmware a basculé — par sécurité on suppose que oui (le
+  // bouton affiche l'action de rétablissement ; /calibration/exit est de
+  // toute façon idempotente si aucune session n'a réellement été ouverte).
+  async function _calSwitchEnter(page) {
+    _calSwitchOccurred = false;
+    _calSwitchSetCloseBtnLabel(page, "Fermer");
+    try {
+      const res = await authFetch("/calibration/enter", { method: "POST" });
+      const data = res.ok ? await res.json().catch(() => null) : null;
+      _calSwitchOccurred = !!(data && (data.ph_switched || data.orp_switched));
+    } catch (e) {
+      _calSwitchOccurred = true; // hypothèse prudente, cf. commentaire ci-dessus
+    }
+    _calSwitchSetCloseBtnLabel(page, _calSwitchCloseLabel());
+    _renderCalSwitchBanner(page);
+  }
+
+  // Appelé par exitMaintenance() — SUCCÈS OU NON, geste humain uniquement
+  // (bouton de fermeture ou liens de retour, jamais automatique).
+  async function _calSwitchExit(page) {
+    _calSwitchOccurred = false;
+    _calSwitchSetCloseBtnLabel(page, "Fermer");
+    try {
+      await authFetch("/calibration/exit", { method: "POST" });
+    } catch (e) {
+      // Best-effort : rien d'autre à tenter côté client — pas de route de
+      // relâche alternative (invariant hérité du volet 2). La régulation
+      // reste en Manuel jusqu'à ce que l'appareil soit de nouveau joignable
+      // et qu'un nouvel appel (réouverture de l'écran) y parvienne — c'est le
+      // compromis assumé par la refonte : un défaut VISIBLE (mode Manuel
+      // affiché) plutôt qu'une minuterie invisible.
+    }
+  }
+
+  // ==========================================================================
+  // bug-160 (volet 2) — bandeau : PATRON des cartes/liens `.flow-maintenance`
+  // (hidden par défaut, basculé en fonction de l'état), pas un mécanisme
+  // d'affichage neuf. Un SEUL bandeau par page, texte FIXE imposé par le gate
+  // pool-chemistry (GATE 5) — porté directement par le HTML (data/index.html),
+  // ce bandeau ne fait que basculer sa visibilité.
+  // ==========================================================================
+  function _renderCalSwitchBanner(page) {
+    // No-op pour toute page SANS bandeau (température) — ⚠️ garde EXPLICITE :
+    // un ternaire par défaut aurait fait retomber "temperature" sur l'élément
+    // ORP et l'aurait manipulé à tort.
+    if (page !== "ph" && page !== "orp") return;
+    const id = page === "ph" ? "ph-cal-switch-banner" : "orp-cal-switch-banner";
+    const el = $("#" + id);
+    if (!el) return;
+    const view = $("#" + MAINTENANCE_PAGES[page].viewId);
+    // ⚠️ DEUX conditions, pas une (relevé en revue, 2026-10-13) : le bandeau
+    // affirme « la régulation a été mise en Manuel ». Le gater sur le seul mode
+    // réglage le ferait MENTIR quand /calibration/enter a échoué (503 mutex) —
+    // il annoncerait une bascule pendant que le bouton affiche « Fermer »,
+    // c'est-à-dire l'absence de bascule. Un texte qui affirme ce qui n'a pas eu
+    // lieu est un défaut, pas une approximation.
+    const inMaintenance = !!(view && view.classList.contains("is-flow-maintenance"));
+    el.hidden = !(inMaintenance && _calSwitchOccurred);
+  }
+
+  // ==========================================================================
   // feature-156 : mode réglage (calibration + correction), mécanisme GÉNÉRIQUE
   // ==========================================================================
   // Remplace show/hide{Ph,Orp,Temp}CalibrationCard (style inline qui écrasait
@@ -8632,22 +9005,28 @@
   // (b) gérer scroll/focus/sous-titre/annonce, (c) les hooks par page.
   const MAINTENANCE_PAGES = {
     ph: {
-      viewId: "view-ph", triggerBtnId: "ph_cal_trigger_btn",
+      viewId: "view-ph", triggerBtnId: "ph_cal_trigger_btn", closeBtnId: "ph_cal_close_btn",
       backTopId: "ph-maintenance-back-top", backBottomId: "ph-maintenance-back-bottom",
       announceId: "ph-maintenance-announce", label: "pH",
       cardIds: ["ph-card-calibration", "ph-card-tune"],
       subMaintenance: "Calibration de la sonde et correction de la mesure",
-      onEnter: () => { resetCalStepper("ph"); renderCalibrationStatus(); },
-      onExit: () => { phCalibrationActive = false; updatePhModeControls(); },
+      // bug-160 (volet 2, REFONTE) : POST /calibration/enter ÉMIS ICI
+      // UNIQUEMENT (geste humain, seul capable de basculer la régulation
+      // en Manuel côté firmware).
+      onEnter: () => { resetCalStepper("ph"); renderCalibrationStatus(); _calSwitchEnter("ph"); },
+      // POST /calibration/exit sur sortie, succès ou non ; arrêt du ticker
+      // C9 (volet 1) même si l'étape active n'a pas été quittée proprement
+      // (quitte-par-le-menu, cf. _exitAllMaintenanceModes).
+      onExit: () => { phCalibrationActive = false; updatePhModeControls(); _calSwitchExit("ph"); _calStabStopPolling(); },
     },
     orp: {
-      viewId: "view-orp", triggerBtnId: "orp_cal_trigger_btn",
+      viewId: "view-orp", triggerBtnId: "orp_cal_trigger_btn", closeBtnId: "orp_cal_close_btn",
       backTopId: "orp-maintenance-back-top", backBottomId: "orp-maintenance-back-bottom",
       announceId: "orp-maintenance-announce", label: "ORP",
       cardIds: ["orp-card-calibration"],
       subMaintenance: null,
-      onEnter: () => { resetCalStepper("orp"); renderCalibrationStatus(); },
-      onExit: () => { orpCalibrationActive = false; updateOrpModeControls(); },
+      onEnter: () => { resetCalStepper("orp"); renderCalibrationStatus(); _calSwitchEnter("orp"); },
+      onExit: () => { orpCalibrationActive = false; updateOrpModeControls(); _calSwitchExit("orp"); _calStabStopPolling(); },
     },
     temperature: {
       viewId: "view-temperature", triggerBtnId: "temp_cal_trigger_btn",
@@ -8693,6 +9072,10 @@
     }
     cfg.onEnter?.();
     view.classList.add("is-flow-maintenance");
+    // bug-160 (volet 2) : rendu IMMÉDIAT du bandeau — la classe
+    // `is-flow-maintenance` vient d'être posée. No-op pour les pages sans
+    // bandeau (température).
+    _renderCalSwitchBanner(page);
 
     const announce = $("#" + cfg.announceId);
     if (announce) announce.textContent = `Mode réglage — ${cfg.label}`;
@@ -8713,6 +9096,9 @@
     if (!view) return;
 
     view.classList.remove("is-flow-maintenance");
+    // bug-160 (volet 2) : masquer IMMÉDIATEMENT le bandeau — même patron que
+    // les cartes ci-dessous.
+    _renderCalSwitchBanner(page);
     cfg.cardIds.forEach(id => { const el = $("#" + id); if (el) el.hidden = true; });
     const backTop = $("#" + cfg.backTopId);
     const backBottom = $("#" + cfg.backBottomId);
@@ -8830,7 +9216,13 @@
     { const l = $("#cal-recal-orp");    if (l) l.hidden = !_calFrozen.orp.orp; }
   }
 
-  function _calEndAwait() {
+  // `isFailure` (bug-160, section 2) : un ÉCHEC confirmé (EZO injoignable,
+  // délai dépassé) vide AUSSI le tampon de stabilité de l'étape concernée —
+  // la sonde est peut-être en train d'être retirée/reconnectée, mélanger ces
+  // échantillons à ceux qui suivront fausserait D/S/G. `false` par défaut :
+  // un succès ou une sortie d'écran ne sont PAS des échecs (leurs propres
+  // chemins vident déjà la fenêtre pour une autre raison, cf. completeCalStep).
+  function _calEndAwait(isFailure = false) {
     if (_calPollTimer) { clearInterval(_calPollTimer); _calPollTimer = null; }
     if (_calAwait) {
       const a = _calAwait;
@@ -8839,6 +9231,7 @@
       if (btn) { btn.disabled = false; btn.textContent = a.originalLabel; }
       if (a.otherBtnId) { const o = $("#" + a.otherBtnId); if (o) o.disabled = false; }
       if (a.roId) { const r = $("#" + a.roId); if (r) r.classList.remove("is-pulsing"); }
+      if (isFailure) _calResetStabBuffer(a.product);
     }
     // Succès → l'étape vient d'être franchie : re-figer son bouton (sinon réactivé ci-dessus).
     _calRefreshFrozenButtons();
@@ -8856,7 +9249,7 @@
       // l'attente en vol et afficherait T4 au lieu de T5. ⚠️ Ne jamais affirmer
       // que la sonde est hors service : à ce stade, l'appareil sait seulement
       // qu'elle ne répond pas MAINTENANT.
-      _calEndAwait();
+      _calEndAwait(true);
       _calSetFailure(a.product, a.step, "Calibration non confirmée — sonde injoignable. Vérifiez le câblage, puis réessayez.");
       return;
     }
@@ -8893,7 +9286,7 @@
       // feature-159 (C9) : ⚠️ ne jamais affirmer que la calibration précédente
       // est intacte — sur un délai dépassé, l'appareil NE SAIT PAS si l'EZO a
       // exécuté la commande ou non.
-      _calEndAwait();
+      _calEndAwait(true);
       _calSetFailure(a.product, a.step, "Calibration non confirmée — délai dépassé. Vérifiez le câblage, puis réessayez.");
     }
   }
@@ -8982,7 +9375,7 @@
   function _calRestartPoint(product, step, targetIdx) {
     _calFrozen[product][step] = false;
     _calClearFailure(product, step);
-    _calStab[product] = [];
+    _calResetStabBuffer(product);
     setCalStepState(product, targetIdx);
     const btnId = product === "ph" ? (step === "mid" ? "btn-cal-ph-mid" : "btn-cal-ph-low") : "btn-cal-orp";
     const b = $("#" + btnId); if (b) b.disabled = false;

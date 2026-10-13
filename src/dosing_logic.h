@@ -129,7 +129,7 @@ DoseFilterState resolveFilterState(bool frozen, bool gateClosed, bool stale,
 // quelles par `phDoseBlockedCode` / `orpDoseBlockedCode` (/data + WebSocket) et
 // traduites par une table côté client. Valeurs FIXÉES EXPLICITEMENT :
 // ne JAMAIS renuméroter, ne JAMAIS insérer au milieu — toute nouvelle cause
-// s'AJOUTE À LA FIN (prochaine valeur disponible : 23). Un décalage ferait
+// s'AJOUTE À LA FIN (prochaine valeur disponible : 24). Un décalage ferait
 // afficher une mauvaise cause, soit précisément la classe de défaut que ce
 // code corrige (précédent : InstallMode). La complétude est verrouillée
 // valeur par valeur par les static_assert de pump_controller.cpp (switch
@@ -163,8 +163,12 @@ enum class DoseRefusal : uint8_t {
   ReadingNaNWarmup = 15,       // fenêtre de lissage en cours de remplissage
   ReadingNaNFrozen = 16,       // capteur figé (PANNE)
   ReadingNaNStale = 17,        // aucune mesure acceptée / trop ancienne (PANNE)
-  ReadingNaNGateClosed = 18    // mesures déclarées non représentatives (purge/eau à l'arrêt)
+  ReadingNaNGateClosed = 18   // mesures déclarées non représentatives (purge/eau à l'arrêt)
   // 19, 20, 21, 22 : RETIRÉS (feature-152), ne jamais recycler.
+  // 23 (CalibrationHold) : RETIRÉ bug-160 (volet 2, REFONTE 2026-10-13) — le
+  // mécanisme de bail (cal_hold_logic) qui le justifiait est ABANDONNÉ au
+  // profit d'une bascule explicite de régulation (mqttCfg.ph/orpRegulationMode
+  // == "manual"). JAMAIS recyclé.
 };
 
 // Entrées POD de la décision de dosage. Tous les champs sont collectés par la
@@ -462,6 +466,14 @@ bool shouldRolloverByMillis(uint32_t dayStartMs, uint32_t now);
 // conditions) — NE PAS réordonner.
 
 // Cause de refus d'injection manuelle. None = injection autorisée.
+// ⚠️ bug-160 (volet 2, REFONTE 2026-10-13) — CalibrationHold (ex-RANG 4,
+// immédiatement après StabilizationActive, devant AlreadyInjecting) est
+// RETIRÉ : le mécanisme de bail qui le justifiait est ABANDONNÉ au profit
+// d'une bascule explicite de régulation en "manual" (mqttCfg.ph/
+// orpRegulationMode), qui ferme nativement le dosage AUTOMATIQUE/PROGRAMMÉ via
+// ModeNotAutomatic (evaluateDose) — l'injection MANUELLE, elle, est interrompue
+// à l'entrée en calibration par la coquille (web_routes_calibration.cpp,
+// gate 5 C6), pas par une garde évaluée ici. JAMAIS recyclé.
 enum class ManualInjectRefusal {
   None,
   WatchdogInactive,     // watchdog inactif (règle absolue : aucun dosage sans watchdog)

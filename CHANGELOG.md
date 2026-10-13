@@ -2,6 +2,97 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [2.76.0] - 2026-10-13
+
+### Firmware
+
+- **Sécurité chimique : la régulation pH et ORP est basculée en Manuel
+  pendant une calibration (`bug-160`, volet 2)** — jusqu'ici, rien
+  n'empêchait l'appareil de continuer à réguler sur ce que lisaient les
+  sondes pendant qu'elles trempaient dans un bécher d'étalonnage : un étalon
+  ORP à 470 mV contre une consigne de 530 pouvait injecter du chlore dans le
+  **bassin** sur la foi de la lecture d'un **bécher**. À l'entrée de l'écran
+  de calibration, l'appareil bascule désormais lui-même la régulation **pH
+  et ORP en Manuel**, mémorise le mode antérieur de chaque boucle, et
+  interrompt immédiatement tout dosage en cours. Vous n'avez rien à activer
+  ni à désactiver vous-même avant de commencer.
+- **La régulation ne repart pas toute seule** : c'est un geste humain — le
+  bouton « Fermer et rétablir la régulation » (ou les liens de retour, même
+  action) — qui restaure le mode d'avant à la fermeture de l'écran. Si la
+  régulation reste en Manuel plus de 2 heures après l'ouverture, une alerte
+  avertit (répétée toutes les 6 heures tant que l'oubli dure) — « on échange
+  un oubli qu'on **voit** contre une panne qu'on ne voit **pas** ».
+- Nouvelles routes `POST /calibration/enter` / `POST /calibration/exit`, et
+  deux champs neufs sur `/data` et le WebSocket (`cal_switch_active`,
+  `cal_switch_epoch`).
+- **Budget de trame WebSocket** : `kWsFrameBufBytes` porté de 3584 à 4096
+  octets — le décompte documenté dans `ws_manager.cpp` avait décroché
+  pendant quatre lots consécutifs, laissant la trame réelle dépasser de
+  5 octets l'ancien plafond sans que personne ne s'en aperçoive (un
+  dépassement fait échouer l'envoi en silence, pas une simple troncature).
+
+### Fonctionnalités
+
+- **L'indicateur de stabilité de calibration pH/ORP cesse de mentir
+  (`bug-160`, volet 1)** — il annonçait « Stable — vous pouvez calibrer »
+  alors que la sonde restait à 0,8 à 1,1 pH de son équilibre réel (le seuil
+  précédent valait treize fois le bruit de lecture invoqué pour le
+  justifier). Le nouveau critère ne regarde plus l'étendue de la mesure mais
+  sa **vitesse de dérive**, avec un résiduel garanti par construction. Un
+  signal bruité sans dérive est désormais reconnu « stable » plus vite
+  qu'avant ; une sonde qui dérive réellement ne l'est jamais, quel que soit
+  le temps d'attente.
+- **Un sixième état apparaît sur l'écran de calibration** : si la mesure
+  reste instable au-delà de 5 minutes, un diagnostic remplace le message
+  d'attente (« Toujours instable après 5 min… Une dérive qui dure est aussi
+  un signe d'usure de la sonde »). Ce n'est ni un succès ni un échec, et le
+  bouton « Calibrer » reste cliquable — comme dans tous les autres états,
+  l'instabilité n'a jamais verrouillé ce bouton.
+- **Un bandeau orange indique désormais que la régulation a été mise en
+  Manuel** pendant une calibration, avec un rappel explicite qu'elle ne
+  repartira pas seule.
+- ⚠️ **La consigne « Mettez les régulations pH et ORP sur Arrêt avant de
+  commencer », publiée dans l'entrée [2.75.0] ci-dessous, est ANNULÉE par ce
+  lot** — l'appareil bascule désormais lui-même la régulation le temps de la
+  calibration. Ne pas la réintroduire.
+
+### Documentation
+
+- `docs/subsystems/sensors.md` : nouveau critère de stabilité de calibration
+  (arithmétique complète `D`/`S`/`G`/`G_MIN`, table des sources ADR-0098,
+  résiduels garantis).
+- `docs/subsystems/pump-controller.md` : bascule de régulation en Manuel
+  pendant une calibration (mode antérieur mémorisé/restauré, exception de
+  sécurité pH, alerte d'oubli 2 h/6 h) ; mise à jour de la table des causes
+  de refus (le code 23 `CalibrationHold`, envisagé pour un mécanisme
+  abandonné, n'a jamais été livré).
+- `docs/API.md` : nouvelles routes `POST /calibration/enter` /
+  `POST /calibration/exit`, deux champs neufs de `/data`.
+- `docs/subsystems/ws-manager.md` : mêmes deux champs côté trame
+  `sensor_data` ; note sur le relèvement de `kWsFrameBufBytes` (dette de
+  discipline de décompte, pas un simple ajustement de dimensionnement).
+- `docs/features/page-ph.md` : passage à six états côté indicateur de
+  stabilité, diagnostic après 5 minutes, bandeau de bascule en Manuel,
+  bouton de fermeture au libellé dynamique.
+- `docs/user/src/guide-utilisation.html`, `guide-regulation.html` :
+  bascule en Manuel (pas d'automatisme de reprise), diagnostic après
+  5 minutes, alerte d'oubli à 2 h puis toutes les 6 h.
+- `docs/adr/0105-un-indicateur-de-transitoire-d-etalonnage-n-est-pas-une-porte-de-mesure.md` :
+  distinction avec ADR-0092 (ce mécanisme n'est pas une porte de mesure) —
+  volet 1, non affecté par la refonte du volet 2.
+- `docs/adr/0106-toute-suspension-demandee-par-un-client-est-bornee.md` :
+  marqué **Superseded by ADR-0107** — le mécanisme de bail qu'il documentait
+  a été abandonné avant tout déploiement ; la doctrine qu'il pose reste la
+  référence pour une future suspension de ce type (`_flowAssistSuspend`
+  demeure le contre-exemple non corrigé qu'il nommait).
+- `docs/adr/0107-etat-visible-et-persistant-plutot-que-suspension-invisible.md` :
+  nouvel ADR — arbitrage entre un état visible et persistant, restauré par
+  un geste humain, et une suspension auto-libérante mais invisible ; conclut
+  en faveur du premier quand le comportement suspendu est déjà une surface
+  de contrôle exposée à l'utilisateur (le mode de régulation).
+
+---
+
 ## [2.75.0] - 2026-10-12
 
 ### Fonctionnalités

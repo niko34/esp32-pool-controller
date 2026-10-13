@@ -241,6 +241,17 @@ void saveMqttConfig() {
   prefs.putULong("ph_am_epoch", mqttCfg.phAutoManualEpoch);
   prefs.putString("ph_am_reason", mqttCfg.phAutoManualReason);
 
+  // bug-160 (volet 2, REFONTE 2026-10-13) : bascule de régulation en manuel
+  // pendant un étalonnage. Clés ≤ 15 caractères (contrainte NVS).
+  prefs.putBool("cal_sw_active", mqttCfg.calSwitchActive);
+  prefs.putULong("cal_sw_epoch", mqttCfg.calSwitchEpoch);
+  prefs.putBool("cal_sw_ph_appl", mqttCfg.phCalSwitchApplied);
+  prefs.putString("cal_sw_ph_prev", mqttCfg.phCalSwitchPrevMode);
+  prefs.putBool("cal_sw_orp_appl", mqttCfg.orpCalSwitchApplied);
+  prefs.putString("cal_sw_orp_prev", mqttCfg.orpCalSwitchPrevMode);
+  prefs.putULong("cal_sw_alert_ep", mqttCfg.calSwitchLastAlertEpoch);
+  prefs.putUChar("cal_sw_alert_n", mqttCfg.calSwitchAlertCount);
+
   // feature-021 (Pass 4a) : calibration pH/ORP entièrement gérée par les modules
   // Atlas EZO (NVS interne au module). Aucune clé NVS pH/ORP côté ESP32.
 
@@ -454,6 +465,23 @@ void loadMqttConfig() {
                           "automatique non acquittée : " + mqttCfg.phAutoManualReason);
   }
 
+  // bug-160 (volet 2, REFONTE 2026-10-13) : trace de la bascule de calibration.
+  // Clés absentes (config antérieure à ce lot) → false/0/"" = aucune session
+  // ouverte — rétrocompatible.
+  mqttCfg.calSwitchActive         = prefs.getBool("cal_sw_active", false);
+  mqttCfg.calSwitchEpoch          = prefs.getULong("cal_sw_epoch", 0);
+  mqttCfg.phCalSwitchApplied       = prefs.getBool("cal_sw_ph_appl", false);
+  mqttCfg.phCalSwitchPrevMode      = prefs.getString("cal_sw_ph_prev", "");
+  mqttCfg.orpCalSwitchApplied      = prefs.getBool("cal_sw_orp_appl", false);
+  mqttCfg.orpCalSwitchPrevMode     = prefs.getString("cal_sw_orp_prev", "");
+  mqttCfg.calSwitchLastAlertEpoch  = prefs.getULong("cal_sw_alert_ep", 0);
+  mqttCfg.calSwitchAlertCount      = prefs.getUChar("cal_sw_alert_n", 0);
+  // ⚠️ La cohérence défensive (session "active" résiduelle alors que les DEUX
+  // modes ont déjà quitté "manual") ne peut être vérifiée qu'une fois
+  // `orpRegulationMode` chargé — PLUS BAS dans cette fonction (section
+  // "Régulation ORP"), pas ici : à ce point, il ne porte encore que sa valeur
+  // par défaut de l'initialiseur de membre.
+
   // feature-021 (Pass 4a) : purge silencieuse des anciennes clés de calibration
   // pH/ORP. La calibration est désormais entièrement stockée dans les modules
   // Atlas EZO (commandes Cal,? / Cal,mid / Cal,low / Cal,<ref>).
@@ -512,6 +540,27 @@ void loadMqttConfig() {
     mqttCfg.orpRegulationMode = "automatic";
   }
   mqttCfg.orpEnabled = (mqttCfg.orpRegulationMode != "manual");
+
+  // bug-160 (volet 2, REFONTE 2026-10-13) : cohérence défensive de la trace de
+  // bascule de calibration (patron EXACT de la trace phAutoManual* plus haut),
+  // vérifiable seulement maintenant que phRegulationMode ET orpRegulationMode
+  // sont tous deux FINALISÉS. Une session restée "active" alors que les DEUX
+  // modes ont déjà quitté "manual" par un AUTRE chemin (/save-config, MQTT)
+  // est un résidu : le purger évite un bandeau et une alerte C4 fantômes pour
+  // une session déjà close ailleurs. Réécrit en NVS au prochain saveMqttConfig().
+  if (mqttCfg.calSwitchActive &&
+      mqttCfg.phRegulationMode != "manual" && mqttCfg.orpRegulationMode != "manual") {
+    systemLogger.info("[Config] Trace de bascule d'étalonnage purgée (régulation "
+                      "déjà reprise en main par un autre chemin)");
+    mqttCfg.calSwitchActive = false;
+    mqttCfg.phCalSwitchApplied = false;
+    mqttCfg.phCalSwitchPrevMode = "";
+    mqttCfg.orpCalSwitchApplied = false;
+    mqttCfg.orpCalSwitchPrevMode = "";
+    mqttCfg.calSwitchEpoch = 0;
+    mqttCfg.calSwitchLastAlertEpoch = 0;
+    mqttCfg.calSwitchAlertCount = 0;
+  }
 
   // feature-056 : mode d'installation. Clé "install_mode" présente → parse ;
   // sinon migration one-shot depuis l'ancien schéma (reg_mode + filt_enabled)

@@ -409,7 +409,29 @@ constexpr uint32_t kWsSkipWarnThrottleMs = 30000;         // 30s - throttle du w
 // DRAM, et le tas 8 bits n'est jamais que le reliquat de cette même DRAM après
 // soustraction du .bss/.data. Le .bss ne FRAGMENTE pas (pas d'impact sur
 // max_alloc_8bit), mais il réduit bien le total disponible.
-constexpr size_t kWsFrameBufBytes = 3584;                 // Taille du buffer statique de trame WS
+// ⚠️ Itération 4 (bug-160, 2026-10-13) : 3584 → 4096. Le décompte de budget de
+// `ws_manager.cpp` s'était ARRÊTÉ à feature-155 (pire cas 3376 o, marge 208 o)
+// alors que SEPT champs ont été ajoutés à la trame depuis, sans être comptés :
+// `ph_offset_epoch`, `ph_cal_epoch`, `ph_offset_stale` (feature-156),
+// `filtration_elapsed_s` (feature-158), puis `cal_hold_remaining_s`,
+// `cal_hold_product`, `cal_hold_refractory_remaining_s` (bug-160).
+// Recompté à la convention du fichier (clé + guillemets + ':' + valeur PIRE CAS
+// + virgule) : +213 o ⇒ pire cas 3589 o, soit 5 o AU-DESSUS de 3584.
+// ⚠️ Un dépassement ne TRONQUE pas : il fait SAUTER le push (garde
+// `measureJson(doc) + 1 > cap`). Le temps réel cesserait donc SILENCIEUSEMENT,
+// avec pour seul signe un avertissement throttlé — exactement le mode de panne
+// que l'itération 3 avait déjà voulu éviter.
+// Coût : +512 o de .bss (DRAM). Ne fragmente pas (pas d'effet sur
+// max_alloc_8bit) mais réduit le total disponible — cf. la correction
+// feature-138 ci-dessus.
+// ⚠️ bug-160 (REFONTE 2026-10-13, décision utilisateur) : le mécanisme de
+// bail (`cal_hold_remaining_s`/`cal_hold_product`/`cal_hold_refractory_remaining_s`,
+// −100 o) est ABANDONNÉ au profit d'une bascule EXPLICITE de régulation —
+// deux champs la remplacent (`cal_switch_active`/`cal_switch_epoch`, +58 o).
+// Recompte détaillé : cf. ws_manager.cpp. Nouvelle marge : 4096 − 3547 = 549 o.
+// ⚠️ LEÇON : ce décompte n'est tenu que par DISCIPLINE, et il a décroché
+// pendant QUATRE lots. Tout ajout de champ à la trame DOIT le reprendre.
+constexpr size_t kWsFrameBufBytes = 4096;                 // Taille du buffer statique de trame WS
 
 // Récolte des clients WS zombies (investigation churn-heap §G1/G2) : un client qui
 // n'ACK plus conserve une file jusqu'à 32 buffers ~1,8 Ko connexion ouverte —
@@ -3118,6 +3140,25 @@ constexpr float kOrpMaxError          = 200.0f;  // Erreur ORP maximale (mV)
 // PLANCHER fixe (kPurgeFloorMs, ci-dessous), pas par un réglage utilisateur.
 constexpr unsigned long kStabilizationDurationPhMs  = 300000UL;  // 5 min — pH post-cal
 constexpr unsigned long kStabilizationDurationOrpMs = 180000UL;  // 3 min — ORP post-cal
+
+// =============================================================================
+// bug-160 (volet 2, REFONTE 2026-10-13, décision utilisateur) — BASCULE DE
+// RÉGULATION EN MANUEL PENDANT UN ÉTALONNAGE (cal_manual_switch_logic.{h,cpp}).
+// Remplace le mécanisme de bail auto-expirant ABANDONNÉ (cal_hold_logic,
+// kCalHold* — défauts trouvés en revue : fail-open au repliement de millis() à
+// 24,8 j sur la période réfractaire, et deux écrivains concurrents sans mutex
+// laissant passer un étalonnage entier SANS AUCUNE suspension). La bascule
+// est désormais EXPLICITE (pH+ORP → "manual" à l'entrée dans l'écran de
+// calibration) et restaurée par un GESTE HUMAIN — gate pool-chemistry
+// GATE 5, GO sous 8 conditions.
+// =============================================================================
+
+// C4 (BLOQUANTE) — alerte d'oubli de rétablissement : 1re alerte 2 h après
+// l'ENTRÉE, répétée toutes les 6 h tant que la bascule reste ouverte. Décision
+// produit (gate 5) : « on fabrique DÉLIBÉRÉMENT des bascules, il faut donc
+// fermer le risque d'oubli ».
+constexpr uint32_t kCalSwitchAlertFirstDelayS = 7200UL;   // 2 h
+constexpr uint32_t kCalSwitchAlertRepeatS     = 21600UL;  // 6 h
 
 // =============================================================================
 // feature-091 (v2.34.0) — PURGE DE REPRISE D'EAU

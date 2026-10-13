@@ -6,6 +6,10 @@
 #include "sensors.h"
 #include "json_compat.h"
 #include "logger.h"
+#include "pump_controller.h"   // bug-160 (volet 2) : interruption d'entrée en étalonnage
+#include "web_routes_control.h"  // bug-160 : manualInjectPh/Orp (interruption à l'entrée, gate 5 C6)
+#include "mqtt_manager.h"      // bug-160 : mqttManager.publishRescueState() (ORP → manual)
+#include "cal_manual_switch_logic.h"  // bug-160 (volet 2, REFONTE) : décision PURE (ADR-0017)
 
 // =============================================================================
 // Routes de calibration capteurs Atlas EZO (feature-021 — Pass 4a)
@@ -271,4 +275,195 @@ void setupCalibrationRoutes(AsyncWebServer* server) {
         resp["sensor"] = sensor;
         sendJsonResponse(req, resp);
       });
+
+  // ===========================================================================
+  // POST /calibration/enter — bug-160 (volet 2, REFONTE 2026-10-13)
+  // ===========================================================================
+  // Décision utilisateur : le mécanisme de bail auto-expirant (cal_hold_logic,
+  // ABANDONNÉ) est remplacé par une bascule EXPLICITE de la régulation pH+ORP
+  // en "manual" à l'ENTRÉE dans l'écran de calibration, restaurée par un GESTE
+  // HUMAIN (POST /calibration/exit, bouton « Fermer ») — PAS auto-libérante.
+  // Gate pool-chemistry GATE 5 : GO sous 8 conditions. « On échange un oubli
+  // qu'on VOIT (mode Manuel affiché au tableau de bord) contre une panne
+  // qu'on ne voit PAS (minuterie coincée, invisible). »
+  //
+  // C3 (gate 5) : ⛔ si une trace de sécurité phAutoManualEpoch/Reason
+  // (feature-067, escalade de plancher acide) est DÉJÀ active, le pH n'est
+  // PAS touché (déjà "manual" sous verrou de sécurité) — seul l'ORP bascule.
+  // Aucun verrou équivalent n'existe côté ORP (vérifié le 2026-10-13 : zéro
+  // résultat sur `grep -r "orp_am_\|orpAutoManual" src/`).
+  //
+  // C6 (gate 5, « le seul trou que le bail couvrait ») : interrompt
+  // IMMÉDIATEMENT toute injection MANUELLE en cours (hors configMutex — même
+  // patron que /ph|orp/inject/stop) + demande l'interruption one-shot d'une
+  // session AUTOMATIQUE/PROGRAMMÉE déjà ouverte (PumpController, consommée au
+  // tour suivant de update()).
+  //
+  // C7 : sous configMutex, persisté (saveMqttConfig()), journalisé avec
+  // l'origine de la requête authentifiée (patron clientIpOf — ce projet n'a
+  // pas de notion d'identité utilisateur au-delà de l'authentification).
+  //
+  // Idempotente : un second appel pendant une session déjà ouverte ne réécrit
+  // PAS le mode antérieur mémorisé (sinon un second appel capturerait
+  // "manual" lui-même comme mode à restaurer).
+  server->on("/calibration/enter", HTTP_POST, [](AsyncWebServerRequest* req) {
+    REQUIRE_AUTH(req, RouteProtection::WRITE);
+
+    if (xSemaphoreTakeRecursive(configMutex, pdMS_TO_TICKS(kConfigMutexTimeoutMs)) != pdTRUE) {
+      systemLogger.error("[Etalonnage] Timeout configMutex dans /calibration/enter");
+      sendErrorResponse(req, 503, "configuration occupee, reessayer");
+      return;
+    }
+
+    bool phSwitched = mqttCfg.phCalSwitchApplied;
+    bool orpSwitched = mqttCfg.orpCalSwitchApplied;
+
+    if (!mqttCfg.calSwitchActive) {
+      const bool phSafetyTraceActive = (mqttCfg.phAutoManualReason.length() > 0) ||
+                                       (mqttCfg.phAutoManualEpoch != 0);
+      const bool applyPh = calSwitchShouldApplyEnter(phSafetyTraceActive);
+      // ORP : aucun verrou de sécurité équivalent → toujours appliqué.
+      const bool applyOrp = calSwitchShouldApplyEnter(false);
+
+      const time_t nowEpoch = time(nullptr);
+      mqttCfg.calSwitchActive = true;
+      mqttCfg.calSwitchEpoch = (nowEpoch >= kMinValidEpoch) ? (uint32_t)nowEpoch : 0;
+      mqttCfg.calSwitchLastAlertEpoch = 0;
+      mqttCfg.calSwitchAlertCount = 0;
+
+      mqttCfg.phCalSwitchApplied = applyPh;
+      if (applyPh) {
+        mqttCfg.phCalSwitchPrevMode = mqttCfg.phRegulationMode;
+        mqttCfg.phRegulationMode = "manual";
+        mqttCfg.phEnabled = false;
+      }
+
+      mqttCfg.orpCalSwitchApplied = applyOrp;
+      if (applyOrp) {
+        mqttCfg.orpCalSwitchPrevMode = mqttCfg.orpRegulationMode;
+        mqttCfg.orpRegulationMode = "manual";
+        mqttCfg.orpEnabled = false;
+        // feature-140 (condition #5 du gate pool-chemistry) : bascule en
+        // Manuel pendant la chloration de secours => désarmement AUTOMATIQUE
+        // (sinon double dosage : l'étalonnage ET le secours). Même patron que
+        // /save-config (web_routes_config.cpp).
+        if (isRescueChlorineActive(time(nullptr))) {
+          stopRescueChlorine(RescueLiftReason::Manual);
+          mqttManager.publishRescueState();
+          systemLogger.warning("[Secours] Désarmée : entrée en étalonnage (bascule Manuel)");
+        }
+      }
+
+      phSwitched = applyPh;
+      orpSwitched = applyOrp;
+
+      systemLogger.info("[Etalonnage] Entrée dans l'écran de calibration depuis " +
+                        clientIpOf(req) + " : régulation pH " +
+                        (applyPh ? "basculée en Manuel" : "déjà verrouillée en Manuel (sécurité), inchangée") +
+                        " ; ORP basculée en Manuel");
+      saveMqttConfig();
+    }
+
+    xSemaphoreGiveRecursive(configMutex);
+
+    // C6 — interruption IMMÉDIATE de toute injection MANUELLE en cours. Hors
+    // configMutex (manualInjectPh/Orp ne sont pas protégés par lui, même
+    // patron que /ph|orp/inject/stop).
+    if (manualInjectPh.active) {
+      PumpController.setManualPump(mqttCfg.phPump - 1, 0);
+      manualInjectPh.active = false;
+      manualInjectPh.startCumulMl = 0.0f;
+      manualInjectPh.creditMl = 0.0f;
+      systemLogger.info("[Injection] pH interrompue (entrée en étalonnage)");
+    }
+    if (manualInjectOrp.active) {
+      PumpController.setManualPump(mqttCfg.orpPump - 1, 0);
+      manualInjectOrp.active = false;
+      manualInjectOrp.startCumulMl = 0.0f;
+      manualInjectOrp.creditMl = 0.0f;
+      systemLogger.info("[Injection] ORP interrompue (entrée en étalonnage)");
+    }
+    // Interruption one-shot d'une session AUTOMATIQUE/PROGRAMMÉE déjà ouverte
+    // (consommée au tour suivant de PumpController::update()).
+    PumpController.requestCalibrationEntryInterrupt();
+
+    StaticJson<128> resp;
+    resp["success"] = true;
+    resp["ph_switched"] = phSwitched;
+    resp["orp_switched"] = orpSwitched;
+    sendJsonResponse(req, resp);
+  });
+
+  // ===========================================================================
+  // POST /calibration/exit — bug-160 (volet 2, REFONTE 2026-10-13)
+  // ===========================================================================
+  // Restaure le mode ANTÉRIEUR de chaque boucle (gate 5, C5) — ⛔ JAMAIS
+  // "automatic" en dur : "scheduled" doit redevenir "scheduled". ⛔ N'acquitte
+  // JAMAIS phAutoManualEpoch/Reason (gate 5, C2 — piège central) : si cette
+  // trace de sécurité est active (apparue à l'entrée OU pendant la session),
+  // le pH reste en Manuel et seul l'ORP est restauré.
+  // Idempotente : appelée sans session ouverte (double clic, jamais ouverte),
+  // répond 200 sans rien muter.
+  server->on("/calibration/exit", HTTP_POST, [](AsyncWebServerRequest* req) {
+    REQUIRE_AUTH(req, RouteProtection::WRITE);
+
+    if (xSemaphoreTakeRecursive(configMutex, pdMS_TO_TICKS(kConfigMutexTimeoutMs)) != pdTRUE) {
+      systemLogger.error("[Etalonnage] Timeout configMutex dans /calibration/exit");
+      sendErrorResponse(req, 503, "configuration occupee, reessayer");
+      return;
+    }
+
+    if (!mqttCfg.calSwitchActive) {
+      xSemaphoreGiveRecursive(configMutex);
+      StaticJson<128> resp;
+      resp["success"] = true;
+      resp["restored"] = false;
+      sendJsonResponse(req, resp);
+      return;
+    }
+
+    const bool phSafetyTraceActiveNow = (mqttCfg.phAutoManualReason.length() > 0) ||
+                                        (mqttCfg.phAutoManualEpoch != 0);
+    const bool restorePh = calSwitchShouldRestore(mqttCfg.phCalSwitchApplied, phSafetyTraceActiveNow);
+    // ORP : aucun verrou de sécurité équivalent → safetyTraceActiveNow=false.
+    const bool restoreOrp = calSwitchShouldRestore(mqttCfg.orpCalSwitchApplied, false);
+
+    if (restorePh) {
+      mqttCfg.phRegulationMode = mqttCfg.phCalSwitchPrevMode;
+      mqttCfg.phEnabled = (mqttCfg.phRegulationMode != "manual");
+    }
+    if (restoreOrp) {
+      mqttCfg.orpRegulationMode = mqttCfg.orpCalSwitchPrevMode;
+      mqttCfg.orpEnabled = (mqttCfg.orpRegulationMode != "manual");
+    }
+
+    systemLogger.info("[Etalonnage] Fermeture de l'écran de calibration depuis " +
+                      clientIpOf(req) + " : régulation pH " +
+                      (restorePh ? ("rétablie en " + mqttCfg.phRegulationMode)
+                                 : String("laissée en Manuel (verrou de sécurité actif)")) +
+                      " ; ORP " +
+                      (restoreOrp ? ("rétablie en " + mqttCfg.orpRegulationMode)
+                                  : String("laissée en Manuel")));
+
+    mqttCfg.calSwitchActive = false;
+    mqttCfg.phCalSwitchApplied = false;
+    mqttCfg.phCalSwitchPrevMode = "";
+    mqttCfg.orpCalSwitchApplied = false;
+    mqttCfg.orpCalSwitchPrevMode = "";
+    mqttCfg.calSwitchEpoch = 0;
+    mqttCfg.calSwitchLastAlertEpoch = 0;
+    mqttCfg.calSwitchAlertCount = 0;
+
+    saveMqttConfig();
+
+    StaticJson<128> resp;
+    resp["success"] = true;
+    resp["restored"] = true;
+    resp["ph_mode"] = mqttCfg.phRegulationMode;
+    resp["orp_mode"] = mqttCfg.orpRegulationMode;
+
+    xSemaphoreGiveRecursive(configMutex);
+
+    sendJsonResponse(req, resp);
+  });
 }

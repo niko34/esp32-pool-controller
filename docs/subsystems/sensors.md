@@ -926,6 +926,109 @@ Logs et alertes MQTT émis **aux transitions uniquement** (entrée et sortie de 
 - [`mqtt_manager`](mqtt-manager.md) : publie `{base}/ph` / `{base}/orp` (= **filtré**), `{base}/temperature`, `{base}/temperature_circuit`, `{base}/ph_cal_points`, `{base}/orp_cal_points` toutes les 10 s (`kMqttPublishIntervalMs`). 3 topics `{base}/ph_slope_*` edge-triggered. feature-025 : topics `{base}/ph|orp_raw|median|filtered|filter_ready|filter_unstable|rejected_count` + `{base}/ph|orp_mixing_delay_active` (retain). Alertes edge-triggered `{base}/alerts/calibration_required`, `{base}/alerts/sensor_stale` et `{base}/alerts/sensor_frozen` + états binaires dédupliqués `{base}/ph|orp_sensor_problem` (feature-022).
 - [`history`](history.md) : snapshot des valeurs courantes toutes les 5 min.
 
+## Indicateur de stabilité de calibration (bug-160)
+
+⚠️ **Ce mécanisme vit côté frontend** (`data/app.js`, objet `CAL_STAB` et fonctions
+`pushStabilitySample()` / `_calStabilityVerdict()`), pas dans `sensors.cpp` — documenté ici parce
+qu'il décide **quand la mesure brute d'une sonde pH/ORP est jugée assez stable pour être
+calibrée**, au même titre que les autres verdicts de cette page. Voir
+[`docs/features/page-ph.md`](../features/page-ph.md#les-six-états-de-lindicateur-de-stabilité-renderstability-bug-160)
+pour le rendu UI.
+
+### Le défaut corrigé
+
+Avant ce lot, le verdict reposait sur une **étendue** (`max − min` d'une fenêtre glissante de
+20 s, seuil 0,9 pH). Une étendue croît avec le nombre d'échantillons et **mélange bruit et
+dérive** : sur une rampe réaliste d'électrode (τ = 30-60 s après le changement de solution
+étalon), le seuil se déclenchait à **0,8 à 1,1 pH de l'équilibre réel** — treize fois le bruit de
+lecture invoqué pour le justifier.
+
+### Le nouveau critère — un estimateur de vitesse de dérive, pas une étendue
+
+Le tampon par produit (`_calStab.ph` / `.orp`, `{t, v}` triés par `t` croissant, horloge
+**monotone** `performance.now()` — jamais `Date.now()`, qu'un recalage NTP ferait exploser ou
+vider dans les deux sens) est coupé en **deux moitiés par comptage** (`floor(n/2)`, l'échantillon
+médian écarté si `n` est impair) :
+
+```
+D = |médiane(moitié récente, valeurs) − médiane(moitié ancienne, valeurs)|   // dérive
+S = médiane(moitié récente, temps) − médiane(moitié ancienne, temps)        // séparation RÉALISÉE
+a = nowMs − médiane(moitié récente, temps)                                  // âge RÉALISÉ
+G = e^(a/τmax) · (e^(S/τmax) − 1)                                           // garde-fou
+R = D / G                                                                    // résiduel garanti
+```
+
+**Verdict rendu seulement si `n ≥ MIN_SAMPLES` (= 6) ET `G ≥ G_MIN`** ; sinon **muet** (icône ⏳,
+jamais un faux « stable » par manque de données). `stable` ⟺ `D ≤ SEUIL`.
+
+`G_MIN = SEUIL / RÉSIDUEL_MAX` — **aucun degré de liberté** : si un vecteur de test échoue, ce
+n'est **jamais** le seuil qu'il faut assouplir (⛔ interdit par [ADR-0098](../adr/0098-toute-constante-de-mesure-declare-sa-source.md)),
+c'est `G ≥ G_MIN` qui est violée — la seule issue légitime est d'allonger la fenêtre ou la
+cadence, toutes deux **plus strictes**, jamais l'inverse.
+
+**Pourquoi les deux gardes (comptage ET `G`) sont imposées ensemble** : une coupure au comptage
+**sans** `G` laisserait passer une **rafale** (beaucoup d'échantillons en peu de temps, donc une
+« ancienne » et une « récente » moitié séparées de quelques secondes seulement — aucune garantie
+que l'électrode a eu le temps de dériver ou non). Une coupure au temps **sans** le plancher de
+comptage laisserait passer une **cadence mixte**. Les deux tuent des mutants différents.
+
+### Table des sources (ADR-0098) — recontrôler, pas croire
+
+| Constante | Valeur | Source déclarée | Rôle |
+|---|---|---|---|
+| `RESIDUAL_MAX` (pH) | **0,10 pH** | produit — `kPhHighMargin` | résiduel garanti maximal toléré |
+| `THRESHOLD` (pH) | **0,05 pH** | produit — `kPhGuardReleaseHysteresis` | seuil de `stable` sur `D` |
+| `THRESHOLD` (ORP) | **0,05 × 59,16 mV/pH** ≈ 2,96 mV | physique — pente de Nernst à 25 °C (⚠️ toujours écrite comme expression, jamais le littéral `3.0` : un littéral serait précisément le mouvement qu'ADR-0098 interdit) | seuil de `stable` sur `D` |
+| `RESIDUAL_MAX` (ORP) | **0,10 × 59,16 mV/pH** ≈ 5,92 mV | physique | résiduel garanti maximal toléré |
+| `TAU_MAX_MS` (pH) | **120 000 ms** | matériel — Atlas EZO pH, majoration de conception **non relevée sur datasheet** (⛔ ne jamais écrire « matériel » sans cette réserve — une source étiquetée matériel sans l'être est une garantie plus forte que ce qu'on sait réellement) | borne de l'exponentielle `G` |
+| `TAU_MAX_MS` (ORP) | **180 000 ms** | matériel, même réserve — plus courte que la pose normale d'une sonde redox | idem |
+| `G_MIN` (les deux, **par produit**, jamais partagé) | `THRESHOLD / RESIDUAL_MAX` = **0,5** | dérivé, aucun degré de liberté | garde-fou d'admissibilité du verdict |
+| `WINDOW_MS` | `TAU_MAX_MS − SLOW_CADENCE_MS` | dérivé | réserve de rétention |
+| `MIN_SAMPLES` | **6** | produit, source unique (ne vit plus en deux littéraux indépendants) | plancher de comptage avant tout verdict |
+
+⚠️ **Direction fail-safe de `TAU_MAX_MS`** : `WINDOW_MS` en dérive, et **surestimer** `TAU_MAX_MS`
+**agrandit** la fenêtre, donc **durcit** le critère — l'erreur ne peut jamais produire un faux
+« stable ». C'est la **baisse** qui serait dangereuse : toute baisse de cette valeur exige un
+relevé fabricant, une hausse est toujours sûre.
+
+Résiduels garantis obtenus avec ces valeurs (vérifiés par `test/cal_stability_vectors.js`) : pH
+**0,0911** à τ = 120 s · ORP **4,65 mV** à τ = 180 s — tous deux sous leur `RESIDUAL_MAX` respectif.
+
+### Rétention — robuste à la cadence (5 s avec WebSocket, 30 s sans)
+
+Deux purges distinctes du tampon, à chaque échantillon poussé :
+- **Purge souple** (`WINDOW_MS`) : retire les échantillons plus vieux que la fenêtre, **sauf**
+  s'il resterait moins de `MIN_SAMPLES` — une cadence dégradée (30 s, WebSocket coupé) doit
+  pouvoir accumuler au-delà de la fenêtre nominale le temps d'atteindre le plancher de comptage,
+  sinon : état **muet permanent**, le pire résultat possible.
+- **Plafond d'âge dur** (`HARD_AGE_MS = WINDOW_MS × HARD_AGE_FACTOR`, facteur 4, décision produit
+  déclarée arbitraire mais large) : jamais un échantillon plus vieux que ce plafond, quel que soit
+  le nombre restant — protège contre une fuite de pertinence si une session reste ouverte des
+  heures.
+
+Le tampon est en outre borné en **nombre** (`CAL_STAB_MAX_SAMPLES = 256`), indépendamment de l'âge.
+
+### Diagnostic après 5 minutes — un constat, jamais un verdict
+
+Si le verdict reste différent de `stable` **5 minutes** après le premier échantillon du tampon
+courant (`CAL_STAB_DIAG_MS`, dérivé de `kStabilizationDurationPhMs` — **le même délai pour les
+deux produits**, décision du gate : la durée ORP post-cal, 180 s, serait plus courte que la pose
+normale d'une sonde redox et donc inadaptée ici), l'écran bascule sur un texte de diagnostic (voir
+[page-ph.md](../features/page-ph.md#diagnostic-après-5-minutes)) plutôt que de répéter « ça
+bouge encore ». ⚠️ **Ce n'est ni un succès ni un échec** : le mécanisme a statistiquement
+**raison** sur une sonde dégradée qui ne redescendra jamais sous le seuil — ce qui change, c'est
+la **nature du message** (un diagnostic, pas une consigne d'attente), jamais le critère lui-même,
+et **le bouton « Calibrer » reste cliquable** dans tous les cas (voir ADR-0105, point 1).
+
+### Distinction avec ADR-0092 — ce n'est PAS un détecteur de stabilité de porte de mesure
+
+Voir [ADR-0105](../adr/0105-un-indicateur-de-transitoire-d-etalonnage-n-est-pas-une-porte-de-mesure.md)
+pour la doctrine complète. En bref : contrairement au mécanisme retiré par
+[ADR-0092](../adr/0092-retrait-analyse-stabilite-porte-mesures.md), celui-ci (1) ne bloque jamais
+rien, (2) mesure un transitoire dont la valeur vraie est déjà connue (le tampon d'étalonnage), pas
+une représentativité permanente, (3) est un estimateur de vitesse de dérive et non une étendue,
+(4) a des constantes sourcées et un résiduel garanti par construction.
+
 ## Multi-sondes DS18B20 — PCB v2 (feature-020)
 
 Le PCB v2 ajoute une 2ᵉ sonde DS18B20 sur le même bus OneWire. Une sonde mesure l'**eau de la piscine**, l'autre est soudée sur le PCB pour mesurer la **température du circuit électronique**.
@@ -982,6 +1085,9 @@ Si une sonde est remplacée physiquement (adresse ROM différente), le scan au b
 - [ADR-0039](../adr/0039-offset-ph-applique-en-sortie-des-accesseurs.md) — offset pH appliqué en sortie des accesseurs (feature-067)
 - [ADR-0097](../adr/0097-le-filtre-lisse-le-dosage-juge.md) — refonte de la chaîne de mesure à 5 étages, retrait des verrous collants (feature-152, supersède l'[ADR-0027](../adr/0027-filtre-tendance-centrale.md), amende l'[ADR-0041](../adr/0041-autorite-mesures-non-representatives-et-sortie-de-secours-filtre.md) et l'[ADR-0049](../adr/0049-code-machine-de-cause-de-refus-et-etat-interne-du-filtre.md))
 - [ADR-0098](../adr/0098-toute-constante-de-mesure-declare-sa-source.md) — règle de conception opposable : toute constante de mesure déclare sa source (physique, décision produit, ou matériel)
+- [`data/app.js`](../../data/app.js) — objet `CAL_STAB`, `pushStabilitySample()`, `_calStabilityVerdict()` (bug-160, indicateur de stabilité de calibration, voir section dédiée ci-dessus)
+- [`test/cal_stability_vectors.js`](../../test/cal_stability_vectors.js) — vecteurs qui épinglent `G_MIN` et le résiduel garanti (ADR-0099 : extraction, pas duplication)
+- [ADR-0105](../adr/0105-un-indicateur-de-transitoire-d-etalonnage-n-est-pas-une-porte-de-mesure.md) — distinction avec ADR-0092 (bug-160, volet 1)
 - [feature-021](../../specs/features/done/feature-021-migration-atlas-ezo.md) — spec d'origine
 - [feature-025](../../specs/features/done/feature-025-lissage-mesures-ph-orp-pid.md) — filtrage mesures + adaptation régulation
 - feature-022 (`specs/features/`) — détection capteur figé `FrozenDetector` + observabilité HA (v2.10.0)

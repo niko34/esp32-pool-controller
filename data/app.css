@@ -2022,6 +2022,30 @@ input.is-computed:disabled {
   color: var(--danger);
   font-weight: 650;
 }
+/* bug-160 (section 4) : 6e état « diagnostic » — ni vert (succès) ni rouge
+   (échec) : la sonde n'a RIEN raté, le mécanisme doit juste changer de
+   registre (consigne d'attente -> diagnostic) après 5 min sans stabilité
+   confirmée. var(--warn), patron EXACT de .is-busy/.is-failed ci-dessus. */
+.cal-stability.is-diag {
+  color: var(--warn);
+  font-weight: 650;
+}
+/* Correctif revue (2026-10-13) : SIX états, SIX icônes (⏳ ○ ● ↻ ✕ ⚠,
+   cf. commentaire de renderStability) — la distinction ne doit JAMAIS
+   reposer sur la seule couleur (daltonisme). Le diagnostic était le seul
+   état où ce n'était pas vrai : le texte T-D1/T-D2 est VERBATIM (imposé mot
+   pour mot par le gate) et ne doit donc PAS concaténer l'icône dans la
+   chaîne — elle est posée ICI, en CSS, sur la PREMIÈRE ligne seulement
+   (`_calRenderStabilityLines` crée un `<div>` par ligne). */
+.cal-stability.is-diag > div:first-child::before {
+  content: "⚠ ";
+}
+/* Diagnostic : DEUX lignes dans le même bloc (jamais aplaties via
+   textContent, cf. _calRenderStabilityLines) — un léger espacement entre
+   elles évite qu'elles ne se lisent comme une seule phrase continue. */
+.cal-stability > div + div {
+  margin-top: 2px;
+}
 .cal-recal {
   margin-top: 8px;
 }

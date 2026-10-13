@@ -147,6 +147,46 @@ struct MqttConfig {
   uint32_t phAutoManualEpoch = 0;     // 0 = pas de bascule automatique enregistrée
   String phAutoManualReason = "";     // Cause de la bascule (vide si epoch == 0)
 
+  // bug-160 (volet 2, REFONTE 2026-10-13, gate pool-chemistry GATE 5 — GO sous
+  // 8 conditions) : TRACE DE LA BASCULE pH+ORP EN "manual" À L'ENTRÉE DANS
+  // L'ÉCRAN DE CALIBRATION, restaurée par un GESTE HUMAIN (bouton « Fermer »).
+  // Remplace le mécanisme de bail auto-expirant ABANDONNÉ (cal_hold_logic).
+  // ⚠️ C2 (piège central du gate) : trace DISTINCTE de phAutoManualEpoch/Reason
+  // ci-dessus — celle-ci porte l'escalade de SÉCURITÉ feature-067 (acquittement
+  // obligatoire via ph_auto_manual_ack, web_routes_config.cpp). Le chemin de
+  // fermeture de l'écran de calibration (web_routes_calibration.cpp) n'acquitte
+  // JAMAIS phAutoManualEpoch/Reason : le faire effacerait une escalade de
+  // plancher acide RÉELLE sous couvert d'une simple fermeture d'écran.
+  //   * calSwitchActive     : une session de bascule est OUVERTE (pas encore
+  //     restaurée par /calibration/exit). PERSISTÉ : survit à un redémarrage
+  //     survenu pendant une calibration (le bandeau et l'alerte C4 doivent
+  //     rester vrais après reboot).
+  //   * calSwitchEpoch      : epoch UNIX de l'ENTRÉE (0 = date inconnue, patron
+  //     EXACT de phAutoManualEpoch — jamais un 1970 trompeur). Sert aussi de
+  //     garde fail-safe pour l'alerte C4 (cf. PumpControllerClass::update()) :
+  //     une entrée survenue avant synchronisation NTP n'alerte jamais plutôt
+  //     que d'halluciner une échéance.
+  //   * phCalSwitchApplied  : pH a-t-il été RÉELLEMENT basculé par CETTE
+  //     session (calSwitchShouldApplyEnter) ? false si phAutoManualEpoch/Reason
+  //     étaient déjà actifs à l'entrée (gate 5, C3 — déjà "manual" sous verrou
+  //     de sécurité, n'y touche pas).
+  //   * phCalSwitchPrevMode : mode pH ANTÉRIEUR à restaurer à la fermeture
+  //     (ignoré si !phCalSwitchApplied) — ⛔ JAMAIS "automatic" en dur (C5) :
+  //     "scheduled" doit redevenir "scheduled".
+  //   * orpCalSwitchApplied / orpCalSwitchPrevMode : miroirs ORP — TOUJOURS
+  //     appliqué (aucun verrou de sécurité ORP équivalent, vérifié le
+  //     2026-10-13 : zéro résultat sur `grep -r "orp_am_\|orpAutoManual" src/`).
+  //   * calSwitchLastAlertEpoch / calSwitchAlertCount : échéance de l'alerte
+  //     C4 (2 h puis toutes les 6 h) — remis à zéro à chaque NOUVELLE session.
+  bool calSwitchActive = false;
+  uint32_t calSwitchEpoch = 0;
+  bool phCalSwitchApplied = false;
+  String phCalSwitchPrevMode = "";
+  bool orpCalSwitchApplied = false;
+  String orpCalSwitchPrevMode = "";
+  uint32_t calSwitchLastAlertEpoch = 0;
+  uint8_t calSwitchAlertCount = 0;
+
   // feature-067 : offset logiciel de mesure pH (unités pH, borné
   // [kPhOffsetMin, kPhOffsetMax]). Formule : pH_corrigé = pH_brut_EZO + phOffset.
   // Appliqué EN SORTIE des accesseurs de SensorManager (cf. src/ph_offset.h) —

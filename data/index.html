@@ -1056,6 +1056,28 @@
             <span aria-hidden="true">←</span> Retour à la page pH
           </button>
 
+          <!-- bug-160 (volet 2, REFONTE 2026-10-13) : bandeau de bascule de
+               régulation pendant une calibration pH/ORP — HORS des cartes, juste
+               après le lien de retour haut, avant #ph-card-calibration (ergonome).
+               PATRON des cartes/liens .flow-maintenance ci-dessus : hidden par
+               défaut, basculé par enterMaintenance()/exitMaintenance() +
+               _renderCalSwitchBanner() (pas un mécanisme d'affichage neuf). Un SEUL
+               bandeau par page, un SEUL état (pas de compte à rebours : l'ancien
+               mécanisme de bail/plafond/réfractaire est ABANDONNÉ, cf. gate
+               pool-chemistry GATE 5). callout--warn (ambre) : ce n'est plus
+               « bleu actif / ambre expiré », c'est un état UNIQUE qui réclame une
+               action en fin de message (rétablir la régulation) — l'ambre est déjà
+               la teinte du jeu existant réservée à « il reste quelque chose à
+               faire », ni le bleu neutre (callout--info) ni le vert de succès ne
+               porteraient ce sens. Texte IMPOSÉ mot pour mot (gate 5) : ⛔ aucune
+               icône, aucune reformulation, aucune décoration. -->
+          <div class="callout callout--warn flow-maintenance" id="ph-cal-switch-banner"
+               role="status" aria-live="polite" hidden>
+            La régulation pH et chlore a été mise en Manuel : aucun dosage pendant
+            l'étalonnage. Elle ne repartira pas toute seule. Utilisez le bouton
+            ci-dessous pour la rétablir.
+          </div>
+
           <!-- feature-156 : la carte Calibration quitte la vue courante pour le mode
                réglage, dédié aux deux SEULS gestes qui touchent à la justesse de la
                mesure (calibration + correction, cf. feature-156). DOM réordonné
@@ -1589,6 +1611,18 @@
                   id="orp-maintenance-back-top" hidden>
             <span aria-hidden="true">←</span> Retour à la page ORP
           </button>
+
+          <!-- bug-160 (volet 2, REFONTE 2026-10-13) : bandeau de bascule — MÊME
+               mécanisme générique que la page pH (cf. commentaire jumeau
+               ci-dessus), même texte imposé (gate 5 : « C14 révoquée », identique
+               que le produit étalonné soit pH ou ORP — les deux boucles sont
+               basculées dans les deux cas). -->
+          <div class="callout callout--warn flow-maintenance" id="orp-cal-switch-banner"
+               role="status" aria-live="polite" hidden>
+            La régulation pH et chlore a été mise en Manuel : aucun dosage pendant
+            l'étalonnage. Elle ne repartira pas toute seule. Utilisez le bouton
+            ci-dessous pour la rétablir.
+          </div>
 
           <!-- Carte Calibration — quitte la vue courante pour le mode réglage
                (feature-156, même mécanisme générique que la page pH). `hidden`

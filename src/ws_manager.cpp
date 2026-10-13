@@ -853,7 +853,43 @@ size_t WsManager::_buildSensorJson(char* buf, size_t cap) const {
   //   "phValueRaw":14.000, → 10+6+4 = 20 o.
   // Pire cas de trame : 3356 (décompte ci-dessus) + 20 = 3376 o, SOUS
   // kWsFrameBufBytes = 3584 o. MARGE RÉSIDUELLE : 3584 − 3376 = 208 o.
-  StaticJson<3584> doc;
+  //
+  // ⚠️⚠️ bug-160 (2026-10-13) — LE DÉCOMPTE AVAIT DÉCROCHÉ PENDANT QUATRE LOTS.
+  // Relevé en documentant `ws-manager.md` : la dernière marge VÉRIFIÉE dans le
+  // code datait de feature-155 (ligne ci-dessus), alors que SEPT champs ont été
+  // ajoutés à la trame depuis — jamais comptés. Recomptés à la convention de ce
+  // fichier (1 + len(clé) + 1 + 1 + len(valeur PIRE CAS) + 1) :
+  //   feature-156 :
+  //     "ph_offset_epoch":4294967295,                 → 29 o
+  //     "ph_cal_epoch":4294967295,                    → 26 o
+  //     "ph_offset_stale":false,                      → 24 o
+  //   feature-158 :
+  //     "filtration_elapsed_s":4294967295,            → 34 o
+  //   bug-160 (volet 2, mécanisme de bail — depuis ABANDONNÉ, cf. ci-dessous) :
+  //     "cal_hold_remaining_s":4294967295,            → 34 o
+  //     "cal_hold_product":2,                         → 21 o
+  //     "cal_hold_refractory_remaining_s":4294967295, → 45 o
+  //   Total NON COMPTÉ : +213 o.
+  // Pire cas de trame : 3376 + 213 = 3589 o — soit 5 o AU-DESSUS de l'ancien
+  // kWsFrameBufBytes de 3584. ⚠️ Un dépassement ne tronque pas, il fait SAUTER
+  // le push (garde `measureJson(doc) + 1 > cap` en fin de fonction) : le temps
+  // réel aurait cessé SILENCIEUSEMENT, avec pour seul signe un avertissement
+  // throttlé.
+  // ⇒ kWsFrameBufBytes porté 3584 → 4096 (cf. constants.h, itération 4).
+  //
+  // ⚠️ bug-160 (REFONTE 2026-10-13, décision utilisateur) — le mécanisme de
+  // bail (cal_hold_*, trois champs ci-dessus) est ABANDONNÉ au profit d'une
+  // bascule EXPLICITE de régulation en Manuel. RECOMPTE (les trois champs
+  // cal_hold_* disparaissent, deux nouveaux les remplacent) :
+  //     "cal_hold_remaining_s":4294967295,            → −34 o (retiré)
+  //     "cal_hold_product":2,                         → −21 o (retiré)
+  //     "cal_hold_refractory_remaining_s":4294967295, → −45 o (retiré)
+  //     "cal_switch_active":false,                    → +27 o (ajouté)
+  //     "cal_switch_epoch":4294967295,                → +31 o (ajouté)
+  //   Delta net : −100 + 58 = −42 o.
+  // Pire cas de trame : 3589 − 42 = 3547 o, SOUS kWsFrameBufBytes = 4096 o
+  // (aucun bump supplémentaire). MARGE RÉSIDUELLE : 4096 − 3547 = 549 o.
+  StaticJson<4096> doc;
   doc["type"] = "sensor_data";
   JsonObject d = doc["data"].to<JsonObject>();
 
@@ -1375,6 +1411,12 @@ size_t WsManager::_buildSensorJson(char* buf, size_t cap) const {
   // fois avant qu'elle ne retombe à 0 d'elle-même (calculée à CHAQUE lecture,
   // aucun minuteur dédié à armer/désarmer).
   d["rescue_lift"] = getRescueLiftReasonCode(nowMs);
+  // bug-160 (volet 2, REFONTE 2026-10-13) : bascule de régulation en Manuel
+  // pendant un étalonnage (remplace le bail cal_hold_* ABANDONNÉ). PARITÉ
+  // /data ↔ WS sur L'EXPRESSION, pas seulement la clé (kSharedExpr,
+  // test_ws_data_parity).
+  d["cal_switch_active"] = mqttCfg.calSwitchActive;
+  d["cal_switch_epoch"] = (unsigned long)mqttCfg.calSwitchEpoch;
   // <<< PARITE-DATA:FIN
 
   d["time_synced"]   = (time(nullptr) >= kMinValidEpoch);

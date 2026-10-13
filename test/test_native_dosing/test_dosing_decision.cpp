@@ -903,7 +903,9 @@ void test_F006_refusal_stabilization_active(void) {
   TEST_ASSERT_EQUAL(ManualInjectRefusal::StabilizationActive, d.cause);
 }
 
-// Garde 4 — AlreadyInjecting (double start sur la même pompe).
+// Garde 4 — AlreadyInjecting (double start sur la même pompe). ⚠️ bug-160
+// (volet 2, REFONTE 2026-10-13) : CalibrationHold (ex-rang 4) est RETIRÉ, ce
+// test devient donc le test de la garde 4 (renumérotée depuis 5).
 void test_F006_refusal_already_injecting(void) {
   ManualInjectInputs in = validManualInputs();
   in.alreadyInjecting = true;
@@ -1077,6 +1079,12 @@ void test_F006_guard_priority_order(void) {
     TEST_ASSERT_EQUAL(ManualInjectRefusal::StabilizationActive, d.cause);
   }
 }
+
+// bug-160 (volet 2, REFONTE 2026-10-13) : le test d'ordre LOAD-BEARING de
+// l'ex-garde CalibrationHold (rang 4) est RETIRÉ avec elle — le mécanisme de
+// bail qui la justifiait est ABANDONNÉ (cal_hold_logic supprimé). Voir
+// cal_manual_switch_logic.h / test_native_cal_manual_switch pour la logique
+// qui la remplace (bascule explicite de régulation, hors evaluateManualInject).
 
 // -----------------------------------------------------------------------------
 // (e) AC3 — Partage anti-rafale AUTO/MANUEL via le ring buffer commun.

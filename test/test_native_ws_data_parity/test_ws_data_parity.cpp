@@ -1324,6 +1324,17 @@ static const SharedExprKey kSharedExpr[] = {
     "Pilote measuresAreValid() cote client, qui gate la TEMPERATURE et les DEUX "
     "voies. Une divergence entre /data et le WS fait apparaitre et disparaitre "
     "la temperature au rythme des deux cadences." },
+  { "cal_switch_active",
+    "bug-160 (volet 2, REFONTE 2026-10-13) : pilote le bandeau de bascule "
+    "pH+ORP en Manuel pendant une calibration (remplace cal_hold_remaining_s, "
+    "bail ABANDONNE). Une divergence d'expression ferait apparaitre et "
+    "disparaitre le bandeau de securite au rythme des deux cadences (~5 s / "
+    "~30 s)." },
+  { "cal_switch_epoch",
+    "bug-160 (volet 2, REFONTE 2026-10-13) : date de la bascule affichee dans "
+    "le bandeau et utilisee par l'alerte d'oubli (C4). Meme risque de "
+    "clignotement qu'un champ de securite si les deux cotes divergent dans "
+    "leur calcul." },
 };
 static const size_t kSharedExprCount = sizeof(kSharedExpr) / sizeof(kSharedExpr[0]);
 

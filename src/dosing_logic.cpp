@@ -406,6 +406,15 @@ ManualInjectDecision evaluateManualInject(const ManualInjectInputs& in) {
     return { false, ManualInjectRefusal::StabilizationActive, 0.0f };
   }
 
+  // (ex-rang 4, CalibrationHold) — RETIRÉ bug-160 (volet 2, REFONTE
+  // 2026-10-13) : le mécanisme de bail qui le justifiait est ABANDONNÉ. Une
+  // calibration en cours bascule désormais la régulation en "manual" (mqttCfg,
+  // posé par web_routes_calibration.cpp), et interrompt toute injection
+  // manuelle ALREADY ACTIVE directement à l'entrée (gate 5, C6) — ce n'est plus
+  // une garde évaluée ici à chaque nouvelle demande. Renumérotation DES RANGS
+  // SUIVANTS (gelés pool-chemistry feature-006, inchangés entre eux) : 5→4,
+  // 6→5, 7→6, 8→7, 9→8, 10→9.
+
   // 4. Pas de double démarrage (une injection manuelle est déjà en cours).
   if (in.alreadyInjecting) {
     return { false, ManualInjectRefusal::AlreadyInjecting, 0.0f };

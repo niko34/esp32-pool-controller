@@ -690,23 +690,107 @@ Le focus est déplacé sur le contrôle de l'étape active (`focusActiveStep()`)
 
 **Minuterie de stabilisation** (aide **non bloquante**) : chaque étape d'attente propose un bouton « Démarrer la minuterie de stabilisation (60 s) » (`.cal-timer-start`). Le compte à rebours est géré **côté client** par timestamp (`startCalTimer()`, constante `CAL_STAB_DURATION_S = 60`), affiche `mm:ss` + une barre de progression dans `#ph-cal-timer` (`role="timer" aria-live="polite"`), et bascule en « Stabilisation atteinte, vous pouvez calibrer » à 0. L'utilisateur **peut calibrer avant la fin** — la minuterie n'inhibe pas le bouton « Calibrer ». Annulation par « Annuler » (`.cal-timer-cancel`).
 
-### Les cinq états de l'indicateur de stabilité (`renderStability()`, feature-159, v2.75.0)
+### Les six états de l'indicateur de stabilité (`renderStability()`, bug-160)
 
-Avant la v2.75.0, l'état d'arrivée sur une étape était **muet** : `Δ60 s : --`, un libellé purement numérique, sans un mot, pendant les 10 à 45 premières secondes (le temps de remplir la fenêtre glissante à 3 échantillons). C'était le **premier contact** de l'utilisateur avec l'étape. `renderStability()` affiche désormais toujours l'un de **cinq états**, distincts par **icône et texte** (jamais la seule couleur, daltonisme) :
+Avant la v2.75.0, l'état d'arrivée sur une étape était **muet** : `Δ60 s : --`, un libellé purement numérique, sans un mot, pendant les 10 à 45 premières secondes. La v2.75.0 (feature-159) a d'abord rendu l'attente **lisible** (cinq états, icône + texte), sans toucher au **critère** lui-même — qui restait une **étendue** (`max − min` sur 20 s, seuil 0,9 pH), chiffrée par le gate `pool-chemistry` comme annonçant « stable » à **0,8 à 1,1 pH** de l'équilibre réel de l'électrode.
+
+`bug-160` remplace ce critère et ajoute un **sixième** état. `renderStability()` affiche désormais toujours l'un de ces six, distincts par **icône et texte** (jamais la seule couleur, daltonisme) :
 
 | État | Icône | Texte |
 |------|-------|-------|
-| Lecture en cours (< 3 échantillons) | ⏳ | « Lecture de la sonde en cours — ne calibrez pas encore » |
+| Lecture en cours (< 6 échantillons, ou `G < G_MIN`) | ⏳ | « Lecture de la sonde en cours — ne calibrez pas encore » |
 | Mesure instable | ○ | « La mesure bouge encore — attendez (écart *X* sur *N* s) » |
 | Stable | ● | « Stable — vous pouvez calibrer » |
 | Calibration en cours | ↻ | « Calibration en cours — ne retirez pas la sonde du tampon » |
 | Échec **persistant** | ✕ | voir [Échec persistant](#échec-persistant-cal-failure-feature-159-v2750) |
+| **Diagnostic** (toujours instable après 5 min) | ⚠ | voir [Diagnostic après 5 minutes](#diagnostic-après-5-minutes) |
 
-Priorité d'affichage, un seul message à la fois : calibration en vol (↻) **>** échec persistant (✕) **>** lecture/stabilité (⏳ ○ ●).
+Priorité d'affichage, un seul message à la fois : calibration en vol (↻) **>** échec persistant (✕) **>** diagnostic (⚠) **>** lecture/stabilité (⏳ ○ ●).
 
-⚠️ **Le bouton « Calibrer » n'est jamais désactivé pour cause d'instabilité** — ce lot ne touche **ni** les seuils (`CAL_STAB_THRESHOLD`), **ni** la fenêtre (`CAL_STAB_WINDOW_MS`, toujours 20 s malgré le libellé historique « Δ60 s » qu'il a remplacé), **ni** une éventuelle confirmation sur mesure instable : ces trois sujets sont **hors périmètre**, reportés à `bug-160` (le gate `pool-chemistry` a établi que l'indicateur annonce « stable » alors que l'écart réel à l'équilibre peut atteindre 0,8 à 1,1 pH — un défaut réel, mais indépendant de ce lot). **Le nombre affiché est bien celui qui décide** (même `delta` que la comparaison au seuil), en virgule française (`0,42`).
+⚠️ **Le bouton « Calibrer » n'est jamais désactivé pour cause d'instabilité**, dans aucun des six états, diagnostic compris — une sonde dégradée qui ne redescend jamais sous le seuil ne doit jamais devenir une impasse (voir [ADR-0105](../adr/0105-un-indicateur-de-transitoire-d-etalonnage-n-est-pas-une-porte-de-mesure.md), point 1). **Le nombre affiché est bien celui qui décide** (même valeur `D` que la comparaison au seuil, durée `S` comprise), en virgule française (`0,42`).
 
-Le calcul (amplitude `max − min` de la mesure **brute** sur la fenêtre glissante) et la réinitialisation à chaque changement de solution sont **inchangés**.
+### Le critère — un estimateur de vitesse de dérive, pas une étendue (bug-160)
+
+⚠️ **Le calcul a changé, pas seulement l'affichage.** L'ancien critère (`max − min` sur une fenêtre de temps fixe) est une **étendue** : elle croît avec le nombre d'échantillons et mélange bruit et dérive. Le nouveau critère coupe le tampon en deux moitiés (récente / ancienne, par comptage) et compare leurs **médianes** :
+
+- `D` = écart entre les deux médianes de valeur — c'est lui que l'affichage compare au seuil.
+- `S` / `a` = séparation et âge **réellement observés** des deux moitiés (pas la fenêtre nominale).
+- `G = e^(a/τmax) · (e^(S/τmax) − 1)` — garde-fou : le verdict n'est rendu que si `n ≥ 6` **et**
+  `G ≥ G_MIN`, sinon **muet** (état ⏳, jamais un faux « stable » par manque de données).
+
+Détail complet de l'arithmétique, des sources de constantes (ADR-0098) et des résiduels garantis
+(pH 0,0911 à τ = 120 s · ORP 4,65 mV à τ = 180 s) : [`docs/subsystems/sensors.md`](../subsystems/sensors.md#indicateur-de-stabilité-de-calibration-bug-160).
+Distinction avec le mécanisme retiré par [ADR-0092](../adr/0092-retrait-analyse-stabilite-porte-mesures.md) : [ADR-0105](../adr/0105-un-indicateur-de-transitoire-d-etalonnage-n-est-pas-une-porte-de-mesure.md).
+
+La réinitialisation à chaque changement de solution (et à chaque geste « Recommencer ») est **inchangée**.
+
+### Bandeau de bascule en Manuel (`#ph-cal-switch-banner` / `#orp-cal-switch-banner`, bug-160)
+
+⚠️ **REFONTE du 2026-10-13 (décision utilisateur)** : un premier mécanisme (bandeau à deux états,
+bail/plafond/réfractaire) a été conçu puis **abandonné avant tout déploiement**. Voir
+[ADR-0107](../adr/0107-etat-visible-et-persistant-plutot-que-suspension-invisible.md).
+
+À l'entrée dans l'écran de calibration (pH ou ORP), le firmware bascule la régulation **pH ET
+ORP en `manual`** (détail firmware :
+[pump-controller.md](../subsystems/pump-controller.md#bascule-de-régulation-en-manuel-pendant-une-calibration-bug-160-volet-2)).
+Un bandeau unique, placé juste après le lien de retour haut (hors des cartes), en rend compte en
+un **seul état** — texte **imposé mot pour mot** (gate 5), aucune icône, aucune reformulation :
+
+> La régulation pH et chlore a été mise en Manuel : aucun dosage pendant l'étalonnage. Elle ne
+> repartira pas toute seule. Utilisez le bouton ci-dessous pour la rétablir.
+
+Couleur **ambre** (`callout--warn`), pas le bleu neutre habituel des `callout--info` : ce n'est
+plus « bleu actif / ambre expiré » comme dans le mécanisme abandonné — c'est un état **unique**
+qui réclame une action en fin de message (rétablir la régulation), et l'ambre est déjà la teinte
+du jeu existant réservée à « il reste quelque chose à faire ».
+
+⚠️ **Texte identique pour pH et ORP** (hérité du gate 2 sur le mécanisme précédent, toujours
+valable) — annoncer « La régulation ORP a été mise en Manuel » lors d'un étalonnage ORP
+mentirait par omission, puisque la régulation **pH** est elle aussi basculée. Les deux pages
+affichent donc le **même** bandeau, quel que soit le produit en cours d'étalonnage.
+
+**Condition d'affichage** : le bandeau n'est **pas** piloté par `cal_switch_active`/`/data` —
+il reflète l'état **optimiste** côté client (`_calSwitchOccurred`, mis à jour par la réponse de
+`POST /calibration/enter`), affiché tant que l'écran reste en mode réglage
+(`is-flow-maintenance`). ⚠️ **Deux conditions, pas une** (relevé en revue) : le bandeau affirme
+« la régulation a été mise en Manuel » — le gater sur le seul mode réglage le ferait **mentir**
+si `/calibration/enter` avait échoué (503, mutex occupé) : il annoncerait une bascule qui n'a pas
+eu lieu, alors que le bouton de fermeture afficherait encore « Fermer » (pas « Fermer et rétablir
+la régulation »). Les deux champs `/data`/WS (`cal_switch_active`, `cal_switch_epoch`) existent
+pour un consommateur externe (MQTT, diagnostic) — ce n'est pas la source du bandeau lui-même.
+
+### Bouton de fermeture dynamique
+
+Le bouton qui ferme l'écran de calibration change de libellé selon ce que l'entrée a réellement
+basculé :
+
+| Cas | Libellé |
+|---|---|
+| Une bascule a eu lieu (pH et/ou ORP) | **« Fermer et rétablir la régulation »** |
+| Aucune bascule (cas d'exception de sécurité — pH déjà verrouillé par une escalade de plancher acide, feature-067) | **« Fermer »** |
+
+La **même action** (`POST /calibration/exit`) est appelée par le bouton et par les deux liens de
+retour (haut et bas) — ⛔ pas deux chemins différents. Idempotente : appelée deux fois, ou sans
+session jamais ouverte, ne mute rien de plus.
+
+### Diagnostic après 5 minutes
+
+Si l'indicateur reste différent de « Stable » **5 minutes** après le premier échantillon de la
+session de lecture courante, il bascule sur un texte de **diagnostic** (icône ⚠, `.is-diag`) :
+
+> Toujours instable après 5 min (écart *D* sur *S* s).
+> Vous pouvez calibrer quand même. Une dérive qui dure est aussi un signe d'usure de la sonde :
+> vérifiez la pente dans « État sonde pH » après l'étalonnage.
+
+(Côté ORP, la seconde ligne dit « … est aussi un signe d'usure de la sonde redox », **sans**
+renvoi vers une pente : un étalonnage ORP est à un seul point, il n'y a pas de pente à vérifier —
+les deux textes ne sont **pas** symétriques.)
+
+⚠️ **Ce n'est ni un succès ni un échec, c'est un constat.** Le mécanisme a statistiquement
+**raison** sur une sonde dégradée qui ne redescendra jamais sous le seuil — ce qui change, c'est la
+**nature du message** (un diagnostic, pas une consigne d'attente), **jamais le critère** : le
+diagnostic cède la priorité dès que « Stable » redevient vrai. **Le bouton « Calibrer » reste
+cliquable** pendant le diagnostic, comme dans tous les autres états.
 
 ### Échec persistant (`_calFailure`, feature-159, v2.75.0)
 
@@ -716,7 +800,7 @@ Depuis, l'échec est **mémorisé par étape** (`_calFailure`) et reste affiché
 
 ⚠️ **Aucun de ces textes n'affirme que la sonde est hors service, ni que la calibration précédente est intacte.** Sur un délai dépassé en particulier, l'appareil **ne sait pas** si l'EZO a exécuté la commande ou non — ce n'est pas le silence qui déciderait à sa place.
 
-Après une calibration EZO réussie, `completeCalStep()` marque l'étape « calibrer » comme faite (✓) et avance le stepper. Le bouton « Fermer » (`#ph_cal_close_btn`) appelle `requestExitMaintenance("ph")` : annule toute minuterie en cours et **quitte le mode réglage** (voir [Mode réglage](#mode-réglage-calibration--correction-feature-156-v2720)) — avant la v2.72.0, il restaurait seulement la carte Régulation masquée à sa place.
+Après une calibration EZO réussie, `completeCalStep()` marque l'étape « calibrer » comme faite (✓) et avance le stepper. Le bouton (`#ph_cal_close_btn`, libellé **dynamique** depuis bug-160 — voir [Bouton de fermeture dynamique](#bouton-de-fermeture-dynamique)) appelle `requestExitMaintenance("ph")` : envoie `POST /calibration/exit` (restaure le mode antérieur de la régulation), annule toute minuterie en cours et **quitte le mode réglage** (voir [Mode réglage](#mode-réglage-calibration--correction-feature-156-v2720)) — avant la v2.72.0, il restaurait seulement la carte Régulation masquée à sa place.
 
 ### Conseil post-étalonnage (`#ph_cal_final_advice`, feature-156, v2.72.0)
 
@@ -760,6 +844,13 @@ Techniquement, les trois boutons appellent la même fonction générique `_calRe
 
 ### Workflow temporel
 
+0. **À l'entrée dans l'écran** (`onEnter`), le client envoie `POST /calibration/enter` (sans
+   corps) — bascule la régulation pH **et** ORP en Manuel côté firmware (bug-160, voir
+   [Bandeau de bascule en Manuel](#bandeau-de-bascule-en-manuel-ph-cal-switch-banner--orp-cal-switch-banner-bug-160)
+   ci-dessus), et met à jour le libellé du bouton de fermeture en fonction de la réponse. À la
+   **sortie** (`onExit`, succès ou non), le client envoie `POST /calibration/exit` — restaure le
+   mode antérieur de chaque boucle. Aucune route de relâche : la session reste ouverte tant que
+   `/calibration/exit` n'est pas appelé, y compris si l'onglet est fermé entre-temps.
 1. L'utilisateur prépare la sonde (rinçage eau distillée, plongée dans le tampon, attente 1 min).
 2. Clic sur **« Calibrer le point 7.0 »** → POST `/calibrate_ph {step:"mid"}`.
 3. Réponse 200 immédiate `{success:true, queued:true, step:"mid"}` → toast info **« Calibration en cours… »**.
@@ -785,6 +876,7 @@ Techniquement, les trois boutons appellent la même fonction générique `_calRe
 **Mesure** : `ph` (= valeur **filtrée corrigée**, 3 décimales) ; `phMedian`, `phFiltered` (**corrigés**) ; `phRaw` (**brut EZO**, feature-025 / feature-067)
 **État filtre** : `phRejectedCount` (diagnostic seul), `phMixingDelayActive`, `phDoseBlockedReason` (feature-025), **`phDoseBlockedCode`** (v2.25.1 — code machine de la cause de refus, source de la catégorie) — voir [Modal détails](#modal-détails). ⚠️ `phFilterReady` / `phFilterUnstable` / `phFilterAlarm` sont **retirés en v2.68.0** (feature-152) — voir [Ce qui a été retiré, fusionné, conservé](#ce-qui-a-été-retiré-fusionné-conservé-feature-152-v2680) et [API.md](../API.md#get-data--write)
 **Calibration** : `phCalPoints` (`-1..3`) — voir [Chip d'état de calibration](#chip-détat-de-calibration-feature-034)
+**Bascule de calibration (bug-160)** : `cal_switch_active`, `cal_switch_epoch` — champs **communs** aux pages pH et ORP (même bascule, les deux boucles) ; ne pilotent **pas** le bandeau (état optimiste côté client, voir [Bandeau de bascule en Manuel](#bandeau-de-bascule-en-manuel-ph-cal-switch-banner--orp-cal-switch-banner-bug-160)), mais servent un consommateur externe (MQTT, diagnostic)
 **Pente sonde** : `phSlopeAcid`, `phSlopeBase`, `phSlopeZero`, `phSlopeAgeMs` (feature-024) — voir [Chip d'état sonde](#chip-détat-sonde-feature-024)
 **Dosage** : `ph_dosing`, `ph_used_ms`, `ph_daily_ml`, `ph_limit_reached` — ⚠️ **`ph_dosing` change de SENS en v2.36.0**, voir [Sens de « en dosage »](#sens-de--en-dosage--feature-094-v2360)
 **Mode** : `ph_regulation_mode` (`automatic` / `scheduled` / `manual`), `ph_daily_target_ml`, `ph_enabled` (miroir, voir [ADR-0004](../adr/0004-mode-regulation-enum-3-valeurs.md))

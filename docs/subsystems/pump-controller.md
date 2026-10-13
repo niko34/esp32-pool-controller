@@ -790,6 +790,7 @@ Cette valeur est résolue par la fonction **pure** `resolveWaterPresent(WaterPre
 | 17 | `ReadingNaNStale` | #4 | valeur officielle indisponible : **plus aucune mesure acceptée** |
 | 18 | `ReadingNaNGateClosed` | #4 | valeur officielle indisponible : mesures non représentatives |
 | ~~19~~-~~22~~ | ~~`FilterWarmup`/`FilterFrozen`/`FilterStale`/`FilterGateClosed`~~ | ~~#4b~~ | **RETIRÉS en v2.68.0** — qualifiaient la garde #4b, qui a disparu avec eux. Jamais recyclés |
+| ~~23~~ | ~~`CalibrationHold`~~ | — | **N'A JAMAIS ÉTÉ LIVRÉ** — envisagé pour `bug-160` (volet 2) au moment du mécanisme de bail (`cal_hold_logic`), **ABANDONNÉ avant tout déploiement** (décision utilisateur du 2026-10-13, remplacé par une bascule explicite de régulation en `manual`, voir [plus bas](#bascule-de-régulation-en-manuel-pendant-une-calibration-bug-160-volet-2)). Le code 23 n'est **jamais recyclé**, bien qu'aucune release n'ait jamais contenu `DoseRefusal::CalibrationHold` |
 | 250 | *(sentinelle `kDoseBlockedCodeGuard`)* | — | cause posée par une **garde de sécurité pH/ORP** ou par l'escalade (hors `canDose`) |
 
 **Aucun libellé ne mélange plus deux causes.** L'ancienne phrase « lecture pH/ORP filtrée indisponible (NaN) » recouvrait plusieurs causes physiques, et l'interface en extrayait un fragment de texte : une **vraie panne d'EZO** s'affichait « Stabilisation du filtre ». Le code 3 subsiste pour le cas où l'état du filtre n'a **pas** été collecté (`DoseFilterState::Unknown`) et dit alors explicitement qu'il ne sait pas — pire cas : une cause **imprécise**, jamais une panne maquillée en état normal. **Depuis v2.68.0** (feature-152), il n'existe plus qu'**une seule** famille de qualification (15-18, garde #4) : la garde #4b et ses quatre qualifications symétriques (19-22) ont disparu avec le mécanisme « filtre non prêt » séparé.
@@ -888,6 +889,14 @@ Incident fondateur (2026-10-02) : après des pluies diluviennes, les deux voies 
 
 **Volontairement absents** (le manuel est aveugle à la mesure — l'opérateur assume la décision chimique) : gardes NaN / filtre capteur / calibration / mode de régulation / pause mélange. Le volume/durée évalués sont **post-plafonnement** `kManualInjectMaxDurationS` (condition pool-chemistry #3 : on évalue ce qui sera vraiment injecté).
 
+⚠️ **bug-160 (volet 2, REFONTE 2026-10-13)** : pas de garde dédiée ici pour la calibration — une
+injection manuelle déjà active est **interrompue immédiatement** par `POST /calibration/enter`
+(hors de cette liste, C6 du gate `pool-chemistry` : « le seul trou que le bail couvrait et que la
+bascule ne couvre pas »), et une **nouvelle** demande manuelle pendant une calibration n'a plus
+besoin d'un rang dédié : la régulation ORP/pH est en `manual`, et `evaluateManualInject` reste
+**volontairement aveugle au mode** — rien ne l'empêche donc de démarrer. La protection du bassin
+repose sur l'interruption à l'entrée, pas sur un refus à la demande suivante.
+
 **Budget horaire partagé ([ADR-0020](../adr/0020-budget-horaire-dosage-unique.md))** : avant feature-006, le manuel ne contournait pas seulement la limite horaire — il n'était **pas compté** dans `usedMs` (jusqu'à 2× le budget/heure possible). Depuis la **v2.21.0** ([ADR-0044](../adr/0044-budget-horaire-et-temps-min-en-temps-pompe-on.md)), `refreshDosingState(state, now, pumpOn)` (privée, [`pump_controller.cpp`](../../src/pump_controller.cpp)) accumule `usedMs` sur le prédicat **POMPE-ON** (pompe physiquement alimentée — pouls auto/scheduled, injection manuelle web, **pompes test** `/pumpN/on`) : entre deux pouls d'une session, le budget n'est **pas** consommé (« minutes où le produit coule », validé gate). Toute future source d'activation passant par `applyPumpDuty()` est comptée par construction. Point d'accumulation unique → pas de double comptage.
 
 **Enregistrement de cycle manuel (pending atomique)** : à l'acceptation, la route appelle `requestManualCycleRecord(pumpIndex)` (incrément `std::atomic<uint8_t> _manualCycleStartPending[2]`, thread-safe depuis `async_tcp`). Le pending est consommé **en tête de `update()`** ([`pump_controller.cpp:657`](../../src/pump_controller.cpp:657)), en `loopTask`, avant tout early-return : `recordDosingCycleStart()` (ring anti-rafale **partagé** avec l'auto) + `cyclesToday++` + flush NVS différé. Le ring et `cyclesToday` restent ainsi écrits par **une seule tâche** (pas de mutex). Les getters `getCyclesToday()` / `getRecentCycles()` **ajoutent le pending** non consommé : deux starts manuels rapprochés se voient mutuellement (fail-closed). Lectures snapshot sans mutex : compteurs écrits en `loopTask` uniquement, lectures 32 bits atomiques sur ESP32 (course bénigne : au pire une valeur en retard d'un tour de loop).
@@ -904,7 +913,7 @@ Incident fondateur (2026-10-02) : après des pluies diluviennes, les deux voies 
 
 **Routes d'arrêt** (`/ph/inject/stop`, `/orp/inject/stop`, `/pump[12]/off`) : **inconditionnelles** — pouvoir arrêter en toute circonstance, y compris pendant une stabilisation.
 
-**Crédit plancher à la fin naturelle (v2.9.1)** : le cumul journalier de sécurité (`dailyPhInjectedMl` / `dailyOrpInjectedMl`) est alimenté par **intégration débit × temps** (`updateSafetyTracking` à l'époque — depuis v2.21.0 : `accountPumpVolume` + `creditInjectedVolume`, voir [Comptabilité du volume](#comptabilité-du-volume-p4)), qui perd systématiquement quelques dixièmes de mL aux bornes d'une injection manuelle volumée : arrondi de `durationS` à la seconde entière, tranche entre le démarrage réel (handler async) et le premier tick de comptage, et surtout **dernière tranche jamais comptée** (`updateManualInject()` coupe la pompe à l'expiration → au tick suivant le delta final est jeté). La garde d'acceptation raisonnant, elle, en **volume exact** (garde #5, frontière `==` acceptée), demander exactement le reliquat du quota (limite 50 mL, injection 50 mL) laissait le cumul à 49,x → `ph/orp_limit_reached` jamais latché, badge dashboard « Cumul 98 % » figé.
+**Crédit plancher à la fin naturelle (v2.9.1)** : le cumul journalier de sécurité (`dailyPhInjectedMl` / `dailyOrpInjectedMl`) est alimenté par **intégration débit × temps** (`updateSafetyTracking` à l'époque — depuis v2.21.0 : `accountPumpVolume` + `creditInjectedVolume`, voir [Comptabilité du volume](#comptabilité-du-volume-p4)), qui perd systématiquement quelques dixièmes de mL aux bornes d'une injection manuelle volumée : arrondi de `durationS` à la seconde entière, tranche entre le démarrage réel (handler async) et le premier tick de comptage, et surtout **dernière tranche jamais comptée** (`updateManualInject()` coupe la pompe à l'expiration → au tick suivant le delta final est jeté). La garde d'acceptation raisonnant, elle, en **volume exact** (garde #6, frontière `==` acceptée), demander exactement le reliquat du quota (limite 50 mL, injection 50 mL) laissait le cumul à 49,x → `ph/orp_limit_reached` jamais latché, badge dashboard « Cumul 98 % » figé.
 
 Correctif : à l'acceptation, la route mémorise dans `ManualInjectState` le cumul au départ (`startCumulMl`) et le volume promis post-plafonnement (`creditMl = effectiveMl`) ([`web_routes_control.cpp:335`](../../src/web_routes_control.cpp:335)). À la **fin naturelle** (expiration de `durationMs`), `updateManualInject()` appelle `creditManualInjectionFloor(idx, startCumulMl, creditMl)` ([`pump_controller.cpp:675`](../../src/pump_controller.cpp:675)) qui **planche** le registre de sécurité :
 
@@ -2027,6 +2036,152 @@ Voir [ADR-0089](../adr/0089-ce-qu-un-redemarrage-a-le-droit-doublier.md).
 - **Arrêt filtration en mode `managed`** : `clearStabilizationTimer()` (efface les 2 pompes) — **inchangé**.
 - Le champ NVS `stab_delay` et le champ `mqttCfg.stabilizationDelayMin` subsistent mais sont **inertes** : plus aucun chemin de dosage ne les lit (précédent `screen_enabled` de la feature-065).
 - Les champs WS `ph_stab_remaining_s` / `orp_stab_remaining_s` sont **conservés à l'identique** : ils décrivent ce sas post-calibration, à ne pas confondre avec `measures_stab_elapsed_s` (purge de la chambre de mesure).
+
+## Bascule de régulation en Manuel pendant une calibration (bug-160, volet 2)
+
+⚠️ **REFONTE du 2026-10-13 (décision utilisateur)** : un premier mécanisme (bail de suspension
+auto-expirant, `cal_hold_logic`, `POST /calibration/hold`) a été conçu, revu par deux gates
+`pool-chemistry` supplémentaires, puis **abandonné avant tout déploiement** — remplacé par celui
+décrit ci-dessous. Voir [ADR-0107](../adr/0107-etat-visible-et-persistant-plutot-que-suspension-invisible.md)
+pour l'arbitrage entre les deux approches, et [ADR-0106](../adr/0106-toute-suspension-demandee-par-un-client-est-bornee.md)
+(statut Superseded) pour le mécanisme abandonné.
+
+**Défaut corrigé** : pendant qu'une sonde pH ou ORP trempe dans un bécher d'étalonnage, rien
+n'empêchait l'appareil de continuer à réguler sur ce qu'elle lisait — un étalon ORP à 470 mV
+contre une consigne de 530 mV pouvait injecter du chlore dans le **bassin** sur la foi de la
+lecture d'un **bécher**.
+
+**Mécanisme retenu** : à l'entrée dans l'écran de calibration, l'appareil bascule lui-même la
+régulation **pH ET ORP en `manual`**, interrompt tout dosage en cours, et attend un **geste
+humain** (bouton « Fermer ») pour restaurer le mode antérieur. « On échange un oubli qu'on VOIT
+(le mode Manuel affiché au tableau de bord) contre une panne qu'on ne voit PAS (une minuterie
+coincée, invisible) » (gate 5). Logique pure dans
+[`src/cal_manual_switch_logic.h`](../../src/cal_manual_switch_logic.h) /
+[`.cpp`](../../src/cal_manual_switch_logic.cpp) ([ADR-0017](../adr/0017-logique-metier-pure-humble-object-testabilite.md)),
+coquille dans [`src/web_routes_calibration.cpp`](../../src/web_routes_calibration.cpp)
+(`POST /calibration/enter` / `POST /calibration/exit`) et dans
+`PumpControllerClass::tickCalSwitchAlert()` (alerte d'oubli, ci-dessous).
+
+### `POST /calibration/enter` — à l'entrée dans l'écran
+
+Appelée par `onEnter` de l'écran de calibration (`data/app.js`, `_calSwitchEnter`). Sous
+`configMutex` :
+
+1. Mémorise le mode **antérieur** de chaque boucle (`phCalSwitchPrevMode` /
+   `orpCalSwitchPrevMode`) et bascule `phRegulationMode` / `orpRegulationMode` → `"manual"`
+   (`phEnabled`/`orpEnabled` → `false`, miroir habituel du mode).
+2. **Exception de sécurité (gate 5, C3)** : si `phAutoManualEpoch`/`phAutoManualReason`
+   (feature-067, escalade de plancher acide) est **déjà** active, le pH n'est **pas** touché — il
+   est déjà verrouillé en Manuel pour une raison plus grave, et cette bascule ne mémorise jamais
+   ce `manual`-là comme un mode à restaurer (l'effacer serait un nouveau trou de sécurité). Aucun
+   verrou équivalent n'existe côté ORP (vérifié : zéro résultat sur
+   `grep -r "orp_am_\|orpAutoManual" src/`) — la boucle ORP bascule toujours.
+3. **Chloration de secours** (feature-140) : si active, elle est désarmée (même patron que
+   `/save-config`) — sinon un double dosage serait possible (étalonnage **et** secours).
+4. **Idempotente** : un second appel pendant une session déjà ouverte ne réécrit **pas** le mode
+   antérieur mémorisé (sinon un second appel capturerait `"manual"` lui-même comme mode à
+   restaurer).
+
+Hors `configMutex` (même patron que `/ph|orp/inject/stop`) : **interrompt immédiatement** toute
+injection **manuelle** en cours sur les deux pompes (⚠️ gate 5, C6 — « le seul trou que le bail
+couvrait et que la bascule ne couvre pas » : changer de mode n'arrête pas une injection **déjà
+lancée** — voir [Gardes des injections manuelles](#gardes-des-injections-manuelles-feature-006) pour ce
+que cette interruption remplace). Demande aussi l'interruption **one-shot** d'une session
+automatique/programmée déjà ouverte, consommée au tour suivant de `update()`
+(`_calEntryInterruptRequested` / `requestCalibrationEntryInterrupt()`).
+
+Réponse : `{ "success": true, "ph_switched": bool, "orp_switched": true }`.
+
+### `POST /calibration/exit` — à la fermeture de l'écran
+
+Appelée par `onExit` (succès **ou** non — toujours) et par le bouton « Fermer et rétablir la
+régulation » (libellé dynamique : simplement « Fermer » si `enter` n'avait rien basculé). Sous
+`configMutex` :
+
+1. Restaure le mode **antérieur** de chaque boucle — ⛔ **jamais** `"automatic"` en dur : un mode
+   `"scheduled"` redevient `"scheduled"` (gate 5, C5).
+2. ⚠️ **N'acquitte jamais** `phAutoManualEpoch`/`phAutoManualReason` (gate 5, C2 — **piège
+   central** de la refonte, cf. ci-dessous) : si cette trace de sécurité est active — qu'elle
+   l'ait déjà été à l'entrée, ou qu'elle soit apparue **pendant** la session de calibration — le
+   pH reste en Manuel et seul l'ORP est restauré.
+3. **Idempotente** : appelée sans session ouverte (double clic, session jamais ouverte), répond
+   200 sans rien muter (`restored: false`).
+
+Réponse (session ouverte) : `{ "success": true, "restored": true, "ph_mode": "...", "orp_mode": "..." }`.
+
+### ⚠️ C2 — le piège que la refonte a failli créer
+
+`web_routes_config.cpp:518-566` est un **gate fail-closed** posé après l'incident du 2026-08-25 :
+tant qu'une trace `phAutoManual*` existe, sortir de `manual` **exige** `ph_auto_manual_ack: true`.
+Réutiliser `phAutoManual*` pour porter la bascule de calibration aurait donc signifié : (a) le
+bouton « rétablir » prendrait un **409** ; ou (b) s'il envoyait l'acquittement, il **effacerait
+une escalade de plancher acide RÉELLE** (feature-067) — un nouveau trou de sécurité, créé par la
+simplification elle-même. ⇒ Trace d'étalonnage **distincte** (`calSwitchActive`,
+`phCalSwitchApplied`/`PrevMode`, `orpCalSwitchApplied`/`PrevMode` — `src/config.h`) ; le chemin de
+fermeture n'acquitte **jamais** `phAutoManual*`.
+
+### Persistance et traces (`src/config.h`)
+
+| Champ | Rôle |
+|---|---|
+| `calSwitchActive` | une session de bascule est **ouverte** (pas encore restaurée). **Persisté** : survit à un redémarrage survenu pendant une calibration — le bandeau et l'alerte d'oubli restent vrais après reboot. |
+| `calSwitchEpoch` | epoch UNIX de l'**entrée** (`0` = heure inconnue, patron `phAutoManualEpoch` — jamais un 1970 trompeur). Sert aussi de garde fail-safe pour l'alerte d'oubli. |
+| `phCalSwitchApplied` / `phCalSwitchPrevMode` | pH a-t-il été réellement basculé par **cette** session ? Si oui, mode à restaurer à la fermeture. |
+| `orpCalSwitchApplied` / `orpCalSwitchPrevMode` | miroirs ORP — toujours appliqué (aucun verrou de sécurité équivalent côté ORP). |
+| `calSwitchLastAlertEpoch` / `calSwitchAlertCount` | échéance de l'alerte d'oubli (ci-dessous), remises à zéro à chaque **nouvelle** session. |
+
+### Alerte d'oubli (gate 5, C4 — BLOQUANTE)
+
+« On fabrique **délibérément** des bascules, il faut donc fermer le risque d'oubli. »
+`PumpControllerClass::tickCalSwitchAlert()` (appelée à chaque tour d'`update()`, patron
+`tickPhUndersizedAlert`) émet un premier avertissement `kCalSwitchAlertFirstDelayS` (2 h) après
+l'**entrée**, puis répété toutes les `kCalSwitchAlertRepeatS` (6 h) tant que `calSwitchActive`
+reste vrai — décision **pure** déléguée à `calSwitchAlertDue()`
+(`src/cal_manual_switch_logic.h`), ce tick n'en est que la coquille temporelle.
+
+Fail-safe epoch (patron `phAutoManualEpoch`) : **aucune** alerte tant que l'heure n'était pas
+synchronisée à l'entrée (`calSwitchEpoch == 0`) ou ne l'est pas maintenant, et aucune si
+l'horloge a reculé depuis (NTP) — une échéance calculée sur une horloge non fiable doit produire
+un faux **silence**, jamais un faux positif.
+
+Texte **imposé** (gate 5), `warning` + MQTT `publishAlert("cal_switch_overdue", …)` :
+
+```
+Régulation pH et chlore en Manuel depuis <N>h<MM> (étalonnage du <AAAA-MM-JJ HH:MM>) — aucun dosage automatique. Rétablissez-la.
+```
+
+### Contrat `/data` et WebSocket
+
+Deux champs, publiés **à l'identique** sur `GET /data` et `sensor_data` WS (parité garantie
+structurellement par un accesseur unique, pas par grep) :
+
+| Champ | Type | Sémantique |
+|---|---|---|
+| `cal_switch_active` | booléen | une session de bascule est ouverte |
+| `cal_switch_epoch` | entier (epoch), `0` si inactive ou heure inconnue | instant de l'entrée qui a ouvert la session courante |
+
+Voir [API.md](../API.md#post-calibrationenter--write) et
+[ws-manager.md](ws-manager.md#champs-sensor_data--bascule-de-calibration-bug-160). La régulation
+`manual` elle-même est **déjà** visible via `phRegulationMode`/`orpRegulationMode` — ces deux
+champs ne font que dater et qualifier la bascule, pas dupliquer le mode.
+
+### Pourquoi aucune garde dédiée dans `evaluateDose()` / `evaluateManualInject()`
+
+Contrairement au mécanisme de bail abandonné (qui ajoutait un rang de garde dans les deux
+fonctions pures), cette bascule **ne touche aucune des deux** :
+
+- **Dosage automatique/programmé** : fermé **nativement** par `ModeNotAutomatic` — la régulation
+  est en `manual`, la conjonction `phMode == "automatic"` échoue comme pour n'importe quelle
+  bascule manuelle de l'utilisateur. Aucun code de refus dédié n'est nécessaire.
+- **Dosage manuel** : `evaluateManualInject()` reste **volontairement aveugle au mode** (comme à
+  la mesure) — rien n'empêche une **nouvelle** demande manuelle pendant une calibration. La
+  protection repose sur l'interruption **immédiate** d'une injection déjà lancée, à l'entrée
+  (C6, ci-dessus) — pas sur un refus de la demande suivante : l'opérateur qui déclenche une
+  injection manuelle pendant qu'il calibre assume cette décision, au même titre que toute
+  injection manuelle.
+
+Le code `DoseRefusal::CalibrationHold` (23) envisagé pour le mécanisme abandonné n'a **jamais été
+livré** — voir la table des causes de refus plus haut.
 
 ## Cycle de régulation : chronologie stabilisation + pause mélange
 

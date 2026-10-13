@@ -14,6 +14,7 @@
 #include "utf8_clamp.h"         // feature-129 (phase A) : ex-clampReasonUtf8, module pur partagé
 #include "dose_available_logic.h"  // feature-139 (B1, extraction test-engineer) : formule pure
 #include "daily_limit_streak_logic.h"  // feature-152 (C6, C1 gate P2) : prédicat pur
+#include "cal_manual_switch_logic.h"   // bug-160 (volet 2, REFONTE) : alerte d'oubli (PURE)
 #include <esp_task_wdt.h>
 #include <string.h>  // strlcpy / strnlen / memcpy — tampon de cause de refus (R2)
 #include <time.h>
@@ -52,6 +53,10 @@ static_assert(static_cast<int>(DoseRefusal::ReadingNaNStale) == 17, "DoseRefusal
 static_assert(static_cast<int>(DoseRefusal::ReadingNaNGateClosed) == 18, "DoseRefusal renuméroté");
 // 19-22 (FilterWarmup/Frozen/Stale/GateClosed) : RETIRÉS feature-152, JAMAIS
 // recyclés — un appareil non mis à jour afficherait l'ancien libellé.
+// 23 (CalibrationHold) : RETIRÉ bug-160 (volet 2, REFONTE 2026-10-13) — le
+// mécanisme de bail qui le rendait atteignable (en théorie seulement : il
+// était déjà inatteignable par evaluateDose(), cf. dosing_logic.h) a été
+// ABANDONNÉ au profit d'une bascule explicite de régulation. JAMAIS recyclé.
 // La sentinelle « cause posée par une garde » ne doit jamais collisionner avec
 // une valeur de l'énum (elle serait traduite en cause de canDose côté client).
 static_assert(static_cast<int>(DoseRefusal::ReadingNaNGateClosed) < kDoseBlockedCodeGuard,
@@ -464,7 +469,18 @@ bool PumpControllerClass::isStabilizationTimerActive(int pumpIndex) const {
   if (pumpIndex < 0 || pumpIndex > 1) return false;
   uint32_t end = _stabilizationEndMs[pumpIndex];
   if (end == 0) return false;
-  return millis() < end;
+  // R1 (bug-160, défaut latent trouvé EN MARGE par le gate pool-chemistry) :
+  // arithmétique SIGNÉE wrap-safe, PATRON isPhMixingDelayActive() (ci-dessous),
+  // le même que celui testé en natif par cal_manual_switch_logic (ADR-0017) et
+  // par les autres modules PURS du projet (ph_offset, measure_validity, etc.).
+  // ⛔ L'ANCIENNE comparaison `millis() < end` échouait au repliement de
+  // millis() (49,7 j) : une calibration réussie dans les kStabilizationDuration*Ms
+  // PRÉCÉDENT le repliement n'obtenait ALORS AUCUNE suspension (`end` devenu
+  // numériquement inférieur à `millis()` après le tour du compteur), alors
+  // qu'elle aurait dû rester active. Corrigé au même endroit où le patron
+  // lui-même reste vérifiable par mutation, même si cette méthode coquille
+  // n'est pas elle-même compilée en env natif (pump_controller.cpp).
+  return (int32_t)(end - (uint32_t)millis()) > 0;
 }
 
 void PumpControllerClass::clearStabilizationTimer() {
@@ -2479,6 +2495,75 @@ void PumpControllerClass::tickPhUndersizedAlert() {
   }
 }
 
+// =============================================================================
+// bug-160 (volet 2, REFONTE 2026-10-13, gate pool-chemistry GATE 5 — C4,
+// BLOQUANTE) — alerte d'oubli de rétablissement de la régulation
+// =============================================================================
+// « On fabrique DÉLIBÉRÉMENT des bascules [pH+ORP en Manuel à l'entrée de
+// l'écran de calibration], il faut donc fermer le risque d'oubli. » Première
+// alerte kCalSwitchAlertFirstDelayS (2 h) après l'ENTRÉE, répétée toutes les
+// kCalSwitchAlertRepeatS (6 h) tant que mqttCfg.calSwitchActive reste vrai —
+// décision PURE déléguée à calSwitchAlertDue() (cal_manual_switch_logic.h,
+// ADR-0017), ce tick n'en est que la coquille temporelle.
+//
+// Fail-safe epoch (patron phAutoManualEpoch) : AUCUNE alerte tant que l'heure
+// n'était pas synchronisée à l'ENTRÉE (calSwitchEpoch == 0) ou ne l'est pas
+// MAINTENANT — une échéance calculée sur une horloge non fiable fabriquerait
+// un faux positif (ou un faux silence), jamais un vrai verdict.
+void PumpControllerClass::tickCalSwitchAlert() {
+  if (!mqttCfg.calSwitchActive) return;
+  if (mqttCfg.calSwitchEpoch == 0) return;  // heure inconnue à l'entrée
+
+  const time_t nowEpoch = time(nullptr);
+  if (nowEpoch < kMinValidEpoch) return;    // heure non synchronisée maintenant
+  if ((uint32_t)nowEpoch < mqttCfg.calSwitchEpoch) return;  // horloge reculée (NTP)
+
+  const uint32_t elapsedS = (uint32_t)nowEpoch - mqttCfg.calSwitchEpoch;
+  const uint32_t sinceLastAlertS =
+      (mqttCfg.calSwitchLastAlertEpoch == 0)
+          ? UINT32_MAX
+          : ((uint32_t)nowEpoch >= mqttCfg.calSwitchLastAlertEpoch
+                 ? (uint32_t)nowEpoch - mqttCfg.calSwitchLastAlertEpoch
+                 : UINT32_MAX);  // horloge reculée depuis la dernière alerte : fail-safe, pas d'alerte
+
+  if (!calSwitchAlertDue(elapsedS, sinceLastAlertS,
+                        kCalSwitchAlertFirstDelayS, kCalSwitchAlertRepeatS)) {
+    return;
+  }
+
+  // ⚠️ MUTATION VOLONTAIREMENT HORS `configMutex` — suggestion de revue ÉCARTÉE
+  // le 2026-10-13, avec son motif, pour qu'elle ne soit pas re-proposée :
+  //   - ce fichier ne prend JAMAIS `configMutex` directement ; c'est une
+  //     convention explicite (cf. « persistNvsIfDue prend configMutex EN
+  //     INTERNE (jamais ici) », plus bas dans updateDosingCore). La prendre ici
+  //     introduirait une attente bornée dans loopTask, sur un chemin périodique ;
+  //   - `saveMqttConfig()` la prend elle-même, de façon récursive et bornée ;
+  //   - et la course résiduelle avec /calibration/exit a un sens d'erreur
+  //     BÉNIN : au pire une échéance d'alerte persistée alors que la bascule
+  //     vient d'être levée — une alerte fantôme, jamais une alerte MANQUÉE.
+  // ⇒ Le remède coûterait plus cher que le défaut qu'il corrige.
+  mqttCfg.calSwitchLastAlertEpoch = (uint32_t)nowEpoch;
+  if (mqttCfg.calSwitchAlertCount < 255) mqttCfg.calSwitchAlertCount++;
+  saveMqttConfig();  // persiste l'échéance — ne pas ré-émettre dès le reboot suivant
+
+  // Texte IMPOSÉ (gate 5, C4) — durée en heures entières (arrondi bas), date
+  // de l'entrée formatée localement (patron localtime_r/strftime du projet).
+  struct tm entryTm;
+  time_t entryEpoch = (time_t)mqttCfg.calSwitchEpoch;
+  localtime_r(&entryEpoch, &entryTm);
+  char dateBuf[20];
+  strftime(dateBuf, sizeof(dateBuf), "%Y-%m-%d %H:%M", &entryTm);
+
+  String msg = "Régulation pH et chlore en Manuel depuis " +
+               String(elapsedS / 3600UL) + "h" +
+               (((elapsedS % 3600UL) / 60UL) < 10 ? "0" : "") +
+               String((elapsedS % 3600UL) / 60UL) +
+               " (étalonnage du " + String(dateBuf) +
+               ") — aucun dosage automatique. Rétablissez-la.";
+  systemLogger.warning(msg);
+  mqttManager.publishAlert("cal_switch_overdue", msg);
+}
+
 // -----------------------------------------------------------------------------
 // R1 — DÉNOMINATEUR : minutes de circulation EFFECTIVES de la journée
 // -----------------------------------------------------------------------------
@@ -3573,6 +3658,31 @@ void PumpControllerClass::updateDosingCore(unsigned long now) {
     }
   }
 
+  // bug-160 (volet 2, REFONTE 2026-10-13, gate 5 C6) — CONSOMMATION one-shot
+  // (test-and-clear) du drapeau d'interruption posé par POST
+  // /calibration/enter. Patron _flowAssistSuspend, à ceci près que le
+  // verrouillage persistant n'est plus porté par ce drapeau mais par le MODE
+  // (mqttCfg.ph/orpRegulationMode == "manual", posé par la MÊME route) : ce
+  // bloc ne sert qu'à fermer IMMÉDIATEMENT et explicitement une session déjà
+  // ouverte, sans attendre que la branche automatique du tour suivant soit
+  // simplement court-circuitée par le changement de mode.
+  const bool calEntryInterrupt = _calEntryInterruptRequested;
+  _calEntryInterruptRequested = false;
+  if (calEntryInterrupt && (phDosingState.active || orpDosingState.active)) {
+    systemLogger.info("Dosage automatique/programmé pH+ORP interrompu (entrée en étalonnage)");
+    if (phDosingState.active) notifyPhDose((uint32_t)now);
+    phDosingState.active = false;
+    orpDosingState.active = false;
+    _phCycleCounted = false;
+    if (!manualMode[0]) applyPumpDuty(0, 0);
+    if (!manualMode[1]) applyPumpDuty(1, 0);
+  }
+
+  // bug-160 (volet 2, REFONTE 2026-10-13, gate 5 C4 — BLOQUANTE) : alerte
+  // d'oubli de rétablissement, indépendante de toute conjonction d'éligibilité
+  // (patron tickPhUndersizedAlert).
+  tickCalSwitchAlert();
+
   // feature-006 (condition pool-chemistry #2) : budget horaire usedMs PARTAGÉ
   // auto + manuel. Itération 2 (bug-dosage-fantome) : le prédicat devient
   // POMPE-ON — pumpDuty reflète ici la commande appliquée au tour PRÉCÉDENT
@@ -3614,6 +3724,13 @@ void PumpControllerClass::updateDosingCore(unsigned long now) {
   // feature-075 : la suspension « assistant de mesure du débit » emprunte ce
   // MÊME chemin de fermeture (aucune duplication) — mêmes garanties que la
   // perte de filtration : auto + scheduled refermés, manuel préservé.
+  // bug-160 (volet 2, REFONTE 2026-10-13) : la suspension pendant une
+  // calibration n'emprunte PLUS ce chemin — elle est désormais portée par le
+  // MODE (mqttCfg.ph/orpRegulationMode == "manual"), qui ferme chaque branche
+  // via sa propre conjonction `phMode == "automatic"`/`orpMode == "automatic"`
+  // plus bas (défense en profondeur inchangée). L'interruption IMMÉDIATE d'une
+  // session déjà ouverte à l'entrée reste couverte par le drapeau one-shot
+  // `_calEntryInterruptRequested` consommé plus haut (gate 5, C6).
   if (!filtrationOk || stabilizationActive || flowAssistSuspend) {
     // Arrêter le dosage en cours si l'eau n'est plus présente / stabilisation
     // active / assistant de mesure du débit en cours

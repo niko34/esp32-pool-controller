@@ -715,6 +715,13 @@ static void handleGetData(AsyncWebServerRequest* request) {
   // MÊME calcul que ws_manager.cpp (parité /data ↔ WS). Voir RescueLiftReason
   // (config.h) et le commentaire détaillé côté WS.
   doc["rescue_lift"] = getRescueLiftReasonCode(millis());
+  // bug-160 (volet 2, REFONTE 2026-10-13) : bascule de régulation en Manuel
+  // pendant un étalonnage (remplace le bail cal_hold_* ABANDONNÉ). PARITÉ
+  // /data ↔ WS sur L'EXPRESSION, pas seulement la clé (kSharedExpr,
+  // test_ws_data_parity) — pilote le bandeau de sécurité et le libellé du
+  // bouton de fermeture côté UI (lot B, hors périmètre de ce lot).
+  doc["cal_switch_active"] = mqttCfg.calSwitchActive;
+  doc["cal_switch_epoch"] = (unsigned long)mqttCfg.calSwitchEpoch;
   // <<< PARITE-DATA:FIN
   doc["ph_daily_ml"] = safetyLimits.dailyPhInjectedMl;
   doc["orp_daily_ml"] = safetyLimits.dailyOrpInjectedMl;

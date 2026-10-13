@@ -97,6 +97,22 @@ private:
   // (pose/levée), jamais de spam par tour. Écrit/lu en loopTask uniquement.
   bool _flowAssistSuspendPrev = false;
 
+  // bug-160 (volet 2, REFONTE 2026-10-13) — demande d'interruption ONE-SHOT de
+  // toute session de dosage AUTOMATIQUE/PROGRAMMÉE en cours, posée par
+  // POST /calibration/enter (web_routes_calibration.cpp) AVANT que le
+  // changement de mode (mqttCfg.ph/orpRegulationMode = "manual", posé par la
+  // MÊME route) ne soit observé au prochain tour de update(). Gate 5, C6 :
+  // « le seul trou que le bail couvrait » — un changement de mode seul ferme
+  // la branche automatique au tour SUIVANT (patron existant : la branche
+  // n'étant plus éligible, le bloc de fermeture hors-branche de fin d'update()
+  // s'en charge), mais ce drapeau rend l'arrêt EXPLICITE, journalisé avec sa
+  // propre cause, sans attendre d'observer la transition de mode.
+  // volatile : écrit par un handler web async, lu ET CONSOMMÉ (test-and-clear)
+  // par update() en loopTask — patron EXACT de `_flowAssistSuspend` ci-dessus,
+  // à ceci près qu'il s'agit d'un ONE-SHOT (pas d'une suspension persistante :
+  // la persistance du blocage est désormais portée par le mode lui-même).
+  volatile bool _calEntryInterruptRequested = false;
+
   // feature-063, prescription P1 pool-chemistry : pompe utilisable. Passé à
   // false UNIQUEMENT dans begin() si ledcAttachChannel() échoue — écrit AVANT le
   // démarrage du serveur web, jamais réarmé à chaud (reboot requis). Fail-closed :
@@ -603,6 +619,16 @@ private:
   // n'est pas atteinte). loopTask uniquement.
   void tickPhUndersizedAlert();
 
+  // bug-160 (volet 2, REFONTE 2026-10-13, gate 5 C4 — BLOQUANTE) : alerte
+  // d'oubli de rétablissement de la régulation après une bascule
+  // d'étalonnage. Appelée une fois par tick d'update(), hors de toute
+  // conjonction d'éligibilité (patron tickPhUndersizedAlert ci-dessus) — doit
+  // tourner même filtration coupée, l'oubli n'a aucune raison d'attendre la
+  // reprise d'eau. Délègue la décision PURE à calSwitchAlertDue()
+  // (cal_manual_switch_logic.h) ; ne lit/écrit que mqttCfg.calSwitch* et
+  // persiste via saveMqttConfig() à chaque émission (pas à chaque tick).
+  void tickCalSwitchAlert();
+
   // Conditions #2 + #7 : DÉCISION de refus du dosage pH. True → dosage pH REFUSÉ.
   // Ne détecte plus rien : rend le verdict de tickPhGuardSurveillance() et n'y
   // ajoute que ce qui relève d'un refus RÉEL (comptage + escalade en automatique,
@@ -977,6 +1003,13 @@ public:
   // filtration et journalise la pose/levée (log info one-shot par transition).
   void setFlowAssistSuspend(bool suspend) { _flowAssistSuspend = suspend; }
   bool isFlowAssistSuspended() const { return _flowAssistSuspend; }
+
+  // ===== bug-160 (volet 2, REFONTE 2026-10-13) : interruption d'entrée en
+  // étalonnage =====
+  // Appelable depuis un handler web async (POST /calibration/enter, patron
+  // setFlowAssistSuspend) : pose le drapeau ONE-SHOT consommé par update() au
+  // tour suivant (cf. _calEntryInterruptRequested). Gate 5, C6.
+  void requestCalibrationEntryInterrupt() { _calEntryInterruptRequested = true; }
 
   // feature-064 (ADR-0034, prescription pool-chemistry P1) : lecture seule
   // STRICTE de l'utilisabilité de la pompe (0 = pH, 1 = ORP/chlore), posée une

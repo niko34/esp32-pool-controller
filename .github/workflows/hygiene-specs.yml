@@ -304,3 +304,28 @@ jobs:
       # (asymétrie mid/low), seuil `>= 1` côté ORP.
       - name: Contrôle des vecteurs d'acquisition de calibration
         run: ./tools/check_cal_points_acquired_vectors.sh
+
+  cal-stability-vectors:
+    name: Vecteurs de stabilité de calibration (bug-160)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # Même script en local (`./tools/check_cal_stability_vectors.sh`) et en
+      # CI. Couvre la fonction PURE `_calStabilityVerdict(product, samples,
+      # nowMs)` qui remplace l'ancien critère `max − min` (0,9 pH / 20 s,
+      # feature-034) — annoncé « stable » à 0,8-1,1 pH de l'équilibre réel
+      # (chiffrage du gate pool-chemistry). Dérive MÉDIANE moitié récente /
+      # moitié ancienne, gardée par l'inégalité `G ≥ G_MIN` sur les temps
+      # RÉELLEMENT observés : résiduel borné PAR CONSTRUCTION, quelle que soit
+      # la cadence. Vecteurs : rampes exponentielles τ ∈ {10,30,60,120} s
+      # (jamais « stable » tant que le résiduel réel dépasse 0,10 pH), bruit
+      # pur sans dérive (⇒ stable), cadence dégradée 30 s (⇒ verdict rendu,
+      # jamais muet en permanence), rafale 40/18 s (⇒ G < G_MIN ⇒ muet),
+      # invariance au recalage d'horloge (performance.now(), jamais
+      # Date.now()), plafond de 256 échantillons, et durée affichée construite
+      # depuis la séparation RÉELLEMENT observée (jamais une constante
+      # nominale, le défaut Δ60 s/Δ20 s reconstitué sous une autre forme).
+      - name: Contrôle des vecteurs de stabilité de calibration
+        run: ./tools/check_cal_stability_vectors.sh
