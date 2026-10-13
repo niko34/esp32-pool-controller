@@ -56,11 +56,37 @@ Générique, partagé avec l'ORP et la Température ([`data/app.js`](../../data/
 
 ### Liens de retour et accessibilité
 
-- Deux boutons identiques (`#ph-maintenance-back-top` / `#ph-maintenance-back-bottom`, texte « ← Retour à la page pH »), en haut et en bas de l'état réglage.
+- Deux boutons (`#ph-maintenance-back-top` / `#ph-maintenance-back-bottom`), en haut et en bas de l'état réglage. ⚠️ **Depuis le 13/10/2026 (bug-160, correctif d'interface) leur libellé n'est plus fixe** : il est **dynamique et binaire**, miroir du [bouton de fermeture](#bouton-de-fermeture-dynamique) (`_calSwitchBackLabel()`) :
+
+  | Cas | Libellé des deux liens |
+  |---|---|
+  | Une bascule a eu lieu (pH et/ou ORP) | « ← Retour à la page pH **et rétablir la régulation** » (idem ORP) |
+  | Aucune bascule (exception de sécurité — pH déjà verrouillé par une escalade `phAutoManual*`) | « ← Retour à la page pH » (**inchangé**) |
+
+  ⚠️ **La destination reste toujours annoncée** : ce sont des liens de *retour*, pas des boutons de fermeture — seul le texte qui suit la flèche change (`_calSwitchSetBackLinksLabel()`, qui cible le nœud texte par son type, jamais le `<span aria-hidden>` de la flèche). L'action de rétablissement est **ajoutée** au libellé, jamais **substituée** à la destination.
+  ⚠️ **Binaire, pas un troisième état** : le cas « aucune bascule » est réel, pas théorique — si une escalade de sécurité verrouille déjà le pH en Manuel, l'entrée en calibration ne touche à rien côté régulation, et annoncer un rétablissement serait **faux**.
+
+- **Trois chemins rétablissent la régulation basculée, un seul geste cliqué par chemin** : le bouton de fermeture et les deux liens de retour (ci-dessus) portent chacun leur libellé dynamique propre. Le **menu** ne porte, lui, aucun libellé — aucun bouton n'y est cliqué. Sortir par le menu alors qu'une bascule est active affiche à la place un **toast bref** sur la page d'arrivée : « Régulation rétablie » (`_exitAllMaintenanceModes()`, qui capture `_calSwitchOccurred` **avant** l'appel à `exitMaintenance()` — celui-ci le remet à `false` via `onExit`/`_calSwitchExit()`).
+  ⛔ **Pas de fenêtre de confirmation sur cette sortie-là** : le code l'interdit explicitement — `showView()` appelle `_exitAllMaintenanceModes()`, jamais `requestExitMaintenance()` (celle-ci ouvrirait une modale) — « une modale qui s'ouvre pendant un changement de route piégerait l'utilisateur dans une page qu'il est déjà en train de quitter » (`app.js:670-673`).
 - Une région `role="status" aria-live="polite"` (`#ph-maintenance-announce`, `sr-only`) annonce le changement d'état à l'entrée comme à la sortie — aucun contenu visuel, vocal uniquement.
 - Le retour restaure la **position de défilement** mémorisée à l'entrée (`requestAnimationFrame` après le repaint, le temps que les cartes redeviennent `hidden` et que la page retrouve sa hauteur normale) et redonne le focus au point d'entrée.
 - **Quitter par le menu** (sans cliquer un lien de retour) ramène automatiquement toute page restée en mode réglage à son état normal (`_exitAllMaintenanceModes()`, appelée depuis `showView()`) — correctif d'un défaut trouvé en test (voir [ADR-0103](../adr/0103-gestes-d-entretien-quittent-la-vue-courante.md#leçon--généraliser-un-mécanisme-en-oubliant-ce-quune-version-spécifique-faisait-en-plus)).
 - **Calibration en cours** : le lien de retour reste actif, mais demande confirmation (« Une calibration est en cours — la quitter maintenant ? ») si une calibration pH/ORP est en vol côté client — la commande déjà envoyée à l'EZO n'est pas annulable, seule l'attente du client (minuteur, polling) l'est.
+
+#### Tension assumée : le bandeau pointe UN bouton, trois chemins existent
+
+Le texte du [bandeau de bascule](#bandeau-de-bascule-en-manuel-ph-cal-switch-banner--orp-cal-switch-banner-bug-160) dit « Utilisez le bouton **ci-dessous** pour la rétablir », alors que trois chemins équivalents la rétablissent (bouton, deux liens, menu). Ce texte est **imposé mot pour mot par le gate `pool-chemistry`** et ⛔ **n'a pas été réécrit** par ce correctif. Jugement de l'ergonome (`ux-ui-designer`) : **tolérable** — le bandeau pointe vers **une** action suffisante parmi plusieurs équivalentes, il n'exclut aucune des autres.
+
+#### ⚠️ Point ouvert : quitter EN COURS d'étalonnage rétablit immédiatement la régulation
+
+Si l'écran est quitté (par n'importe lequel des trois chemins) **au milieu** d'un étalonnage — sonde encore plongée dans un bécher, point pas encore validé — la régulation repart **immédiatement** sur la lecture de la sonde, qui peut encore lire la solution tampon plusieurs minutes après la sortie. **Ce défaut n'est pas corrigé par ce lot.**
+
+Le mécanisme **abandonné** lors de la refonte du bail (bug-160, volet 2 — voir [ADR-0107](../adr/0107-etat-visible-et-persistant-plutot-que-suspension-invisible.md)) couvrait précisément ce cas : il maintenait la suspension ~9 min **après** la sortie, le temps que la sonde revienne dans l'eau et que le filtre de mesure (médiane + lissage) absorbe un oubli du bécher. La version actuelle (état visible + geste humain, ADR-0107) a **perdu cette garde** en simplifiant le mécanisme.
+
+Trois options sont sur la table, **non tranchées** :
+1. ne rien changer (le bandeau et l'alerte d'oubli 2 h/6 h restent le seul filet) ;
+2. demander confirmation si l'on quitte un étalonnage **entamé mais non terminé** (point en cours de lecture, pas encore calibré) ;
+3. retarder le rétablissement de quelques minutes après la sortie (réintroduire une forme bornée du mécanisme abandonné).
 
 ### Responsive
 
@@ -771,7 +797,10 @@ basculé :
 
 La **même action** (`POST /calibration/exit`) est appelée par le bouton et par les deux liens de
 retour (haut et bas) — ⛔ pas deux chemins différents. Idempotente : appelée deux fois, ou sans
-session jamais ouverte, ne mute rien de plus.
+session jamais ouverte, ne mute rien de plus. ⚠️ **Depuis le 13/10/2026**, les deux liens de retour
+portent le **même libellé dynamique** que ce bouton (miroir, pas de nouveau mécanisme) — voir
+[Liens de retour et accessibilité](#liens-de-retour-et-accessibilité) pour le détail des deux
+états et le cas de la sortie par le menu.
 
 ### Diagnostic après 5 minutes
 

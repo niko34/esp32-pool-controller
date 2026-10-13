@@ -2,6 +2,35 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [2.76.1] - 2026-10-13
+
+### Fonctionnalités
+
+- **Calibration pH/ORP : les liens de retour annoncent enfin le rétablissement
+  de la régulation** — constat utilisateur : sur l'écran de calibration,
+  **trois** chemins rétablissaient la régulation basculée en Manuel (bouton
+  de fermeture, deux liens de retour, sortie par le menu), mais **un seul**
+  (le bouton) le disait. Les deux liens « ← Retour à la page pH / ORP »
+  portent désormais le même libellé **dynamique binaire** que le bouton de
+  fermeture : « … et rétablir la régulation » si une bascule a réellement eu
+  lieu, inchangé sinon (cas d'exception de sécurité pH). La destination du
+  lien reste toujours annoncée — l'action s'ajoute, elle ne la remplace pas.
+  Quitter par le **menu** (aucun bouton cliqué) affiche désormais un toast
+  bref « Régulation rétablie » sur la page d'arrivée.
+
+### Documentation
+
+- `docs/features/page-ph.md` : les trois chemins de sortie et leurs
+  libellés exacts dans leurs deux états ; tension assumée entre le texte figé
+  du bandeau (« le bouton ci-dessous ») et l'existence de trois chemins
+  équivalents ; point ouvert consigné — quitter en cours d'étalonnage
+  rétablit la régulation immédiatement, sans la garde ~9 min du mécanisme
+  abandonné en [2.76.0].
+- `docs/user/src/guide-utilisation.html` : mention des liens de retour et de
+  la sortie par le menu, en complément du bouton de fermeture déjà documenté.
+
+---
+
 ## [2.76.0] - 2026-10-13
 
 ### Firmware

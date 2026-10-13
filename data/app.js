@@ -8930,6 +8930,35 @@
     if (btn) btn.textContent = label;
   }
 
+  // 2026-10-13 : les DEUX liens de retour rétablissent la régulation au même
+  // titre que le bouton de fermeture (même route /calibration/exit) mais ne
+  // l'annonçaient jamais — miroir binaire du libellé du bouton, décision
+  // ux-ui-designer. Destination CONSERVÉE, l'action est AJOUTÉE, jamais
+  // substituée.
+  function _calSwitchBackLabel(page) {
+    const label = MAINTENANCE_PAGES[page]?.label || "";
+    const base = `Retour à la page ${label}`;
+    return _calSwitchOccurred ? `${base} et rétablir la régulation` : base;
+  }
+
+  // Ne touche QUE le texte qui suit la flèche — ⛔ le `<span aria-hidden>` ne
+  // doit jamais être écrasé (repéré dans son propre nœud texte, pas par index
+  // fixe, pour rester robuste à un espace blanc de mise en forme).
+  function _calSwitchSetBackLinksLabel(page, label) {
+    const cfg = MAINTENANCE_PAGES[page];
+    if (!cfg) return;
+    [cfg.backTopId, cfg.backBottomId].forEach(id => {
+      const btn = id && $("#" + id);
+      if (!btn) return;
+      for (const node of btn.childNodes) {
+        if (node.nodeType === Node.TEXT_NODE && node.textContent.trim()) {
+          node.textContent = " " + label;
+          break;
+        }
+      }
+    });
+  }
+
   // Appelé par onEnter (geste humain, seul capable d'ouvrir une session côté
   // firmware). Best-effort : si le réseau est indisponible, on ne PEUT PAS
   // savoir si le firmware a basculé — par sécurité on suppose que oui (le
@@ -8938,6 +8967,7 @@
   async function _calSwitchEnter(page) {
     _calSwitchOccurred = false;
     _calSwitchSetCloseBtnLabel(page, "Fermer");
+    _calSwitchSetBackLinksLabel(page, _calSwitchBackLabel(page));
     try {
       const res = await authFetch("/calibration/enter", { method: "POST" });
       const data = res.ok ? await res.json().catch(() => null) : null;
@@ -8946,6 +8976,7 @@
       _calSwitchOccurred = true; // hypothèse prudente, cf. commentaire ci-dessus
     }
     _calSwitchSetCloseBtnLabel(page, _calSwitchCloseLabel());
+    _calSwitchSetBackLinksLabel(page, _calSwitchBackLabel(page));
     _renderCalSwitchBanner(page);
   }
 
@@ -8954,6 +8985,7 @@
   async function _calSwitchExit(page) {
     _calSwitchOccurred = false;
     _calSwitchSetCloseBtnLabel(page, "Fermer");
+    _calSwitchSetBackLinksLabel(page, _calSwitchBackLabel(page));
     try {
       await authFetch("/calibration/exit", { method: "POST" });
     } catch (e) {
@@ -9127,11 +9159,16 @@
   // Idempotente, et `restoreView=false` : on part ailleurs.
   function _exitAllMaintenanceModes() {
     let left = false;
+    // 2026-10-13 : capturé AVANT toute sortie — exitMaintenance() → onExit()
+    // → _calSwitchExit() remet ce drapeau à false. Sortie par le MENU, aucun
+    // bouton ni lien cliqué : seul un toast peut encore l'annoncer.
+    const hadSwitch = _calSwitchOccurred;
     Object.keys(MAINTENANCE_PAGES).forEach(page => {
       const cfg = MAINTENANCE_PAGES[page];
       const view = cfg && $("#" + cfg.viewId);
       if (view && view.classList.contains("is-flow-maintenance")) { exitMaintenance(page, false); left = true; }
     });
+    if (left && hadSwitch) showToast("Régulation rétablie", "info");
     // 🔴 LE FRÈRE DU DÉFAUT DE NAVIGATION (trouvé en revue de code).
     // `_calEndAwait()` n'était appelé que par requestExitMaintenance() — le lien
     // de retour. Quitter par le MENU pendant une calibration en vol (exactement
