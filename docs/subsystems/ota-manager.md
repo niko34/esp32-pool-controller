@@ -41,6 +41,27 @@ bool isEnabled() const;
 
    **Diagnostics (v2.16.2, spec `bug-checkupdate-tls-core3`)** : le handler logge l'état heap **avant** d'ouvrir la session TLS — « heap libre=… o, plus gros bloc=… o » (`ESP.getFreeHeap()` / `ESP.getMaxAllocHeap()`, distingue épuisement total et fragmentation). Sur un code HTTP négatif (échec client TLS/socket), le log « Erreur HTTP GitHub » porte le détail mbedtls (`client.lastError()`, message + code) et le libellé `HTTPClient::errorToString()`.
 
+   ⚠️ **Réponse d'échec enrichie (`bug-165`, v2.80.x)** — avant ce lot, tout code HTTP négatif
+   produisait la **même** réponse `{"error":"GitHub API error","code":-1}`, muette sur l'étape et
+   la raison. Le corps JSON porte désormais deux champs supplémentaires, dérivés de la décision
+   **pure** `classifyOtaCheckFailure(httpCode, tlsErrorCode)` ([`ota_check_logic.h`](../../src/ota_check_logic.h),
+   testée en natif et par mutation — le cas qui tue la régression « priorité inversée » est le
+   symptôme réel du bug : `httpCode == -1` **et** `tlsErrorCode != 0` simultanément, où le signal
+   TLS doit l'emporter) :
+   - `step` : `"tls_handshake"` (chaîne de certificats refusée, `tlsErrorCode != 0`) /
+     `"connection"` (résolution de nom ou TCP refusé, `httpCode == -1` **sans** erreur TLS) /
+     `"http"` (tout autre code HTTPClient négatif — délai dépassé, encodage…).
+   - `detail` : le message mbedtls réel (`client.lastError()`) pour `tls_handshake`, un texte fixe
+     pour `connection`, `HTTPClient::errorToString()` pour `http` — **même** texte que celui déjà
+     journalisé, aucune IP ni chemin ni secret.
+
+   ⚠️ **Le 404 « aucune release publiée » est un cas à part, intercepté AVANT cette
+   classification** (réponse `200` avec `"no_release": true` — comportement antérieur, inchangé) :
+   une réponse HTTP **reçue** (404, le dépôt existe mais n'a aucune release) ne doit **jamais** se
+   confondre avec une réponse **absente** (`-1`, échec réseau) — les deux produisaient le **même**
+   `code: -1` tant que le défaut ci-dessous empêchait toute réponse GitHub d'être reçue. Verrouillé
+   par un test dédié (`test_classify_404_is_never_connection_failure`).
+
    > ⚠️ **Limitation connue — core Arduino 3 uniquement** ([ADR-0034, note additive 2026-08-08](../adr/0034-migration-core3-idf5.md)) : sous core 3 / IDF 5 sur ESP32 classique (sans PSRAM), le plus gros bloc heap contigu (~43-47 Ko dès le boot) ne suffit pas à la session TLS sortante (~50 Ko en pointe) → `/check-update` et `/download-update` (GitHub) échouent systématiquement en `500` propre, sans crash — les erreurs mbedtls loggées (`X509 alloc failed`, « verify failed ») masquent un échec d'allocation. Limitation **acceptée** en son temps ; contournement : upload manuel `/update`. **Levier appliqué** : module WROVER-E + PSRAM (feature-066, [ADR-0036](../adr/0036-psram-requise-mise-a-jour-en-ligne.md)) — c'est ce qui a permis de faire du core 3 l'environnement de production ([ADR-0042](../adr/0042-core3-environnement-par-defaut.md)). Sur un module **sans** PSRAM en core 3, la limitation reste entière.
 2. Client appelle `POST /download-update` avec l'URL **et le paramètre `digest=` (requis, fail-closed)**.
 3. Le firmware télécharge le `.bin` via HTTPS depuis `github.com` (certificat racine embarqué dans [`github_root_ca.h`](../../src/github_root_ca.h)), en calculant le SHA-256 du flux au fil de l'eau.
@@ -48,6 +69,78 @@ bool isEnabled() const;
 5. Reboot après `kRestartAfterOtaDelayMs = 3000` ms ([`constants.h:26`](../../src/constants.h:26)).
 
 Pour l'upload manuel : `POST /update` (multipart `.bin`).
+
+## Règle — une ancre de confiance est toujours la variante AUTO-SIGNÉE (bug-checkupdate-tls-core3, bug-165, [ADR-0111](../adr/0111-ancre-de-confiance-tls-toujours-auto-signee.md))
+
+⚠️ **Cette règle a mordu deux fois** (2026-08-08 puis 2026-10-14) — elle n'est donc plus une
+consigne à retenir, mais un **contrôle automatique** (voir plus bas). La règle elle-même :
+
+> **mbedtls 3.x (core Arduino 3 / IDF 5) refuse les ancres de confiance CROSS-SIGNÉES**, que
+> mbedtls 2.28 (core 2) tolérait. Une racine « croisée » (cross-signed) porte **le même nom** et
+> **la même clé publique** que sa variante auto-signée — seule la **signature de l'émetteur**
+> diffère (une autorité croisée signe la racine d'une autre, pour une transition de confiance
+> progressive côté navigateurs). ⛔ **Vérifier le nom ne suffit pas** : il faut vérifier que le
+> certificat est **auto-signé** (`subject == issuer` **et** signature vérifiable avec sa propre
+> clé publique), pas seulement qu'un certificat du bon nom est présent.
+
+### Les deux incidents, et pourquoi la règle n'a pas suffi la première fois
+
+- **2026-08-08 (`bug-checkupdate-tls-core3`)** : GitHub servait une chaîne terminant sur les
+  variantes **USERTrust cross-signées par « AAA Certificate Services »**. Remplacées par les
+  variantes auto-signées (USERTrust RSA, USERTrust ECC) — 3 racines au total avec ISRG Root X1
+  (CDN de téléchargement). La règle « toutes auto-signées » est posée **en commentaire**, dans
+  [`github_root_ca.h`](../../src/github_root_ca.h).
+- **2026-10-14 (`bug-165`)** : **la chaîne servie EN PRATIQUE a changé** — GitHub sert désormais
+  `api.github.com ← Sectigo Public Server Authentication CA DV E36 ← Sectigo Public Server
+  Authentication Root E46 (variante CROISÉE, signée par USERTrust ECC)`. **Le commentaire posé en
+  août disait la règle, mais rien ne la réappliquait** quand la chaîne réelle a évolué — une
+  consigne écrite n'est vérifiée que par la mémoire de quelqu'un, qui s'use. Corrigé : ajout des
+  racines **Sectigo Root E46** (ECC, auto-signée) et **Root R46** (RSA, auto-signée — chaîne de
+  repli réelle de GitHub pour les clients qui ne négocient pas ECDSA, vérifié, pas anticipé) — 5
+  racines au total.
+
+### ⚠️ La règle est désormais imposée en CI, pas seulement écrite
+
+[`tools/check_github_root_ca.sh`](../../tools/check_github_root_ca.sh) (job `github-root-ca` du
+workflow `hygiene-specs.yml`, voir [BUILD.md](../BUILD.md#intégration-continue-github-actions)) délègue à
+[`tools/github_root_ca_vectors.py`](../../tools/github_root_ca_vectors.py), qui **extrait** (via
+`openssl`) les certificats réellement présents dans `github_root_ca.h` et vérifie
+**mécaniquement** :
+1. il y en a bien **5** ;
+2. aucune des **3 racines d'origine** n'a disparu (ISRG Root X1 ancre
+   `objects.githubusercontent.com`, le chemin de **téléchargement** du firmware — distinct du
+   chemin de vérification `api.github.com`) ;
+3. **chaque certificat est auto-signé** — `openssl verify -no-CAfile -no-CApath -CAfile <cert>
+   <cert>` doit réussir — et pas seulement présent sous le bon nom ;
+4. les empreintes SHA-256 **annoncées en commentaire** dans le header correspondent aux
+   certificats **réellement** présents (un commentaire qui ment sur l'empreinte est exactement le
+   genre d'écart qu'on ne détecte qu'en le vérifiant).
+
+⇒ Si GitHub fait **encore** évoluer sa chaîne, le contrôle échouera dès qu'une racine cross-signée
+serait ajoutée par erreur (test 3) — la règle ne dépend plus de la mémoire de quelqu'un.
+
+### ⚠️ Risque identifié, NON vérifié, à tester après déploiement
+
+Le domaine de **téléchargement** (`objects.githubusercontent.com`, étape 3 du flow ci-dessus) sert
+**aujourd'hui** (vérifié le 2026-10-14) la chaîne `*.github.io ← YR1 ← Root YR (variante CROISÉE
+par ISRG Root X1)`. ⚠️ **C'est exactement la même structure** que celle qui vient de casser
+`/check-update` : l'avant-dernier maillon est croisé, et l'appareil n'a embarqué que la racine
+historique (ISRG Root X1, auto-signée — mais ce n'est **pas** la même racine que « Root YR »,
+même si les deux sont liées à Let's Encrypt/ISRG).
+
+⇒ **Hypothèse, non vérifiée sur appareil réel** : le **téléchargement** du firmware est
+probablement **déjà cassé** par ce même mécanisme, sans que personne ne l'ait constaté — parce que
+la **recherche** de mise à jour (`/check-update`) échouait **avant** d'atteindre cette étape, donc
+ce chemin n'a jamais été exercé en conditions réelles depuis que GitHub sert cette chaîne.
+
+⛔ **Non corrigé par ce lot** — à tester **après déploiement du correctif `/check-update`**, une
+fois qu'une release existe pour exercer `POST /download-update` de bout en bout. ⚠️ **Ajouter
+« ISRG Root X2 » ne suffirait PAS** : c'est une **autre racine** (succession d'ISRG Root X1 côté
+Let's Encrypt), **sans rapport** avec « Root YR » — ajouter X2 ne couvrirait pas la chaîne
+réellement observée sur `objects.githubusercontent.com`. Si l'hypothèse se confirme, la racine à
+ajouter est la variante **auto-signée** de « Root YR », identifiée par la même méthode que pour
+Sectigo E46/R46 ci-dessus (`openssl s_client -connect objects.githubusercontent.com:443
+-showcerts`, puis retrouver l'auto-signée de même clé publique).
 
 ## Vérification d'intégrité SHA-256 (feature-026, [ADR-0022](../adr/0022-verification-integrite-ota.md))
 
@@ -278,8 +371,8 @@ L'historique est **préservé** pendant une OTA filesystem car il vit sur une pa
 - [`test/test_native_ota_update_fail_closed/`](../../test/test_native_ota_update_fail_closed/) — garde structurelle du fail-closed de `ota_update.sh` (échec de hachage avant l'appel `curl`)
 - [`test/sha256_vectors.js`](../../test/sha256_vectors.js) / [`tools/check_sha256_vectors.sh`](../../tools/check_sha256_vectors.sh) — vecteurs du SHA-256 JS extrait de `data/app.js`
 - [`src/ota_type_logic.h`](../../src/ota_type_logic.h) — logique pure du type d'image (`inferOtaKindFromFilename`, `checkOtaFirstByte` — 29 tests natifs `test/test_native_ota_type/`) ; miroir JS `detectUpdateType()` dans [`data/app.js`](../../data/app.js)
-- [`src/ota_check_logic.h`](../../src/ota_check_logic.h) — logique pure `/check-update` (`AllocBudget`, `utf8SafeCutLen` — 13 tests natifs `test/test_native_ota_check/`)
-- [`src/github_root_ca.h`](../../src/github_root_ca.h) — 3 racines **auto-signées** (v2.16.2 : les variantes USERTrust cross-signées AAA sont retirées) : USERTrust RSA + USERTrust ECC (github.com / api.github.com, exp. 2038), ISRG Root X1 (objects.githubusercontent.com, exp. 2035) — empreintes SHA-256 vérifiées, sources consignées dans le header
+- [`src/ota_check_logic.h`](../../src/ota_check_logic.h) — logique pure `/check-update` (`AllocBudget`, `utf8SafeCutLen`, `classifyOtaCheckFailure` depuis bug-165 — 20 tests natifs `test/test_native_ota_check/`, à mesurer plutôt qu'à recopier, ADR-0073)
+- [`src/github_root_ca.h`](../../src/github_root_ca.h) — **5 racines auto-signées** (3 depuis v2.16.2, +2 Sectigo E46/R46 depuis bug-165, 2026-10-14) : USERTrust RSA + USERTrust ECC (github.com / api.github.com, exp. 2038), ISRG Root X1 (objects.githubusercontent.com, exp. 2035), Sectigo Public Server Authentication Root E46 (ECC, exp. 2046) + Root R46 (RSA, exp. 2046) — chaîne ECC/RSA actuelle d'api.github.com — empreintes SHA-256 vérifiées, sources consignées dans le header, conformité imposée en CI par [`tools/check_github_root_ca.sh`](../../tools/check_github_root_ca.sh) (voir [règle dédiée](#règle--une-ancre-de-confiance-est-toujours-la-variante-auto-signée-bug-checkupdate-tls-core3-bug-165-adr-0111) ci-dessus)
 - [`partitions.csv`](../../partitions.csv)
 - [docs/UPDATE_GUIDE.md](../UPDATE_GUIDE.md)
 - [ADR-0007](../adr/0007-table-partitions-custom.md), [ADR-0022](../adr/0022-verification-integrite-ota.md), [ADR-0096](../adr/0096-empreinte-sha256-obligatoire-sur-post-update.md)

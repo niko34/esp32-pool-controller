@@ -932,11 +932,12 @@ static void handleCheckUpdate(AsyncWebServerRequest* request) {
 
   if (httpCode != HTTP_CODE_OK) {
     String errorDetail = "";
+    char tlsErr[128] = {0};
+    int tlsCode = 0;
     if (httpCode < 0) {
       // bug-checkupdate-tls-core3 : un code négatif = échec côté client
       // (TLS/socket) — remonter le détail mbedtls au lieu d'un -1 muet.
-      char tlsErr[128] = {0};
-      int tlsCode = client.lastError(tlsErr, sizeof(tlsErr));
+      tlsCode = client.lastError(tlsErr, sizeof(tlsErr));
       if (tlsCode != 0) {
         errorDetail = String(" — TLS: ") + tlsErr + " (" + String(tlsCode) + ")";
       }
@@ -962,8 +963,31 @@ static void handleCheckUpdate(AsyncWebServerRequest* request) {
       return;
     }
 
-    // Autres erreurs HTTP
-    String errorMsg = "{\"error\":\"GitHub API error\",\"code\":" + String(httpCode) + "}";
+    // Autres erreurs HTTP — bug-165 : l'échec était MUET côté réponse HTTP
+    // (`code: -1` opaque) alors que le journal avait déjà le détail mbedtls.
+    // classifyOtaCheckFailure() NOMME l'étape ; le détail mbedtls (message
+    // générique de bibliothèque, aucune IP/chemin/secret) est repris tel quel
+    // — c'est la même chaîne que celle déjà journalisée ligne au-dessus.
+    JsonDocument response;
+    response["error"] = "GitHub API error";
+    response["code"] = httpCode;
+    switch (classifyOtaCheckFailure(httpCode, tlsCode)) {
+      case OtaCheckFailureStep::kTlsHandshake:
+        response["step"] = "tls_handshake";
+        response["detail"] = String(tlsErr) + " (" + String(tlsCode) + ")";
+        break;
+      case OtaCheckFailureStep::kConnection:
+        response["step"] = "connection";
+        response["detail"] = "Connexion impossible (résolution de nom ou TCP refusé)";
+        break;
+      case OtaCheckFailureStep::kHttpOther:
+        response["step"] = "http";
+        response["detail"] = HTTPClient::errorToString(httpCode);
+        break;
+    }
+
+    String errorMsg;
+    serializeJson(response, errorMsg);
     request->send(500, "application/json", errorMsg);
     return;
   }

@@ -3044,6 +3044,49 @@ Depuis la v2.16.1 ([ADR-0032, extension 2026-08-04](adr/0032-reponses-http-borne
 INFO  Vérification des mises à jour GitHub... (PSRAM libre=… o, heap libre=… o, plus gros bloc=… o, client=192.168.1.15)
 ```
 
+#### ⚠️ Contrat d'erreur enrichi (`bug-165`, v2.80.x) — `step` et `detail`
+
+Avant ce lot, **tout** code HTTP négatif (échec côté client — résolution de nom, TCP refusé,
+handshake TLS…) produisait le **même** corps `{"error":"GitHub API error","code":-1}` : la cause
+racine du bug-165 lui-même (mbedtls 3.x refusant une ancre de confiance cross-signée, voir
+[docs/subsystems/ota-manager.md](subsystems/ota-manager.md#règle--une-ancre-de-confiance-est-toujours-la-variante-auto-signée-bug-checkupdate-tls-core3-bug-165-adr-0111))
+n'était donc **diagnosticable qu'au journal**, jamais depuis la réponse HTTP elle-même. Le corps
+`500` porte désormais deux champs supplémentaires :
+
+```json
+{
+  "error": "GitHub API error",
+  "code": -1,
+  "step": "tls_handshake",
+  "detail": "unable to verify the first certificate (-9984)"
+}
+```
+
+| `step` | Condition | `detail` |
+|---|---|---|
+| `tls_handshake` | Code HTTP négatif **avec** une erreur TLS (`WiFiClientSecure::lastError() != 0`) — chaîne de certificats refusée | Message mbedtls réel (identique à celui déjà journalisé) |
+| `connection` | Code HTTP `-1` **sans** erreur TLS associée | « Connexion impossible (résolution de nom ou TCP refusé) » |
+| `http` | Tout autre code HTTPClient négatif (délai dépassé, encodage…) | `HTTPClient::errorToString(code)` |
+
+⚠️ **`code` reste le contrat stable** (déjà le cas) ; `step`/`detail` sont des **champs
+diagnostiques**, pas un contrat figé — le texte de `detail` peut varier selon la bibliothèque TLS.
+
+⚠️ **Le 404 « aucune release publiée » est désormais nettement distinguable d'un échec réseau** —
+avant que le correctif TLS ne rétablisse la connexion, **les deux cas produisaient le même
+`code: -1`** : la connexion échouait systématiquement avant même d'atteindre GitHub, donc un vrai
+404 (dépôt sans release) n'était jamais reçu pour être distingué. Le cas 404 reste intercepté
+**avant** la classification ci-dessus et répond en **`200`**, pas en erreur :
+
+```json
+{
+  "current_version": "2.80.0",
+  "latest_version": "2.80.0",
+  "update_available": false,
+  "no_release": true,
+  "message": "Aucune release disponible sur GitHub"
+}
+```
+
 <a id="garde-tls-sortante-psram-libre--heap-v2186"></a>
 
 #### Garde TLS sortante — PSRAM libre + heap (v2.18.6, [ADR-0036](adr/0036-psram-requise-mise-a-jour-en-ligne.md))

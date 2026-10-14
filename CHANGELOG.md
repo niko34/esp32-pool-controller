@@ -2,6 +2,40 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [2.80.1] - 2026-10-14
+
+### Corrections
+
+- **La recherche de mise à jour en ligne (`GET /check-update`) refonctionne** (bug-165). Elle
+  échouait **systématiquement** — `{"error":"GitHub API error","code":-1}` — depuis que GitHub a
+  changé la chaîne de certificats servie par `api.github.com`.
+  ⚠️ **Cause** : mbedtls 3.x **refuse les ancres de confiance cross-signées**, et la chaîne servie
+  se termine désormais sur une variante **croisée** de « Sectigo Root E46 ». Le projet avait déjà
+  rencontré ce mécanisme le **2026-08-08** et posé la règle « toutes auto-signées » ; la chaîne a
+  changé depuis, **la règle n'avait pas été réappliquée**.
+
+### Firmware
+
+- **Deux racines de confiance ajoutées** (3 → 5, toutes auto-signées) : Sectigo Root **E46** (ECC)
+  et **R46** (RSA), expiration 2046. ⛔ Aucune des trois d'origine retirée — ISRG Root X1 ancre le
+  chemin de **téléchargement**.
+- `GET /check-update` renvoie désormais **`step`** (`tls_handshake` / `connection` / `http`) et
+  **`detail`** en plus de `code`. ⚠️ Un **404** « aucune release publiée » est désormais
+  **distinguable** d'un échec réseau — les deux rendaient le même `-1` opaque.
+- **Un contrôle automatique impose la règle en CI** (`tools/check_github_root_ca.sh`) : exactement
+  5 ancres, les 3 d'origine présentes, empreintes des **5** alignées sur les certificats réels, et
+  **auto-signature vérifiée cryptographiquement** pour chacune. ⇒ La règle ne dépend plus de la
+  mémoire de quelqu'un.
+- **ADR-0111** : une ancre de confiance TLS est **toujours** la variante auto-signée.
+
+### Limite connue
+
+- ⚠️ **Risque identifié, NON corrigé et NON vérifié** : le chemin de **téléchargement**
+  (`objects.githubusercontent.com`) présente **la même structure** — un maillon croisé
+  (« Root YR », croisé par ISRG Root X1). Il est **probablement déjà affecté** sans qu'on ait pu
+  le constater, puisque la recherche échouait **avant** d'atteindre cette étape. ⛔ Ajouter « ISRG
+  Root X2 » ne réglerait rien : c'est une racine sans rapport. **À vérifier après déploiement.**
+
 ## [2.80.0] - 2026-10-14
 
 ### Fonctionnalités
@@ -62,6 +96,13 @@
 - [ADR-0110](docs/adr/0110-regler-une-consigne-est-une-commande-differee.md) : une consigne est
   une commande différée — éligible à la carte, jamais en enregistrement implicite. Complète
   [ADR-0108](docs/adr/0108-basculer-le-mode-est-une-commande-injecter-est-un-geste.md).
+- `docs/subsystems/ota-manager.md` : règle « une ancre de confiance est toujours auto-signée »,
+  les deux incidents (2026-08-08 et bug-165), le contrôle CI qui l'impose désormais, et le risque
+  non vérifié sur le chemin de téléchargement.
+- `docs/BUILD.md` : 19ᵉ job d'hygiène (`github-root-ca`), compteur de jobs remesuré (18).
+- [ADR-0111](docs/adr/0111-ancre-de-confiance-tls-toujours-auto-signee.md) : une ancre de
+  confiance TLS embarquée est toujours la variante auto-signée, et un contrôle automatique
+  l'impose — la règle a mordu deux fois faute d'application mécanique.
 
 ---
 

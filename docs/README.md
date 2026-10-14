@@ -148,7 +148,8 @@ docs/
 │   ├── 0101-la-correction-nait-d-une-mesure-jamais-d-un-ecart.md
 │   ├── 0108-basculer-le-mode-est-une-commande-injecter-est-un-geste.md
 │   ├── 0109-atterrissage-de-migration-et-alias-ha-portee-a-une-energie.md
-│   └── 0110-regler-une-consigne-est-une-commande-differee.md
+│   ├── 0110-regler-une-consigne-est-une-commande-differee.md
+│   └── 0111-ancre-de-confiance-tls-toujours-auto-signee.md
 │
 ├── API.md               ← Référence REST + WebSocket
 ├── MQTT.md              ← Topics MQTT + auto-discovery Home Assistant

@@ -15,6 +15,13 @@
 //   - utf8SafeCutLen    : point de coupe des release notes qui ne scinde
 //                         jamais un caractère UTF-8 multi-octets (accents,
 //                         emojis des notes en français).
+//   - classifyOtaCheckFailure : étape à laquelle un échec `/check-update` a
+//                         eu lieu (bug-165) — un code HTTPClient négatif
+//                         (ex. -1) couvre À LA FOIS un TCP refusé/DNS et un
+//                         échec de handshake TLS ; sans distinction la
+//                         réponse HTTP reste muette alors que l'appelant
+//                         (WiFiClientSecure::lastError) connaît déjà la
+//                         cause précise.
 // =============================================================================
 
 #include <stddef.h>
@@ -53,6 +60,33 @@ inline size_t utf8SafeCutLen(const char* s, size_t len, size_t maxLen) {
     --cut;
   }
   return cut;
+}
+
+// Étape à laquelle un échec `/check-update` a eu lieu, pour que la réponse
+// HTTP NOMME la cause au lieu d'un code numérique opaque (bug-165).
+enum class OtaCheckFailureStep {
+  kTlsHandshake,  // échec du handshake TLS (certificat, chaîne de confiance...)
+  kConnection,    // httpCode == -1 SANS erreur TLS : résolution de nom ou TCP refusé
+  kHttpOther,     // tout autre code HTTPClient négatif (délai dépassé, encodage...)
+};
+
+// Classifie un échec à partir du code HTTPClient (`httpCode`, toujours < 0
+// ici) et du code d'erreur TLS éventuel (`tlsErrorCode`, 0 si absent — valeur
+// renvoyée par `WiFiClientSecure::lastError()`). Pure, sans dépendance
+// Arduino : testable en natif et par mutation.
+//
+// ⚠️ httpCode == -1 (HTTPC_ERROR_CONNECTION_REFUSED) est ambigu par
+// construction : WiFiClientSecure::connect() renvoie 0 aussi bien pour un TCP
+// refusé/DNS en échec QUE pour un handshake TLS avorté — HTTPClient ne fait
+// pas la différence. tlsErrorCode est le seul signal qui lève l'ambiguïté.
+inline OtaCheckFailureStep classifyOtaCheckFailure(int httpCode, int tlsErrorCode) {
+  if (tlsErrorCode != 0) {
+    return OtaCheckFailureStep::kTlsHandshake;
+  }
+  if (httpCode == -1) {
+    return OtaCheckFailureStep::kConnection;
+  }
+  return OtaCheckFailureStep::kHttpOther;
 }
 
 #endif  // OTA_CHECK_LOGIC_H

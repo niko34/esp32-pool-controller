@@ -3,17 +3,40 @@
 
 // Certificats racine pour GitHub et son CDN (objects.githubusercontent.com)
 //
-// Contient 3 Root CAs, TOUTES AUTO-SIGNÉES (bug-checkupdate-tls-core3,
-// 2026-08-08) : mbedtls 3.x (core Arduino 3 / IDF 5) n'accepte plus les
-// ancres de confiance cross-signées que mbedtls 2.28 (core 2) tolérait —
-// les précédentes versions USERTrust étaient les variantes cross-signées
-// par « AAA Certificate Services » et provoquaient un échec de handshake
-// (Erreur HTTP GitHub: -1) sous core 3 uniquement.
+// Contient 5 Root CAs, TOUTES AUTO-SIGNÉES (bug-checkupdate-tls-core3,
+// 2026-08-08 ; complété bug-165, 2026-10-14) : mbedtls 3.x (core Arduino 3 /
+// IDF 5) n'accepte plus les ancres de confiance cross-signées que mbedtls
+// 2.28 (core 2) tolérait — les précédentes versions USERTrust étaient les
+// variantes cross-signées par « AAA Certificate Services » et provoquaient
+// un échec de handshake (Erreur HTTP GitHub: -1) sous core 3 uniquement.
+//
+// ⚠️ bug-165 (2026-10-14) : la chaîne servie EN PRATIQUE par api.github.com a
+// changé depuis le 08/08 — GitHub sert désormais (vérifié par
+// `openssl s_client -connect api.github.com:443 -showcerts`) :
+//   *.github.com <- Sectigo Public Server Authentication CA DV E36
+//                 <- Sectigo Public Server Authentication Root E46 (variante
+//                    CROISÉE, signée par USERTrust ECC)
+// La variante croisée de Root E46 n'est PAS une ancre valide pour mbedtls 3.x
+// (même raison qu'en août : il exige l'auto-signée). Les 3 certificats
+// précédents ne couvrent PAS cette chaîne. ⇒ Ajout des racines Sectigo E46
+// et R46 AUTO-SIGNÉES ci-dessous (même clé publique que la variante croisée
+// servie par GitHub, vérifié par `openssl x509 -pubkey` + sha256sum — seule
+// la signature de l'émetteur diffère). Si GitHub fait à nouveau évoluer sa
+// chaîne, la règle à réappliquer est toujours la même : retrouver l'ancre
+// AUTO-SIGNÉE correspondante, jamais une variante cross-signée.
 //
 // 1. USERTrust RSA CA  (auto-signée, exp. 2038) - github.com, api.github.com (chaînes RSA)
 // 2. USERTrust ECC CA  (auto-signée, exp. 2038) - github.com, api.github.com
-//    (chaîne ECC actuelle : leaf <- Sectigo E36 <- Sectigo Root E46 <- USERTrust ECC)
+//    (chaîne ECC historique : leaf <- Sectigo E36 <- Sectigo Root E46 <- USERTrust ECC)
 // 3. ISRG Root X1      (auto-signée, exp. 2035) - objects.githubusercontent.com (Let's Encrypt, CDN assets)
+// 4. Sectigo Public Server Authentication Root E46 (auto-signée, ECC P-384,
+//    exp. 2046) - chaîne ECC ACTUELLE d'api.github.com (voir ci-dessus)
+// 5. Sectigo Public Server Authentication Root R46 (auto-signée, RSA 4096,
+//    exp. 2046) - ⚠️ PAS une anticipation : vérifié le 2026-10-14, api.github.com
+//    sert AUJOURD'HUI la chaîne « leaf <- CA DV R36 <- Root R46 » aux clients qui
+//    ne proposent pas ECDSA (reproduit avec `openssl s_client -sigalgs
+//    rsa_pss_rsae_sha256`). L'ESP32 négocie ECDSA, donc reçoit la chaîne E46 —
+//    mais R46 est la chaîne de REPLI RÉELLE de GitHub, pas une hypothèse.
 //
 // Sources :
 // - USERTrust RSA/ECC : magasin système macOS (SystemRootCertificates.keychain),
@@ -21,6 +44,15 @@
 //   RSA E7:93:C9:B0:2F:D8:AA:13:E2:1C:31:22:8A:CC:B0:81:19:64:3B:74:9C:89:89:64:B1:74:6D:46:C3:D4:CB:D2
 //   ECC 4F:F4:60:D5:4B:9C:86:DA:BF:BC:FC:57:12:E0:40:0D:2B:ED:3F:BC:4D:4F:BD:AA:86:E0:6A:DC:D2:A9:AD:7A
 // - ISRG Root X1 : https://letsencrypt.org/certs/isrgrootx1.pem
+//   (empreinte ajoutée le 2026-10-14 sur revue : elle manquait, alors que
+//   c'est l'ancre du chemin de TÉLÉCHARGEMENT — la seule dont l'absence
+//   casserait l'OTA sans casser la recherche, donc sans se voir)
+//   X1 96:BC:EC:06:26:49:76:F3:74:60:77:9A:CF:28:C5:A7:CF:E8:A3:C0:AA:E1:1A:8F:FC:EE:05:C0:BD:DF:08:C6
+// - Sectigo Root E46/R46 : récupérées et vérifiées localement le 2026-10-14
+//   (auto-signature confirmée par `openssl verify -CAfile <cert> <cert>` =>
+//   OK, et clé publique de E46 confirmée identique à celle servie par GitHub) :
+//   E46 (ECC) C9:0F:26:F0:FB:1B:40:18:B2:22:27:51:9B:5C:A2:B5:3E:2C:A5:B3:BE:5C:F1:8E:FE:1B:EF:47:38:0C:53:83
+//   R46 (RSA) 7B:B6:47:A6:2A:EE:AC:88:BF:25:7A:A5:22:D0:1F:FE:A3:95:E0:AB:45:C7:3F:93:F6:56:54:EC:38:F2:5A:06
 //
 const char* GITHUB_ROOT_CA = \
 // === Root CA 1: USERTrust RSA Certification Authority (auto-signée) ===
@@ -106,6 +138,54 @@ const char* GITHUB_ROOT_CA = \
 "4RgqsahDYVvTH9w7jXbyLeiNdd8XM2w9U/t7y0Ff/9yi0GE44Za4rF2LN9d11TPA\n" \
 "mRGunUHBcnWEvgJBQl9nJEiU0Zsnvgc/ubhPgXRR4Xq37Z0j4r7g1SgEEzwxA57d\n" \
 "emyPxgcYxn/eR44/KJ4EBs+lVDR3veyJm+kXQ99b21/+jh5Xos1AnX5iItreGCc=\n" \
+"-----END CERTIFICATE-----\n" \
+// === Root CA 4: Sectigo Public Server Authentication Root E46 (auto-signée, ECC) ===
+"-----BEGIN CERTIFICATE-----\n" \
+"MIICOjCCAcGgAwIBAgIQQvLM2htpN0RfFf51KBC49DAKBggqhkjOPQQDAzBfMQsw\n" \
+"CQYDVQQGEwJHQjEYMBYGA1UEChMPU2VjdGlnbyBMaW1pdGVkMTYwNAYDVQQDEy1T\n" \
+"ZWN0aWdvIFB1YmxpYyBTZXJ2ZXIgQXV0aGVudGljYXRpb24gUm9vdCBFNDYwHhcN\n" \
+"MjEwMzIyMDAwMDAwWhcNNDYwMzIxMjM1OTU5WjBfMQswCQYDVQQGEwJHQjEYMBYG\n" \
+"A1UEChMPU2VjdGlnbyBMaW1pdGVkMTYwNAYDVQQDEy1TZWN0aWdvIFB1YmxpYyBT\n" \
+"ZXJ2ZXIgQXV0aGVudGljYXRpb24gUm9vdCBFNDYwdjAQBgcqhkjOPQIBBgUrgQQA\n" \
+"IgNiAAR2+pmpbiDt+dd34wc7qNs9Xzjoq1WmVk/WSOrsfy2qw7LFeeyZYX8QeccC\n" \
+"WvkEN/U0NSt3zn8gj1KjAIns1aeibVvjS5KToID1AZTc8GgHHs3u/iVStSBDHBv+\n" \
+"6xnOQ6OjQjBAMB0GA1UdDgQWBBTRItpMWfFLXyY4qp3W7usNw/upYTAOBgNVHQ8B\n" \
+"Af8EBAMCAYYwDwYDVR0TAQH/BAUwAwEB/zAKBggqhkjOPQQDAwNnADBkAjAn7qRa\n" \
+"qCG76UeXlImldCBteU/IvZNeWBj7LRoAasm4PdCkT0RHlAFWovgzJQxC36oCMB3q\n" \
+"4S6ILuH5px0CMk7yn2xVdOOurvulGu7t0vzCAxHrRVxgED1cf5kDW21USAGKcw==\n" \
+"-----END CERTIFICATE-----\n" \
+// === Root CA 5: Sectigo Public Server Authentication Root R46 (auto-signée, RSA) ===
+"-----BEGIN CERTIFICATE-----\n" \
+"MIIFijCCA3KgAwIBAgIQdY39i658BwD6qSWn4cetFDANBgkqhkiG9w0BAQwFADBf\n" \
+"MQswCQYDVQQGEwJHQjEYMBYGA1UEChMPU2VjdGlnbyBMaW1pdGVkMTYwNAYDVQQD\n" \
+"Ey1TZWN0aWdvIFB1YmxpYyBTZXJ2ZXIgQXV0aGVudGljYXRpb24gUm9vdCBSNDYw\n" \
+"HhcNMjEwMzIyMDAwMDAwWhcNNDYwMzIxMjM1OTU5WjBfMQswCQYDVQQGEwJHQjEY\n" \
+"MBYGA1UEChMPU2VjdGlnbyBMaW1pdGVkMTYwNAYDVQQDEy1TZWN0aWdvIFB1Ymxp\n" \
+"YyBTZXJ2ZXIgQXV0aGVudGljYXRpb24gUm9vdCBSNDYwggIiMA0GCSqGSIb3DQEB\n" \
+"AQUAA4ICDwAwggIKAoICAQCTvtU2UnXYASOgHEdCSe5jtrch/cSV1UgrJnwUUxDa\n" \
+"ef0rty2k1Cz66jLdScK5vQ9IPXtamFSvnl0xdE8H/FAh3aTPaE8bEmNtJZlMKpnz\n" \
+"SDBh+oF8HqcIStw+KxwfGExxqjWMrfhu6DtK2eWUAtaJhBOqbchPM8xQljeSM9xf\n" \
+"iOefVNlI8JhD1mb9nxc4Q8UBUQvX4yMPFF1bFOdLvt30yNoDN9HWOaEhUTCDsG3X\n" \
+"ME6WW5HwcCSrv0WBZEMNvSE6Lzzpng3LILVCJ8zab5vuZDCQOc2TZYEhMbUjUDM3\n" \
+"IuM47fgxMMxF/mL50V0yeUKH32rMVhlATc6qu/m1dkmU8Sf4kaWD5QazYw6A3OAS\n" \
+"VYCmO2a0OYctyPDQ0RTp5A1NDvZdV3LFOxxHVp3i1fuBYYzMTYCQNFu31xR13NgE\n" \
+"SJ/AwSiItOkcyqex8Va3e0lMWeUgFaiEAin6OJRpmkkGj80feRQXEgyDet4fsZfu\n" \
+"+Zd4KKTIRJLpfSYFplhym3kT2BFfrsU4YjRosoYwjviQYZ4ybPUHNs2iTG7sijbt\n" \
+"8uaZFURww3y8nDnAtOFr94MlI1fZEoDlSfB1D++N6xybVCi0ITz8fAr/73trdf+L\n" \
+"HaAZBav6+CuBQug4urv7qv094PPK306Xlynt8xhW6aWWrL3DkJiy4Pmi1KZHQ3xt\n" \
+"zwIDAQABo0IwQDAdBgNVHQ4EFgQUVnNYZJX5khqwEioEYnmhQBWIIUkwDgYDVR0P\n" \
+"AQH/BAQDAgGGMA8GA1UdEwEB/wQFMAMBAf8wDQYJKoZIhvcNAQEMBQADggIBAC9c\n" \
+"mTz8Bl6MlC5w6tIyMY208FHVvArzZJ8HXtXBc2hkeqK5Duj5XYUtqDdFqij0lgVQ\n" \
+"YKlJfp/imTYpE0RHap1VIDzYm/EDMrraQKFz6oOht0SmDpkBm+S8f74TlH7Kph52\n" \
+"gDY9hAaLMyZlbcp+nv4fjFg4exqDsQ+8FxG75gbMY/qB8oFM2gsQa6H61SilzwZA\n" \
+"Fv97fRheORKkU55+MkIQpiGRqRxOF3yEvJ+M0ejf5lG5Nkc/kLnHvALcWxxPDkjB\n" \
+"JYOcCj+esQMzEhonrPcibCTRAUH4WAP+JWgiH5paPHxsnnVI84HxZmduTILA7rpX\n" \
+"DhjvLpr3Etiga+kFpaHpaPi8TD8SHkXoUsCjvxInebnMMTzD9joiFgOgyY9mpFui\n" \
+"TdaBJQbpdqQACj7LzTWb4OE4y2BThihCQRxEV+ioratF4yUQvNs+ZUH7G6aXD+u5\n" \
+"dHn5HrwdVw1Hr8Mvn4dGp+smWg9WY7ViYG4A++MnESLn/pmPNPW56MORcr3Ywx65\n" \
+"LvKRRFHQV80MNNVIIb/bE/FmJUNS0nAiNs2fxBx1IK1jcmMGDw4nztJqDby1ORrp\n" \
+"0XZ60Vzk50lJLVU3aPAaOpg+VBeHVOmmJ1CJeyAvP/+/oYtKR5j/K3tJPsMpRmAY\n" \
+"QqszKbrAKbkTidOIijlBO8n9pu0f9GBj39ItVQGL\n" \
 "-----END CERTIFICATE-----\n";
 
 #endif // GITHUB_ROOT_CA_H

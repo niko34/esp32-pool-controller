@@ -351,3 +351,21 @@ jobs:
       # coûte cher.
       - name: Contrôle des vecteurs de mode affiché après bascule
         run: ./tools/check_resolve_selector_mode_vectors.sh
+
+  github-root-ca:
+    name: Cohérence du paquet de racines TLS GitHub (bug-165)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # Même script en local (`./tools/check_github_root_ca.sh`) et en CI.
+      # src/github_root_ca.h n'est pas compilable nativement : ce contrôle
+      # EXTRAIT (openssl) les 5 certificats réels du fichier livré et vérifie
+      # qu'aucune des 3 racines d'origine n'a disparu (ISRG Root X1 ancre
+      # objects.githubusercontent.com, le chemin de téléchargement OTA) et que
+      # les empreintes SHA-256 annoncées en commentaire correspondent aux
+      # certificats réellement présents — openssl est préinstallé sur
+      # ubuntu-latest, aucune installation supplémentaire nécessaire.
+      - name: Contrôle du paquet de racines TLS
+        run: ./tools/check_github_root_ca.sh
