@@ -229,3 +229,85 @@ valeur lue n'est pas un rapport tant qu'on n'a pas vérifié qui la consomme.** 
 avait été classée « hors périmètre, métrique brute » — donc rangée mentalement avec
 les affichages — alors qu'elle **décide** d'un refus. La requalification a demandé
 une relecture du chemin d'appel, pas une relecture du site.
+
+---
+
+## ⚠️ MISE À JOUR DU 2026-10-14 — ce qui a changé, et ce qui bloque
+
+### 1. ⛔ BLOQUÉ PAR [`bug-165`](bug-165-recherche-de-mise-a-jour-en-ligne-echoue.md)
+`GET /check-update` **échoue systématiquement** sur l'appareil réel (`code: -1`, échec de
+connexion). ⚠️ **Corriger la garde d'un chemin qui ne fonctionne pas n'a pas de sens** — et
+surtout, le **relevé décisif** (mémoire pendant une session TLS) est **impossible à prendre** : le
+chiffrement n'alloue jamais rien. ⇒ **bug-165 passe d'abord.**
+
+### 2. 🚨 L'ARGUMENT CENTRAL DE CETTE SPEC EST PÉRIMÉ — mais le défaut reste
+
+La spec dit que la bascule est bloquée parce que `kCheckUpdateMinMaxAllocBytes = 20 480` serait
+*« au-dessus du nominal terrain »* (21 492 o, ADR-0058, septembre).
+⛔ **Faux aujourd'hui.** Relevé appareil réel, **2026-10-14, v2.80.0** :
+
+| Grandeur | Valeur |
+|---|---|
+| `max_alloc_8bit` | **45 044** |
+| `free_heap_8bit` | **54 224 – 55 068** |
+| `mb` — plancher du plus gros bloc depuis le démarrage (~1 h) | **30 708** |
+| `mf` — **plancher de la mémoire libre** depuis le démarrage | **37 024** |
+| `psram_free` | 4 174 860 / 4 194 304 |
+
+⇒ Le nominal a **plus que doublé** depuis septembre. ⚠️ **Mais ce n'était pas le bon seuil.**
+
+### 3. 🚨 LE VRAI BLOQUANT EST L'AUTRE SEUIL — que cette spec n'avait pas chiffré
+
+`oomTlsGateReason()` (`src/oom_guard_logic.h:661`) refuse si **l'UN OU L'AUTRE** critère cède :
+```cpp
+if (freeHeapBytes < minFreeBytes || maxAllocBytes < minMaxAllocBytes) return kOomTlsGateLowMemory;
+```
+
+| Critère | Seuil | Valeur 8 bits | Verdict d'une bascule à seuil constant |
+|---|---|---|---|
+| `kCheckUpdateMinMaxAllocBytes` | 20 480 | 45 044 (pire : 30 708) | ✅ **passe**, 50 % de marge |
+| **`kCheckUpdateMinFreeHeapBytes`** | **65 536** | **54 224** (pire : **37 024**) | ❌ **REFUS PERMANENT, en régime SAIN** |
+
+⚠️ **Le projet l'avait DÉJÀ écrit**, mot pour mot, dans
+[ADR-0040](../../../docs/adr/0040-pas-de-calibrage-sur-fragmentation-pathologique.md) :
+> « `kCheckUpdateMinFreeHeapBytes` 65 536 > `libre8` 46 480 → **mise à jour en ligne définitivement
+> refusée**. La bascule sans recalibrage n'est pas une demi-mesure prudente, **c'est la panne**. »
+
+`libre8` est passé de 46 480 à ~54 000 : **l'écart s'est réduit, le signe n'a pas changé.**
+
+⇒ **Le lot reste un redimensionnement, mais d'UN SEUL seuil** (`free`), pas des deux. Périmètre
+**nettement plus petit** que ce que cette spec anticipait — à acter par l'`architect`.
+
+### 4. L'amélioration est IDENTIFIÉE, donc fiable — mais pas acquise
+Trois lots ont sorti des allocations de la RAM interne : **ADR-0061** (tampon stdio de 4 096 o par
+fichier ouvert basculé en PSRAM), **seuil de bascule PSRAM 4095 → 1024**, **feature-129** (le
+chemin de journalisation n'alloue plus).
+⚠️ **Deux réserves** : (a) le gain dépend d'un `sdkconfig` de **bibliothèques précompilées** —
+une montée de plateforme peut le **défaire en silence** ; (b) la PSRAM est un **pool de travail** :
+si elle sature, les allocations **retombent en interne**. ⇒ Le seuil doit garder une **marge**,
+⛔ pas coller au relevé.
+
+### 5. Corrections de la spec elle-même
+- ⛔ **Numéros de ligne FAUX** : les deux sites sont `src/web_routes_ota.cpp:887-888` et
+  `:1125-1127`, ⛔ pas 654-655 / 893-894.
+- ⛔ **`security-reviewer` N'EST PAS COCHÉ** dans « Agents requis » — **omission** : `CLAUDE.md`
+  l'impose sur toute modification de `web_routes_ota.cpp`. Il passe **deux fois** (design, puis diff).
+- `src/web_routes_debug.cpp` est **déjà soldé** (bug-080) ⇒ la dette d'ADR-0058 se réduit à
+  `web_routes_ota.cpp` seul.
+- ⚠️ **Piège de coût** : `heapFree8Bit()` + `heapLargestFreeBlock8Bit()` = **DEUX** parcours TLSF
+  interruptions coupées. `heapMetricsSnapshot()` les livre en **UN**. ⇒ C'est celui-là qu'il faut
+  appeler.
+- Le test sentinelle `test_oom_guard.cpp:311-313` fige `65536u` / `20480u` : il **cassera**, et
+  c'est **voulu** — ⛔ à mettre à jour délibérément, **jamais** à neutraliser.
+
+### 6. Les relevés qui manquent encore
+1. `mf` / `wf` du masque 8 bits après **≥ 24 h** d'uptime — ⚠️ les chiffres ci-dessus ne couvrent
+   qu'**une heure**, après un redémarrage de déploiement.
+2. Les mêmes **sous charge web** (interface complète, plusieurs onglets).
+3. ⛔ **Les mêmes PENDANT une session TLS réelle** — **IMPOSSIBLE aujourd'hui** (bug-165). *C'est le
+   seul régime où la garde sert, et aucun chiffre du dépôt ne le couvre.*
+4. Les contextes `cf` / `cb`, qui **nomment ce qui a creusé** le tas.
+
+### 7. Hors périmètre, mais désormais mesurable
+`kOtaTlsMinPsramBytes = 1 048 576` **n'a jamais été mesuré sur WROVER réel** (ADR-0036). ⇒ Relevé
+du 14/10 : `psram_free` = **4 174 860**, soit **4 fois** le seuil. Spec de suivi possible.
