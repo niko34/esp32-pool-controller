@@ -260,10 +260,16 @@ l'interface **MOINS cohérente qu'avant** : il ajoute une troisième forme au li
 Si un impact ne peut pas être traité dans le lot, **on l'écrit** — on ne le passe pas sous silence.
 
 ⚠️ **Et l'agent doit VOIR ce qu'il conçoit.** Le défaut du jour est né de ce qu'il lisait du HTML et
-du CSS dans des fichiers séparés en imaginant le rendu. Un harnais permet de photographier
-n'importe quelle page à n'importe quelle largeur (serveur local rejouant un état capturé +
-Chromium sans interface) : **toute étude d'ergonomie sur une surface existante s'accompagne de la
-capture rendue**, pas d'une lecture de feuille de style.
+du CSS dans des fichiers séparés en imaginant le rendu. **`./tools/ui_shot.sh`** photographie
+n'importe quelle page à n'importe quelle largeur, sans passer par l'appareil (`-f` force un champ
+de `/data`, `-c` un champ de `/get-config`, pour atteindre un état rare).
+
+⛔ **MAIS `ux-ui-designer` N'A PAS D'ACCÈS AU SHELL** (Read/Grep/Glob seulement) : il **ne peut pas**
+lancer cet outil. ⇒ **C'est l'agent principal qui capture AVANT de l'invoquer**, et qui **joint les
+chemins des PNG dans le brief** — l'agent sait les lire. Un brief d'ergonomie sur une surface
+existante **sans images jointes** est un brief incomplet, et le résultat sera une déduction, pas une
+observation. *(Constaté le 2026-10-14 : l'agent l'a signalé lui-même au lieu d'affirmer un rendu
+qu'il n'avait pas vu — c'est le bon comportement, mais l'omission était la mienne.)*
 
 ## Quand utiliser l'orchestrateur vs travailler directement
 

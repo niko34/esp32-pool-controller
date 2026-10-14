@@ -16,6 +16,15 @@ void LightingManager::begin() {
 }
 
 void LightingManager::ensureTimesValid() {
+  // feature-162 : jeton inconnu => repli FAIL-CLOSED sur Éteint — une config
+  // corrompue ou un client legacy ne doit jamais faire basculer la décision
+  // sur un état implicite (même garde que FiltrationManager::ensureTimesValid,
+  // repli Auto).
+  if (parseLightingModeFrom(lightingCfg.mode) == LightingMode::Inconnu) {
+    systemLogger.warning("[Éclairage] Mode inconnu (\"" + lightingCfg.mode + "\") — repli sur Éteint");
+    lightingCfg.mode = lightingModeToken(LightingMode::Off);
+  }
+
   auto normalize = [](String value, const char* fallback) {
     if (value.length() < 5 || value.charAt(2) != ':') return String(fallback);
     int hh = value.substring(0, 2).toInt();
@@ -37,19 +46,9 @@ bool LightingManager::getCurrentMinutesOfDay(int& minutes) {
   return true;
 }
 
-void LightingManager::setManualOn() {
-  lightingCfg.enabled = true;
-  state.manualOverride = true;
-  state.manualSetAtMs = millis();
-  systemLogger.info("Éclairage manuel: ON");
-  publishState();
-}
-
-void LightingManager::setManualOff() {
-  lightingCfg.enabled = false;
-  state.manualOverride = true;
-  state.manualSetAtMs = millis();
-  systemLogger.info("Éclairage manuel: OFF");
+void LightingManager::setMode(LightingMode mode) {
+  lightingCfg.mode = lightingModeToken(mode);
+  systemLogger.info("Éclairage : mode -> " + lightingCfg.mode);
   publishState();
 }
 
@@ -66,18 +65,16 @@ void LightingManager::update() {
 
   ensureTimesValid();
 
-  // Collecte des entrées pour la décision pure (schedule_logic).
-  bool manualOverride = state.manualOverride;
-  bool enabledFlag = lightingCfg.enabled;
-  bool scheduleEnabled = lightingCfg.scheduleEnabled;
+  // Collecte des entrées pour la décision pure (schedule_logic). feature-162 :
+  // lightingCfg.mode est la SEULE autorité, ensureTimesValid() vient de
+  // coercer tout jeton inconnu vers Off.
+  LightingMode mode = parseLightingModeFrom(lightingCfg.mode);
   int nowMinutes = 0;
   bool haveTime = getCurrentMinutesOfDay(nowMinutes);
   int startMin = timeStringToMinutes(lightingCfg.startTime.c_str());
   int endMin = timeStringToMinutes(lightingCfg.endTime.c_str());
 
-  bool shouldBeOn = decideLightingOn(manualOverride, enabledFlag, scheduleEnabled,
-                                     haveTime, nowMinutes, startMin, endMin,
-                                     relayState);
+  bool shouldBeOn = decideLightingOn(mode, haveTime, nowMinutes, startMin, endMin, relayState);
 
   // Mettre à jour le relais si nécessaire
   if (shouldBeOn != relayState) {

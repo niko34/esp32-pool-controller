@@ -785,6 +785,18 @@ Deux gardes complémentaires : chaque exception porte un **motif écrit d'au moi
 
 **Que faire quand elle casse** : ajouter la clé du côté manquant **entre les marqueurs** (en vérifiant la marge de trame), ou l'inscrire dans `kHttpOnlyKeys` avec un motif écrit. Jamais la désactiver.
 
+## feature-162 (v2.79.0) — `lighting_mode`, seule autorité de l'éclairage
+
+Une clé ajoutée à la trame `config`, **entre les marqueurs de parité** :
+
+| Champ | Type | Pourquoi il est mutable à l'exécution |
+|-------|------|----------------------------------------|
+| `lighting_mode` | string (`on`/`off`/`schedule`) | Remplace le triplet `enabled`/`scheduleEnabled`/l'ancien forçage manuel **caché** (jamais publié avant ce lot) — seule autorité de l'état d'éclairage, réglable depuis la carte d'accueil **et** la page de réglage. |
+
+`lighting_enabled` et `lighting_schedule_enabled` restent servis des **deux côtés** (déjà présents dans la trame avant ce lot) mais changent d'**expression** : dérivés de `lighting_mode` (`mode == "on"` / `mode == "schedule"`) plutôt que de deux booléens séparés. ⚠️ **C'est exactement l'angle mort qu'une comparaison par simple présence de clé ne voit pas** (4ᵉ récidive du motif de parité, dont une forme déjà invisible au grep sur `sensor_data`) : une clé présente des deux côtés mais calculée différemment ferait **osciller** l'affichage au rythme des deux cadences de rafraîchissement (`/get-config` périodique vs push WS), sans qu'aucune charge isolée ne paraisse fausse. Couvert par une sentinelle **dédiée**, vérifiant l'**expression**, pas seulement la clé : `test_h_lighting_expression_partagee_identique_des_deux_cotes` (`test/test_native_ws_config_parity/test_ws_config_parity.cpp`), même technique d'extraction de texte source que la sentinelle générique ci-dessus mais restreinte à la région des trois clés citées.
+
+Détail firmware complet : [docs/subsystems/lighting.md](lighting.md).
+
 ## feature-093 (v2.34.0) — persistance de l'intégrale pH : AUCUN champ nouveau
 
 La restauration de l'intégrale pH au démarrage ([pump-controller.md](pump-controller.md#3-persistance-nvs-conditionnelle-r1-r7)) ne publie **rien de neuf** : les champs `ph_integral`, `ph_integral_term`, `ph_integral_pct` et `ph_integral_saturated` (v2.26.0) suffisent — une valeur restaurée s'y lit comme n'importe quelle autre. Toute la traçabilité (motif de rejet, âge en temps de filtration, motif d'écriture) passe par le **journal système**, donc par `broadcastLog`.

@@ -381,37 +381,171 @@ void test_decide_filtration_run_boost_widened_window_combined_with_each_mode(voi
 }
 
 // -----------------------------------------------------------------------------
-// feature-040 AC1/AC4 — decideLightingOn (table de vérité, copie de update())
+// feature-162 — decideLightingOn : trois modes (On/Off/Programme), signature
+// REMPLACÉE (plus de manualOverride/enabledFlag/scheduleEnabled — jetons
+// lightingCfg.mode SEULE AUTORITÉ, ADR-0107/ADR-0108). Nouvelle signature :
+//   decideLightingOn(LightingMode, haveTime, nowMin, startMin, endMin, currentlyOn)
+// D1 — matrice complète : 3 modes réels × (dans/hors créneau) × (heure connue/
+// inconnue) × (état courant true/false).
 // -----------------------------------------------------------------------------
-void test_lighting_manual_override_returns_enabled_flag(void) {
-  // manualOverride=true → renvoie enabledFlag, quel que soit le reste.
-  TEST_ASSERT_TRUE(decideLightingOn(true, true, true, true, 1200, 1200, 1380, false));
-  TEST_ASSERT_FALSE(decideLightingOn(true, false, true, true, 1200, 1200, 1380, true));
-  // indépendant de scheduleEnabled / haveTime / plage
-  TEST_ASSERT_TRUE(decideLightingOn(true, true, false, false, 0, -1, -1, false));
-  TEST_ASSERT_FALSE(decideLightingOn(true, false, false, false, 0, -1, -1, true));
+void test_decide_lighting_on_full_matrix(void) {
+  // Fenêtre 20:00-23:00 = [1200, 1380).
+  const int baseStart = 1200, baseEnd = 1380;
+  const int inScheduleMin = 1200;   // 20:00, DANS la plage (borne basse incluse)
+  const int outScheduleMin = 1199;  // 19:59, HORS la plage
+
+  struct ModeCase { LightingMode mode; const char* name; };
+  static const ModeCase kModes[3] = {
+    {LightingMode::On,        "On"},
+    {LightingMode::Off,       "Off"},
+    {LightingMode::Programme, "Programme"},
+  };
+
+  for (int m = 0; m < 3; m++) {
+    for (int inSched = 0; inSched <= 1; inSched++) {
+      const int nowMin = inSched ? inScheduleMin : outScheduleMin;
+      for (int haveTimeInt = 0; haveTimeInt <= 1; haveTimeInt++) {
+        const bool haveTime = haveTimeInt != 0;
+        for (int curInt = 0; curInt <= 1; curInt++) {
+          const bool currentlyOn = curInt != 0;
+          bool expected;
+          switch (kModes[m].mode) {
+            case LightingMode::On:
+              expected = true;
+              break;
+            case LightingMode::Off:
+              expected = false;
+              break;
+            case LightingMode::Programme:
+              expected = haveTime ? (inSched != 0) : currentlyOn;
+              break;
+            default:
+              expected = currentlyOn;
+              break;
+          }
+          const bool actual = decideLightingOn(kModes[m].mode, haveTime, nowMin,
+                                                baseStart, baseEnd, currentlyOn);
+          char msg[160];
+          snprintf(msg, sizeof(msg),
+                   "mode=%s inSchedule=%d haveTime=%d currentlyOn=%d",
+                   kModes[m].name, inSched, haveTimeInt, curInt);
+          TEST_ASSERT_EQUAL_INT_MESSAGE(expected, actual, msg);
+        }
+      }
+    }
+  }
 }
 
-void test_lighting_schedule_disabled_returns_enabled_flag(void) {
-  // manualOverride=false, scheduleEnabled=false → renvoie enabledFlag.
-  TEST_ASSERT_TRUE(decideLightingOn(false, true, false, true, 1200, 1200, 1380, false));
-  TEST_ASSERT_FALSE(decideLightingOn(false, false, false, true, 1200, 1200, 1380, true));
+// Le gel `haveTime == false → currentlyOn` est une protection anti-faux-
+// basculement (OTA / perte RTC). ⚠️ Il ne vaut QUE pour Programme : vérifie
+// explicitement qu'il NE s'applique PAS à On/Off (ligne demandée par le
+// mandat — ne pas se contenter de la preuve implicite de la matrice).
+void test_decide_lighting_on_haveTime_freeze_applies_only_to_programme(void) {
+  // On/Off : vrai/faux quel que soit haveTime ou currentlyOn.
+  TEST_ASSERT_TRUE(decideLightingOn(LightingMode::On, false, 0, -1, -1, false));
+  TEST_ASSERT_TRUE(decideLightingOn(LightingMode::On, false, 0, -1, -1, true));
+  TEST_ASSERT_TRUE(decideLightingOn(LightingMode::On, true, 0, -1, -1, false));
+  TEST_ASSERT_FALSE(decideLightingOn(LightingMode::Off, false, 0, -1, -1, false));
+  TEST_ASSERT_FALSE(decideLightingOn(LightingMode::Off, false, 0, -1, -1, true));
+  TEST_ASSERT_FALSE(decideLightingOn(LightingMode::Off, true, 0, -1, -1, true));
+  // Programme : le gel s'applique bel et bien, renvoie currentlyOn tel quel.
+  TEST_ASSERT_TRUE(decideLightingOn(LightingMode::Programme, false, 0, -1, -1, true));
+  TEST_ASSERT_FALSE(decideLightingOn(LightingMode::Programme, false, 0, -1, -1, false));
 }
 
-void test_lighting_schedule_follows_range_when_have_time(void) {
-  // scheduleEnabled=true, haveTime=true → suit isMinutesInRange(...,true).
-  // dans la plage 20:00-23:00
-  TEST_ASSERT_TRUE(decideLightingOn(false, false, true, true, 1200, 1200, 1380, false));
-  // hors plage
-  TEST_ASSERT_FALSE(decideLightingOn(false, true, true, true, 1199, 1200, 1380, true));
-  // start==end → equalMeansAlways=true → allumé toute la journée
-  TEST_ASSERT_TRUE(decideLightingOn(false, false, true, true, 600, 300, 300, false));
+// Programme, start==end → equalMeansAlways=true (allumé toute la journée,
+// INCHANGÉ depuis feature-040) — cas limite non couvert par la matrice
+// ci-dessus (qui ne fait varier que in/hors créneau simple).
+void test_decide_lighting_on_programme_equal_bounds_means_always_on(void) {
+  TEST_ASSERT_TRUE(decideLightingOn(LightingMode::Programme, true, 600, 300, 300, false));
 }
 
-void test_lighting_schedule_no_time_keeps_current_state(void) {
-  // scheduleEnabled=true, haveTime=false → renvoie currentlyOn tel quel.
-  TEST_ASSERT_TRUE(decideLightingOn(false, false, true, false, 1200, 1200, 1380, true));
-  TEST_ASSERT_FALSE(decideLightingOn(false, true, true, false, 1200, 1200, 1380, false));
+// Mode Inconnu : fail-safe de DÉCISION, pas un mode choisissable. Indépendant
+// du créneau et de l'heure — renvoie TOUJOURS currentlyOn tel quel
+// (ensureTimesValid() ramène normalement tout jeton inconnu à Off en amont ;
+// ce cas protège une course entre lecture et coercition).
+void test_decide_lighting_on_inconnu_always_keeps_current_state(void) {
+  TEST_ASSERT_TRUE(decideLightingOn(LightingMode::Inconnu, true, 1200, 1200, 1380, true));
+  TEST_ASSERT_FALSE(decideLightingOn(LightingMode::Inconnu, true, 1200, 1200, 1380, false));
+  TEST_ASSERT_TRUE(decideLightingOn(LightingMode::Inconnu, false, 1200, 1200, 1380, true));
+  TEST_ASSERT_FALSE(decideLightingOn(LightingMode::Inconnu, false, 1199, -1, -1, false));
+}
+
+// -----------------------------------------------------------------------------
+// feature-162/D3 — parseLightingMode : UNIQUE site de correspondance jeton ->
+// sens. `token` DOIT arriver déjà en minuscules (précondition imposée à
+// l'appelant, parseLightingModeFrom côté config.cpp) : ce module n'est PAS
+// tolérant à la casse par lui-même, et le test ci-dessous le démontre.
+// -----------------------------------------------------------------------------
+void test_parse_lighting_mode_valid_tokens(void) {
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(LightingMode::On), static_cast<int>(parseLightingMode("on")));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(LightingMode::Off), static_cast<int>(parseLightingMode("off")));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(LightingMode::Programme), static_cast<int>(parseLightingMode("schedule")));
+}
+
+void test_parse_lighting_mode_unknown_empty_null_is_inconnu(void) {
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(LightingMode::Inconnu), static_cast<int>(parseLightingMode("bogus")));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(LightingMode::Inconnu), static_cast<int>(parseLightingMode("")));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(LightingMode::Inconnu), static_cast<int>(parseLightingMode(nullptr)));
+}
+
+// Casse différente : "On"/"OFF"/"SCHEDULE" ne doivent JAMAIS matcher — la
+// comparaison est strcmp(), pas une comparaison insensible à la casse.
+void test_parse_lighting_mode_different_case_is_inconnu(void) {
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(LightingMode::Inconnu), static_cast<int>(parseLightingMode("On")));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(LightingMode::Inconnu), static_cast<int>(parseLightingMode("OFF")));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(LightingMode::Inconnu), static_cast<int>(parseLightingMode("SCHEDULE")));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(LightingMode::Inconnu), static_cast<int>(parseLightingMode("Schedule")));
+}
+
+// Jeton tronqué (ex. ce que produirait un buffer plus court que "schedule")
+// ne doit jamais matcher partiellement.
+void test_parse_lighting_mode_truncated_token_is_inconnu(void) {
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(LightingMode::Inconnu), static_cast<int>(parseLightingMode("sched")));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(LightingMode::Inconnu), static_cast<int>(parseLightingMode("schedul")));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(LightingMode::Inconnu), static_cast<int>(parseLightingMode("o")));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(LightingMode::Inconnu), static_cast<int>(parseLightingMode("of")));
+}
+
+// lightingModeToken : réciproque UNIQUE. Inconnu n'est normalement jamais
+// fourni (mode de décision) — vérifie le repli fail-closed documenté ("off").
+void test_lighting_mode_token_roundtrip_and_inconnu_fails_closed(void) {
+  TEST_ASSERT_EQUAL_STRING("on", lightingModeToken(LightingMode::On));
+  TEST_ASSERT_EQUAL_STRING("off", lightingModeToken(LightingMode::Off));
+  TEST_ASSERT_EQUAL_STRING("schedule", lightingModeToken(LightingMode::Programme));
+  TEST_ASSERT_EQUAL_STRING_MESSAGE("off", lightingModeToken(LightingMode::Inconnu),
+      "Inconnu doit se replier sur le jeton \"off\" (fail-closed), jamais planter ni inventer un jeton.");
+}
+
+// -----------------------------------------------------------------------------
+// feature-162/D2 — migrateLightingMode : migration NVS one-shot
+// light_enabled/light_sched_en -> light_mode, fonction PURE. Quatre
+// combinaisons EXHAUSTIVES. light_sched_en PRIME sur light_enabled.
+// -----------------------------------------------------------------------------
+void test_migrate_lighting_mode_four_combinations(void) {
+  TEST_ASSERT_EQUAL_INT_MESSAGE(static_cast<int>(LightingMode::Programme),
+      static_cast<int>(migrateLightingMode(/*lightEnabled=*/true, /*lightScheduleEnabled=*/true)),
+      "enabled=true, scheduleEnabled=true -> Programme (schedule prime).");
+  TEST_ASSERT_EQUAL_INT_MESSAGE(static_cast<int>(LightingMode::Programme),
+      static_cast<int>(migrateLightingMode(/*lightEnabled=*/false, /*lightScheduleEnabled=*/true)),
+      "enabled=false, scheduleEnabled=true -> Programme (schedule prime meme si enabled est faux).");
+  TEST_ASSERT_EQUAL_INT_MESSAGE(static_cast<int>(LightingMode::On),
+      static_cast<int>(migrateLightingMode(/*lightEnabled=*/true, /*lightScheduleEnabled=*/false)),
+      "enabled=true, scheduleEnabled=false -> On.");
+  TEST_ASSERT_EQUAL_INT_MESSAGE(static_cast<int>(LightingMode::Off),
+      static_cast<int>(migrateLightingMode(/*lightEnabled=*/false, /*lightScheduleEnabled=*/false)),
+      "enabled=false, scheduleEnabled=false -> Off.");
+}
+
+// Jamais en Programme quand l'ancien scheduleEnabled est faux (critère
+// d'acceptation feature-162 : une migration ne doit jamais atterrir en
+// Programme sur la seule base d'un ancien override manuel, qui n'a jamais été
+// persisté).
+void test_migrate_lighting_mode_never_programme_when_schedule_was_disabled(void) {
+  TEST_ASSERT_NOT_EQUAL(static_cast<int>(LightingMode::Programme),
+                        static_cast<int>(migrateLightingMode(true, false)));
+  TEST_ASSERT_NOT_EQUAL(static_cast<int>(LightingMode::Programme),
+                        static_cast<int>(migrateLightingMode(false, false)));
 }
 
 // =============================================================================
@@ -965,6 +1099,33 @@ static char* readProjectCode(const char* rel) {
   char* src = readProjectFile(rel, &len);
   if (src != NULL) stripCppComments(src);
   return src;
+}
+
+// =============================================================================
+// feature-162/D3 — Sentinelle de SOURCE : ensureTimesValid() (src/lighting.cpp)
+// coerce bien un jeton inconnu vers Off (fail-closed). La logique pure
+// (parseLightingMode) ne peut pas prouver seule que la COQUILLE applique la
+// coercition : lighting.cpp dépend d'Arduino.h/String, non compilable en natif.
+// Patron EXACT des sentinelles bug-126 ci-dessous.
+// =============================================================================
+void test_lighting_cpp_ensure_times_valid_coerces_unknown_token_to_off(void) {
+  char* code = readProjectCode("src/lighting.cpp");
+  TEST_ASSERT_NOT_NULL_MESSAGE(code, "src/lighting.cpp INTROUVABLE.");
+  char* body = extractFunctionBody(code, "void LightingManager::ensureTimesValid()");
+  TEST_ASSERT_NOT_NULL_MESSAGE(body,
+      "Corps de LightingManager::ensureTimesValid() introuvable (signature "
+      "changee ?). QUE FAIRE : mettre a jour la signature cherchee par ce test.");
+  if (body != NULL) {
+    TEST_ASSERT_TRUE_MESSAGE(countOccurrences(body, "LightingMode::Inconnu") >= 1,
+        "ensureTimesValid() ne teste plus LightingMode::Inconnu : le repli "
+        "fail-closed sur Off pourrait avoir disparu.");
+    TEST_ASSERT_TRUE_MESSAGE(countOccurrences(body, "LightingMode::Off") >= 1,
+        "ensureTimesValid() ne coerce plus vers LightingMode::Off : repli "
+        "fail-closed perdu — un jeton inconnu pourrait desormais atterrir sur "
+        "un mode implicite.");
+  }
+  free(body);
+  free(code);
 }
 
 // A4 — le défaut originel a disparu du source : ni le délai magique de 5 min,
@@ -1978,11 +2139,22 @@ int main(int /*argc*/, char** /*argv*/) {
   RUN_TEST(test_F053_boost_force_beats_force_off);
   RUN_TEST(test_decide_filtration_run_boost_widened_window_combined_with_each_mode);
 
-  // feature-040 AC1/AC4 — decideLightingOn
-  RUN_TEST(test_lighting_manual_override_returns_enabled_flag);
-  RUN_TEST(test_lighting_schedule_disabled_returns_enabled_flag);
-  RUN_TEST(test_lighting_schedule_follows_range_when_have_time);
-  RUN_TEST(test_lighting_schedule_no_time_keeps_current_state);
+  // feature-162 — decideLightingOn (D1 : matrice complète On/Off/Programme)
+  RUN_TEST(test_decide_lighting_on_full_matrix);
+  RUN_TEST(test_decide_lighting_on_haveTime_freeze_applies_only_to_programme);
+  RUN_TEST(test_decide_lighting_on_programme_equal_bounds_means_always_on);
+  RUN_TEST(test_decide_lighting_on_inconnu_always_keeps_current_state);
+
+  // feature-162 — parseLightingMode / lightingModeToken (D3)
+  RUN_TEST(test_parse_lighting_mode_valid_tokens);
+  RUN_TEST(test_parse_lighting_mode_unknown_empty_null_is_inconnu);
+  RUN_TEST(test_parse_lighting_mode_different_case_is_inconnu);
+  RUN_TEST(test_parse_lighting_mode_truncated_token_is_inconnu);
+  RUN_TEST(test_lighting_mode_token_roundtrip_and_inconnu_fails_closed);
+
+  // feature-162 — migrateLightingMode (D2)
+  RUN_TEST(test_migrate_lighting_mode_four_combinations);
+  RUN_TEST(test_migrate_lighting_mode_never_programme_when_schedule_was_disabled);
 
   // bug-126 — CycleTempAccumulator / isSampleEligible / accumulateCycleTemp (C2/C9)
   RUN_TEST(test_reset_cycle_temp_accumulator_is_nan_and_zero);
@@ -2021,6 +2193,9 @@ int main(int /*argc*/, char** /*argv*/) {
 
   // bug-126 — computeAutoWindow, intervalle admis (ferme les cas 44°C/48°C)
   RUN_TEST(test_auto_window_never_crosses_midnight_on_admitted_interval);
+
+  // feature-162/D3 — Sentinelle de source (lighting.cpp)
+  RUN_TEST(test_lighting_cpp_ensure_times_valid_coerces_unknown_token_to_off);
 
   // bug-126 — Sentinelles de source (filtration.cpp, pump_controller.cpp)
   RUN_TEST(test_filtration_cpp_no_longer_contains_the_defect_literals);

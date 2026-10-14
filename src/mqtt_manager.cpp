@@ -238,8 +238,9 @@ void MqttManager::refreshTopics() {
   topics.filtrationEndCommand = base + "/filtration_end/set";     // feature-051
   topics.lightingState = base + "/lighting_state";
   topics.lightingCommand = base + "/lighting/set";
-  topics.lightingScheduleState = base + "/lighting_schedule";        // feature-052
-  topics.lightingScheduleCommand = base + "/lighting_schedule/set";  // feature-052
+  topics.lightingModeState = base + "/lighting_mode";          // feature-162
+  topics.lightingModeCommand = base + "/lighting_mode/set";    // feature-162
+  topics.lightingScheduleState = base + "/lighting_schedule";        // feature-052 (lecture dérivée depuis feature-162)
   topics.lightingStartState = base + "/lighting_start";             // feature-052
   topics.lightingEndState = base + "/lighting_end";                 // feature-052
   topics.lightingStartCommand = base + "/lighting_start/set";       // feature-052
@@ -549,8 +550,12 @@ void MqttManager::connectInTask() {
     // feature-051 : heures de filtration
     mqtt.subscribe(topics.filtrationStartCommand.c_str());
     mqtt.subscribe(topics.filtrationEndCommand.c_str());
-    // feature-052 : programmation + heures d'éclairage
-    mqtt.subscribe(topics.lightingScheduleCommand.c_str());
+    // feature-162 : mode éclairage (remplace la souscription à l'ancien select
+    // _lighting_schedule — garder les deux aurait obligé à décider en silence
+    // que "Désactivé" == "Éteint", un changement de sens invisible).
+    mqtt.subscribe(topics.lightingModeCommand.c_str());
+    // feature-052 : heures d'éclairage (la programmation elle-même passe
+    // désormais par lightingModeCommand ci-dessus).
     mqtt.subscribe(topics.lightingStartCommand.c_str());
     mqtt.subscribe(topics.lightingEndCommand.c_str());
     mqtt.subscribe(topics.boostCommand.c_str());  // feature-053
@@ -765,9 +770,11 @@ void MqttManager::publishFiltrationState() {
 }
 
 void MqttManager::publishLightingState() {
+  enqueueOutbound(topics.lightingModeState, lightingCfg.mode, true);  // feature-162 : seule autorité
   enqueueOutbound(topics.lightingState, lighting.isOn() ? "ON" : "OFF", true);
-  // feature-052 : programmation + heures d'éclairage (miroir filtration)
-  enqueueOutbound(topics.lightingScheduleState, lightingCfg.scheduleEnabled ? "ON" : "OFF", true);
+  // feature-052 : heures d'éclairage (miroir filtration) ; lightingScheduleState
+  // reste publié en LECTURE DÉRIVÉE (feature-162) — plus de commande associée.
+  enqueueOutbound(topics.lightingScheduleState, (lightingCfg.mode == "schedule") ? "ON" : "OFF", true);
   enqueueOutbound(topics.lightingStartState, lightingCfg.startTime, true);
   enqueueOutbound(topics.lightingEndState, lightingCfg.endTime, true);
 }
@@ -969,8 +976,9 @@ void MqttManager::publishAllStatesInternal() {
   safePublish(topics.filtrationState.c_str(), filtration.isRunning() ? "ON" : "OFF", true);
   safePublish(topics.filtrationStartState.c_str(), filtrationCfg.start.c_str(), true);  // feature-051
   safePublish(topics.filtrationEndState.c_str(), filtrationCfg.end.c_str(), true);      // feature-051
+  safePublish(topics.lightingModeState.c_str(), lightingCfg.mode.c_str(), true);  // feature-162
   safePublish(topics.lightingState.c_str(), lighting.isOn() ? "ON" : "OFF", true);
-  safePublish(topics.lightingScheduleState.c_str(), lightingCfg.scheduleEnabled ? "ON" : "OFF", true);  // feature-052
+  safePublish(topics.lightingScheduleState.c_str(), (lightingCfg.mode == "schedule") ? "ON" : "OFF", true);  // feature-052 (dérivé, feature-162)
   safePublish(topics.lightingStartState.c_str(), lightingCfg.startTime.c_str(), true);                  // feature-052
   safePublish(topics.lightingEndState.c_str(), lightingCfg.endTime.c_str(), true);                      // feature-052
 
@@ -1579,7 +1587,7 @@ void MqttManager::messageCallback(char* topic, byte* payload, unsigned int lengt
   else if (topicStr == topics.rebootCommand)            cmd.type = InboundCmdType::Reboot;
   else if (topicStr == topics.filtrationStartCommand)   cmd.type = InboundCmdType::FiltrationStart;
   else if (topicStr == topics.filtrationEndCommand)     cmd.type = InboundCmdType::FiltrationEnd;
-  else if (topicStr == topics.lightingScheduleCommand)  cmd.type = InboundCmdType::LightingSchedule;
+  else if (topicStr == topics.lightingModeCommand)      cmd.type = InboundCmdType::LightingMode;
   else if (topicStr == topics.lightingStartCommand)     cmd.type = InboundCmdType::LightingStart;
   else if (topicStr == topics.lightingEndCommand)       cmd.type = InboundCmdType::LightingEnd;
   else if (topicStr == topics.boostCommand)             cmd.type = InboundCmdType::Boost;
@@ -1698,11 +1706,25 @@ void MqttManager::drainCommandQueue() {
         break;
       }
       case InboundCmdType::Lighting: {
+        // feature-162 : setMode(On|Off) remplace setManualOn/Off — persisté
+        // (ADR-0107 : état visible ET persistant), comme les autres entrées
+        // de mode (route HTTP, select lighting_mode ci-dessous).
+        // feature-162 (revue, mineure 1) : écriture sous configMutex, comme
+        // InboundCmdType::LightingMode plus bas. setMode() écrit une String de
+        // configuration — l'asymétrie entre les deux chemins du MÊME lot n'avait
+        // aucune raison d'être, même si une écriture non verrouillée est un
+        // patron pré-existant ailleurs dans le projet.
         payloadStr.toUpperCase();
-        if (payloadStr == "ON") {
-          lighting.setManualOn();
-        } else if (payloadStr == "OFF") {
-          lighting.setManualOff();
+        if (payloadStr == "ON" || payloadStr == "OFF") {
+          if (xSemaphoreTakeRecursive(configMutex, pdMS_TO_TICKS(kConfigMutexTimeoutMs)) != pdTRUE) {
+            static unsigned long sWarnLightOnOffMs = 0;
+            warnConfigMutexTimeout(sWarnLightOnOffMs, "cmd lighting");
+            publishLightingState();  // resync HA sur l'état réel
+            break;
+          }
+          lighting.setMode(payloadStr == "ON" ? LightingMode::On : LightingMode::Off);
+          saveMqttConfig();
+          xSemaphoreGiveRecursive(configMutex);
         }
         publishLightingState();
         break;
@@ -2028,27 +2050,30 @@ void MqttManager::drainCommandQueue() {
         publishFiltrationState();
         break;
       }
-      case InboundCmdType::LightingSchedule: {
-        // feature-052 : programmation éclairage (ON/OFF). Miroir de FiltrationOnOff :
-        // écrit lightingCfg.scheduleEnabled sous configMutex, persiste, applique via
-        // lighting.update(), republie. Payload invalide → warning + resync HA.
-        payloadStr.toUpperCase();
-        if (payloadStr != "ON" && payloadStr != "OFF") {
-          systemLogger.warning("Programmation éclairage invalide (MQTT): " + payloadStr);
+      case InboundCmdType::LightingMode: {
+        // feature-162 : validation via parseLightingMode (UNIQUE site de
+        // correspondance jeton -> sens) — même patron que FiltrationMode
+        // plus haut. Remplace l'ancien InboundCmdType::LightingSchedule
+        // (ON/OFF de la programmation seule) : le mode entier est désormais
+        // la SEULE autorité.
+        payloadStr.toLowerCase();
+        if (parseLightingMode(payloadStr.c_str()) == LightingMode::Inconnu) {
+          systemLogger.warning("Mode éclairage invalide (MQTT): " + payloadStr);
           publishLightingState();  // resync HA sur la valeur réelle
           break;
         }
+        // feature-027 : timeout → commande abandonnée (rien modifié avant le take),
+        // resync HA sur l'état réel.
         if (xSemaphoreTakeRecursive(configMutex, pdMS_TO_TICKS(kConfigMutexTimeoutMs)) != pdTRUE) {
-          static unsigned long sWarnLightSchedMs = 0;
-          warnConfigMutexTimeout(sWarnLightSchedMs, "cmd lighting_schedule");
+          static unsigned long sWarnLightModeMs = 0;
+          warnConfigMutexTimeout(sWarnLightModeMs, "cmd lighting_mode");
           publishLightingState();
           break;
         }
-        const bool wanted = (payloadStr == "ON");
-        if (lightingCfg.scheduleEnabled != wanted) {
-          lightingCfg.scheduleEnabled = wanted;
+        if (lightingCfg.mode != payloadStr) {
+          lightingCfg.mode = payloadStr;
           saveMqttConfig();
-          systemLogger.info(String("Programmation éclairage ") + (wanted ? "activée" : "désactivée") + " (MQTT)");
+          systemLogger.info("Mode éclairage changé (MQTT): " + payloadStr);
         }
         xSemaphoreGiveRecursive(configMutex);
         lighting.update();
@@ -2590,28 +2615,36 @@ void MqttManager::publishDiscovery(DiscoveryReason reason) {
   makeDevice(doc["device"].to<JsonObject>());
   publishConfig(topic);
 
-  // bug-ha-eclairage-select : programmation éclairage exposée en SELECT
-  // (Programmation/Désactivé) pour cohérence avec le select Mode Filtration.
-  // Protocole inchangé sur le fil (ON/OFF) : value_template/command_template
-  // traduisent seulement l'affichage HA. Backend booléen + handler LightingSchedule
-  // (reçoit ON/OFF) inchangés.
-  // Nettoyage migration : retirer l'ancien switch orphelin (feature-052) de HA.
+  // feature-162 : lightingCfg.mode (Allumé/Éteint/Programme) est la SEULE
+  // autorité — fin du select 2 options "Mode Éclairage" (bug-ha-eclairage-select,
+  // Programmation/Désactivé) qui ne portait QUE sur la programmation et
+  // laissait un forçage manuel invisible neutraliser le planning en silence
+  // (ADR-0107/ADR-0108). Nettoyage migration : retirer l'ancien switch
+  // orphelin (feature-052) ET l'ancien select 2 options de HA — les garder
+  // aurait obligé à décider en silence que "Désactivé" == "Éteint", un
+  // changement de sens invisible, pire qu'une rupture visible.
   safePublish((discoveryBase + "switch/" + HA_DEVICE_ID + "_lighting_schedule/config").c_str(), "", true);
-  topic = discoveryBase + "select/" + HA_DEVICE_ID + "_lighting_schedule/config";
+  safePublish((discoveryBase + "select/" + HA_DEVICE_ID + "_lighting_schedule/config").c_str(), "", true);
+
+  // feature-162 : select Mode Éclairage à 3 options (Allumé/Éteint/Programme),
+  // jetons bruts on/off/schedule sur le fil — même patron que le select Mode
+  // Filtration (value_template/command_template, protocole stable).
+  topic = discoveryBase + "select/" + HA_DEVICE_ID + "_lighting_mode/config";
   doc["name"] = "Mode Éclairage";
-  doc["unique_id"] = String(HA_DEVICE_ID) + "_lighting_schedule";
-  doc["state_topic"] = topics.lightingScheduleState;
-  doc["command_topic"] = topics.lightingScheduleCommand;
+  doc["unique_id"] = String(HA_DEVICE_ID) + "_lighting_mode";
+  doc["state_topic"] = topics.lightingModeState;
+  doc["command_topic"] = topics.lightingModeCommand;
   doc["icon"] = "mdi:calendar-clock";
   {
     JsonArray lightOpts = doc["options"].to<JsonArray>();
-    lightOpts.add("Programmation");
-    lightOpts.add("Désactivé");
+    lightOpts.add("Allumé");
+    lightOpts.add("Éteint");
+    lightOpts.add("Programme");
   }
   doc["value_template"] =
-    "{{ {'ON':'Programmation','OFF':'Désactivé'}.get(value, value) }}";
+    "{{ {'on':'Allumé','off':'Éteint','schedule':'Programme'}.get(value, value) }}";
   doc["command_template"] =
-    "{{ {'Programmation':'ON','Désactivé':'OFF'}[value] }}";
+    "{{ {'Allumé':'on','Éteint':'off','Programme':'schedule'}[value] }}";
   makeDevice(doc["device"].to<JsonObject>());
   publishConfig(topic);  // publishConfig fait doc.clear() → pas de fuite value/command_template
 

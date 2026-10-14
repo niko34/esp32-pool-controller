@@ -49,6 +49,22 @@ FiltrationMode parseFiltrationModeFrom(const String& raw) {
   return parseFiltrationMode(buf);
 }
 
+// feature-162 (même patron que parseFiltrationModeFrom ci-dessus) : voir le
+// commentaire de la déclaration (config.h). Buffer de pile, AUCUNE String
+// allouée. 10 o : couvre le plus long jeton reconnu, "schedule" (8 + NUL = 9).
+LightingMode parseLightingModeFrom(const String& raw) {
+  char buf[10];
+  const char* src = raw.c_str();
+  size_t i = 0;
+  for (; i < sizeof(buf) - 1 && src[i] != '\0'; i++) {
+    char c = src[i];
+    if (c >= 'A' && c <= 'Z') c = char(c - 'A' + 'a');
+    buf[i] = c;
+  }
+  buf[i] = '\0';
+  return parseLightingMode(buf);
+}
+
 // Mutex pour protection concurrence
 SemaphoreHandle_t configMutex = nullptr;
 SemaphoreHandle_t i2cMutex = nullptr;
@@ -299,11 +315,15 @@ void saveMqttConfig() {
 
   // Éclairage
   prefs.putBool("light_feat_en", lightingCfg.featureEnabled);
-  prefs.putBool("light_enabled", lightingCfg.enabled);
   prefs.putUChar("light_bright", lightingCfg.brightness);
-  prefs.putBool("light_sched_en", lightingCfg.scheduleEnabled);
   prefs.putString("light_start", lightingCfg.startTime);
   prefs.putString("light_end", lightingCfg.endTime);
+  // feature-162 : light_mode est la SEULE autorité, mais light_enabled/
+  // light_sched_en restent ÉCRITES en DÉRIVÉ (coût nul) pour un retour arrière
+  // OTA sûr vers un firmware antérieur qui ne connaît pas light_mode.
+  prefs.putBool("light_enabled", lightingCfg.mode == "on");
+  prefs.putBool("light_sched_en", lightingCfg.mode == "schedule");
+  prefs.putString("light_mode", lightingCfg.mode);
 
   // Authentification
   prefs.putBool("auth_enabled", authCfg.enabled);
@@ -701,11 +721,38 @@ void loadMqttConfig() {
 
   // Éclairage
   lightingCfg.featureEnabled = prefs.getBool("light_feat_en", lightingCfg.featureEnabled);
-  lightingCfg.enabled = prefs.getBool("light_enabled", lightingCfg.enabled);
   lightingCfg.brightness = prefs.getUChar("light_bright", lightingCfg.brightness);
-  lightingCfg.scheduleEnabled = prefs.getBool("light_sched_en", lightingCfg.scheduleEnabled);
   lightingCfg.startTime = prefs.getString("light_start", lightingCfg.startTime);
   lightingCfg.endTime = prefs.getString("light_end", lightingCfg.endTime);
+  // feature-162 : light_mode (SEULE autorité) remplace light_enabled +
+  // light_sched_en. Clé présente → lecture directe ; sinon migration one-shot
+  // depuis les deux anciens booléens, puis write-back (patron EXACT
+  // install_mode ci-dessus).
+  // ⚠️ Le forçage manuel (ex-`LightingRuntime::manualOverride`) n'a JAMAIS été
+  // persisté et est DÉJÀ perdu au redémarrage AVANT ce lot (feature-040) : le
+  // seul cas qui perd de l'information à cette migration (programmation
+  // active ET forçage manuel actif en RAM au moment du reboot) retombe sur
+  // Programme — EXACTEMENT ce que le firmware actuel produit déjà à ce même
+  // redémarrage. Aucune régression (conforme ADR-0104). Le critère « jamais
+  // en Programme sur un forçage perdu » n'est donc tenu qu'À PARTIR du
+  // premier démarrage sur ce nouveau firmware, pas pendant cette migration.
+  if (prefs.isKey("light_mode")) {
+    lightingCfg.mode = prefs.getString("light_mode", lightingCfg.mode);
+  } else {
+    bool oldSchedEnabled = prefs.getBool("light_sched_en", false);
+    bool oldEnabled = prefs.getBool("light_enabled", false);
+    // feature-162 (test-engineer) : logique de migration extraite en fonction
+    // PURE testée en natif (schedule_logic.h) — comportement INCHANGÉ.
+    lightingCfg.mode = lightingModeToken(migrateLightingMode(oldEnabled, oldSchedEnabled));
+    systemLogger.info("Migration NVS light_mode : light_sched_en=" + String(oldSchedEnabled ? 1 : 0) +
+                      " light_enabled=" + String(oldEnabled ? 1 : 0) + " → " + lightingCfg.mode);
+    prefs.end();  // réouverture en écriture pour le write-back one-shot
+    if (prefs.begin("poolctrl", false)) {
+      prefs.putString("light_mode", lightingCfg.mode);
+      prefs.end();
+    }
+    prefs.begin("poolctrl", true);
+  }
 
   // Authentification
   authCfg.enabled = prefs.getBool("auth_enabled", authCfg.enabled);

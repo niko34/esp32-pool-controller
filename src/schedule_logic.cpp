@@ -132,17 +132,55 @@ bool decideFiltrationRun(FiltrationMode mode, bool haveTime, int nowMin, int sta
   return currentlyRunning;  // inatteignable (switch exhaustif ci-dessus)
 }
 
-bool decideLightingOn(bool manualOverride, bool enabledFlag, bool scheduleEnabled,
-                      bool haveTime, int nowMin, int startMin, int endMin,
-                      bool currentlyOn) {
-  // Copie exacte de LightingManager::update() L85-108 (characterization).
-  if (manualOverride) return enabledFlag;
-  if (scheduleEnabled) {
-    // Heure indisponible : on conserve l'état courant pour éviter un faux
-    // toggle pendant un OTA / perte RTC.
-    return haveTime ? isMinutesInRange(nowMin, startMin, endMin, true) : currentlyOn;
+LightingMode parseLightingMode(const char* token) {
+  if (token == nullptr) return LightingMode::Inconnu;
+  // UNIQUE site de correspondance jeton -> sens, forward (voir schedule_logic.h).
+  if (strcmp(token, "on") == 0)       return LightingMode::On;
+  if (strcmp(token, "off") == 0)      return LightingMode::Off;
+  if (strcmp(token, "schedule") == 0) return LightingMode::Programme;
+  return LightingMode::Inconnu;
+}
+
+LightingMode migrateLightingMode(bool lightEnabled, bool lightScheduleEnabled) {
+  // light_sched_en PRIME : une installation où les deux anciens booléens sont
+  // vrais migre vers Programme, jamais vers Allumé (voir schedule_logic.h).
+  if (lightScheduleEnabled) return LightingMode::Programme;
+  return lightEnabled ? LightingMode::On : LightingMode::Off;
+}
+
+const char* lightingModeToken(LightingMode mode) {
+  // UNIQUE site de correspondance sens -> jeton, réciproque de parseLightingMode.
+  switch (mode) {
+    case LightingMode::On:        return "on";
+    case LightingMode::Off:       return "off";
+    case LightingMode::Programme: return "schedule";
+    case LightingMode::Inconnu:   return "off";  // fail-closed, non choisissable
   }
-  return enabledFlag;
+  return "off";  // inatteignable (switch exhaustif ci-dessus)
+}
+
+bool decideLightingOn(LightingMode mode, bool haveTime, int nowMin, int startMin, int endMin,
+                      bool currentlyOn) {
+  // feature-162 : trois modes, chacun fait EXACTEMENT ce que son nom annonce.
+  // Switch EXHAUSTIF, SANS `default` : un mode non traité ne compile pas
+  // (-Wswitch), même motif que decideFiltrationRun ci-dessus.
+  switch (mode) {
+    case LightingMode::On:
+      return true;
+    case LightingMode::Off:
+      return false;
+    case LightingMode::Programme:
+      // Heure indisponible : on conserve l'état courant pour éviter un faux
+      // toggle pendant un OTA / perte RTC.
+      return haveTime ? isMinutesInRange(nowMin, startMin, endMin, true) : currentlyOn;
+    case LightingMode::Inconnu:
+      // Fail-safe : état courant conservé plutôt qu'un toggle sur un jeton
+      // non reconnu. ensureTimesValid() ramène normalement tout jeton inconnu
+      // à Off en tête d'update() — ce cas protège une course entre lecture et
+      // coercition.
+      return currentlyOn;
+  }
+  return currentlyOn;  // inatteignable (switch exhaustif ci-dessus)
 }
 
 // =============================================================================

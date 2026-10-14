@@ -39,7 +39,8 @@ contexte d'origine.
 
 | Je veux… | Composant | Contexte(s) déclaré(s) |
 |---|---|---|
-| Choisir un mode (2-4 options) depuis une carte d'accueil **ou** en tête d'une page de réglage pH/ORP | `.mode-select` (§5.2) | Carte d'accueil **et** page de réglage |
+| Choisir un mode (2-4 options) depuis une carte d'accueil **ou** en tête d'une page de réglage pH/ORP/Éclairage | `.mode-select` (§5.2) | Carte d'accueil **et** page de réglage |
+| Modifier une valeur (horaire, consigne) dans une carte, **dans le mode qui la rend pertinente** | §5.20 — composition `.field` + `.detail-actions`/`.btn--primary` « Sauvegarder » | Carte d'accueil et page de réglage |
 | Barre d'onglets (≥5 items), choix ponctuel sans card-header (taille bassin, vitesse de régulation, cadence d'affichage) | `.segmented` (§5.3) | Page de réglage uniquement |
 | Saisie numérique par positions (consigne pH) | `.segmented--num` (§5.3) | Page de réglage uniquement |
 | Incrémenter/décrémenter une valeur (offset) | `.stepper` | Page de réglage uniquement |
@@ -115,9 +116,13 @@ tout nouveau bloc ajoute sa propre marge, toujours une valeur du jeton d'espacem
 
 ### 5.2 Sélecteur de mode — `.mode-select`
 **Rôle** : choisir UN mode parmi 2 à 4, avec effet immédiat (pas de validation séparée).
-**Contexte déclaré** : carte d'accueil (Filtration, pH, ORP, et Éclairage dès feature-162)
-**et** page de réglage quand le même choix y est dupliqué (`#ph_regulation_mode`,
-`#orp_regulation_mode`, `#lighting_...` à venir).
+**Contexte déclaré** : carte d'accueil (Filtration, pH, ORP, Éclairage) **et** page de réglage
+quand le même choix y est dupliqué (`#ph_regulation_mode`, `#orp_regulation_mode`,
+`#dashboard-lighting-mode` et la page `/lighting` — feature-162).
+**Emplois mesurés au 2026-10-14** : **4** avant feature-162 (`dashboard-ph-mode`,
+`dashboard-orp-mode`, `ph_regulation_mode`, `orp_regulation_mode`), **6** après.
+⚠️ La carte **Filtration n'emploie pas** `.mode-select` : 4 options en grille 2×2 dédiée
+(`.filtration-modes`), parce que 4 colonnes ne tiennent pas à 390 px (calcul §6).
 **Base** : ce que Filtration fait déjà — ne pas réinventer.
 **Balisage** :
 
@@ -181,8 +186,11 @@ un style inline, pour toute nouvelle ligne conditionnelle.
 ### 5.7 `.state-badge`
 Pastille d'état : `--ok` (vert, fonctionnement normal), `--off` (gris neutre, à l'arrêt),
 `--active` (bleu accent, option activée), `--warn` (ambre, attention sans danger immédiat).
-**Un seul badge d'état par en-tête de carte** — ne pas empiler deux pastilles qui décrivent
-la même chose sous deux angles (motif déjà choisi pour Filtration : `état réel` dans le
+**Un badge d'état AU MAXIMUM par en-tête de carte** — ⚠️ « au maximum », pas « un » : un
+en-tête peut n'en afficher **aucun** quand le mode actif décrit déjà entièrement l'état (carte
+Éclairage en Allumé ou Éteint). Le badge ne réapparaît que lorsque **l'état réel peut différer du
+mode demandé** (Éclairage en Programme, Filtration dans tous ses modes).
+⛔ Ne pas empiler deux pastilles qui décrivent la même chose sous deux angles (motif déjà choisi pour Filtration : `état réel` dans le
 badge, `mode demandé` dans `.card__status-mode`, jamais les deux dans un badge).
 
 ### 5.8 `.gauge`
@@ -310,6 +318,40 @@ test, ni génération partagée.
 frappe n'est annoncé à aucun lecteur d'écran ; et l'icône emploie une bordure **codée en dur**
 alors qu'un jeton existe (§3).
 
+### 5.20 Modifier une valeur dans une carte — une COMPOSITION, pas une classe nouvelle
+**Rôle** : ajuster une valeur qui commande le mode actif (horaire, consigne) **en restant sur la
+carte**, sans aller dans une page de réglage.
+**Contexte déclaré** : carte Éclairage en mode Programme (feature-162, horaires). Prévu pour
+pH/ORP (consignes) et Filtration (horaires) par feature-164.
+**Composition** : un ou deux `.field` (§5.13, réutilisés à l'identique — deux côte à côte en
+`.grid.grid--2`, ⚠️ **avec la classe dédiée `.schedule-fields`** pour un intervalle horaire ; un
+seul champ pour une consigne), suivis d'un `.detail-actions` contenant **un seul** `.btn--primary`
+« **Sauvegarder** ».
+
+⚠️ **PIÈGE MESURÉ le 2026-10-14, sur capture réelle.** Sans `.schedule-fields`, la règle générique
+`@media (max-width: 640px) { .grid--2 { grid-template-columns: 1fr } }` (`app.css`) **empile** les
+deux champs et ajoute **~80 px** de hauteur à la carte. ⛔ **Un raisonnement sur la seule règle de
+base ne l'avait pas vu** — ni l'ergonome, ni le développeur, ni la relecture ; **l'image l'a montré
+en deux secondes**. La technique est celle, déjà éprouvée, de `.filtration-modes.grid--2` :
+spécificité supérieure dans la même media query. Classe **générique**, ⛔ pas `lighting-*`.
+⚠️ **Le mot du projet est « Sauvegarder »**, pas « Enregistrer » (mesuré : 10 occurrences contre 2,
+et les deux exceptions sont des boutons secondaires de calibration).
+
+⛔ **RÈGLE ABSOLUE, née du défaut de la page Produits (2026-10-09)** : le bouton n'est **JAMAIS**
+sur la même ligne qu'un champ, **à aucune largeur**. Il est sur sa **propre ligne**, en dessous.
+⚠️ Ce n'est **pas un repli mobile**, c'est la disposition **par défaut** — c'est exactement la
+confusion qui avait produit un bouton « perdu entre les 2 champs » sur téléphone.
+
+**Visibilité** : le bloc entier porte l'attribut `hidden` (⛔ pas `style.display`) hors du mode qui
+le rend pertinent. ⛔ Jamais affiché en lecture seule à côté.
+**États** : échec d'enregistrement ⇒ **valeur réelle restaurée** + `.field.is-error` et
+`.field__error` sur le champ fautif (§5.13) ; sauvegarde en cours ⇒ `.btn--loading`.
+⚠️ **Ne pas hériter du manque de §5.13** : relier le champ à son message d'erreur par
+`aria-describedby` dès la création. Le projet n'a **aucun** `aria-invalid` ; un composant neuf n'a
+aucune raison de reprendre ce défaut.
+**Pourquoi pas une classe dédiée** : la composition existante couvre le besoin sans dupliquer
+`.field` ni `.detail-actions`. Une classe enveloppe ajouterait une variante sans mieux réutiliser.
+
 ## 6. Responsive — 390 px d'abord
 
 Référence de calcul pour toute nouvelle rangée de boutons dans une carte d'accueil :
@@ -326,6 +368,12 @@ Référence de calcul pour toute nouvelle rangée de boutons dans une carte d'ac
   ≈ 45-50px < 66px) — c'est pourquoi Filtration (4 options) reste en grille **2×2**
   (`grid--2`), jamais en ligne unique. Ne pas copier le motif 3-colonnes vers un sélecteur à
   4 options sans refaire ce calcul.
+- Pour **deux champs côte à côte** (intervalle horaire dans une carte), `gap:8px` ⇒
+  `(322 − 8) / 2 ≈ `**157 px** par colonne. Un `<input type="time">` (« 20:00 » + icône d'horloge +
+  marges internes) demande **90-110 px** ⇒ **tient**, marge ≈ 47 px. Les libellés « Début » et
+  « Fin » sont bien en-dessous du libellé de référence « Programme » (9 caractères) : aucun risque.
+  ⚠️ **Mais sans la classe `.schedule-fields`, la règle générique empile les champs sous 640 px** —
+  piège mesuré le 2026-10-14 sur capture réelle. ⛔ Ne jamais compter sur la règle de base seule.
 - Toute nouvelle rangée de boutons/libellés : refaire ce calcul (largeur de colonne −
   padding horizontal du bouton ≥ largeur mesurée du libellé le plus long + 10px de marge),
   ne jamais se contenter d'« a l'air de tenir ».
@@ -372,6 +420,13 @@ le rendu au lieu de le déduire d'une feuille de style.
 (étalonnage en cours) du 14/10, que personne n'avait jamais vu.
 ⛔ Les données recopiées contiennent le **SSID Wi-Fi** et l'**identifiant MQTT** : elles vont dans
 un dossier temporaire, **jamais dans le dépôt**. Ne pas les y ajouter « pour la reproductibilité ».
+
+⚠️ **Limite connue, à ne pas confondre avec un défaut** : les champs `<input type="time">`
+apparaissent au format **américain** (« 08:00 PM ») dans les captures. Ce type de champ est rendu
+par le navigateur selon **sa** locale, et le navigateur sans interface l'ignore ici (testé avec
+`--lang`, `--accept-lang`, `LANG`/`LC_ALL` et la locale `fr_FR.UTF-8` générée : aucun effet). Sur
+un téléphone en français, l'heure s'affiche **20:00**. ⛔ Ne pas « corriger » l'interface sur la
+foi d'une capture à cause de ça.
 
 Avant toute livraison touchant `data/app.css` ou la structure d'une carte :
 1. Capturer la vue concernée à **390px** (référence mobile) et comparer visuellement les

@@ -579,6 +579,95 @@ void test_g_orp_enabled_derive_jamais_ecrit_directement(void) {
 }
 
 // ---------------------------------------------------------------------------
+// (h) feature-162 (D4, test-engineer) : PARITE D'EXPRESSION pour
+// lighting_mode / lighting_enabled / lighting_schedule_enabled. Les tests
+// (a)-(d) ci-dessus ne comparent que des JEUX DE CLÉS : ils ne voient pas une
+// clé présente des deux côtés mais CALCULÉE DIFFÉREMMENT — même angle mort que
+// test_q de test_native_ws_data_parity (feature-152, découvert par mutation).
+// `window._config` (chargé par /get-config) et la trame WS `config` alimentent
+// la MÊME variable côté client : une divergence d'expression ferait OSCILLER
+// le mode affiché au rythme des deux cadences, sans qu'aucune charge isolée ne
+// paraisse fausse.
+// ---------------------------------------------------------------------------
+static const char* kLightingExprKeys[] = {
+  "lighting_mode", "lighting_enabled", "lighting_schedule_enabled",
+};
+static const size_t kLightingExprKeysCount =
+    sizeof(kLightingExprKeys) / sizeof(kLightingExprKeys[0]);
+
+// Membre droit de `recv["key"] = ... ;`, RESTREINT à la région [beginMarker,
+// endMarker) du fichier `rel`. Espaces retirés. NULL si introuvable (marqueur
+// absent, clé absente de la région, ou forme autre que `= ... ;`).
+static char* extractNormalizedRhsInRegion(const char* rel, const char* recv, const char* key,
+                                           const char* beginMarker, const char* endMarker) {
+  long len = 0;
+  char* src = readProjectFile(rel, &len);
+  if (src == NULL) return NULL;
+  const char* b = strstr(src, beginMarker);
+  const char* e = (b != NULL) ? strstr(b, endMarker) : NULL;
+  if (b == NULL || e == NULL) { free(src); return NULL; }
+
+  char needle[64];
+  snprintf(needle, sizeof(needle), "%s[\"%s\"]", recv, key);
+  const char* p = strstr(b, needle);
+  if (p == NULL || p >= e) { free(src); return NULL; }
+  p += strlen(needle);
+  while (*p == ' ' || *p == '\t') p++;
+  if (*p != '=') { free(src); return NULL; }
+  p++;
+  const char* semi = strchr(p, ';');
+  if (semi == NULL || semi > e) { free(src); return NULL; }
+
+  char* out = (char*)malloc((size_t)(semi - p) + 1);
+  if (out == NULL) { free(src); return NULL; }
+  size_t n = 0;
+  for (const char* q = p; q < semi; ++q) {
+    if (*q == ' ' || *q == '\t' || *q == '\n' || *q == '\r') continue;
+    out[n++] = *q;
+  }
+  out[n] = '\0';
+  free(src);
+  return out;
+}
+
+void test_h_lighting_expression_partagee_identique_des_deux_cotes(void) {
+  for (size_t i = 0; i < kLightingExprKeysCount; ++i) {
+    const char* key = kLightingExprKeys[i];
+    char msg[768];
+
+    char* httpRhs = extractNormalizedRhsInRegion(kHttpFile, "doc", key, kMarkerBegin, kMarkerEnd);
+    snprintf(msg, sizeof(msg),
+             "EXPRESSION DE `%s` INTROUVABLE dans %s (entre les marqueurs "
+             "PARITE-CONFIG, forme attendue doc[\"%s\"] = ... ;). Si la clé a "
+             "changé de forme, mettre ce test à jour SCIEMMENT. NE PAS "
+             "DESACTIVER CE TEST.", key, kHttpFile, key);
+    TEST_ASSERT_NOT_NULL_MESSAGE(httpRhs, msg);
+
+    char* wsRhs = extractNormalizedRhsInRegion(kWsFile, "d", key, kMarkerBegin, kMarkerEnd);
+    snprintf(msg, sizeof(msg),
+             "EXPRESSION DE `%s` INTROUVABLE dans %s (entre les marqueurs "
+             "PARITE-CONFIG, forme attendue d[\"%s\"] = ... ;). NE PAS "
+             "DESACTIVER CE TEST.", key, kWsFile, key);
+    TEST_ASSERT_NOT_NULL_MESSAGE(wsRhs, msg);
+
+    if (httpRhs != NULL && wsRhs != NULL) {
+      snprintf(msg, sizeof(msg),
+               "PARITE D'EXPRESSION ROMPUE sur `%s` (feature-162) : "
+               "/get-config (%s) et la trame WS `config` (%s) ne la CALCULENT "
+               "PAS pareil.\n  /get-config : %s\n  WS config   : %s\n"
+               "window._config et latestConfig sont remplacés par la dernière "
+               "charge reçue côté client : une divergence ferait OSCILLER le "
+               "mode affiché au rythme des deux cadences. QUE FAIRE : aligner "
+               "les deux expressions. NE PAS DESACTIVER CE TEST.",
+               key, kHttpFile, kWsFile, httpRhs, wsRhs);
+      TEST_ASSERT_EQUAL_STRING_MESSAGE(httpRhs, wsRhs, msg);
+    }
+    free(httpRhs);
+    free(wsRhs);
+  }
+}
+
+// ---------------------------------------------------------------------------
 
 int main(int, char**) {
   UNITY_BEGIN();
@@ -589,5 +678,6 @@ int main(int, char**) {
   RUN_TEST(test_e_chaque_exception_porte_un_motif_ecrit);
   RUN_TEST(test_f_inventaire_coherent);
   RUN_TEST(test_g_orp_enabled_derive_jamais_ecrit_directement);
+  RUN_TEST(test_h_lighting_expression_partagee_identique_des_deux_cotes);
   return UNITY_END();
 }

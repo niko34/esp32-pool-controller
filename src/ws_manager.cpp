@@ -1165,7 +1165,7 @@ size_t WsManager::_buildSensorJson(char* buf, size_t cap) const {
     f255.add(kPumpFlow255MlPerMin);
   }
 
-  d["lighting_enabled"] = lighting.isOn();  // état réel du relais, pas lightingCfg.enabled
+  d["lighting_enabled"] = lighting.isOn();  // état réel du relais, pas le réglage lightingCfg.mode
 
   // feature-053 : Mode Boost — état effectif (isBoostActive expire à minuit) + epoch
   // d'expiration (0 si inactif). Le client calcule le temps restant.
@@ -1576,11 +1576,14 @@ size_t WsManager::_buildConfigJson(char* buf, size_t cap) const {
   d["filtration_end"]   = filtrationCfg.end;
   d["filtration_running"] = filtration.isRunning();
   d["lighting_feature_enabled"] = lightingCfg.featureEnabled;
-  d["lighting_enabled"] = lightingCfg.enabled;
+  // feature-162 : PARITE-CONFIG avec web_routes_config.cpp (/get-config) —
+  // MÊME EXPRESSION des deux côtés, pas seulement la même clé.
+  d["lighting_enabled"] = (lightingCfg.mode == "on");
   d["lighting_brightness"] = lightingCfg.brightness;
-  d["lighting_schedule_enabled"] = lightingCfg.scheduleEnabled;
+  d["lighting_schedule_enabled"] = (lightingCfg.mode == "schedule");
   d["lighting_start_time"] = lightingCfg.startTime;
   d["lighting_end_time"]   = lightingCfg.endTime;
+  d["lighting_mode"] = lightingCfg.mode;
   d["wifi_ssid"]        = WiFi.SSID();
 
   wifi_mode_t mode = WiFi.getMode();

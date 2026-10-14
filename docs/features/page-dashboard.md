@@ -12,7 +12,7 @@ Vue d'ensemble de la piscine en temps réel. C'est la page que l'utilisateur voi
 La page est une **grille de cinq cartes** (classe `grid--status-cards`) — **était six** jusqu'à la v2.63.x : la carte « Modes temporaires » séparée a été **supprimée** en feature-147/v2.63.0, son unique contenu (le Boost) devenant un sous-bloc de la carte Filtration (voir [Carte Filtration — quatre boutons, mode vs état, Boost intégré](#carte-filtration--quatre-boutons-mode-vs-état-boost-intégré-feature-147-v2630)) :
 
 1. **Carte Filtration** (`#dashboard-filtration-card`) — en-tête : badge d'**état réel** de la pompe (`#detail-filtration-status`, « En marche » / « Arrêtée », ou « Hors gel » en ambre) et texte de **mode demandé** (`#detail-filtration-mode`, « Mode Auto » etc.) ; corps : **quatre boutons de mode** (Auto · Programme · Marche · Arrêt, feature-147, remplacent l'ancienne ligne « Mode » + les boutons Démarrer/Arrêter), horaires — **visibles seulement en Auto/Programme depuis feature-161** (lot B, v2.77.0, voir [section dédiée](#sélecteur-de-mode-depuis-les-cartes-ph--orp--filtration-feature-161-v2770)) —, et un sous-bloc **Boost** (feature-053), **rétrogradé en option mineure depuis feature-161**. Un lien engrenage amène vers `/filtration`.
-2. **Carte Éclairage** (`#dashboard-lighting-card`) — état, mode (programmation on/off), horaires, boutons Allumer / Éteindre. Lien vers `/lighting`. ⚠️ **Non concernée par feature-161** : le sélecteur de mode envisagé pour cette carte est reporté à `feature-162` (la carte ment déjà sur l'état réel du programme, voir [section dédiée](#sélecteur-de-mode-depuis-les-cartes-ph--orp--filtration-feature-161-v2770)).
+2. **Carte Éclairage** (`#dashboard-lighting-card`) — **sélecteur de mode Allumé/Éteint/Programme depuis feature-162 (v2.79.0)**, horaires en carte en mode Programme uniquement, badge d'état réservé à ce même mode. Lien vers `/lighting`. Voir [section dédiée](#carte-éclairage--trois-modes-feature-162-v2790).
 3. **Carte pH** (`#dashboard-ph-card`) — valeur pH courante, cible (masquée hors mode Auto depuis feature-161), badge dosage actif, mini-graphique + légende « Lissé (régulation) » / interrupteur « Brut » (v2.38.0), **jauge de position** (feature-147, v2.63.0 — voir [section dédiée](#jauges-de-position-ph--orp-feature-147-v2630)). Bandeau « Calibration requise » si la sonde n'a jamais été calibrée. **Texte de mode en en-tête et sélecteur de mode intégré depuis feature-161** (lot A, v2.77.0 — voir [section dédiée](#sélecteur-de-mode-depuis-les-cartes-ph--orp--filtration-feature-161-v2770)). Lien vers `/ph`.
 4. **Carte ORP** (`#dashboard-orp-card`) — valeur ORP courante (mV), cible (masquée hors mode Auto depuis feature-161), badge dosage actif, mini-graphique + même légende (v2.38.0), **jauge de position** (feature-147, v2.63.0 — voir section dédiée). Bandeau calibration. **Texte de mode en en-tête et sélecteur de mode intégré depuis feature-161**, miroir exact du pH. Lien vers `/orp`.
 5. **Carte Température** (`#dashboard-temperature-card`) — valeur courante en °C, badge `#temperature-sensor-badge` (« Capteur indisponible » v2.10.5 + segments d'état mesure feature-061 itération 2), mini-graphique. Lien vers `/temperature`.
@@ -83,7 +83,7 @@ Les cartes **pH** et **ORP** du tableau de bord permettent désormais de **chois
 régulation sans quitter l'accueil** — jusque-là réservé à la page de réglage. La carte
 **Filtration** possédait déjà ses quatre boutons de mode (feature-147) ; ce lot y **conditionne
 les horaires au mode** et **rétrograde le Boost en option mineure**. ⚠️ **L'Éclairage est EXCLU de
-ce lot** — voir [note de périmètre](#léclairage-exclu-reporté-à-feature-162) en fin de section.
+ce lot** — voir [note de périmètre](#léclairage-exclu-reporté-à-feature-162--livré-voir-section-dédiée) en fin de section.
 
 ### Vocabulaire : « Manuelle » cesse d'être un mode, devient « Arrêt »
 
@@ -246,17 +246,80 @@ Le sélecteur de la carte et celui de la page de réglage passent par le **même
 `kind: "ph" | "orp"`) — aucune route créée, aucune logique dupliquée entre pH et ORP (les deux sont
 structurellement symétriques).
 
-### L'Éclairage, EXCLU, reporté à `feature-162`
+### ~~L'Éclairage, EXCLU, reporté à `feature-162`~~ — livré, voir section dédiée
 
-La carte Éclairage **n'a reçu aucun sélecteur** par ce lot, bien que l'utilisateur ait initialement
-demandé les quatre cartes. Motif trouvé en amont (`architect`/orchestrateur) : la carte **ment
-déjà** — `data/app.js` affiche « Programmation activée » à partir du seul booléen
-`lighting_schedule_enabled`, alors qu'un override manuel (`state.manualOverride`,
-`src/lighting.cpp`) neutralise le programme **sans jamais être publié** (ni `/get-config`, ni la
-trame WS). Poser un sélecteur sur un affichage déjà faux transformerait un défaut d'affichage en
-**commande fausse**. L'appareil n'a par ailleurs **aucun modèle de mode** pour l'éclairage (un
-booléen de planning + un relais, pas un enum à 3 valeurs) : l'aligner est un lot firmware à part
-entière, pas une carte. `feature-162` couvrira les deux à la fois.
+La carte Éclairage **n'a reçu aucun sélecteur** par **ce** lot (feature-161), bien que
+l'utilisateur ait initialement demandé les quatre cartes. Motif trouvé en amont
+(`architect`/orchestrateur) : la carte **mentait déjà** — `data/app.js` affichait « Programmation
+activée » à partir du seul booléen `lighting_schedule_enabled`, alors qu'un override manuel
+(`state.manualOverride`, `src/lighting.cpp`) neutralisait le programme **sans jamais être publié**
+(ni `/get-config`, ni la trame WS). Poser un sélecteur sur un affichage déjà faux aurait transformé
+un défaut d'affichage en **commande fausse**. L'appareil n'avait par ailleurs **aucun modèle de
+mode** pour l'éclairage (un booléen de planning + un relais, pas un enum à 3 valeurs) : l'aligner
+était un lot firmware à part entière, pas une carte.
+
+✅ **Livré par `feature-162` (v2.79.0)** — voir [Carte Éclairage — trois modes](#carte-éclairage--trois-modes-feature-162-v2790)
+ci-dessous pour le détail complet.
+
+## Carte Éclairage — trois modes (feature-162, v2.79.0)
+
+Décision utilisateur, mot pour mot : *« Quand c'est allumé, il faut écrire Allumé. Quand c'est
+éteint, il faut écrire Éteint. Et quand c'est Programme (comme les autres cartes), c'est
+Programme. »* ⇒ sélecteur **Allumé / Éteint / Programme** (`.mode-select`,
+[DESIGN_SYSTEM.md §5.2](../DESIGN_SYSTEM.md#52-sélecteur-de-mode--mode-select)) — ⛔ **vocabulaire
+distinct des cartes pH/ORP/Filtration** (« Auto / Programme / Arrêt »), décision utilisateur
+explicite pour ne pas les confondre.
+
+### Ce qui disparaît
+
+La ligne « Mode » (texte d'en-tête dupliquant le mode), la ligne « Horaires `--:-- - --:--` »
+(affichée même quand elle ne voulait rien dire), et les boutons dédiés Allumer/Éteindre du
+tableau de bord — allumer à la main **est** désormais un mode, choisi dans le sélecteur.
+
+### ⛔ Aucun libellé ne répète le mode — différence assumée avec pH/ORP
+
+Contrairement aux cartes pH/ORP, où le gate `pool-chemistry` **refuse** de retirer le texte de
+mode en en-tête (la redondance protège un dosage chimique accidentel, voir
+[§ ci-dessus](#le-cœur-du-lot--le-mode-est-visible-avant-le-sélecteur-et-cest-une-redondance-voulue)),
+l'Éclairage **n'a aucun enjeu chimique** : *« Pourquoi écrire un libellé alors que le bouton actif
+permettra de voir ce qui est sélectionné ? »* ⇒ le segment actif **est** l'unique source d'état.
+⛔ Ne pas invoquer l'un des deux motifs pour justifier l'autre.
+
+### Horaires modifiables dans la carte — en mode Programme uniquement
+
+Les heures de début/fin (`#dashboard-lighting-schedule-edit`) sont **modifiables directement sur
+la carte** (composition [DESIGN_SYSTEM.md §5.20](../DESIGN_SYSTEM.md#520-modifier-une-valeur-dans-une-carte--une-composition-pas-une-classe-nouvelle),
+**première implémentation** de ce composant — prévu ensuite pour pH/ORP/Filtration par
+`feature-164`). ⛔ **Absentes en Allumé/Éteint** : elles n'ont aucun effet dans ces deux modes, les
+afficher serait trompeur. ⚠️ **Hors autosave** (le projet exclut les champs horaires de
+`bindAutosave()`) : bouton **Sauvegarder** requis, toujours sur sa **propre ligne**, jamais à côté
+d'un champ (règle née du défaut de la page Produits, 2026-10-09).
+
+### Le badge d'état : visible UNIQUEMENT en mode Programme
+
+En Allumé ou Éteint, le segment actif **dit déjà** si la lampe est allumée — un badge y serait
+redondant. En **Programme**, le sélecteur ne dit en revanche **pas** si la lampe est allumée à cet
+instant précis (information différente du mode, pas une redite) : le badge d'en-tête
+(`#detail-lighting-status`) réapparaît alors, alimenté par l'état **réel** du relais
+(`latestSensorData.lighting_enabled`, trame `sensor_data` — **jamais** `config.lighting_enabled`,
+qui est un dérivé du réglage, pas du relais). Piloté par `[hidden]`, jamais masqué par défaut.
+
+### Même chemin que pH/ORP/Filtration, aucun second mécanisme
+
+`applyLightingMode()` (dédiée, **pas** une généralisation d'`applyRegulationMode` — pas de garde
+`pool-chemistry` à respecter ici) réutilise néanmoins `resolveSelectorMode()` (décision pure et
+générique) pour le revert sur échec : même invariant « un sélecteur qui ment est pire que pas de
+sélecteur ». `renderLightingModeCard()` resynchronise le sélecteur sur `window._config.lighting_mode`
+à chaque charge `/get-config` et chaque push WS `config` — un changement venu de MQTT ou d'un
+autre onglet se reflète donc sans rechargement.
+
+### Migration d'une installation existante
+
+Une installation où la programmation était active atterrit en **Programme** ; sinon, en
+Allumé/Éteint selon l'ancien relais manuel — **jamais en Programme sur un simple forçage manuel
+perdu au redémarrage**, puisque ce forçage n'a **jamais été persisté** (déjà perdu avant ce lot).
+Détail et nuance de portée : [docs/subsystems/lighting.md](../subsystems/lighting.md) et
+[ADR-0109](../adr/0109-atterrissage-de-migration-et-alias-ha-portee-a-une-energie.md).
 
 ## ~~Bannière « Régulation à l'arrêt »~~ (v2.20.3) — RETIRÉE (feature-152, v2.68.0)
 

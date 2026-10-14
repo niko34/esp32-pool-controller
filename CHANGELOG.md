@@ -2,6 +2,57 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [2.79.0] - 2026-10-14
+
+### Fonctionnalités
+
+- **La carte Éclairage choisit enfin son mode depuis l'accueil** : **Allumé / Éteint / Programme**,
+  comme les trois autres cartes (pH, ORP, Filtration). Allumer à la main **cesse d'être une
+  action séparée et devient un mode** — plus d'état caché capable de neutraliser la programmation
+  sans le dire. **Disparaissent** : la ligne « Mode », la ligne « Horaires `--:-- - --:--` », les
+  boutons Allumer/Éteindre dédiés. **Apparaissent** : les horaires, **modifiables directement dans
+  la carte** en mode Programme. Le badge d'état n'est visible **qu'en Programme**, où il porte
+  l'état réel de la lampe (information que le sélecteur, seul, ne donne pas).
+- **Sur la page Éclairage, les cartes « Contrôle manuel » et « Programmation » fusionnent** en une
+  seule carte « Régulation éclairage » — même mouvement que la fusion déjà faite côté pH.
+- ⚠️ **Rupture assumée, confirmée par l'utilisateur** : le select Home Assistant « Mode Éclairage »
+  (2 options, Programmation/Désactivé) est **supprimé**, remplacé par un select à **3 options**
+  (Allumé/Éteint/Programme). Garder l'ancien aurait obligé à décider en silence que « Désactivé »
+  signifie « Éteint » — un changement de sens invisible, pire qu'une rupture visible. Une
+  automatisation HA qui envoyait encore l'ancien libellé doit être mise à jour.
+
+### Firmware
+
+- **`lightingCfg.mode` devient la seule autorité** de l'état d'éclairage (jetons `on`/`off`/
+  `schedule`), remplaçant le triplet `enabled`/`scheduleEnabled`/un forçage manuel **jamais
+  persisté ni publié**. `decideLightingOn()` passe par un switch exhaustif, un mode non traité ne
+  compile plus.
+- **Migration NVS one-shot** : une installation existante migre vers le mode dérivé de ses deux
+  anciens booléens, `light_sched_en` primant toujours (jamais Programme perdu au profit d'Allumé).
+  ⚠️ Le forçage manuel n'ayant jamais été persisté, le critère « jamais en Programme sur un
+  forçage perdu » ne vaut qu'à partir du premier démarrage sur ce firmware.
+- **`POST /lighting/on`\|`/off` persistent désormais en NVS et republient en MQTT** — elles ne le
+  faisaient pas avant (ancien forçage manuel temporaire).
+- **MQTT** : nouveau topic `{base}/lighting_mode` (+ `/set`), ancien `{base}/lighting_schedule/set`
+  **supprimé** (la programmation se choisit désormais par le mode). `{base}/lighting_schedule`
+  reste publié en lecture dérivée, sans commande.
+
+### Documentation
+
+- `docs/subsystems/lighting.md` : réécriture — modèle d'état par mode, migration NVS et sa nuance
+  de portée, testabilité native, parité `/data`↔WS par expression.
+- `docs/subsystems/ws-manager.md` : champ `lighting_mode` ajouté à la trame `config`, sentinelle
+  d'expression dédiée (`lighting_mode`/`lighting_enabled`/`lighting_schedule_enabled`).
+- `docs/features/page-dashboard.md`, `page-lighting.md` : nouvelle carte, fusion des cartes de
+  réglage, ce qui a disparu/apparu, badge conditionnel au mode.
+- `docs/MQTT.md` : nouveau select 3 options, ancien select 2 options supprimé (rupture assumée),
+  topic de commande `lighting_schedule/set` retiré.
+- `docs/API.md` : `/lighting/on`\|`/off` changent de sens (choisissent un mode, persisté).
+- [ADR-0109](docs/adr/0109-atterrissage-de-migration-et-alias-ha-portee-a-une-energie.md) :
+  atterrissage de migration vers Programme (pas Éteint), suppression de l'entité HA (pas d'alias).
+
+---
+
 ## [2.78.0] - 2026-10-14
 
 ### Fonctionnalités

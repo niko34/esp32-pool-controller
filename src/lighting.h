@@ -3,15 +3,10 @@
 
 #include <Arduino.h>
 #include "config.h"
-
-struct LightingRuntime {
-  bool manualOverride = false;  // True si contrôle manuel actif
-  unsigned long manualSetAtMs = 0;
-};
+#include "schedule_logic.h"  // feature-162 : LightingMode (seule autorité)
 
 class LightingManager {
 private:
-  LightingRuntime state;
   bool relayState = false;
 
   bool getCurrentMinutesOfDay(int& minutes);
@@ -23,9 +18,13 @@ public:
   bool isOn() const { return relayState; }
   bool getRelayState() const { return relayState; }
 
-  void setManualOn();
-  void setManualOff();
-  void clearManualOverride() { state.manualOverride = false; }
+  // feature-162 : remplace setManualOn()/setManualOff()/clearManualOverride()
+  // (ADR-0107/ADR-0108 — un état visible et persistant plutôt qu'une
+  // suspension invisible). Écrit lightingCfg.mode (jeton canonique via
+  // lightingModeToken()) et republie immédiatement l'état MQTT — NE PERSISTE
+  // PAS en NVS elle-même : l'appelant appelle saveMqttConfig() (un seul
+  // chemin d'écriture, cf. schedule_logic.h).
+  void setMode(LightingMode mode);
   void ensureTimesValid();
   void publishState();
 };

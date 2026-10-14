@@ -217,11 +217,16 @@ static void handleGetConfig(AsyncWebServerRequest* request) {
   doc["filtration_end"] = filtrationCfg.end;
   doc["filtration_running"] = filtration.isRunning();
   doc["lighting_feature_enabled"] = lightingCfg.featureEnabled;
-  doc["lighting_enabled"] = lightingCfg.enabled;
+  // feature-162 : lighting_mode est la SEULE autorité ; lighting_enabled et
+  // lighting_schedule_enabled restent publiés en DÉRIVÉ (contrat /get-config
+  // inchangé) — PARITE-CONFIG avec la trame WS "config" (ws_manager.cpp),
+  // MÊME EXPRESSION des deux côtés.
+  doc["lighting_enabled"] = (lightingCfg.mode == "on");
   doc["lighting_brightness"] = lightingCfg.brightness;
-  doc["lighting_schedule_enabled"] = lightingCfg.scheduleEnabled;
+  doc["lighting_schedule_enabled"] = (lightingCfg.mode == "schedule");
   doc["lighting_start_time"] = lightingCfg.startTime;
   doc["lighting_end_time"] = lightingCfg.endTime;
+  doc["lighting_mode"] = lightingCfg.mode;
   doc["wifi_ssid"] = WiFi.SSID();
 
   // Déterminer l'IP à afficher selon le mode WiFi
@@ -1125,15 +1130,23 @@ static void handleSaveConfig(AsyncWebServerRequest* request, uint8_t* data, size
   if (!doc["max_ph_ml_per_day"].isNull()) safetyLimits.maxPhMlPerDay = doc["max_ph_ml_per_day"];
   if (!doc["max_chlorine_ml_per_day"].isNull()) safetyLimits.maxChlorineMlPerDay = doc["max_chlorine_ml_per_day"];
   if (!doc["lighting_feature_enabled"].isNull()) lightingCfg.featureEnabled = doc["lighting_feature_enabled"];
-  if (!doc["lighting_enabled"].isNull()) lightingCfg.enabled = doc["lighting_enabled"];
   if (!doc["lighting_brightness"].isNull()) lightingCfg.brightness = doc["lighting_brightness"];
-  if (!doc["lighting_schedule_enabled"].isNull()) {
-    lightingCfg.scheduleEnabled = doc["lighting_schedule_enabled"];
-    // Quand la programmation est activée, annuler le contrôle manuel pour que le planning prenne effet
-    if (lightingCfg.scheduleEnabled) lighting.clearManualOverride();
-  }
   if (!doc["lighting_start_time"].isNull()) lightingCfg.startTime = doc["lighting_start_time"].as<String>();
   if (!doc["lighting_end_time"].isNull()) lightingCfg.endTime = doc["lighting_end_time"].as<String>();
+  // feature-162 : lighting_mode remplace lighting_enabled/lighting_schedule_enabled
+  // en ÉCRITURE — lightingCfg.mode est désormais la SEULE autorité (plus de
+  // manualOverride caché à annuler). Validation SERVEUR via parseLightingMode
+  // (UNIQUE site de correspondance) — un jeton non reconnu est REFUSÉ (mode
+  // inchangé, warning), même patron que filtration_mode ci-dessus.
+  if (!doc["lighting_mode"].isNull()) {
+    String newLightMode = doc["lighting_mode"].as<String>();
+    newLightMode.toLowerCase();
+    if (parseLightingMode(newLightMode.c_str()) != LightingMode::Inconnu) {
+      lightingCfg.mode = newLightMode;
+    } else {
+      systemLogger.warning("[Éclairage] Mode invalide ignoré (HTTP /save-config): " + newLightMode);
+    }
+  }
 
   // feature-021 : la calibration ORP est désormais stockée dans le module Atlas EZO
   // (commande Cal,<ref>). Plus de champs orp_calibration_* à persister côté ESP32.

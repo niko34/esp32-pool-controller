@@ -3315,6 +3315,154 @@
         applyRegulationMode("orp", btn.dataset.value);
       });
     });
+
+    // feature-162 : même mécanisme, carte Éclairage — "on"/"off"/"schedule"
+    // (jeton firmware). Aucun enjeu chimique ici : chemin dédié
+    // (applyLightingMode), pas une 3e branche d'applyRegulationMode.
+    $$(`#dashboard-lighting-mode .btn[data-value]`).forEach(btn => {
+      btn.addEventListener("click", () => applyLightingMode(btn.dataset.value));
+    });
+  }
+
+  // ===========================================================================
+  // feature-162 : rendu du mode Éclairage (carte d'accueil ET page /lighting) —
+  // sélecteur toujours resynchronisé sur l'état RÉEL de window._config (jamais
+  // figé sur ce qui a été cliqué, même invariant que renderDashboardModeCard).
+  // ===========================================================================
+  function renderLightingModeCard() {
+    const cfg = window._config || {};
+    const mode = cfg.lighting_mode || "off";
+
+    // Interrupteur « Gérer l'éclairage » — relocalisé ici (ex-loadLightingConfig,
+    // supprimée) : même render central que le reste de la carte/page.
+    const featureSwitch = $("#lighting_feature_enabled");
+    if (featureSwitch) {
+      featureSwitch.checked = cfg.lighting_feature_enabled !== false;
+      updateFeatureVisibility("lighting");
+    }
+
+    setModeSelect("dashboard-lighting-mode", mode);
+    setModeSelect("lighting_regulation_mode", mode);
+
+    // DESIGN_SYSTEM.md §5.7 : badge visible UNIQUEMENT en Programme — en
+    // Allumé/Éteint le segment actif dit déjà l'état (pas de redite).
+    const badge = $("#detail-lighting-status");
+    if (badge) {
+      // feature-162 (revue, suite mineure 2) : le badge est masqué TANT QUE
+      // l'état réel du relais est inconnu — il ne vient que des trames
+      // sensor_data, et /data (HTTP) ne le porte pas. Avant ce correctif, il
+      // affichait la valeur écrite en dur dans le HTML, donc potentiellement
+      // FAUSSE pendant les premières secondes. ⚠️ Constaté sur capture : la
+      // relecture du code ne l'avait pas vu, parce que le chemin JS est correct
+      // — c'est son point de DÉPART qui mentait. Règle DESIGN_SYSTEM §4 :
+      // donnée absente ⇒ on n'affiche rien, jamais une valeur par défaut.
+      const inSchedule = mode === "schedule";
+      const stateKnown = latestSensorData?.lighting_enabled != null;
+      badge.hidden = !inSchedule || !stateKnown;
+      // lighting_enabled vient exclusivement des push sensor_data (état réel
+      // du relais) — pas de config.lighting_enabled (dérivé du mode, pas du relais).
+      if (inSchedule && stateKnown) {
+        const isOn = latestSensorData.lighting_enabled;
+        // feature-162 (revue, mineure 2) : « Lampe allumée/éteinte », PAS
+        // « Allumé/Éteint » — ces deux mots sont ceux des BOUTONS de mode juste
+        // en dessous, et le badge dit autre chose : l'état RÉEL du relais à cet
+        // instant. Collision repérée sur capture, pas en relisant le code.
+        badge.textContent = isOn ? "Lampe allumée" : "Lampe éteinte";
+        badge.className = "state-badge " + (isOn ? "state-badge--ok" : "state-badge--off");
+      }
+    }
+
+    // DESIGN_SYSTEM.md §5.20 : horaires modifiables UNIQUEMENT en Programme,
+    // sur les deux surfaces — jamais affichés en Allumé/Éteint (aucun effet).
+    const dashEdit = $("#dashboard-lighting-schedule-edit");
+    if (dashEdit) dashEdit.hidden = mode !== "schedule";
+    const pageEdit = $("#lighting-schedule-edit");
+    if (pageEdit) pageEdit.hidden = mode !== "schedule";
+
+    if (!dashboardLightingDirty) {
+      const ds = $("#dashboard-lighting-start"), de = $("#dashboard-lighting-end");
+      if (ds) ds.value = cfg.lighting_start_time || "20:00";
+      if (de) de.value = cfg.lighting_end_time || "23:00";
+    }
+    if (!lightingDirty) {
+      const ps = $("#lighting_start_time"), pe = $("#lighting_end_time");
+      if (ps) ps.value = cfg.lighting_start_time || "20:00";
+      if (pe) pe.value = cfg.lighting_end_time || "23:00";
+    }
+  }
+
+  // ===========================================================================
+  // feature-162 : chemin d'application du mode Éclairage — DÉDIÉ, ⛔ pas une
+  // généralisation d'applyRegulationMode (taillée pour pH/ORP, sous garde
+  // pool-chemistry). Réutilise resolveSelectorMode (générique, pas chimique).
+  // ===========================================================================
+  async function applyLightingMode(mode) {
+    const previousMode = window._config?.lighting_mode || "off";
+    if (mode === previousMode) return true;
+
+    const applyLocal = (m) => {
+      if (window._config) window._config.lighting_mode = m;
+      renderLightingModeCard();
+    };
+
+    applyLocal(resolveSelectorMode(mode, previousMode, "ok"));
+    const r = await sendConfigDetailed({ lighting_mode: mode });
+    if (r.ok) { loadConfig(); return true; }
+
+    // Échec (refus serveur ou appareil injoignable) : retour au dernier mode
+    // confirmé — jamais un sélecteur qui affiche un mode que l'appareil n'a
+    // pas adopté.
+    applyLocal(resolveSelectorMode(mode, previousMode, "refus"));
+    showToast(r.message || r.error || "Changement de mode refusé.", "error");
+    loadConfig();
+    return false;
+  }
+
+  // ===========================================================================
+  // feature-162 : enregistrement des horaires depuis une carte — composition
+  // DESIGN_SYSTEM.md §5.20 (prévue aussi pour pH/ORP/Filtration, feature-164 ;
+  // première implémentation ici). .btn--loading pendant la requête ; échec ⇒
+  // valeurs réelles restaurées + .field.is-error sur les deux champs, relié
+  // par aria-describedby (le projet n'a aucun aria-invalid — un composant
+  // neuf n'a aucune raison d'hériter ce manque).
+  // ===========================================================================
+  function bindLightingScheduleSave(startId, endId, errorId, btnId, onSaved) {
+    const btn = $(`#${btnId}`);
+    const startField = $(`#${startId}`);
+    const endField = $(`#${endId}`);
+    if (!btn || !startField || !endField) return;
+    const errorEl = $(`#${errorId}`);
+    const startLabel = startField.closest(".field");
+    const endLabel = endField.closest(".field");
+    const setError = (msg) => {
+      startLabel?.classList.toggle("is-error", !!msg);
+      endLabel?.classList.toggle("is-error", !!msg);
+      if (errorEl) { errorEl.textContent = msg || ""; errorEl.hidden = !msg; }
+    };
+    btn.addEventListener("click", async () => {
+      if (btn.disabled) return;
+      const start = startField.value;
+      const end = endField.value;
+      if (!start || !end) {
+        setError("Renseignez une heure de début et une heure de fin.");
+        return;
+      }
+      setError("");
+      btn.classList.add("btn--loading");
+      btn.disabled = true;
+      const r = await sendConfigDetailed({ lighting_start_time: start, lighting_end_time: end });
+      btn.classList.remove("btn--loading");
+      btn.disabled = false;
+      if (r.ok) {
+        onSaved();
+        loadConfig();
+        showToast("Horaires enregistrés", "success");
+      } else {
+        startField.value = window._config?.lighting_start_time || start;
+        endField.value = window._config?.lighting_end_time || end;
+        setError(r.message || r.error || "Échec de l'enregistrement.");
+      }
+    });
   }
 
   function collectConfig() {
@@ -3339,7 +3487,6 @@
     const timeValue = $("#time_value")?.value || "";
 
     const lightingFeatureEnabled = $("#lighting_feature_enabled")?.checked ?? true;
-    const lightingScheduleMode = $("#lighting_schedule_mode")?.value || "disabled";
     const lightingStartTime = $("#lighting_start_time")?.value || "20:00";
     const lightingEndTime = $("#lighting_end_time")?.value || "23:00";
 
@@ -3390,8 +3537,12 @@
       ntp_server: timeNtpServer,
       manual_time: timeValue,
       timezone_id: timeTimezone,
+      // feature-162 : lighting_mode VOLONTAIREMENT absent du payload — même
+      // patron que ph_regulation_mode/orp_regulation_mode (B1) : le mode a son
+      // PROPRE chemin de sauvegarde (applyLightingMode), le réémettre ici avec
+      // la valeur en cache de window._config ferait courir le même risque
+      // d'onglet périmé qui a motivé leur exclusion.
       lighting_feature_enabled: lightingFeatureEnabled,
-      lighting_schedule_enabled: lightingScheduleMode === "enabled",
       lighting_start_time: lightingStartTime,
       lighting_end_time: lightingEndTime,
       temperature_enabled: temperatureEnabled,
@@ -3572,18 +3723,9 @@
     }
     updateFiltrationControls();
 
-    // Éclairage — programmation (bug-ui-eclairage-refresh-ws : rafraîchissement
-    // temps réel sur message WS config, miroir de la filtration ci-dessus).
-    if (!lightingDirty) {
-      const lightMode = $("#lighting_schedule_mode");
-      if (lightMode && cfg.lighting_schedule_enabled !== undefined) {
-        lightMode.value = cfg.lighting_schedule_enabled ? "enabled" : "disabled";
-        const lightSettings = $("#lighting-schedule-settings");
-        if (lightSettings) lightSettings.style.display = cfg.lighting_schedule_enabled ? "" : "none";
-      }
-      if (cfg.lighting_start_time) $("#lighting_start_time").value = cfg.lighting_start_time;
-      if (cfg.lighting_end_time) $("#lighting_end_time").value = cfg.lighting_end_time;
-    }
+    // Éclairage — feature-162 : rendu consolidé dans renderLightingModeCard(),
+    // appelée depuis updateDetailSections() plus bas (même invariant que
+    // pH/ORP : un seul endroit décide de l'affichage).
 
     // Time
     const timeActiveId = document.activeElement?.id || "";
@@ -3681,6 +3823,7 @@
   let filtrationRunningOverride = null; // Valeur optimiste après sauvegarde, null = utiliser /data
   let filtrationDirty = false; // Modifications non sauvegardées dans la section Programmation
   let lightingDirty = false;   // Idem pour la section Programmation éclairage (bug-ui-eclairage-refresh-ws)
+  let dashboardLightingDirty = false; // feature-162 : idem pour les horaires de la carte d'accueil
 
   // ========== BADGES CAPTEURS ==========
 
@@ -5096,7 +5239,9 @@
                    measuresOk);
 
     // === ÉCLAIRAGE ===
-    if (data.lighting_enabled != null) updateLightingStatus(data.lighting_enabled);
+    // feature-162 : badge d'en-tête (Programme uniquement) rendu par
+    // renderLightingModeCard(), appelée depuis updateDetailSections() qui
+    // suit toujours cette fonction (cf. commentaires des call sites).
 
     // === TEMPÉRATURE COMPACT ===
     // feature-061 it. 2 : mesure non représentative (filtration arrêtée) → « -- »
@@ -6705,6 +6850,7 @@
     // tient donc jusqu'au prochain rendu.
     try { renderDashboardModeCard('ph'); } catch (e) { console.error('[dashboard-ph-mode] rendu:', e); }
     try { renderDashboardModeCard('orp'); } catch (e) { console.error('[dashboard-orp-mode] rendu:', e); }
+    try { renderLightingModeCard(); } catch (e) { console.error('[lighting-mode] rendu:', e); }
 
     // feature-096 : temps d'atteinte de cible (pages pH ET ORP) — appelé
     // exactement là où updatePhDosingCard() l'est, donc après une charge
@@ -6754,35 +6900,8 @@
     // Arrêt, « Démarrer » est précisément la sortie du mode : plus jamais grisés.
 
     // === ÉCLAIRAGE ===
-    // lighting_enabled vient exclusivement des push sensor_data (état réel du relais)
-    // Ne pas utiliser config.lighting_enabled (= état du toggle config, pas du relais)
-    const detailLightingStatus = $("#detail-lighting-status");
-    if (detailLightingStatus && latestSensorData?.lighting_enabled != null) {
-      const isOn = latestSensorData.lighting_enabled;
-      detailLightingStatus.textContent = isOn ? 'Allumé' : 'Éteint';
-      detailLightingStatus.className = 'state-badge ' + (isOn ? 'state-badge--ok' : 'state-badge--off');
-    }
-
-    const detailLightingMode = $("#detail-lighting-mode");
-    if (detailLightingMode) {
-      const scheduleEnabled = config.lighting_schedule_enabled;
-      detailLightingMode.textContent = scheduleEnabled ? 'Programmation activée' : 'Programmation désactivée';
-    }
-
-    const detailLightingSchedule = $("#detail-lighting-schedule");
-    if (detailLightingSchedule) {
-      // Programmation désactivée → la ligne Horaires est masquée (afficher des
-      // horaires inertes contredisait le mode affiché juste au-dessus).
-      const schedRow = detailLightingSchedule.closest('.detail-row');
-      if (config.lighting_schedule_enabled) {
-        const startTime = config.lighting_start_time || '20:00';
-        const endTime = config.lighting_end_time || '23:00';
-        detailLightingSchedule.textContent = startTime + ' - ' + endTime;
-        if (schedRow) schedRow.style.display = '';
-      } else if (schedRow) {
-        schedRow.style.display = 'none';
-      }
-    }
+    // feature-162 : rendu consolidé dans renderLightingModeCard() ci-dessus
+    // (appelée avec renderDashboardModeCard('ph'/'orp'), même invariant).
   }
 
   // feature-146 : les boutons Démarrer/Arrêter (tableau de bord ET réglages)
@@ -6838,45 +6957,9 @@
       if (btn) btn.addEventListener('click', () => setFiltrationRunMode(m));
     });
 
-    // Boutons éclairage
-    const lightOnBtn = $("#detail-lighting-on");
-    const lightOffBtn = $("#detail-lighting-off");
-
-    if (lightOnBtn) {
-      lightOnBtn.addEventListener('click', async () => {
-        try {
-          const response = await authFetch("/lighting/on", { method: "POST" });
-          if (response.ok) {
-            if (latestSensorData) latestSensorData.lighting_enabled = true;
-            updateLightingStatus(true);
-            showToast("Éclairage allumé", "success");
-          } else {
-            showToast("Erreur lors de l'allumage", "error");
-          }
-        } catch (e) {
-          console.error('Erreur allumage éclairage:', e);
-          showToast("Erreur de connexion", "error");
-        }
-      });
-    }
-
-    if (lightOffBtn) {
-      lightOffBtn.addEventListener('click', async () => {
-        try {
-          const response = await authFetch("/lighting/off", { method: "POST" });
-          if (response.ok) {
-            if (latestSensorData) latestSensorData.lighting_enabled = false;
-            updateLightingStatus(false);
-            showToast("Éclairage éteint", "success");
-          } else {
-            showToast("Erreur lors de l'extinction", "error");
-          }
-        } catch (e) {
-          console.error('Erreur extinction éclairage:', e);
-          showToast("Erreur de connexion", "error");
-        }
-      });
-    }
+    // feature-162 : les boutons Allumer/Éteindre dédiés ont disparu — allumer
+    // à la main EST un mode désormais, choisi depuis #dashboard-lighting-mode
+    // (bindDashboardModeSelectors → applyLightingMode).
 
     // Boutons Boost (feature-053)
     const boostStartBtn = $("#detail-boost-start");
@@ -11489,40 +11572,6 @@
     });
   }
 
-  function bindLightingManualSave() {
-    trackDirtyState("#lighting_save_btn", ["lighting_schedule_mode", "lighting_start_time", "lighting_end_time"]);
-    const saveBtn = $("#lighting_save_btn");
-    if (!saveBtn) return;
-    const defaultLabel = "Sauvegarder";
-    const setBtn = (label, spinner, disabled, status) => {
-      saveBtn.disabled = disabled;
-      saveBtn.classList.remove("btn--primary", "btn--ok", "btn--danger");
-      if (status === "success") saveBtn.classList.add("btn--ok");
-      else if (status === "error") saveBtn.classList.add("btn--danger");
-      else saveBtn.classList.add("btn--primary");
-      saveBtn.innerHTML = spinner ? `<span class="btn__spinner"></span><span>${label}</span>` : label;
-    };
-    saveBtn.addEventListener("click", async () => {
-      if (saveBtn.disabled) return;
-      setBtn("Sauvegarde...", true, true, "default");
-      const cfg = {
-        lighting_schedule_enabled: $("#lighting_schedule_mode")?.value === "enabled",
-        lighting_start_time: $("#lighting_start_time")?.value,
-        lighting_end_time: $("#lighting_end_time")?.value,
-      };
-      const ok = await sendConfig(cfg);
-      if (ok) {
-        lightingDirty = false;  // bug-ui-eclairage-refresh-ws : édition sauvegardée
-        loadConfig();
-        setBtn("Sauvegarde réussie", false, true, "success");
-        setTimeout(() => setBtn(defaultLabel, false, true, "default"), 2000);
-      } else {
-        setBtn("Erreur", false, true, "error");
-        setTimeout(() => setBtn(defaultLabel, false, false, "default"), 2000);
-      }
-    });
-  }
-
   function bindFiltrationManualSave() {
     trackDirtyState("#filtration_save_btn", ["filtration_mode", "filtration_start", "filtration_end"]);
     const saveBtn = $("#filtration_save_btn");
@@ -12829,17 +12878,21 @@
       save().then((ok) => { if (ok !== false) loadConfig(); });
     });
 
-    // Lighting schedule — sauvegarde manuelle via bouton
-    $("#lighting_schedule_mode")?.addEventListener("change", () => {
-      lightingDirty = true;  // bug-ui-eclairage-refresh-ws : ne pas écraser une édition en cours
-      const scheduleSettings = $("#lighting-schedule-settings");
-      if (scheduleSettings) {
-        scheduleSettings.style.display = $("#lighting_schedule_mode").value === "enabled" ? "" : "none";
-      }
+    // feature-162 : mode Éclairage — sauvegarde immédiate sur le sélecteur
+    // (page /lighting) ; même chemin partagé qu'applyLightingMode, pas de
+    // second chemin d'écriture. Dashboard lié par bindDashboardModeSelectors().
+    $$(`#lighting_regulation_mode .btn[data-value]`).forEach(btn => {
+      btn.addEventListener("click", () => applyLightingMode(btn.dataset.value));
     });
-    $("#lighting_start_time")?.addEventListener("change", () => { lightingDirty = true; });
-    $("#lighting_end_time")?.addEventListener("change", () => { lightingDirty = true; });
-    bindLightingManualSave();
+    // Horaires — bouton explicite, ⛔ PAS d'autosave (le projet exclut les
+    // champs horaires de bindAutosave) : trackDirtyState marque juste la
+    // perte de synchro tant que l'édition n'est pas enregistrée.
+    $("#lighting_start_time")?.addEventListener("input", () => { lightingDirty = true; });
+    $("#lighting_end_time")?.addEventListener("input", () => { lightingDirty = true; });
+    $("#dashboard-lighting-start")?.addEventListener("input", () => { dashboardLightingDirty = true; });
+    $("#dashboard-lighting-end")?.addEventListener("input", () => { dashboardLightingDirty = true; });
+    bindLightingScheduleSave("lighting_start_time", "lighting_end_time", "lighting-schedule-error", "lighting_save_btn", () => { lightingDirty = false; });
+    bindLightingScheduleSave("dashboard-lighting-start", "dashboard-lighting-end", "dashboard-lighting-schedule-error", "dashboard-lighting-schedule-save", () => { dashboardLightingDirty = false; });
 
     // pH / ORP regulation — sauvegarde immédiate sur le sélecteur de mode.
     // feature-161 (lot A) : logique partagée dans applyRegulationMode() — le
@@ -13506,8 +13559,9 @@
     // ========== FILTRATION MANUAL CONTROL ==========
     setupFiltrationManualControl();
 
-    // ========== LIGHTING SCHEDULE ==========
-    setupLightingSchedule();
+    // feature-162 : plus de setupLightingSchedule() dédiée — le mode Éclairage
+    // (carte ET page) est câblé par bindDashboardModeSelectors()/bindAutosave()
+    // et rendu par renderLightingModeCard() (appelée depuis updateDetailSections()).
 
     // ========== WIFI CONFIG BUTTON ==========
     const wifiConfigBtn = $("#wifi_config_btn");
@@ -13518,78 +13572,6 @@
     }
 
     perf?.end();
-  }
-
-  // ========== LIGHTING SCHEDULE SETUP ==========
-  function setupLightingSchedule() {
-    const manualOnBtn = $("#lighting-manual-on");
-    const manualOffBtn = $("#lighting-manual-off");
-
-    // Manual control buttons
-    if (manualOnBtn) {
-      manualOnBtn.addEventListener("click", async () => {
-        try {
-          const response = await authFetch("/lighting/on", { method: "POST" });
-          if (response.ok) {
-            if (latestSensorData) latestSensorData.lighting_enabled = true;
-            updateLightingStatus(true);
-            showToast("Éclairage allumé", "success");
-          }
-        } catch (error) {
-          console.error("Error turning on lighting:", error);
-          showToast("Erreur de connexion", "error");
-        }
-      });
-    }
-
-    if (manualOffBtn) {
-      manualOffBtn.addEventListener("click", async () => {
-        try {
-          const response = await authFetch("/lighting/off", { method: "POST" });
-          if (response.ok) {
-            if (latestSensorData) latestSensorData.lighting_enabled = false;
-            updateLightingStatus(false);
-            showToast("Éclairage éteint", "success");
-          }
-        } catch (error) {
-          console.error("Error turning off lighting:", error);
-          showToast("Erreur de connexion", "error");
-        }
-      });
-    }
-
-    // Load current lighting config
-    loadLightingConfig();
-  }
-
-  async function loadLightingConfig() {
-    try {
-      const config = window._config || {};
-
-      // Feature enabled switch
-      $("#lighting_feature_enabled").checked = config.lighting_feature_enabled !== false;
-      updateFeatureVisibility("lighting");
-
-      const scheduleMode = $("#lighting_schedule_mode");
-      const scheduleSettings = $("#lighting-schedule-settings");
-
-      if (scheduleMode && config.lighting_schedule_enabled !== undefined) {
-        scheduleMode.value = config.lighting_schedule_enabled ? "enabled" : "disabled";
-        scheduleSettings.style.display = config.lighting_schedule_enabled ? "" : "none";
-      }
-
-      if (config.lighting_start_time) {
-        const startInput = $("#lighting_start_time");
-        if (startInput) startInput.value = config.lighting_start_time;
-      }
-
-      if (config.lighting_end_time) {
-        const endInput = $("#lighting_end_time");
-        if (endInput) endInput.value = config.lighting_end_time;
-      }
-    } catch (error) {
-      console.error("Error loading lighting config:", error);
-    }
   }
 
   // ========== FILTRATION MANUAL CONTROL ==========
@@ -13609,23 +13591,6 @@
 
     // Initial status update
     updateFiltrationBadges();
-  }
-
-  function updateLightingStatus(isOn) {
-    const statusBadge = $("#lighting-current-status");
-    const detailStatusBadge = $("#detail-lighting-status");
-
-    // Card "Contrôle manuel" : badge .pill placé dans .card__head
-    if (statusBadge) {
-      statusBadge.textContent = isOn ? "Allumé" : "Éteint";
-      statusBadge.className = isOn ? "pill ok" : "pill bad";
-    }
-
-    // Dashboard : conserve la classe legacy .state-badge--*
-    if (detailStatusBadge) {
-      detailStatusBadge.textContent = isOn ? "Allumé" : "Éteint";
-      detailStatusBadge.className = isOn ? "state-badge state-badge--ok" : "state-badge state-badge--off";
-    }
   }
 
   window.addEventListener("DOMContentLoaded", init);

@@ -133,17 +133,57 @@ ScheduleWindow computeAutoWindow(float tempC, float pivotHour);
 bool decideFiltrationRun(FiltrationMode mode, bool haveTime, int nowMin, int startMin, int endMin,
                          bool currentlyRunning);
 
+// =============================================================================
+// feature-162 — trois modes d'éclairage, lightingCfg.mode SEULE AUTORITÉ
+// =============================================================================
+// Remplace l'ancien triplet manualOverride/enabledFlag/scheduleEnabled
+// (feature-040) : plus d'état caché qui neutralise la programmation sans le
+// dire (ADR-0107/ADR-0108). Jetons CONSERVÉS tels quels sur le fil (MQTT,
+// NVS) : "on"/"off"/"schedule" — libellés UI "Allumé"/"Éteint"/"Programme".
+enum class LightingMode : uint8_t { On, Off, Programme, Inconnu };
+
+// UNIQUE site de correspondance jeton -> sens (forward). `token` DOIT arriver
+// en minuscules (la coquille applique toLowerCase() avant, exactement comme
+// pour parseFiltrationMode). Une casse différente (ex. "On", "SCHEDULE") NE
+// matche PAS ici : le repli minuscule est à la charge de l'APPELANT
+// (parseLightingModeFrom, config.cpp) — ce module n'y touche pas.
+LightingMode parseLightingMode(const char* token);
+
+// feature-162 — migration one-shot NVS light_enabled/light_sched_en ->
+// light_mode, fonction PURE (zéro Preferences/String/Arduino.h), testée en
+// natif. Reproduite EXACTEMENT par config.cpp au chargement (light_mode
+// absent de la NVS) : light_sched_en PRIME sur light_enabled (une
+// installation existante dont les deux étaient vrais migre vers Programme,
+// jamais vers Allumé). ⚠️ Ne représente QUE la migration déduite des deux
+// booléens persistés — l'ancien `manualOverride` (jamais persisté, feature-040)
+// n'entre pas dans ce calcul : il est déjà perdu au redémarrage AVANT ce lot,
+// donc aucune régression (ADR-0104).
+LightingMode migrateLightingMode(bool lightEnabled, bool lightScheduleEnabled);
+
+// Réciproque UNIQUE (sens -> jeton) : sert aux appelants qui raisonnent en
+// énum (LightingManager::setMode(), routes /lighting/on|off) et doivent
+// reposer l'état dans lightingCfg.mode (String) — jamais de littéral
+// "on"/"off"/"schedule" dupliqué ailleurs dans le code métier. `Inconnu`
+// n'est normalement jamais fourni (mode de décision, pas un mode
+// choisissable) ; renvoie "off" par repli fail-closed si un appelant le
+// faisait malgré tout.
+const char* lightingModeToken(LightingMode mode);
+
 // Décision marche/arrêt de l'éclairage (extrait pur de la décision de
-// LightingManager::update()). Reproduit EXACTEMENT :
-//   - manualOverride → enabledFlag
-//   - sinon scheduleEnabled →
-//       haveTime ? isMinutesInRange(nowMin, startMin, endMin, true) : currentlyOn
-//   - sinon → enabledFlag
-// L'éclairage utilise equalMeansAlways=true (start==end → allumé toute la
-// journée). Quand haveTime=false sous programmation, conserve l'état courant
-// pour éviter un faux toggle pendant un OTA / perte RTC.
-bool decideLightingOn(bool manualOverride, bool enabledFlag, bool scheduleEnabled,
-                      bool haveTime, int nowMin, int startMin, int endMin,
+// LightingManager::update()). feature-162 — trois modes, chacun fait
+// EXACTEMENT ce que son nom annonce :
+//   - On        → true
+//   - Off       → false
+//   - Programme → haveTime ? isMinutesInRange(nowMin, startMin, endMin, true)
+//                            : currentlyOn
+//   - Inconnu   → currentlyOn (fail-safe de décision ; ensureTimesValid()
+//                 coerce normalement tout jeton inconnu vers Off en tête
+//                 d'update() — ce cas protège une course entre lecture et
+//                 coercition, même motif que decideFiltrationRun)
+// equalMeansAlways=true (start==end → allumé toute la journée), INCHANGÉ
+// depuis l'ancienne décision caractérisée (feature-040).
+// Switch EXHAUSTIF, SANS `default` : un mode non traité ne compile pas.
+bool decideLightingOn(LightingMode mode, bool haveTime, int nowMin, int startMin, int endMin,
                       bool currentlyOn);
 
 // =============================================================================

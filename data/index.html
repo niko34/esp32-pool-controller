@@ -323,23 +323,46 @@
                 <div class="card__status-info">
                   <div class="card__status-label">Éclairage</div>
                   <div class="card__status-state">
-                    <span class="state-badge state-badge--off" id="detail-lighting-status">Éteint</span>
+                    <!-- feature-162 : badge visible UNIQUEMENT en mode Programme — en
+                         Allumé/Éteint le segment actif du sélecteur dit déjà l'état
+                         (DESIGN_SYSTEM.md §5.7, « un badge AU MAXIMUM par en-tête »).
+                         Reste dans le DOM avec [hidden] (⛔ jamais style.display),
+                         basculé par renderLightingModeCard() (app.js). -->
+                    <span class="state-badge state-badge--off" id="detail-lighting-status" hidden>Lampe éteinte</span>
                   </div>
                 </div>
                 <a href="#/lighting" class="card__settings-btn" aria-label="Configurer l'éclairage"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></a>
               </div>
               <div class="card__body">
-                <div class="detail-row">
-                  <div class="detail-label">Mode</div>
-                  <div class="detail-value" id="detail-lighting-mode">Programmation désactivée</div>
+                <!-- feature-162 : DESIGN_SYSTEM.md §5.2 — .mode-select, « Allumé /
+                     Éteint / Programme » (décision utilisateur 2026-10-14). Allumer
+                     à la main EST un mode désormais (ADR-0107/ADR-0108) : plus de
+                     manualOverride caché à publier. Jeton "schedule" (firmware). -->
+                <div class="grid mode-select" id="dashboard-lighting-mode" role="group" aria-label="Mode d'éclairage">
+                  <button type="button" class="btn btn--ghost" data-value="on" aria-pressed="false">Allumé</button>
+                  <button type="button" class="btn btn--ghost" data-value="off" aria-pressed="false">Éteint</button>
+                  <button type="button" class="btn btn--ghost" data-value="schedule" aria-pressed="false">Programme</button>
                 </div>
-                <div class="detail-row">
-                  <div class="detail-label">Horaires</div>
-                  <div class="detail-value" id="detail-lighting-schedule">--:-- - --:--</div>
-                </div>
-                <div class="detail-actions">
-                  <button class="btn btn--primary" id="detail-lighting-on">Allumer</button>
-                  <button class="btn btn--danger" id="detail-lighting-off">Éteindre</button>
+
+                <!-- feature-162 : DESIGN_SYSTEM.md §5.20 — modifier une valeur dans
+                     une carte (composition .field + .detail-actions, zéro CSS
+                     nouveau). Visible UNIQUEMENT en mode Programme ; bouton Sauvegarder
+                     JAMAIS à côté d'un champ, toujours sur sa propre ligne. -->
+                <div id="dashboard-lighting-schedule-edit" hidden>
+                  <div class="grid grid--2 schedule-fields" style="margin-top:12px">
+                    <label class="field">
+                      <span class="field__label">Début</span>
+                      <input type="time" id="dashboard-lighting-start" aria-describedby="dashboard-lighting-schedule-error" />
+                    </label>
+                    <label class="field">
+                      <span class="field__label">Fin</span>
+                      <input type="time" id="dashboard-lighting-end" aria-describedby="dashboard-lighting-schedule-error" />
+                    </label>
+                  </div>
+                  <p class="field__hint" id="dashboard-lighting-schedule-error" hidden></p>
+                  <div class="detail-actions">
+                    <button class="btn btn--primary" type="button" id="dashboard-lighting-schedule-save">Sauvegarder</button>
+                  </div>
                 </div>
               </div>
             </div>
@@ -702,49 +725,43 @@
           </div>
 
           <div id="lighting-content">
-            <div class="card">
+            <!-- feature-162 : les cartes « Contrôle manuel » et « Programmation »
+                 FUSIONNENT — miroir structurel de #ph-card-regulation / #orp-card
+                 (DESIGN_SYSTEM.md §5.2 : même .mode-select que la carte d'accueil,
+                 pour que l'utilisateur retrouve le même repère visuel aux deux
+                 endroits). Allumer à la main EST un mode (ADR-0107/ADR-0108). -->
+            <div class="card" id="lighting-card-regulation">
               <div class="card__head">
-                <h2 class="card__title">Contrôle manuel</h2>
-                <span class="pill" id="lighting-current-status" role="status" aria-live="polite">Éteint</span>
+                <h2 class="card__title">Régulation éclairage</h2>
               </div>
               <div class="card__body">
-                <div class="detail-actions">
-                  <button class="btn btn--primary" id="lighting-manual-on">Allumer</button>
-                  <button class="btn btn--danger" id="lighting-manual-off">Éteindre</button>
-                </div>
-              </div>
-            </div>
-
-            <div class="card">
-              <div class="card__head">
-                <h2 class="card__title">Programmation</h2>
-              </div>
-              <div class="card__body">
-                <label class="field">
-                  <span class="field__label">Mode d'éclairage</span>
-                  <select id="lighting_schedule_mode">
-                    <option value="enabled">Programmation</option>
-                    <option value="disabled">Désactivé</option>
-                  </select>
-                </label>
-
-                <div id="lighting-schedule-settings" class="grid grid--2" style="display:none;">
-                  <label class="field">
-                    <span class="field__label">Début</span>
-                    <input type="time" id="lighting_start_time" value="20:00" />
-                  </label>
-
-                  <label class="field">
-                    <span class="field__label">Fin</span>
-                    <input type="time" id="lighting_end_time" value="23:00" />
-                  </label>
+                <div class="grid mode-select" id="lighting_regulation_mode" role="group" aria-label="Mode d'éclairage" style="margin-bottom:16px">
+                  <button type="button" class="btn btn--ghost" data-value="on" aria-pressed="false">Allumé</button>
+                  <button type="button" class="btn btn--ghost" data-value="off" aria-pressed="false">Éteint</button>
+                  <button type="button" class="btn btn--ghost" data-value="schedule" aria-pressed="false">Programme</button>
                 </div>
 
-                <div class="hint">
-                  En mode Programmation, l'éclairage s'allume automatiquement entre l'heure de début et l'heure de fin.
-                </div>
-                <div class="row row--gap" style="margin-top:16px;">
-                  <button class="btn btn--primary" type="button" id="lighting_save_btn">Sauvegarder</button>
+                <!-- DESIGN_SYSTEM.md §5.20 : horaires modifiables UNIQUEMENT en mode
+                     Programme — en Allumé/Éteint ils n'ont aucun effet. Bouton
+                     Sauvegarder toujours sur sa propre ligne. -->
+                <div id="lighting-schedule-edit" hidden>
+                  <div class="grid grid--2 schedule-fields">
+                    <label class="field">
+                      <span class="field__label">Début</span>
+                      <input type="time" id="lighting_start_time" aria-describedby="lighting-schedule-error" />
+                    </label>
+                    <label class="field">
+                      <span class="field__label">Fin</span>
+                      <input type="time" id="lighting_end_time" aria-describedby="lighting-schedule-error" />
+                    </label>
+                  </div>
+                  <p class="field__hint" id="lighting-schedule-error" hidden></p>
+                  <div class="hint">
+                    En mode Programme, l'éclairage s'allume automatiquement entre l'heure de début et l'heure de fin.
+                  </div>
+                  <div class="detail-actions">
+                    <button class="btn btn--primary" type="button" id="lighting_save_btn">Sauvegarder</button>
+                  </div>
                 </div>
               </div>
             </div>

@@ -996,6 +996,22 @@ canvas:hover {
   .filtration-modes.grid--2 {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+
+  /* feature-162 : les deux champs d'un intervalle horaire DANS UNE CARTE restent
+     côte à côte sous 640px (DESIGN_SYSTEM.md §5.20/§6). Même technique et même
+     motif que .filtration-modes ci-dessus : un empilement alourdirait la carte.
+     ⚠️ PIÈGE MESURÉ le 2026-10-14, sur capture réelle : sans cette spécificité,
+     la règle générique `.grid--2 { grid-template-columns: 1fr }` juste au-dessus
+     empile les deux champs et ajoute ~80px de hauteur. Un raisonnement sur la
+     seule règle de base, sans l'image, ne l'avait pas vu — ni l'ergonome, ni le
+     développeur, ni la relecture.
+     Chiffré : utile 322px, gap 8px ⇒ (322-8)/2 = 157px par colonne ; un
+     `<input type="time">` (« 20:00 » + icône + marges internes) demande 90-110px.
+     Classe volontairement GÉNÉRIQUE (pas `lighting-*`) : feature-164 la reprend
+     pour Filtration, pH et ORP. */
+  .schedule-fields.grid--2 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 /* ========== v2.25.0 — Contrôles numériques pH (consigne + offset) ========== */

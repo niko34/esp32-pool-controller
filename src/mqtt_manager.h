@@ -28,8 +28,9 @@ struct MqttTopics {
   String filtrationEndCommand;    // feature-051 : .../filtration_end/set
   String lightingState;        // État éclairage
   String lightingCommand;      // ON/OFF switch command
-  String lightingScheduleState;    // feature-052 : programmation éclairage (ON/OFF)
-  String lightingScheduleCommand;  // feature-052 : .../lighting_schedule/set
+  String lightingModeState;    // feature-162 : seule autorité ("on"/"off"/"schedule")
+  String lightingModeCommand;  // feature-162 : .../lighting_mode/set
+  String lightingScheduleState;    // feature-052 (lecture DÉRIVÉE depuis feature-162) : programmation éclairage (ON/OFF)
   String lightingStartState;       // feature-052 : heure début éclairage (HH:MM)
   String lightingEndState;         // feature-052 : heure fin éclairage (HH:MM)
   String lightingStartCommand;     // feature-052 : .../lighting_start/set
@@ -417,7 +418,7 @@ enum class InboundCmdType : uint8_t {
   Reboot,            // payload = "PRESS" (tout payload accepté — feature-050)
   FiltrationStart,   // payload = "08:00" (HH:MM — feature-051)
   FiltrationEnd,     // payload = "20:00" (HH:MM — feature-051)
-  LightingSchedule,  // payload = "ON"|"OFF" (feature-052)
+  LightingMode,      // payload = "on"|"off"|"schedule" (feature-162 : remplace LightingSchedule)
   LightingStart,     // payload = "20:00" (HH:MM — feature-052)
   LightingEnd,       // payload = "23:00" (HH:MM — feature-052)
   Boost,             // payload = "ON"|"OFF" (feature-053 : Mode Boost)

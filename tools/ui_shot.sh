@@ -11,7 +11,8 @@
 #   ./tools/ui_shot.sh                          # tableau de bord, 390 px
 #   ./tools/ui_shot.sh -w 1024                  # largeur desktop
 #   ./tools/ui_shot.sh -r '#/ph' -o /tmp/ph.png # une autre page
-#   ./tools/ui_shot.sh -f cal_switch_active=true  # forcer un état
+#   ./tools/ui_shot.sh -f cal_switch_active=true    # forcer un champ de /data
+#   ./tools/ui_shot.sh -c lighting_mode=scheduled   # forcer un champ de /get-config
 #
 # ⚠️ Les données recopiées contiennent le SSID Wi-Fi et l'identifiant MQTT.
 #    Elles vont dans un dossier TEMPORAIRE, jamais dans le dépôt.
@@ -22,14 +23,16 @@ HEIGHT=2600
 ROUTE=""
 OUT=""
 declare -a FORCE=()
+declare -a FORCE_CFG=()
 
-while getopts "w:h:r:o:f:" opt; do
+while getopts "w:h:r:o:f:c:" opt; do
   case "$opt" in
     w) WIDTH="$OPTARG" ;;
     h) HEIGHT="$OPTARG" ;;
     r) ROUTE="$OPTARG" ;;
     o) OUT="$OPTARG" ;;
     f) FORCE+=("$OPTARG") ;;
+    c) FORCE_CFG+=("$OPTARG") ;;
     *) grep '^#' "$0" | sed 's/^# \?//' >&2; exit 2 ;;
   esac
 done
@@ -78,11 +81,10 @@ for ep in data get-config get-system-info; do
   [[ -s "$TMP/api/$ep.json" ]] || { echo "ERREUR : /$ep vide." >&2; exit 1; }
 done
 
-# Forçage d'état : -f cle=valeur (remplacement textuel dans /data).
-for f in "${FORCE[@]:-}"; do
-  [[ -z "$f" ]] && continue
-  key="${f%%=*}"; val="${f#*=}"
-  python3 - "$TMP/api/data.json" "$key" "$val" <<'PY'
+# Forçage d'état : -f sur /data (mesures), -c sur /get-config (réglages).
+force_field() {  # $1 = fichier, $2 = cle=valeur
+  local file="$1" key="${2%%=*}" val="${2#*=}"
+  python3 - "$file" "$key" "$val" <<'PY'
 import json, sys
 path, key, val = sys.argv[1], sys.argv[2], sys.argv[3]
 doc = json.load(open(path))
@@ -95,7 +97,17 @@ else:
         doc[key] = val
 json.dump(doc, open(path, 'w'))
 PY
-  echo "   état forcé : $f"
+}
+
+for f in "${FORCE[@]:-}"; do
+  [[ -z "$f" ]] && continue
+  force_field "$TMP/api/data.json" "$f"
+  echo "   /data forcé : $f"
+done
+for f in "${FORCE_CFG[@]:-}"; do
+  [[ -z "$f" ]] && continue
+  force_field "$TMP/api/get-config.json" "$f"
+  echo "   /get-config forcé : $f"
 done
 
 # Port libre.
@@ -108,7 +120,18 @@ for _ in $(seq 1 40); do
 done
 
 echo "→ Capture ${WIDTH}×${HEIGHT}${ROUTE:+ (route $ROUTE)}…"
+# ⚠️ LIMITE CONNUE DE CET OUTIL, mesurée le 2026-10-14 :
+#    les champs `<input type="time">` apparaissent au format AMÉRICAIN
+#    (« 08:00 PM ») dans les captures. Ce N'EST PAS un défaut de l'interface :
+#    ce type de champ est rendu par le navigateur selon SA locale, et le
+#    navigateur sans interface l'ignore ici — testé avec --lang=fr-FR,
+#    --accept-lang, LANG/LC_ALL, et la locale fr_FR.UTF-8 effectivement
+#    générée : aucun effet. Sur un téléphone configuré en français, l'heure
+#    s'affiche « 20:00 ».
+# ⛔ NE PAS « corriger » l'interface sur la foi d'une capture à cause de ça.
+LANG=fr_FR.UTF-8 LC_ALL=fr_FR.UTF-8 LANGUAGE=fr \
 "$CHROME" --headless --no-sandbox --disable-gpu --hide-scrollbars \
+  --lang=fr-FR --accept-lang=fr-FR,fr \
   --window-size="$WIDTH,$HEIGHT" --virtual-time-budget=10000 \
   --screenshot="$OUT" "http://127.0.0.1:$PORT/__boot.html$ROUTE" 2>/dev/null
 

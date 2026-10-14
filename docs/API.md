@@ -984,6 +984,7 @@ curl -u admin:monmotdepasse http://poolcontroller.local/get-config
   "filtration_start": "08:00",
   "filtration_end": "20:00",
   "lighting_feature_enabled": true,
+  "lighting_mode": "schedule",
   "lighting_enabled": false,
   "lighting_schedule_enabled": true,
   "lighting_start": "20:00",
@@ -2426,6 +2427,15 @@ curl -u admin:monmotdepasse -X POST http://poolcontroller.local/orp/inject/stop
 ### POST /lighting/on, /lighting/off — WRITE
 
 Allume ou éteint l'éclairage (relais).
+
+⚠️ **v2.79.0 (feature-162) — le sens change, les routes restent.** Avant ce lot, ces routes
+posaient un **forçage manuel temporaire** (`state.manualOverride`, jamais persisté ni publié) qui
+**neutralisait** la programmation en silence — la carte continuait d'annoncer « Programmation
+activée » alors qu'elle ne faisait plus rien. Elles **choisissent désormais un mode** parmi les
+trois seuls qui existent (`on` / `off` / `schedule`, voir [docs/subsystems/lighting.md](subsystems/lighting.md)) :
+`/lighting/on` équivaut à `POST /save-config {"lighting_mode":"on"}`, `/lighting/off` à
+`{"lighting_mode":"off"}`. **Persisté en NVS et publié en MQTT** — ce qu'elles ne faisaient pas
+avant. Aucun état caché ne peut plus subsister derrière un appel à ces routes.
 
 ```bash
 curl -u admin:monmotdepasse -X POST http://poolcontroller.local/lighting/on

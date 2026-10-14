@@ -755,16 +755,19 @@ void setupControlRoutes(AsyncWebServer* server) {
   });
 
   // Routes pour contrôle de l'éclairage (relais) - PROTÉGÉES
+  // feature-162 : setMode(On|Off) remplace setManualOn/Off — même patron
+  // (appel direct + saveMqttConfig() dans le gestionnaire asynchrone, un seul
+  // chemin d'écriture).
   server->on("/lighting/on", HTTP_POST, [](AsyncWebServerRequest *req) {
     REQUIRE_AUTH(req, RouteProtection::WRITE);
-    lighting.setManualOn();
+    lighting.setMode(LightingMode::On);
     saveMqttConfig();
     req->send(200, "text/plain", "OK");
   });
 
   server->on("/lighting/off", HTTP_POST, [](AsyncWebServerRequest *req) {
     REQUIRE_AUTH(req, RouteProtection::WRITE);
-    lighting.setManualOff();
+    lighting.setMode(LightingMode::Off);
     saveMqttConfig();
     req->send(200, "text/plain", "OK");
   });

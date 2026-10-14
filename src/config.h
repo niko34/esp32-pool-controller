@@ -251,12 +251,28 @@ FiltrationMode parseFiltrationModeFrom(const String& raw);
 
 struct LightingConfig {
   bool featureEnabled = true;          // Fonction éclairage activée/désactivée (masque l'UI)
-  bool enabled = false;                // Éclairage ON/OFF manuel
   uint8_t brightness = 255;            // Luminosité PWM (0-255)
-  bool scheduleEnabled = false;        // Programmation activée/désactivée
+  // feature-162 : SEULE autorité de l'état d'éclairage (remplace enabled +
+  // scheduleEnabled + l'ancien manualOverride CACHÉ de LightingRuntime —
+  // ADR-0107/ADR-0108, « un état visible et persistant plutôt qu'une
+  // suspension invisible »). Jetons CONSERVÉS tels quels sur le fil (MQTT,
+  // NVS) : "on"/"off"/"schedule" — libellés UI "Allumé"/"Éteint"/"Programme".
+  // Correspondance UNIQUE dans parseLightingMode()/lightingModeToken()
+  // (schedule_logic.h). Les contrats historiques "lighting_enabled" et
+  // "lighting_schedule_enabled" (/get-config, trame WS config, HA) restent
+  // honorés en les DÉRIVANT de ce champ à l'émission (mode=="on" /
+  // mode=="schedule") — plus de booléen séparé à tenir synchronisé.
+  String mode = "off";
   String startTime = "20:00";          // Heure de début (HH:MM)
   String endTime = "23:00";            // Heure de fin (HH:MM)
 };
+
+// feature-162 : SITE UNIQUE de lecture d'un mode d'éclairage depuis une
+// String — même patron SANS allocation que parseFiltrationModeFrom ci-dessus
+// (buffer de pile borné au plus long jeton reconnu, "schedule" = 8+NUL=9 ;
+// marge à 10). Un jeton plus long est tronqué puis ne correspond à rien de
+// connu, donc résout en `Inconnu` (fail-safe, sans crash).
+LightingMode parseLightingModeFrom(const String& raw);
 
 struct AuthConfig {
   bool enabled = true;            // Authentification activée/désactivée
