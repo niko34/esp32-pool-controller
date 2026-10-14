@@ -286,7 +286,9 @@ Encart `#orp_inject_raw_guard_warning` (titre `#orp_inject_raw_guard_title`, tex
 
 ## Sélecteur de mode : chemin partagé avec le pH et le tableau de bord (feature-161, v2.77.0)
 
-Le segmented `#orp_regulation_mode` de cette page passe désormais par la **même** fonction
+Le sélecteur `#orp_regulation_mode` de cette page (`.mode-select` depuis le 14/10, était
+`.segmented` — voir [page-dashboard.md](page-dashboard.md#composant-visuel--mode-select-pas-segmented-correctif-du-1410)
+pour le correctif visuel) passe désormais par la **même** fonction
 `applyRegulationMode("orp", mode)` que le sélecteur de la [page pH](page-ph.md#parcours-en-cas-de-refus-409-sur-le-sélecteur-de-mode)
 et que la carte ORP du [tableau de bord](page-dashboard.md#sélecteur-de-mode-depuis-les-cartes-ph--orp--filtration-feature-161-v2770) —
 mêmes revert sur échec, même décision pure `resolveSelectorMode()` testée par vecteurs.

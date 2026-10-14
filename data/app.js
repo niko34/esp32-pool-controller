@@ -30,6 +30,32 @@
       btn.addEventListener("click", () => setSegmented(id, btn.dataset.value));
     });
   }
+
+  // DESIGN_SYSTEM.md §5.2 — .mode-select : sélecteur de mode (2-4 options,
+  // effet immédiat), carte d'accueil ET page de réglage. Miroir EXACT de
+  // `updateFiltrationModeButtons` (la référence du projet, app.js) : pas
+  // d'`is-active` ni de cadre `.segmented` — un bouton `.btn--ghost` au repos
+  // devient `.btn--primary` quand sélectionné, `aria-pressed` tenu à jour.
+  // ⛔ Pas d'`initSegmented`-équivalent : AUCUN écouteur ne déplace la
+  // pastille au clic indépendamment de la décision. C'est précisément ce
+  // double mécanisme qui avait causé le bloquant [1] de feature-161 (annuler
+  // une confirmation laissait un clic déjà « appliqué » visuellement) — ici,
+  // seul `applyLocal()`/`renderDashboardModeCard()` (via `applyRegulationMode`)
+  // appelle `setModeSelect`, jamais le clic lui-même.
+  function setModeSelect(id, value) {
+    const container = $(`#${id}`);
+    if (!container) return;
+    container.querySelectorAll(".btn[data-value]").forEach(btn => {
+      const active = btn.dataset.value === value;
+      btn.classList.toggle("btn--primary", active);
+      btn.classList.toggle("btn--ghost", !active);
+      btn.setAttribute("aria-pressed", active ? "true" : "false");
+    });
+  }
+  function getModeSelect(id) {
+    const active = $(`#${id} .btn--primary[data-value]`);
+    return active ? active.dataset.value : null;
+  }
   const DEBUG = false;
 
   // ---------- WebSocket ----------
@@ -1995,7 +2021,7 @@
   }
 
   function updatePhModeControls() {
-    const mode = getSegmented("ph_regulation_mode") || "automatic";
+    const mode = getModeSelect("ph_regulation_mode") || "automatic";
     const params = $("#ph-regulation-params");      // sous-bloc Auto
     const scheduled = $("#ph-params-scheduled");    // sous-bloc Programmée
 
@@ -3023,7 +3049,7 @@
   }
 
   function updateOrpModeControls() {
-    const mode = getSegmented("orp_regulation_mode") || "automatic";
+    const mode = getModeSelect("orp_regulation_mode") || "automatic";
     const params = $("#orp-regulation-params");      // sous-bloc Automatique
     const scheduled = $("#orp-params-scheduled");    // sous-bloc Programmée
 
@@ -3123,8 +3149,8 @@
     if (hasConfig && mode === previousMode) return true;  // no-op réel : rien à envoyer
 
     const applyLocal = (m) => {
-      setSegmented(key, m);                      // page de réglage
-      setSegmented(`dashboard-${kind}-mode`, m);  // carte du tableau de bord
+      setModeSelect(key, m);                      // page de réglage
+      setModeSelect(`dashboard-${kind}-mode`, m);  // carte du tableau de bord
       if (window._config) {
         window._config[key] = m;
         window._config[enabledKey] = (m !== "manual");
@@ -3186,7 +3212,7 @@
     // Sélecteur — toujours resynchronisé sur l'état RÉEL de window._config,
     // jamais figé sur ce qui a été cliqué (ADR-0100 : l'écran répète ce que
     // l'appareil dit, il ne le devine pas).
-    setSegmented(`dashboard-${kind}-mode`, mode);
+    setModeSelect(`dashboard-${kind}-mode`, mode);
 
     // C2 — étalonnage en cours. ⚠️ CE CHAMP VIT SUR /data ↔ WS "sensor_data"
     // (latestSensorData), PAS sur /get-config : vérifié dans web_routes_data.cpp
@@ -3210,11 +3236,11 @@
 
     // Segments Auto/Programme désactivés (⛔ JAMAIS hidden, gate C3) pendant
     // un verrou — "Arrêt" reste cliquable (c'est la SORTIE du mode forcé,
-    // no-op serveur si déjà actif, cf. phModeChangeNeedsAck). Le segment actif
-    // passe en teinte --warn (CSS .segmented__btn:disabled.is-active) ET le
-    // texte du bandeau porte la même information : daltonisme couvert.
+    // no-op serveur si déjà actif, cf. phModeChangeNeedsAck). Le bouton actif
+    // passe en teinte --warn (CSS .mode-select .btn:disabled.btn--primary) ET
+    // le texte du bandeau porte la même information : daltonisme couvert.
     const locked = calActive || escalationActive;
-    $$(`#dashboard-${kind}-mode .segmented__btn`).forEach(btn => {
+    $$(`#dashboard-${kind}-mode .btn[data-value]`).forEach(btn => {
       const isManualBtn = btn.dataset.value === "manual";
       const dis = locked && !isManualBtn;
       btn.disabled = dis;
@@ -3263,25 +3289,27 @@
     if (hint) hint.hidden = mode !== "manual";
   }
 
-  // feature-161 (lot A) : clic sur les sélecteurs de mode du tableau de bord —
-  // même chemin d'écriture ET même chemin de DÉCISION que la page de réglage
+  // feature-161 (lot A), converti vers .mode-select (DESIGN_SYSTEM.md §5.2,
+  // 2026-10-14) : clic sur les sélecteurs de mode du tableau de bord — même
+  // chemin d'écriture ET même chemin de DÉCISION que la page de réglage
   // (applyRegulationMode), donc aucun second chemin. C4 (confirmation ORP →
   // Arrêt pendant une chloration de secours, ÉTENDU le 2026-10-13 par le gate
   // pool-chemistry aux DEUX surfaces) vit désormais DANS applyRegulationMode
   // (confirmOrpRescueInterruption) — ce gestionnaire ne fait plus que relayer
   // le clic, pour que le revert sur annulation (bloquant [1]) soit garanti au
   // MÊME endroit que la confirmation elle-même, quelle que soit la surface.
+  // ⛔ Pas d'`initSegmented`-équivalent ici (cf. setModeSelect ci-dessus) :
+  // SEUL `applyRegulationMode` (via applyLocal/renderDashboardModeCard) décide
+  // de l'affichage, jamais le clic lui-même.
   function bindDashboardModeSelectors() {
-    initSegmented("dashboard-ph-mode");
-    $$(`#dashboard-ph-mode .segmented__btn`).forEach(btn => {
+    $$(`#dashboard-ph-mode .btn[data-value]`).forEach(btn => {
       btn.addEventListener("click", () => {
         if (btn.disabled) return;
         applyRegulationMode("ph", btn.dataset.value);
       });
     });
 
-    initSegmented("dashboard-orp-mode");
-    $$(`#dashboard-orp-mode .segmented__btn`).forEach(btn => {
+    $$(`#dashboard-orp-mode .btn[data-value]`).forEach(btn => {
       btn.addEventListener("click", () => {
         if (btn.disabled) return;
         applyRegulationMode("orp", btn.dataset.value);
@@ -3468,7 +3496,7 @@
     }
     $("#orp_target").value = typeof cfg.orp_target === "number" ? cfg.orp_target : 650;
 
-    setSegmented("ph_regulation_mode", cfg.ph_regulation_mode || "automatic");
+    setModeSelect("ph_regulation_mode", cfg.ph_regulation_mode || "automatic");
     updatePhModeControls();
     // v2.20.3 (C5) : trace persistée d'une bascule AUTOMATIQUE en mode manuel
     renderPhAutoManualBanner(cfg);
@@ -3480,7 +3508,7 @@
     if ($("#ph_daily_target_ml") && maxMl > 0) $("#ph_daily_target_ml").max = maxMl;
 
     // ORP regulation mode
-    setSegmented("orp_regulation_mode", cfg.orp_regulation_mode || "automatic");
+    setModeSelect("orp_regulation_mode", cfg.orp_regulation_mode || "automatic");
     updateOrpModeControls();
     if ($("#orp_daily_target_ml") && cfg.orp_daily_target_ml != null)
       $("#orp_daily_target_ml").value = cfg.orp_daily_target_ml;
@@ -6055,7 +6083,7 @@
     // un reliquat figé) et champ sentinelle servi (firmware ≥ feature-092).
     const card = $("#ph-card-dosing");
     if (!card) return;
-    const mode = getSegmented("ph_regulation_mode") || "automatic";
+    const mode = getModeSelect("ph_regulation_mode") || "automatic";
     if (mode !== "automatic" || data.ph_demand_ml_per_min === undefined) {
       card.hidden = true;
       return;
@@ -6146,7 +6174,7 @@
     const data = latestSensorData || {};
     const card = $("#orp-card-dosing");
     if (!card) return;
-    const mode = getSegmented("orp_regulation_mode") || "automatic";
+    const mode = getModeSelect("orp_regulation_mode") || "automatic";
     if (mode !== "automatic" || data.orp_demand_ml_per_min === undefined) {
       card.hidden = true;
       return;
@@ -12817,8 +12845,9 @@
     // feature-161 (lot A) : logique partagée dans applyRegulationMode() — le
     // revert optimiste pH (v2.25.0 B4) et le miroir ORP (C10, cf. plus bas)
     // vivent désormais au MÊME endroit, pour éviter deux variantes qui divergent.
-    initSegmented("ph_regulation_mode");
-    $$(`#ph_regulation_mode .segmented__btn`).forEach(btn => {
+    // Converti vers .mode-select (DESIGN_SYSTEM.md §5.2, 2026-10-14) : pas
+    // d'`initSegmented`, setModeSelect() (dans applyLocal) décide seul.
+    $$(`#ph_regulation_mode .btn[data-value]`).forEach(btn => {
       btn.addEventListener("click", () => applyRegulationMode("ph", btn.dataset.value));
     });
     const schedBtn = $("#ph_scheduled_save_btn");
@@ -12849,8 +12878,7 @@
     // (confirmOrpRescueInterruption) — ce sélecteur l'hérite automatiquement,
     // sans rien dupliquer ici. La friction protège l'ACTION, pas la carte du
     // tableau de bord seule.
-    initSegmented("orp_regulation_mode");
-    $$(`#orp_regulation_mode .segmented__btn`).forEach(btn => {
+    $$(`#orp_regulation_mode .btn[data-value]`).forEach(btn => {
       btn.addEventListener("click", () => applyRegulationMode("orp", btn.dataset.value));
     });
     const orpSchedBtn = $("#orp_scheduled_save_btn");

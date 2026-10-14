@@ -722,6 +722,50 @@ select:focus-visible {
 .grid--2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .grid > * { min-width: 0; }
 
+/* ============================================================================
+   .mode-select — DESIGN_SYSTEM.md §5.2. Sélecteur de mode (2-4 options, effet
+   immédiat), carte d'accueil ET page de réglage (#dashboard-ph-mode,
+   #dashboard-orp-mode, #ph_regulation_mode, #orp_regulation_mode).
+   Correctif du défaut du 14/10 : remplace .segmented (cadre bordure+fond+
+   ombre pensé pour une page de réglage, + règle responsive à 640px taillée
+   pour les 9 onglets de #settings-segmented qui forçait un « 2+1 » sur un
+   sélecteur à 3 options). ⛔ AUCUN `flex-wrap` ici : une grille CSS ne reflue
+   pas, ce qui élimine le « 2+1 » PAR CONSTRUCTION, pas par réglage media-query.
+   Boutons : `.btn.btn--ghost` (repos, a l'air d'un bouton) / `.btn--primary`
+   (sélectionné) — classes posées par setModeSelect()/getModeSelect() (app.js),
+   miroir de updateFiltrationModeButtons. N = 3 (les 4 emplois actuels sont
+   tous Auto/Programme/Arrêt) ; un futur emploi à 4 options (Éclairage,
+   §5.2) suit le calcul de §6 avant de changer ce chiffre. */
+.mode-select {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+/* États obligatoires (§4/§7) : le bouton verrouillé (escalade pH / étalonnage
+   en cours, gate C3) qui reste SÉLECTIONNÉ passe en teinte --warn — daltonisme
+   couvert par le bandeau d'exception juxtaposé (même information, deux
+   canaux). Équivalent exact de l'ancien `.segmented__btn:disabled.is-active`. */
+.mode-select .btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  transform: none !important;
+  box-shadow: none !important;
+}
+.mode-select .btn:disabled.btn--primary {
+  background: var(--warn);
+  border-color: var(--warn);
+  color: #ffffff;
+  opacity: 1;
+}
+
+/* Carte d'accueil UNIQUEMENT (pas la page de réglage, qui a son propre
+   margin-bottom inline) : espace le sélecteur de ce qui le précède
+   (.sensor-badge sans margin-bottom, ou le field__hint--panel déplacé juste
+   au-dessus) SANS toucher .sensor-badge — classe partagée par 6 badges à
+   l'écran, modifier sa marge aurait demandé de vérifier chacun d'eux pour un
+   gain local à 2 cartes. */
+.card--status .mode-select { margin-top: 8px; }
+
 /* ========== 2026 CARDS - SYSTÈME UNIFIÉ ========== */
 /* Élévation stratifiée : séparation tactile sans surcharge */
 
@@ -918,18 +962,16 @@ canvas:hover {
    arbitrage visuel hors du périmètre de ce correctif (ux-ui-designer si
    jugé nécessaire). */
 
-/* feature-161 (lot A) : sélecteur verrouillé (escalade de sécurité pH en
-   cours OU étalonnage en cours) — jamais `hidden`/masqué (gate C3), seulement
-   neutralisé. Le segment actif passe en teinte --warn : il porte la MÊME
-   information que le bandeau au-dessus, pas seulement une couleur
-   (daltonisme couvert). */
+/* Règle DÉFENSIVE générique : aucun code ne désactive aujourd'hui un segment
+   (vérifié le 2026-10-14), elle couvre un usage futur.
+   ⚠️ Le verrouillage de la RÉGULATION (escalade de sécurité pH ou étalonnage
+   en cours) ne passe PLUS par ici : il est porté par `.mode-select`, voir
+   `.mode-select .btn:disabled`. Le commentaire précédent décrivait ce rôle et
+   était devenu faux — un lecteur aurait cherché le rendu du gate C3 au mauvais
+   endroit. */
 .segmented__btn:disabled {
   cursor: not-allowed;
   opacity: 0.55;
-}
-.segmented__btn:disabled.is-active {
-  background: var(--warn);
-  opacity: 1;
 }
 
 @media (max-width: 640px) {
@@ -1145,6 +1187,20 @@ canvas:hover {
   line-height: 1.4;
   margin-top: 4px;
   transition: all var(--transition-fast);
+}
+
+/* DESIGN_SYSTEM.md §5.11 (correctif du 14/10) : fond PERCEPTIBLE pour un
+   .field__hint qui porte une information de conséquence directe d'un mode
+   (ex. "la régulation automatique ne dose plus"), SANS en faire une alerte —
+   ⚠️ volontairement neutre : même paire fond/liseré que .card__option
+   (--panel2/--stroke), aucune des teintes --info/--warning/--danger de
+   .sensor-badge / .callout. */
+.field__hint--panel {
+  background: var(--panel2);
+  border: 1px solid var(--stroke);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  margin-top: 8px;
 }
 
 .field__error {

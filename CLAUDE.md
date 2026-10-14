@@ -80,6 +80,7 @@ Si la réponse à 1, 2 ou 3 est **oui** → **invoquer l'agent `doc-writer` AVAN
 | Comportement de la RÉGULATION visible utilisateur changé | `docs/user/src/guide-regulation.html` (source du PDF) puis `./tools/build_user_pdfs.sh` |
 | Page UI changée (nouveau bouton, réglage, message) | `docs/user/src/guide-utilisation.html` puis `./tools/build_user_pdfs.sh` — et signaler à l'utilisateur LA capture d'écran à refaire (`screenshots/`, seule étape humaine) |
 | Version firmware bumpée + PDF régénérés | supprimer les PDF de la version précédente dans `docs/user/` (flotte mono-appareil : pas d'archive à conserver) |
+| Composant visuel ajouté, modifié, **ou réemployé dans un contexte nouveau** | `docs/DESIGN_SYSTEM.md` |
 | Trade-off architectural avec alternative écartée | nouvel ADR `docs/adr/NNNN-*.md` |
 
 **Cas qui n'exigent PAS doc-writer :**
@@ -225,6 +226,44 @@ responsive. Tout brief qui énumère des points se termine par : *« et tout aut
 que ce lot impose — dis-le même si je ne l'ai pas demandé »*.
 ⇒ **Un défaut visuel qui remonte APRÈS livraison est le signe d'un mandat trop étroit**, pas
 d'un agent défaillant. Chercher ce qu'on a oublié de lui confier, pas ce qu'il a raté.
+
+### ⚠️ Le DESIGN SYSTEM est un document vivant, et l'`ux-ui-designer` en est le gardien
+
+**Règle posée par l'utilisateur le 2026-10-14**, après avoir constaté sur son téléphone que les
+cartes du tableau de bord ne se ressemblaient pas : *« l'agent UX est toujours incompétent. Il ne
+produit pas un résultat cohérent entre les cartes. C'est quand même la base… »*
+
+**Cause réelle, établie dans le code** : les cartes pH et ORP réemployaient `.segmented` — le
+composant des **pages de réglage** — tel quel sur une carte d'accueil. Il porte un cadre, un fond
+et une ombre destinés à un autre contexte, ses boutons inactifs sont transparents, il passe à la
+ligne, et il n'a aucune marge haute. La carte Filtration, elle, utilise de vrais boutons en
+grille. **Deux composants pour le même geste, sur le même écran.** Personne n'avait comparé les
+deux cartes **rendues**.
+
+⇒ **`docs/DESIGN_SYSTEM.md` est une documentation de référence, PAS une spec.** Il ne passe jamais
+par `todo/ · doing/ · done/`, il n'a ni critères d'acceptation ni version cible : il se maintient
+**en continu**, comme `docs/API.md` ou la documentation utilisateur. Chaque composant y déclare
+**son contexte d'emploi** (carte d'accueil / page de réglage / les deux) — c'est la règle dont
+l'absence a produit le défaut.
+
+**L'`ux-ui-designer` en est le gardien** : il **part de lui** à chaque évolution d'interface, et il
+**a le droit de le faire évoluer**. ⛔ Mais une évolution de composant **partagé** n'est jamais
+locale. Elle oblige à **trois choses ensemble** :
+
+1. **MESURER l'impact** — l'inventaire **exhaustif** des emplois (fichiers, sélecteurs, écrans),
+   en comptes **réels**, jamais « quelques pages ».
+2. **Garder l'ensemble cohérent** — dire ce que deviennent les emplois qui ne correspondent plus.
+3. **Faire réaliser TOUS les impacts par les développeurs, dans le MÊME lot.**
+
+⛔ **L'application partielle est interdite.** ⚠️ Un design system appliqué à moitié rend
+l'interface **MOINS cohérente qu'avant** : il ajoute une troisième forme au lieu d'en retirer une.
+Si un impact ne peut pas être traité dans le lot, **on l'écrit** — on ne le passe pas sous silence.
+
+⚠️ **Et l'agent doit VOIR ce qu'il conçoit.** Le défaut du jour est né de ce qu'il lisait du HTML et
+du CSS dans des fichiers séparés en imaginant le rendu. Un harnais permet de photographier
+n'importe quelle page à n'importe quelle largeur (serveur local rejouant un état capturé +
+Chromium sans interface) : **toute étude d'ergonomie sur une surface existante s'accompagne de la
+capture rendue**, pas d'une lecture de feuille de style.
 
 ## Quand utiliser l'orchestrateur vs travailler directement
 

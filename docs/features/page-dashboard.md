@@ -108,10 +108,64 @@ libellé affiché ne garantit pas la même valeur sur le fil.
 |---|---|
 | **Auto** (`automatic`) | mesure + jauge (toujours visibles) + **cible** (masquée dans les deux autres modes — rien n'est poursuivi hors Auto) |
 | **Programme** (`scheduled`) | mesure + jauge + deux lignes en **lecture seule** : « Volume quotidien » et « Limite de sécurité » (valeurs déjà servies par `/get-config` — `ph_daily_target_ml`/`max_ph_ml_per_day` ou équivalents ORP — **rien recalculé côté client**, **aucun champ éditable sur la carte**) |
-| **Arrêt** (`manual`) | mesure + jauge + texte `.field__hint` : « La régulation automatique ne dose plus. L'injection manuelle reste possible depuis les réglages. » (texte imposé par le gate `pool-chemistry`, C7) |
+| **Arrêt** (`manual`) | mesure + jauge + texte de conséquence, **juste après le bandeau de mesure et avant le sélecteur** (repositionné le 14/10, voir ci-dessous) : « La régulation automatique ne dose plus. L'injection manuelle reste possible depuis les réglages. » (texte imposé par le gate `pool-chemistry`, C7 — **inchangé** par le correctif du 14/10) |
 
 La **mesure et la jauge de position restent visibles dans tous les modes** — c'est une lecture de
 capteur, pas une action à suspendre.
+
+### Composant visuel : `.mode-select`, pas `.segmented` (correctif du 14/10)
+
+⚠️ **Défaut constaté par l'utilisateur sur téléphone, le 14/10** : les cartes pH et ORP ne
+ressemblaient pas à la carte Filtration (déjà en production depuis feature-147) — un **cadre**
+visible autour des trois boutons, des boutons **inactifs qui n'avaient pas l'air de boutons**, le
+sélecteur qui passait sur **deux lignes** (effet « 2+1 », un bouton seul sur sa propre ligne), et
+le texte de conséquence du mode Arrêt **presque invisible** en bas de carte.
+
+**Cause** : le sélecteur réemployait `.segmented`, le composant déjà utilisé par les **pages de
+réglage** (`#settings-segmented`, 9 onglets) — un composant conçu pour une page dense de champs,
+avec un cadre (bordure + fond + ombre) qui crée un second niveau de boîte **dans** une carte qui a
+déjà son propre en-tête, et une règle responsive à 640 px taillée pour 9 onglets qui force deux
+boutons par ligne sur un sélecteur à 3 options.
+
+**Correctif** : nouveau composant **`.mode-select`** (grille CSS `repeat(N, minmax(0,1fr))`,
+jamais de `flex-wrap` — une grille ne reflue pas, ce qui élimine le « 2+1 » **par construction**,
+pas par un réglage de media-query supplémentaire), appliqué aux **quatre** emplacements qui
+partagent le même geste : les deux cartes du tableau de bord (`#dashboard-ph-mode`,
+`#dashboard-orp-mode`) **et** les deux sélecteurs des pages de réglage (`#ph_regulation_mode`,
+`#orp_regulation_mode`) — voir [page-ph.md](page-ph.md#injection-manuelle-déconditionnée-du-mode-feature-161-v2770)
+et [page-orp.md](page-orp.md). Boutons `.btn.btn--ghost` (repos, a l'air d'un bouton) /
+`.btn--primary` (sélectionné), mécanique `setModeSelect()`/`getModeSelect()` (`data/app.js`),
+miroir exact d'`updateFiltrationModeButtons` — **aucune logique de clic séparée** qui déplacerait
+l'état visuel indépendamment de la décision serveur (c'est exactement le mécanisme qui avait causé
+le bloquant [1] de feature-161 : ici, seul `applyRegulationMode()` appelle `setModeSelect()`).
+
+Le texte de conséquence du mode Arrêt (`#dashboard-ph-stopped-hint` / `-orp-`) est **déplacé** :
+il vivait après le sélecteur, où il passait inaperçu ; il est désormais juste **après le bandeau
+de mesure et avant le sélecteur**, dans un encadré perceptible (`.field__hint--panel`, fond
+`--panel2` + liseré `--stroke`) — ⚠️ **volontairement neutre, pas une teinte d'alerte** (ni
+`--info`, ni `--warning`, ni `--danger`) : ce n'est pas une alerte, c'est la conséquence directe
+d'un choix déjà fait. ⛔ **Le texte lui-même est inchangé mot pour mot** (imposé par le gate
+`pool-chemistry`, C7) — seuls la position et l'habillage visuel bougent.
+
+**Motif réutilisable, au-delà de ce correctif** : *un composant conçu pour une surface (ici, une
+page de réglage dense de champs) ne se réemploie pas sur une autre surface (une carte de tableau
+de bord avec son propre en-tête) sans vérifier que son habillage a encore un sens.* Voir
+[`docs/DESIGN_SYSTEM.md`](../DESIGN_SYSTEM.md#52-sélecteur-de-mode--mode-select) (§5.2, qui déclare
+les deux contextes légitimes de `.mode-select`) et [§5.3](../DESIGN_SYSTEM.md#53-segmented-et-ses-variantes--page-de-réglage-uniquement)
+(qui restreint désormais `.segmented` aux sélecteurs **sans** en-tête de carte à proximité).
+
+⚠️ **Limites connues, constatées pendant ce lot et documentées dans `DESIGN_SYSTEM.md` (non
+corrigées ici — hors périmètre, laissées comme limites, pas comme des oublis)** :
+- `wizard.html`, `wifi.html` et `login.html` **ne chargent pas `app.css`** : 65 familles de
+  composants supplémentaires vivent dans des `<style>` internes, jamais inventoriées jusqu'ici.
+  `.field` existe en **trois** implémentations indépendantes (plus `.form-group` dans
+  `login.html`) ; `.password-strength` et `.password-checklist` sont **dupliqués à l'identique**
+  entre `app.css` et `wizard.html` — un seuil de robustesse modifié d'un seul côté désynchronise
+  silencieusement les deux parcours de mot de passe.
+- **Aucun `aria-invalid` dans tout le projet** : un champ en erreur n'est signalé que par la
+  couleur.
+- `.switch` n'a **aucune règle `:disabled`** : un interrupteur désactivé est indiscernable d'un
+  actif.
 
 ### Le cœur du lot : le mode est visible AVANT le sélecteur, et c'est une redondance VOULUE
 
@@ -136,7 +190,7 @@ Trois états **verrouillent** le sélecteur sans jamais le masquer (`disabled` +
 
 | État | Détection | Affichage |
 |---|---|---|
-| **Escalade de sécurité pH** (`phAutoManual*`, pH **uniquement** — pas de symétrique ORP) | `cfg.ph_auto_manual_reason` ou `cfg.ph_auto_manual_epoch` non vide (`window._config`, via `/get-config`) | Bandeau `.regul-alert--inline` au-dessus du sélecteur : « Sécurité pH : régulation arrêtée par l'appareil. Acquittez sur la page pH. » Segments **Auto/Programme désactivés**, **Arrêt reste cliquable** (c'est la sortie du mode forcé, no-op si déjà actif) — le segment actif passe en teinte `--warn`, le texte du bandeau porte la même information (daltonisme couvert). ⛔ Aucun acquittement possible depuis l'accueil — le lien renvoie vers `/ph`. |
+| **Escalade de sécurité pH** (`phAutoManual*`, pH **uniquement** — pas de symétrique ORP) | `cfg.ph_auto_manual_reason` ou `cfg.ph_auto_manual_epoch` non vide (`window._config`, via `/get-config`) | Bandeau `.regul-alert--inline` au-dessus du sélecteur : « Sécurité pH : régulation arrêtée par l'appareil. Acquittez sur la page pH. » Boutons **Auto/Programme désactivés**, **Arrêt reste cliquable** (c'est la sortie du mode forcé, no-op si déjà actif) — le bouton sélectionné passe en teinte `--warn` (`.mode-select .btn:disabled.btn--primary`, depuis le 14/10 — était `.segmented__btn:disabled.is-active`), le texte du bandeau porte la même information (daltonisme couvert). ⛔ Aucun acquittement possible depuis l'accueil — le lien renvoie vers `/ph`. |
 | **Étalonnage en cours** (pH ou ORP) | `latestSensorData.cal_switch_active === true` (champ servi par `/data` **et** la trame WS `sensor_data` — ⚠️ **PAS** par `/get-config`, parité d'expression vérifiée par `test_ws_data_parity`) | Même bandeau (texte : « Étalonnage en cours — le mode est rétabli à la fin de l'étalonnage. »), mêmes segments désactivés. Refus **409 côté serveur** si une requête passe outre (voir [pump-controller.md](../subsystems/pump-controller.md#verrou-étalonnage-sur-le-changement-de-mode-bug-161-gate-c2)). |
 | **Chloration de secours en cours** (ORP uniquement) | `latestSensorData.rescue_until > 0` | **Pas** un verrou — une **confirmation** s'ouvre au clic sur Arrêt : « La chloration de secours est en cours. Passer en Arrêt l'interrompt. Confirmer ? » (boutons Interrompre le secours / Annuler). Seule friction du lot — voir ci-dessous. |
 

@@ -556,26 +556,28 @@ Présent de la feature-025 à la v2.67.x, le chip cliquable `#ph-filter-chip` + 
 
 - Envoie **uniquement** `{"ph_auto_manual_ack": true}` sur `POST /save-config` — **jamais** de mode : effacer la trace ne doit pas réarmer la régulation. L'appareil **reste en manuel**, l'utilisateur choisit ensuite.
 - Pendant l'appel : bouton désactivé, libellé « Acquittement… ». Il est **toujours** réhabilité en sortie (succès comme hors ligne) — jamais figé.
-- Succès ⇒ toast « Alerte acquittée — vous pouvez choisir un mode de régulation. » puis `loadConfig()` (la bannière disparaît, le segmented se resynchronise).
+- Succès ⇒ toast « Alerte acquittée — vous pouvez choisir un mode de régulation. » puis `loadConfig()` (la bannière disparaît, le sélecteur se resynchronise).
 - Échec ⇒ toast d'erreur, la bannière reste.
 
 #### Parcours en cas de refus 409 sur le sélecteur de mode
 
 ⚠️ **Mécanisme partagé depuis feature-161 (v2.77.0)** — ce qui suit décrivait jusque-là une logique
-propre au segmented `#ph_regulation_mode` de cette page ; elle vit désormais dans une fonction
-**unique** `applyRegulationMode(kind, mode)` (`data/app.js`), appelée **identiquement** par ce
-segmented **et** par le sélecteur de la carte pH du [tableau de bord](page-dashboard.md#sélecteur-de-mode-depuis-les-cartes-ph--orp--filtration-feature-161-v2770)
+propre au sélecteur `#ph_regulation_mode` de cette page (`.mode-select` depuis le 14/10, était
+`.segmented` — voir [page-dashboard.md](page-dashboard.md#composant-visuel--mode-select-pas-segmented-correctif-du-1410)
+pour le détail du correctif visuel) ; elle vit désormais dans une fonction **unique**
+`applyRegulationMode(kind, mode)` (`data/app.js`), appelée **identiquement** par ce sélecteur **et**
+par celui de la carte pH du [tableau de bord](page-dashboard.md#sélecteur-de-mode-depuis-les-cartes-ph--orp--filtration-feature-161-v2770)
 — aucune seconde copie, aucun second chemin d'écriture.
 
 Tant que la trace d'escalade existe, le firmware **refuse (409)** toute sortie du mode `manual`
 (voir [API.md](../API.md#post-save-config--critical)). Un second verrou, **nouveau en feature-161
 (gate `pool-chemistry` C2)**, refuse également tout changement de mode **pendant une session
 d'étalonnage** (`calSwitchActive`) — voir [pump-controller.md](../subsystems/pump-controller.md#verrou-étalonnage-sur-le-changement-de-mode-bug-161-gate-c2).
-Le clic sur le segmented (ou la carte) est donc asynchrone et gère ces refus :
+Le clic sur le sélecteur (ou la carte) est donc asynchrone et gère ces refus :
 
 1. Mémorisation du mode précédent (`previousMode`, lu depuis `window._config` — **jamais** un repli deviné si la config n'est pas encore chargée), affichage optimiste du mode cliqué.
 2. `POST /save-config {"ph_regulation_mode": …}` via `sendConfigDetailed()` (qui remonte `status` et le champ `message` du corps d'erreur, en plus de `error`).
-3. Sur `409` (trace d'escalade **ou** étalonnage en cours) : **revert** de `window._config` **et** du segmented sur le mode réel (décision pure `resolveSelectorMode(requested, lastConfirmed, outcome)`, testée par vecteurs — voir [page-dashboard.md](page-dashboard.md#un-sélecteur-qui-ment-est-pire-que-pas-de-sélecteur--le-défaut-qui-a-mordu-en-revue)), toast portant le message français du serveur. **Seul le refus d'escalade** déclenche en plus un **défilement automatique vers la bannière** (`scrollIntoView`) — l'utilisateur est renvoyé vers la cause et le bouton d'acquittement ; le refus d'étalonnage ne pointe vers aucun bouton d'acquittement (il n'y en a pas : le mode est rétabli de lui-même à la sortie de la session, voir [bug-160](#mode-réglage-calibration--correction-feature-156-v2720)).
+3. Sur `409` (trace d'escalade **ou** étalonnage en cours) : **revert** de `window._config` **et** du sélecteur sur le mode réel (décision pure `resolveSelectorMode(requested, lastConfirmed, outcome)`, testée par vecteurs — voir [page-dashboard.md](page-dashboard.md#un-sélecteur-qui-ment-est-pire-que-pas-de-sélecteur--le-défaut-qui-a-mordu-en-revue)), toast portant le message français du serveur. **Seul le refus d'escalade** déclenche en plus un **défilement automatique vers la bannière** (`scrollIntoView`) — l'utilisateur est renvoyé vers la cause et le bouton d'acquittement ; le refus d'étalonnage ne pointe vers aucun bouton d'acquittement (il n'y en a pas : le mode est rétabli de lui-même à la sortie de la session, voir [bug-160](#mode-réglage-calibration--correction-feature-156-v2720)).
 4. Sur toute autre erreur (panne réseau) : même revert + toast générique — **sendConfigDetailed() traite refus serveur et panne réseau de façon identique**.
 5. Dans tous les cas de refus, `loadConfig()` resynchronise l'UI sur l'état **réel** du contrôleur.
 
@@ -583,7 +585,7 @@ Le clic sur le segmented (ou la carte) est donc asynchrone et gère ces refus :
 
 > ⚠️ L'acquittement n'est possible **que depuis cette interface web**. La commande MQTT/Home Assistant `ph_regulation_mode/set` est refusée sous trace et n'efface jamais rien (recommandation du gate `pool-chemistry` — voir [MQTT.md](../MQTT.md#refus-du-changement-de-mode-ph-sous-trace-de-sécurité-v2250)). ✅ **Le verrou d'étalonnage (C2) couvre désormais aussi le chemin MQTT** (lot C, correctif post-livraison le jour même) — la commande MQTT équivalente était d'abord restée hors de portée de ce verrou (angle mort signalé puis fermé), voir [MQTT.md](../MQTT.md#refus-du-changement-de-mode-phorp-pendant-un-étalonnage-désormais-aussi-côté-mqtt-bug-161-lot-c) et [pump-controller.md](../subsystems/pump-controller.md#lot-c--le-verrou-couvre-désormais-mqtt-et-deux-trous-de-plus-fermés-bug-161-correctif-post-livraison).
 
-> **v2.25.0 — `collectConfig()` n'envoie plus `ph_regulation_mode` ni `ph_enabled`.** Le mode a son **propre** chemin de sauvegarde (clic sur le segmented) ; le réémettre dans le payload global avec un repli **en dur** sur `"automatic"` réarmait la régulation depuis un onglet périmé (incident du 2026-08-25 : bascule de sécurité annulée et trace effacée sur une simple consultation de l'app). Même patron que feature-074 pour `pumpN_max_duty_pct`. `ph_enabled` n'est en outre plus accepté en écriture par le firmware.
+> **v2.25.0 — `collectConfig()` n'envoie plus `ph_regulation_mode` ni `ph_enabled`.** Le mode a son **propre** chemin de sauvegarde (clic sur le sélecteur) ; le réémettre dans le payload global avec un repli **en dur** sur `"automatic"` réarmait la régulation depuis un onglet périmé (incident du 2026-08-25 : bascule de sécurité annulée et trace effacée sur une simple consultation de l'app). Même patron que feature-074 pour `pumpN_max_duty_pct`. `ph_enabled` n'est en outre plus accepté en écriture par le firmware.
 
 ### Libellés révisés : Auto / Programme / Arrêt (feature-161, v2.77.0)
 

@@ -398,6 +398,18 @@
                   </div>
                 </div>
                 <div class="sensor-badge" id="ph-sensor-badge" style="display:none;" role="status" aria-live="polite"></div>
+
+                <!-- DESIGN_SYSTEM.md §5.11 (correctif du 14/10) : déplacé ICI,
+                     juste après le bandeau de mesure et AVANT le sélecteur —
+                     cause (bandeau ci-dessus, ex. « Filtration arrêtée ») et
+                     conséquence (ce texte) se lisent désormais ensemble,
+                     plutôt qu'après le sélecteur où il passait inaperçu. Fond
+                     perceptible (`field__hint--panel`) ⚠️ PAS une couleur
+                     d'alerte : ce n'est pas une alerte (C7). ⛔ Texte IMPOSÉ
+                     mot pour mot (gate pool-chemistry) — INCHANGÉ, seuls la
+                     position et l'habillage bougent. -->
+                <p class="field__hint field__hint--panel" id="dashboard-ph-stopped-hint" hidden>La régulation automatique ne dose plus. L'injection manuelle reste possible depuis les réglages.</p>
+
                 <div class="calibration-alert" id="ph-calibration-alert" style="display:none;">
                   <span class="calibration-alert__text">Calibration requise</span>
                   <a href="#/ph" class="calibration-alert__btn">Configurer</a>
@@ -422,22 +434,27 @@
                   </div>
                 </div>
 
-                <!-- feature-161 (lot A) : sélecteur de mode — réutilise
-                     .segmented tel quel (ux-ui-designer : rien de neuf).
-                     « Auto/Programme/Arrêt » (4+9+5 caractères), MÊMES
-                     libellés courts que la page de réglage (même composant,
-                     alignement vérifié en revue le 2026-10-13 — l'écart
-                     décrit ici dans une version antérieure de ce commentaire
-                     n'existe plus). ⛔ Valeur interne INCHANGÉE : "manual"
-                     reste persistée en NVS/MQTT, "Arrêt" n'est qu'un libellé.
-                     Même chemin d'écriture ET de DÉCISION que la page de
-                     réglage (sendConfigDetailed → /save-config,
-                     applyRegulationMode() dans app.js) — aucun second
-                     chemin. -->
-                <div class="segmented" id="dashboard-ph-mode" role="group" aria-label="Mode de régulation pH">
-                  <button type="button" class="segmented__btn" data-value="automatic">Auto</button>
-                  <button type="button" class="segmented__btn" data-value="scheduled">Programme</button>
-                  <button type="button" class="segmented__btn" data-value="manual">Arrêt</button>
+                <!-- DESIGN_SYSTEM.md §5.2 : .mode-select (correctif du défaut
+                     du 14/10 — « on ne voit pas que ce sont des boutons » +
+                     « 2+1 » sur 3 options). Remplace .segmented, qui portait
+                     un cadre pensé pour une page de réglage (bordure + fond +
+                     ombre), créant un second niveau de boîte dans la carte,
+                     et dont la règle responsive à 640px (taillée pour les 9
+                     onglets de #settings-segmented) forçait deux boutons par
+                     ligne sur un sélecteur à 3 options. « Auto/Programme/
+                     Arrêt » (4+9+5 caractères), MÊMES libellés courts que la
+                     page de réglage (même composant, §5.2 déclare les deux
+                     contextes). ⛔ Valeur interne INCHANGÉE : "manual" reste
+                     persistée en NVS/MQTT, "Arrêt" n'est qu'un libellé. Même
+                     chemin d'écriture ET de DÉCISION que la page de réglage
+                     (sendConfigDetailed → /save-config, applyRegulationMode()
+                     dans app.js) — aucun second chemin. JS : setModeSelect()/
+                     getModeSelect() (app.js), miroir de
+                     updateFiltrationModeButtons (référence du projet). -->
+                <div class="grid mode-select" id="dashboard-ph-mode" role="group" aria-label="Mode de régulation pH">
+                  <button type="button" class="btn btn--ghost" data-value="automatic" aria-pressed="false">Auto</button>
+                  <button type="button" class="btn btn--ghost" data-value="scheduled" aria-pressed="false">Programme</button>
+                  <button type="button" class="btn btn--ghost" data-value="manual" aria-pressed="false">Arrêt</button>
                 </div>
 
                 <!-- feature-161 (lot A) — C9 : mode Programme, deux lignes en
@@ -452,11 +469,6 @@
                   <div class="detail-label">Limite de sécurité</div>
                   <div class="detail-value" id="dashboard-ph-limit-value">— mL</div>
                 </div>
-
-                <!-- feature-161 (lot A) — C7 : mode Arrêt, texte IMPOSÉ mot
-                     pour mot (gate pool-chemistry). Ton discret (.field__hint),
-                     ⛔ pas un .callout : ce n'est pas une alerte. -->
-                <p class="field__hint" id="dashboard-ph-stopped-hint" hidden>La régulation automatique ne dose plus. L'injection manuelle reste possible depuis les réglages.</p>
               </div>
             </div>
 
@@ -505,6 +517,13 @@
                   </div>
                 </div>
                 <div class="sensor-badge" id="orp-sensor-badge" style="display:none;" role="status" aria-live="polite"></div>
+
+                <!-- DESIGN_SYSTEM.md §5.11 (correctif du 14/10) : miroir pH —
+                     déplacé juste après le bandeau de mesure, AVANT le
+                     sélecteur. ⛔ Texte IMPOSÉ mot pour mot (gate
+                     pool-chemistry) — INCHANGÉ. -->
+                <p class="field__hint field__hint--panel" id="dashboard-orp-stopped-hint" hidden>La régulation automatique ne dose plus. L'injection manuelle reste possible depuis les réglages.</p>
+
                 <div class="calibration-alert" id="orp-calibration-alert" style="display:none;">
                   <span class="calibration-alert__text">Calibration requise</span>
                   <a href="#/orp" class="calibration-alert__btn">Configurer</a>
@@ -520,15 +539,17 @@
                   </div>
                 </div>
 
-                <!-- feature-161 (lot A) : sélecteur de mode — miroir EXACT du
-                     sélecteur pH (symétrie pH/ORP). C4 (gate pool-chemistry) :
-                     la bascule vers Arrêt pendant une chloration de secours
-                     ouvre une confirmation — SEULE friction du lot, gérée par
-                     bindDashboardModeSelectors() (app.js), pas ici. -->
-                <div class="segmented" id="dashboard-orp-mode" role="group" aria-label="Mode de régulation ORP">
-                  <button type="button" class="segmented__btn" data-value="automatic">Auto</button>
-                  <button type="button" class="segmented__btn" data-value="scheduled">Programme</button>
-                  <button type="button" class="segmented__btn" data-value="manual">Arrêt</button>
+                <!-- DESIGN_SYSTEM.md §5.2 : .mode-select, miroir EXACT du
+                     sélecteur pH ci-dessus (symétrie pH/ORP) — cf. commentaire
+                     jumeau pour le détail du correctif du 14/10. C4 (gate
+                     pool-chemistry) : la bascule vers Arrêt pendant une
+                     chloration de secours ouvre une confirmation — vit
+                     désormais DANS applyRegulationMode (app.js), valable sur
+                     les DEUX surfaces (carte et page de réglage). -->
+                <div class="grid mode-select" id="dashboard-orp-mode" role="group" aria-label="Mode de régulation ORP">
+                  <button type="button" class="btn btn--ghost" data-value="automatic" aria-pressed="false">Auto</button>
+                  <button type="button" class="btn btn--ghost" data-value="scheduled" aria-pressed="false">Programme</button>
+                  <button type="button" class="btn btn--ghost" data-value="manual" aria-pressed="false">Arrêt</button>
                 </div>
 
                 <!-- feature-161 (lot A) — C9 : miroir pH, valeurs DÉJÀ servies
@@ -541,9 +562,6 @@
                   <div class="detail-label">Limite de sécurité</div>
                   <div class="detail-value" id="dashboard-orp-limit-value">— mL</div>
                 </div>
-
-                <!-- feature-161 (lot A) — C7 : texte IMPOSÉ, miroir pH. -->
-                <p class="field__hint" id="dashboard-orp-stopped-hint" hidden>La régulation automatique ne dose plus. L'injection manuelle reste possible depuis les réglages.</p>
               </div>
             </div>
 
@@ -1066,14 +1084,16 @@
                   </div>
                 </div>
               </div>
-              <!-- feature-161 (lot A) : libellés « Auto/Programme/Arrêt » —
-                   "Manuelle" cesse d'être un mode affiché (décision utilisateur
-                   2026-10-13). ⛔ Valeur interne "manual" INCHANGÉE (NVS, MQTT,
-                   phEnabled en miroir, config.h:146) : seul le LIBELLÉ bouge. -->
-              <div class="segmented" id="ph_regulation_mode" style="margin-bottom:16px">
-                <button class="segmented__btn is-active" data-value="automatic">Auto</button>
-                <button class="segmented__btn" data-value="scheduled">Programme</button>
-                <button class="segmented__btn" data-value="manual">Arrêt</button>
+              <!-- DESIGN_SYSTEM.md §5.2 : .mode-select, même composant que la
+                   carte d'accueil (correctif du 14/10). Libellés « Auto/
+                   Programme/Arrêt » — "Manuelle" cesse d'être un mode affiché
+                   (décision utilisateur 2026-10-13). ⛔ Valeur interne
+                   "manual" INCHANGÉE (NVS, MQTT, phEnabled en miroir,
+                   config.h:146) : seul le LIBELLÉ bouge. -->
+              <div class="grid mode-select" id="ph_regulation_mode" role="group" aria-label="Mode de régulation pH" style="margin-bottom:16px">
+                <button type="button" class="btn btn--primary" data-value="automatic" aria-pressed="true">Auto</button>
+                <button type="button" class="btn btn--ghost" data-value="scheduled" aria-pressed="false">Programme</button>
+                <button type="button" class="btn btn--ghost" data-value="manual" aria-pressed="false">Arrêt</button>
               </div>
 
               <div id="ph-regulation-params">
@@ -1650,13 +1670,13 @@
               <h2 class="card__title">Régulation ORP</h2>
             </div>
             <div class="card__body">
-              <!-- Sélecteur 3 modes — feature-161 (lot A) : libellés
-                   « Auto/Programme/Arrêt », miroir EXACT du sélecteur pH
-                   ci-dessus. ⛔ Valeur interne "manual" INCHANGÉE. -->
-              <div class="segmented" id="orp_regulation_mode" style="margin-bottom:16px">
-                <button class="segmented__btn is-active" data-value="automatic">Auto</button>
-                <button class="segmented__btn" data-value="scheduled">Programme</button>
-                <button class="segmented__btn" data-value="manual">Arrêt</button>
+              <!-- Sélecteur 3 modes — DESIGN_SYSTEM.md §5.2 : .mode-select,
+                   miroir EXACT du sélecteur pH ci-dessus. ⛔ Valeur interne
+                   "manual" INCHANGÉE. -->
+              <div class="grid mode-select" id="orp_regulation_mode" role="group" aria-label="Mode de régulation ORP" style="margin-bottom:16px">
+                <button type="button" class="btn btn--primary" data-value="automatic" aria-pressed="true">Auto</button>
+                <button type="button" class="btn btn--ghost" data-value="scheduled" aria-pressed="false">Programme</button>
+                <button type="button" class="btn btn--ghost" data-value="manual" aria-pressed="false">Arrêt</button>
               </div>
 
               <!-- Sous-bloc Automatique -->

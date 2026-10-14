@@ -2,6 +2,37 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [2.78.0] - 2026-10-14
+
+### Fonctionnalités
+
+- **Les sélecteurs de mode pH/ORP ressemblent enfin à celui de la Filtration** — constat
+  utilisateur sur téléphone : contrairement au sélecteur Filtration (en production depuis
+  feature-147), ceux de pH et ORP affichaient un **cadre** autour des boutons, des boutons
+  inactifs qui **n'avaient pas l'air de boutons**, et un effet « 2+1 » (le sélecteur passait sur
+  deux lignes). Nouveau composant **`.mode-select`**, appliqué aux **quatre** emplacements qui
+  partagent le même geste : les deux cartes du tableau de bord **et** les deux sélecteurs des
+  pages de réglage pH/ORP — mêmes libellés, même mécanique, un seul repère visuel.
+- **Le message « La régulation automatique ne dose plus… » est remonté** : il vivait après le
+  sélecteur, où il passait inaperçu ; il est désormais juste après le bandeau de mesure et avant
+  le sélecteur, dans un encadré perceptible. ⛔ Son texte est **inchangé** (imposé par un gate de
+  sécurité) — seuls la position et l'habillage visuel bougent.
+
+### Documentation
+
+- `docs/DESIGN_SYSTEM.md` : nouveau document de référence du vocabulaire visuel (composants,
+  jetons, états obligatoires, responsive, daltonisme) — motif du lot : un composant conçu pour
+  une surface ne se réemploie pas sur une autre sans vérifier que son habillage a encore un sens.
+- `docs/features/page-dashboard.md` : nouvelle sous-section sur le correctif `.mode-select`
+  (cause, correctif, déplacement du texte de conséquence) ; limites connues signalées sans être
+  corrigées (65 familles de composants hors `app.css` dans `wizard.html`/`wifi.html`/`login.html`,
+  `.field` en trois implémentations, `.password-strength`/`.password-checklist` dupliqués,
+  absence d'`aria-invalid`, absence de `.switch:disabled`).
+- `docs/features/page-ph.md` / `page-orp.md` : renvoi vers le composant partagé et vers
+  `DESIGN_SYSTEM.md`.
+
+---
+
 ## [2.77.0] - 2026-10-13
 
 ### Fonctionnalités

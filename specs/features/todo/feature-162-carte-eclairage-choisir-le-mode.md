@@ -5,7 +5,7 @@
 - **Statut** : todo
 - **Priorité** : normale
 - **Version cible** : 2.78.0
-- **Dernière mise à jour** : 2026-10-14
+- **Dernière mise à jour** : 2026-10-14 (modes **Allumé/Éteint/Programme** — décision utilisateur)
 - **Spec(s) liée(s)** : [`feature-161`](../done/feature-161-choisir-le-mode-depuis-les-cartes.md) (dont cette spec a été **détachée sur décision utilisateur**), [ADR-0108](../../../docs/adr/0108-basculer-le-mode-est-une-commande-injecter-est-un-geste.md)
 
 ## Domaines touchés
@@ -48,15 +48,40 @@ l'ordre affiché **ne disent pas la même chose**. C'est le motif de l'ADR-0093 
 seule autorité ») appliqué à l'éclairage.
 
 ## Comportement attendu
-- Trois modes **équivalents** sur la carte — ⚠️ **décision utilisateur prise pendant feature-161**,
-  à ne pas rouvrir sans elle.
-- Le contenu de la carte **suit** le mode, comme les trois autres.
-- L'état réellement appliqué est **publié** et **affiché** : si un override neutralise la
-  programmation, la carte le dit. ⛔ Plus jamais « Programmation activée » quand elle ne l'est pas.
+
+### ⚠️ Les trois modes sont **Allumé / Éteint / Programme** (décision utilisateur, 2026-10-14)
+
+Mot pour mot : *« Quand c'est allumé, il faut écrire Allumé. Quand c'est éteint, il faut écrire
+Éteint. Et quand c'est Programme (comme les autres cartes), c'est Programme. »*
+
+⛔ **Pas de libellé d'état séparé.** *« Pourquoi écrire un libellé alors que le bouton actif
+permettra de voir ce qui est sélectionné ? »* ⇒ le segment actif **EST** l'état. Toute ligne qui
+répète le mode est à **supprimer**, pas à corriger.
+
+⚠️ **Cette décision DISSOUT le défaut au lieu de le corriger.** Aujourd'hui, allumer à la main
+crée un état **caché** (`state.manualOverride`) qui neutralise la programmation sans le dire et
+n'est jamais publié. Avec ces trois modes, allumer à la main revient à **choisir le mode Allumé** :
+il n'y a plus d'état invisible à publier, donc plus rien qui puisse mentir.
+⇒ C'est l'application directe d'[ADR-0107](../../../docs/adr/0107-etat-visible-et-persistant-plutot-que-suspension-invisible.md)
+(un état **visible et persistant** plutôt qu'une suspension invisible).
+
+⚠️ **Différence assumée avec les cartes pH/ORP** : là-bas, la ligne de mode en en-tête double le
+sélecteur, et le gate `pool-chemistry` a **refusé** qu'on la retire — cette redondance est la
+protection contre un arrêt accidentel du dosage. **Ici il n'y a aucun enjeu chimique**, donc
+l'argument ne s'applique pas. ⛔ Ne pas invoquer l'un pour justifier l'autre.
+
+### La seule information que les trois boutons ne portent PAS
+En mode **Programme**, le sélecteur ne dit pas **si la lampe est allumée à cet instant**. C'est une
+information **différente** du mode, pas une redite ⇒ **à conserver, et uniquement dans ce mode**.
+En Allumé ou Éteint elle serait redondante : ⛔ ne pas l'afficher.
 
 ### Cas limites
-- Override actif **et** programmation activée : que montre la carte ? ⚠️ C'est le cas qui a produit
-  le défaut — il doit être tranché **explicitement**, pas déduit.
+- ⚠️ **Migration de l'existant** : que devient une installation où `manualOverride` est actif au
+  moment de la mise à jour ? Elle doit se retrouver en **Allumé** ou **Éteint** selon l'état réel,
+  jamais en Programme.
+- Un changement venu de MQTT ou d'un autre navigateur : reflété sans rechargement.
+- Échec d'enregistrement : le sélecteur **revient à l'état réel** (réutiliser `resolveSelectorMode`,
+  ⛔ ne pas en écrire un second).
 - Changement venu de MQTT ou d'un autre navigateur : reflété sans rechargement.
 - Échec d'enregistrement : le sélecteur **revient à l'état réel** (réutiliser `resolveSelectorMode`,
   ⛔ ne pas en écrire un second).
@@ -88,8 +113,11 @@ impose un arbitrage général sur la publication de l'état appliqué — alors 
 `CHANGELOG.md`, `docs/user/src/guide-utilisation.html`.
 
 ## Critères d'acceptation
-- [ ] Le mode Éclairage se choisit depuis la carte.
-- [ ] La carte ne peut plus annoncer une programmation **neutralisée** comme active.
+- [ ] Le mode Éclairage se choisit depuis la carte : **Allumé / Éteint / Programme**.
+- [ ] ⛔ **Aucun libellé ne répète le mode** — le segment actif est la seule source.
+- [ ] `manualOverride` ne subsiste plus comme **état caché** : allumer à la main **est** un mode.
+- [ ] En mode **Programme uniquement**, la carte indique si la lampe est allumée à cet instant.
+- [ ] Une installation dont l'override était actif se retrouve en Allumé/Éteint, **jamais** en Programme.
 - [ ] L'état appliqué est publié, et la parité `/data` ↔ WS est vérifiée **par expression**.
 - [ ] Un échec d'enregistrement ramène le sélecteur à l'état réel.
 - [ ] Vérifié **à 390 px sur appareil réel** (tâche humaine).
