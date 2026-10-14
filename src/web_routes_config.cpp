@@ -13,6 +13,7 @@
 #include "ph_offset.h"     // feature-067 : isPhOffsetValid (validation serveur de ph_offset)
 #include "temp_compensation_logic.h"  // bug-114 : clampTempCalOffset (écrêtage serveur de l'offset T°)
 #include "ph_guard_logic.h"  // v2.25.0 : phModeChangeNeedsAck (gate fail-closed du mode pH)
+#include "cal_manual_switch_logic.h"  // bug-161 (gate C2) : calSwitchBlocksModeChange
 #include "ph_tune_logic.h"   // feature-155 : evaluatePhTune (accord pH sur un test manuel)
 #include "logger.h"
 #include "version.h"
@@ -566,6 +567,65 @@ static void handleSaveConfig(AsyncWebServerRequest* request, uint8_t* data, size
   }
 
   // ===========================================================================
+  // bug-161 (gate pool-chemistry C2) — GATE fail-closed : mode de régulation
+  // VERROUILLÉ pendant une session d'ÉTALONNAGE
+  // ===========================================================================
+  // bug-160 bascule la régulation en "manual" à l'ENTRÉE en étalonnage
+  // (/calibration/enter, mqttCfg.calSwitchActive) et la restaure au mode
+  // ANTÉRIEUR mémorisé (ph/orpCalSwitchPrevMode) à la SORTIE
+  // (/calibration/exit). ⚠️ ANGLE MORT comblé ici : SANS ce gate, une demande
+  // de changement de mode reçue PENDANT la session serait acceptée... puis
+  // SILENCIEUSEMENT ÉCRASÉE par la valeur mémorisée à la sortie — un réglage
+  // accepté puis annulé sans un mot, exactement le motif « l'écran ment » que
+  // ce projet traque (invariant feature-161).
+  // ⛔ Ce bloc NE MET JAMAIS À JOUR ph/orpCalSwitchPrevMode : ce serait un
+  // second chemin d'écriture vers une mémoire de sécurité — SEUL
+  // /calibration/enter y écrit. On REFUSE, on ne réconcilie pas.
+  // Gate `phAutoManual*` ci-dessus : INTACT ET PRIORITAIRE (évalué AVANT ce
+  // bloc, ordre inchangé).
+  // Ne refuse QUE si le mode DEMANDÉ diffère du mode COURANT (même patron que
+  // le gate ci-dessus) : l'interface renvoie systématiquement le mode courant
+  // dans chaque payload de sauvegarde — refuser sur la seule PRÉSENCE de la
+  // clé bloquerait tout autre réglage pendant une session d'étalonnage.
+  // CE BLOC PRÉCÈDE TOUTE MUTATION de mqttCfg (même raison que les gates
+  // voisins : un refus après écritures partielles diverge la RAM de la NVS).
+  {
+    String reqPhMode = mqttCfg.phRegulationMode;
+    if (!doc["ph_regulation_mode"].isNull()) {
+      const String m = doc["ph_regulation_mode"].as<String>();
+      if (m == "automatic" || m == "scheduled" || m == "manual") reqPhMode = m;
+    }
+    String reqOrpMode = mqttCfg.orpRegulationMode;
+    if (!doc["orp_regulation_mode"].isNull()) {
+      const String m = doc["orp_regulation_mode"].as<String>();
+      if (m == "automatic" || m == "scheduled" || m == "manual") reqOrpMode = m;
+    }
+    const bool phWouldChange  = (reqPhMode  != mqttCfg.phRegulationMode);
+    const bool orpWouldChange = (reqOrpMode != mqttCfg.orpRegulationMode);
+    // Décision PURE (cal_manual_switch_logic.h, testée en natif) : fail-closed,
+    // refuse dès que la session est ouverte ET qu'un changement réel est
+    // demandé — jamais sur la seule présence de la clé (cf. commentaire ci-dessus).
+    if (calSwitchBlocksModeChange(mqttCfg.calSwitchActive, phWouldChange) ||
+        calSwitchBlocksModeChange(mqttCfg.calSwitchActive, orpWouldChange)) {
+      xSemaphoreGiveRecursive(configMutex);
+      systemLogger.warning(
+          "[Config] /save-config REFUSÉ (409) depuis " + clientIpOf(request) +
+          " : changement de mode" +
+          String(phWouldChange ? " pH" : "") + String(orpWouldChange ? " ORP" : "") +
+          " refusé — étalonnage en cours (calSwitchActive).");
+      (*g_configErrors)[request] = true;
+      g_configErrorStatus[request] = 409;
+      // Texte IMPOSÉ mot pour mot (gate pool-chemistry C2) — ne pas reformuler
+      // sans nouveau passage du gate.
+      g_configErrorMessages[request] =
+        "{\"error\":\"\\u00c9talonnage en cours\","
+        "\"message\":\"\\u00c9talonnage en cours \\u2014 le mode est "
+        "r\\u00e9tabli \\u00e0 la fin de l'\\u00e9talonnage.\"}";
+      return;
+    }
+  }
+
+  // ===========================================================================
   // v2.25.0 — Bornes de la CONSIGNE pH (fenêtre chimique d'exploitation)
   // ===========================================================================
   // La consigne n'était validée NULLE PART sur ce chemin : un `ph_target` de 6,0
@@ -767,6 +827,14 @@ static void handleSaveConfig(AsyncWebServerRequest* request, uint8_t* data, size
         systemLogger.info("Mode régulation pH changé: " + regMode + " (depuis " +
                           clientIpOf(request) + ")");
       }
+    } else {
+      // bug-161 (risque relevé par le gate pool-chemistry, libellés HA) : une
+      // option INEXISTANTE (ex. automatisation Home Assistant non mise à jour
+      // après un changement de libellé, ADR-0085) tombait SILENCIEUSEMENT
+      // ici — mode inchangé, AUCUNE trace. Visible désormais.
+      systemLogger.warning("[Config] ph_regulation_mode rejeté (valeur inconnue \"" +
+                           regMode + "\") depuis " + clientIpOf(request) +
+                           " — mode inchangé.");
     }
   }
   if (!doc["ph_daily_target_ml"].isNull()) {
@@ -783,13 +851,26 @@ static void handleSaveConfig(AsyncWebServerRequest* request, uint8_t* data, size
     }
     mqttCfg.phDailyTargetMl = dailyMl;
   }
-  if (!doc["orp_enabled"].isNull()) mqttCfg.orpEnabled = doc["orp_enabled"];
+  // bug-161 (gate pool-chemistry C2, correctif) : `orp_enabled` n'est plus
+  // ACCEPTÉ en écriture — miroir EXACT de `ph_enabled` ci-dessus (v2.25.0 B7),
+  // qui avait fermé ce chemin côté pH sans que l'ORP ne le soit jamais. C'est
+  // un DÉRIVÉ pur du mode (`mode != "manual"`) : le laisser écrivable ouvrait
+  // un second chemin capable de rouvrir la régulation ORP en contournant le
+  // gate d'étalonnage (calSwitchBlocksModeChange, plus haut), et de
+  // désynchroniser le couple mode/enabled persisté en NVS. Le champ reste
+  // exposé en LECTURE (/get-config, trame WS config, Home Assistant) — aucune
+  // rupture de contrat ; une clé envoyée par un vieux client est simplement
+  // ignorée (même patron que ph_enabled / screen_enabled).
   if (!doc["orp_regulation_mode"].isNull()) {
     String orpRegMode = doc["orp_regulation_mode"].as<String>();
     if (orpRegMode == "automatic" || orpRegMode == "scheduled" || orpRegMode == "manual") {
       mqttCfg.orpRegulationMode = orpRegMode;
       mqttCfg.orpEnabled = (orpRegMode != "manual");
-      systemLogger.info("Mode régulation ORP changé: " + orpRegMode);
+      // bug-161 (gate C6) : parité avec le pH (ci-dessus) — journaliser
+      // l'ORIGINE de la requête authentifiée. Avant ce correctif, cette ligne
+      // ne la portait pas, contrairement au pH.
+      systemLogger.info("Mode régulation ORP changé: " + orpRegMode + " (depuis " +
+                        clientIpOf(request) + ")");
       // feature-140 (condition #5 du gate pool-chemistry) : bascule en Manuel
       // pendant la chloration de secours => désarmement AUTOMATIQUE (sinon
       // double dosage : l'utilisateur dose lui-même ET le secours continue).
@@ -798,6 +879,12 @@ static void handleSaveConfig(AsyncWebServerRequest* request, uint8_t* data, size
         mqttManager.publishRescueState();
         systemLogger.warning("[Secours] Désarmée : bascule en mode Manuel (HTTP)");
       }
+    } else {
+      // bug-161 (risque relevé par le gate pool-chemistry, libellés HA) :
+      // même motif que le pH ci-dessus — visible désormais.
+      systemLogger.warning("[Config] orp_regulation_mode rejeté (valeur inconnue \"" +
+                           orpRegMode + "\") depuis " + clientIpOf(request) +
+                           " — mode inchangé.");
     }
   }
   if (!doc["orp_daily_target_ml"].isNull()) {

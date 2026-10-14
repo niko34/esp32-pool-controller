@@ -11,10 +11,10 @@ Vue d'ensemble de la piscine en temps réel. C'est la page que l'utilisateur voi
 
 La page est une **grille de cinq cartes** (classe `grid--status-cards`) — **était six** jusqu'à la v2.63.x : la carte « Modes temporaires » séparée a été **supprimée** en feature-147/v2.63.0, son unique contenu (le Boost) devenant un sous-bloc de la carte Filtration (voir [Carte Filtration — quatre boutons, mode vs état, Boost intégré](#carte-filtration--quatre-boutons-mode-vs-état-boost-intégré-feature-147-v2630)) :
 
-1. **Carte Filtration** (`#dashboard-filtration-card`) — en-tête : badge d'**état réel** de la pompe (`#detail-filtration-status`, « En marche » / « Arrêtée », ou « Hors gel » en ambre) et texte de **mode demandé** (`#detail-filtration-mode`, « Mode Auto » etc.) ; corps : **quatre boutons de mode** (Auto · Programme · Marche · Arrêt, feature-147, remplacent l'ancienne ligne « Mode » + les boutons Démarrer/Arrêter), horaires, et un sous-bloc **Boost** (feature-053) — voir section dédiée ci-dessous. Un lien engrenage amène vers `/filtration`.
-2. **Carte Éclairage** (`#dashboard-lighting-card`) — état, mode (programmation on/off), horaires, boutons Allumer / Éteindre. Lien vers `/lighting`.
-3. **Carte pH** (`#dashboard-ph-card`) — valeur pH courante, cible, badge dosage actif, mini-graphique + légende « Lissé (régulation) » / interrupteur « Brut » (v2.38.0), **jauge de position** (feature-147, v2.63.0 — voir [section dédiée](#jauges-de-position-ph--orp-feature-147-v2630)). Bandeau « Calibration requise » si la sonde n'a jamais été calibrée. Lien vers `/ph`.
-4. **Carte ORP** (`#dashboard-orp-card`) — valeur ORP courante (mV), cible, badge dosage actif, mini-graphique + même légende (v2.38.0), **jauge de position** (feature-147, v2.63.0 — voir section dédiée). Bandeau calibration. Lien vers `/orp`.
+1. **Carte Filtration** (`#dashboard-filtration-card`) — en-tête : badge d'**état réel** de la pompe (`#detail-filtration-status`, « En marche » / « Arrêtée », ou « Hors gel » en ambre) et texte de **mode demandé** (`#detail-filtration-mode`, « Mode Auto » etc.) ; corps : **quatre boutons de mode** (Auto · Programme · Marche · Arrêt, feature-147, remplacent l'ancienne ligne « Mode » + les boutons Démarrer/Arrêter), horaires — **visibles seulement en Auto/Programme depuis feature-161** (lot B, v2.77.0, voir [section dédiée](#sélecteur-de-mode-depuis-les-cartes-ph--orp--filtration-feature-161-v2770)) —, et un sous-bloc **Boost** (feature-053), **rétrogradé en option mineure depuis feature-161**. Un lien engrenage amène vers `/filtration`.
+2. **Carte Éclairage** (`#dashboard-lighting-card`) — état, mode (programmation on/off), horaires, boutons Allumer / Éteindre. Lien vers `/lighting`. ⚠️ **Non concernée par feature-161** : le sélecteur de mode envisagé pour cette carte est reporté à `feature-162` (la carte ment déjà sur l'état réel du programme, voir [section dédiée](#sélecteur-de-mode-depuis-les-cartes-ph--orp--filtration-feature-161-v2770)).
+3. **Carte pH** (`#dashboard-ph-card`) — valeur pH courante, cible (masquée hors mode Auto depuis feature-161), badge dosage actif, mini-graphique + légende « Lissé (régulation) » / interrupteur « Brut » (v2.38.0), **jauge de position** (feature-147, v2.63.0 — voir [section dédiée](#jauges-de-position-ph--orp-feature-147-v2630)). Bandeau « Calibration requise » si la sonde n'a jamais été calibrée. **Texte de mode en en-tête et sélecteur de mode intégré depuis feature-161** (lot A, v2.77.0 — voir [section dédiée](#sélecteur-de-mode-depuis-les-cartes-ph--orp--filtration-feature-161-v2770)). Lien vers `/ph`.
+4. **Carte ORP** (`#dashboard-orp-card`) — valeur ORP courante (mV), cible (masquée hors mode Auto depuis feature-161), badge dosage actif, mini-graphique + même légende (v2.38.0), **jauge de position** (feature-147, v2.63.0 — voir section dédiée). Bandeau calibration. **Texte de mode en en-tête et sélecteur de mode intégré depuis feature-161**, miroir exact du pH. Lien vers `/orp`.
 5. **Carte Température** (`#dashboard-temperature-card`) — valeur courante en °C, badge `#temperature-sensor-badge` (« Capteur indisponible » v2.10.5 + segments d'état mesure feature-061 itération 2), mini-graphique. Lien vers `/temperature`.
 
 Chaque mini-graphique est rendu par **uPlot** (usine `createMiniLineChart`, feature-043 — remplace Chart.js) dans un conteneur dédié, alimenté par l'historique de la **journée en cours** (depuis minuit local — v2.18.9, était une fenêtre glissante de 24 h en v2.18.4 et 3 jours avant ; points bruts + moyennes horaires selon l'ancienneté — voir [Plage « journée en cours »](#plage-des-mini-graphiques--journée-en-cours-v2189)). La coloration de la courbe est **conditionnelle par segment** (vert dans la tolérance, interpolation continue vers le rouge au-delà, gris si donnée absente — `getMiniChartRGB`, app.js).
@@ -30,8 +30,10 @@ Refonte de surface (`ux-ui-designer`, zéro logique de régulation touchée) rep
 - **Quatre boutons de mode** (`#filtration-mode-btn-auto` / `-manual` / `-force` / `-off`, grille 2×2 `.filtration-modes`, reste 2×2 même sous 640 px — écran consulté au bord du bassin), libellés **Auto · Programme · Marche · Arrêt** (feature-146). Le bouton actif reçoit `btn--primary` + `aria-pressed="true"` (`updateFiltrationModeButtons()`, app.js) ; les autres restent `btn--ghost`. **Aucun bouton n'est jamais désactivé** : en Arrêt, cliquer « Auto » est précisément la sortie du mode. Les quatre passent par `setFiltrationRunMode()` existant (`POST /save-config {filtration_mode}`) — **aucun second chemin créé** ; `bindDetailActions()` attache les quatre écouteurs là où il n'y en avait que deux (Démarrer/Arrêter, désormais supprimés du tableau de bord).
 - **En-tête : le mode ET l'état, et pourquoi les deux coexistent.** Le texte de mode (`#detail-filtration-mode`, « Mode Auto » / « Mode Programme » / « Mode Marche » / « Mode Arrêt », exception visuelle « Hors gel » en ambre — classe `.card__status-label--warn` — pendant la pause anti-gel) dit ce qui est **demandé** ; le badge d'état (`#detail-filtration-status`, **inchangé depuis feature-001**, « En marche » / « Arrêtée ») dit ce que la pompe **fait réellement**. ⚠️ **En mode Auto hors créneau, le mode affiche « Mode Auto » et l'état affiche « Arrêtée » — ce n'est PAS une anomalie** : c'est l'information qui évite de croire à une panne. Les deux sont mis à jour ensemble par `updateFiltrationBadges()`, à partir du **même** calcul `getFiltrationState()` que le badge `.pill` de la page `/filtration` (`#filtration-current-status`) — les deux badges restent synchronisés.
 - **Boost en sous-bloc, plus de carte séparée.** La carte `#dashboard-temp-modes-card` (feature-140) est **supprimée** ; son unique contenu, le sous-bloc `#temp-mode-boost`, devient une section de la carte Filtration (séparateur `<hr class="temp-mode__sep">`, classe déjà existante). **Markup, ids et comportement du Boost strictement inchangés** — la ligne d'effet honnête (`#detail-boost-effect`, feature-055) et l'indisponibilité du bouton Activer en mode Arrêt (`startBtn.disabled = filtrationOff`, feature-146) sont **conservées à l'identique**, seul l'emplacement a bougé. Détail complet : [Carte Modes temporaires (feature-140)](#carte-modes-temporaires-feature-140) ci-dessous (section historique conservée pour le reste de son contenu — Chloration de secours, bandeau dédié — inchangé par ce lot).
+- ⚠️ **Boost rétrogradé en option mineure (feature-161, lot B, v2.77.0).** Le défaut diagnostiqué par `ux-ui-designer` : `#temp-mode-boost` répétait le **gabarit complet** de la carte (icône 34 px, libellé en majuscules, badge en pleine largeur) alors qu'il n'est qu'une option de la filtration — relevé explicitement par l'utilisateur (« le Boost est mieux présenté… on voit que ce n'est qu'une option »). Nouveau gabarit `.card__option` : fond légèrement teinté (`--panel2`), liseré `--stroke`, titre **14 px sans majuscules forcées** (`.card__option-title`), surlignage « OPTION » discret (`.card__option-eyebrow`), badge d'état **en ligne** avec le titre, **aucune icône dupliquée**. ⛔ **Mécanique JS strictement inchangée** — tous les ids (`#temp-mode-boost`, `#detail-boost-*`) gardent leur nom et leur comportement (feature-140/147) : seul le poids **visuel** change. Gabarit réutilisable pour toute future option mineure d'une carte (pas un cas spécial Boost).
+- ⚠️ **Ligne « Horaires » conditionnée au mode (feature-161, lot B).** Affichée uniquement en mode **Auto** ou **Programme** (`[hidden]` sur `#detail-filtration-schedule-row` sinon) — en Marche ou en Arrêt, **aucun créneau n'est suivi**, l'afficher serait trompeur. Pilotée par `updateFiltrationBadges()` (`data/app.js`).
 
-**Fichiers** : `data/index.html` (grille des 4 boutons + en-tête) · `data/app.js` : `updateFiltrationModeButtons()`, `updateFiltrationBadges()` (étendu pour piloter aussi les boutons et le texte de mode), `bindDetailActions()`, `setFiltrationRunMode()` (prédiction `filtrationRunningOverride` corrigée au passage : `predictFiltrationRunning()` remplace un test `mode === "force"` qui ignorait auto/manual) · `data/app.css` : `.filtration-modes`, `.card__status-label--warn`.
+**Fichiers** : `data/index.html` (grille des 4 boutons + en-tête) · `data/app.js` : `updateFiltrationModeButtons()`, `updateFiltrationBadges()` (étendu pour piloter aussi les boutons, le texte de mode, et depuis feature-161 la visibilité de la ligne Horaires), `bindDetailActions()`, `setFiltrationRunMode()` (prédiction `filtrationRunningOverride` corrigée au passage : `predictFiltrationRunning()` remplace un test `mode === "force"` qui ignorait auto/manual) · `data/app.css` : `.filtration-modes`, `.card__status-label--warn`, `.card__option*` (feature-161).
 
 ## Jauges de position pH / ORP (feature-147, v2.63.0)
 
@@ -74,6 +76,133 @@ Les cartes pH et ORP gagnent une **jauge de position** horizontale (`.gauge`, CS
 - **Filtration arrêtée / mesures non représentatives** (`measuresOk`, même garde `measuresAreValid()` que les badges existants) : la jauge entière passe en `.gauge--stale` (grisée, `grayscale(1)`), le texte d'état devient « Mesures non représentatives » — jamais une position qui suggérerait une mesure fiable.
 
 **Fichiers** : `data/index.html` (markup `.gauge` dans `#dashboard-ph-card` / `#dashboard-orp-card`) · `data/app.js` : `phGaugePosition()`, `phGaugeStateText()`, `orpGaugePosition()`, `orpGaugeStateText()`, `updatePhGauge()`, `updateOrpGauge()` (appelées depuis le flux `/data` + WS existant — **aucun nouveau champ**, mesure et consigne déjà publiés) · `data/app.css` : classes `.gauge*` (nouvelles, réutilisent uniquement les variables existantes `--danger`/`--success`/`--warn`/`--accent`/`--text`/`--text-secondary`/`--panel2`).
+
+## Sélecteur de mode depuis les cartes pH / ORP / Filtration (feature-161, v2.77.0)
+
+Les cartes **pH** et **ORP** du tableau de bord permettent désormais de **choisir le mode de
+régulation sans quitter l'accueil** — jusque-là réservé à la page de réglage. La carte
+**Filtration** possédait déjà ses quatre boutons de mode (feature-147) ; ce lot y **conditionne
+les horaires au mode** et **rétrograde le Boost en option mineure**. ⚠️ **L'Éclairage est EXCLU de
+ce lot** — voir [note de périmètre](#léclairage-exclu-reporté-à-feature-162) en fin de section.
+
+### Vocabulaire : « Manuelle » cesse d'être un mode, devient « Arrêt »
+
+Décision utilisateur (2026-10-13) : le sélecteur pH/ORP affiche désormais **Auto / Programme /
+Arrêt** (était Automatique / Programmée / Manuelle). ⛔ **La valeur interne `manual` est
+INCHANGÉE** — persistée en NVS, publiée en MQTT, miroir `phEnabled`/`orpEnabled` — **seul le
+libellé bouge**. « Manuelle » laissait croire qu'on dose à la main ; « Arrêt » dit que **la
+régulation automatique ne fonctionne plus**, ce qui est plus vrai : le mode ne répond qu'à une
+seule question, *la régulation automatique tourne-t-elle ?*. Injecter à la main est une **ACTION**,
+accessible depuis la page de réglage **dans les trois modes** (voir
+[Injection manuelle déconditionnée du mode](page-ph.md#injection-manuelle-déconditionnée-du-mode-feature-161-v2770)).
+
+⚠️ **« Programme » désigne DEUX valeurs internes différentes selon la carte** : `manual` côté
+Filtration (héritage feature-146/147, mapping `auto→Auto / manual→Programme / force→Marche /
+off→Arrêt`), `scheduled` côté pH/ORP. **Acceptable à l'écran** — les deux sélecteurs ne sont jamais
+côte à côte — mais à garder en tête pour tout diagnostic sur un journal ou une trame brute : un même
+libellé affiché ne garantit pas la même valeur sur le fil.
+
+### Contenu de la carte qui suit le mode (pH/ORP)
+
+| Mode | Contenu affiché |
+|---|---|
+| **Auto** (`automatic`) | mesure + jauge (toujours visibles) + **cible** (masquée dans les deux autres modes — rien n'est poursuivi hors Auto) |
+| **Programme** (`scheduled`) | mesure + jauge + deux lignes en **lecture seule** : « Volume quotidien » et « Limite de sécurité » (valeurs déjà servies par `/get-config` — `ph_daily_target_ml`/`max_ph_ml_per_day` ou équivalents ORP — **rien recalculé côté client**, **aucun champ éditable sur la carte**) |
+| **Arrêt** (`manual`) | mesure + jauge + texte `.field__hint` : « La régulation automatique ne dose plus. L'injection manuelle reste possible depuis les réglages. » (texte imposé par le gate `pool-chemistry`, C7) |
+
+La **mesure et la jauge de position restent visibles dans tous les modes** — c'est une lecture de
+capteur, pas une action à suspendre.
+
+### Le cœur du lot : le mode est visible AVANT le sélecteur, et c'est une redondance VOULUE
+
+Une ligne de texte (`#detail-ph-mode` / `#detail-orp-mode`, « Mode Auto » / « Mode Programme » /
+« Mode Arrêt ») apparaît dans l'**en-tête** de la carte, au même endroit que celle déjà posée sur la
+Filtration (`#detail-filtration-mode`) — **avant** même de regarder le sélecteur en bas de carte,
+qui porte la même information.
+
+⚠️ **Cette redondance est volontaire et documentée comme mécanisme de sécurité, pas comme du
+bruit visuel.** Le gate `pool-chemistry` a **refusé toute confirmation de clic** pour les
+transitions Auto↔Arrêt (C5 : « les plafonds protègent — 9 gardes de dosage + présence d'eau +
+capteurs ; une friction uniforme est un anti-pattern ici ») en répondant que **la protection
+contre un arrêt accidentel du dosage EST cette visibilité permanente du mode**, pas un modal. ⛔
+**Ne jamais la supprimer en croyant « simplifier » ou « dédupliquer »** : un futur passage
+d'ergonomie qui retirerait ce texte parce que « le sélecteur dit déjà la même chose » romprait un
+invariant de sécurité, pas un doublon cosmétique.
+
+### États d'exception
+
+Trois états **verrouillent** le sélecteur sans jamais le masquer (`disabled` + `aria-disabled`,
+⛔ **jamais `hidden`** — condition C3 du gate) :
+
+| État | Détection | Affichage |
+|---|---|---|
+| **Escalade de sécurité pH** (`phAutoManual*`, pH **uniquement** — pas de symétrique ORP) | `cfg.ph_auto_manual_reason` ou `cfg.ph_auto_manual_epoch` non vide (`window._config`, via `/get-config`) | Bandeau `.regul-alert--inline` au-dessus du sélecteur : « Sécurité pH : régulation arrêtée par l'appareil. Acquittez sur la page pH. » Segments **Auto/Programme désactivés**, **Arrêt reste cliquable** (c'est la sortie du mode forcé, no-op si déjà actif) — le segment actif passe en teinte `--warn`, le texte du bandeau porte la même information (daltonisme couvert). ⛔ Aucun acquittement possible depuis l'accueil — le lien renvoie vers `/ph`. |
+| **Étalonnage en cours** (pH ou ORP) | `latestSensorData.cal_switch_active === true` (champ servi par `/data` **et** la trame WS `sensor_data` — ⚠️ **PAS** par `/get-config`, parité d'expression vérifiée par `test_ws_data_parity`) | Même bandeau (texte : « Étalonnage en cours — le mode est rétabli à la fin de l'étalonnage. »), mêmes segments désactivés. Refus **409 côté serveur** si une requête passe outre (voir [pump-controller.md](../subsystems/pump-controller.md#verrou-étalonnage-sur-le-changement-de-mode-bug-161-gate-c2)). |
+| **Chloration de secours en cours** (ORP uniquement) | `latestSensorData.rescue_until > 0` | **Pas** un verrou — une **confirmation** s'ouvre au clic sur Arrêt : « La chloration de secours est en cours. Passer en Arrêt l'interrompt. Confirmer ? » (boutons Interrompre le secours / Annuler). Seule friction du lot — voir ci-dessous. |
+
+Un seul bandeau visible à la fois : l'escalade pH **prime** sur l'étalonnage (elle verrouille elle
+aussi, et le gate serveur de l'escalade est évalué en premier côté firmware).
+
+### La seule friction du lot : interrompre un secours en cours
+
+Toute autre transition de mode (Auto↔Programme↔Arrêt) s'applique **sans confirmation** — décision
+explicite du gate (C5, citée ci-dessus) : une confirmation systématique s'apprend à cliquer sans
+lire (leçon de feature-159). La **seule** exception : passer la régulation ORP en **Arrêt** pendant
+qu'une **chloration de secours** tourne désarme ce secours **immédiatement** côté firmware
+(`web_routes_config.cpp`). Cette confirmation est appelée **depuis le chemin unique**
+`applyRegulationMode()` (`data/app.js`) — donc valable **identiquement** sur la carte du tableau de
+bord **et** sur le sélecteur de la page `/orp` (condition C4, **étendue** par le gate après revue :
+*« la friction protège l'ACTION, pas la SURFACE »* — un même chemin d'écriture avec deux niveaux de
+protection serait une garde contournable en changeant de page).
+
+⚠️ **Non couvert, assumé par écrit** : MQTT et l'appel direct à `POST /save-config` restent **sans
+confirmation** — ce sont des chemins sans surface d'interaction. Le désarmement y est déjà
+journalisé en `warning`, jugé suffisant sur ces chemins par le gate.
+
+### Un sélecteur qui ment est pire que pas de sélecteur — le défaut qui a mordu en revue
+
+La première implémentation déplaçait la pastille du sélecteur **avant** l'ouverture de la
+confirmation de désarmement : annuler laissait l'écran affiché sur « Arrêt » alors que l'ORP
+continuait de réguler et que le secours tournait toujours — jusqu'au prochain rafraîchissement.
+Corrigé en extrayant une décision **pure** et testée par vecteurs
+(`resolveSelectorMode(requested, lastConfirmed, outcome)`, `data/app.js`,
+`test/resolve_selector_mode_vectors.js`, ADR-0099) : le sélecteur n'affiche le mode **demandé**
+qu'en cas de succès serveur confirmé (`outcome: 'ok'`) ; sur refus serveur, panne réseau, **ou**
+annulation de la confirmation, il revient systématiquement au **dernier mode confirmé par le
+serveur** — jamais un mode que l'appareil n'a pas réellement adopté.
+
+Ce même chemin (`applyRegulationMode()`) corrige au passage un **défaut existant** : le sélecteur
+ORP de la page de réglage ne revenait **pas** à l'état réel en cas d'échec, contrairement au pH
+(condition C10 du gate). Les deux voies partagent désormais une seule logique de revert.
+
+### Hauteur naturelle des cartes (la grille n'étire plus)
+
+Le contenu d'une carte pH/ORP **varie désormais avec le mode** (une carte en Programme affiche deux
+lignes de plus qu'en Auto) — sa hauteur n'est donc plus constante. `.grid--status-cards` utilisait
+`align-items: stretch` (défaut de grille) : une carte plus haute sur une même ligne **étirait**
+toutes ses voisines. Correctif : `align-items: start`, pour que chaque carte garde sa hauteur
+**naturelle**. ⚠️ **Le problème n'existait qu'au-dessus de 980 px** — sous ce seuil, la grille passe
+à une colonne, donc **aucun étirement possible sur mobile** ; le correctif ne change rien en dessous
+de ce seuil.
+
+### Aucun second chemin d'écriture
+
+Le sélecteur de la carte et celui de la page de réglage passent par le **même** endpoint
+(`POST /save-config`) et la **même** fonction JS (`applyRegulationMode(kind, mode)`,
+`kind: "ph" | "orp"`) — aucune route créée, aucune logique dupliquée entre pH et ORP (les deux sont
+structurellement symétriques).
+
+### L'Éclairage, EXCLU, reporté à `feature-162`
+
+La carte Éclairage **n'a reçu aucun sélecteur** par ce lot, bien que l'utilisateur ait initialement
+demandé les quatre cartes. Motif trouvé en amont (`architect`/orchestrateur) : la carte **ment
+déjà** — `data/app.js` affiche « Programmation activée » à partir du seul booléen
+`lighting_schedule_enabled`, alors qu'un override manuel (`state.manualOverride`,
+`src/lighting.cpp`) neutralise le programme **sans jamais être publié** (ni `/get-config`, ni la
+trame WS). Poser un sélecteur sur un affichage déjà faux transformerait un défaut d'affichage en
+**commande fausse**. L'appareil n'a par ailleurs **aucun modèle de mode** pour l'éclairage (un
+booléen de planning + un relais, pas un enum à 3 valeurs) : l'aligner est un lot firmware à part
+entière, pas une carte. `feature-162` couvrira les deux à la fois.
 
 ## ~~Bannière « Régulation à l'arrêt »~~ (v2.20.3) — RETIRÉE (feature-152, v2.68.0)
 

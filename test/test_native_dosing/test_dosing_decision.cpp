@@ -843,6 +843,7 @@ static ManualInjectInputs validManualInputs() {
   in.stabilizationActive = false;
   in.stabilizationRemainingS = 0;
   in.alreadyInjecting = false;
+  in.automaticInjectInProgress = false;  // bug-161 (gate C1) : pas de dosage auto en cours
   in.requestedMl = 50.0f;               // 100 + 50 = 150 <= 300 → OK
   in.dailyInjectedMl = 100.0f;
   in.maxDailyMl = 300.0f;               // valeur réelle projet
@@ -1085,6 +1086,76 @@ void test_F006_guard_priority_order(void) {
 // bail qui la justifiait est ABANDONNÉ (cal_hold_logic supprimé). Voir
 // cal_manual_switch_logic.h / test_native_cal_manual_switch pour la logique
 // qui la remplace (bascule explicite de régulation, hors evaluateManualInject).
+
+// =============================================================================
+// bug-161 (gate pool-chemistry C1) — garde AutomaticInjectInProgress (rang 4)
+// =============================================================================
+// Ce trou était INATTEIGNABLE tant que le bouton d'injection manuelle restait
+// masqué hors du mode `manual` (app.js). feature-161 lève ce masquage : SANS
+// cette garde, une injection manuelle pourrait démarrer PAR-DESSUS un dosage
+// automatique en cours. Trois faits à verrouiller : (1) la garde refuse
+// effectivement ; (2) elle est DEVANT les quotas (5-10, ADR-0095 : la cause
+// annoncée doit être celle qui mord) ; (3) elle reste DERRIÈRE Watchdog (1) et
+// FiltrationOff (2) — une cause bénigne ne doit jamais masquer une cause absolue.
+
+// Garde 4 — AutomaticInjectInProgress seule : refus, même si tout le reste est OK.
+void test_F161_refusal_automatic_inject_in_progress(void) {
+  ManualInjectInputs in = validManualInputs();
+  in.automaticInjectInProgress = true;
+  ManualInjectDecision d = evaluateManualInject(in);
+  TEST_ASSERT_FALSE(d.allowed);
+  TEST_ASSERT_EQUAL(ManualInjectRefusal::AutomaticInjectInProgress, d.cause);
+  TEST_ASSERT_FLOAT_WITHIN(kFloatEps, 0.0f, d.remainingMl);
+}
+
+// Garde 4 devant les quotas (5-10) : automatique en cours + limite journalière
+// dépassée ⇒ la cause rendue reste AutomaticInjectInProgress (ADR-0095 : la
+// cause annoncée doit être celle qui mord en premier, pas la plus "sévère").
+void test_F161_automatic_inject_in_progress_devant_quotas(void) {
+  ManualInjectInputs in = validManualInputs();
+  in.automaticInjectInProgress = true;
+  in.dailyInjectedMl = 300.0f;        // 300 + 50 > 300 (DailyLimit aussi en échec)
+  in.cyclesLastMin = in.maxCyclesPerMin;  // BurstPerMinute aussi en échec
+  ManualInjectDecision d = evaluateManualInject(in);
+  TEST_ASSERT_FALSE(d.allowed);
+  TEST_ASSERT_EQUAL(ManualInjectRefusal::AutomaticInjectInProgress, d.cause);
+}
+
+// Watchdog (1) ET FiltrationOff (2) ET automatique en cours (4) simultanément :
+// la cause rendue reste WatchdogInactive — ORDRE LOAD-BEARING, une cause
+// bénigne ne doit JAMAIS masquer une cause absolue.
+void test_F161_watchdog_devant_automatic_inject_in_progress(void) {
+  ManualInjectInputs in = validManualInputs();
+  in.watchdogActive = false;
+  in.waterPresent = false;
+  in.automaticInjectInProgress = true;
+  ManualInjectDecision d = evaluateManualInject(in);
+  TEST_ASSERT_FALSE(d.allowed);
+  TEST_ASSERT_EQUAL(ManualInjectRefusal::WatchdogInactive, d.cause);
+}
+
+// FiltrationOff (2) devant automatique en cours (4) : même principe, un cran
+// plus bas.
+void test_F161_filtration_off_devant_automatic_inject_in_progress(void) {
+  ManualInjectInputs in = validManualInputs();
+  in.waterPresent = false;
+  in.automaticInjectInProgress = true;
+  ManualInjectDecision d = evaluateManualInject(in);
+  TEST_ASSERT_FALSE(d.allowed);
+  TEST_ASSERT_EQUAL(ManualInjectRefusal::FiltrationOff, d.cause);
+}
+
+// Automatique en cours (4) devant AlreadyInjecting (5) : vérifie le RANG
+// exact d'insertion — sans cela, un double-start manuel masquerait la
+// véritable cause (chevauchement avec l'automatique).
+void test_F161_automatic_inject_in_progress_devant_already_injecting(void) {
+  ManualInjectInputs in = validManualInputs();
+  in.automaticInjectInProgress = true;
+  in.alreadyInjecting = true;
+  ManualInjectDecision d = evaluateManualInject(in);
+  TEST_ASSERT_FALSE(d.allowed);
+  TEST_ASSERT_EQUAL(ManualInjectRefusal::AutomaticInjectInProgress, d.cause);
+}
 
 // -----------------------------------------------------------------------------
 // (e) AC3 — Partage anti-rafale AUTO/MANUEL via le ring buffer commun.
@@ -3446,6 +3517,12 @@ int main(int, char **) {
   RUN_TEST(test_F006_boundary_hourly_exact_accepted);
   RUN_TEST(test_F006_boundary_zero_limits_unlimited);
   RUN_TEST(test_F006_guard_priority_order);
+  // bug-161 (gate C1) — garde AutomaticInjectInProgress (rang 4).
+  RUN_TEST(test_F161_refusal_automatic_inject_in_progress);
+  RUN_TEST(test_F161_automatic_inject_in_progress_devant_quotas);
+  RUN_TEST(test_F161_watchdog_devant_automatic_inject_in_progress);
+  RUN_TEST(test_F161_filtration_off_devant_automatic_inject_in_progress);
+  RUN_TEST(test_F161_automatic_inject_in_progress_devant_already_injecting);
   RUN_TEST(test_F006_manual_start_visible_in_shared_ring);
   RUN_TEST(test_F006_stabilization_independent_of_remaining_seconds);
   // feature-011 — evaluateScheduledDose (répartition 24 h programmée).

@@ -613,6 +613,98 @@ Journalisation : l'**IP d'origine** est tracée sur les deux issues (`REFUSÉ (4
 
 Voir [API.md](../API.md#post-save-config--critical), [MQTT.md](../MQTT.md) et [page-ph.md](../features/page-ph.md#bannière--bascule-automatique-en-mode-manuel--v2203).
 
+#### Verrou étalonnage sur le changement de mode (bug-161, gate C2)
+
+⚠️ **Angle mort comblé en feature-161 (v2.77.0), distinct de l'acquittement ci-dessus.** bug-160
+bascule la régulation (pH **ou** ORP) en `manual` à l'**entrée** en étalonnage
+(`POST /calibration/enter`, `mqttCfg.calSwitchActive`) et la restaure au mode **antérieur**
+mémorisé (`ph/orpCalSwitchPrevMode`) à la **sortie** (`POST /calibration/exit`). **Sans garde**, une
+demande de changement de mode reçue **pendant** la session serait acceptée… puis **silencieusement
+écrasée** à la sortie par la valeur mémorisée à l'entrée — un réglage accepté puis annulé sans un
+mot, exactement le motif « l'écran ment » que ce projet traque.
+
+**Décision pure** `calSwitchBlocksModeChange(calSwitchActive, modeWouldChange)`
+([`cal_manual_switch_logic.h`](../../src/cal_manual_switch_logic.h)) : refuse **ssi** la session
+est ouverte **et** qu'un changement **réel** est demandé (mode demandé ≠ mode courant, calculé par
+l'appelant) — jamais sur la seule **présence** de la clé dans la requête, car l'interface renvoie
+systématiquement le mode courant dans chaque payload de sauvegarde : refuser sur la présence
+bloquerait **tout autre réglage** pendant une session d'étalonnage.
+
+⛔ **Cette fonction REFUSE, elle ne réconcilie jamais** : elle ne met **jamais** à jour
+`ph/orpCalSwitchPrevMode` — un second chemin d'écriture vers cette mémoire de sécurité serait
+exactement le piège qu'elle ferme (seul `/calibration/enter` y écrit).
+
+| Chemin | Comportement sous session ouverte |
+|---|---|
+| `POST /save-config` (pH **et** ORP) | **409 Conflict** avant toute mutation (même emplacement que le gate `phAutoManual*` ci-dessus — **évalué après lui**, intact et prioritaire), corps JSON : `Étalonnage en cours — le mode est rétabli à la fin de l'étalonnage.` |
+| Commande MQTT `ph\|orp_regulation_mode/set` | ✅ **Couvert depuis le lot C (correctif post-livraison, même jour)** — voir sous-section dédiée ci-dessous. |
+
+Journalisation : `warning`, IP d'origine, voie(s) concernée(s) — `[Config] /save-config REFUSÉ
+(409) depuis <ip> : changement de mode pH refusé — étalonnage en cours (calSwitchActive).`
+
+**Risque relevé par le gate, corrigé en même temps** : une option de mode **inexistante** envoyée
+par une automatisation Home Assistant non mise à jour (après le renommage des libellés, voir
+[MQTT.md](../MQTT.md#libellés-français-des-selects-mode-régulation-phorp-bug-ha-regulation-mode-labels-v2173))
+tombait **silencieusement** dans un `else` sans trace — mode inchangé, aucun log. Un `warning`
+journalise désormais tout mode rejeté (`ph_regulation_mode` / `orp_regulation_mode` « rejeté
+(valeur inconnue) »).
+
+#### Lot C — le verrou couvre désormais MQTT, et deux trous de plus fermés (bug-161, correctif post-livraison)
+
+⚠️ **Un gate à moitié posé est pire qu'absent — il crée la confiance sans la protection.** Signalé
+par `doc-writer` en documentant la section ci-dessus (« non vérifié par ce lot… à porter à un futur
+gate »), vérifié puis instruit par `pool-chemistry` : **GO sous conditions**, fermé le jour même.
+L'instruction a trouvé **deux trous de plus**, dans le même chemin, plus graves que le premier :
+
+1. **Le verrou MQTT lui-même** — `drainCommandQueue()` (`src/mqtt_manager.cpp`) appelle désormais
+   la **même** décision pure `calSwitchBlocksModeChange(calSwitchActive, changed)` que le chemin
+   HTTP, au **même rang** (après le gate `phAutoManual*` existant côté pH, inchangé — l'ORP n'a
+   aucun gate de sécurité équivalent, celui-ci est donc le seul évalué sur cette voie). Refus =
+   sortie de `manual` uniquement ; une commande entrante `manual` reste un no-op accepté. Même
+   texte de refus, même `warning`, même `publishTargetState()` de resynchronisation que le chemin
+   HTTP — **aucune seconde variante** de la décision.
+2. **`orp_enabled` acceptait l'écriture directe** (`web_routes_config.cpp:854`,
+   `mqttCfg.orpEnabled = doc["orp_enabled"]`) — chemin **jamais fermé** depuis que son équivalent
+   `ph_enabled` l'avait été en v2.25.0 (B7). Un payload `{"orp_enabled": true}` seul, sans
+   `orp_regulation_mode`, pouvait réarmer `orpEnabled` **pendant que `orpRegulationMode` restait
+   `manual`** — y compris pendant une session d'étalonnage, contournant le verrou C2 par un champ
+   voisin. `orp_enabled` est désormais un **dérivé pur** du mode (comme `ph_enabled`), ignoré en
+   écriture (clé envoyée = no-op silencieux, même patron que `ph_enabled`/`screen_enabled`).
+3. **La trace de session était purgée au redémarrage suivant si le trou MQTT avait été exploité**
+   (`config.cpp:548` — la purge au boot suppose que les deux modes n'ont pu quitter `manual` qu'**
+   après** la fermeture réelle de la session ; le trou MQTT rendait cette hypothèse fausse).
+   **Conséquence la plus grave des trois** : pas seulement un dosage possible sur une mesure non
+   représentative, mais la **disparition de la trace elle-même** — bandeau d'étalonnage éteint,
+   alerte d'oubli (2 h puis 6 h) jamais émise, **sonde toujours physiquement dans le tampon** sans
+   aucun signal à l'écran. Fermé par construction : la purge au boot reste correcte dès lors que
+   les trois chemins d'écriture du mode (HTTP, MQTT, et la purge elle-même) partagent le même
+   verrou — documenté comme invariant à vérifier **avant** tout futur chemin d'écriture du mode,
+   pas après (commentaire dans `config.cpp`).
+
+**Tests natifs** (`test/test_native_cal_manual_switch/test_cal_manual_switch.cpp`) : vecteurs
+`(calActive, modeCourant, payload)` pH **et** ORP, dérivant `modeWouldChange` exactement comme les
+deux sites d'appel réels — sortie de `manual` refusée, entrée `manual` acceptée (no-op), hors
+session acceptée, et un cas de défense en profondeur (mode courant non-`manual` pendant une session
+active, état non atteignable en production mais refusé quand même).
+`test/test_native_ws_config_parity/test_ws_config_parity.cpp` (test structurel, lit les sources) :
+vérifie qu'`orp_enabled` n'est affecté **qu'une seule fois** dans chaque fichier (HTTP et MQTT), et
+que c'est toujours la forme **dérivée** du mode — un mutant qui réintroduirait l'écriture directe,
+ou un second chemin d'écriture même dérivé, fait échouer le test.
+
+### ⚠️ Limites connues, non corrigées par ce lot (laissées à des specs séparées)
+
+Deux défauts **constatés** pendant l'instruction du lot C, volontairement **non corrigés** ici —
+ce sont des limites connues, pas des oublis :
+
+- **Aucun garde-fou indépendant du mode** n'existe au niveau de `canDose()` pour refuser **tout**
+  dosage tant qu'un étalonnage est ouvert. Les gardes posées (HTTP, MQTT, purge au boot) protègent
+  **trois chemins nommés**, pas « le dosage pendant un étalonnage » comme propriété générale — un
+  futur quatrième chemin d'écriture du mode qui ne passerait pas par `calSwitchBlocksModeChange()`
+  rouvrirait le même risque.
+- **Côté `ph_plus` (base), aucun plancher bas n'existe** : un tampon pH 4,0 déclencherait une
+  injection de base sans aucune garde pour l'arrêter (asymétrie avec le plafond haut déjà couvert
+  par l'inhibition ORP ci-dessous).
+
 ### 2. Inhibition du dosage ORP sur pH élevé (`isOrpInhibitedByPh`)
 
 Au-dessus de `kPhOrpInhibit` = **7,60**, la fraction d'**acide hypochloreux** (HClO, forme active du chlore) s'effondre (< 25 %) : l'ORP mesuré chute à concentration de chlore constante, et la régulation ORP compenserait en **surdosant**. Le dosage ORP est donc suspendu — le vrai correctif est de **faire baisser le pH**.
@@ -880,14 +972,60 @@ Incident fondateur (2026-10-02) : après des pluies diluviennes, les deux voies 
 | 1 | Watchdog actif | wdt inactif sur `loopTask` | — |
 | 2 | Présence d'eau | `resolveWaterPresence().waterPresent == false` (feature-056 : `managed`→filtration commandée, `powered`→toujours vrai, `external`→signal récent) | — |
 | 3 | Stabilisation post-cal | fenêtre active **pour la pompe visée** | — |
-| 4 | Double démarrage | injection manuelle déjà active sur cette pompe | — |
-| 5 | Limite journalière **prédictive** | `cumul + volume demandé > max` (limite ≤ 0 = illimité) | `==` **acceptée** (strict `>`) ; `remaining_ml` renseigné dans le refus |
-| 6 | Limite horaire **prédictive** | `usedMs + durée demandée > limite` (limite 0 = illimité) | `==` acceptée (strict `>`) ; budget **partagé** avec l'auto ([ADR-0020](../adr/0020-budget-horaire-dosage-unique.md)) |
-| 7 | Cycles/jour | `cyclesToday >= maxCyclesPerDay` (compteur partagé auto + manuel) | `>=` (identique à l'auto) |
-| 8 | Anti-rafale 1 min | `>= 6` démarrages dans la fenêtre (ring partagé) | `>=` |
-| 9 | Anti-rafale 15 min | `>= 20` démarrages dans la fenêtre (ring partagé) | `>=` |
+| 4 | **Injection automatique en cours** (bug-161, gate C1) | `PumpController.isPhDosing()` / `isOrpDosing()` vrai **sur cette pompe** | — |
+| 5 | Double démarrage | injection manuelle déjà active sur cette pompe | — |
+| 6 | Limite journalière **prédictive** | `cumul + volume demandé > max` (limite ≤ 0 = illimité) | `==` **acceptée** (strict `>`) ; `remaining_ml` renseigné dans le refus |
+| 7 | Limite horaire **prédictive** | `usedMs + durée demandée > limite` (limite 0 = illimité) | `==` acceptée (strict `>`) ; budget **partagé** avec l'auto ([ADR-0020](../adr/0020-budget-horaire-dosage-unique.md)) |
+| 8 | Cycles/jour | `cyclesToday >= maxCyclesPerDay` (compteur partagé auto + manuel) | `>=` (identique à l'auto) |
+| 9 | Anti-rafale 1 min | `>= 6` démarrages dans la fenêtre (ring partagé) | `>=` |
+| 10 | Anti-rafale 15 min | `>= 20` démarrages dans la fenêtre (ring partagé) | `>=` |
 
 **Volontairement absents** (le manuel est aveugle à la mesure — l'opérateur assume la décision chimique) : gardes NaN / filtre capteur / calibration / mode de régulation / pause mélange. Le volume/durée évalués sont **post-plafonnement** `kManualInjectMaxDurationS` (condition pool-chemistry #3 : on évalue ce qui sera vraiment injecté).
+
+### Garde rang 4 — injection automatique en cours (bug-161, gate C1)
+
+⚠️ **Ce trou existait depuis feature-006, mais était INATTEIGNABLE** : `web_routes_control.cpp`
+ne regardait jusqu'ici que `manualInjectPh.active` / `manualInjectOrp.active` (double démarrage
+**manuel**, rang 5) — jamais un dosage **automatique** en cours. En pratique, cela ne mordait
+jamais : le bouton d'injection manuelle restait **masqué** tant que le mode n'était pas `manual`
+(`app.js`, `updatePhModeControls()`/`updateOrpModeControls()`), et le mode automatique ne pouvait
+donc jamais être actif en même temps que le bouton visible.
+
+**feature-161 (v2.77.0) lève ce masquage** — « Manuelle » cesse d'être un mode, l'injection
+manuelle devient accessible dans les **trois** modes de régulation (voir
+[page-ph.md](../features/page-ph.md#injection-manuelle-déconditionnée-du-mode-feature-161-v2770)).
+Sans garde nouvelle, on aurait pu injecter à la main **par-dessus** un dosage automatique en cours
+sur la **même pompe**. Le gate `pool-chemistry` a donc imposé une garde `AutomaticInjectInProgress`
+**avant** de démasquer le bouton, pas après :
+
+> **C'est le défaut le plus intéressant du lot** : il n'existait pas, il était *caché* par une
+> restriction d'affichage que l'on s'apprêtait à lever. Une simplification d'interface a failli
+> ouvrir un chemin de dosage.
+
+**Pourquoi le rang 4, précisément** (`web_routes_control.cpp:103`, `dosing_logic.h` /
+`dosing_logic.cpp`) :
+
+- **Derrière** Watchdog (1) et Présence d'eau (2) : une cause **absolue** (rien ne doit jamais
+  injecter sans watchdog ou sans eau) ne doit jamais être masquée par une cause plus bénigne.
+- **Devant** le double démarrage manuel (5) et les quotas (6-10, [ADR-0095](../adr/0095-une-cause-de-garde-cite-un-seuil-pas-une-mesure.md)
+  : « la cause annoncée doit être celle qui mord en premier ») : un chevauchement avec l'automatique
+  est une cause plus informative qu'un quota, s'il se produit en même temps.
+
+⚠️ **Contrat de numérotation verrouillé par `static_assert`** (`dosing_logic.cpp`) : l'**ordinal**
+de `ManualInjectRefusal::AutomaticInjectInProgress` (`= 10`, en **fin d'énumération**, pour ne
+renuméroter aucune valeur existante — elles sont persistées indirectement via le code machine
+JSON du refus) est **indépendant** du **rang d'évaluation** (4, documenté par les commentaires
+numérotés d'`evaluateManualInject()`). Toute cause future s'ajoute à la fin de l'énum, quel que
+soit son rang d'évaluation réel — ne **jamais** renuméroter ni insérer au milieu.
+
+**Texte de refus** (409 JSON, `web_routes_control.cpp`) : `automatic_inject_in_progress` —
+« Une injection automatique est en cours — réessayez dans un instant. » Voir
+[API.md](../API.md#codes-de-refus-409-v260).
+
+**Testabilité native** : 5 tests dédiés (`test/test_native_dosing/test_dosing_decision.cpp`,
+préfixe `test_F161_*`) — refus seul, devant les quotas (5-10), derrière Watchdog (1) et
+FiltrationOff (2), devant AlreadyInjecting (5). `evaluateManualInject` compte désormais **22**
+tests dédiés au total (17 `test_F006_*` + 5 `test_F161_*`, était 17 avant ce lot).
 
 ⚠️ **bug-160 (volet 2, REFONTE 2026-10-13)** : pas de garde dédiée ici pour la calibration — une
 injection manuelle déjà active est **interrompue immédiatement** par `POST /calibration/enter`
@@ -942,7 +1080,7 @@ Le refus `daily_limit` ne subsiste que si le reliquat est **nul ou < 1 s de pomp
 
 > Cohérence : la garde filtration reproduit **exactement** la condition #3 de `canDose()` — elle consomme la même source unique `filtration.resolveWaterPresence().waterPresent` (feature-056). En mode `powered` (ex-`continu`), l'alimentation 12 V des pompes suit la filtration au niveau matériel → présence d'eau présumée `true` en permanence ; en `external`, la présence dépend du signal récent (fail-safe OFF).
 
-**Testabilité native** : `evaluateManualInject` est couverte par **17 tests** dédiés (`test/test_native_dosing/test_dosing_decision.cpp`, préfixe `test_F006_*` — 135 tests au total) : une cause de refus par test + nominal, reliquat, frontières `==` acceptées, limites 0/≤0 = illimité, ordre de priorité des gardes, partage du ring anti-rafale avec l'auto. `dosing_logic.cpp` reste à **100 % des lignes**.
+**Testabilité native** : `evaluateManualInject` est couverte par **22 tests** dédiés (`test/test_native_dosing/test_dosing_decision.cpp`, préfixes `test_F006_*` (17) et `test_F161_*` (5, garde rang 4 — voir [section dédiée](#garde-rang-4--injection-automatique-en-cours-bug-161-gate-c1)) — 148 `RUN_TEST` au total dans ce fichier au 2026-10-13, à **mesurer** plutôt qu'à recopier, cf. CLAUDE.md ADR-0073) : une cause de refus par test + nominal, reliquat, frontières `==` acceptées, limites 0/≤0 = illimité, ordre de priorité des gardes, partage du ring anti-rafale avec l'auto. `dosing_logic.cpp` reste à **100 % des lignes**.
 
 ### Ring buffer anti-rafale
 

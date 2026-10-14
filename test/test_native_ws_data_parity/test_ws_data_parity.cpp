@@ -1335,6 +1335,12 @@ static const SharedExprKey kSharedExpr[] = {
     "le bandeau et utilisee par l'alerte d'oubli (C4). Meme risque de "
     "clignotement qu'un champ de securite si les deux cotes divergent dans "
     "leur calcul." },
+  { "rescue_until",
+    "bug-161 (gate pool-chemistry C4) : la carte ORP derive l'etat secours "
+    "actif de rescue_until > 0 (meme predicat que l'offre L7, app.js:7471) "
+    "pour decider d'ouvrir la modale de confirmation avant un passage en "
+    "Arret. Une divergence d'expression ferait apparaitre et disparaitre "
+    "cette modale au rythme des deux cadences (~5 s / ~30 s)." },
 };
 static const size_t kSharedExprCount = sizeof(kSharedExpr) / sizeof(kSharedExpr[0]);
 

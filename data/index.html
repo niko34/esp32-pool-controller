@@ -247,7 +247,14 @@
                   <button type="button" class="btn btn--ghost" id="filtration-mode-btn-force" data-mode="force" aria-pressed="false">Marche</button>
                   <button type="button" class="btn btn--ghost" id="filtration-mode-btn-off" data-mode="off" aria-pressed="false">Arrêt</button>
                 </div>
-                <div class="detail-row">
+                <!-- feature-161 (lot B) : visible seulement en Auto/Programme —
+                     en Marche/Arrêt aucun créneau n'est suivi, l'afficher
+                     serait trompeur. Bascule sur `[hidden]` (propriété .hidden,
+                     pas style.display) — .detail-row[hidden]{display:none!important}
+                     existe déjà (app.css:3255, posé par le lot A) et l'emporte
+                     sur `.detail-row{display:flex}`. Visibilité pilotée par
+                     updateFiltrationBadges() dans app.js. -->
+                <div class="detail-row" id="detail-filtration-schedule-row">
                   <div class="detail-label">Horaires</div>
                   <div class="detail-value" id="detail-filtration-schedule">08:00 - 20:00</div>
                 </div>
@@ -261,24 +268,23 @@
                      était déjà utilisée ailleurs). -->
                 <hr class="temp-mode__sep">
 
-                <!-- Sous-bloc Boost (feature-053) — markup et ids INCHANGÉS,
-                     simplement remonté comme sous-bloc (non-régression stricte). -->
-                <div id="temp-mode-boost">
-                  <div class="card__status-header">
-                    <div class="card__status-icon card__status-icon--transparent">
-                      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                        <path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91 0z"/>
-                        <path d="M12 15l-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z"/>
-                        <path d="M9 12H4s.55-3.03 2-4c1.62-1.08 5 0 5 0"/>
-                        <path d="M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5"/>
-                      </svg>
+                <!-- feature-161 (lot B) : Boost rétrogradé en OPTION mineure
+                     (ux-ui-designer, 2026-10-13) — le défaut diagnostiqué était
+                     que ce sous-bloc répétait le gabarit COMPLET de la carte
+                     (icône 34px, libellé en majuscules, badge) alors qu'il n'est
+                     qu'une option de la filtration. .card__option : fond
+                     légèrement teinté, pas d'icône dupliquée, titre 14px sans
+                     majuscules forcées, badge d'état EN LIGNE avec le titre.
+                     ⛔ Mécanique JS INCHANGÉE : tous les ids (#temp-mode-boost,
+                     #detail-boost-*) gardent leur nom et leur comportement
+                     (feature-140/147) — seul le poids visuel change. -->
+                <div class="card__option" id="temp-mode-boost">
+                  <div class="card__option-head">
+                    <div class="card__option-heading">
+                      <span class="card__option-eyebrow">Option</span>
+                      <span class="card__option-title">Boost</span>
                     </div>
-                    <div class="card__status-info">
-                      <div class="card__status-label">Boost</div>
-                      <div class="card__status-state">
-                        <span class="state-badge state-badge--off" id="detail-boost-status">Inactif</span>
-                      </div>
-                    </div>
+                    <span class="state-badge state-badge--off" id="detail-boost-status">Inactif</span>
                   </div>
                   <div class="detail-row">
                     <div class="detail-label">Expiration</div>
@@ -344,13 +350,27 @@
                 <div class="card__status-icon"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2.69l5.66 5.66a8 8 0 1 1-11.31 0z"/><text x="12" y="16" text-anchor="middle" font-size="6" font-weight="600" fill="currentColor" stroke="none">PH</text></svg></div>
                 <div class="card__status-info">
                   <div class="card__status-label">pH</div>
+                  <!-- feature-161 (lot A) : LE CŒUR DU LOT — texte de MODE dans
+                       l'en-tête, même motif que #detail-filtration-mode.
+                       Redondance VOLONTAIRE avec l'état actif du sélecteur
+                       plus bas dans la carte : le gate pool-chemistry a
+                       refusé toute confirmation de clic en répondant que
+                       CETTE visibilité PERMANENTE est la protection contre un
+                       arrêt accidentel du dosage — pas un modal. Ne jamais la
+                       retirer en croyant simplifier (C5). -->
+                  <div class="card__status-mode" id="detail-ph-mode">Mode Auto</div>
                 </div>
                 <a href="#/ph" class="card__settings-btn" aria-label="Configurer le pH"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></a>
               </div>
               <div class="card__body">
                 <div class="card__status-compact">
                   <div class="compact-value" id="compact-ph">--</div>
-                  <div class="compact-target">Cible: <span id="compact-ph-target">7.2</span></div>
+                  <!-- feature-161 (lot A) : la cible disparaît hors mode Auto
+                       (rien n'est poursuivi) — la MESURE et la jauge restent
+                       visibles dans TOUS les modes (lecture de capteur, pas
+                       une action). Visibilité pilotée par
+                       renderDashboardModeCard() dans app.js. -->
+                  <div class="compact-target" id="ph-compact-target-row">Cible: <span id="compact-ph-target">7.2</span></div>
                 </div>
                 <!-- feature-147 : position du pH corrigé (déjà affiché ci-dessus)
                      sur une échelle. Bornes de DESSIN UNIQUEMENT (jamais
@@ -382,6 +402,61 @@
                   <span class="calibration-alert__text">Calibration requise</span>
                   <a href="#/ph" class="calibration-alert__btn">Configurer</a>
                 </div>
+
+                <!-- feature-161 (lot A) — C3/C2 : bandeau d'exception, AU-DESSUS
+                     du sélecteur. Réutilise .regul-alert--inline tel quel (ux-ui-
+                     designer : aucun composant neuf). Un seul des deux visible à
+                     la fois (renderDashboardModeCard(), app.js) : l'escalade de
+                     sécurité pH prime sur l'étalonnage. ⛔ Jamais d'acquittement
+                     depuis l'accueil — le lien renvoie vers la page pH. -->
+                <div class="regul-alert regul-alert--inline" id="dashboard-ph-escalation-banner" role="alert" hidden>
+                  <span class="regul-alert__dot" aria-hidden="true"></span>
+                  <div class="regul-alert__body">
+                    <span class="regul-alert__text">Sécurité pH : régulation arrêtée par l'appareil. <a href="#/ph">Acquittez sur la page pH.</a></span>
+                  </div>
+                </div>
+                <div class="regul-alert regul-alert--inline" id="dashboard-ph-cal-banner" role="status" aria-live="polite" hidden>
+                  <span class="regul-alert__dot" aria-hidden="true"></span>
+                  <div class="regul-alert__body">
+                    <span class="regul-alert__text">Étalonnage en cours — le mode est rétabli à la fin de l'étalonnage.</span>
+                  </div>
+                </div>
+
+                <!-- feature-161 (lot A) : sélecteur de mode — réutilise
+                     .segmented tel quel (ux-ui-designer : rien de neuf).
+                     « Auto/Programme/Arrêt » (4+9+5 caractères), MÊMES
+                     libellés courts que la page de réglage (même composant,
+                     alignement vérifié en revue le 2026-10-13 — l'écart
+                     décrit ici dans une version antérieure de ce commentaire
+                     n'existe plus). ⛔ Valeur interne INCHANGÉE : "manual"
+                     reste persistée en NVS/MQTT, "Arrêt" n'est qu'un libellé.
+                     Même chemin d'écriture ET de DÉCISION que la page de
+                     réglage (sendConfigDetailed → /save-config,
+                     applyRegulationMode() dans app.js) — aucun second
+                     chemin. -->
+                <div class="segmented" id="dashboard-ph-mode" role="group" aria-label="Mode de régulation pH">
+                  <button type="button" class="segmented__btn" data-value="automatic">Auto</button>
+                  <button type="button" class="segmented__btn" data-value="scheduled">Programme</button>
+                  <button type="button" class="segmented__btn" data-value="manual">Arrêt</button>
+                </div>
+
+                <!-- feature-161 (lot A) — C9 : mode Programme, deux lignes en
+                     LECTURE SEULE, valeurs DÉJÀ servies par /get-config
+                     (ph_daily_target_ml, max_ph_ml_per_day) — rien recalculé
+                     côté client. ⛔ Aucun champ éditable sur la carte. -->
+                <div class="detail-row" id="dashboard-ph-daily-row" hidden>
+                  <div class="detail-label">Volume quotidien</div>
+                  <div class="detail-value" id="dashboard-ph-daily-value">0 mL</div>
+                </div>
+                <div class="detail-row" id="dashboard-ph-limit-row" hidden>
+                  <div class="detail-label">Limite de sécurité</div>
+                  <div class="detail-value" id="dashboard-ph-limit-value">— mL</div>
+                </div>
+
+                <!-- feature-161 (lot A) — C7 : mode Arrêt, texte IMPOSÉ mot
+                     pour mot (gate pool-chemistry). Ton discret (.field__hint),
+                     ⛔ pas un .callout : ce n'est pas une alerte. -->
+                <p class="field__hint" id="dashboard-ph-stopped-hint" hidden>La régulation automatique ne dose plus. L'injection manuelle reste possible depuis les réglages.</p>
               </div>
             </div>
 
@@ -391,13 +466,19 @@
                 <div class="card__status-icon"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L3 14h8l-1 8 10-12h-8l1-8z"/></svg></div>
                 <div class="card__status-info">
                   <div class="card__status-label">ORP</div>
+                  <!-- feature-161 (lot A) : miroir EXACT du texte de mode pH
+                       ci-dessus (symétrie pH/ORP voulue — cf. piège récurrent
+                       « parité pH/ORP » de ce projet). Même motif que
+                       #detail-filtration-mode / #detail-ph-mode. -->
+                  <div class="card__status-mode" id="detail-orp-mode">Mode Auto</div>
                 </div>
                 <a href="#/orp" class="card__settings-btn" aria-label="Configurer l'ORP"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></a>
               </div>
               <div class="card__body">
                 <div class="card__status-compact">
                   <div class="compact-value" id="compact-orp">--<span class="compact-unit">mV</span></div>
-                  <div class="compact-target">Cible: <span id="compact-orp-target">650</span> mV</div>
+                  <!-- feature-161 (lot A) : miroir pH — cible masquée hors Auto. -->
+                  <div class="compact-target" id="orp-compact-target-row">Cible: <span id="compact-orp-target">650</span> mV</div>
                 </div>
                 <!-- feature-147 : gate pool-chemistry (2e passage, GO SOUS
                      CONDITIONS) — dégradé ÉVALUATIF mais ASYMÉTRIQUE, posé par
@@ -428,6 +509,41 @@
                   <span class="calibration-alert__text">Calibration requise</span>
                   <a href="#/orp" class="calibration-alert__btn">Configurer</a>
                 </div>
+
+                <!-- feature-161 (lot A) — C2 : étalonnage en cours. Pas de
+                     bannière d'escalade côté ORP (pas de symétrique de
+                     phAutoManual* pour le chlore — vérifié, cf. spec). -->
+                <div class="regul-alert regul-alert--inline" id="dashboard-orp-cal-banner" role="status" aria-live="polite" hidden>
+                  <span class="regul-alert__dot" aria-hidden="true"></span>
+                  <div class="regul-alert__body">
+                    <span class="regul-alert__text">Étalonnage en cours — le mode est rétabli à la fin de l'étalonnage.</span>
+                  </div>
+                </div>
+
+                <!-- feature-161 (lot A) : sélecteur de mode — miroir EXACT du
+                     sélecteur pH (symétrie pH/ORP). C4 (gate pool-chemistry) :
+                     la bascule vers Arrêt pendant une chloration de secours
+                     ouvre une confirmation — SEULE friction du lot, gérée par
+                     bindDashboardModeSelectors() (app.js), pas ici. -->
+                <div class="segmented" id="dashboard-orp-mode" role="group" aria-label="Mode de régulation ORP">
+                  <button type="button" class="segmented__btn" data-value="automatic">Auto</button>
+                  <button type="button" class="segmented__btn" data-value="scheduled">Programme</button>
+                  <button type="button" class="segmented__btn" data-value="manual">Arrêt</button>
+                </div>
+
+                <!-- feature-161 (lot A) — C9 : miroir pH, valeurs DÉJÀ servies
+                     (orp_daily_target_ml, max_orp_ml_per_day). -->
+                <div class="detail-row" id="dashboard-orp-daily-row" hidden>
+                  <div class="detail-label">Volume quotidien</div>
+                  <div class="detail-value" id="dashboard-orp-daily-value">0 mL</div>
+                </div>
+                <div class="detail-row" id="dashboard-orp-limit-row" hidden>
+                  <div class="detail-label">Limite de sécurité</div>
+                  <div class="detail-value" id="dashboard-orp-limit-value">— mL</div>
+                </div>
+
+                <!-- feature-161 (lot A) — C7 : texte IMPOSÉ, miroir pH. -->
+                <p class="field__hint" id="dashboard-orp-stopped-hint" hidden>La régulation automatique ne dose plus. L'injection manuelle reste possible depuis les réglages.</p>
               </div>
             </div>
 
@@ -950,10 +1066,14 @@
                   </div>
                 </div>
               </div>
+              <!-- feature-161 (lot A) : libellés « Auto/Programme/Arrêt » —
+                   "Manuelle" cesse d'être un mode affiché (décision utilisateur
+                   2026-10-13). ⛔ Valeur interne "manual" INCHANGÉE (NVS, MQTT,
+                   phEnabled en miroir, config.h:146) : seul le LIBELLÉ bouge. -->
               <div class="segmented" id="ph_regulation_mode" style="margin-bottom:16px">
-                <button class="segmented__btn is-active" data-value="automatic">Automatique</button>
-                <button class="segmented__btn" data-value="scheduled">Programmée</button>
-                <button class="segmented__btn" data-value="manual">Manuelle</button>
+                <button class="segmented__btn is-active" data-value="automatic">Auto</button>
+                <button class="segmented__btn" data-value="scheduled">Programme</button>
+                <button class="segmented__btn" data-value="manual">Arrêt</button>
               </div>
 
               <div id="ph-regulation-params">
@@ -1004,8 +1124,16 @@
                 </div>
               </div>
 
-              <div id="ph-inject-section" style="display:none">
+              <!-- feature-161 (lot A) : section DÉCONDITIONNÉE du mode — « Manuelle »
+                   cesse d'être un mode, injecter à la main est une ACTION, pas un
+                   mode (décision utilisateur 2026-10-13). Visible dans les TROIS
+                   modes désormais (updatePhModeControls() ne touche plus à son
+                   display) ; neuf gardes d'evaluateManualInject() + la garde serveur
+                   C1 (automaticInjectInProgress) continuent de s'appliquer. -->
+              <div id="ph-inject-section">
                 <hr style="margin:16px 0;border:none;border-top:1px solid var(--border)">
+                <!-- C7 — texte IMPOSÉ mot pour mot (gate pool-chemistry). -->
+                <p class="muted small" style="margin-bottom:10px"><strong>Injection manuelle — disponible dans tous les modes. Les limites de sécurité s'appliquent.</strong></p>
                 <p class="muted small" style="margin-bottom:10px">
                   Démarre la pompe pH à la puissance configurée. Utile pour corriger manuellement le pH
                   ou vérifier le fonctionnement de la pompe, même si la régulation automatique est désactivée.
@@ -1070,7 +1198,11 @@
                la teinte du jeu existant réservée à « il reste quelque chose à
                faire », ni le bleu neutre (callout--info) ni le vert de succès ne
                porteraient ce sens. Texte IMPOSÉ mot pour mot (gate 5) : ⛔ aucune
-               icône, aucune reformulation, aucune décoration. -->
+               icône, aucune reformulation, aucune décoration.
+               feature-161 (lot A) : vérifié — « mise en Manuel » ici décrit un
+               ÉTAT TECHNIQUE basculé par le firmware (bug-160), pas le libellé
+               du sélecteur ("Arrêt" dans ce lot). Verrouillé par un gate
+               antérieur : INCHANGÉ. -->
           <div class="callout callout--warn flow-maintenance" id="ph-cal-switch-banner"
                role="status" aria-live="polite" hidden>
             La régulation pH et chlore a été mise en Manuel : aucun dosage pendant
@@ -1518,11 +1650,13 @@
               <h2 class="card__title">Régulation ORP</h2>
             </div>
             <div class="card__body">
-              <!-- Sélecteur 3 modes -->
+              <!-- Sélecteur 3 modes — feature-161 (lot A) : libellés
+                   « Auto/Programme/Arrêt », miroir EXACT du sélecteur pH
+                   ci-dessus. ⛔ Valeur interne "manual" INCHANGÉE. -->
               <div class="segmented" id="orp_regulation_mode" style="margin-bottom:16px">
-                <button class="segmented__btn is-active" data-value="automatic">Automatique</button>
-                <button class="segmented__btn" data-value="scheduled">Programmée</button>
-                <button class="segmented__btn" data-value="manual">Manuelle</button>
+                <button class="segmented__btn is-active" data-value="automatic">Auto</button>
+                <button class="segmented__btn" data-value="scheduled">Programme</button>
+                <button class="segmented__btn" data-value="manual">Arrêt</button>
               </div>
 
               <!-- Sous-bloc Automatique -->
@@ -1555,9 +1689,13 @@
                 </div>
               </div>
 
-              <!-- Sous-bloc Injection manuelle (uniquement en mode Manuelle) -->
-              <div id="orp-inject-section" style="display:none">
+              <!-- Sous-bloc Injection manuelle — feature-161 (lot A) : section
+                   DÉCONDITIONNÉE du mode (miroir pH ci-dessus). « Manuelle » cesse
+                   d'être un mode, injecter à la main est une ACTION, pas un mode. -->
+              <div id="orp-inject-section">
                 <hr style="margin:16px 0;border:none;border-top:1px solid var(--border)">
+                <!-- C7 — texte IMPOSÉ mot pour mot (gate pool-chemistry). -->
+                <p class="muted small" style="margin-bottom:10px"><strong>Injection manuelle — disponible dans tous les modes. Les limites de sécurité s'appliquent.</strong></p>
                 <p class="muted small" style="margin-bottom:10px">
                   Démarre la pompe ORP à la puissance configurée. Utile pour corriger manuellement le taux
                   de chlore ou vérifier le fonctionnement de la pompe. Cliquez à nouveau sur le bouton pour
@@ -1616,7 +1754,9 @@
                mécanisme générique que la page pH (cf. commentaire jumeau
                ci-dessus), même texte imposé (gate 5 : « C14 révoquée », identique
                que le produit étalonné soit pH ou ORP — les deux boucles sont
-               basculées dans les deux cas). -->
+               basculées dans les deux cas).
+               feature-161 (lot A) : même vérification que la page pH —
+               texte INCHANGÉ. -->
           <div class="callout callout--warn flow-maintenance" id="orp-cal-switch-banner"
                role="status" aria-live="polite" hidden>
             La régulation pH et chlore a été mise en Manuel : aucun dosage pendant

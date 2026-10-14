@@ -614,7 +614,7 @@ sur la journée de filtration programmée est affiché discrètement.</p>
 
 <h4>La carte «&nbsp;Débit d'injection pH&nbsp;»</h4>
 
-<p><em>Nouveau en 2.46.</em> En mode <strong>Automatique</strong>, une carte
+<p><em>Nouveau en 2.46.</em> En mode <strong>Auto</strong>, une carte
 présente en un seul endroit tout ce que la régulation a en tête. Elle
 remplace quatre morceaux qui s'étaient empilés au fil des versions
 (rattrapage, dose apprise, débit soutenable, bandeau de limite).</p>
@@ -674,24 +674,32 @@ débit d'usine.</p>
 juste sous la carte, appelle une action de votre part (chapitre&nbsp;4).</p>
 
 <p><strong>Ce que vous pouvez faire</strong> — choisir le mode de
-régulation&nbsp;:</p>
+régulation&nbsp;: <strong>Auto</strong>, <strong>Programme</strong> ou
+<strong>Arrêt</strong> <em>(nouveaux noms depuis la 2.77&nbsp;; «&nbsp;Arrêt&nbsp;»
+remplace «&nbsp;Manuelle&nbsp;», qui laissait croire qu'on dose à la main — ce
+n'est plus un mode, c'est un geste décrit plus bas)</em>&nbsp;:</p>
 
 <ul>
-  <li><strong>Automatique</strong> — l'appareil vise votre consigne, à
+  <li><strong>Auto</strong> — l'appareil vise votre consigne, à
   choisir parmi quatre positions&nbsp;: 7,20, 7,30, 7,40 ou 7,50. Un clic
   suffit, la valeur est enregistrée immédiatement. Ce que la régulation a en
   tête se lit dans la carte «&nbsp;Débit d'injection pH&nbsp;» juste
   au-dessus — pure information, rien à régler.</li>
-  <li><strong>Programmée</strong> — un volume quotidien fixe est réparti
+  <li><strong>Programme</strong> — un volume quotidien fixe est réparti
   sur les heures de filtration, sans regarder la mesure. Utile le temps de
   remplacer une sonde. Le volume non injecté avant minuit est perdu, jamais
   reporté.</li>
-  <li><strong>Manuelle</strong> — plus aucune régulation automatique&nbsp;;
-  vous déclenchez vous-même des injections d'un volume choisi (bouton
-  ▶&nbsp;Injecter, bouton ⏹ pour arrêter à tout moment). Les sécurités
-  restent actives&nbsp;: pas d'injection sans filtration, et les limites
-  journalières et horaires s'appliquent aussi au manuel.</li>
+  <li><strong>Arrêt</strong> — la régulation automatique ne dose plus.</li>
 </ul>
+
+<p>Dans <strong>les trois modes</strong> désormais <em>(nouveau en 2.77)</em>,
+un bloc «&nbsp;Injection manuelle&nbsp;» reste disponible sur cette page&nbsp;:
+vous déclenchez vous-même une injection d'un volume choisi (bouton
+▶&nbsp;Injecter, bouton ⏹ pour arrêter à tout moment), que la régulation
+automatique soit en train de doser ou non. Les sécurités restent actives&nbsp;:
+pas d'injection sans filtration, les limites journalières et horaires
+s'appliquent aussi au manuel, et une injection manuelle est refusée si une
+injection automatique est déjà en cours sur la même pompe.</p>
 
 <div class="box">
   <span class="box-title">Rattrapage, dose apprise, refus de doser…</span>
@@ -855,10 +863,11 @@ n'existe pas de plage universelle du potentiel de désinfection — la bonne
 cible dépend de votre eau.</p>
 
 <p><strong>Ce que vous pouvez faire</strong> — les trois mêmes modes que le
-pH&nbsp;: <strong>Automatique</strong> (l'appareil tient votre cible en
-millivolts), <strong>Programmée</strong> (volume quotidien de chlore réparti
-sur la filtration, sans regarder la mesure) et <strong>Manuelle</strong>
-(injections à la demande). Le bouton «&nbsp;<strong>Calibrer la
+pH&nbsp;: <strong>Auto</strong> (l'appareil tient votre cible en
+millivolts), <strong>Programme</strong> (volume quotidien de chlore réparti
+sur la filtration, sans regarder la mesure) et <strong>Arrêt</strong>
+(plus aucune régulation automatique — l'injection manuelle, elle, reste
+disponible dans les trois modes, voir plus haut). Le bouton «&nbsp;<strong>Calibrer la
 sonde</strong>&nbsp;» ouvre, comme sur la page pH, un écran dédié qui masque
 le reste de la page le temps du réglage (lien de retour en haut et en bas) —
 mais ici une seule carte, car l'ORP n'a pas de correction manuelle de mesure.
@@ -878,7 +887,7 @@ bouton de fermeture pour la rétablir, même rappel si vous l'oubliez.</p>
 
 <h4>La carte «&nbsp;Débit d'injection ORP&nbsp;»</h4>
 
-<p><em>Nouveau en 2.46.</em> En mode <strong>Automatique</strong>, la page
+<p><em>Nouveau en 2.46.</em> En mode <strong>Auto</strong>, la page
 chlore présente la même carte que la page pH, mais avec
 <strong>deux lignes seulement</strong>&nbsp;: «&nbsp;Écart courant&nbsp;» et
 «&nbsp;Demande&nbsp;». Ce n'est pas une version au rabais&nbsp;: le chlore est
@@ -1062,7 +1071,7 @@ pH déjà trop bas pour recevoir de l'acide). Marche à suivre&nbsp;:
 réactif, la sonde, le produit), puis cliquez
 <strong>«&nbsp;Acquitter l'alerte&nbsp;»</strong>. L'acquittement ne dose
 rien et ne réactive rien&nbsp;: il vous rend simplement le choix du mode —
-c'est vous qui repassez en Automatique quand la situation est comprise.
+c'est vous qui repassez en Auto quand la situation est comprise.
 Tant que l'alerte n'est pas acquittée, tout retour en automatique est
 refusé, y compris depuis la domotique.</p>
 
@@ -1092,8 +1101,9 @@ pas.</p>
 sonde muette), le bandeau propose en plus un bouton
 «&nbsp;Activer la chloration de secours&nbsp;» — voir ci-dessous. Une
 confirmation reste nécessaire avant toute activation. Si la régulation du
-chlore est en mode Manuel, le bandeau l'indique à la place&nbsp;: la
-chloration de secours n'est pas disponible tant que vous dosez vous-même.
+chlore est en mode Arrêt, le bandeau l'indique à la place&nbsp;: la
+chloration de secours n'est pas disponible tant que la régulation automatique
+ne tourne pas.
 <strong>Depuis la version&nbsp;2.62</strong>, ce bouton n'est plus proposé
 pendant la simple attente de reprise après un arrêt de filtration (devenue
 courte et annoncée à l'écran, voir chapitre&nbsp;3) — un volume fixe de
@@ -1155,8 +1165,8 @@ au-delà, rien ne prouve que doser davantage aide (voir ci-dessous).</p>
   d'acide à l'aveugle, sur une mesure qu'on soupçonne déjà, ne se reprend
   pas&nbsp;: ce risque n'est pas pris.</li>
   <li><strong>Ce mode n'est pas disponible si la régulation du chlore est en
-  mode Manuel</strong> (vous dosez déjà vous-même — l'activer en plus
-  doserait deux fois).</li>
+  mode Arrêt</strong> (la régulation automatique ne tourne pas — activer la
+  chloration de secours par-dessus n'aurait pas de sens).</li>
 </ul>
 
 <p>Le mode se termine de lui-même de trois façons&nbsp;: vous l'arrêtez
@@ -1166,8 +1176,8 @@ faire confiance à la régulation automatique, qui a déjà repris selon votre
 configuration habituelle)&nbsp;; ou les mesures de chlore redeviennent
 fiables pendant 30&nbsp;minutes d'affilée, auquel cas le mode se désactive
 automatiquement et la régulation automatique reprend. Dans tous les cas,
-votre réglage habituel du mode de régulation chlore (Automatique ou
-Programmée) <strong>n'est jamais modifié</strong>&nbsp;: la chloration de
+votre réglage habituel du mode de régulation chlore (Auto ou
+Programme) <strong>n'est jamais modifié</strong>&nbsp;: la chloration de
 secours est une surcouche temporaire, pas un changement de configuration.</p>
 
 <h3>… une pastille annonce «&nbsp;Calibration requise&nbsp;» ou «&nbsp;critère hors norme&nbsp;»&nbsp;?</h3>

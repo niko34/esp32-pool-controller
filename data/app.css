@@ -884,6 +884,13 @@ canvas:hover {
   padding: 8px 16px;
   border-radius: 10px;
   flex: 1 1 auto;
+  /* feature-161 (lot A) : défaut latent corrigé ICI (règle générique, pas une
+     instance de plus) — seule .segmented--num l'imposait jusque-là
+     (feature-153 B16 avait documenté l'absence comme « vérifiée », pas
+     « acceptable » ; cf. #trace_rate_select ci-dessous, devenu redondant).
+     Cible tactile WCAG 2.5.8 sur TOUT sélecteur segmenté, y compris les
+     pages de réglage existantes. */
+  min-height: 44px;
 
   /* Typography */
   color: var(--muted);
@@ -894,6 +901,35 @@ canvas:hover {
   cursor: pointer;
   position: relative;
   transition: all var(--transition-base);
+}
+
+/* feature-161 (revue, 2026-10-13) : VÉRIFIÉ — #settings-segmented (9 onglets)
+   grandit depuis que min-height:44px est devenu générique ci-dessus, mais ne
+   DÉBORDE pas à 390 px. Les boutons sont en `flex-wrap`, `white-space` normal
+   (défaut) : le texte le plus long de la barre, « Régulation pH / ORP », a
+   pour mot le plus large « Régulation » (~80 px) — largement sous la largeur
+   d'une colonne à 50 % (~183 px à 390 px d'écran), donc flex-shrink ne force
+   AUCUN débordement horizontal. L'effet observé est une hauteur de barre plus
+   grande (le texte long passe sur deux lignes dans sa pastille, qui s'étire
+   par le `align-items` par défaut) — c'est l'effet ATTENDU de la cible
+   tactile WCAG 2.5.8 ajoutée ci-dessus, pas une régression. Aucun changement
+   appliqué ici : seule une colonne plus étroite (grille à 3) réduirait la
+   hauteur totale, au prix d'un libellé encore plus souvent sur deux lignes —
+   arbitrage visuel hors du périmètre de ce correctif (ux-ui-designer si
+   jugé nécessaire). */
+
+/* feature-161 (lot A) : sélecteur verrouillé (escalade de sécurité pH en
+   cours OU étalonnage en cours) — jamais `hidden`/masqué (gate C3), seulement
+   neutralisé. Le segment actif passe en teinte --warn : il porte la MÊME
+   information que le bandeau au-dessus, pas seulement une couleur
+   (daltonisme couvert). */
+.segmented__btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+.segmented__btn:disabled.is-active {
+  background: var(--warn);
+  opacity: 1;
 }
 
 @media (max-width: 640px) {
@@ -2186,6 +2222,13 @@ input.is-computed:disabled {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
   gap: 14px;
+  /* feature-161 (lot A) : le contenu d'une carte pH/ORP varie désormais avec
+     le mode (hauteur non constante) — sans ceci, `align-items: stretch`
+     (défaut grille) étire TOUTES les cartes d'une ligne sur la plus haute.
+     Vérifié : sous 980px la grille passe à 1 colonne (ligne 2086 ci-dessous),
+     donc aucun étirement possible sur mobile — le problème n'existe
+     qu'au-dessus de ce seuil. */
+  align-items: start;
 }
 
 /* 2026 Status cards - enhanced hover states */
@@ -2882,9 +2925,11 @@ input.is-computed:disabled {
   vertical-align: -1px;
 }
 
-/* feature-153 (B16) : .segmented__btn générique n'impose PAS de min-height ≥
-   44 px (seule la variante --num le fait) — vérifié, pas supposé. Cible
-   tactile WCAG 2.5.8 sur CETTE instance (sélecteur de cadence). */
+/* feature-153 (B16) : ce correctif ciblait #trace_rate_select parce que la
+   règle générique .segmented__btn n'imposait PAS encore min-height ≥ 44 px.
+   feature-161 (lot A) a comblé ce défaut dans la règle générique elle-même —
+   cette instance est désormais REDONDANTE mais inoffensive (même valeur) ;
+   conservée pour ne pas réduire le périmètre de ce lot à une carte. */
 #trace_rate_select .segmented__btn {
   min-height: 44px;
 }
@@ -3216,12 +3261,28 @@ input.is-computed:disabled {
   transition: all var(--transition-fast);
 }
 
+/* feature-161 (lot A) : défaut évité, pas réintroduit — `display:flex` d'un
+   AUTEUR bat TOUJOURS `[hidden]{display:none}` de l'agent utilisateur, quelle
+   que soit la spécificité (priorité d'ORIGINE dans la cascade). Même motif
+   que .regul-alert[hidden] / .dose-block-banner[hidden] ci-dessous : toute
+   `.detail-row` neuve pilotée par `hidden` (cartes pH/ORP du tableau de bord)
+   exige ce correctif, sans quoi elle resterait visible malgré l'attribut. */
+.detail-row[hidden] { display: none !important; }
+
 .detail-row:hover {
   padding-left: 4px;
   border-left: 2px solid var(--accent-light);
 }
 
-.detail-row:last-of-type {
+/* feature-161 (correctif review, 2026-10-13) : `:last-of-type` cible le
+   dernier élément du bon TYPE (div) parmi les enfants, masqué ou non — si
+   cette rangée est masquée par [hidden] (ex. #dashboard-ph-limit-row hors
+   mode Programme), la bordure est retirée du MAUVAIS élément et la rangée
+   VISIBLE précédente garde une bordure résiduelle. `:has()` cible la rangée
+   qui n'a AUCUNE rangée .detail-row VISIBLE après elle — visible ou masquée,
+   c'est donc toujours le bon élément qui perd sa bordure (et le comportement
+   SANS rangée masquée est inchangé). */
+.detail-row:not([hidden]):not(:has(~ .detail-row:not([hidden]))) {
   border-bottom: none;
 }
 
@@ -3268,11 +3329,11 @@ input.is-computed:disabled {
   margin-left: auto;
 }
 
-/* feature-140 : sous-blocs du widget « Modes temporaires » (Boost + Chloration
-   de secours) — en-têtes internes sans le padding latéral du
-   card__status-header top-level (déjà fourni par le card__body englobant).
-   Aucune variable CSS nouvelle : réutilise --stroke/--border existants. */
-#temp-mode-boost .card__status-header,
+/* feature-140 : en-tête interne du sous-bloc « Chloration de secours »
+   (#temp-mode-rescue, hors périmètre feature-161) — sans le padding latéral
+   du card__status-header top-level (déjà fourni par le card__body englobant).
+   feature-161 (lot B) : le Boost (#temp-mode-boost) n'utilise plus ce
+   gabarit — voir .card__option ci-dessous. */
 #temp-mode-rescue .card__status-header {
   padding: 0 0 12px;
   margin-bottom: 12px;
@@ -3281,6 +3342,53 @@ input.is-computed:disabled {
   border: none;
   border-top: 1px solid var(--border);
   margin: 16px 0;
+}
+
+/* feature-161 (lot B) : sous-bloc « OPTION » mineure de la carte Filtration
+   (Boost) — fond légèrement teinté (--panel2) + liseré --stroke pour se
+   distinguer du corps de carte sans rivaliser avec elle (ux-ui-designer,
+   2026-10-13). Réutilisé tel quel pour toute future option mineure d'une
+   carte (ADR implicite : un seul gabarit « option », pas un par carte). */
+.card__option {
+  background: var(--panel2);
+  border: 1px solid var(--stroke);
+  border-radius: 12px;
+  padding: 12px 14px;
+}
+
+.card__option-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.card__option-heading {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+/* Discret et en retrait — PAS de majuscules forcées sur le titre (contraste
+   voulu avec .card__status-label qui, lui, capitalise). */
+.card__option-eyebrow {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+
+.card__option-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.card__option .detail-row {
+  padding: 8px 0;
 }
 
 @keyframes slideIn {

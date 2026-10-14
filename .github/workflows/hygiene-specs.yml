@@ -329,3 +329,25 @@ jobs:
       # nominale, le défaut Δ60 s/Δ20 s reconstitué sous une autre forme).
       - name: Contrôle des vecteurs de stabilité de calibration
         run: ./tools/check_cal_stability_vectors.sh
+
+  resolve-selector-mode-vectors:
+    name: Vecteurs de mode affiché après bascule (feature-161, correctif bloquant)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # Même script en local (`./tools/check_resolve_selector_mode_vectors.sh`)
+      # et en CI. Couvre la fonction PURE `resolveSelectorMode(requested,
+      # lastConfirmed, outcome)` qui décide quel mode le sélecteur pH/ORP doit
+      # AFFICHER après une tentative de bascule — succès serveur (mode
+      # demandé), refus serveur ET panne réseau (même traitement que
+      # sendConfigDetailed, dernier mode confirmé), annulation de la
+      # confirmation C4 « Interrompre la chloration de secours ? » (dernier
+      # mode confirmé), et dernier mode confirmé inconnu (restitué tel quel).
+      # Corrige un bloquant de revue : annuler cette confirmation laissait le
+      # sélecteur ORP affiché sur « Arrêt » alors que la régulation
+      # continuait de tourner — un sélecteur qui ment, dans le seul cas où ça
+      # coûte cher.
+      - name: Contrôle des vecteurs de mode affiché après bascule
+        run: ./tools/check_resolve_selector_mode_vectors.sh

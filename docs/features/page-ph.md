@@ -15,10 +15,10 @@ En état courant, cinq zones :
 
 1. **Bloc Statistiques** (bandeau compact, sans titre) — valeur pH **officielle** courante en grand (1 décimale, cohérent avec le tableau de bord) + **ligne brute discrète** « brut · maj » + **rangée de chips** : **chip unique sonde + calibration** cliquable (cf. [Chip d'état sonde](#chip-détat-sonde-feature-024)) + dosage du jour (barre de progression). Depuis feature-034, le chip de calibration distinct est **supprimé** : son information est fusionnée dans le chip sonde. ⚠️ **Depuis la refonte de la chaîne de mesure (feature-152, v2.68.0)**, il n'existe plus de chip ni de modal d'état du **filtre** distincts : voir [Ce qui a été retiré, fusionné, conservé](#ce-qui-a-été-retiré-fusionné-conservé-feature-152-v2680). Depuis la **v2.37.0** (feature-096), ce bloc se termine par « **Atteinte de la cible** » (`#ph-ttt-block`) : ligne de valeur + bande de 7 pastilles — voir [Atteinte de la cible](#atteinte-de-la-cible-feature-096-v2370).
 2. **Carte Débit d'injection pH** (`#ph-card-dosing`, feature-092, v2.46.0) — insérée **entre** le bloc Statistiques et la carte Régulation, visible **en mode automatique uniquement** : quatre lignes (dose de base apprise, écart courant, rattrapage accumulé, **Demande** en total) et une pastille d'état à 5 priorités. Voir [Carte « Débit d'injection pH »](#carte--débit-dinjection-ph--ph-card-dosing-feature-092-v2460).
-3. **Carte Régulation pH** — sélecteur de mode : `Automatique`, `Programmée`, `Manuelle`. Sous-blocs conditionnels :
-   - **Automatique** : pH cible — **contrôle segmenté 4 positions** `#ph_target_group` depuis la v2.25.0 (7,20 / 7,30 / 7,40 / 7,50), avec hint de plage `#ph_target_hint`. Voir [Consigne pH : contrôle segmenté](#consigne-ph--contrôle-segmenté-v2250) et [Règles firmware appliquées](#règles-firmware-appliquées).
-   - **Programmée** : volume quotidien en mL (borné par `max_ph_ml_per_day`) + bouton Sauvegarder. Depuis la v2.8.0 (feature-011) : ligne « **Débit calculé : X,X mL/min** » (`#ph_scheduled_flow_line` / `#ph_scheduled_flow_value`, alimentée par le champ WS `ph_scheduled_flow_ml_per_min` ; affiche « — » avec `title` « Hors plage de filtration ou données indisponibles » quand la valeur est `null`) + hint statique « Le volume non injecté avant minuit est perdu (pas de report au lendemain). ». Volontairement **pas** de « sur Y h restantes » côté client : l'horloge du navigateur peut différer de celle de l'ESP32, seul le débit (source firmware) est affiché.
-   - **Manuelle** : bloc Injection manuelle (volume + bouton ▶ Injecter / ⏹ Stopper).
+3. **Carte Régulation pH** — sélecteur de mode : `Auto`, `Programme`, `Arrêt` (libellés révisés en **feature-161, v2.77.0** — étaient `Automatique`, `Programmée`, `Manuelle` ; voir [Libellés révisés](#libellés-révisés-auto--programme--arrêt-feature-161-v2770)). Sous-blocs conditionnels :
+   - **Auto** : pH cible — **contrôle segmenté 4 positions** `#ph_target_group` depuis la v2.25.0 (7,20 / 7,30 / 7,40 / 7,50), avec hint de plage `#ph_target_hint`. Voir [Consigne pH : contrôle segmenté](#consigne-ph--contrôle-segmenté-v2250) et [Règles firmware appliquées](#règles-firmware-appliquées).
+   - **Programme** : volume quotidien en mL (borné par `max_ph_ml_per_day`) + bouton Sauvegarder. Depuis la v2.8.0 (feature-011) : ligne « **Débit calculé : X,X mL/min** » (`#ph_scheduled_flow_line` / `#ph_scheduled_flow_value`, alimentée par le champ WS `ph_scheduled_flow_ml_per_min` ; affiche « — » avec `title` « Hors plage de filtration ou données indisponibles » quand la valeur est `null`) + hint statique « Le volume non injecté avant minuit est perdu (pas de report au lendemain). ». Volontairement **pas** de « sur Y h restantes » côté client : l'horloge du navigateur peut différer de celle de l'ESP32, seul le débit (source firmware) est affiché.
+   - **Les trois modes** : bloc Injection manuelle (volume + bouton ▶ Injecter / ⏹ Stopper) — ⚠️ **déconditionné du mode depuis feature-161** (était visible en Manuelle seulement) : voir [Injection manuelle déconditionnée du mode](#injection-manuelle-déconditionnée-du-mode-feature-161-v2770).
    - Le bloc « Rattrapage accumulé » qui vivait en pied de cette carte (`#ph-integral-section`, v2.26.0) est **retiré** depuis la v2.46.0 : son contenu est passé dans la carte « Débit d'injection pH ».
 4. **Carte Historique** — graphique uPlot (feature-043, ex-Chart.js), plages `Tout` / `30j` / `7j` / `24h`. Depuis la **v2.28.1** (feature-083) : bande fixe **7,2-7,6** (plage idéale de l'eau) + **ligne de consigne pointillée** à `ph_target` — voir [Repères du graphique d'historique](#repères-du-graphique-dhistorique-feature-083-v2281). Ce graphique trace la mesure **brute** et le reste en v2.38.0 — voir [Le graphique d'historique de cette page reste brut](#le-graphique-dhistorique-de-cette-page-reste-brut-feature-095-v2380).
 5. **Point d'entrée du mode réglage** (`#ph_cal_trigger_btn`, « **Calibration et correction de la mesure** ») — sous la rangée de chips. **Ni la carte Calibration ni la carte Correction manuelle de la mesure ne sont visibles dans cet état** (changement v2.72.0 — avant cette version, la carte de correction était **toujours affichée** entre Régulation et Historique).
@@ -561,19 +561,66 @@ Présent de la feature-025 à la v2.67.x, le chip cliquable `#ph-filter-chip` + 
 
 #### Parcours en cas de refus 409 sur le sélecteur de mode
 
-Tant que la trace existe, le firmware **refuse (409)** toute sortie du mode `manual` (voir [API.md](../API.md#post-save-config--critical)). Le clic sur le segmented `#ph_regulation_mode` est donc asynchrone et gère ce refus :
+⚠️ **Mécanisme partagé depuis feature-161 (v2.77.0)** — ce qui suit décrivait jusque-là une logique
+propre au segmented `#ph_regulation_mode` de cette page ; elle vit désormais dans une fonction
+**unique** `applyRegulationMode(kind, mode)` (`data/app.js`), appelée **identiquement** par ce
+segmented **et** par le sélecteur de la carte pH du [tableau de bord](page-dashboard.md#sélecteur-de-mode-depuis-les-cartes-ph--orp--filtration-feature-161-v2770)
+— aucune seconde copie, aucun second chemin d'écriture.
 
-1. Mémorisation du mode précédent, affichage optimiste du mode cliqué.
-2. `POST /save-config {"ph_regulation_mode": …}` via `sendConfigDetailed()` (qui remonte désormais `status` et le champ `message` du corps d'erreur, en plus de `error`).
-3. Sur `409` : **revert** de `window._config` **et** du segmented sur le mode réel, toast portant le message français du serveur, puis **défilement automatique vers la bannière** (`scrollIntoView`) — l'utilisateur est renvoyé vers la cause et le bouton d'acquittement.
-4. Sur toute autre erreur : revert + toast générique.
+Tant que la trace d'escalade existe, le firmware **refuse (409)** toute sortie du mode `manual`
+(voir [API.md](../API.md#post-save-config--critical)). Un second verrou, **nouveau en feature-161
+(gate `pool-chemistry` C2)**, refuse également tout changement de mode **pendant une session
+d'étalonnage** (`calSwitchActive`) — voir [pump-controller.md](../subsystems/pump-controller.md#verrou-étalonnage-sur-le-changement-de-mode-bug-161-gate-c2).
+Le clic sur le segmented (ou la carte) est donc asynchrone et gère ces refus :
+
+1. Mémorisation du mode précédent (`previousMode`, lu depuis `window._config` — **jamais** un repli deviné si la config n'est pas encore chargée), affichage optimiste du mode cliqué.
+2. `POST /save-config {"ph_regulation_mode": …}` via `sendConfigDetailed()` (qui remonte `status` et le champ `message` du corps d'erreur, en plus de `error`).
+3. Sur `409` (trace d'escalade **ou** étalonnage en cours) : **revert** de `window._config` **et** du segmented sur le mode réel (décision pure `resolveSelectorMode(requested, lastConfirmed, outcome)`, testée par vecteurs — voir [page-dashboard.md](page-dashboard.md#un-sélecteur-qui-ment-est-pire-que-pas-de-sélecteur--le-défaut-qui-a-mordu-en-revue)), toast portant le message français du serveur. **Seul le refus d'escalade** déclenche en plus un **défilement automatique vers la bannière** (`scrollIntoView`) — l'utilisateur est renvoyé vers la cause et le bouton d'acquittement ; le refus d'étalonnage ne pointe vers aucun bouton d'acquittement (il n'y en a pas : le mode est rétabli de lui-même à la sortie de la session, voir [bug-160](#mode-réglage-calibration--correction-feature-156-v2720)).
+4. Sur toute autre erreur (panne réseau) : même revert + toast générique — **sendConfigDetailed() traite refus serveur et panne réseau de façon identique**.
 5. Dans tous les cas de refus, `loadConfig()` resynchronise l'UI sur l'état **réel** du contrôleur.
 
 > Le toast de refus **ne propose pas** d'acquitter en un clic : l'acquittement doit rester un acte **lu et réfléchi** (bouton de la bannière, qui affiche la cause), pas un réflexe pour débloquer un clic refusé.
 
-> ⚠️ L'acquittement n'est possible **que depuis cette interface web**. La commande MQTT/Home Assistant `ph_regulation_mode/set` est refusée sous trace et n'efface jamais rien (recommandation du gate `pool-chemistry` — voir [MQTT.md](../MQTT.md#refus-du-changement-de-mode-ph-sous-trace-de-sécurité-v2250)).
+> ⚠️ L'acquittement n'est possible **que depuis cette interface web**. La commande MQTT/Home Assistant `ph_regulation_mode/set` est refusée sous trace et n'efface jamais rien (recommandation du gate `pool-chemistry` — voir [MQTT.md](../MQTT.md#refus-du-changement-de-mode-ph-sous-trace-de-sécurité-v2250)). ✅ **Le verrou d'étalonnage (C2) couvre désormais aussi le chemin MQTT** (lot C, correctif post-livraison le jour même) — la commande MQTT équivalente était d'abord restée hors de portée de ce verrou (angle mort signalé puis fermé), voir [MQTT.md](../MQTT.md#refus-du-changement-de-mode-phorp-pendant-un-étalonnage-désormais-aussi-côté-mqtt-bug-161-lot-c) et [pump-controller.md](../subsystems/pump-controller.md#lot-c--le-verrou-couvre-désormais-mqtt-et-deux-trous-de-plus-fermés-bug-161-correctif-post-livraison).
 
 > **v2.25.0 — `collectConfig()` n'envoie plus `ph_regulation_mode` ni `ph_enabled`.** Le mode a son **propre** chemin de sauvegarde (clic sur le segmented) ; le réémettre dans le payload global avec un repli **en dur** sur `"automatic"` réarmait la régulation depuis un onglet périmé (incident du 2026-08-25 : bascule de sécurité annulée et trace effacée sur une simple consultation de l'app). Même patron que feature-074 pour `pumpN_max_duty_pct`. `ph_enabled` n'est en outre plus accepté en écriture par le firmware.
+
+### Libellés révisés : Auto / Programme / Arrêt (feature-161, v2.77.0)
+
+Décision utilisateur du 2026-10-13 : le sélecteur affiche **Auto / Programme / Arrêt**, à la place
+de **Automatique / Programmée / Manuelle**. « Manuelle » laissait croire qu'on dose à la main ;
+« Arrêt » dit que **la régulation automatique ne fonctionne plus**, ce qui est plus vrai — le mode
+ne répond qu'à une seule question, *la régulation automatique tourne-t-elle ?*. ⛔ **La valeur
+interne `manual` est INCHANGÉE** — NVS, MQTT, miroir `ph_enabled` ([`config.h:146`](../../src/config.h:146)) : seul le libellé
+bouge. Même renommage, même invariant, côté [ORP](page-orp.md) et côté
+[Home Assistant](../MQTT.md#libellés-français-des-selects-mode-régulation-phorp-bug-ha-regulation-mode-labels-v2173)
+(republication de la découverte MQTT requise, [ADR-0085](../adr/0085-republication-decouverte-ha-sur-empreinte.md)).
+
+### Injection manuelle déconditionnée du mode (feature-161, v2.77.0)
+
+Jusqu'à la v2.76.x, le bloc Injection manuelle (`#ph-inject-section`) n'était **affiché qu'en mode
+Manuelle** (`inject.style.display = mode === "manual" ? "" : "none"`, purement cosmétique — aucune
+des neuf gardes d'`evaluateManualInject()` ne regardait le mode, et aucune route d'injection ne le
+vérifiait non plus). Décision utilisateur du 2026-10-13 : « Manuelle ne devrait pas être un mode …
+on pourrait laisser la possibilité d'injecter manuellement dans la page des réglages. » ⇒ **le bloc
+est désormais visible dans les trois modes**, avec un texte imposé au-dessus du bouton Injecter :
+« Injection manuelle — disponible dans tous les modes. Les limites de sécurité s'appliquent. »
+(condition C7 du gate `pool-chemistry`).
+
+⚠️ **Déconditionner ce bloc a rendu atteignable une garde manquante.** Rien n'empêchait jusqu'ici
+d'injecter à la main **par-dessus un dosage automatique en cours** — le trou existait déjà dans
+`evaluateManualInject()`, mais était **caché** par le masquage du bouton hors mode `manual` (le
+mode automatique ne pouvait jamais être actif en même temps que le bouton visible). Une **nouvelle
+garde serveur** (rang 4, `AutomaticInjectInProgress`) a donc été ajoutée **avant** de démasquer —
+voir [pump-controller.md](../subsystems/pump-controller.md#garde-rang-4--injection-automatique-en-cours-bug-161-gate-c1).
+C'est le défaut le plus intéressant du lot : une simplification d'interface a failli ouvrir un
+chemin de dosage qui n'avait jamais été accessible en pratique.
+
+Conséquence pour l'utilisateur : **injecter à la main pendant que l'automatique régule est
+désormais possible et visible** (les compteurs journaliers/horaires/anti-rafale sont **partagés**
+entre auto et manuel, donc les limites de sécurité tiennent dans tous les cas) — refusé uniquement
+si une injection **automatique** est déjà en train de doser sur la même pompe, message : « Une
+injection automatique est en cours — réessayez dans un instant. »
 
 ## Chip d'état sonde (feature-024)
 

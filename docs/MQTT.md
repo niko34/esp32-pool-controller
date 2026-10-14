@@ -180,11 +180,41 @@ Quand le firmware a basculé la régulation pH en `manual` par sécurité (3 ref
 
 1. **refusée** — `mqttCfg.phRegulationMode` reste `manual`, rien n'est écrit en NVS ;
 2. journalisée en `warning` : `Mode régulation pH REFUSÉ (MQTT → automatic) : bascule de sécurité pH non acquittée — acquittez l'alerte sur la page pH de l'interface web avant de réactiver la régulation. Trace active : …` ;
-3. suivie d'un `publishTargetState()` qui **resynchronise Home Assistant** sur le mode **réel** — le select HA revient donc de lui-même sur « Manuelle », il ne reste pas figé sur une valeur fantôme.
+3. suivie d'un `publishTargetState()` qui **resynchronise Home Assistant** sur le mode **réel** — le select HA revient donc de lui-même sur « Arrêt » (libellé révisé en feature-161, v2.77.0 — était « Manuelle »), il ne reste pas figé sur une valeur fantôme.
 
 La trace n'est **jamais** effacée par MQTT (comportement changé : en v2.20.3, une commande HA acquittait la trace). **Motif** : un select Home Assistant est un clic **distant** qui n'affiche ni la cause de la bascule ni le refus ; pire, une automation ou une simple **restauration d'état HA au redémarrage** rejouerait `automatic` et désarmerait la sécurité **sans témoin**. L'acquittement passe donc obligatoirement par le bouton de la bannière de la [page pH](features/page-ph.md) (`ph_auto_manual_ack`), seul endroit où la cause est affichée. Voir [ADR-0048](adr/0048-seuils-ph-fixes-derives-de-la-plage-de-consigne.md).
 
 Entrer ou rester en `manual` reste toujours possible depuis HA.
+
+### Refus du changement de mode pH/ORP pendant un étalonnage, désormais aussi côté MQTT (bug-161, lot C)
+
+⚠️ **Comportement nouveau et visible (v2.77.0, correctif post-livraison).** Signalé puis instruit
+par le gate `pool-chemistry` : le verrou étalonnage (bug-161, gate C2) n'était vérifié qu'au chemin
+HTTP `/save-config` — une commande MQTT `{base}/ph\|orp_regulation_mode/set` reçue **pendant** une
+session d'étalonnage en cours était acceptée puis **écrasée en silence** à la sortie de la session
+(bug-160 restaure le mode antérieur mémorisé). Fermé par le **même** verrou pur
+(`calSwitchBlocksModeChange()`) que le chemin HTTP, appelé au **même rang** (après le gate
+`phAutoManual*` existant, inchangé) dans `drainCommandQueue()`.
+
+**Comportement pendant une session d'étalonnage ouverte** (`calSwitchActive`) :
+
+1. Une commande qui tenterait de **sortir** de `manual` (ex. `automatic`, `scheduled`) est
+   **refusée** — `mqttCfg.ph\|orpRegulationMode` reste `manual`, rien n'est écrit en NVS ;
+2. journalisée en `warning` : `Mode régulation pH|ORP REFUSÉ (MQTT → <mode>) : étalonnage en cours — le mode est rétabli à la fin de l'étalonnage.` ;
+3. suivie d'un `publishTargetState()` qui **resynchronise Home Assistant** sur le mode réel
+   (`manual`, affiché « Arrêt ») — le select HA revient de lui-même, il ne reste pas figé.
+4. Une commande entrante `manual` reste **acceptée** (no-op souhaitable : elle ne change rien
+   puisque le mode est déjà `manual` pendant la session).
+
+⚠️ **Une automation Home Assistant qui rejoue `automatic` (ex. restauration d'état au redémarrage
+de HA, **sans aucune action humaine**) reste donc sans effet pendant un étalonnage** — c'est
+précisément le scénario qui a motivé cette garde : une sonde pH ou ORP trempe dans un tampon
+d'étalonnage, et rien ne doit pouvoir y faire croire que c'est l'eau du bassin.
+
+⛔ **Ce verrou refuse, il ne réconcilie jamais** : il ne met **jamais** à jour la mémoire de mode
+antérieur à l'étalonnage (`ph/orpCalSwitchPrevMode`) — un second chemin d'écriture vers cette
+mémoire de sécurité serait exactement le piège qu'il ferme. Détail et motif général :
+[pump-controller.md](subsystems/pump-controller.md#verrou-étalonnage-sur-le-changement-de-mode-bug-161-gate-c2).
 
 ---
 
@@ -546,7 +576,7 @@ mosquitto_sub -h <broker> -t 'homeassistant/#' --remove-retained --retained-only
 
 > **Compatibilité `orp_enabled` :** le champ `orp_enabled` (booléen) est maintenu comme miroir de `orp_regulation_mode` (`true` si mode ≠ `manual`). Les automations Home Assistant qui testent la valeur de ce champ continuent de fonctionner sans modification. Le topic `{base}/orp_regulation_mode` est la source de vérité pour le mode actif.
 
-> **Libellés du select « Mode Filtration » — RÉVISÉS en feature-146 (v2.63.0, [ADR-0093](adr/0093-le-mode-de-filtration-est-la-seule-autorite.md)) :** dans Home Assistant, ce select expose désormais les libellés français **Auto / Programme / Marche / Arrêt** (alignés sur l'UI web), et non plus les valeurs brutes anglaises. La traduction est purement côté HA via templates de la discovery : `value_template` mappe l'état brut publié (`auto`/`manual`/`force`/`off`) vers le libellé affiché (avec `.get(value, value)` → un état inattendu passe sans casser), `command_template` mappe le libellé choisi vers la valeur brute envoyée sur `.../set`. **Le protocole MQTT sur le fil reste strictement `auto`/`manual`/`force`/`off`** (état publié comme commande attendue par `drainCommandQueue`) : aucune automatisation qui publie le jeton brut n'est cassée. ⚠️ **Rupture assumée pour les libellés** : les précédents (bug-ha-filtration-mode-labels, v2.15.0 — **Auto / Programmation / Manuel / Désactivé**) sont remplacés, pas ajoutés ; une automatisation HA qui appelle `select.select_option` avec un ancien libellé cesse de fonctionner. Le libellé « Manuel » pour `force` était précisément le piège relevé par l'incident du 2026-10-09 (« Manuel » désignait un mode qui **arrêtait** la pompe) — corrigé. Les selects `ph`/`orp_regulation_mode` affichent depuis v2.17.3 les libellés français **Automatique / Programmée / Manuelle** via la même technique (le fil reste `automatic`/`scheduled`/`manual`, voir bug-ha-regulation-mode-labels ci-dessous) — **non concernés** par ce lot.
+> **Libellés du select « Mode Filtration » — RÉVISÉS en feature-146 (v2.63.0, [ADR-0093](adr/0093-le-mode-de-filtration-est-la-seule-autorite.md)) :** dans Home Assistant, ce select expose désormais les libellés français **Auto / Programme / Marche / Arrêt** (alignés sur l'UI web), et non plus les valeurs brutes anglaises. La traduction est purement côté HA via templates de la discovery : `value_template` mappe l'état brut publié (`auto`/`manual`/`force`/`off`) vers le libellé affiché (avec `.get(value, value)` → un état inattendu passe sans casser), `command_template` mappe le libellé choisi vers la valeur brute envoyée sur `.../set`. **Le protocole MQTT sur le fil reste strictement `auto`/`manual`/`force`/`off`** (état publié comme commande attendue par `drainCommandQueue`) : aucune automatisation qui publie le jeton brut n'est cassée. ⚠️ **Rupture assumée pour les libellés** : les précédents (bug-ha-filtration-mode-labels, v2.15.0 — **Auto / Programmation / Manuel / Désactivé**) sont remplacés, pas ajoutés ; une automatisation HA qui appelle `select.select_option` avec un ancien libellé cesse de fonctionner. Le libellé « Manuel » pour `force` était précisément le piège relevé par l'incident du 2026-10-09 (« Manuel » désignait un mode qui **arrêtait** la pompe) — corrigé. Les selects `ph`/`orp_regulation_mode` affichaient depuis v2.17.3 les libellés français **Automatique / Programmée / Manuelle** via la même technique (le fil reste `automatic`/`scheduled`/`manual`) — ⚠️ **concernés à leur tour en feature-161 (v2.77.0)** : voir [Libellés français des selects Mode Régulation pH/ORP](#libellés-français-des-selects-mode-régulation-phorp-bug-ha-regulation-mode-labels-v2173) ci-dessous, qui documente le remplacement de « Manuelle » par « Arrêt ».
 
 > **Select « Mode Éclairage » (bug-ha-eclairage-select, v2.17.2) :** la programmation horaire de l'éclairage était exposée en `switch` ON/OFF. Elle est désormais un `select` « Mode Éclairage » avec les libellés **Programmation / Désactivé**, pour cohérence visuelle avec le select « Mode Filtration ». Même technique que ce dernier : `value_template` (`{'ON':'Programmation','OFF':'Désactivé'}.get(value, value)`) et `command_template` (`{'Programmation':'ON','Désactivé':'OFF'}`) traduisent l'affichage HA. **Le protocole MQTT sur le fil reste strictement `ON`/`OFF`** ; le booléen `lightingCfg.scheduleEnabled` et le handler `lighting_schedule` (reçoit toujours ON/OFF) sont **inchangés**. `unique_id` conservé (`poolcontroller_lighting_schedule`). Migration : un payload retain vide est publié une fois sur l'ancien topic `homeassistant/switch/{HA_DEVICE_ID}_lighting_schedule/config` pour retirer le switch orphelin de HA.
 
@@ -644,10 +674,14 @@ Deux entités HA `select` permettent de changer le mode de régulation pH / ORP 
 
 | Entité | Discovery topic | `state_topic` | `command_topic` | Détails |
 |--------|-----------------|---------------|-----------------|---------|
-| Mode Régulation pH | `homeassistant/select/poolcontroller_ph_regulation_mode/config` | `{base}/ph_regulation_mode` | `{base}/ph_regulation_mode/set` | `unique_id: poolcontroller_ph_regulation_mode`, `icon: mdi:ph`, `options: ["Automatique","Programmée","Manuelle"]` + templates (voir note ci-dessous) |
+| Mode Régulation pH | `homeassistant/select/poolcontroller_ph_regulation_mode/config` | `{base}/ph_regulation_mode` | `{base}/ph_regulation_mode/set` | `unique_id: poolcontroller_ph_regulation_mode`, `icon: mdi:ph`, `options: ["Automatique","Programmée","Arrêt"]` + templates (voir note ci-dessous) |
 | Mode Régulation ORP | `homeassistant/select/poolcontroller_orp_regulation_mode/config` | `{base}/orp_regulation_mode` | `{base}/orp_regulation_mode/set` | `unique_id: poolcontroller_orp_regulation_mode`, `icon: mdi:flash`, mêmes options + templates |
 
-> **Libellés français des selects Mode Régulation pH/ORP (bug-ha-regulation-mode-labels, v2.17.3) :** dans Home Assistant, ces deux selects exposent les libellés français **Automatique / Programmée / Manuelle** (libellés exacts de l'UI web), et non plus les valeurs brutes anglaises. Même technique que les selects « Mode Filtration » et « Mode Éclairage » : `value_template` (`{'automatic':'Automatique','scheduled':'Programmée','manual':'Manuelle'}.get(value, value)`) mappe l'état brut publié vers le libellé, `command_template` (`{'Automatique':'automatic','Programmée':'scheduled','Manuelle':'manual'}[value]`) retraduit le libellé choisi vers la valeur brute envoyée sur `.../set`. **Le protocole MQTT sur le fil reste strictement `automatic` / `scheduled` / `manual`** (topics d'état et handlers `PhRegulationMode` / `OrpRegulationMode` inchangés) : aucune automatisation Home Assistant existante n'est cassée.
+> **Libellés français des selects Mode Régulation pH/ORP (bug-ha-regulation-mode-labels, v2.17.3) :** dans Home Assistant, ces deux selects exposent les libellés français — **Automatique / Programmée / Manuelle** jusqu'à la v2.76.x, **Automatique / Programmée / Arrêt depuis la v2.77.0 (feature-161)** —, et non plus les valeurs brutes anglaises. Même technique que les selects « Mode Filtration » et « Mode Éclairage » : `value_template` (`{'automatic':'Automatique','scheduled':'Programmée','manual':'Arrêt'}.get(value, value)`) mappe l'état brut publié vers le libellé, `command_template` (`{'Automatique':'automatic','Programmée':'scheduled','Arrêt':'manual'}[value]`) retraduit le libellé choisi vers la valeur brute envoyée sur `.../set`. **Le protocole MQTT sur le fil reste strictement `automatic` / `scheduled` / `manual`** (topics d'état et handlers `PhRegulationMode` / `OrpRegulationMode` inchangés, et la valeur interne `manual` ne change pas) : aucune automatisation Home Assistant existante n'est cassée **au niveau du protocole**.
+>
+> ⚠️ **Rupture assumée pour les libellés (feature-161, décision utilisateur du 2026-10-13)** : « Manuelle » **disparaît**, remplacé par « Arrêt » — pas ajouté en plus. Une automatisation Home Assistant qui appelle `select.select_option` avec l'ancien libellé **« Manuelle » cesse de fonctionner** et doit être mise à jour côté HA ; celles qui publient directement le jeton brut `manual` sur `.../set` **ne sont pas affectées**. Motif : « Manuelle » laissait croire qu'on dose à la main depuis HA, alors que le mode ne fait qu'arrêter la régulation automatique — voir [docs/features/page-ph.md](features/page-ph.md#libellés-révisés-auto--programme--arrêt-feature-161-v2770).
+>
+> ⚠️ **Republication de la découverte OBLIGATOIRE** ([ADR-0085](adr/0085-republication-decouverte-ha-sur-empreinte.md)) : la liste d'`options` fait partie de l'empreinte de découverte (qui inclut `FIRMWARE_VERSION`) — un changement de version republie automatiquement au démarrage suivant, sans action manuelle. Sans cette republication, Home Assistant conserverait l'ancienne liste d'options (« Manuelle » visible, mais rejetée en silence par le firmware si sélectionnée — voir le `warning` ajouté en feature-161 pour ce cas, [pump-controller.md](subsystems/pump-controller.md#verrou-étalonnage-sur-le-changement-de-mode-bug-161-gate-c2)).
 
 Comportement :
 

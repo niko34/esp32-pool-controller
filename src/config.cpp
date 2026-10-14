@@ -548,6 +548,21 @@ void loadMqttConfig() {
   // modes ont déjà quitté "manual" par un AUTRE chemin (/save-config, MQTT)
   // est un résidu : le purger évite un bandeau et une alerte C4 fantômes pour
   // une session déjà close ailleurs. Réécrit en NVS au prochain saveMqttConfig().
+  // bug-161 (gate pool-chemistry, correctif) : ce résidu n'est légitime QUE
+  // parce que calSwitchBlocksModeChange() (web_routes_config.cpp ET
+  // mqtt_manager.cpp, gate C-1) refuse toute sortie de "manual" PENDANT une
+  // session active — les deux modes ne peuvent donc avoir quitté "manual"
+  // qu'APRÈS la fermeture réelle de la session (/calibration/exit). Un futur
+  // chemin d'écriture du mode qui ne passerait pas par ce gate rouvrirait
+  // cette purge comme un contournement silencieux : à vérifier AVANT d'y
+  // toucher, pas après.
+  // Un tel chemin EXISTE déjà, et il est dans CE fichier : la migration NVS
+  // ph_enabled/orp_enabled → *_regulation_mode (plus haut) dérive le mode
+  // sans passer par aucun gate, et s'exécute AVANT cette purge. Elle est
+  // pratiquement inatteignable — la clé "cal_sw_active" est POSTÉRIEURE à
+  // cette migration, donc une NVS assez ancienne pour la déclencher ne peut
+  // pas porter de session d'étalonnage. Nommé ici pour que l'exception soit
+  // VUE plutôt que redécouverte (revue feature-161, mineure 1).
   if (mqttCfg.calSwitchActive &&
       mqttCfg.phRegulationMode != "manual" && mqttCfg.orpRegulationMode != "manual") {
     systemLogger.info("[Config] Trace de bascule d'étalonnage purgée (régulation "

@@ -100,6 +100,10 @@ static bool manualInjectGuardOrReject(AsyncWebServerRequest* req, bool isPh,
   in.stabilizationActive = (stabS > 0);
   in.stabilizationRemainingS = (uint32_t)stabS;
   in.alreadyInjecting = isPh ? manualInjectPh.active : manualInjectOrp.active;
+  // bug-161 (gate C1) : isPh/OrpDosing() ne reflètent QUE la régulation AUTO
+  // (jamais une injection manuelle ni un test pompe, cf. pump_controller.h) —
+  // seule source correcte pour détecter un chevauchement manuel/automatique.
+  in.automaticInjectInProgress = isPh ? PumpController.isPhDosing() : PumpController.isOrpDosing();
   in.requestedMl = effectiveMl;
   in.dailyInjectedMl = isPh ? safetyLimits.dailyPhInjectedMl : safetyLimits.dailyOrpInjectedMl;
   in.maxDailyMl = isPh ? safetyLimits.maxPhMlPerDay : safetyLimits.maxChlorineMlPerDay;
@@ -139,6 +143,12 @@ static bool manualInjectGuardOrReject(AsyncWebServerRequest* req, bool isPh,
     case ManualInjectRefusal::AlreadyInjecting:
       code = "already_injecting";
       msg = "Une injection manuelle est déjà en cours — l'arrêter avant d'en relancer une.";
+      break;
+    case ManualInjectRefusal::AutomaticInjectInProgress:
+      // bug-161 (gate C1) : texte IMPOSÉ mot pour mot — ne pas reformuler
+      // sans nouveau passage du gate pool-chemistry.
+      code = "automatic_inject_in_progress";
+      msg = "Une injection automatique est en cours — réessayez dans un instant.";
       break;
     case ManualInjectRefusal::DailyLimit: {
       // Reliquat arrondi VERS LE BAS (floorf, jamais lroundf) : le message ne

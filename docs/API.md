@@ -1067,7 +1067,7 @@ Champs notables de la réponse :
 | `ph_enabled` | boolean | Miroir dérivé de `ph_regulation_mode` : `true` si mode ≠ `"manual"`. Maintenu pour compatibilité MQTT / HA. ⚠️ **v2.25.0 — LECTURE SEULE** : le champ n'est **plus accepté en écriture** par `/save-config` (une clé envoyée est ignorée silencieusement). Il ouvrait un second chemin capable de rouvrir la régulation en contournant le gate d'acquittement, et de désynchroniser le couple mode/enabled en NVS. |
 | `orp_regulation_mode` | string | Mode de régulation ORP : `"automatic"` (PID vers orp_target), `"scheduled"` (volume quotidien de chlore, aveugle au capteur), `"manual"` (aucune régulation automatique). ⚠️ **v2.55.0 (feature-140)** : cette valeur est **toujours la configuration NVS brute**, jamais affectée par la Chloration de secours — pendant que ce mode est actif, la **décision de dosage** peut différer de cette valeur publiée (mode ORP *effectif*, voir [ADR-0087](adr/0087-ce-qu-un-mode-temporaire-a-le-droit-de-faire.md)) ; `rescue_until`/`rescue_dosing` (`GET /data`) disent ce qui se passe réellement. |
 | `orp_daily_target_ml` | integer | Volume quotidien cible en mL pour le mode Programmée ORP (0 = désactivé, borné par `max_orp_ml_per_day`) |
-| `orp_enabled` | boolean | Miroir dérivé de `orp_regulation_mode` : `true` si mode ≠ `"manual"`. Maintenu pour compatibilité MQTT / HA. |
+| `orp_enabled` | boolean | Miroir dérivé de `orp_regulation_mode` : `true` si mode ≠ `"manual"`. Maintenu pour compatibilité MQTT / HA. ⚠️ **v2.77.0 (bug-161, gate `pool-chemistry` C2) — LECTURE SEULE** : le champ n'est **plus accepté en écriture** par `/save-config` (une clé envoyée est ignorée silencieusement) — alignement d'un **écart** qui durait depuis v2.25.0 (`ph_enabled` avait fermé ce chemin, `orp_enabled` ne l'avait jamais été). Écrivable, il ouvrait un second chemin capable de réarmer `orp_enabled` en contournant le gate d'étalonnage et de désynchroniser le couple mode/enabled en NVS, symétriquement au défaut corrigé sur `ph_enabled` en v2.25.0. |
 | `max_orp_ml_per_day` | float | Limite journalière ORP configurée (mL) — alias de `max_chlorine_ml_per_day` |
 | `orp_cal_valid` | boolean | `true` si une calibration ORP a déjà été enregistrée (date non vide) |
 | `sensor_logs_enabled` | boolean | Verbosité des logs capteurs (default `false`). Modifiable via Paramètres → Avancé → « Log des sondes ». |
@@ -1234,12 +1234,13 @@ Si une même requête cumule plusieurs motifs de refus, l'ordre d'évaluation du
 
 1. authentification du corps (`401`) ;
 2. **gate d'acquittement de la bascule pH** (`409`) ;
-3. bornes de la consigne pH (`400`) ;
-4. autres validations de champs (`400`).
+3. **v2.77.0 (bug-161, gate `pool-chemistry` C2)** — **verrou étalonnage** sur le changement de mode pH **ou** ORP (`409`), si une session de calibration est ouverte (`mqttCfg.calSwitchActive`) et qu'un changement **réel** de mode est demandé ;
+4. bornes de la consigne pH (`400`) ;
+5. autres validations de champs (`400`).
 
 Donc un payload contenant **à la fois** un changement de mode refusé **et** une consigne hors bornes — par exemple `{"ph_regulation_mode":"automatic","ph_target":6.8}` sous trace de sécurité active — répond **`409`**, pas `400` : le gate de mode est évalué en premier. Dans tous les cas, **aucun** champ n'est appliqué.
 
-**Corps de la réponse 409** :
+**Corps de la réponse 409 (acquittement pH)** :
 
 ```json
 {
@@ -1247,6 +1248,17 @@ Donc un payload contenant **à la fois** un changement de mode refusé **et** un
   "message": "Bascule de sécurité pH non acquittée — acquittez l'alerte sur la page pH avant de réactiver la régulation."
 }
 ```
+
+**Corps de la réponse 409 (verrou étalonnage, v2.77.0, texte imposé par le gate)** :
+
+```json
+{
+  "error": "Étalonnage en cours",
+  "message": "Étalonnage en cours — le mode est rétabli à la fin de l'étalonnage."
+}
+```
+
+⚠️ Ce second verrou **refuse**, il ne **réconcilie** jamais : il ne met **jamais** à jour la mémoire de mode antérieur à l'étalonnage (`ph/orpCalSwitchPrevMode`) — un second chemin d'écriture vers cette mémoire de sécurité serait exactement le piège qu'il ferme. Détail : [pump-controller.md](subsystems/pump-controller.md#verrou-étalonnage-sur-le-changement-de-mode-bug-161-gate-c2).
 
 Acquitter puis réarmer (deux requêtes, patron de l'interface web) :
 
@@ -2366,6 +2378,7 @@ Format du corps (`application/json`) :
 | `watchdog_inactive` | Watchdog inactif sur la tâche de dosage (`loopTask`) — règle absolue | — |
 | `filtration_off` | Filtration arrêtée et `regulationMode != "continu"` | — |
 | `stabilization_in_progress` | Stabilisation post-calibration en cours **pour la pompe visée** | `seconds_remaining` (int) |
+| `automatic_inject_in_progress` | **v2.77.0 (bug-161, gate `pool-chemistry` C1)** — une injection **automatique** est en cours sur cette pompe (`PumpController.isPhDosing()` / `isOrpDosing()`). Garde **rang 4** — derrière Watchdog/Présence d'eau/Stabilisation, **devant** le double démarrage manuel et les quotas. Ce trou était inatteignable tant que le bouton d'injection manuelle restait masqué hors du mode `manual` (feature-161 lève ce masquage) — voir [pump-controller.md](subsystems/pump-controller.md#garde-rang-4--injection-automatique-en-cours-bug-161-gate-c1). Message : « Une injection automatique est en cours — réessayez dans un instant. » | — |
 | `already_injecting` | Une injection manuelle est déjà en cours sur cette pompe (double start) | — |
 | `daily_limit` | Reliquat journalier **nul ou < 1 s de pompe** (sinon la demande est **écrêtée** au reliquat et acceptée — v2.9.2 ; frontière `==` **acceptée** ; limite ≤ 0 = illimité) | `remaining_ml` (int, reliquat arrondi **vers le bas** depuis v2.9.2 — le message ne promet jamais plus que disponible) |
 | `hourly_limit` | `usedMs + durée demandée > *_limit_minutes × 60000` (budget **partagé** auto + manuel ; frontière `==` acceptée ; limite 0 = illimité) | — |

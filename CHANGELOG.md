@@ -2,6 +2,83 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [2.77.0] - 2026-10-13
+
+### Fonctionnalités
+
+- **Choisir le mode de régulation depuis les cartes du tableau de bord** (pH, ORP, Filtration) —
+  demande utilisateur du jour, avec maquettes : chaque carte permet désormais de changer de mode
+  **sans quitter l'accueil**, et son contenu **s'adapte au mode choisi** (cible masquée hors Auto,
+  volume quotidien + limite de sécurité en Programme, horaires masqués en Marche/Arrêt pour la
+  Filtration). L'**Éclairage sort du lot** (sa carte affiche déjà un état faux — report à
+  `feature-162`).
+- **« Manuelle » cesse d'être un mode, devient « Arrêt »** — le mode répond à une seule question :
+  *la régulation automatique tourne-t-elle ?*. Injecter à la main est désormais une **ACTION**,
+  accessible depuis la page de réglage **dans les trois modes** (était réservée au mode Manuelle,
+  masquage purement cosmétique). ⛔ La valeur interne `manual` ne change pas (NVS, MQTT, miroir
+  `ph_enabled`/`orp_enabled`) : seuls les libellés bougent, des deux côtés (UI web et Home
+  Assistant).
+- **Le Boost redevient une option visuellement mineure** de la carte Filtration, au lieu de
+  répéter le gabarit complet de la carte (icône, majuscules, badge pleine largeur).
+- **Confirmation avant d'interrompre une chloration de secours** : passer la régulation ORP en
+  Arrêt pendant qu'un secours chlore tourne ouvre désormais une confirmation explicite —
+  identique sur la carte du tableau de bord et sur la page de réglage (même chemin d'écriture,
+  même protection).
+
+### Firmware
+
+- **Nouvelle garde de dosage (rang 4) : injection automatique en cours.** Démasquer l'injection
+  manuelle dans tous les modes a rendu atteignable un trou de garde qui existait depuis
+  feature-006 sans jamais mordre : rien n'empêchait d'injecter à la main par-dessus un dosage
+  automatique en cours sur la même pompe. Comblé **avant** la mise en production du nouveau
+  comportement, pas après.
+- **Verrou étalonnage sur le changement de mode** (`POST /save-config` **et commande MQTT**
+  `ph|orp_regulation_mode/set`, pH et ORP) : un changement de mode demandé pendant une session
+  d'étalonnage en cours est désormais **refusé** (409 côté HTTP, refus + resync HA côté MQTT), au
+  lieu d'être accepté puis silencieusement écrasé par le mode antérieur restauré à la sortie de la
+  session. ⚠️ **Correctif post-livraison le jour même** : le verrou initial ne couvrait que le
+  chemin HTTP ; l'instruction a trouvé deux trous supplémentaires sur le même chemin — `orp_enabled`
+  acceptait l'écriture directe en contournement (jamais fermé depuis `ph_enabled` en v2.25.0), et
+  le trou MQTT pouvait faire **disparaître la trace de session** au redémarrage suivant (bandeau
+  et alerte d'oubli éteints, sonde pourtant toujours dans le tampon). Les trois chemins partagent
+  désormais la même décision pure.
+- **Journalisation** : parité pH/ORP de l'IP d'origine sur un changement de mode accepté ; tout
+  mode de régulation rejeté (valeur inconnue, ex. option Home Assistant périmée) est désormais
+  journalisé en `warning` au lieu de tomber en silence.
+- **MQTT / Home Assistant** : les selects « Mode Régulation pH »/« Mode Régulation ORP » exposent
+  « Arrêt » à la place de « Manuelle » — republication de la découverte automatique au démarrage
+  (empreinte liée à la version). ⚠️ **Rupture assumée** : une automatisation Home Assistant qui
+  envoie encore « Manuelle » doit être mise à jour côté HA ; le protocole MQTT sur le fil
+  (`automatic`/`scheduled`/`manual`) est inchangé.
+
+### Documentation
+
+- `docs/features/page-dashboard.md` : nouvelle section sur le sélecteur de mode pH/ORP/Filtration
+  — contenu conditionnel, redondance volontaire du texte de mode (protection contre l'arrêt
+  accidentel), états d'exception (escalade, étalonnage, secours), hauteur naturelle des cartes.
+- `docs/features/page-ph.md` / `page-orp.md` : libellés révisés, injection manuelle
+  déconditionnée du mode, chemin de refus 409 partagé (mode + nouveau verrou étalonnage),
+  correction d'un défaut existant (le sélecteur ORP de la page de réglage ne revenait pas à l'état
+  réel en cas d'échec).
+- `docs/features/page-filtration.md` : renvoi vers les changements du tableau de bord (Boost en
+  option, horaires conditionnés), correction d'une inexactitude de doc (`saveFiltration()`
+  n'existe pas).
+- `docs/subsystems/pump-controller.md` : nouvelle garde rang 4 et son ordre d'évaluation, verrou
+  étalonnage sur le changement de mode — **lot C** : couverture MQTT, correctif `orp_enabled`,
+  risque de purge silencieuse de la trace de session, limites connues non corrigées (pas de garde
+  indépendante du mode au niveau `canDose()`, absence de plancher bas `ph_plus`).
+- `docs/MQTT.md` : libellés HA révisés, republication de découverte, rupture assumée pour les
+  automatisations existantes ; **lot C** : le verrou étalonnage refuse désormais aussi les
+  commandes MQTT pendant une session — une automation HA qui rejoue `automatic` reste sans effet.
+- `docs/API.md` : nouveau code de refus `automatic_inject_in_progress`, nouveau refus 409 du
+  verrou étalonnage sur `/save-config`, ordre d'évaluation des gates mis à jour ; `orp_enabled`
+  documenté lecture seule (alignement sur `ph_enabled`, lot C).
+- [ADR-0108](docs/adr/0108-basculer-le-mode-est-une-commande-injecter-est-un-geste.md) : la distinction
+  entre « basculer un mode » (éligible à l'accueil, protégé par visibilité permanente) et
+  « injecter » (jamais sur l'accueil, confirmation attachée à l'action pas à la surface).
+
+---
+
 ## [2.76.2] - 2026-10-13
 
 ### Fonctionnalités

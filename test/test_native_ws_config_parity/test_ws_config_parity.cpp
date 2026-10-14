@@ -454,6 +454,131 @@ void test_f_inventaire_coherent(void) {
 }
 
 // ---------------------------------------------------------------------------
+// (g) bug-161 (gate pool-chemistry C-2, BLOQUANTE) : `orp_enabled` est un
+// DÉRIVÉ PUR du mode (`orpRegulationMode != "manual"`), SUR TOUTE SÉQUENCE —
+// jamais une valeur acceptée telle quelle depuis une requête. Avant ce
+// correctif, `mqttCfg.orpEnabled = doc["orp_enabled"];` (web_routes_config.cpp)
+// acceptait la valeur BRUTE du client : un payload `{"orp_enabled": true}`
+// SEUL (sans `orp_regulation_mode`) pouvait réarmer `orpEnabled` pendant que
+// `orpRegulationMode` restait "manual" — exactement la divergence
+// mode/enabled que ce lot ferme, miroir du correctif `ph_enabled` (v2.25.0 B7).
+//
+// Test STRUCTUREL (même famille que (a)-(f) ci-dessus) : il lit les SOURCES,
+// pas le comportement — ce fichier ne compile pas Arduino/PubSubClient/
+// ESPAsyncWebServer nativement. Il vérifie, texte normalisé (espaces
+// retirés) :
+//   - AUCUNE occurrence du motif dangereux `mqttCfg.orpEnabled=doc[...]`
+//     (écriture directe depuis le corps de la requête) dans
+//     src/web_routes_config.cpp — le mutant « réintroduire l'écriture
+//     directe » (ligne supprimée par ce lot) tue ce test ;
+//   - EXACTEMENT une affectation à `mqttCfg.orpEnabled=` dans
+//     web_routes_config.cpp, et c'est la forme dérivée
+//     `(orpRegMode!="manual")` — le mutant « ajouter une seconde affectation »
+//     (second chemin d'écriture) tue ce test ;
+//   - EXACTEMENT une affectation à `mqttCfg.orpEnabled=` dans
+//     src/mqtt_manager.cpp (chemin MQTT), et c'est la forme dérivée
+//     `(payloadStr!="manual")` — même garantie côté MQTT.
+// ---------------------------------------------------------------------------
+static const char* kMqttFile = "src/mqtt_manager.cpp";
+
+// Copie espaces/tabs/retours-ligne retirés — mêmes garanties que
+// extractNormalizedRhs (test_ws_data_parity.cpp) : une reformulation
+// (saut de ligne, indentation) ne doit jamais faire paraître absent un motif
+// présent, ni inversement masquer sa duplication.
+static char* stripWhitespace(const char* src) {
+  const size_t len = strlen(src);
+  char* out = (char*)malloc(len + 1);
+  if (out == NULL) return NULL;
+  size_t n = 0;
+  for (size_t i = 0; i < len; ++i) {
+    const char c = src[i];
+    if (c == ' ' || c == '\t' || c == '\n' || c == '\r') continue;
+    out[n++] = c;
+  }
+  out[n] = '\0';
+  return out;
+}
+
+// Nombre d'occurrences NON chevauchantes de `needle` dans `haystack`.
+static size_t countOccurrences(const char* haystack, const char* needle) {
+  size_t count = 0;
+  const char* p = haystack;
+  const size_t nl = strlen(needle);
+  while ((p = strstr(p, needle)) != NULL) {
+    count++;
+    p += nl;
+  }
+  return count;
+}
+
+void test_g_orp_enabled_derive_jamais_ecrit_directement(void) {
+  long lenHttp = 0, lenMqtt = 0;
+  char* rawHttp = readProjectFile(kHttpFile, &lenHttp);
+  TEST_ASSERT_NOT_NULL_MESSAGE(rawHttp,
+      "FICHIER INTROUVABLE : src/web_routes_config.cpp. QUE FAIRE : vérifier "
+      "le chemin kHttpFile. NE PAS DESACTIVER CE TEST.");
+  char* rawMqtt = readProjectFile(kMqttFile, &lenMqtt);
+  TEST_ASSERT_NOT_NULL_MESSAGE(rawMqtt,
+      "FICHIER INTROUVABLE : src/mqtt_manager.cpp. QUE FAIRE : vérifier le "
+      "chemin kMqttFile. NE PAS DESACTIVER CE TEST.");
+  if (rawHttp == NULL || rawMqtt == NULL) { free(rawHttp); free(rawMqtt); return; }
+
+  char* http = stripWhitespace(rawHttp);
+  char* mqtt = stripWhitespace(rawMqtt);
+  free(rawHttp);
+  free(rawMqtt);
+  TEST_ASSERT_NOT_NULL(http);
+  TEST_ASSERT_NOT_NULL(mqtt);
+  if (http == NULL || mqtt == NULL) { free(http); free(mqtt); return; }
+
+  // Mutant « réintroduire l'écriture directe » (C-2) : la ligne supprimée par
+  // ce lot était `mqttCfg.orpEnabled = doc["orp_enabled"];`.
+  TEST_ASSERT_NULL_MESSAGE(
+      strstr(http, "mqttCfg.orpEnabled=doc["),
+      "C-2 ROMPU : src/web_routes_config.cpp accepte À NOUVEAU orp_enabled en "
+      "ÉCRITURE directe depuis la requête (mqttCfg.orpEnabled=doc[...]). "
+      "orp_enabled DOIT rester un dérivé pur de orp_regulation_mode — "
+      "supprimer cette ligne, miroir de ph_enabled (v2.25.0 B7). NE PAS "
+      "DESACTIVER CE TEST.");
+
+  // Exactement UNE affectation à mqttCfg.orpEnabled= dans chaque fichier, et
+  // c'est la forme dérivée attendue — un second chemin d'écriture (même
+  // dérivé) romprait quand même l'invariant « un seul endroit qui décide ».
+  const size_t httpAssignCount = countOccurrences(http, "mqttCfg.orpEnabled=");
+  char msg[400];
+  snprintf(msg, sizeof(msg),
+           "C-2 : src/web_routes_config.cpp affecte mqttCfg.orpEnabled= %u "
+           "fois (attendu : exactement 1, la forme dérivée du mode). Un "
+           "second chemin d'écriture romprait l'invariant même s'il est "
+           "dérivé. NE PAS DESACTIVER CE TEST.", (unsigned)httpAssignCount);
+  TEST_ASSERT_EQUAL_size_t_MESSAGE(1, httpAssignCount, msg);
+  TEST_ASSERT_NOT_NULL_MESSAGE(
+      strstr(http, "mqttCfg.orpEnabled=(orpRegMode!=\"manual\")"),
+      "C-2 : la seule affectation de mqttCfg.orpEnabled dans "
+      "web_routes_config.cpp n'est plus de la forme dérivée "
+      "`(orpRegMode != \"manual\")`. QUE FAIRE : restaurer la dérivation, ou "
+      "mettre ce test à jour SCIEMMENT si la variable locale a changé de nom. "
+      "NE PAS DESACTIVER CE TEST.");
+
+  const size_t mqttAssignCount = countOccurrences(mqtt, "mqttCfg.orpEnabled=");
+  snprintf(msg, sizeof(msg),
+           "C-1 : src/mqtt_manager.cpp affecte mqttCfg.orpEnabled= %u fois "
+           "(attendu : exactement 1, la forme dérivée du payload MQTT). NE "
+           "PAS DESACTIVER CE TEST.", (unsigned)mqttAssignCount);
+  TEST_ASSERT_EQUAL_size_t_MESSAGE(1, mqttAssignCount, msg);
+  TEST_ASSERT_NOT_NULL_MESSAGE(
+      strstr(mqtt, "mqttCfg.orpEnabled=(payloadStr!=\"manual\")"),
+      "C-1 : la seule affectation de mqttCfg.orpEnabled dans "
+      "mqtt_manager.cpp n'est plus de la forme dérivée "
+      "`(payloadStr != \"manual\")`. QUE FAIRE : restaurer la dérivation, ou "
+      "mettre ce test à jour SCIEMMENT si la variable locale a changé de nom. "
+      "NE PAS DESACTIVER CE TEST.");
+
+  free(http);
+  free(mqtt);
+}
+
+// ---------------------------------------------------------------------------
 
 int main(int, char**) {
   UNITY_BEGIN();
@@ -463,5 +588,6 @@ int main(int, char**) {
   RUN_TEST(test_d_aucune_exception_morte);
   RUN_TEST(test_e_chaque_exception_porte_un_motif_ecrit);
   RUN_TEST(test_f_inventaire_coherent);
+  RUN_TEST(test_g_orp_enabled_derive_jamais_ecrit_directement);
   return UNITY_END();
 }

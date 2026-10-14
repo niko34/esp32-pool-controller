@@ -380,6 +380,24 @@ bool shouldRolloverByMillis(uint32_t dayStartMs, uint32_t now) {
   return (now - dayStartMs) >= 86400000UL;
 }
 
+// bug-161 (gate C1) : verrou de complétude/numérotation de ManualInjectRefusal
+// — même motif que les static_assert DoseRefusal de pump_controller.cpp.
+// Cet énum n'est pas sérialisé en brut sur le fil (traduit par un switch →
+// code JSON string dans web_routes_control.cpp), mais le RANG D'ÉVALUATION
+// dans evaluateManualInject() reste un contrat gelé pool-chemistry : ne
+// jamais renuméroter, ne jamais insérer au milieu, toujours ajouter à la fin.
+static_assert(static_cast<int>(ManualInjectRefusal::None) == 0, "ManualInjectRefusal renuméroté");
+static_assert(static_cast<int>(ManualInjectRefusal::WatchdogInactive) == 1, "ManualInjectRefusal renuméroté");
+static_assert(static_cast<int>(ManualInjectRefusal::FiltrationOff) == 2, "ManualInjectRefusal renuméroté");
+static_assert(static_cast<int>(ManualInjectRefusal::StabilizationActive) == 3, "ManualInjectRefusal renuméroté");
+static_assert(static_cast<int>(ManualInjectRefusal::AlreadyInjecting) == 4, "ManualInjectRefusal renuméroté");
+static_assert(static_cast<int>(ManualInjectRefusal::DailyLimit) == 5, "ManualInjectRefusal renuméroté");
+static_assert(static_cast<int>(ManualInjectRefusal::HourlyLimit) == 6, "ManualInjectRefusal renuméroté");
+static_assert(static_cast<int>(ManualInjectRefusal::MaxCyclesPerDay) == 7, "ManualInjectRefusal renuméroté");
+static_assert(static_cast<int>(ManualInjectRefusal::BurstPerMinute) == 8, "ManualInjectRefusal renuméroté");
+static_assert(static_cast<int>(ManualInjectRefusal::BurstPer15Min) == 9, "ManualInjectRefusal renuméroté");
+static_assert(static_cast<int>(ManualInjectRefusal::AutomaticInjectInProgress) == 10, "ManualInjectRefusal renuméroté");
+
 // =============================================================================
 // evaluateManualInject — gardes d'injection manuelle PURES (feature-006)
 // =============================================================================
@@ -411,16 +429,28 @@ ManualInjectDecision evaluateManualInject(const ManualInjectInputs& in) {
   // calibration en cours bascule désormais la régulation en "manual" (mqttCfg,
   // posé par web_routes_calibration.cpp), et interrompt toute injection
   // manuelle ALREADY ACTIVE directement à l'entrée (gate 5, C6) — ce n'est plus
-  // une garde évaluée ici à chaque nouvelle demande. Renumérotation DES RANGS
-  // SUIVANTS (gelés pool-chemistry feature-006, inchangés entre eux) : 5→4,
-  // 6→5, 7→6, 8→7, 9→8, 10→9.
+  // une garde évaluée ici à chaque nouvelle demande.
 
-  // 4. Pas de double démarrage (une injection manuelle est déjà en cours).
+  // 4. bug-161 (gate pool-chemistry C1) : pas d'injection AUTOMATIQUE en cours
+  // sur cette pompe. Le bouton d'injection manuelle était masqué hors du mode
+  // `manual` (app.js, updatePhModeControls/updateOrpModeControls) — ce trou
+  // était donc INATTEIGNABLE. Ce lot lève ce masquage (l'injection manuelle
+  // n'est plus conditionnée au mode) : SANS cette garde, on pourrait injecter
+  // à la main PAR-DESSUS un dosage automatique en cours. ⚠️ ORDRE LOAD-BEARING :
+  // reste DERRIÈRE Watchdog (1) et FiltrationOff (2) — une cause bénigne ne
+  // doit jamais masquer une cause absolue — et DEVANT les quotas (5-10,
+  // ADR-0095 : la cause annoncée doit être celle qui mord). Place AVANT
+  // AlreadyInjecting (double start MANUEL, question distincte).
+  if (in.automaticInjectInProgress) {
+    return { false, ManualInjectRefusal::AutomaticInjectInProgress, 0.0f };
+  }
+
+  // 5. Pas de double démarrage (une injection manuelle est déjà en cours).
   if (in.alreadyInjecting) {
     return { false, ManualInjectRefusal::AlreadyInjecting, 0.0f };
   }
 
-  // 5. Limite journalière PRÉDICTIVE : refuser si le cumul + volume demandé
+  // 6. Limite journalière PRÉDICTIVE : refuser si le cumul + volume demandé
   // DÉPASSERAIT la limite. Frontière `cumul + volume == max` ACCEPTÉE
   // (STRICT >) — frontière figée pool-chemistry feature-006. maxDailyMl ≤ 0
   // = illimité (pas de garde journalière).
@@ -428,25 +458,25 @@ ManualInjectDecision evaluateManualInject(const ManualInjectInputs& in) {
     return { false, ManualInjectRefusal::DailyLimit, remaining };
   }
 
-  // 6. Limite horaire PRÉDICTIVE : mêmes conventions que l'auto (0 = illimité) ;
+  // 7. Limite horaire PRÉDICTIVE : mêmes conventions que l'auto (0 = illimité) ;
   // frontière `usedMs + durée == limite` ACCEPTÉE (STRICT >) — figée
   // pool-chemistry feature-006. Budget usedMs PARTAGÉ avec l'auto.
   if (in.hourlyLimitMs > 0 && (in.usedMs + in.requestedDurationMs > in.hourlyLimitMs)) {
     return { false, ManualInjectRefusal::HourlyLimit, 0.0f };
   }
 
-  // 7. Anti-cycling journalier : frontière >= (à la limite → refus), identique
+  // 8. Anti-cycling journalier : frontière >= (à la limite → refus), identique
   // à la garde 9 d'evaluateDose (compteur partagé auto + manuel).
   if (in.cyclesToday >= in.maxCyclesPerDay) {
     return { false, ManualInjectRefusal::MaxCyclesPerDay, 0.0f };
   }
 
-  // 8. Anti-rafale fenêtre 1 min : frontière >= (identique à l'auto, ring partagé).
+  // 9. Anti-rafale fenêtre 1 min : frontière >= (identique à l'auto, ring partagé).
   if (in.cyclesLastMin >= in.maxCyclesPerMin) {
     return { false, ManualInjectRefusal::BurstPerMinute, 0.0f };
   }
 
-  // 9. Anti-rafale fenêtre 15 min : frontière >= (identique à l'auto, ring partagé).
+  // 10. Anti-rafale fenêtre 15 min : frontière >= (identique à l'auto, ring partagé).
   if (in.cyclesLast15Min >= in.maxCyclesPer15Min) {
     return { false, ManualInjectRefusal::BurstPer15Min, 0.0f };
   }

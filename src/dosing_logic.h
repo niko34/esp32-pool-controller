@@ -474,17 +474,28 @@ bool shouldRolloverByMillis(uint32_t dayStartMs, uint32_t now);
 // ModeNotAutomatic (evaluateDose) — l'injection MANUELLE, elle, est interrompue
 // à l'entrée en calibration par la coquille (web_routes_calibration.cpp,
 // gate 5 C6), pas par une garde évaluée ici. JAMAIS recyclé.
+// ⚠️ CONTRAT DE NUMÉROTATION (bug-161, gate pool-chemistry C1) : valeurs
+// EXPLICITES verrouillées par les static_assert de dosing_logic.cpp — ne
+// JAMAIS renuméroter, ne JAMAIS insérer au milieu. Toute nouvelle cause
+// s'AJOUTE À LA FIN, quel que soit son RANG D'ÉVALUATION dans
+// evaluateManualInject() (le rang d'évaluation est documenté par les
+// commentaires numérotés de la fonction, indépendant de l'ordinal ci-dessous).
 enum class ManualInjectRefusal {
-  None,
-  WatchdogInactive,     // watchdog inactif (règle absolue : aucun dosage sans watchdog)
-  FiltrationOff,        // filtration arrêtée (hors mode continu — exemption côté collecte)
-  StabilizationActive,  // stabilisation post-calibration en cours (par pompe)
-  AlreadyInjecting,     // une injection manuelle est déjà en cours (double start)
-  DailyLimit,           // cumul + volume demandé dépasserait la limite journalière
-  HourlyLimit,          // usedMs + durée demandée dépasserait la limite horaire
-  MaxCyclesPerDay,      // limite cycles/jour atteinte (compteur partagé avec l'auto)
-  BurstPerMinute,       // anti-rafale : fenêtre 1 min (ring partagé avec l'auto)
-  BurstPer15Min         // anti-rafale : fenêtre 15 min (ring partagé avec l'auto)
+  None = 0,
+  WatchdogInactive = 1,      // watchdog inactif (règle absolue : aucun dosage sans watchdog)
+  FiltrationOff = 2,         // filtration arrêtée (hors mode continu — exemption côté collecte)
+  StabilizationActive = 3,   // stabilisation post-calibration en cours (par pompe)
+  AlreadyInjecting = 4,      // une injection manuelle est déjà en cours (double start)
+  DailyLimit = 5,            // cumul + volume demandé dépasserait la limite journalière
+  HourlyLimit = 6,           // usedMs + durée demandée dépasserait la limite horaire
+  MaxCyclesPerDay = 7,       // limite cycles/jour atteinte (compteur partagé avec l'auto)
+  BurstPerMinute = 8,        // anti-rafale : fenêtre 1 min (ring partagé avec l'auto)
+  BurstPer15Min = 9,         // anti-rafale : fenêtre 15 min (ring partagé avec l'auto)
+  // bug-161 (gate C1) : AJOUTÉ EN FIN D'ÉNUMÉRATION (⛔ aucune renumérotation
+  // des valeurs ci-dessus) — évalué au RANG 4 dans evaluateManualInject()
+  // (immédiatement après StabilizationActive, avant AlreadyInjecting) : le
+  // rang d'évaluation et l'ordinal de l'énum sont deux axes INDÉPENDANTS ici.
+  AutomaticInjectInProgress = 10  // une injection AUTOMATIQUE est en cours sur cette pompe
 };
 
 // Entrées POD collectées par la coquille (web_routes_control) AVANT l'appel.
@@ -507,6 +518,15 @@ struct ManualInjectInputs {
   int maxCyclesPerMin;             // kMaxDosingCyclesPerMinute
   int cyclesLast15Min;             // getRecentCycles(pumpIndex, 900000)
   int maxCyclesPer15Min;           // kMaxDosingCyclesPer15Min
+  // bug-161 (gate C1) : AJOUTÉ EN FIN DE STRUCTURE. Une injection AUTOMATIQUE
+  // était auparavant ATTEIGNABLE par-dessus l'injection manuelle sans aucune
+  // garde — inatteignable en pratique tant que le bouton manuel restait
+  // masqué hors du mode `manual` (app.js), mais ce lot lève ce masquage.
+  // PumpController.isPh/OrpDosing() : LECTURE SEULE de phDosingState.active /
+  // orpDosingState.active — ne reflète QUE la régulation AUTO (jamais une
+  // injection manuelle ni un test pompe, cf. commentaire d'isAnyPumpEnergized
+  // dans pump_controller.h).
+  bool automaticInjectInProgress;  // PumpController.isPhDosing() / isOrpDosing()
 };
 
 // Verdict : allowed=true ssi cause==None. remainingMl = reliquat journalier

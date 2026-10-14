@@ -33,6 +33,14 @@ Les autres cartes (graphe, statistiques) peuvent être ajoutées au fil du temps
 
 > ⚠️ **Hors périmètre de feature-147 (v2.63.0).** Le tableau de bord expose désormais les quatre modes sous forme de **boutons** directement dans la carte Filtration, et le Boost y devient un sous-bloc — voir [docs/features/page-dashboard.md](page-dashboard.md#carte-filtration--quatre-boutons-mode-vs-état-boost-intégré-feature-147-v2630). **Cette page conserve son `<select>` de mode et sa carte « Contrôle manuel » à l'identique** : aucune des deux cartes ci-dessus n'a été modifiée par ce lot.
 
+> ⚠️ **Hors périmètre de feature-161 (lot B, v2.77.0) également.** Ce lot ne touche que la carte
+> Filtration du **tableau de bord** : la ligne « Horaires » n'y est plus affichée qu'en Auto/Programme
+> (masquée en Marche/Arrêt — aucun créneau n'est suivi dans ces deux modes), et le sous-bloc
+> **Boost y devient une option visuellement mineure** (`.card__option`, plus de gabarit identique à la
+> carte elle-même). **Cette page n'est pas modifiée** : voir
+> [docs/features/page-dashboard.md](page-dashboard.md#sélecteur-de-mode-depuis-les-cartes-ph--orp--filtration-feature-161-v2770)
+> pour le détail.
+
 ## Données consommées (WebSocket `/ws`)
 
 - `install_mode` (`managed` / `powered` / `external`) — pilote la visibilité de la page (feature-056). `filtration_enabled` **retiré**.
@@ -54,7 +62,7 @@ l'ordre direct qu'ils portaient — plus aucun champ WS de forçage temporaire.
 ⚠️ **Il n'existe plus de route `/filtration/on` / `/filtration/off` dédiée** (feature-146) : les
 boutons Démarrer/Arrêter passent par `/save-config`, comme tout changement de mode.
 
-La fonction `saveFiltration()` côté JS sauvegarde uniquement les champs filtration, indépendamment des autres saves (autosave dédié). Les boutons Démarrer/Arrêter du tableau de bord **et** de cette page partagent désormais le même chemin, `setFiltrationRunMode()` (`data/app.js`).
+⚠️ **Correction de doc** : il n'existe pas de fonction `saveFiltration()`. Le bouton « Sauvegarder » de la carte Configuration (`#filtration_save_btn`) est géré par `bindFiltrationManualSave()`, qui lit `collectFiltrationConfig()` (champs `filtration_mode`/`filtration_start`/`filtration_end` uniquement, indépendamment des autres saves) — c'est l'autosave générique (`bindAutosave()`) qui **exclut explicitement** les champs numériques et horaires, mode et horaires de filtration compris (voir le commentaire du code : « Programmation (mode, start, end) — pas d'auto-save, bouton Sauvegarder uniquement »). Les boutons Démarrer/Arrêter du tableau de bord **et** de cette page partagent désormais le même chemin, `setFiltrationRunMode()` (`data/app.js`).
 
 ## Règles firmware
 

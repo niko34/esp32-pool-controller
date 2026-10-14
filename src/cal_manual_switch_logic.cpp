@@ -17,3 +17,7 @@ bool calSwitchAlertDue(uint32_t elapsedS, uint32_t sinceLastAlertS,
   if (sinceLastAlertS == UINT32_MAX) return true;
   return sinceLastAlertS >= repeatS;
 }
+
+bool calSwitchBlocksModeChange(bool calSwitchActive, bool modeWouldChange) {
+  return calSwitchActive && modeWouldChange;
+}

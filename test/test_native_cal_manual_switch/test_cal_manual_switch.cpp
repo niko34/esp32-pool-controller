@@ -63,6 +63,7 @@
 
 #include <unity.h>
 #include <stdint.h>
+#include <string.h>  // strcmp — dérivation modeWouldChange des vecteurs pH/ORP ci-dessous
 
 #include "cal_manual_switch_logic.h"
 #include "constants.h"  // kCalSwitchAlertFirstDelayS / kCalSwitchAlertRepeatS
@@ -213,6 +214,119 @@ void test_alert_sequence_realiste_deux_h_puis_six_h(void) {
   TEST_ASSERT_TRUE(calSwitchAlertDue(first + repeat, repeat, first, repeat));
 }
 
+// -----------------------------------------------------------------------------
+// calSwitchBlocksModeChange — bug-161, gate pool-chemistry C2 (BLOQUANTE)
+// -----------------------------------------------------------------------------
+// bug-160 bascule la régulation en "manual" à l'entrée en étalonnage et la
+// restaure au mode ANTÉRIEUR à la sortie : un changement de mode accepté
+// PENDANT la session serait écrasé sans un mot. Cette fonction refuse ssi la
+// session est ouverte ET qu'un changement RÉEL est demandé.
+
+void test_block_session_ouverte_et_changement_refuse(void) {
+  TEST_ASSERT_TRUE(calSwitchBlocksModeChange(/*calSwitchActive=*/true, /*modeWouldChange=*/true));
+}
+
+// MUTATION À TUER : retirer `&& modeWouldChange` (ou le remplacer par `true`
+// constant) bloquerait TOUT /save-config pendant un étalonnage, y compris des
+// sauvegardes qui ne touchent PAS le mode — alors que l'interface renvoie
+// systématiquement le mode courant dans chaque payload.
+void test_block_session_ouverte_sans_changement_accepte(void) {
+  TEST_ASSERT_FALSE(calSwitchBlocksModeChange(/*calSwitchActive=*/true, /*modeWouldChange=*/false));
+}
+
+// MUTATION À TUER : retirer `calSwitchActive &&` (ou le remplacer par `true`
+// constant) bloquerait tout changement de mode HORS étalonnage — un dosage
+// deviendrait impossible à arrêter depuis l'accueil en dehors de toute
+// session de calibration.
+void test_block_pas_de_session_changement_accepte(void) {
+  TEST_ASSERT_FALSE(calSwitchBlocksModeChange(/*calSwitchActive=*/false, /*modeWouldChange=*/true));
+}
+
+void test_block_pas_de_session_pas_de_changement_accepte(void) {
+  TEST_ASSERT_FALSE(calSwitchBlocksModeChange(/*calSwitchActive=*/false, /*modeWouldChange=*/false));
+}
+
+// -----------------------------------------------------------------------------
+// calSwitchBlocksModeChange — bug-161 (gate pool-chemistry C-1, BLOQUANTE) :
+// vecteurs (calActive, modeCourant, payload) côté pH ET ORP, exactement la
+// dérivation `modeWouldChange = (payload != modeCourant)` faite aux DEUX sites
+// d'appel réels — src/mqtt_manager.cpp (InboundCmdType::PhRegulationMode /
+// OrpRegulationMode) et src/web_routes_config.cpp (/save-config). Ces deux
+// fichiers ne compilent pas nativement (Arduino/PubSubClient/
+// ESPAsyncWebServer) : ce qui est VÉRIFIABLE ici est la décision PURE que les
+// deux chemins appellent avec le MÊME argument — pas le câblage mutex/MQTT
+// lui-même (à charge de la revue de code, comme pour calSwitchShouldApplyEnter
+// ci-dessus).
+//
+// Pendant une session active (calSwitchActive), bug-160 force DÉJÀ les deux
+// modes à "manual" — modeCourant == "manual" est donc le cas RÉEL en
+// production ; les vecteurs modeCourant == "automatic"/"scheduled" avec
+// calSwitchActive=true documentent que la fonction refuserait AUSSI dans ce
+// cas (défense en profondeur, pas un état atteignable aujourd'hui).
+// -----------------------------------------------------------------------------
+
+// pH — sortie de "manual" PENDANT une session : REFUSÉ (le scénario exact du
+// gate : HA ou une restauration d'état sans humain tenterait "automatic"
+// pendant que la sonde pH trempe dans un tampon).
+void test_block_ph_session_active_sortie_manual_refuse(void) {
+  const char* modeCourant = "manual";
+  const char* payload = "automatic";
+  const bool modeWouldChange = (strcmp(payload, modeCourant) != 0);
+  TEST_ASSERT_TRUE(calSwitchBlocksModeChange(/*calSwitchActive=*/true, modeWouldChange));
+}
+
+// pH — commande entrante "manual" PENDANT une session où le mode courant est
+// déjà "manual" : no-op, JAMAIS refusé (gate pool-chemistry : « une commande
+// entrante manual est un no-op et reste souhaitable »).
+void test_block_ph_session_active_entree_manual_no_op_accepte(void) {
+  const char* modeCourant = "manual";
+  const char* payload = "manual";
+  const bool modeWouldChange = (strcmp(payload, modeCourant) != 0);
+  TEST_ASSERT_FALSE(calSwitchBlocksModeChange(/*calSwitchActive=*/true, modeWouldChange));
+}
+
+// pH — sortie de "manual" HORS session : accepté (aucune calibration en cours).
+void test_block_ph_pas_de_session_sortie_manual_accepte(void) {
+  const char* modeCourant = "manual";
+  const char* payload = "scheduled";
+  const bool modeWouldChange = (strcmp(payload, modeCourant) != 0);
+  TEST_ASSERT_FALSE(calSwitchBlocksModeChange(/*calSwitchActive=*/false, modeWouldChange));
+}
+
+// ORP — miroir EXACT du pH (gate C-1 symétrique, aucun verrou de sécurité
+// ORP-spécifique n'intervient ici).
+void test_block_orp_session_active_sortie_manual_refuse(void) {
+  const char* modeCourant = "manual";
+  const char* payload = "automatic";
+  const bool modeWouldChange = (strcmp(payload, modeCourant) != 0);
+  TEST_ASSERT_TRUE(calSwitchBlocksModeChange(/*calSwitchActive=*/true, modeWouldChange));
+}
+
+void test_block_orp_session_active_entree_manual_no_op_accepte(void) {
+  const char* modeCourant = "manual";
+  const char* payload = "manual";
+  const bool modeWouldChange = (strcmp(payload, modeCourant) != 0);
+  TEST_ASSERT_FALSE(calSwitchBlocksModeChange(/*calSwitchActive=*/true, modeWouldChange));
+}
+
+void test_block_orp_pas_de_session_sortie_manual_accepte(void) {
+  const char* modeCourant = "manual";
+  const char* payload = "scheduled";
+  const bool modeWouldChange = (strcmp(payload, modeCourant) != 0);
+  TEST_ASSERT_FALSE(calSwitchBlocksModeChange(/*calSwitchActive=*/false, modeWouldChange));
+}
+
+// ORP — défense en profondeur : session active, modeCourant encore
+// "automatic" (état non atteignable en production depuis bug-160, cf.
+// commentaire d'en-tête) et payload "scheduled" : changement réel ⇒ refusé
+// quand même.
+void test_block_orp_session_active_mode_courant_non_manual_refuse_aussi(void) {
+  const char* modeCourant = "automatic";
+  const char* payload = "scheduled";
+  const bool modeWouldChange = (strcmp(payload, modeCourant) != 0);
+  TEST_ASSERT_TRUE(calSwitchBlocksModeChange(/*calSwitchActive=*/true, modeWouldChange));
+}
+
 // =============================================================================
 int main(int argc, char** argv) {
   (void)argc;
@@ -233,5 +347,16 @@ int main(int argc, char** argv) {
   RUN_TEST(test_alert_pas_de_repetition_avant_lecheance_de_repetition);
   RUN_TEST(test_alert_repetition_pile_a_lecheance_declenche);
   RUN_TEST(test_alert_sequence_realiste_deux_h_puis_six_h);
+  RUN_TEST(test_block_session_ouverte_et_changement_refuse);
+  RUN_TEST(test_block_session_ouverte_sans_changement_accepte);
+  RUN_TEST(test_block_pas_de_session_changement_accepte);
+  RUN_TEST(test_block_pas_de_session_pas_de_changement_accepte);
+  RUN_TEST(test_block_ph_session_active_sortie_manual_refuse);
+  RUN_TEST(test_block_ph_session_active_entree_manual_no_op_accepte);
+  RUN_TEST(test_block_ph_pas_de_session_sortie_manual_accepte);
+  RUN_TEST(test_block_orp_session_active_sortie_manual_refuse);
+  RUN_TEST(test_block_orp_session_active_entree_manual_no_op_accepte);
+  RUN_TEST(test_block_orp_pas_de_session_sortie_manual_accepte);
+  RUN_TEST(test_block_orp_session_active_mode_courant_non_manual_refuse_aussi);
   return UNITY_END();
 }

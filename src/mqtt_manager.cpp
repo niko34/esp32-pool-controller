@@ -12,6 +12,7 @@
 #include "mqtt_topics_logic.h"  // bug-race-refreshtopics-uaf : normalisation pure du préfixe
 #include "oom_guard.h"  // bug-080 B-1 : drain du drapeau « parachute sans réserve »
 #include "ph_guard_logic.h"  // v2.25.0 : phModeChangeNeedsAck (gate fail-closed du mode pH)
+#include "cal_manual_switch_logic.h"  // bug-161 (gate C-1) : calSwitchBlocksModeChange, miroir HTTP
 #include "history.h"          // bug-100 : historyFopenDeferralCount (diagnostic retenu)
 #include "web_routes_data.h"  // bug-100 : logsExportFopenDeferralCount (diagnostic retenu)
 #include "discovery_report_logic.h"  // feature-109 : synthèse pure d'une rafale de découverte HA
@@ -1813,6 +1814,26 @@ void MqttManager::drainCommandQueue() {
             break;
           }
           const bool changed = (mqttCfg.phRegulationMode != payloadStr);
+          // bug-161 (gate pool-chemistry C-1, BLOQUANTE) : évalué APRÈS le
+          // gate phAutoManual* ci-dessus (ordre INCHANGÉ, celui-ci reste
+          // prioritaire). MÊME fonction pure et MÊME argument que le chemin
+          // HTTP (web_routes_config.cpp, calSwitchBlocksModeChange) — pas de
+          // seconde variante. Un select Home Assistant, ou une restauration
+          // d'état HA au redémarrage SANS AUCUN humain, remettrait sinon la
+          // régulation en Auto pendant qu'une sonde trempe dans un tampon
+          // d'étalonnage (ORP : Zobell ~230-470 mV < consigne 530 ⇒ injection
+          // de chlore sur une mesure non représentative). Refus = sortie de
+          // "manual" uniquement (changed ET mode courant "manual" via
+          // calSwitchActive, lequel force déjà "manual" pendant la session) —
+          // une commande entrante "manual" reste un no-op souhaitable.
+          if (calSwitchBlocksModeChange(mqttCfg.calSwitchActive, changed)) {
+            xSemaphoreGiveRecursive(configMutex);
+            systemLogger.warning(
+                "Mode régulation pH REFUSÉ (MQTT → " + payloadStr +
+                ") : étalonnage en cours — le mode est rétabli à la fin de l'étalonnage.");
+            publishTargetState();  // resync HA sur le mode RÉEL (⛔ ne jamais écrire ph/orpCalSwitchPrevMode ici)
+            break;
+          }
           if (changed) {
             mqttCfg.phRegulationMode = payloadStr;
             mqttCfg.phEnabled = (payloadStr != "manual");
@@ -1828,6 +1849,11 @@ void MqttManager::drainCommandQueue() {
           }
         } else {
           systemLogger.warning("Mode régulation pH invalide (MQTT): " + payloadStr);
+          // feature-161 (revue, mineure 2) : resync HA aussi sur une charge
+          // invalide, pour que C-4 « aucun refus muet » soit SANS exception.
+          // Inoffensif en pratique (un select HA ne peut pas émettre hors
+          // liste), mais une règle à exception se perd.
+          publishTargetState();
         }
         break;
       }
@@ -1843,6 +1869,21 @@ void MqttManager::drainCommandQueue() {
             break;
           }
           const bool changed = (mqttCfg.orpRegulationMode != payloadStr);
+          // bug-161 (gate pool-chemistry C-1, BLOQUANTE) : aucun gate
+          // phAutoManual*-équivalent côté ORP (pas de trace de sécurité
+          // ORP) — ce gate est donc le PREMIER et SEUL évalué ici, avant
+          // toute mutation. MÊME fonction pure et MÊME argument que le
+          // chemin HTTP (web_routes_config.cpp, calSwitchBlocksModeChange).
+          // Refus = sortie de "manual" uniquement ; une commande entrante
+          // "manual" reste un no-op souhaitable.
+          if (calSwitchBlocksModeChange(mqttCfg.calSwitchActive, changed)) {
+            xSemaphoreGiveRecursive(configMutex);
+            systemLogger.warning(
+                "Mode régulation ORP REFUSÉ (MQTT → " + payloadStr +
+                ") : étalonnage en cours — le mode est rétabli à la fin de l'étalonnage.");
+            publishTargetState();  // resync HA sur le mode RÉEL (⛔ ne jamais écrire ph/orpCalSwitchPrevMode ici)
+            break;
+          }
           if (changed) {
             mqttCfg.orpRegulationMode = payloadStr;
             mqttCfg.orpEnabled = (payloadStr != "manual");
@@ -1862,6 +1903,11 @@ void MqttManager::drainCommandQueue() {
           }
         } else {
           systemLogger.warning("Mode régulation ORP invalide (MQTT): " + payloadStr);
+          // feature-161 (revue, mineure 2) : resync HA aussi sur une charge
+          // invalide, pour que C-4 « aucun refus muet » soit SANS exception.
+          // Inoffensif en pratique (un select HA ne peut pas émettre hors
+          // liste), mais une règle à exception se perd.
+          publishTargetState();
         }
         break;
       }
@@ -2394,16 +2440,21 @@ void MqttManager::publishDiscovery(DiscoveryReason reason) {
   doc["icon"] = "mdi:ph";
   // bug-ha-regulation-mode-labels : libellés français dans HA (comme le mode
   // filtration), protocole sur le fil inchangé (automatic/scheduled/manual).
+  // bug-161 : « Manuelle » devient « Arrêt » (décision utilisateur) — la
+  // valeur interne `manual` NE CHANGE PAS, seul le libellé bouge. ADR-0085 :
+  // ce changement modifie l'empreinte de découverte (FIRMWARE_VERSION en
+  // fait partie) → republication AUTOMATIQUE au prochain démarrage, sans
+  // action supplémentaire ici.
   {
     JsonArray phRegOptions = doc["options"].to<JsonArray>();
     phRegOptions.add("Automatique");
     phRegOptions.add("Programmée");
-    phRegOptions.add("Manuelle");
+    phRegOptions.add("Arrêt");
   }
   doc["value_template"] =
-    "{{ {'automatic':'Automatique','scheduled':'Programmée','manual':'Manuelle'}.get(value, value) }}";
+    "{{ {'automatic':'Automatique','scheduled':'Programmée','manual':'Arrêt'}.get(value, value) }}";
   doc["command_template"] =
-    "{{ {'Automatique':'automatic','Programmée':'scheduled','Manuelle':'manual'}[value] }}";
+    "{{ {'Automatique':'automatic','Programmée':'scheduled','Arrêt':'manual'}[value] }}";
   makeDevice(doc["device"].to<JsonObject>());
   publishConfig(topic);  // publishConfig fait doc.clear() → pas de fuite value/command_template
 
@@ -2415,16 +2466,17 @@ void MqttManager::publishDiscovery(DiscoveryReason reason) {
   doc["command_topic"] = topics.orpRegulationModeCommand;
   doc["icon"] = "mdi:flash";
   // bug-ha-regulation-mode-labels : idem pH (protocole inchangé sur le fil)
+  // bug-161 : « Manuelle » devient « Arrêt » — cf. commentaire du select pH.
   {
     JsonArray orpRegOptions = doc["options"].to<JsonArray>();
     orpRegOptions.add("Automatique");
     orpRegOptions.add("Programmée");
-    orpRegOptions.add("Manuelle");
+    orpRegOptions.add("Arrêt");
   }
   doc["value_template"] =
-    "{{ {'automatic':'Automatique','scheduled':'Programmée','manual':'Manuelle'}.get(value, value) }}";
+    "{{ {'automatic':'Automatique','scheduled':'Programmée','manual':'Arrêt'}.get(value, value) }}";
   doc["command_template"] =
-    "{{ {'Automatique':'automatic','Programmée':'scheduled','Manuelle':'manual'}[value] }}";
+    "{{ {'Automatique':'automatic','Programmée':'scheduled','Arrêt':'manual'}[value] }}";
   makeDevice(doc["device"].to<JsonObject>());
   publishConfig(topic);  // publishConfig fait doc.clear() → pas de fuite value/command_template
 

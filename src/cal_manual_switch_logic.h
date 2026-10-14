@@ -77,4 +77,29 @@ bool calSwitchShouldRestore(bool wasApplied, bool safetyTraceActiveNow);
 bool calSwitchAlertDue(uint32_t elapsedS, uint32_t sinceLastAlertS,
                        uint32_t firstDelayS, uint32_t repeatS);
 
+// =============================================================================
+// bug-161 (gate pool-chemistry C2, BLOQUANTE) — mode verrouillé pendant une
+// session d'étalonnage
+// =============================================================================
+// Le mode de régulation (pH OU ORP) peut-il être changé par /save-config
+// PENDANT qu'une session d'étalonnage est OUVERTE (mqttCfg.calSwitchActive) ?
+// bug-160 bascule la régulation en "manual" à l'ENTRÉE en étalonnage et la
+// restaure au mode ANTÉRIEUR mémorisé à la SORTIE. SANS ce refus, un
+// changement de mode reçu PENDANT la session serait accepté... puis
+// SILENCIEUSEMENT ÉCRASÉ à la sortie par la valeur mémorisée à l'entrée — un
+// réglage accepté puis annulé sans un mot, exactement le motif « l'écran
+// ment » que ce projet traque.
+// Fail-closed STRICT : refuse ssi la session est ouverte ET qu'un changement
+// RÉEL est demandé (modeWouldChange = mode demandé != mode courant, calculé
+// par l'appelant — jamais recalculé ici, l'appelant seul connaît le format
+// des chaînes de mode). Ne JAMAIS appeler sur la seule PRÉSENCE de la clé
+// dans la requête : l'interface renvoie systématiquement le mode courant dans
+// chaque payload de sauvegarde, ce qui bloquerait tout autre réglage pendant
+// une session d'étalonnage.
+// ⛔ Cette fonction REFUSE, elle ne réconcilie JAMAIS : elle ne prend ni ne
+// renvoie rien qui pourrait mettre à jour ph/orpCalSwitchPrevMode — un second
+// chemin d'écriture vers cette mémoire de sécurité serait exactement le piège
+// que C2 interdit (cf. en-tête de ce fichier, note C2 sur phAutoManual*).
+bool calSwitchBlocksModeChange(bool calSwitchActive, bool modeWouldChange);
+
 #endif  // CAL_MANUAL_SWITCH_LOGIC_H

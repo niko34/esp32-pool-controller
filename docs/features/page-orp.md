@@ -15,10 +15,10 @@ En état courant, quatre zones :
 
 1. **Bloc Statistiques** (bandeau compact, sans titre) — valeur ORP **officielle** courante en grand (mV) + **ligne brute discrète** « brut · maj » + **rangée de chips** : **chip d'état de calibration** (cf. [Chip d'état de calibration](#chip-détat-de-calibration-feature-034)) + dosage du jour (barre de progression, borne `max_orp_ml_per_day`). ⚠️ **Depuis la refonte de la chaîne de mesure (feature-152, v2.68.0)**, il n'existe plus de chip ni de modal d'état du **filtre** distincts — voir [Ce qui a été retiré, fusionné, conservé](#ce-qui-a-été-retiré-fusionné-conservé-feature-152-v2680). Depuis la **v2.37.0** (feature-096), ce bloc se termine par « **Atteinte de la cible** » (`#orp-ttt-block`) — voir [Atteinte de la cible](#atteinte-de-la-cible-feature-096-v2370).
 2. **Carte Débit d'injection ORP** (`#orp-card-dosing`, feature-092, v2.46.0) — insérée **entre** le bloc Statistiques et la carte Régulation, visible **en mode automatique uniquement** : **deux** lignes (écart courant, **Demande** en total) et une pastille d'état. Voir [Carte « Débit d'injection ORP »](#carte--débit-dinjection-orp--orp-card-dosing-feature-092-v2460).
-3. **Carte Régulation ORP** — sélecteur de mode : `Automatique`, `Programmée`, `Manuelle`. Sous-blocs :
-   - **Automatique** : ORP cible (mV) + bouton Sauvegarder.
-   - **Programmée** : volume quotidien de chlore en mL + bouton Sauvegarder. Depuis la v2.8.0 (feature-011) : ligne « **Débit calculé : X,X mL/min** » (`#orp_scheduled_flow_line` / `#orp_scheduled_flow_value`, alimentée par le champ WS `orp_scheduled_flow_ml_per_min` ; affiche « — » avec `title` « Hors plage de filtration ou données indisponibles » quand la valeur est `null`) + hint statique « Le volume non injecté avant minuit est perdu (pas de report au lendemain). ». Volontairement **pas** de « sur Y h restantes » côté client : l'horloge du navigateur peut différer de celle de l'ESP32, seul le débit (source firmware) est affiché.
-   - **Manuelle** : bloc Injection manuelle.
+3. **Carte Régulation ORP** — sélecteur de mode : `Auto`, `Programme`, `Arrêt` (libellés révisés en **feature-161, v2.77.0** — étaient `Automatique`, `Programmée`, `Manuelle` ; miroir **exact** de la [page pH](page-ph.md#libellés-révisés-auto--programme--arrêt-feature-161-v2770), détail non dupliqué ici). Sous-blocs :
+   - **Auto** : ORP cible (mV) + bouton Sauvegarder.
+   - **Programme** : volume quotidien de chlore en mL + bouton Sauvegarder. Depuis la v2.8.0 (feature-011) : ligne « **Débit calculé : X,X mL/min** » (`#orp_scheduled_flow_line` / `#orp_scheduled_flow_value`, alimentée par le champ WS `orp_scheduled_flow_ml_per_min` ; affiche « — » avec `title` « Hors plage de filtration ou données indisponibles » quand la valeur est `null`) + hint statique « Le volume non injecté avant minuit est perdu (pas de report au lendemain). ». Volontairement **pas** de « sur Y h restantes » côté client : l'horloge du navigateur peut différer de celle de l'ESP32, seul le débit (source firmware) est affiché.
+   - **Les trois modes** : bloc Injection manuelle — ⚠️ **déconditionné du mode depuis feature-161** (miroir exact du pH, voir [Injection manuelle déconditionnée du mode](page-ph.md#injection-manuelle-déconditionnée-du-mode-feature-161-v2770)).
 4. **Carte Historique** — graphique uPlot (feature-043, ex-Chart.js), plages `Tout` / `30j` / `7j` / `24h`. Depuis la **v2.28.1** (feature-083) : **plus de zone ombrée** — **ligne de consigne pointillée** à `orp_target`, voir [Repère du graphique d'historique](#repère-du-graphique-dhistorique-feature-083-v2281). Ce graphique trace la mesure **brute** et le reste en v2.38.0 — voir [Le graphique d'historique de cette page reste brut](#le-graphique-dhistorique-de-cette-page-reste-brut-feature-095-v2380).
 
 Le point d'entrée du mode réglage (« **Calibrer la sonde** », `#orp_cal_trigger_btn`) est rendu **sous la rangée de chips** du bloc Statistiques — voir [Mode réglage](#mode-réglage-calibration-seule-feature-156-v2720). ⚠️ **La carte Calibration n'est plus visible dans l'état courant** depuis la v2.72.0 (avant cette version, elle s'affichait au clic **au milieu** des autres cartes de la page, sans les masquer).
@@ -283,6 +283,33 @@ Encart `#orp_inject_raw_guard_warning` (titre `#orp_inject_raw_guard_title`, tex
 | Erreur HTTP autre (4xx/5xx) | Lecture du body texte affiché si court (< 200 chars), sinon message générique. |
 
 **Comportement attendu utilisateur** : démarrer la filtration **avant** d'injecter, ou relancer manuellement après reprise. Pas de reprise automatique — l'injection en cours est perdue.
+
+## Sélecteur de mode : chemin partagé avec le pH et le tableau de bord (feature-161, v2.77.0)
+
+Le segmented `#orp_regulation_mode` de cette page passe désormais par la **même** fonction
+`applyRegulationMode("orp", mode)` que le sélecteur de la [page pH](page-ph.md#parcours-en-cas-de-refus-409-sur-le-sélecteur-de-mode)
+et que la carte ORP du [tableau de bord](page-dashboard.md#sélecteur-de-mode-depuis-les-cartes-ph--orp--filtration-feature-161-v2770) —
+mêmes revert sur échec, même décision pure `resolveSelectorMode()` testée par vecteurs.
+
+⚠️ **Défaut existant corrigé au passage (condition C10 du gate `pool-chemistry`)** : avant ce lot,
+ce sélecteur **ne revenait pas** à l'état réel en cas d'échec (refus serveur ou panne réseau) —
+contrairement au pH, qui le faisait depuis la v2.25.0. L'invariant « un sélecteur qui ment est pire
+que pas de sélecteur » était donc **déjà violé** sur cette page avant qu'on en ajoute un deuxième
+sur le tableau de bord. Les deux voies partagent désormais une seule logique.
+
+**Confirmation « Interrompre la chloration de secours ? »** : passer en **Arrêt** pendant qu'une
+chloration de secours est active (`rescue_until > 0`) ouvre une confirmation (boutons « Interrompre
+le secours » / « Annuler ») — **seule friction du lot**, étendue par le gate (après revue) à
+**toutes** les surfaces qui partagent ce chemin d'écriture, donc à cette page **autant** qu'au
+tableau de bord : *« la friction protège l'ACTION, pas la SURFACE »*. Annuler restaure l'affichage
+sur le dernier mode **confirmé par le serveur** — pas sur le mode précédemment cliqué (défaut
+corrigé en revue, voir [page-dashboard.md](page-dashboard.md#un-sélecteur-qui-ment-est-pire-que-pas-de-sélecteur--le-défaut-qui-a-mordu-en-revue)).
+
+⚠️ **Non couvert par cette confirmation, assumé par écrit** : la commande MQTT
+`{base}/orp_regulation_mode/set` et l'appel direct à `POST /save-config` désarment le secours
+**sans rien demander** — ce sont des chemins sans surface d'interaction. Le désarmement y est déjà
+journalisé en `warning` (voir [MQTT.md](../MQTT.md#topic-et-entité-ajoutées-en-feature-141-volume-de-secours-saisi-v2560)), jugé suffisant par le
+gate sur ces deux chemins.
 
 ## Cas limites
 

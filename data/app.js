@@ -1998,11 +1998,15 @@
     const mode = getSegmented("ph_regulation_mode") || "automatic";
     const params = $("#ph-regulation-params");      // sous-bloc Auto
     const scheduled = $("#ph-params-scheduled");    // sous-bloc Programmée
-    const inject = $("#ph-inject-section");         // Injection manuelle
 
     if (params)    params.style.display    = mode === "automatic"  ? "" : "none";
     if (scheduled) scheduled.style.display = mode === "scheduled"  ? "" : "none";
-    if (inject)    inject.style.display    = mode === "manual"     ? "" : "none";
+    // feature-161 (lot A) : #ph-inject-section N'EST PLUS conditionnée au mode
+    // — « Manuelle » cesse d'être un mode, injecter à la main est une ACTION
+    // (décision utilisateur 2026-10-13). Le masquage était PUREMENT cosmétique
+    // (aucune des neuf gardes d'evaluateManualInject() ne regarde le mode) ;
+    // la section reste visible dans les trois modes, cf. HTML (plus de
+    // style="display:none" par défaut).
     // feature-092 : la carte « Débit d'injection pH » dépend AUSSI du mode ET de
     // la disponibilité de la donnée — sa visibilité est décidée en un seul
     // endroit (updatePhDosingCard, qui pilote également la capacité journalière
@@ -3022,11 +3026,12 @@
     const mode = getSegmented("orp_regulation_mode") || "automatic";
     const params = $("#orp-regulation-params");      // sous-bloc Automatique
     const scheduled = $("#orp-params-scheduled");    // sous-bloc Programmée
-    const inject = $("#orp-inject-section");         // Injection manuelle
 
     if (params)    params.style.display    = mode === "automatic"  ? "" : "none";
     if (scheduled) scheduled.style.display = mode === "scheduled"  ? "" : "none";
-    if (inject)    inject.style.display    = mode === "manual"     ? "" : "none";
+    // feature-161 (lot A) : #orp-inject-section déconditionnée — miroir EXACT
+    // du pH ci-dessus, même motif (masquage purement cosmétique, aucune garde
+    // firmware ne regardait le mode).
     // feature-092 : miroir de la page pH — la carte « Débit d'injection ORP »
     // dépend du mode ET de la donnée, décidés en un seul endroit.
     updateOrpDosingCard();
@@ -3038,6 +3043,250 @@
   function updateOrpControls() {
     updateOrpModeControls();
     updateFeatureVisibility("orp");
+  }
+
+  // ===========================================================================
+  // feature-161 (correctif bloquant code-reviewer, 2026-10-13) : décision PURE
+  // « quel mode AFFICHER sur le sélecteur après une tentative de bascule ? »,
+  // extraite pour rendre TUABLE le mutant qui a mordu (bloquant [1] : annuler
+  // la confirmation C4 laissait le sélecteur sur « Arrêt » alors que l'ORP
+  // continuait de réguler — jusqu'au prochain rafraîchissement). Le DOM reste
+  // hors test ; la DÉCISION, elle, devient vérifiable par vecteurs
+  // (test/resolve_selector_mode_vectors.js, ADR-0099).
+  //
+  // outcome :
+  //   'ok'     — le serveur a confirmé la bascule ⇒ affiche le mode DEMANDÉ.
+  //   'refus'  — refus serveur (409/400) OU contrôleur injoignable (panne
+  //              réseau) : sendConfigDetailed() traite déjà les deux
+  //              IDENTIQUEMENT (ok:false, cf. plus bas) ⇒ dernier mode
+  //              CONFIRMÉ, jamais le mode demandé.
+  //   'annule' — l'utilisateur a refusé la confirmation C4 (chloration de
+  //              secours en cours) : rien n'a été envoyé au serveur ⇒ dernier
+  //              mode CONFIRMÉ, pour la même raison.
+  // lastConfirmed peut être inconnu (undefined/null, ex. tout premier
+  // chargement) : la fonction le restitue TEL QUEL, sans inventer de repli —
+  // c'est à l'appelant (qui connaît le repli par kind, cf. `fallback`
+  // ci-dessous) de combler ce trou, pas à cette décision générique pH/ORP.
+  // ===========================================================================
+  function resolveSelectorMode(requested, lastConfirmed, outcome) {
+    return outcome === "ok" ? requested : lastConfirmed;
+  }
+
+  // ===========================================================================
+  // feature-161 — C4 (gate pool-chemistry, ÉTENDU le 2026-10-13) : confirmation
+  // de désarmement de la chloration de secours. « La friction protège
+  // l'ACTION (interrompre un secours en cours), pas la SURFACE d'où part le
+  // clic » — appelée ICI, dans le chemin UNIQUE d'application du mode
+  // (applyRegulationMode), donc valable pour la carte du tableau de bord ET le
+  // sélecteur de la page de réglage SANS code ni texte dupliqués.
+  // ===========================================================================
+  async function confirmOrpRescueInterruption(mode, previousMode) {
+    if (mode !== "manual" || previousMode === "manual") return true;  // pas une transition vers Arrêt
+    if (!Number.isFinite(latestSensorData?.rescue_until) || latestSensorData.rescue_until <= 0) return true;
+    return confirmDialog({
+      title: "Interrompre la chloration de secours ?",
+      message: "La chloration de secours est en cours. Passer en Arrêt l'interrompt. Confirmer ?",
+      confirmLabel: "Interrompre le secours",
+      cancelLabel: "Annuler",
+      danger: true,
+    });
+  }
+
+  // ===========================================================================
+  // feature-161 (lot A) — chemin UNIQUE d'application d'un changement de mode
+  // de régulation (pH OU ORP), partagé par le sélecteur de la page de réglage
+  // ET celui du tableau de bord. ⛔ Un seul chemin d'ÉCRITURE réseau
+  // (sendConfigDetailed → /save-config, déjà existant) ; ceci ne fait que
+  // partager la logique de rendu optimiste + revert côté CLIENT, pour éviter
+  // une 3e variante qui diverge entre pH et ORP (piège récurrent « parité
+  // pH/ORP » de ce projet — cf. memory). C10 : corrige au passage le défaut
+  // existant du sélecteur ORP de la page de réglage, qui ne revenait PAS à
+  // l'état réel en cas d'échec (seul le pH le faisait jusqu'ici).
+  // kind: "ph" | "orp". Retourne true si le changement a été accepté par le
+  // serveur, false sinon (revert déjà effectué dans tous les cas d'échec —
+  // refus serveur, panne réseau, ou annulation C4).
+  // ===========================================================================
+  async function applyRegulationMode(kind, mode) {
+    const key = `${kind}_regulation_mode`;
+    const enabledKey = `${kind}_enabled`;
+    // Repli asymétrique INTENTIONNEL, hérité du comportement pH pré-existant
+    // (v2.25.0 B4) : "manual" côté pH (fail-closed), "automatic" côté ORP —
+    // non harmonisé par ce lot, périmètre inchangé.
+    const fallback = kind === "ph" ? "manual" : "automatic";
+    // ⚠️ Correctif mineur (revue feature-161) : le no-op ne vaut que si l'état
+    // SERVEUR est réellement connu. Sans config chargée, `previousMode` n'est
+    // qu'un repli deviné — le taire aurait laissé la pastille déplacée par
+    // initSegmented() SANS rien de confirmé par l'appareil (même famille que
+    // le bloquant [1] : un sélecteur qui ment par omission).
+    const hasConfig = !!window._config;
+    const previousMode = hasConfig ? (window._config[key] || fallback) : fallback;
+    if (hasConfig && mode === previousMode) return true;  // no-op réel : rien à envoyer
+
+    const applyLocal = (m) => {
+      setSegmented(key, m);                      // page de réglage
+      setSegmented(`dashboard-${kind}-mode`, m);  // carte du tableau de bord
+      if (window._config) {
+        window._config[key] = m;
+        window._config[enabledKey] = (m !== "manual");
+      }
+      if (kind === "ph") updatePhModeControls(); else updateOrpModeControls();
+      renderDashboardModeCard(kind);
+    };
+
+    if (kind === "orp") {
+      const proceed = await confirmOrpRescueInterruption(mode, previousMode);
+      if (!proceed) {
+        applyLocal(resolveSelectorMode(mode, previousMode, "annule"));
+        return false;
+      }
+    }
+
+    applyLocal(resolveSelectorMode(mode, previousMode, "ok"));
+    const r = await sendConfigDetailed({ [key]: mode });
+    if (r.ok) { loadConfig(); return true; }
+
+    // Échec (refus serveur ou appareil injoignable — même branche, cf.
+    // sendConfigDetailed) : retour au DERNIER mode confirmé par le serveur —
+    // jamais un sélecteur qui affiche un mode que l'appareil n'a pas adopté
+    // (invariant feature-161).
+    applyLocal(resolveSelectorMode(mode, previousMode, "refus"));
+    if (r.status === 409 && kind === "ph") {
+      // On NE propose PAS d'acquitter depuis ce message (v2.25.0 B4) :
+      // l'acquittement reste un acte lu et réfléchi (bouton de la bannière).
+      showToast(r.message || r.error, "error");
+      const banner = $("#ph-auto-manual-banner");
+      if (banner && !banner.hidden && typeof banner.scrollIntoView === "function") {
+        banner.scrollIntoView({ behavior: "smooth", block: "center" });
+      }
+    } else {
+      showToast(r.message || r.error || "Changement de mode refusé.", "error");
+    }
+    loadConfig();  // resynchronisation sur l'état RÉEL du contrôleur
+    return false;
+  }
+
+  // ===========================================================================
+  // feature-161 (lot A) : rendu de la carte pH/ORP du tableau de bord —
+  // texte de mode en en-tête, bandeaux d'exception (C2/C3), sélecteur
+  // synchronisé sur l'état RÉEL, visibilité cible/lignes Programme/hint Arrêt.
+  // kind: "ph" | "orp". Fonction PARTAGÉE (pas deux copies) : pH et ORP sont
+  // structurellement symétriques (cf. analyse d'impact de la spec) — une
+  // divergence de comportement entre les deux serait un bug, pas une feature.
+  // ===========================================================================
+  function renderDashboardModeCard(kind) {
+    const cfg = window._config || {};
+    const isPh = kind === "ph";
+    const mode = cfg[`${kind}_regulation_mode`] || "automatic";
+    const modeLabels = { automatic: "Auto", scheduled: "Programme", manual: "Arrêt" };
+
+    // Texte de mode en en-tête — même motif que #detail-filtration-mode.
+    const modeLabel = $(`#detail-${kind}-mode`);
+    if (modeLabel) modeLabel.textContent = "Mode " + (modeLabels[mode] || "Auto");
+
+    // Sélecteur — toujours resynchronisé sur l'état RÉEL de window._config,
+    // jamais figé sur ce qui a été cliqué (ADR-0100 : l'écran répète ce que
+    // l'appareil dit, il ne le devine pas).
+    setSegmented(`dashboard-${kind}-mode`, mode);
+
+    // C2 — étalonnage en cours. ⚠️ CE CHAMP VIT SUR /data ↔ WS "sensor_data"
+    // (latestSensorData), PAS sur /get-config : vérifié dans web_routes_data.cpp
+    // / ws_manager.cpp (bloc PARITE-DATA), parité d'EXPRESSION garantie par
+    // test_ws_data_parity. ⛔ Ne pas le lire sur window._config — absent de ce
+    // côté, il y vaudrait silencieusement `undefined` (jamais `false`).
+    const calActive = (latestSensorData || {}).cal_switch_active === true;
+    // C3 — escalade de sécurité pH (PAS de symétrique ORP, vérifié). Même
+    // détection que renderPhAutoManualBanner() : reason non vide OU epoch non
+    // nul, jamais l'absence des deux clés.
+    const escalReason = isPh ? ((cfg.ph_auto_manual_reason || "").trim()) : "";
+    const escalEpoch = isPh ? (cfg.ph_auto_manual_epoch || 0) : 0;
+    const escalationActive = isPh && (!!escalReason || !!escalEpoch);
+
+    // Un seul bandeau visible à la fois : l'escalade pH prime (elle verrouille
+    // ELLE AUSSI, cf. gate serveur évalué en premier, web_routes_config.cpp).
+    const escBanner = $(`#dashboard-${kind}-escalation-banner`);
+    if (escBanner) escBanner.hidden = !escalationActive;
+    const calBanner = $(`#dashboard-${kind}-cal-banner`);
+    if (calBanner) calBanner.hidden = !calActive || escalationActive;
+
+    // Segments Auto/Programme désactivés (⛔ JAMAIS hidden, gate C3) pendant
+    // un verrou — "Arrêt" reste cliquable (c'est la SORTIE du mode forcé,
+    // no-op serveur si déjà actif, cf. phModeChangeNeedsAck). Le segment actif
+    // passe en teinte --warn (CSS .segmented__btn:disabled.is-active) ET le
+    // texte du bandeau porte la même information : daltonisme couvert.
+    const locked = calActive || escalationActive;
+    $$(`#dashboard-${kind}-mode .segmented__btn`).forEach(btn => {
+      const isManualBtn = btn.dataset.value === "manual";
+      const dis = locked && !isManualBtn;
+      btn.disabled = dis;
+      btn.setAttribute("aria-disabled", dis ? "true" : "false");
+    });
+
+    // La MESURE et la jauge restent visibles dans TOUS les modes (lecture de
+    // capteur, pas une action) — seules la cible et son marqueur disparaissent
+    // hors Auto : rien n'est poursuivi.
+    const targetRow = $(`#${kind}-compact-target-row`);
+    if (targetRow) targetRow.hidden = mode !== "automatic";
+    if (!isPh) {
+      // updateOrpGauge() réaffiche le marqueur à chaque trame sensor_data —
+      // cette fonction est appelée APRÈS lui dans updateDetailSections() (donc
+      // après updateStatusCards()) : l'override tient jusqu'au prochain rendu.
+      const marker = $("#orp-gauge-target");
+      if (marker && mode !== "automatic") marker.hidden = true;
+    }
+
+    // Programme — C9 : deux lignes en LECTURE SEULE, valeurs DÉJÀ servies par
+    // /get-config, rien recalculé côté client.
+    const dailyRow = $(`#dashboard-${kind}-daily-row`);
+    const limitRow = $(`#dashboard-${kind}-limit-row`);
+    const showSchedRows = mode === "scheduled";
+    if (dailyRow) dailyRow.hidden = !showSchedRows;
+    if (limitRow) limitRow.hidden = !showSchedRows;
+    if (showSchedRows) {
+      const dailyVal = $(`#dashboard-${kind}-daily-value`);
+      if (dailyVal) {
+        const ml = cfg[`${kind}_daily_target_ml`];
+        dailyVal.textContent = (typeof ml === "number" ? Math.round(ml) : 0) + " mL";
+      }
+      const limitVal = $(`#dashboard-${kind}-limit-value`);
+      if (limitVal) {
+        const maxMl = isPh
+          ? (typeof cfg.max_ph_ml_per_day === "number" ? cfg.max_ph_ml_per_day : 0)
+          : (typeof cfg.max_orp_ml_per_day === "number" ? cfg.max_orp_ml_per_day
+             : (typeof cfg.max_chlorine_ml_per_day === "number" ? cfg.max_chlorine_ml_per_day : 0));
+        limitVal.textContent = maxMl > 0 ? (Math.round(maxMl) + " mL") : "—";
+      }
+    }
+
+    // Arrêt — C7 : la régulation automatique ne dose plus, l'injection
+    // manuelle reste accessible depuis les réglages (texte imposé).
+    const hint = $(`#dashboard-${kind}-stopped-hint`);
+    if (hint) hint.hidden = mode !== "manual";
+  }
+
+  // feature-161 (lot A) : clic sur les sélecteurs de mode du tableau de bord —
+  // même chemin d'écriture ET même chemin de DÉCISION que la page de réglage
+  // (applyRegulationMode), donc aucun second chemin. C4 (confirmation ORP →
+  // Arrêt pendant une chloration de secours, ÉTENDU le 2026-10-13 par le gate
+  // pool-chemistry aux DEUX surfaces) vit désormais DANS applyRegulationMode
+  // (confirmOrpRescueInterruption) — ce gestionnaire ne fait plus que relayer
+  // le clic, pour que le revert sur annulation (bloquant [1]) soit garanti au
+  // MÊME endroit que la confirmation elle-même, quelle que soit la surface.
+  function bindDashboardModeSelectors() {
+    initSegmented("dashboard-ph-mode");
+    $$(`#dashboard-ph-mode .segmented__btn`).forEach(btn => {
+      btn.addEventListener("click", () => {
+        if (btn.disabled) return;
+        applyRegulationMode("ph", btn.dataset.value);
+      });
+    });
+
+    initSegmented("dashboard-orp-mode");
+    $$(`#dashboard-orp-mode .segmented__btn`).forEach(btn => {
+      btn.addEventListener("click", () => {
+        if (btn.disabled) return;
+        applyRegulationMode("orp", btn.dataset.value);
+      });
+    });
   }
 
   function collectConfig() {
@@ -6419,6 +6668,16 @@
     try { updatePhDosingCard(); } catch (e) { console.error('[ph-dosage] rendu:', e); }
     try { updateOrpDosingCard(); } catch (e) { console.error('[orp-dosage] rendu:', e); }
 
+    // feature-161 (lot A) : carte pH/ORP du tableau de bord — mode en en-tête,
+    // bandeaux d'exception, sélecteur, cible/lignes Programme/hint Arrêt. Même
+    // précaution try/catch que les rendus voisins (une exception sur l'un ne
+    // doit jamais masquer l'autre en silence). Appelé APRÈS updateStatusCards()
+    // (gauge/compact déjà à jour) dans les deux call sites de cette fonction
+    // (loadConfig ET loadSensorData) : l'override du marqueur ORP hors-Auto
+    // tient donc jusqu'au prochain rendu.
+    try { renderDashboardModeCard('ph'); } catch (e) { console.error('[dashboard-ph-mode] rendu:', e); }
+    try { renderDashboardModeCard('orp'); } catch (e) { console.error('[dashboard-orp-mode] rendu:', e); }
+
     // feature-096 : temps d'atteinte de cible (pages pH ET ORP) — appelé
     // exactement là où updatePhDosingCard() l'est, donc après une charge
     // /data ET après une trame WS `sensor_data` (les deux passent ici via
@@ -6437,11 +6696,21 @@
     // === FILTRATION ===
     // feature-147 : le texte de mode ("Mode Auto"/.../"Hors gel") est géré par
     // updateFiltrationBadges() ci-dessous (un seul calcul, header de carte).
+    // feature-161 (lot B) : la ligne Horaires ne vaut qu'en Auto/Programme —
+    // en Marche/Arrêt aucun créneau n'est suivi, l'afficher serait trompeur.
+    // `.hidden` (propriété DOM, reflète l'attribut [hidden]) — même patron que
+    // renderDashboardModeCard() (lot A) : .detail-row[hidden]{display:none!important}
+    // (app.css:3255) l'emporte sur `.detail-row{display:flex}`.
     const detailFiltrationSchedule = $("#detail-filtration-schedule");
+    const detailFiltrationScheduleRow = $("#detail-filtration-schedule-row");
     if (detailFiltrationSchedule) {
       const start = config.filtration_start || '08:00';
       const end = config.filtration_end || '20:00';
       detailFiltrationSchedule.textContent = `${start} - ${end}`;
+    }
+    if (detailFiltrationScheduleRow) {
+      const fMode = (config.filtration_mode || 'auto').toLowerCase();
+      detailFiltrationScheduleRow.hidden = (fMode !== 'auto' && fMode !== 'manual');
     }
 
     updateFiltrationBadges();
@@ -6609,7 +6878,7 @@
             } else if (!filtExt && chlorBoost) {
               showToast("Boost activé (surchloration seule) : la filtration n'est pas gérée par PoolController. Vérifiez le taux de chlore avant la baignade.", "info");
             } else if (filtExt && !chlorBoost) {
-              showToast("Boost activé (filtration prolongée seule) : la régulation ORP n'est pas en mode Automatique, le chlore n'est pas relevé.", "warning");
+              showToast("Boost activé (filtration prolongée seule) : la régulation ORP n'est pas en mode Auto, le chlore n'est pas relevé.", "warning");
             } else {
               showToast("Boost sans effet : filtration non gérée et régulation ORP non automatique.", "warning");
             }
@@ -7423,7 +7692,15 @@
       rescueHint.className = 'dose-block-banner__rescue-hint';
       if (isManual) {
         // L8 — libellé IMPOSÉ par le gate pool-chemistry, repris MOT À MOT.
-        rescueHint.textContent = "Chloration de secours indisponible : la régulation du chlore est en mode Manuel. Repassez en Automatique ou Programmée pour l'utiliser.";
+        // ⚠️ v2 (2026-10-13) : la v1 (« mode Manuel… Automatique ou
+        // Programmée ») nommait un bouton INEXISTANT — les segments réels
+        // sont Auto / Programme / Arrêt (feature-161). Le gate a dégelé ce
+        // texte pour cette seule raison : une consigne de sécurité qui nomme
+        // un bouton absent n'est pas une divergence cosmétique, c'est une
+        // consigne INAPPLICABLE. Dit en plus OÙ agir (sélecteur présent sur
+        // DEUX surfaces depuis ce lot) — ⛔ ne JAMAIS mentionner la valeur
+        // interne "manual" ici, ni dans un attribut/une infobulle.
+        rescueHint.textContent = "Chloration de secours indisponible : la régulation du chlore est en mode Arrêt. Repassez en Auto ou Programme pour l'utiliser.";
         container.appendChild(rescueHint);
       } else {
         // L7 — libellé IMPOSÉ par le gate pool-chemistry (2e passage,
@@ -12536,41 +12813,13 @@
     $("#lighting_end_time")?.addEventListener("change", () => { lightingDirty = true; });
     bindLightingManualSave();
 
-    // pH / ORP regulation — sauvegarde immédiate sur le sélecteur de mode
+    // pH / ORP regulation — sauvegarde immédiate sur le sélecteur de mode.
+    // feature-161 (lot A) : logique partagée dans applyRegulationMode() — le
+    // revert optimiste pH (v2.25.0 B4) et le miroir ORP (C10, cf. plus bas)
+    // vivent désormais au MÊME endroit, pour éviter deux variantes qui divergent.
     initSegmented("ph_regulation_mode");
     $$(`#ph_regulation_mode .segmented__btn`).forEach(btn => {
-      btn.addEventListener("click", async () => {
-        // v2.25.0 (B4) : le serveur peut REFUSER (409) — bascule de sécurité pH
-        // non acquittée. Sans revert, l'UI resterait bloquée sur un mode que
-        // l'appareil n'a jamais adopté, et l'utilisateur n'aurait aucune issue.
-        const previousMode = window._config?.ph_regulation_mode || "manual";
-        const mode = btn.dataset.value;
-        updatePhModeControls();
-        if (window._config) { window._config.ph_regulation_mode = mode; window._config.ph_enabled = (mode !== "manual"); }
-        const r = await sendConfigDetailed({ ph_regulation_mode: mode });
-        if (r.ok) { loadConfig(); return; }
-        // Revert de l'override optimiste (config + segmented) sur l'état serveur.
-        if (window._config) {
-          window._config.ph_regulation_mode = previousMode;
-          window._config.ph_enabled = (previousMode !== "manual");
-        }
-        setSegmented("ph_regulation_mode", previousMode);
-        updatePhModeControls();
-        if (r.status === 409) {
-          // On NE propose PAS d'acquitter depuis ce message : l'acquittement doit
-          // rester un acte lu et réfléchi (bouton de la bannière, qui affiche la
-          // cause), pas un réflexe pour débloquer un clic refusé.
-          showToast(r.message || r.error, "error");
-          const banner = $("#ph-auto-manual-banner");
-          if (banner && !banner.hidden && typeof banner.scrollIntoView === "function") {
-            banner.scrollIntoView({ behavior: "smooth", block: "center" });
-          }
-        } else {
-          showToast(r.error || "Changement de mode refusé.", "error");
-        }
-        // Resynchronisation sur l'état RÉEL du contrôleur (et bannière à jour).
-        loadConfig();
-      });
+      btn.addEventListener("click", () => applyRegulationMode("ph", btn.dataset.value));
     });
     const schedBtn = $("#ph_scheduled_save_btn");
     if (schedBtn) {
@@ -12591,15 +12840,18 @@
         else { setSchedBtn("Erreur", false, false, "error"); setTimeout(() => setSchedBtn("Sauvegarder", false, false, "default"), 2000); }
       });
     }
-    // ORP regulation — sauvegarde immédiate sur le sélecteur de mode
+    // ORP regulation — sauvegarde immédiate sur le sélecteur de mode.
+    // feature-161 (lot A), C10 : défaut EXISTANT corrigé — ce sélecteur ne
+    // revenait PAS à l'état réel en cas d'échec (contrairement au pH). Même
+    // chemin partagé qu'au-dessus désormais (applyRegulationMode).
+    // ⚠️ C4 ÉTENDU (gate pool-chemistry, 2026-10-13) : la confirmation
+    // « Interrompre la chloration de secours ? » vit DANS applyRegulationMode
+    // (confirmOrpRescueInterruption) — ce sélecteur l'hérite automatiquement,
+    // sans rien dupliquer ici. La friction protège l'ACTION, pas la carte du
+    // tableau de bord seule.
     initSegmented("orp_regulation_mode");
     $$(`#orp_regulation_mode .segmented__btn`).forEach(btn => {
-      btn.addEventListener("click", () => {
-        updateOrpModeControls();
-        const mode = btn.dataset.value;
-        if (window._config) { window._config.orp_regulation_mode = mode; window._config.orp_enabled = (mode !== "manual"); }
-        sendConfig({ orp_regulation_mode: mode }).then(ok => { if (ok) loadConfig(); });
-      });
+      btn.addEventListener("click", () => applyRegulationMode("orp", btn.dataset.value));
     });
     const orpSchedBtn = $("#orp_scheduled_save_btn");
     if (orpSchedBtn) {
@@ -13116,6 +13368,7 @@
     bindConfirmModal();
     bindHistoryBackup();
     bindDetailActions();
+    bindDashboardModeSelectors();  // feature-161 (lot A) : sélecteurs pH/ORP du tableau de bord
     bindAutosave();
     bindPhCalibration();
     bindPhProbeChip();
