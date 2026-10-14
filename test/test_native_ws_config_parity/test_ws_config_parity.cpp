@@ -69,6 +69,12 @@ static const HttpOnlyKey kHttpOnlyKeys[] = {
   {"ph_offset_min",  "Constante de compilation (kPhOffsetMin) : immuable a l'execution, app.js conserve la derniere borne recue."},
   {"ph_offset_max",  "Constante de compilation (kPhOffsetMax) : immuable a l'execution, app.js conserve la derniere borne recue."},
   {"ph_offset_step", "Constante de compilation (kPhOffsetStep) : immuable a l'execution, app.js conserve le dernier pas recu."},
+  // feature-164 (gate pool-chemistry, 3e passage, ADR-0100) : bornes de la
+  // consigne ORP servies au client, miroir EXACT du triplet ph_target_*
+  // ci-dessus -- memes regles (constante de compilation, jamais en WS).
+  {"orp_target_min",  "Constante de compilation (kOrpTargetPlausibleMin) : immuable a l'execution, app.js conserve la derniere borne recue."},
+  {"orp_target_max",  "Constante de compilation (kOrpTargetPlausibleMax) : immuable a l'execution, app.js conserve la derniere borne recue."},
+  {"orp_target_step", "Constante de compilation (kOrpTargetStep) : immuable a l'execution, app.js conserve le dernier pas recu."},
   // feature-154 : fenetre de sante EZO (constants.h) servie pour les 3
   // pastilles de l'ecran "Etat sonde pH" (classifyPhCriterion cote client).
   // Memes regles que les bornes ph_target_*/ph_offset_* ci-dessus.
@@ -81,6 +87,11 @@ static const HttpOnlyKey kHttpOnlyKeys[] = {
   // Memes regles que les bornes ph_target_*/ph_offset_* ci-dessus.
   {"ph_cal_points_min",         "Constante de compilation (kPhTuneCalPointsMin) : immuable a l'execution, app.js conserve la derniere borne recue."},
   {"ph_tune_min_filtration_ms", "Constante de compilation (kPhTuneMinFiltrationMs) : immuable a l'execution, app.js conserve la derniere borne recue."},
+  // feature-164 (gate pool-chemistry C12, ADR-0100) : seuil d'avertissement
+  // de duree de filtration courte, meme regle que les bornes ph_target_*
+  // ci-dessus -- constante de compilation, jamais en WS.
+  {"filtration_short_duration_warn_min",
+   "Constante de compilation (kFiltrationShortDurationWarnMinutes) : immuable a l'execution, app.js conserve la derniere borne recue."},
   {"regulation_defaults_by_size",
    "Table de compilation (kRegulationDefaultsBySize, 3 colonnes) : immuable a l'execution et ~525 o de trame par push."},
   // Dérivable côté client : `pool_size` EST dans la trame WS depuis bug-089 et
@@ -630,40 +641,63 @@ static char* extractNormalizedRhsInRegion(const char* rel, const char* recv, con
   return out;
 }
 
+static void assertExpressionParity(const char* key, const char* featureTag) {
+  char msg[768];
+
+  char* httpRhs = extractNormalizedRhsInRegion(kHttpFile, "doc", key, kMarkerBegin, kMarkerEnd);
+  snprintf(msg, sizeof(msg),
+           "EXPRESSION DE `%s` INTROUVABLE dans %s (entre les marqueurs "
+           "PARITE-CONFIG, forme attendue doc[\"%s\"] = ... ;). Si la clé a "
+           "changé de forme, mettre ce test à jour SCIEMMENT. NE PAS "
+           "DESACTIVER CE TEST.", key, kHttpFile, key);
+  TEST_ASSERT_NOT_NULL_MESSAGE(httpRhs, msg);
+
+  char* wsRhs = extractNormalizedRhsInRegion(kWsFile, "d", key, kMarkerBegin, kMarkerEnd);
+  snprintf(msg, sizeof(msg),
+           "EXPRESSION DE `%s` INTROUVABLE dans %s (entre les marqueurs "
+           "PARITE-CONFIG, forme attendue d[\"%s\"] = ... ;). NE PAS "
+           "DESACTIVER CE TEST.", key, kWsFile, key);
+  TEST_ASSERT_NOT_NULL_MESSAGE(wsRhs, msg);
+
+  if (httpRhs != NULL && wsRhs != NULL) {
+    snprintf(msg, sizeof(msg),
+             "PARITE D'EXPRESSION ROMPUE sur `%s` (%s) : "
+             "/get-config (%s) et la trame WS `config` (%s) ne la CALCULENT "
+             "PAS pareil.\n  /get-config : %s\n  WS config   : %s\n"
+             "window._config et latestConfig sont remplacés par la dernière "
+             "charge reçue côté client : une divergence ferait OSCILLER la "
+             "valeur affichée au rythme des deux cadences. QUE FAIRE : aligner "
+             "les deux expressions. NE PAS DESACTIVER CE TEST.",
+             key, featureTag, kHttpFile, kWsFile, httpRhs, wsRhs);
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(httpRhs, wsRhs, msg);
+  }
+  free(httpRhs);
+  free(wsRhs);
+}
+
 void test_h_lighting_expression_partagee_identique_des_deux_cotes(void) {
   for (size_t i = 0; i < kLightingExprKeysCount; ++i) {
-    const char* key = kLightingExprKeys[i];
-    char msg[768];
+    assertExpressionParity(kLightingExprKeys[i], "feature-162");
+  }
+}
 
-    char* httpRhs = extractNormalizedRhsInRegion(kHttpFile, "doc", key, kMarkerBegin, kMarkerEnd);
-    snprintf(msg, sizeof(msg),
-             "EXPRESSION DE `%s` INTROUVABLE dans %s (entre les marqueurs "
-             "PARITE-CONFIG, forme attendue doc[\"%s\"] = ... ;). Si la clé a "
-             "changé de forme, mettre ce test à jour SCIEMMENT. NE PAS "
-             "DESACTIVER CE TEST.", key, kHttpFile, key);
-    TEST_ASSERT_NOT_NULL_MESSAGE(httpRhs, msg);
+// ---------------------------------------------------------------------------
+// (i) feature-164 (gate pool-chemistry, 2e passage) : PARITE D'EXPRESSION pour
+// ph_target / orp_target. 6e occurrence documentée du piège (même clé des
+// deux côtés, expressions divergentes) — `ph_target` servait
+// `roundf(mqttCfg.phTarget * 100.0f) / 100.0f` côté HTTP contre
+// `mqttCfg.phTarget` brut côté WS, corrigé par ce lot. Sentinelle ajoutée pour
+// qu'une 7e occurrence ne soit plus possible SANS faire échouer ce test.
+// ---------------------------------------------------------------------------
+static const char* kRegulationTargetExprKeys[] = {
+  "ph_target", "orp_target",
+};
+static const size_t kRegulationTargetExprKeysCount =
+    sizeof(kRegulationTargetExprKeys) / sizeof(kRegulationTargetExprKeys[0]);
 
-    char* wsRhs = extractNormalizedRhsInRegion(kWsFile, "d", key, kMarkerBegin, kMarkerEnd);
-    snprintf(msg, sizeof(msg),
-             "EXPRESSION DE `%s` INTROUVABLE dans %s (entre les marqueurs "
-             "PARITE-CONFIG, forme attendue d[\"%s\"] = ... ;). NE PAS "
-             "DESACTIVER CE TEST.", key, kWsFile, key);
-    TEST_ASSERT_NOT_NULL_MESSAGE(wsRhs, msg);
-
-    if (httpRhs != NULL && wsRhs != NULL) {
-      snprintf(msg, sizeof(msg),
-               "PARITE D'EXPRESSION ROMPUE sur `%s` (feature-162) : "
-               "/get-config (%s) et la trame WS `config` (%s) ne la CALCULENT "
-               "PAS pareil.\n  /get-config : %s\n  WS config   : %s\n"
-               "window._config et latestConfig sont remplacés par la dernière "
-               "charge reçue côté client : une divergence ferait OSCILLER le "
-               "mode affiché au rythme des deux cadences. QUE FAIRE : aligner "
-               "les deux expressions. NE PAS DESACTIVER CE TEST.",
-               key, kHttpFile, kWsFile, httpRhs, wsRhs);
-      TEST_ASSERT_EQUAL_STRING_MESSAGE(httpRhs, wsRhs, msg);
-    }
-    free(httpRhs);
-    free(wsRhs);
+void test_i_regulation_target_expression_partagee_identique_des_deux_cotes(void) {
+  for (size_t i = 0; i < kRegulationTargetExprKeysCount; ++i) {
+    assertExpressionParity(kRegulationTargetExprKeys[i], "feature-164");
   }
 }
 
@@ -679,5 +713,6 @@ int main(int, char**) {
   RUN_TEST(test_f_inventaire_coherent);
   RUN_TEST(test_g_orp_enabled_derive_jamais_ecrit_directement);
   RUN_TEST(test_h_lighting_expression_partagee_identique_des_deux_cotes);
+  RUN_TEST(test_i_regulation_target_expression_partagee_identique_des_deux_cotes);
   return UNITY_END();
 }

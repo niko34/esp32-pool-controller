@@ -27,7 +27,7 @@ mode** (→ Marche / → Arrêt) au lieu de poser un état séparé.
 > ⚠️ **Visibilité conditionnée au mode d'installation** (feature-056, v2.19.0). La page n'est pleinement active qu'en mode d'installation **`managed`** (PoolController pilote la filtration). En **`powered`** (alimenté par le circuit de filtration) et **`external`** (filtration tierce signalée), la programmation et le contrôle du relais sont **masqués** : le PoolController ne pilote pas le relais, une note « filtration non pilotée par le PoolController » est affichée. Le mode se règle dans Paramètres → Installation (voir [page-settings.md](page-settings.md#installation-panel-install-feature-056) et [ADR-0026](../adr/0026-mode-installation.md)). L'ancien toggle « Gérer la filtration » (`#filtration_enabled`) est **supprimé** (fusionné dans `install_mode`).
 
 - **Carte Contrôle manuel** (`#filtration-manual-card`) — boutons **Démarrer** / **Arrêter**, qui **changent le mode** (→ Marche / → Arrêt, feature-146) — **jamais grisés** : en mode Arrêt, « Démarrer » est précisément la sortie du mode. Le **badge d'état (Marche / Arrêt)** est placé à droite du titre dans le `card__head` (frère direct du `<h2>`, classes `pill ok` ou `pill bad`) — voir feature-001. La ligne « État actuel » du body, devenue redondante, a été supprimée. Masquée hors mode d'installation `managed`.
-- **Carte Configuration** — sélecteur de mode (Auto / Programme / Marche / Arrêt), heure de début, heure de fin, bouton Sauvegarder. Le bandeau d'aide (`#filtration_mode_hint`) décrit désormais les **quatre modes en permanence** (il ne se masque plus selon le mode sélectionné). Masquée hors mode d'installation `managed`.
+- **Carte Configuration** — sélecteur de mode (Auto / Programme / Marche / Arrêt), heure de début, heure de fin, bouton Sauvegarder. Le bandeau d'aide (`#filtration_mode_hint`) décrit désormais les **quatre modes en permanence** (il ne se masque plus selon le mode sélectionné). ⚠️ **feature-164 (v2.80.0)** : un bandeau `#filtration-duration-warning` (`.callout--warn`, non bloquant) apparaît en mode **Programme** si la durée saisie est sous 120 min — voir [Validation serveur des horaires](#validation-serveur-des-horaires-feature-164-v2800). Masquée hors mode d'installation `managed`.
 
 Les autres cartes (graphe, statistiques) peuvent être ajoutées au fil du temps ; se référer à `#view-filtration` pour l'état courant.
 
@@ -40,6 +40,38 @@ Les autres cartes (graphe, statistiques) peuvent être ajoutées au fil du temps
 > carte elle-même). **Cette page n'est pas modifiée** : voir
 > [docs/features/page-dashboard.md](page-dashboard.md#sélecteur-de-mode-depuis-les-cartes-ph--orp--filtration-feature-161-v2770)
 > pour le détail.
+
+> ⚠️ **feature-164 (v2.80.0)** : la carte **Filtration du tableau de bord** gagne un bloc horaires
+> **éditable** en mode Programme (`#dashboard-filtration-schedule-edit`) — voir
+> [docs/features/page-dashboard.md](page-dashboard.md#régler-la-consigne-depuis-la-carte-feature-164-v2800).
+> **Cette page-ci** (réglage) **n'est pas restructurée**, mais son unique chemin d'écriture
+> (`POST /save-config`) gagne la **validation serveur des horaires** décrite ci-dessous — voir
+> [Validation serveur des horaires](#validation-serveur-des-horaires-feature-164-v2800).
+
+## Validation serveur des horaires (feature-164, v2.80.0)
+
+⚠️ **Avant ce lot, `filtration_start`/`filtration_end` n'étaient validés NULLE PART sur ce
+chemin** : affectés en **String brute**, sans passer par `timeStringToMinutes` ni aucune règle de
+cohérence — contrairement à `filtration_mode`, validé depuis feature-146. Deux correctifs,
+**communs aux deux surfaces** (cette page **et** la carte du tableau de bord, même chemin
+d'écriture) :
+
+- **`début == fin` → refus explicite, HTTP 400 (C11, bloquant)**. Cette plage faisait tourner la
+  filtration **zéro heure par jour**, **silencieusement**, jusqu'à ce lot (`isMinutesInRange` avec
+  `equalMeansAlways=false` renvoie `false` pour `start==end` — aucun refus ni message n'existait).
+  Texte imposé mot pour mot, cite l'heure fautive et un exemple :
+  > « Heure de début et heure de fin identiques ({HH:MM}) : la filtration ne démarrerait jamais.
+  > Saisissez deux heures différentes — par exemple 00:00 et 23:59 pour filtrer en continu. »
+  ⛔ **`fin < début` reste ACCEPTÉ** : cas d'usage réel, une plage qui **enjambe minuit**
+  (ex. filtration de nuit) — voir [`src/schedule_logic.cpp`](../../src/schedule_logic.cpp).
+- **Durée programmée sous 120 min → avertissement non bloquant (C12)**, cite la durée saisie **et**
+  le seuil (ADR-0095), même texte à l'écran (`#filtration-duration-warning`, cette page **et** la
+  carte) et au journal (`warning`) :
+  > « Filtration programmée : {X} min par jour. Sous 120 min, la circulation est trop courte pour
+  > que la régulation pH/ORP atteigne sa consigne — l'eau restera durablement à côté de la valeur
+  > visée. »
+
+Détail complet (ordre d'évaluation, corps JSON) : [API.md](../API.md#post-save-config--horaires-de-filtration-feature-164-v2800).
 
 ## Données consommées (WebSocket `/ws`)
 

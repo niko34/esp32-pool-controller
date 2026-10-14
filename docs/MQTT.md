@@ -153,7 +153,7 @@ Tous les topics utilisent le préfixe configurable (ex: `pool/sensors`). Les val
 | `{base}/lighting_start/set` | `HH:MM` (ex. `20:00`) | Change l'heure de début du créneau (feature-052, v2.17.0). Validée `HH:MM` via `timeStringToMinutes` (format invalide → ignoré + `warning` + resync HA). Pilote `lightingCfg.startTime`, persisté NVS, appliqué, republié |
 | `{base}/lighting_end/set` | `HH:MM` (ex. `23:30`) | Change l'heure de fin du créneau (symétrique, `lightingCfg.endTime`, feature-052, v2.17.0) |
 | `{base}/ph_target/set` | `7.4` (**7.20 – 7.50**, pas 0,10) | Change la consigne pH. ⚠️ **v2.25.0** : bornes `kPhTargetMin`/`kPhTargetMax`, **identiques à celles de `POST /save-config`** (avant : littéraux `6.0 – 8.5` propres à ce chemin). Valeur hors bornes ou non numérique → **refusée** (aucune écriture, aucune persistance) + log `warning` + `publishTargetState()` qui **resynchronise Home Assistant** sur la consigne réelle. **Jamais d'écrêtage silencieux** — voir [Refus de consigne pH hors bornes](#refus-de-consigne-ph-hors-bornes-v2250) |
-| `{base}/orp_target/set` | `700` (400 – 900) | Change la consigne ORP (mV) |
+| `{base}/orp_target/set` | `700` (**300 – 950**, v2.80.0 — était 400-900) | Change la consigne ORP (mV). ⚠️ **v2.80.0 (feature-164)** : fenêtre **élargie** à `kOrpTargetPlausibleMin`/`kOrpTargetPlausibleMax`, **identiques** à celles de `POST /save-config` (avant : littéraux `400 – 900` propres à ce chemin, plus stricts sans justification). Motif de l'élargissement : *une fenêtre resserrée interdirait la recalibration légitime après un changement de stabilisant (acide cyanurique)*. Valeur hors bornes ou non numérique → **refusée** + log `warning` + resync HA sur la consigne réelle. **Jamais d'écrêtage silencieux**. Dans la plage, arrondie à l'entier (`kOrpTargetStep` = 1 mV). |
 | `{base}/ph_regulation_mode/set` | `automatic` / `scheduled` / `manual` | Change le mode de régulation pH (feature-009, v2.7.0). Insensible à la casse. Valeur hors enum → ignorée + log `warning`. ⚠️ **v2.25.0** : **refusé** tant qu'une bascule de sécurité pH n'est pas acquittée — voir [Refus du changement de mode pH sous trace de sécurité](#refus-du-changement-de-mode-ph-sous-trace-de-sécurité-v2250) |
 | `{base}/orp_regulation_mode/set` | `automatic` / `scheduled` / `manual` | Change le mode de régulation ORP (idem) |
 | `{base}/ph_daily_target_ml/set` | `150` (0 – 2000 mL, entier) | Change le volume quotidien programmé pH (feature-050, v2.14.0). Payload non numérique → ignoré + log `warning` ; négatif → clampé à 0 ; **valeur > limite journalière VIVE `maxPhMlPerDay` → refusée** + `warning` + resync HA. Persisté NVS, republié |
@@ -202,7 +202,7 @@ session d'étalonnage en cours était acceptée puis **écrasée en silence** à
 
 1. Une commande qui tenterait de **sortir** de `manual` (ex. `automatic`, `scheduled`) est
    **refusée** — `mqttCfg.ph\|orpRegulationMode` reste `manual`, rien n'est écrit en NVS ;
-2. journalisée en `warning` : `Mode régulation pH|ORP REFUSÉ (MQTT → <mode>) : étalonnage en cours — le mode est rétabli à la fin de l'étalonnage.` ;
+2. journalisée en `warning` : `Mode régulation pH|ORP REFUSÉ (MQTT → <mode>) : Étalonnage en cours — le mode et les consignes sont verrouillés. Le mode est rétabli à la fin de l'étalonnage, et les consignes redeviennent modifiables au même moment.` (texte révisé en v2.80.0, feature-164 — l'ancien ne mentionnait pas les consignes) ;
 3. suivie d'un `publishTargetState()` qui **resynchronise Home Assistant** sur le mode réel
    (`manual`, affiché « Arrêt ») — le select HA revient de lui-même, il ne reste pas figé.
 4. Une commande entrante `manual` reste **acceptée** (no-op souhaitable : elle ne change rien
@@ -217,6 +217,23 @@ d'étalonnage, et rien ne doit pouvoir y faire croire que c'est l'eau du bassin.
 antérieur à l'étalonnage (`ph/orpCalSwitchPrevMode`) — un second chemin d'écriture vers cette
 mémoire de sécurité serait exactement le piège qu'il ferme. Détail et motif général :
 [pump-controller.md](subsystems/pump-controller.md#verrou-étalonnage-sur-le-changement-de-mode-bug-161-gate-c2).
+
+✅ **Couvert depuis v2.80.0, sur les QUATRE chemins d'écriture.** Un changement de consigne
+pH/ORP pendant un étalonnage est refusé **partout** : `/save-config` (HTTP), **les commandes MQTT
+`{base}/ph\|orp_target/set`**, et le recalcul induit par un changement de **taille de bassin**.
+Même verrou, **même texte** (voir [API.md](API.md#bornes-de-la-consigne-orp-v2800)).
+
+⚠️ **Et c'est l'histoire qui mérite d'être retenue** : la garde avait d'abord été posée sur le
+**gestionnaire HTTP** au lieu du **point où la valeur change**. Quatre chemins ont dû être
+découverts l'un après l'autre — HTTP, MQTT (mode), MQTT (consignes), puis `pool_size`. ⛔ Avant
+d'ajouter un cinquième écrivain de `phTarget`/`orpTarget`, **vérifier qu'il passe par la garde** :
+le motif du gate est *« un gate à moitié posé est pire qu'absent — il crée la confiance sans la
+protection »*.
+
+⚠️ **Nuance qui a compté** : le refus ne s'arme que si la valeur **diffère réellement** de la
+courante. L'interface renvoie toujours la valeur en vigueur dans sa charge utile — tester la seule
+**présence** de la clé refuserait **toute** sauvegarde de réglages pendant un étalonnage, soit *une
+garde qui bloque plus qu'elle ne protège*.
 
 ---
 

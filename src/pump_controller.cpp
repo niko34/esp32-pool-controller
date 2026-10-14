@@ -143,10 +143,25 @@ void PumpControllerClass::applyRegulationSpeed() {
   _phTuningChangeRequested.store(true);
 }
 
+// feature-164 (gate pool-chemistry C5+C6) : MÊME patron que
+// applyRegulationSpeed() ci-dessus — poser un drapeau atomique, jamais écrire
+// depuis ce contexte. Consommé en tête d'update(), à côté de
+// _phTuningChangeRequested, par applyRegulationSpeedNow(forcePurge=true).
+void PumpControllerClass::requestPhTargetChange() {
+  _phTargetChangeRequested.store(true);
+}
+
 // APPLICATION EFFECTIVE — loopTask UNIQUEMENT (begin(), ou update() après
-// consommation de `_phTuningChangeRequested`). Seul écrivain de phPID/_phIntegral
-// sur ce chemin : plus aucun entrelacement possible avec phIntegralTick().
-void PumpControllerClass::applyRegulationSpeedNow() {
+// consommation de `_phTuningChangeRequested`/`_phTargetChangeRequested`). Seul
+// écrivain de phPID/_phIntegral sur ce chemin : plus aucun entrelacement
+// possible avec phIntegralTick().
+// `forcePurge` (feature-164) : un changement de CONSIGNE pH seul (sans
+// changement de vitesse) ne modifie PAS Kp/Ki/integralMax — sans ce paramètre,
+// `phTuningChanged` resterait faux et l'intégrale, chargée pour viser l'ANCIENNE
+// consigne, serait servie telle quelle contre la nouvelle (cf. le commentaire
+// de web_routes_config.cpp, C5+C6 : « 16 200 pH·s accumulés contre 7,50 servis
+// contre 7,20 = acide immédiat que personne n'a demandé »).
+void PumpControllerClass::applyRegulationSpeedNow(bool forcePurge) {
   const uint8_t code = _regulationSpeedCode.load();
   const char* speedName;
   float newPhKp, newPhKi, newPhIntegralMax, newOrpKp;
@@ -165,17 +180,23 @@ void PumpControllerClass::applyRegulationSpeedNow() {
     newOrpKp = 0.3f;
   }
 
-  // (a) + (b) : purge SEULEMENT sur changement réel, et AVANT les coefficients.
+  // (a) + (b) : purge SEULEMENT sur changement réel (ou demande explicite via
+  // forcePurge), et AVANT les coefficients.
   const bool phTuningChanged = (newPhKp != phPID.kp) || (newPhKi != phPID.ki) ||
                                (newPhIntegralMax != phPID.integralMax);
-  if (phTuningChanged && phPID.integral != 0.0f) {
+  const bool shouldPurge = phTuningChanged || forcePurge;
+  if (shouldPurge && phPID.integral != 0.0f) {
+    // feature-164 : la cause du message distingue vitesse vs consigne — le
+    // format « X pH·s abandonnés » est IMPOSÉ (gate pool-chemistry C6).
+    const char* cause = phTuningChanged ? "changement de vitesse de régulation"
+                                         : "changement de consigne pH";
     char msg[112];
     snprintf(msg, sizeof(msg),
-             "Intégrale pH remise à zéro (changement de vitesse de régulation) : "
-             "%.0f pH·s abandonnés", phPID.integral);
+             "Intégrale pH remise à zéro (%s) : %.0f pH·s abandonnés",
+             cause, phPID.integral);
     systemLogger.info(msg);
   }
-  if (phTuningChanged) {
+  if (shouldPurge) {
     phPID.integral = 0.0f;
     phPID.lastError = 0.0f;
     phPID.lastTime = 0;  // dt reconstruit au prochain tick (pas de dt synthétisé)
@@ -3430,6 +3451,16 @@ void PumpControllerClass::updateDosingCore(unsigned long now) {
   // ont lieu ICI, sur loopTask — donc jamais entrelacées avec phIntegralTick().
   if (_phTuningChangeRequested.exchange(false)) {
     applyRegulationSpeedNow();
+  }
+  // feature-164 (gate pool-chemistry C5+C6) : changement de CONSIGNE pH
+  // demandé depuis la tâche web (requestPhTargetChange()). Même emplacement
+  // que _phTuningChangeRequested ci-dessus, pour la même raison (purge
+  // UNIQUEMENT sur loopTask) — forcePurge=true car la consigne seule ne
+  // change pas Kp/Ki/integralMax. ⛔ Ne touche NI _sessionOnMs NI les
+  // compteurs horaire/journalier/cycle : on efface une DEMANDE, jamais une
+  // DETTE (cf. web_routes_config.cpp).
+  if (_phTargetChangeRequested.exchange(false)) {
+    applyRegulationSpeedNow(/*forcePurge=*/true);
   }
   if (_phPauseResetRequested.exchange(false)) {
     // Purge OBLIGATOIRE et conservée (verdict du gate v2.26.0) : ce reset est

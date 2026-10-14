@@ -397,6 +397,29 @@ faire.
 - **Tests avant commit** : `pio run` doit passer, lint doit être propre
 - **Toujours mettre à jour la spec** en fin de travail avec le statut réel
 
+## ⛔ LA COMPILATION EST UNE RESSOURCE EXCLUSIVE — GLOBALE, pas par agent
+
+**Incident du 2026-10-14** : deux agents ont compilé **en même temps**, la charge est montée à
+**9,8** et le conteneur de l'utilisateur s'est bloqué — il a dû ouvrir une session parallèle pour
+reprendre la main.
+
+⚠️ **La consigne qui existait était « une seule compilation à la fois », donnée À CHAQUE AGENT.**
+Elle était respectée par chacun **et pourtant insuffisante** : rien n'empêchait deux agents
+distincts de la respecter **simultanément**.
+
+⇒ **La règle porte sur la MACHINE, pas sur l'agent** :
+- ⛔ **Jamais deux agents susceptibles de compiler en parallèle.** `pio run`, `pio test`,
+  `build_fs.sh` et `ui_shot.sh` (qui lance un navigateur) se **sérialisent**.
+- ⚠️ Concrètement : `embedded-developer` et `web-ui-developer` ⛔ **ne se lancent pas ensemble** si
+  l'un des deux peut compiler. Idem `test-engineer` avec n'importe quel développeur.
+- ✅ **Restent parallélisables** : les agents qui ne font que **lire** (`code-reviewer`,
+  `ux-ui-designer`, `spec-reader`, `pool-chemistry`, `architect`) et `doc-writer`.
+- ⚠️ **Avant de lancer un agent qui compile**, vérifier qu'aucun autre ne tourne :
+  `uptime` (charge > 8 durablement = saturation) et `pgrep -af "cc1plus|platformio"`.
+
+⚠️ **Le signe qui ne trompe pas** : un processus à des heures d'ELAPSED pour quelques minutes de
+TIME n'attend ni le réseau ni un verrou — il attend le **CPU** ou le **disque**.
+
 ## Rappels Claude Code
 
 - Lancer les commandes longues (build, flash) en background si possible

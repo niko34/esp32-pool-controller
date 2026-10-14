@@ -1,6 +1,6 @@
 # ADR-0108 — Basculer le mode de régulation est une commande d'accueil ; injecter manuellement reste un geste de réglage
 
-- **Statut** : Accepté
+- **Statut** : Accepté — complété par [ADR-0110](0110-regler-une-consigne-est-une-commande-differee.md) (régler une consigne : troisième catégorie, ni mode ni injection)
 - **Date** : 2026-10-13
 - **Décideurs** : utilisateur (décision produit), gate `pool-chemistry` (GO sous 10 conditions puis
   arbitrages après revue), `ux-ui-designer`, `architect`, `web-ui-developer`, `code-reviewer`

@@ -1641,8 +1641,14 @@ constexpr float kPhTargetMax = 7.50f;
 // taille de bassin). ⚠️ Anciennement empruntée aux bornes de ré-amorçage du
 // filtre pH/ORP (kOrpFilterRearmMin/Max) — mécanisme RETIRÉ par feature-152 ;
 // ces deux constantes sont désormais une fenêtre NOMMÉE indépendante, pas un
-// sous-produit d'un mécanisme de filtrage. Le chemin de commande MQTT accepte
-// [400 ; 900] (plus strict), 600 (valeur par défaut) est dans les deux.
+// sous-produit d'un mécanisme de filtrage.
+// feature-164 (gate pool-chemistry C2+C4) : fenêtre désormais IDENTIQUE sur
+// les DEUX chemins d'écriture (HTTP /save-config ET MQTT InboundCmdType::
+// OrpTarget). Le chemin MQTT acceptait auparavant [400 ; 900] (plus strict),
+// resserrement sans justification propre : une fenêtre resserrée interdirait
+// la recalibration légitime après un changement de CYA — garde qui bloque
+// plus qu'elle ne protège (principe produit déjà posé pour le pH). HTTP
+// n'avait, lui, AUCUNE validation avant ce lot.
 constexpr float kOrpTargetPlausibleMin = 300.0f;  // mV — décision produit
 constexpr float kOrpTargetPlausibleMax = 950.0f;  // mV — décision produit
 
@@ -1652,6 +1658,18 @@ constexpr float kOrpTargetPlausibleMax = 950.0f;  // mV — décision produit
 // sur la régulation, et lisible par un humain.
 constexpr float kPhTargetStep = 0.10f;
 constexpr float kPhOffsetStep = 0.10f;
+
+// feature-164 (gate pool-chemistry, 3e passage) : PAS de la consigne ORP.
+// ⚠️ DIFFÉRENT de kPhTargetStep : ce n'est PAS une grille de calage (le gate a
+// tranché « aucun pas ORP serveur, roundf entier seulement ») — c'est la
+// granularité de l'ARRONDI déjà appliqué par la validation serveur (HTTP
+// /save-config ET MQTT InboundCmdType::OrpTarget, tous deux `roundf(valeur /
+// kOrpTargetStep) * kOrpTargetStep`, mathématiquement identique à
+// `roundf(valeur)` pour ce pas = 1). Exister comme CONSTANTE (plutôt qu'un
+// littéral `1` dans chaque formule) permet de la SERVIR au client
+// (orp_target_step, /get-config) sur le même modèle que kPhTargetStep — ADR-0100 :
+// un seuil/pas est SERVI, jamais réécrit en dur côté client.
+constexpr float kOrpTargetStep = 1.0f;
 
 // --- Marges de sécurité (les seuils de garde en dérivent) ---
 // kPhSafetyMargin — distance entre la consigne BASSE et le refus d'ACIDIFIER.
@@ -2910,6 +2928,15 @@ constexpr uint32_t kFiltrationTempSampleIntervalMs = 60000UL;  // 1 échantillon
 // couvrir une fraction représentative du cycle diurne, dont le profil varie
 // avec l'ensoleillement.
 constexpr uint16_t kFiltrationMinRepresentativeSamples = 30;
+
+// feature-164 (gate pool-chemistry C12, non bloquant) : seuil d'AVERTISSEMENT
+// sous lequel une durée de filtration programmée est jugée trop courte pour
+// que la régulation pH/ORP (qui ne dose QUE filtration active, cf. garde
+// présence d'eau) ait le temps d'atteindre sa consigne — l'eau reste
+// durablement à côté de la valeur visée. Seuil cité (ADR-0095), jamais une
+// mesure : source UNIQUE du texte servi à l'écran ET au journal
+// (web_routes_config.cpp).
+constexpr uint16_t kFiltrationShortDurationWarnMinutes = 120;
 
 // La fenêtre auto ne peut plus franchir minuit : la promotion à 00:00 ne peut
 // donc jamais tomber au milieu d'une plage auto (bug-126, condition C5

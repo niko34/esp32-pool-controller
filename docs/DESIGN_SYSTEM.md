@@ -40,7 +40,7 @@ contexte d'origine.
 | Je veux… | Composant | Contexte(s) déclaré(s) |
 |---|---|---|
 | Choisir un mode (2-4 options) depuis une carte d'accueil **ou** en tête d'une page de réglage pH/ORP/Éclairage | `.mode-select` (§5.2) | Carte d'accueil **et** page de réglage |
-| Modifier une valeur (horaire, consigne) dans une carte, **dans le mode qui la rend pertinente** | §5.20 — composition `.field` + `.detail-actions`/`.btn--primary` « Sauvegarder » | Carte d'accueil et page de réglage |
+| Modifier une valeur (horaire, consigne) dans une carte, **dans le mode qui la rend pertinente** | §5.20 — `.field` (consigne ORP, horaires) **ou** `.segmented--num` **sans cadre** (consigne pH) + `.detail-actions`/`.btn--primary` « Sauvegarder » | Carte d'accueil et page de réglage — pH/ORP (Auto) et Filtration (Programme) par feature-164, Éclairage (Programme) par feature-162 |
 | Barre d'onglets (≥5 items), choix ponctuel sans card-header (taille bassin, vitesse de régulation, cadence d'affichage) | `.segmented` (§5.3) | Page de réglage uniquement |
 | Saisie numérique par positions (consigne pH) | `.segmented--num` (§5.3) | Page de réglage uniquement |
 | Incrémenter/décrémenter une valeur (offset) | `.stepper` | Page de réglage uniquement |
@@ -160,6 +160,18 @@ force **deux boutons par ligne**. Elle a été taillée pour les 9 onglets de la
 appliquée à un sélecteur à **3** options, elle produit un « 2 + 1 » où le troisième occupe
 toute la largeur. ⛔ C'est la cause mécanique du défaut du 14/10 — pas un `flex-wrap`
 générique.
+⚠️ **Extension de contexte, feature-164** : `.segmented--num` est repris pour la **consigne pH sur
+la carte d'accueil**, avec **exactement la raison** qui a fait retirer le cadre de `.segmented` pour
+`.mode-select` (§5.2) : une carte a **déjà un en-tête**, le cadre y créerait une boîte dans la boîte.
+⇒ Sur la carte, le balisage porte **`class="segmented--num"` SEUL** — ⛔ pas `"segmented
+segmented--num"`. Les `.segmented__btn` sont inchangés.
+⚠️ **Conséquence CSS** : `.segmented--num` doit porter son **propre** `gap: 4px`, jusqu'ici **hérité
+du parent `.segmented`** et donc absent sans lui. Ajout **neutre** pour la page de réglage (même
+valeur).
+⛔ **Ne pas étendre ce retrait de cadre à un AUTRE usage** de `.segmented--num` sans revérifier
+qu'aucune page de réglage n'en dépendait comme repère visuel (ici : vérifié, seul `#ph_target_group`
+existe).
+
 ⛔ **Ne plus ajouter** de nouvel usage de `.segmented` nu à 2-4 options en tête d'une page
 dont la section répète un sélecteur déjà présent sur la carte d'accueil correspondante —
 utiliser `.mode-select` (§5.2) aux deux endroits pour que l'utilisateur retrouve le même
@@ -248,6 +260,14 @@ nommé pour un champ.
 ⛔ **Composant mort constaté** : `.field__label-icon` (et ses variantes) — **0 usage** dans
 `index.html`. Candidat à suppression, à confirmer (vérifier qu'aucun JS ne l'injecte).
 
+#### ⚠️ Une UNITÉ ne se met JAMAIS en majuscules
+`.field__label` applique `text-transform: uppercase`. ⇒ « (mV) » s'affichait « **(MV)** », c'est-à-dire
+**mégavolt**. ⛔ Même piège pour `mL`, `°C`, `mg/L`.
+⇒ Toute unité dans un libellé va dans `<span class="unit">`, qui porte `text-transform: none`.
+
+⚠️ **Défaut repéré sur CAPTURE, invisible à la relecture** : le HTML contenait bien `mV`. Seul le
+rendu montrait la faute. C'est l'illustration la plus courte de pourquoi §9 existe.
+
 ### 5.14 `.switch`
 **Rôle** : activer/désactiver une option binaire persistante. ⛔ Pas un mode à 3 valeurs — pour
 ce geste, voir §5.2.
@@ -323,10 +343,102 @@ alors qu'un jeton existe (§3).
 carte**, sans aller dans une page de réglage.
 **Contexte déclaré** : carte Éclairage en mode Programme (feature-162, horaires). Prévu pour
 pH/ORP (consignes) et Filtration (horaires) par feature-164.
-**Composition** : un ou deux `.field` (§5.13, réutilisés à l'identique — deux côte à côte en
-`.grid.grid--2`, ⚠️ **avec la classe dédiée `.schedule-fields`** pour un intervalle horaire ; un
-seul champ pour une consigne), suivis d'un `.detail-actions` contenant **un seul** `.btn--primary`
-« **Sauvegarder** ».
+**Composition** : **trois formes, choisies par la NATURE de la valeur** — ⛔ pas par préférence.
+- **Intervalle horaire** : deux `.field` (§5.13) côte à côte en `.grid.grid--2.schedule-fields`
+  (Filtration, Éclairage).
+- **Consigne à plage continue** (ORP) : **un seul** `.field` + `<input type="number">`.
+- **Consigne à positions discrètes déjà validées par le serveur** (pH) : `.segmented--num` **sans**
+  la classe `.segmented` (§5.3) — **le même geste que la page de réglage**, cadre retiré pour la
+  raison de `.mode-select`.
+  ⛔ **Ne pas remettre un `<input>` libre pour le pH** : la page de réglage n'en a plus depuis une
+  décision produit d'août, et un geste différent entre la carte et la page **romprait §5.1**.
+
+Dans les trois cas : un `.detail-actions` avec **un seul** `.btn--primary` « Sauvegarder ».
+
+### ⚠️ Plage visible : cela dépend de la NATURE du contrôle, pas d'une parité mécanique
+- **Consigne à positions discrètes** (pH, `.segmented--num`) : la plage est **montrée par
+  construction**. ⛔ **Aucun texte de plage n'est dû** sur la carte — ce serait répéter du visible.
+  ⚠️ Le texte de la **page** pH reste légitime, mais **pour une autre raison** : il porte la règle
+  *« les seuils de sécurité portent sur le pH affiché, offset compris »*, **absente** des segments.
+  ⛔ Ne pas le confondre avec un rappel de plage, ni le porter sur la carte pour ce motif.
+- **Consigne à champ libre** (ORP) : elle n'a **aucun** moyen d'afficher sa plage. ⇒ **`.field__hint`
+  OBLIGATOIRE**, sur **la carte ET la page** : « **Plage autorisée : {min} à {max} mV.** »
+  ⛔ Pas de mention de pas (il vaut 1 mV, donc non contraignant — contrairement au pH).
+  ⚠️ Valeurs **lues** sur `orp_target_min` / `orp_target_max`, ⛔ **jamais en dur** (ADR-0100). Hint
+  **masqué** tant que la configuration n'est pas chargée — ⛔ ne jamais afficher une plage devinée.
+
+⚠️ **La règle générale qui s'en dégage** : *contrôle discret ⇒ plage visible ⇒ pas de texte ;
+contrôle libre ⇒ plage invisible ⇒ texte requis.* La parité pH/ORP porte sur la **PRÉSENCE de
+l'information** quelque part dans l'interface, ⛔ **pas** sur la forme du composant qui la porte.
+
+### ⚠️ RETRAIT ASSOCIÉ — la règle qui empêche l'empilement
+Quand une valeur devient **éditable** dans le corps d'une carte, **toute mention STATIQUE de cette
+même valeur ailleurs dans la carte DISPARAÎT** — retirée du DOM, ⛔ pas seulement masquée.
+⇒ feature-164 retire `#ph-compact-target-row` et `#orp-compact-target-row` (« Cible : X »).
+⚠️ **L'information vit à UN SEUL endroit.** C'est ce retrait qui compense le 7ᵉ ajout sur des cartes
+qui en portaient déjà six — sans lui, l'écran se dégrade comme la page Produits.
+
+### ⚠️ Verrou pendant étalonnage : condition DIFFÉRENTE de celle du mode
+Le bloc consigne se désactive sur **`calActive` SEUL** — ⛔ **PAS** `calActive || escalationActive`
+comme le sélecteur de mode juste au-dessus. Motif du gate : une escalade de sécurité pH force déjà le
+mode en Arrêt (dosage stoppé), donc verrouiller **aussi** la consigne n'y protège rien.
+⚠️ **Deux variables de verrouillage distinctes dans la même carte** — ⛔ ne pas les fusionner par
+souci de symétrie.
+
+### ⚠️ Correctif visuel du verrou — « techniquement désactivé » ne suffit pas
+Réserve remontée **sur capture réelle** : `opacity:.55` sur une position déjà pleine (`--accent`) est
+**quasi invisible** à l'œil. ⚠️ §4 exige un signal **perceptible**, ⛔ pas seulement un `disabled`
+correct dans le DOM — un utilisateur cliquerait sans comprendre pourquoi rien ne se passe.
+⇒ **Réutiliser le code couleur déjà établi** pour `.mode-select` : une position active **désactivée**
+passe en `--warn`.
+
+```css
+.segmented--num .segmented__btn:disabled.is-active {
+  background: var(--warn); border-color: var(--warn); color: #fff; opacity: 1;
+}
+```
+⚠️ **Portée MESURÉE avant d'écrire la règle** : `.segmented--num` n'a que **deux** emplois dans tout
+le projet — `#ph_target_group` (page de réglage, **jamais désactivé**, vérifié) et
+`#dashboard-ph-target-group` (carte). ⇒ **Rien ne change sur la page de réglage.**
+
+⛔ **NE PAS recolorer `.btn:disabled` / `.btn--primary:disabled`** pour le bouton Sauvegarder : règle
+partagée par **des dizaines** de boutons sans rapport (calibration, tous les « Sauvegarder » de
+réglage). La recolorer les repeindrait **tous, en silence**. ⇒ **Surcharge par ID**, limitée aux deux
+boutons concernés :
+```css
+#dashboard-ph-target-save:disabled,
+#dashboard-orp-target-save:disabled { background: var(--warn); border-color: var(--warn); color: #fff; opacity: 1; }
+```
+
+### ⚠️ Adjacence du texte explicatif — le bandeau du haut ne compte PAS
+Le bandeau d'étalonnage (`.regul-alert`) est **juxtaposé au sélecteur de mode**, ⛔ **pas** au bloc
+consigne : le sélecteur entier s'intercale entre les deux. §5.11 exige l'adjacence **au contrôle**,
+⛔ pas « ailleurs dans la carte ».
+⇒ Ajouter un `.field__hint` **court et autonome**, **dans** le bloc consigne — ⛔ pas un second
+`.regul-alert`, qui serait un **ajout de composant** au lieu d'une mise en conformité :
+```html
+<p class="field__hint" id="dashboard-ph-target-lock-hint" hidden>Modification désactivée pendant l'étalonnage.</p>
+```
+Miroir ORP, même texte. Visibilité pilotée par **la même condition que le verrou** (`calActive`), et
+l'identifiant **ajouté à `aria-describedby`** du contrôle — ⚠️ pour que le lecteur d'écran porte la
+**même** explication que l'œil (§7 : jamais la couleur seule).
+
+### Confirmation à la baisse pendant une chloration de secours (ORP seulement)
+Avant d'envoyer une consigne ORP **inférieure** à la courante alors qu'un secours est actif : passer
+par le **même** mécanisme que `confirmOrpRescueInterruption`. ⚠️ Critère = **baisse de consigne**,
+⛔ jamais comparaison à la mesure. Pas de confirmation à la hausse, ni hors secours.
+
+### ⚠️ DÉRIVE LIVRÉE À CORRIGER (feature-162)
+`bindLightingScheduleSave` pose son texte d'erreur dans un élément `.field__hint` (**gris**) au lieu
+de `.field__error` (**rouge**) prescrit ici. ⇒ La généralisation de cette fonction **corrige la
+classe pour les DEUX cartes existantes**, ⛔ **ne pas committer une 3ᵉ instance qui reproduit la
+dérive** (gouvernance §11 : tous les impacts dans le même lot).
+
+### Survol imbriqué
+Un `.callout` placé **dans** une `.card--status` hérite de `.callout:hover{transform:translateY(-1px)}`
+et **sautille** en plus du `.card--status:hover{transform:translateY(-2px)}` englobant.
+⇒ Neutraliser par `.card--status .callout:hover { transform: none; }` — ⚠️ **correctif déjà appliqué
+à `.product-card .callout`**, pas un composant neuf.
 
 ⚠️ **PIÈGE MESURÉ le 2026-10-14, sur capture réelle.** Sans `.schedule-fields`, la règle générique
 `@media (max-width: 640px) { .grid--2 { grid-template-columns: 1fr } }` (`app.css`) **empile** les
@@ -368,6 +480,12 @@ Référence de calcul pour toute nouvelle rangée de boutons dans une carte d'ac
   ≈ 45-50px < 66px) — c'est pourquoi Filtration (4 options) reste en grille **2×2**
   (`grid--2`), jamais en ligne unique. Ne pas copier le motif 3-colonnes vers un sélecteur à
   4 options sans refaire ce calcul.
+- Pour une **rangée de positions numériques sans cadre** (consigne pH, 4 positions,
+  `.segmented--num` seul) : `gap:4px` × 3 intervalles = 12 px ⇒ `(322 − 12)/4 = `**77,5 px** par
+  position. Le padding interne du bouton (`10px 4px`) retire 8 px ⇒ zone de texte **≈69,5 px**. Le
+  libellé le plus large, « 7,2 » (3 caractères en chiffres tabulaires) ≈ **21 px** ⇒ marge
+  **≈48 px**. Tient largement, et resterait tenable jusqu'à 5-6 positions.
+  ⚠️ **Refaire ce calcul si les bornes serveur changent le nombre de positions généré.**
 - Pour **deux champs côte à côte** (intervalle horaire dans une carte), `gap:8px` ⇒
   `(322 − 8) / 2 ≈ `**157 px** par colonne. Un `<input type="time">` (« 20:00 » + icône d'horloge +
   marges internes) demande **90-110 px** ⇒ **tient**, marge ≈ 47 px. Les libellés « Début » et
@@ -383,6 +501,10 @@ Référence de calcul pour toute nouvelle rangée de boutons dans une carte d'ac
 Aucun état ne doit reposer sur la seule teinte :
 - `.mode-select` / `.segmented__btn.is-active` : fond plein **+** texte blanc **+**
   `aria-pressed="true"` (le lecteur d'écran et le focus clavier portent la même info).
+- Bloc consigne verrouillé (feature-164) : `.segmented--num .segmented__btn:disabled.is-active` et
+  `#dashboard-{ph,orp}-target-save:disabled` recolorent en `--warn` **ET** un `.field__hint` adjacent
+  **nomme la cause** — ⛔ jamais la couleur seule, même pour un verrou hérité d'un composant déjà
+  conforme ailleurs dans la même carte.
 - `.gauge` : toujours doublée d'un marqueur de position ET d'un texte dans
   `.gauge__legend-state` quand l'état sort du nominal (jamais la couleur seule sur la piste).
 - `.sensor-badge` / `.callout` : la couleur de fond n'est jamais le seul signal — le texte

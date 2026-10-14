@@ -1024,6 +1024,12 @@ canvas:hover {
   display: flex;
   width: 100%;
   margin: 0;  /* l'espacement vient du .field (grid gap), pas du contrôle */
+  /* feature-164 : gap PROPRE, jusqu'ici hérité de `.segmented` parent. La
+     carte pH reprend ce contrôle avec `class="segmented--num"` SEUL (sans
+     `.segmented` — DESIGN_SYSTEM.md §5.3/§5.20, même raison que `.mode-select` :
+     une carte a déjà un en-tête, le cadre y créerait une boîte dans la boîte).
+     Neutre pour la page de réglage : même valeur que celle héritée jusqu'ici. */
+  gap: 4px;
 }
 
 .segmented--num .segmented__btn {
@@ -1033,6 +1039,35 @@ canvas:hover {
   padding: 10px 4px;
   font-size: 15px;
   font-variant-numeric: tabular-nums;  /* chiffres de largeur fixe : pas de saut */
+}
+
+/* feature-164 (correctif ux-ui-designer, DESIGN_SYSTEM.md §5.20) : une position
+   ACTIVE désactivée (`opacity:.55` générique sur un fond --accent déjà plein)
+   est quasi invisible à l'œil — réserve confirmée sur capture réelle. Réutilise
+   le code couleur DÉJÀ établi pour `.mode-select` (position active verrouillée
+   → --warn), ⛔ pas une couleur inventée.
+   ⚠️ Portée MESURÉE : `.segmented--num` n'a que DEUX emplois dans tout le
+   projet — #ph_target_group (page de réglage, JAMAIS désactivé) et
+   #dashboard-ph-target-group (carte). Rien ne change sur la page de réglage. */
+.segmented--num .segmented__btn:disabled.is-active {
+  background: var(--warn);
+  border-color: var(--warn);
+  color: #fff;
+  opacity: 1;
+}
+
+/* feature-164 (correctif ux-ui-designer) : même signal pour les DEUX boutons
+   Sauvegarder de consigne (pH/ORP) désactivés pendant l'étalonnage. ⛔ PAS une
+   retouche de `.btn:disabled`/`.btn--primary:disabled` — règle partagée par
+   des dizaines de boutons sans rapport (calibration, tous les "Sauvegarder" de
+   réglage) : la recolorer les repeindrait tous, en silence. Surcharge par ID,
+   limitée aux deux boutons concernés. */
+#dashboard-ph-target-save:disabled,
+#dashboard-orp-target-save:disabled {
+  background: var(--warn);
+  border-color: var(--warn);
+  color: #fff;
+  opacity: 1;
 }
 
 @media (max-width: 640px) {
@@ -1232,6 +1267,20 @@ canvas:hover {
   display: block;
 }
 
+/* feature-164 : le texte d'erreur d'un enregistrement « carte » (horaires,
+   consigne) n'est pas toujours un enfant DIRECT d'un `.field.is-error` — par
+   exemple le message partagé par les deux champs d'un intervalle horaire
+   (<p class="field__error"> en frère de `.grid.grid--2.schedule-fields>`,
+   DESIGN_SYSTEM.md §5.20). Sans cette règle, la seule bascule de l'attribut
+   `hidden` ne suffirait pas : `.field__error{display:none}` ci-dessus
+   resterait prioritaire, et le message resterait invisible malgré
+   `element.hidden = false`. Spécificité (0,2,0) > `.field__error` seul
+   (0,1,0) : l'emporte quand l'élément n'est pas masqué, sans rien changer au
+   cas déjà couvert par `.field.is-error .field__error` ci-dessus. */
+.field__error:not([hidden]) {
+  display: block;
+}
+
 .field__success {
   font-size: 12px;
   color: var(--success);
@@ -1246,6 +1295,14 @@ canvas:hover {
 }
 
 /* Icône de validation dans le label */
+/* feature-164 : une UNITÉ ne se met jamais en majuscules — `.field__label` applique
+   `text-transform: uppercase`, qui transformait « (mV) » en « (MV) », c'est-à-dire
+   MÉGAVOLT. Défaut repéré sur capture, invisible à la relecture du HTML (qui porte
+   bien « mV »). Même piège pour mL, °C, mg : toute unité va dans ce span. */
+.field__label .unit {
+  text-transform: none;
+}
+
 .field__label-icon {
   width: 14px;
   height: 14px;
@@ -2314,6 +2371,15 @@ input.is-computed:disabled {
 
 .card--status:hover {
   transform: translateY(-2px);
+}
+
+/* feature-164 : correctif « survol imbriqué » (DESIGN_SYSTEM.md §5.20) — un
+   .callout placé DANS une .card--status hérite de
+   .callout:hover{transform:translateY(-1px)} EN PLUS du -2px ci-dessus,
+   et sautille. Même correctif déjà appliqué à .product-card .callout
+   (ligne ~3305) ; ce n'est pas un composant neuf. */
+.card--status .callout:hover {
+  transform: none;
 }
 
 .card--status .card__body {

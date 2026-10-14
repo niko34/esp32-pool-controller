@@ -1910,6 +1910,19 @@
       start.disabled = true;
       end.disabled = true;
     }
+
+    // feature-164 (gate pool-chemistry C12, correction : surface "les deux" —
+    // la page de réglage ⛔ N'ÉTAIT PAS COUVERTE au premier passage, seule la
+    // carte l'était). MÊME fonction que la carte d'accueil
+    // (renderFiltrationDurationWarning), ⛔ pas une 2e implémentation. Non
+    // bloquant, pertinent UNIQUEMENT en Programme (Auto = calculé par le
+    // firmware, Marche/Arrêt = aucun horaire suivi).
+    if (mode === "manual") {
+      renderFiltrationDurationWarning(start.value, end.value, "filtration-duration-warning");
+    } else {
+      const durationWarning = $("#filtration-duration-warning");
+      if (durationWarning) { durationWarning.hidden = true; durationWarning.textContent = ""; }
+    }
   }
 
   // Variable pour stocker l'heure complète avec secondes (mode manuel)
@@ -2089,6 +2102,69 @@
       next.offsetMin = oMin; next.offsetMax = oMax; next.offsetStep = oStep;
     }
     _phBounds = next;
+  }
+
+  // ---------- feature-164 (correctif gate, ADR-0100) : bornes ORP SERVIES ----------
+  // ⚠️ ADR-0100 : « un seuil est SERVI, jamais réécrit côté client ». MÊME
+  // PATRON EXACT que PH_BOUNDS_FALLBACK/_applyPhBounds ci-dessus : `/get-config`
+  // sert `orp_target_min`/`orp_target_max` (dérivés de
+  // kOrpTargetPlausibleMin/kOrpTargetPlausibleMax, src/constants.h) dès que le
+  // firmware les expose — ce repli n'est qu'une valeur de SECOURS pour un
+  // firmware antérieur qui ne les servirait pas encore, JAMAIS une autorité.
+  // Premier gate (2026-10-14) : ces deux nombres avaient été posés comme
+  // MIROIR DÉFINITIF (lu nulle part côté serveur) — corrigé ici pour suivre le
+  // même chemin de lecture que le pH, prêt dès que embedded-developer sert les
+  // deux clés (aucune retouche des appelants requise).
+  const ORP_BOUNDS_FALLBACK = Object.freeze({ targetMin: 300, targetMax: 950 });
+  let _orpBounds = Object.assign({}, ORP_BOUNDS_FALLBACK);
+
+  // Reprend les bornes de la config — MÊME garde qu'_applyPhBounds : un lot
+  // incohérent (borne inversée) ou ABSENT (firmware antérieur qui ne sert pas
+  // encore ces deux clés) est ignoré EN BLOC, on conserve les bornes déjà
+  // connues (repli initial compris) — jamais de repli SILENCIEUX sur une
+  // valeur en dur différente de celle déjà affichée.
+  function _applyOrpBounds(cfg) {
+    const tMin = _phNum(cfg?.orp_target_min);
+    const tMax = _phNum(cfg?.orp_target_max);
+    if (isFinite(tMin) && isFinite(tMax) && tMin < tMax) {
+      _orpBounds = { targetMin: tMin, targetMax: tMax };
+    }
+  }
+
+  // Applique les bornes COURANTES (_orpBounds) à TOUT champ
+  // `<input type="number">` de consigne ORP (page de réglage ET carte
+  // d'accueil) — un seul point d'écriture, aucune valeur en dur répétée dans
+  // le HTML. Appelée à l'init (repli) ET à chaque /get-config (bornes réelles).
+  function applyOrpTargetBounds() {
+    ["orp_target", "dashboard-orp-target"].forEach((id) => {
+      const el = $(`#${id}`);
+      if (!el) return;
+      el.min = String(_orpBounds.targetMin);
+      el.max = String(_orpBounds.targetMax);
+    });
+  }
+
+  // ===========================================================================
+  // feature-164 (ux-ui-designer, asymétrie remontée par test-engineer) : le pH
+  // montre sa plage PAR CONSTRUCTION (4 positions visibles sur `.segmented--num`)
+  // — un champ libre (ORP) n'a AUCUN moyen de le faire, l'utilisateur n'apprend
+  // le refus qu'APRÈS avoir cliqué Sauvegarder. `.field__hint` sur les DEUX
+  // surfaces (carte ET page) : une plage visible d'un côté et pas de l'autre
+  // serait une incohérence NOUVELLE, pas une correction. ⛔ Pas de mention de
+  // pas (il vaut 1 mV, non contraignant — contrairement au pH).
+  // ⚠️ Appelée UNIQUEMENT depuis loadConfig() (jamais au bind initial, ⛔ pas le
+  // patron de renderPhTargetHint qui peuple dès le repli) : les deux éléments
+  // restent `hidden` tant que la configuration n'a pas été reçue au moins une
+  // fois — jamais une plage DEVINÉE avant tout contact avec l'appareil.
+  // ===========================================================================
+  function renderOrpTargetHint() {
+    const text = `Plage autorisée : ${Math.round(_orpBounds.targetMin)} à ${Math.round(_orpBounds.targetMax)} mV.`;
+    ["orp_target_hint", "dashboard-orp-target-hint"].forEach((id) => {
+      const el = $(`#${id}`);
+      if (!el) return;
+      el.textContent = text;
+      el.hidden = false;
+    });
   }
 
   // ---------- feature-155 : accord de la mesure pH sur un test manuel ----------
@@ -2911,10 +2987,13 @@
   // consigne le chlore est déjà nettement moins actif, et c'est précisément la
   // raison pour laquelle la plage s'arrête là. Aucun avertissement sur la borne
   // basse : 7,20 est une consigne d'exploitation normale (défaut du projet).
-  function renderPhTargetWarning() {
-    const box = $("#ph_target_warning");
+  // feature-164 (gate pool-chemistry C9) : GÉNÉRALISÉE (cible de rendu en
+  // paramètre) pour servir AUSSI la carte d'accueil — ⛔ le texte lui-même
+  // n'a PAS changé (texte imposé, convient déjà).
+  function renderPhTargetWarning(inputId = "ph_target", boxId = "ph_target_warning") {
+    const box = $(`#${boxId}`);
     if (!box) return;
-    const v = parseFloat($("#ph_target")?.value);
+    const v = parseFloat($(`#${inputId}`)?.value);
     if (isFinite(v) && v >= _phBounds.targetMax - PH_EPS) {
       box.textContent = `Consigne à la borne haute (${_fmtPh(_phBounds.targetMax, false)}) : à ce pH, `
         + `le chlore est nettement moins actif et la désinfection perd en efficacité. `
@@ -2927,13 +3006,17 @@
   }
 
   // ---------- v2.25.0 : consigne pH (contrôle segmenté généré) ----------
-  const _phTargetButtons = () => $$("#ph_target_group .segmented__btn");
+  // feature-164 : GÉNÉRALISÉ (groupId/inputId/warningBoxId en paramètres) pour
+  // servir DEUX instances — page de réglage (défauts ci-dessous, INCHANGÉS)
+  // et carte d'accueil (#dashboard-ph-target-group/#dashboard-ph-target).
+  // ⛔ Pas de second composant : un seul jeu de fonctions, deux appels.
+  const _phTargetButtons = (groupId = "ph_target_group") => $$(`#${groupId} .segmented__btn`);
 
   // (Re)génère les positions depuis les bornes serveur. Idempotent : on ne
   // reconstruit que si la liste des valeurs a changé, pour ne pas détruire le
   // bouton qui a le focus à chaque trame de config.
-  function buildPhTargetSegments() {
-    const group = $("#ph_target_group");
+  function buildPhTargetSegments(groupId = "ph_target_group", inputId = "ph_target", warningBoxId = "ph_target_warning") {
+    const group = $(`#${groupId}`);
     if (!group) return;
     const values = _phTargetValues();
     const signature = values.join(",");
@@ -2954,16 +3037,16 @@
     // Une reconstruction efface la sélection : la rétablir TOUT DE SUITE depuis le
     // porteur de valeur, y compris si l'utilisateur était en train de modifier —
     // « aucune position sélectionnée » est un état interdit (B7).
-    const current = parseFloat($("#ph_target")?.value);
-    if (isFinite(current)) setPhTarget(current, true);
+    const current = parseFloat($(`#${inputId}`)?.value);
+    if (isFinite(current)) setPhTarget(current, true, groupId, inputId, warningBoxId);
   }
 
   // Sélectionne la position correspondant à `value` et met à jour le porteur de
   // valeur caché. `silent` = écriture programmatique (chargement de config) : ni
   // `input` ni `change` ne sont émis, donc aucun « dirty » implicite (B6).
-  function setPhTarget(value, silent) {
-    const input = $("#ph_target");
-    const btns = _phTargetButtons();
+  function setPhTarget(value, silent, groupId = "ph_target_group", inputId = "ph_target", warningBoxId = "ph_target_warning") {
+    const input = $(`#${inputId}`);
+    const btns = _phTargetButtons(groupId);
     if (!input || btns.length === 0) return;
     // Position la PLUS PROCHE : une consigne héritée hors grille (7,35 d'une
     // configuration antérieure) doit s'afficher quelque part — « aucune position
@@ -2982,8 +3065,11 @@
       b.tabIndex = on ? 0 : -1;
     });
     input.value = best.dataset.value;
-    renderPhTargetHint();
-    renderPhTargetWarning();
+    // Le hint de plage autorisée (#ph_target_hint) n'existe que sur la page de
+    // réglage — la carte n'en porte pas de double (le texte serait redondant
+    // avec la grille déjà bornée par le serveur).
+    if (inputId === "ph_target") renderPhTargetHint();
+    renderPhTargetWarning(inputId, warningBoxId);
     if (!silent) {
       // Les consommateurs historiques (trackDirtyState, updatePhControls) écoutent
       // `input`/`change` sur #ph_target : une écriture `.value =` ne les déclenche
@@ -2996,23 +3082,23 @@
   // Clic + clavier (délégation : survit à la regénération des positions).
   // Mêmes touches que les onglets Réglages : ←/→/↑/↓ déplacent ET sélectionnent,
   // Début/Fin vont aux bornes.
-  function bindPhTargetControl() {
-    const group = $("#ph_target_group");
+  function bindPhTargetControl(groupId = "ph_target_group", inputId = "ph_target", warningBoxId = "ph_target_warning") {
+    const group = $(`#${groupId}`);
     if (!group) return;
     // Contrôleur injoignable au chargement : le contrôle doit malgré tout avoir
     // des positions ET une position sélectionnée (état « aucune » interdit). Les
     // bornes de repli seront remplacées par celles du serveur dès /get-config.
-    buildPhTargetSegments();
-    if (!$("#ph_target_group .segmented__btn.is-active")) {
-      setPhTarget(_phBounds.targetMin, true);
+    buildPhTargetSegments(groupId, inputId, warningBoxId);
+    if (!$(`#${groupId} .segmented__btn.is-active`)) {
+      setPhTarget(_phBounds.targetMin, true, groupId, inputId, warningBoxId);
     }
     group.addEventListener("click", (e) => {
       const btn = e.target.closest(".segmented__btn");
       if (!btn || !group.contains(btn)) return;
-      setPhTarget(parseFloat(btn.dataset.value), false);
+      setPhTarget(parseFloat(btn.dataset.value), false, groupId, inputId, warningBoxId);
     });
     group.addEventListener("keydown", (e) => {
-      const btns = _phTargetButtons();
+      const btns = _phTargetButtons(groupId);
       const i = btns.indexOf(e.target);
       if (i < 0 || btns.length === 0) return;
       let target = null;
@@ -3027,7 +3113,7 @@
       }
       if (!target) return;
       e.preventDefault();
-      setPhTarget(parseFloat(target.dataset.value), false);
+      setPhTarget(parseFloat(target.dataset.value), false, groupId, inputId, warningBoxId);
       target.focus();
     });
   }
@@ -3105,14 +3191,37 @@
   // clic » — appelée ICI, dans le chemin UNIQUE d'application du mode
   // (applyRegulationMode), donc valable pour la carte du tableau de bord ET le
   // sélecteur de la page de réglage SANS code ni texte dupliqués.
+  //
+  // feature-164 (gate pool-chemistry C7) — MUTUALISÉE (⛔ pas une 2e fonction) :
+  // couvre désormais AUSSI la baisse de consigne ORP pendant un secours actif.
+  // `kind: "mode"` (comportement C4, INCHANGÉ) ou `kind: "target"` (C7, texte
+  // et boutons IMPOSÉS, ⛔ jamais reformulés). ⚠️ Critère C7 = TOUTE BAISSE de
+  // consigne, ⛔ JAMAIS une comparaison à la mesure (« une mesure fluctue et
+  // rendrait la garde intermittente » — verdict du gate, formulation « sous la
+  // mesure actuelle » explicitement REJETÉE).
   // ===========================================================================
-  async function confirmOrpRescueInterruption(mode, previousMode) {
-    if (mode !== "manual" || previousMode === "manual") return true;  // pas une transition vers Arrêt
-    if (!Number.isFinite(latestSensorData?.rescue_until) || latestSensorData.rescue_until <= 0) return true;
+  async function confirmOrpRescueInterruption({ kind = "mode", mode, previousMode, newTarget, previousTarget } = {}) {
+    const rescueActive = Number.isFinite(latestSensorData?.rescue_until) && latestSensorData.rescue_until > 0;
+    if (!rescueActive) return true;
+    if (kind === "mode") {
+      if (mode !== "manual" || previousMode === "manual") return true;  // pas une transition vers Arrêt
+      return confirmDialog({
+        title: "Interrompre la chloration de secours ?",
+        message: "La chloration de secours est en cours. Passer en Arrêt l'interrompt. Confirmer ?",
+        confirmLabel: "Interrompre le secours",
+        cancelLabel: "Annuler",
+        danger: true,
+      });
+    }
+    // kind === "target" — C7 : texte IMPOSÉ mot pour mot, valeurs en mV entiers.
+    if (!(Number.isFinite(newTarget) && Number.isFinite(previousTarget) && newTarget < previousTarget)) return true;
+    const prevRounded = Math.round(previousTarget);
+    const nextRounded = Math.round(newTarget);
     return confirmDialog({
       title: "Interrompre la chloration de secours ?",
-      message: "La chloration de secours est en cours. Passer en Arrêt l'interrompt. Confirmer ?",
-      confirmLabel: "Interrompre le secours",
+      message: `Chloration de secours en cours. Abaisser la consigne de ${prevRounded} à ${nextRounded} mV `
+        + `réduira, voire interrompra, le dosage de secours. Confirmer ?`,
+      confirmLabel: "Abaisser la consigne",
       cancelLabel: "Annuler",
       danger: true,
     });
@@ -3160,7 +3269,7 @@
     };
 
     if (kind === "orp") {
-      const proceed = await confirmOrpRescueInterruption(mode, previousMode);
+      const proceed = await confirmOrpRescueInterruption({ kind: "mode", mode, previousMode });
       if (!proceed) {
         applyLocal(resolveSelectorMode(mode, previousMode, "annule"));
         return false;
@@ -3248,16 +3357,52 @@
     });
 
     // La MESURE et la jauge restent visibles dans TOUS les modes (lecture de
-    // capteur, pas une action) — seules la cible et son marqueur disparaissent
-    // hors Auto : rien n'est poursuivi.
-    const targetRow = $(`#${kind}-compact-target-row`);
-    if (targetRow) targetRow.hidden = mode !== "automatic";
+    // capteur, pas une action) — seul le marqueur de cible disparaît hors Auto :
+    // rien n'est poursuivi. feature-164 : la ligne statique « Cible : X » a été
+    // RETIRÉE DU DOM (⛔ pas seulement masquée) — DESIGN_SYSTEM.md §5.20,
+    // « quand une valeur devient éditable dans le corps d'une carte, toute
+    // mention statique de cette même valeur disparaît » : la consigne vit
+    // désormais UNIQUEMENT dans le bloc éditable ci-dessous.
     if (!isPh) {
       // updateOrpGauge() réaffiche le marqueur à chaque trame sensor_data —
       // cette fonction est appelée APRÈS lui dans updateDetailSections() (donc
       // après updateStatusCards()) : l'override tient jusqu'au prochain rendu.
       const marker = $("#orp-gauge-target");
       if (marker && mode !== "automatic") marker.hidden = true;
+    }
+
+    // ===========================================================================
+    // feature-164 : consigne modifiable DEPUIS LA CARTE, UNIQUEMENT en mode
+    // Auto (DESIGN_SYSTEM.md §5.20) — ⛔ visibilité ET verrou sont DEUX
+    // décisions distinctes. Visibilité : pilotée par le MODE (hors Auto, rien
+    // à régler n'est pertinent ⇒ bloc entier masqué par `hidden`, ⛔ jamais
+    // `style.display`). Verrou : C10 (gate pool-chemistry) — `calActive` SEUL,
+    // ⛔ PAS `locked` (qui inclut l'escalade pH) : une escalade force déjà le
+    // mode en Arrêt, verrouiller AUSSI la consigne n'y protégerait rien et
+    // ôterait à l'utilisateur le moyen de déplacer la cible pour sortir.
+    // Désactivé, ⛔ JAMAIS masqué pendant l'étalonnage (C10, même principe que
+    // le sélecteur de mode ci-dessus).
+    // ===========================================================================
+    const targetEdit = $(`#dashboard-${kind}-target-edit`);
+    if (targetEdit) {
+      targetEdit.hidden = mode !== "automatic";
+      const targetSaveBtn = $(`#dashboard-${kind}-target-save`);
+      if (isPh) {
+        $$(`#dashboard-ph-target-group .segmented__btn`).forEach(btn => { btn.disabled = calActive; });
+      } else {
+        const orpInput = $("#dashboard-orp-target");
+        if (orpInput) orpInput.disabled = calActive;
+      }
+      if (targetSaveBtn) targetSaveBtn.disabled = calActive;
+      // ux-ui-designer (correctif DESIGN_SYSTEM.md §5.20/§7) : le bandeau
+      // d'étalonnage du haut est juxtaposé au SÉLECTEUR DE MODE, pas à ce bloc
+      // (le sélecteur entier s'intercale) — §5.11 exige l'adjacence AU
+      // CONTRÔLE. Texte COURT dans le bloc consigne lui-même, piloté par LA
+      // MÊME condition que le verrou (`calActive`, ⛔ pas une 2e condition qui
+      // pourrait diverger) ; relié par aria-describedby (§7 : jamais la
+      // couleur seule, le lecteur d'écran doit porter la même explication).
+      const lockHint = $(`#dashboard-${kind}-target-lock-hint`);
+      if (lockHint) lockHint.hidden = !calActive;
     }
 
     // Programme — C9 : deux lignes en LECTURE SEULE, valeurs DÉJÀ servies par
@@ -3419,14 +3564,19 @@
   }
 
   // ===========================================================================
-  // feature-162 : enregistrement des horaires depuis une carte — composition
-  // DESIGN_SYSTEM.md §5.20 (prévue aussi pour pH/ORP/Filtration, feature-164 ;
-  // première implémentation ici). .btn--loading pendant la requête ; échec ⇒
-  // valeurs réelles restaurées + .field.is-error sur les deux champs, relié
-  // par aria-describedby (le projet n'a aucun aria-invalid — un composant
-  // neuf n'a aucune raison d'hériter ce manque).
+  // feature-162/feature-164 : enregistrement des horaires depuis une carte —
+  // composition DESIGN_SYSTEM.md §5.20. .btn--loading pendant la requête ;
+  // échec ⇒ valeurs réelles restaurées + .field.is-error sur les deux champs,
+  // relié par aria-describedby (le projet n'a aucun aria-invalid — un
+  // composant neuf n'a aucune raison d'hériter ce manque).
+  // feature-164 : GÉNÉRALISÉE — `startKey`/`endKey` en PARAMÈTRES (⛔ la
+  // version feature-162 codait en dur `lighting_start_time`/`lighting_end_time`,
+  // ce qui en faisait un binding spécifique à l'Éclairage malgré l'apparence
+  // réutilisable de sa signature). Sert désormais l'Éclairage (clés inchangées)
+  // ET la Filtration (`filtration_start`/`filtration_end`). ⛔ Un seul chemin
+  // d'écriture (sendConfigDetailed → /save-config) : pas de second binding.
   // ===========================================================================
-  function bindLightingScheduleSave(startId, endId, errorId, btnId, onSaved) {
+  function bindScheduleSave(startId, endId, errorId, btnId, startKey, endKey, onSaved) {
     const btn = $(`#${btnId}`);
     const startField = $(`#${startId}`);
     const endField = $(`#${endId}`);
@@ -3450,7 +3600,7 @@
       setError("");
       btn.classList.add("btn--loading");
       btn.disabled = true;
-      const r = await sendConfigDetailed({ lighting_start_time: start, lighting_end_time: end });
+      const r = await sendConfigDetailed({ [startKey]: start, [endKey]: end });
       btn.classList.remove("btn--loading");
       btn.disabled = false;
       if (r.ok) {
@@ -3458,8 +3608,8 @@
         loadConfig();
         showToast("Horaires enregistrés", "success");
       } else {
-        startField.value = window._config?.lighting_start_time || start;
-        endField.value = window._config?.lighting_end_time || end;
+        startField.value = window._config?.[startKey] || start;
+        endField.value = window._config?.[endKey] || end;
         setError(r.message || r.error || "Échec de l'enregistrement.");
       }
     });
@@ -3626,6 +3776,20 @@
     // v2.25.0 (B1) : bornes de réglage servies par le serveur, JAMAIS codées côté
     // client. À appliquer AVANT de (re)construire les positions de la consigne.
     _applyPhBounds(cfg);
+    // feature-164 (correctif gate, ADR-0100) : MÊME patron pour l'ORP — lu
+    // depuis `cfg` dès que le firmware sert `orp_target_min`/`orp_target_max`,
+    // repli de secours sinon (ORP_BOUNDS_FALLBACK, jamais une autorité).
+    _applyOrpBounds(cfg);
+    applyOrpTargetBounds();
+    // feature-164 (ux-ui-designer) : plage ORP visible — appelée ICI
+    // uniquement (⛔ jamais au bind initial), donc masquée tant que ce point
+    // n'a pas été atteint au moins une fois (= configuration reçue).
+    renderOrpTargetHint();
+    // feature-164 (correctif ADR-0100) : MÊME patron pour le seuil de durée
+    // de filtration courte — lu AVANT tout rendu qui le consomme
+    // (updateFiltrationControls/updateDetailSections, plus bas dans cette
+    // fonction et dans updateDetailSections()).
+    _applyFiltrationShortDurationWarnMin(cfg);
     // feature-155 : constantes de l'accord pH sur un test manuel (calPoints
     // minimal, délai minimal de filtration) — même convention que ci-dessus.
     _applyPhTuneConfig(cfg);
@@ -3635,6 +3799,9 @@
     renderPhTuneRemoveRow(cfg);
     buildPhTargetSegments();
     renderPhTargetHint();
+    // feature-164 : seconde instance du MÊME contrôle, carte d'accueil —
+    // DESIGN_SYSTEM.md §5.20/§5.3. Mêmes bornes serveur, aucune valeur en dur.
+    buildPhTargetSegments("dashboard-ph-target-group", "dashboard-ph-target", "dashboard-ph-target-warning");
     // feature-154 : seuils de SANTÉ pH (pente/zéro) — distincts des bornes de
     // réglage ci-dessus. Alimente les 3 pastilles du modal + le chip global.
     _applyPhHealth(cfg);
@@ -3645,7 +3812,30 @@
     if (!_phControlBusy("#ph_target_group", "#ph_regulation_save_btn")) {
       setPhTarget(typeof cfg.ph_target === "number" ? cfg.ph_target : _phBounds.targetMin, true);
     }
-    $("#orp_target").value = typeof cfg.orp_target === "number" ? cfg.orp_target : 650;
+    // feature-164 : carte d'accueil — drapeau DÉDIÉ (dashboardPhTargetDirty),
+    // même motif que dashboardLightingDirty (feature-162) : le bouton
+    // Sauvegarder de la carte n'est JAMAIS désactivé (précédent #5.20), donc
+    // `_phControlBusy` ne peut pas s'appuyer sur son état pour détecter une
+    // saisie en cours — une trame de config écraserait sinon la position que
+    // l'utilisateur vient de choisir avant d'avoir cliqué Sauvegarder.
+    if (!dashboardPhTargetDirty && !$("#dashboard-ph-target-group")?.contains(document.activeElement)) {
+      setPhTarget(typeof cfg.ph_target === "number" ? cfg.ph_target : _phBounds.targetMin, true,
+                  "dashboard-ph-target-group", "dashboard-ph-target", "dashboard-ph-target-warning");
+    }
+
+    // feature-164 : consigne ORP — DEUX surfaces écrivent la même clé (page de
+    // réglage ET carte d'accueil) : chacune porte désormais son propre
+    // drapeau « saisie en cours » (orpTargetDirty / dashboardOrpTargetDirty),
+    // même motif que dashboardLightingDirty — sinon une trame WS/poll écrase
+    // la frappe en cours. ⚠️ Avant ce lot, #orp_target n'avait AUCUNE garde
+    // (écriture inconditionnelle) : corrigé au passage, pas une régression.
+    if (!orpTargetDirty && document.activeElement?.id !== "orp_target") {
+      $("#orp_target").value = typeof cfg.orp_target === "number" ? Math.round(cfg.orp_target) : 650;
+    }
+    if (!dashboardOrpTargetDirty && document.activeElement?.id !== "dashboard-orp-target") {
+      const dashOrpTarget = $("#dashboard-orp-target");
+      if (dashOrpTarget) dashOrpTarget.value = typeof cfg.orp_target === "number" ? Math.round(cfg.orp_target) : 650;
+    }
 
     setModeSelect("ph_regulation_mode", cfg.ph_regulation_mode || "automatic");
     updatePhModeControls();
@@ -3824,6 +4014,14 @@
   let filtrationDirty = false; // Modifications non sauvegardées dans la section Programmation
   let lightingDirty = false;   // Idem pour la section Programmation éclairage (bug-ui-eclairage-refresh-ws)
   let dashboardLightingDirty = false; // feature-162 : idem pour les horaires de la carte d'accueil
+  // feature-164 : même motif (dashboardLightingDirty) pour les couples qui
+  // gagnent un second point d'écriture (carte ET page de réglage) sur la même
+  // clé de config — sans ce drapeau, une trame de config poussée pendant la
+  // saisie écraserait ce que l'utilisateur vient de taper/choisir.
+  let dashboardPhTargetDirty = false;       // carte d'accueil — consigne pH (segmenté)
+  let orpTargetDirty = false;               // page de réglage — consigne ORP (#orp_target n'avait AUCUNE garde avant ce lot)
+  let dashboardOrpTargetDirty = false;      // carte d'accueil — consigne ORP
+  let dashboardFiltrationDirty = false;     // carte d'accueil — horaires de filtration (Programme)
 
   // ========== BADGES CAPTEURS ==========
 
@@ -4579,6 +4777,81 @@
     return false;
   }
 
+  // feature-164 : "HH:MM" → minutes depuis minuit, NaN si invalide. Miroir
+  // CLIENT de timeStringToMinutes (src/web_routes_config.cpp) pour le seul
+  // besoin d'un AFFICHAGE non bloquant (C12) — la décision qui COMPTE (refus
+  // C11, calcul de plage) reste exclusivement serveur (ADR-0100).
+  function _timeStrToMinutes(s) {
+    if (!s || s.length < 5) return NaN;
+    const parts = s.split(':');
+    const h = parseInt(parts[0], 10);
+    const m = parseInt(parts[1], 10);
+    if (!Number.isFinite(h) || !Number.isFinite(m)) return NaN;
+    return h * 60 + m;
+  }
+
+  // feature-164 (correctif ADR-0100, 3e récidive du jour — bornes ORP puis
+  // attributs min/max, maintenant ce seuil) : le seuil de durée courte est
+  // SERVI par /get-config (`filtration_short_duration_warn_min`, source
+  // unique kFiltrationShortDurationWarnMinutes) — ⛔ plus un `120` en dur dans
+  // la COMPARAISON et le TEXTE. Repli de secours identique à la valeur
+  // compilée (jamais une autorité, MÊME patron que ORP_BOUNDS_FALLBACK).
+  const FILTRATION_SHORT_DURATION_WARN_FALLBACK_MIN = 120;
+  let _filtrationShortDurationWarnMin = FILTRATION_SHORT_DURATION_WARN_FALLBACK_MIN;
+  // MÊME patron que la plage ORP (_orpBounds / renderOrpTargetHint) : ⛔ pas
+  // de repli SILENCIEUX sur une valeur devinée avant tout contact avec
+  // l'appareil — ce drapeau ne passe à `true` qu'une fois /get-config reçu
+  // (cf. _applyFiltrationShortDurationWarnMin, appelée depuis loadConfig()).
+  let _filtrationDurationThresholdKnown = false;
+
+  // Reprend le seuil de la config — même garde que _applyOrpBounds : une
+  // valeur incohérente (<=0) ou ABSENTE (firmware antérieur) est ignorée, on
+  // conserve le seuil déjà connu (repli initial compris). `_known` passe à
+  // `true` dans tous les cas : on a reçu la configuration, avec ou sans cette
+  // clé précise — c'est ce contact qui lève le masquage, pas la clé elle-même.
+  function _applyFiltrationShortDurationWarnMin(cfg) {
+    const v = _phNum(cfg?.filtration_short_duration_warn_min);
+    if (isFinite(v) && v > 0) _filtrationShortDurationWarnMin = v;
+    _filtrationDurationThresholdKnown = true;
+  }
+
+  // feature-164 (gate pool-chemistry C12, NON bloquant) : durée programmée
+  // sous le seuil SERVI (ADR-0095/ADR-0100) — texte IMPOSÉ mot pour mot, cite
+  // la durée ET le seuil, LUS, jamais recopiés. Formule posée par la spec :
+  // (fin − début + 1440) % 1440 (minuit est une valeur valide, ex. 00:00 →
+  // 23:59 = filtration quasi continue).
+  // `start === end` n'est PAS un cas à traiter ici : refusé par le serveur
+  // (C11, HTTP 400) avec son propre message — ce helper masque juste la
+  // sienne dans ce cas pour ne pas superposer deux avertissements.
+  function renderFiltrationDurationWarning(startVal, endVal, boxId) {
+    const box = $(`#${boxId}`);
+    if (!box) return;
+    // ⛔ Jamais un seuil deviné avant le premier /get-config reçu — même
+    // principe que la plage ORP masquée pré-chargement.
+    if (!_filtrationDurationThresholdKnown) {
+      box.hidden = true;
+      box.textContent = "";
+      return;
+    }
+    const s = _timeStrToMinutes(startVal);
+    const e = _timeStrToMinutes(endVal);
+    if (!Number.isFinite(s) || !Number.isFinite(e) || s === e) {
+      box.hidden = true;
+      box.textContent = "";
+      return;
+    }
+    const duration = ((e - s) + 1440) % 1440;
+    if (duration < _filtrationShortDurationWarnMin) {
+      box.textContent = `Filtration programmée : ${duration} min par jour. Sous ${_filtrationShortDurationWarnMin} min, la `
+        + `circulation est trop courte pour que la régulation pH/ORP atteigne sa consigne — `
+        + `l'eau restera durablement à côté de la valeur visée.`;
+      box.hidden = false;
+    } else {
+      box.hidden = true;
+      box.textContent = "";
+    }
+  }
+
   function updateFiltrationBadges() {
     const config = window._config || {};
     const state = getFiltrationState(config, latestSensorData || {});
@@ -5211,10 +5484,9 @@
         : "--";
     }
 
-    const compactPhTarget = $("#compact-ph-target");
-    if (compactPhTarget && config.ph_target != null) {
-      compactPhTarget.textContent = config.ph_target.toFixed(1);
-    }
+    // feature-164 : la ligne « Cible : X » (#compact-ph-target) a été retirée
+    // du DOM — la consigne pH vit désormais UNIQUEMENT dans le bloc éditable
+    // de la carte (DESIGN_SYSTEM.md §5.20), rendu par renderDashboardModeCard().
 
     // feature-147 : jauge pH — trace le pH CORRIGÉ (data.ph, déjà affiché
     // ci-dessus en compact-value), jamais une valeur brute (gate C1).
@@ -5227,10 +5499,8 @@
       compactOrp.innerHTML = orpText + '<span class="compact-unit">mV</span>';
     }
 
-    const compactOrpTarget = $("#compact-orp-target");
-    if (compactOrpTarget && config.orp_target != null) {
-      compactOrpTarget.textContent = Math.round(config.orp_target);
-    }
+    // feature-164 : la ligne « Cible : X mV » (#compact-orp-target) a été
+    // retirée du DOM — même motif que pH ci-dessus.
 
     // feature-147 : jauge ORP — mesure + consigne, aucune zone colorée/nommée
     // (gate : un ORP « correct » n'existe pas dans l'absolu).
@@ -6870,21 +7140,49 @@
     // === FILTRATION ===
     // feature-147 : le texte de mode ("Mode Auto"/.../"Hors gel") est géré par
     // updateFiltrationBadges() ci-dessous (un seul calcul, header de carte).
-    // feature-161 (lot B) : la ligne Horaires ne vaut qu'en Auto/Programme —
-    // en Marche/Arrêt aucun créneau n'est suivi, l'afficher serait trompeur.
+    // feature-164 : la ligne Horaires EN LECTURE SEULE est désormais RESTREINTE
+    // à Auto (elle couvrait Auto ET Programme jusqu'ici) — en Programme, les
+    // horaires sont modifiables juste en dessous
+    // (#dashboard-filtration-schedule-edit, DESIGN_SYSTEM.md §5.20 : « l'info
+    // vit à un seul endroit »). En Marche/Arrêt aucun créneau n'est suivi,
+    // l'afficher serait trompeur.
     // `.hidden` (propriété DOM, reflète l'attribut [hidden]) — même patron que
     // renderDashboardModeCard() (lot A) : .detail-row[hidden]{display:none!important}
     // (app.css:3255) l'emporte sur `.detail-row{display:flex}`.
     const detailFiltrationSchedule = $("#detail-filtration-schedule");
     const detailFiltrationScheduleRow = $("#detail-filtration-schedule-row");
+    const fMode = (config.filtration_mode || 'auto').toLowerCase();
     if (detailFiltrationSchedule) {
       const start = config.filtration_start || '08:00';
       const end = config.filtration_end || '20:00';
       detailFiltrationSchedule.textContent = `${start} - ${end}`;
     }
     if (detailFiltrationScheduleRow) {
-      const fMode = (config.filtration_mode || 'auto').toLowerCase();
-      detailFiltrationScheduleRow.hidden = (fMode !== 'auto' && fMode !== 'manual');
+      detailFiltrationScheduleRow.hidden = (fMode !== 'auto');
+    }
+
+    // feature-164 : bloc ÉDITABLE, visible UNIQUEMENT en Programme (⛔ en Auto
+    // les horaires sont CALCULÉS d'après la température — jamais saisissables,
+    // les rendre éditables serait un mensonge d'interface). Gabarit IDENTIQUE
+    // à l'Éclairage (feature-162). Valeurs resynchronisées SAUF saisie en
+    // cours (dashboardFiltrationDirty OU focus dans le bloc) — même motif que
+    // dashboardLightingDirty.
+    const filtScheduleEdit = $("#dashboard-filtration-schedule-edit");
+    if (filtScheduleEdit) {
+      filtScheduleEdit.hidden = fMode !== 'manual';
+      const busy = dashboardFiltrationDirty || filtScheduleEdit.contains(document.activeElement);
+      if (!busy) {
+        const fs = $("#dashboard-filtration-start"), fe = $("#dashboard-filtration-end");
+        if (fs) fs.value = config.filtration_start || '08:00';
+        if (fe) fe.value = config.filtration_end || '20:00';
+      }
+      // C12 (non bloquant) : réévalué à chaque rendu sur les valeurs AFFICHÉES
+      // (saisie en cours comprise) — avertissement réactif, pas seulement au
+      // chargement.
+      renderFiltrationDurationWarning(
+        $("#dashboard-filtration-start")?.value, $("#dashboard-filtration-end")?.value,
+        "dashboard-filtration-duration-warning"
+      );
     }
 
     updateFiltrationBadges();
@@ -12817,6 +13115,15 @@
     };
     saveBtn.addEventListener("click", async () => {
       if (saveBtn.disabled) return;
+      // feature-164 (gate pool-chemistry C7) : secours actif ET baisse de
+      // consigne ORP ⇒ confirmation mutualisée avec le passage en Arrêt
+      // (confirmOrpRescueInterruption). ⛔ Avant d'envoyer QUOI QUE CE SOIT.
+      if (sensor === "orp") {
+        const newTarget = parseFloat($("#orp_target")?.value);
+        const previousTarget = typeof window._config?.orp_target === "number" ? window._config.orp_target : newTarget;
+        const proceed = await confirmOrpRescueInterruption({ kind: "target", newTarget, previousTarget });
+        if (!proceed) return;
+      }
       // v2.25.0 : plus de garde-fou de saisie sur la consigne pH — le contrôle
       // segmenté ne peut produire qu'une valeur de la plage servie par le
       // serveur. La validation serveur reste, elle, en place (défense en
@@ -12828,6 +13135,7 @@
       if (r.ok) {
         setBtn("Sauvegarde réussie", false, true, "success");
         if (sensor === "ph") renderPhTargetHint();  // efface un éventuel échec précédent
+        if (sensor === "orp") { orpTargetDirty = false; showOrpTargetSaveError(""); }
         setTimeout(() => setBtn(defaultLabel, false, true, "default"), 2000);
       } else {
         const msg = r.message || r.error || "Enregistrement refusé.";
@@ -12836,8 +13144,105 @@
         if (sensor === "ph") {
           showPhTargetSaveError(msg + " La consigne affichée n'a pas été enregistrée.");
         }
+        if (sensor === "orp") {
+          showOrpTargetSaveError(msg + " La consigne affichée n'a pas été enregistrée.");
+        }
         setBtn("Erreur", false, true, "error");
         setTimeout(() => setBtn(defaultLabel, false, false, "default"), 2000);
+      }
+    });
+  }
+
+  // feature-164 : miroir de showPhTargetSaveError() (B5) pour l'ORP — rouge
+  // réservé aux ÉCHECS DE SAUVEGARDE, `.field__error` relié par
+  // aria-describedby (#orp_target_error). msg vide efface l'état d'erreur.
+  function showOrpTargetSaveError(msg) {
+    const hint = $("#orp_target_error");
+    const label = $("#orp_target")?.closest(".field");
+    label?.classList.toggle("is-error", !!msg);
+    if (hint) { hint.textContent = msg || ""; hint.hidden = !msg; }
+  }
+
+  // ===========================================================================
+  // feature-164 : enregistrement de la consigne pH DEPUIS LA CARTE — bouton
+  // explicite (C1, ⛔ aucun autosave), jamais sur la même ligne qu'un champ.
+  // Échec ⇒ position RÉELLE restaurée (setPhTarget silencieux) + .field__error
+  // relié par aria-describedby (DESIGN_SYSTEM.md §5.20).
+  // ===========================================================================
+  function bindDashboardPhTargetSave() {
+    const btn = $("#dashboard-ph-target-save");
+    const input = $("#dashboard-ph-target");
+    const group = $("#dashboard-ph-target-group");
+    if (!btn || !input || !group) return;
+    const label = input.closest(".field");
+    const errorEl = $("#dashboard-ph-target-error");
+    const setError = (msg) => {
+      label?.classList.toggle("is-error", !!msg);
+      if (errorEl) { errorEl.textContent = msg || ""; errorEl.hidden = !msg; }
+    };
+    btn.addEventListener("click", async () => {
+      if (btn.disabled) return;
+      const value = parseFloat(input.value);
+      setError("");
+      btn.classList.add("btn--loading");
+      btn.disabled = true;
+      const r = await sendConfigDetailed({ ph_target: value });
+      btn.classList.remove("btn--loading");
+      btn.disabled = false;
+      if (r.ok) {
+        dashboardPhTargetDirty = false;
+        loadConfig();
+        showToast("Consigne pH enregistrée", "success");
+      } else {
+        // Revient à la DERNIÈRE consigne confirmée par le serveur — jamais une
+        // position que l'appareil n'a pas adoptée (même invariant que
+        // resolveSelectorMode pour le mode).
+        setPhTarget(
+          typeof window._config?.ph_target === "number" ? window._config.ph_target : _phBounds.targetMin,
+          true, "dashboard-ph-target-group", "dashboard-ph-target", "dashboard-ph-target-warning"
+        );
+        setError((r.message || r.error || "Échec de l'enregistrement.") + " La consigne affichée n'a pas été enregistrée.");
+      }
+    });
+  }
+
+  // ===========================================================================
+  // feature-164 : enregistrement de la consigne ORP DEPUIS LA CARTE — même
+  // principe que ci-dessus. C7 (gate pool-chemistry) : secours actif ET
+  // baisse de consigne ⇒ confirmation MUTUALISÉE avec la page de réglage
+  // (confirmOrpRescueInterruption), AVANT tout envoi réseau.
+  // ===========================================================================
+  function bindDashboardOrpTargetSave() {
+    const btn = $("#dashboard-orp-target-save");
+    const input = $("#dashboard-orp-target");
+    if (!btn || !input) return;
+    const label = input.closest(".field");
+    const errorEl = $("#dashboard-orp-target-error");
+    const setError = (msg) => {
+      label?.classList.toggle("is-error", !!msg);
+      if (errorEl) { errorEl.textContent = msg || ""; errorEl.hidden = !msg; }
+    };
+    input.addEventListener("input", () => { dashboardOrpTargetDirty = true; });
+    btn.addEventListener("click", async () => {
+      if (btn.disabled) return;
+      const value = parseFloat(input.value);
+      if (!Number.isFinite(value)) { setError("Saisissez une consigne en mV."); return; }
+      const previousTarget = typeof window._config?.orp_target === "number" ? window._config.orp_target : value;
+      const proceed = await confirmOrpRescueInterruption({ kind: "target", newTarget: value, previousTarget });
+      if (!proceed) return;
+      setError("");
+      btn.classList.add("btn--loading");
+      btn.disabled = true;
+      const r = await sendConfigDetailed({ orp_target: value });
+      btn.classList.remove("btn--loading");
+      btn.disabled = false;
+      if (r.ok) {
+        dashboardOrpTargetDirty = false;
+        loadConfig();
+        showToast("Consigne ORP enregistrée", "success");
+      } else {
+        input.value = typeof window._config?.orp_target === "number" ? Math.round(window._config.orp_target) : value;
+        setError((r.message || r.error || "Échec de l'enregistrement.") + " La consigne affichée n'a pas été enregistrée.");
       }
     });
   }
@@ -12866,10 +13271,18 @@
     $("#filtration_start")?.addEventListener("change", () => {
       cachedManualStart = $("#filtration_start").value;
       filtrationDirty = true;
+      // feature-164 (C12) : réévalué à CHAQUE changement, pas seulement au rendu
+      // périodique (même motif que la carte d'accueil).
+      if (($("#filtration_mode")?.value || "auto") === "manual") {
+        renderFiltrationDurationWarning($("#filtration_start")?.value, $("#filtration_end")?.value, "filtration-duration-warning");
+      }
     });
     $("#filtration_end")?.addEventListener("change", () => {
       cachedManualEnd = $("#filtration_end").value;
       filtrationDirty = true;
+      if (($("#filtration_mode")?.value || "auto") === "manual") {
+        renderFiltrationDurationWarning($("#filtration_start")?.value, $("#filtration_end")?.value, "filtration-duration-warning");
+      }
     });
 
     // Lighting feature — sauvegarde immédiate (interrupteur on/off)
@@ -12891,8 +13304,31 @@
     $("#lighting_end_time")?.addEventListener("input", () => { lightingDirty = true; });
     $("#dashboard-lighting-start")?.addEventListener("input", () => { dashboardLightingDirty = true; });
     $("#dashboard-lighting-end")?.addEventListener("input", () => { dashboardLightingDirty = true; });
-    bindLightingScheduleSave("lighting_start_time", "lighting_end_time", "lighting-schedule-error", "lighting_save_btn", () => { lightingDirty = false; });
-    bindLightingScheduleSave("dashboard-lighting-start", "dashboard-lighting-end", "dashboard-lighting-schedule-error", "dashboard-lighting-schedule-save", () => { dashboardLightingDirty = false; });
+    bindScheduleSave("lighting_start_time", "lighting_end_time", "lighting-schedule-error", "lighting_save_btn",
+      "lighting_start_time", "lighting_end_time", () => { lightingDirty = false; });
+    bindScheduleSave("dashboard-lighting-start", "dashboard-lighting-end", "dashboard-lighting-schedule-error", "dashboard-lighting-schedule-save",
+      "lighting_start_time", "lighting_end_time", () => { dashboardLightingDirty = false; });
+
+    // feature-164 : carte Filtration — mode Programme. ⛔ PAS d'autosave
+    // (même motif que l'Éclairage) ; C12 (durée sous le seuil SERVI, non
+    // bloquant) réévalué à CHAQUE frappe, pas seulement au rendu périodique.
+    $("#dashboard-filtration-start")?.addEventListener("input", () => {
+      dashboardFiltrationDirty = true;
+      renderFiltrationDurationWarning($("#dashboard-filtration-start")?.value, $("#dashboard-filtration-end")?.value, "dashboard-filtration-duration-warning");
+    });
+    $("#dashboard-filtration-end")?.addEventListener("input", () => {
+      dashboardFiltrationDirty = true;
+      renderFiltrationDurationWarning($("#dashboard-filtration-start")?.value, $("#dashboard-filtration-end")?.value, "dashboard-filtration-duration-warning");
+    });
+    bindScheduleSave("dashboard-filtration-start", "dashboard-filtration-end", "dashboard-filtration-schedule-error", "dashboard-filtration-schedule-save",
+      "filtration_start", "filtration_end", () => {
+        dashboardFiltrationDirty = false;
+        filtrationRunningOverride = predictFiltrationRunning(Object.assign({}, window._config, {
+          filtration_start: $("#dashboard-filtration-start")?.value,
+          filtration_end: $("#dashboard-filtration-end")?.value,
+        }));
+        updateFiltrationBadges();
+      });
 
     // pH / ORP regulation — sauvegarde immédiate sur le sélecteur de mode.
     // feature-161 (lot A) : logique partagée dans applyRegulationMode() — le
@@ -12964,6 +13400,15 @@
     bindPhTargetControl();  // v2.25.0 : contrôle segmenté de la consigne pH
     // v2.25.0 : rappel de la plage sous le contrôle.
     $("#ph_target")?.addEventListener("input", renderPhTargetHint);
+    // feature-164 : page de réglage ORP — AUCUNE garde avant ce lot (écriture
+    // inconditionnelle de #orp_target par loadConfig) ; drapeau dédié, même
+    // motif que dashboardLightingDirty.
+    $("#orp_target")?.addEventListener("input", () => { orpTargetDirty = true; });
+    applyOrpTargetBounds();  // feature-164 : repli AVANT le premier /get-config (⛔ plus 0/1000) ; _applyOrpBounds(cfg) prend le relais dès la réponse serveur
+    // feature-164 : seconde instance du contrôle pH segmenté — carte d'accueil.
+    bindPhTargetControl("dashboard-ph-target-group", "dashboard-ph-target", "dashboard-ph-target-warning");
+    bindDashboardPhTargetSave();
+    bindDashboardOrpTargetSave();
     // Onglet Régulation : initialisation segmented + save dédié
     initSegmented("regulation_speed");
     // feature-090 : sélecteur de taille du bassin (dialogue avant/après 088).

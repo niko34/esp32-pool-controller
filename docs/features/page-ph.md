@@ -511,6 +511,30 @@ Le champ `<input type="number">` est remplacé par un **contrôle segmenté** `#
 
 > ⚠️ **Pourquoi pas un `input[type=range]`** : sur mobile, un curseur n'affiche pas sa valeur, n'a pas de cran tactile et se déclenche au premier contact — y compris pendant un scroll. Voir [ADR-0048](../adr/0048-seuils-ph-fixes-derives-de-la-plage-de-consigne.md).
 
+### ⚠️ feature-164 (v2.80.0) — même contrôle, une SECONDE instance sur le tableau de bord
+
+La carte pH du [tableau de bord](page-dashboard.md#régler-la-consigne-depuis-la-carte-feature-164-v2800)
+porte désormais le **même geste** (`#dashboard-ph-target-group` / `#dashboard-ph-target`),
+généré par la **même** fonction (`buildPhTargetSegments()`, généralisée pour accepter un second
+jeu d'identifiants) — mêmes bornes serveur, ⛔ **aucune valeur en dur**, aucun second composant.
+
+⚠️ **Sur cette page, l'enregistrement reste au clic** (autosave, inchangé) — **sur la carte**, un
+bouton **Sauvegarder explicite** est requis (ADR-0110 : régler une consigne est une commande
+**différée**, jamais en enregistrement implicite). Cette asymétrie est assumée : la page de
+réglage est une surface **dédiée** où le clic sur une position *est* le geste de confirmation ;
+la carte d'accueil, elle, exige un geste **séparé**.
+
+⚠️ **Verrou d'étalonnage étendu (C10)** : `calActive` **seul** désactive désormais aussi ce
+contrôle (sur les deux surfaces) — ⛔ **pas** l'escalade de sécurité pH (qui force déjà le mode en
+Arrêt et ne gagnerait rien à verrouiller la consigne en plus). Détail :
+[pump-controller.md](../subsystems/pump-controller.md#verrou-étendu-aux-consignes-feature-164-gate-c5c6).
+⚠️ **Un étalonnage, quelle que soit la sonde (pH OU ORP), verrouille les DEUX consignes** —
+`calSwitchActive` est un drapeau global, sans distinction de canal.
+
+⚠️ **Changer la consigne en marche purge l'intégrale pH côté firmware** (sans toucher aux
+compteurs de dosage) — transparent pour l'utilisateur, détail dans
+[pump-controller.md](../subsystems/pump-controller.md#purge-de-lintégrale-sur-changement-runtime-de-consigne-feature-164-gate-c5c6).
+
 ### ~~Offset pH : incrémenteur~~ et ~~deux paliers d'avertissement~~ — RETIRÉS (feature-155, v2.71.0)
 
 Présents de la v2.25.0 à la v2.70.x : un incrémenteur `#ph-offset-stepper` réglant un **écart signé** `[−0,50 ; +0,50]`, un texte d'aide permanent (`#ph_offset_help`), et un callout ambré à **deux paliers** (`#ph_offset_warning`, 0,15 / 0,30 pH) recalculant côté client le pH réel probable en cas d'offset erroné. Les trois ont **disparu** avec le changement de geste décrit ci-dessus — voir [Ce qui a disparu (et ce qui ne l'a pas)](#ce-qui-a-disparu-et-ce-qui-ne-la-pas). L'enregistrement ne passe plus par `POST /save-config {"ph_offset": …}` depuis cette carte (route toujours valide pour un appel API direct, voir [API.md](../API.md#post-save-config--critical)), mais par [`POST /tune-ph-offset`](#enregistrement--post-tune-ph-offset) — voir la section ci-dessus.

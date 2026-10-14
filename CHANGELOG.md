@@ -2,6 +2,69 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [2.80.0] - 2026-10-14
+
+### Fonctionnalités
+
+- **Les consignes pH et ORP se règlent depuis les cartes du tableau de bord** (mode Auto), **et
+  les horaires de filtration depuis la carte** (mode Programme) — suite directe de feature-161.
+  Le pH reprend **le même geste à 4 positions** que la page de réglage ; l'ORP garde un champ
+  libre, **désormais accompagné de sa plage autorisée**. ⚠️ **Exclus par choix utilisateur** :
+  volume quotidien et limite de sécurité restent réservés aux pages de réglage (« les plafonds
+  protègent, le reste informe »).
+- **La ligne statique « Cible : X » disparaît** des cartes pH et ORP — le 7ᵉ ajout sur ces cartes
+  est compensé par un retrait, pour ne pas reproduire la dégradation de la page Produits.
+- **Bouton Sauvegarder explicite partout, jamais d'enregistrement automatique** sur ces nouveaux
+  champs (ADR-0110) : régler une consigne commande un dosage à venir, ce n'est ni une commande
+  immédiate (comme le mode) ni une action (comme l'injection).
+- **Un étalonnage, quelle que soit la sonde, verrouille désormais aussi les deux consignes** (pH
+  et ORP) en plus du mode — accepté tel quel par le gate chimie (session de quelques minutes,
+  bornée par l'alerte d'oubli).
+- **Confirmation étendue à la consigne ORP** : toute baisse pendant une chloration de secours
+  active ouvre la même confirmation que le passage en mode Arrêt.
+- **La plage ORP s'élargit** de [400 ; 900] à **[300 ; 950] mV**, sur les deux chemins d'écriture
+  (HTTP et MQTT) : une fenêtre resserrée interdisait la recalibration légitime après un
+  changement de stabilisant.
+- **Une heure de début et de fin identiques pour la filtration est désormais refusée**, avec un
+  message explicite — ce cas faisait tourner la filtration zéro heure par jour, silencieusement.
+  Une plage qui enjambe minuit (fin avant début) reste acceptée, c'est un usage réel.
+- **Avertissement non bloquant** si la durée de filtration programmée est sous 120 minutes : la
+  régulation pH/ORP n'aurait pas le temps d'atteindre sa consigne.
+
+### Firmware
+
+- **Validation serveur de la consigne ORP** (`orp_target`, `/save-config` et MQTT) : absente
+  jusqu'ici, un payload malformé pouvait éteindre silencieusement la chloration. Refus explicite
+  hors plage, jamais d'écrêtage.
+- **Validation serveur des horaires de filtration** (`filtration_start`/`filtration_end`) :
+  affectés en texte brut sans aucune règle de cohérence jusqu'ici.
+- **Le changement de consigne pH en cours de marche purge désormais le terme intégral de la
+  régulation** (sans toucher aux compteurs de dosage) — sinon, l'intégrale accumulée contre
+  l'ancienne consigne servait l'acide contre la nouvelle cible.
+- **Verrou d'étalonnage étendu aux consignes** sur `/save-config` (même refus 409 que le mode,
+  texte révisé pour les mentionner). ⚠️ **Texte du refus 409 CHANGÉ** — l'ancien (qui ne
+  mentionnait pas les consignes) est périmé.
+- **Nouvelles clés servies par `/get-config`** : `orp_target_min`, `orp_target_max`,
+  `orp_target_step` (ADR-0100 — un seuil est servi, jamais réécrit en dur côté client).
+- **Correctif de parité d'expression** (6ᵉ occurrence du motif) : `ph_target`/`orp_target`
+  n'étaient pas calculés de façon identique entre `/get-config` et la trame WebSocket `config`.
+
+### Documentation
+
+- `docs/API.md` : validation ORP et horaires, nouveau texte de refus 409, nouvelles clés servies,
+  ordre d'évaluation des gates mis à jour.
+- `docs/MQTT.md` : bornes ORP élargies (motif écrit), texte de refus 409 révisé, limite connue
+  signalée (le verrou d'étalonnage ne couvre pas les consignes via MQTT).
+- `docs/features/page-dashboard.md`, `page-ph.md`, `page-orp.md`, `page-filtration.md` :
+  nouveaux contrôles, retrait de « Cible : X », verrou d'étalonnage étendu, plage ORP affichée.
+- `docs/subsystems/pump-controller.md` : purge de l'intégrale au changement runtime de consigne
+  (motif : on efface une demande, jamais une dette), verrou étendu aux consignes.
+- [ADR-0110](docs/adr/0110-regler-une-consigne-est-une-commande-differee.md) : une consigne est
+  une commande différée — éligible à la carte, jamais en enregistrement implicite. Complète
+  [ADR-0108](docs/adr/0108-basculer-le-mode-est-une-commande-injecter-est-un-geste.md).
+
+---
+
 ## [2.79.0] - 2026-10-14
 
 ### Fonctionnalités

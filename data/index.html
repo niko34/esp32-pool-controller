@@ -247,16 +247,48 @@
                   <button type="button" class="btn btn--ghost" id="filtration-mode-btn-force" data-mode="force" aria-pressed="false">Marche</button>
                   <button type="button" class="btn btn--ghost" id="filtration-mode-btn-off" data-mode="off" aria-pressed="false">Arrêt</button>
                 </div>
-                <!-- feature-161 (lot B) : visible seulement en Auto/Programme —
-                     en Marche/Arrêt aucun créneau n'est suivi, l'afficher
-                     serait trompeur. Bascule sur `[hidden]` (propriété .hidden,
-                     pas style.display) — .detail-row[hidden]{display:none!important}
+                <!-- feature-161 (lot B), RESTREINT à Auto par feature-164 : en
+                     Programme les horaires deviennent ÉDITABLES juste en
+                     dessous (#dashboard-filtration-schedule-edit) — cette ligne
+                     EN LECTURE SEULE n'a donc plus de raison d'y apparaître
+                     aussi (double affichage de la même valeur, DESIGN_SYSTEM.md
+                     §5.20 « l'information vit à un seul endroit »). En
+                     Marche/Arrêt aucun créneau n'est suivi, l'afficher serait
+                     trompeur. Bascule sur `[hidden]` (propriété .hidden, pas
+                     style.display) — .detail-row[hidden]{display:none!important}
                      existe déjà (app.css:3255, posé par le lot A) et l'emporte
                      sur `.detail-row{display:flex}`. Visibilité pilotée par
-                     updateFiltrationBadges() dans app.js. -->
+                     updateDetailSections() dans app.js. -->
                 <div class="detail-row" id="detail-filtration-schedule-row">
                   <div class="detail-label">Horaires</div>
                   <div class="detail-value" id="detail-filtration-schedule">08:00 - 20:00</div>
+                </div>
+
+                <!-- feature-164 : DESIGN_SYSTEM.md §5.20 — gabarit IDENTIQUE à
+                     l'Éclairage (feature-162, #dashboard-lighting-schedule-edit),
+                     visible UNIQUEMENT en mode Programme (filtration_mode ===
+                     "manual"). ⛔ En Auto les horaires sont CALCULÉS d'après la
+                     température — jamais saisissables, ce bloc reste masqué.
+                     C12 (gate pool-chemistry, non bloquant) : avertissement si
+                     la durée programmée est sous le seuil SERVI (ADR-0100 —
+                     `filtration_short_duration_warn_min`, 120 min par défaut,
+                     ⛔ plus en dur côté client, cf. renderFiltrationDurationWarning). -->
+                <div id="dashboard-filtration-schedule-edit" hidden>
+                  <div class="grid grid--2 schedule-fields" style="margin-top:12px">
+                    <label class="field">
+                      <span class="field__label">Début</span>
+                      <input type="time" id="dashboard-filtration-start" aria-describedby="dashboard-filtration-schedule-error" />
+                    </label>
+                    <label class="field">
+                      <span class="field__label">Fin</span>
+                      <input type="time" id="dashboard-filtration-end" aria-describedby="dashboard-filtration-schedule-error" />
+                    </label>
+                  </div>
+                  <p class="field__error" id="dashboard-filtration-schedule-error" hidden></p>
+                  <div class="callout callout--warn" id="dashboard-filtration-duration-warning" role="status" aria-live="polite" hidden></div>
+                  <div class="detail-actions">
+                    <button class="btn btn--primary" type="button" id="dashboard-filtration-schedule-save">Sauvegarder</button>
+                  </div>
                 </div>
 
                 <!-- feature-147 : Boost déménagé depuis la carte séparée
@@ -359,7 +391,10 @@
                       <input type="time" id="dashboard-lighting-end" aria-describedby="dashboard-lighting-schedule-error" />
                     </label>
                   </div>
-                  <p class="field__hint" id="dashboard-lighting-schedule-error" hidden></p>
+                  <!-- feature-164 : correctif de la dérive livrée en feature-162 —
+                       `.field__error` (rouge), ⛔ PAS `.field__hint` (gris), pour un
+                       texte d'ÉCHEC D'ENREGISTREMENT (DESIGN_SYSTEM.md §5.20). -->
+                  <p class="field__error" id="dashboard-lighting-schedule-error" hidden></p>
                   <div class="detail-actions">
                     <button class="btn btn--primary" type="button" id="dashboard-lighting-schedule-save">Sauvegarder</button>
                   </div>
@@ -388,12 +423,6 @@
               <div class="card__body">
                 <div class="card__status-compact">
                   <div class="compact-value" id="compact-ph">--</div>
-                  <!-- feature-161 (lot A) : la cible disparaît hors mode Auto
-                       (rien n'est poursuivi) — la MESURE et la jauge restent
-                       visibles dans TOUS les modes (lecture de capteur, pas
-                       une action). Visibilité pilotée par
-                       renderDashboardModeCard() dans app.js. -->
-                  <div class="compact-target" id="ph-compact-target-row">Cible: <span id="compact-ph-target">7.2</span></div>
                 </div>
                 <!-- feature-147 : position du pH corrigé (déjà affiché ci-dessus)
                      sur une échelle. Bornes de DESSIN UNIQUEMENT (jamais
@@ -453,7 +482,7 @@
                 <div class="regul-alert regul-alert--inline" id="dashboard-ph-cal-banner" role="status" aria-live="polite" hidden>
                   <span class="regul-alert__dot" aria-hidden="true"></span>
                   <div class="regul-alert__body">
-                    <span class="regul-alert__text">Étalonnage en cours — le mode est rétabli à la fin de l'étalonnage.</span>
+                    <span class="regul-alert__text">Étalonnage en cours — le mode et les consignes sont verrouillés. Le mode est rétabli à la fin de l'étalonnage, et les consignes redeviennent modifiables au même moment.</span>
                   </div>
                 </div>
 
@@ -478,6 +507,46 @@
                   <button type="button" class="btn btn--ghost" data-value="automatic" aria-pressed="false">Auto</button>
                   <button type="button" class="btn btn--ghost" data-value="scheduled" aria-pressed="false">Programme</button>
                   <button type="button" class="btn btn--ghost" data-value="manual" aria-pressed="false">Arrêt</button>
+                </div>
+
+                <!-- feature-164 : DESIGN_SYSTEM.md §5.20/§5.3 — consigne pH
+                     modifiable DEPUIS LA CARTE, en mode Auto seulement (le
+                     bloc est masqué dans les deux autres modes, rien à régler
+                     n'y est pertinent). Même geste que la page de réglage
+                     (#ph_target_group) — contrôle GÉNÉRÉ depuis les bornes
+                     serveur par buildPhTargetSegments(group, input), ⛔ aucune
+                     valeur en dur. `class="segmented--num"` SEUL (⛔ PAS
+                     `"segmented segmented--num"`) : la carte a déjà un
+                     en-tête, le cadre y créerait une boîte dans la boîte
+                     (raison de .mode-select). C10 (gate pool-chemistry) :
+                     désactivé (⛔ jamais masqué) pendant un étalonnage —
+                     `calActive` SEUL, PAS l'escalade de sécurité (elle force
+                     déjà Arrêt). -->
+                <div id="dashboard-ph-target-edit" hidden>
+                  <div class="field" style="margin-top:12px">
+                    <span class="field__label" id="dashboard-ph-target-label">Consigne pH</span>
+                    <div class="segmented--num" id="dashboard-ph-target-group"
+                         role="radiogroup" aria-labelledby="dashboard-ph-target-label"
+                         aria-describedby="dashboard-ph-target-error dashboard-ph-target-lock-hint"></div>
+                    <input type="hidden" id="dashboard-ph-target" />
+                  </div>
+                  <!-- ux-ui-designer (correctif §5.20/§7) : adjacence AU CONTRÔLE —
+                       le bandeau d'étalonnage du haut est juxtaposé au SÉLECTEUR DE
+                       MODE, pas à ce bloc (le sélecteur entier s'intercale). Même
+                       condition que le verrou (`calActive` SEUL), ⛔ pas une 2e
+                       condition qui pourrait diverger. Relié par aria-describedby
+                       ci-dessus : le lecteur d'écran porte la MÊME explication que
+                       la couleur --warn (§7, jamais la couleur seule). -->
+                  <p class="field__hint" id="dashboard-ph-target-lock-hint" hidden>Modification désactivée pendant l'étalonnage.</p>
+                  <!-- C9 : texte IMPOSÉ, déjà écrit pour la page de réglage
+                       (renderPhTargetWarning(), généralisée pour accepter
+                       cette cible en second paramètre) — ⛔ pas de second texte. -->
+                  <div class="callout callout--warn" id="dashboard-ph-target-warning"
+                       role="status" aria-live="polite" hidden></div>
+                  <p class="field__error" id="dashboard-ph-target-error" hidden></p>
+                  <div class="detail-actions">
+                    <button class="btn btn--primary" type="button" id="dashboard-ph-target-save">Sauvegarder</button>
+                  </div>
                 </div>
 
                 <!-- feature-161 (lot A) — C9 : mode Programme, deux lignes en
@@ -512,8 +581,6 @@
               <div class="card__body">
                 <div class="card__status-compact">
                   <div class="compact-value" id="compact-orp">--<span class="compact-unit">mV</span></div>
-                  <!-- feature-161 (lot A) : miroir pH — cible masquée hors Auto. -->
-                  <div class="compact-target" id="orp-compact-target-row">Cible: <span id="compact-orp-target">650</span> mV</div>
                 </div>
                 <!-- feature-147 : gate pool-chemistry (2e passage, GO SOUS
                      CONDITIONS) — dégradé ÉVALUATIF mais ASYMÉTRIQUE, posé par
@@ -558,7 +625,7 @@
                 <div class="regul-alert regul-alert--inline" id="dashboard-orp-cal-banner" role="status" aria-live="polite" hidden>
                   <span class="regul-alert__dot" aria-hidden="true"></span>
                   <div class="regul-alert__body">
-                    <span class="regul-alert__text">Étalonnage en cours — le mode est rétabli à la fin de l'étalonnage.</span>
+                    <span class="regul-alert__text">Étalonnage en cours — le mode et les consignes sont verrouillés. Le mode est rétabli à la fin de l'étalonnage, et les consignes redeviennent modifiables au même moment.</span>
                   </div>
                 </div>
 
@@ -573,6 +640,44 @@
                   <button type="button" class="btn btn--ghost" data-value="automatic" aria-pressed="false">Auto</button>
                   <button type="button" class="btn btn--ghost" data-value="scheduled" aria-pressed="false">Programme</button>
                   <button type="button" class="btn btn--ghost" data-value="manual" aria-pressed="false">Arrêt</button>
+                </div>
+
+                <!-- feature-164 : consigne ORP (mV) modifiable DEPUIS LA
+                     CARTE, en mode Auto seulement — plage CONTINUE (⛔ pas une
+                     grille comme le pH) : `.field` + `<input type="number">`,
+                     DESIGN_SYSTEM.md §5.20. `min`/`max` posés par
+                     applyOrpTargetBounds() (app.js) depuis les bornes SERVIES
+                     par /get-config (orp_target_min/_max, ADR-0100 — ⛔ plus
+                     de miroir en dur ni des 0/1000 d'origine), repli de
+                     secours sinon. C7 (gate pool-chemistry) : secours actif ET
+                     baisse de consigne ⇒ confirmation mutualisée avec le
+                     passage en Arrêt (confirmOrpRescueInterruption). C10 :
+                     désactivé (⛔ jamais masqué) pendant un étalonnage,
+                     `calActive` SEUL. -->
+                <div id="dashboard-orp-target-edit" hidden>
+                  <div class="field" style="margin-top:12px">
+                    <span class="field__label">Consigne ORP <span class="unit">(mV)</span></span>
+                    <input type="number" id="dashboard-orp-target" step="1"
+                           aria-describedby="dashboard-orp-target-error dashboard-orp-target-lock-hint dashboard-orp-target-hint" />
+                  </div>
+                  <!-- ux-ui-designer (correctif §5.20, asymétrie remontée par
+                       test-engineer) : le pH montre sa plage PAR CONSTRUCTION
+                       (4 positions visibles) — un champ libre n'a AUCUN moyen de
+                       le faire. Texte REQUIS, ⛔ pas de mention de pas (1 mV, non
+                       contraignant). Valeurs LUES sur _orpBounds (orp_target_min/
+                       _max servis par /get-config si présents, repli de secours
+                       sinon — JAMAIS en dur, ADR-0100) ; peuplé UNIQUEMENT par
+                       loadConfig() (renderOrpTargetHint()), ⛔ jamais au bind
+                       initial : `hidden` tant que la configuration n'est pas
+                       chargée, pour ne jamais afficher une plage devinée. -->
+                  <p class="field__hint" id="dashboard-orp-target-hint" hidden></p>
+                  <!-- ux-ui-designer (correctif §5.20/§7) : miroir EXACT du pH —
+                       même texte, même condition (`calActive` SEUL). -->
+                  <p class="field__hint" id="dashboard-orp-target-lock-hint" hidden>Modification désactivée pendant l'étalonnage.</p>
+                  <p class="field__error" id="dashboard-orp-target-error" hidden></p>
+                  <div class="detail-actions">
+                    <button class="btn btn--primary" type="button" id="dashboard-orp-target-save">Sauvegarder</button>
+                  </div>
                 </div>
 
                 <!-- feature-161 (lot A) — C9 : miroir pH, valeurs DÉJÀ servies
@@ -692,6 +797,12 @@
                   </label>
                 </div>
 
+                <!-- feature-164 (gate pool-chemistry C12, correction : surface
+                     "les deux" — carte ET page) : MÊME fonction que la carte
+                     d'accueil (renderFiltrationDurationWarning), ⛔ pas une 2e
+                     implémentation. Texte IMPOSÉ, non bloquant. -->
+                <div class="callout callout--warn" id="filtration-duration-warning" role="status" aria-live="polite" hidden></div>
+
                 <div class="hint" id="filtration_mode_hint">
                   <strong>Auto</strong> : les horaires sont calculés automatiquement selon la température et ajustés si elle change (affinés après 5 min de filtration). <strong>Programme</strong> : vous fixez les horaires vous-même, ils ne changent jamais tout seuls. <strong>Marche</strong> : la pompe tourne en continu. <strong>Arrêt</strong> : la pompe est arrêtée. Marche et Arrêt durent jusqu'à ce que vous changiez de mode.
                 </div>
@@ -755,7 +866,9 @@
                       <input type="time" id="lighting_end_time" aria-describedby="lighting-schedule-error" />
                     </label>
                   </div>
-                  <p class="field__hint" id="lighting-schedule-error" hidden></p>
+                  <!-- feature-164 : correctif de la dérive livrée en feature-162 —
+                       `.field__error` (rouge), ⛔ PAS `.field__hint` (gris). -->
+                  <p class="field__error" id="lighting-schedule-error" hidden></p>
                   <div class="hint">
                     En mode Programme, l'éclairage s'allume automatiquement entre l'heure de début et l'heure de fin.
                   </div>
@@ -1700,10 +1813,21 @@
               <div id="orp-regulation-params">
                 <div class="grid grid--2">
                   <label class="field">
-                    <span class="field__label">ORP cible (mV)</span>
-                    <input type="number" id="orp_target" min="0" max="1000" step="1" placeholder="ex: 650" />
+                    <span class="field__label">ORP cible <span class="unit">(mV)</span></span>
+                    <!-- feature-164 (ADR-0100) : `min`/`max` ⛔ plus en dur (0/1000)
+                         — posés par applyOrpTargetBounds() (app.js) depuis les
+                         bornes SERVIES par /get-config (orp_target_min/_max),
+                         repli de secours sinon. -->
+                    <input type="number" id="orp_target" step="1" placeholder="ex: 650" aria-describedby="orp_target_error orp_target_hint" />
                   </label>
                 </div>
+                <!-- ux-ui-designer (§5.20, asymétrie remontée par test-engineer) :
+                     MÊMES surfaces que la carte — ⛔ une plage visible d'un côté
+                     et pas de l'autre serait une incohérence nouvelle. Miroir
+                     EXACT de #dashboard-orp-target-hint (même fonction, mêmes
+                     garde ADR-0100 et masquage pré-chargement). -->
+                <p class="field__hint" id="orp_target_hint" hidden></p>
+                <p class="field__error" id="orp_target_error" hidden></p>
                 <div class="detail-actions" style="margin-top:12px">
                   <button class="btn btn--primary" type="button" id="orp_regulation_save_btn">Sauvegarder</button>
                 </div>
@@ -1832,7 +1956,7 @@
                     <div class="step__content">
                       <div class="step__title">Saisir la valeur de référence de l'étalon</div>
                       <label class="field">
-                        <span class="field__label">Valeur de référence (mV)</span>
+                        <span class="field__label">Valeur de référence <span class="unit">(mV)</span></span>
                         <input type="number" id="orp-cal-reference" min="200" max="1000" step="1" value="470" />
                       </label>
                       <button class="btn btn--secondary cal-step-advance" type="button" data-advance="1">Valider →</button>
@@ -2398,7 +2522,7 @@ action:
                       <input type="number" id="ph_limit" min="1" max="60" step="1" value="5" style="width:120px;" />
                     </label>
                     <label class="field">
-                      <span class="field__label">pH — volume max / jour (ml)</span>
+                      <span class="field__label">pH — volume max / jour <span class="unit">(ml)</span></span>
                       <input type="number" id="ph_daily_limit" min="0" step="10" value="300" style="width:120px;" />
                     </label>
                     <label class="field">
@@ -2406,7 +2530,7 @@ action:
                       <input type="number" id="orp_limit" min="1" max="60" step="1" value="10" style="width:120px;" />
                     </label>
                     <label class="field">
-                      <span class="field__label">ORP — volume max / jour (ml)</span>
+                      <span class="field__label">ORP — volume max / jour <span class="unit">(ml)</span></span>
                       <input type="number" id="orp_daily_limit" min="0" step="10" value="500" style="width:120px;" />
                     </label>
                     <label class="field">
@@ -2683,7 +2807,7 @@ action:
                     <div id="pump1_adv" hidden>
                       <div class="grid grid--2" style="margin-top:8px">
                         <label class="field">
-                          <span class="field__label">Débit mesuré (ml/min)</span>
+                          <span class="field__label">Débit mesuré <span class="unit">(ml/min)</span></span>
                           <input type="number" id="pump1_cal_flow" min="0.1" max="200" step="0.1" placeholder="ex. 28.0" aria-label="Débit mesuré Pompe 1 (ml/min)" />
                         </label>
                       </div>
@@ -2708,7 +2832,7 @@ action:
                     <div id="pump2_adv" hidden>
                       <div class="grid grid--2" style="margin-top:8px">
                         <label class="field">
-                          <span class="field__label">Débit mesuré (ml/min)</span>
+                          <span class="field__label">Débit mesuré <span class="unit">(ml/min)</span></span>
                           <input type="number" id="pump2_cal_flow" min="0.1" max="200" step="0.1" placeholder="ex. 28.0" aria-label="Débit mesuré Pompe 2 (ml/min)" />
                         </label>
                       </div>
@@ -3052,7 +3176,7 @@ action:
                   <div class="step__content">
                     <div class="step__title">Volume recueilli</div>
                     <label class="field">
-                      <span class="field__label">Quel volume lisez-vous&nbsp;? (ml)</span>
+                      <span class="field__label">Quel volume lisez-vous&nbsp;? <span class="unit">(ml)</span></span>
                       <input type="text" inputmode="decimal" id="flow-wizard-volume" placeholder="ex. 56" aria-label="Volume recueilli (ml)" />
                     </label>
                     <div class="muted small" id="flow-wizard-conversion" aria-live="polite"></div>

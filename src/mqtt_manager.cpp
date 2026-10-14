@@ -1760,9 +1760,47 @@ void MqttManager::drainCommandQueue() {
             publishTargetState();
             break;
           }
+          // bug-166 (gate pool-chemistry, trou relevé fin feature-164) : la
+          // garde d'étalonnage et la purge d'intégrale avaient été posées sur
+          // le GESTIONNAIRE HTTP (/save-config), pas sur le POINT où la valeur
+          // change — ce chemin MQTT mutait mqttCfg.phTarget sans aucune des
+          // deux. ⚠️ Toute mutation future de phTarget doit passer par CE
+          // bloc (ou son miroir HTTP) : un 4ᵉ écrivain qui réécrirait
+          // directement mqttCfg.phTarget contournerait les deux gardes en
+          // silence.
+          // MÊME fonction pure et MÊME argument que le gate de mode
+          // (calSwitchBlocksModeChange, bug-161) : une automation Home
+          // Assistant, ou une restauration d'état HA au redémarrage SANS
+          // AUCUN humain, pourrait sinon déplacer la consigne pendant qu'une
+          // sonde trempe dans un tampon d'étalonnage.
+          const float phTargetBefore = mqttCfg.phTarget;
+          const bool phTargetWouldChange = fabsf(value - phTargetBefore) > 0.001f;
+          if (calSwitchBlocksModeChange(mqttCfg.calSwitchActive, phTargetWouldChange)) {
+            xSemaphoreGiveRecursive(configMutex);
+            // feature-164 (gate pool-chemistry, 2e passage) : phrase IMPOSÉE,
+            // identique partout où ce refus apparaît (HTTP web_routes_config.cpp,
+            // MQTT mode pH/ORP) — ne pas reformuler sans nouveau passage du gate.
+            systemLogger.warning(
+                "Consigne pH REFUSÉE (MQTT → " + String(value, 1) +
+                ") : Étalonnage en cours — le mode et les consignes sont "
+                "verrouillés. Le mode est rétabli à la fin de l'étalonnage, et "
+                "les consignes redeviennent modifiables au même moment.");
+            publishTargetState();  // resync HA sur la consigne RÉELLE (inchangée)
+            break;
+          }
           mqttCfg.phTarget = value;
           saveMqttConfig();
           xSemaphoreGiveRecursive(configMutex);
+          // feature-164 (gate pool-chemistry C5+C6), MIROIR du chemin HTTP
+          // (web_routes_config.cpp) : un changement RÉEL de consigne pH purge
+          // l'intégrale PID — sinon une intégrale accumulée contre l'ancienne
+          // consigne continuerait de piloter le dosage contre la nouvelle.
+          // Hook DIFFÉRÉ (invariant v2.26.0) : requestPhTargetChange() ne fait
+          // que poser un drapeau atomique, consommé par update() (loopTask) —
+          // ⛔ jamais d'écriture directe de _phIntegral depuis mqttTask.
+          if (phTargetWouldChange) {
+            PumpController.requestPhTargetChange();
+          }
           publishTargetState();
           systemLogger.info("Consigne pH changée via MQTT: " + String(value, 1));
         } else {
@@ -1777,8 +1815,18 @@ void MqttManager::drainCommandQueue() {
         break;
       }
       case InboundCmdType::OrpTarget: {
+        // feature-164 (gate pool-chemistry C3+C4) — ÉLARGI aux mêmes bornes que
+        // HTTP /save-config : [kOrpTargetPlausibleMin ; kOrpTargetPlausibleMax]
+        // = [300 ; 950] mV. La fenêtre MQTT était auparavant PLUS STRICTE
+        // ([400 ; 900], littéraux en dur) : une fenêtre resserrée interdirait la
+        // recalibration légitime après un changement de CYA — garde qui bloque
+        // plus qu'elle ne protège (verdict pool-chemistry). Pas de grille de
+        // réglage serveur pour l'ORP (contrairement à kPhTargetStep pour le
+        // pH) : kOrpTargetStep (=1) n'est que la granularité de l'arrondi à
+        // l'entier le plus proche (mV) — MÊME formule que HTTP /save-config.
         float value = payloadStr.toFloat();
-        if (value >= 400.0f && value <= 900.0f) {
+        if (isfinite(value) && value >= kOrpTargetPlausibleMin && value <= kOrpTargetPlausibleMax) {
+          value = roundf(value / kOrpTargetStep) * kOrpTargetStep;
           // feature-027 : timeout → commande abandonnée (rien modifié avant le take),
           // resync HA sur la consigne réelle via publishTargetState().
           if (xSemaphoreTakeRecursive(configMutex, pdMS_TO_TICKS(kConfigMutexTimeoutMs)) != pdTRUE) {
@@ -1787,13 +1835,36 @@ void MqttManager::drainCommandQueue() {
             publishTargetState();
             break;
           }
+          // bug-166 (gate pool-chemistry, trou relevé fin feature-164) : MÊME
+          // garde que ph_target ci-dessus — posée au POINT où la valeur
+          // change, pas sur le gestionnaire HTTP. Pas de purge d'intégrale
+          // équivalente côté ORP (feature-164 C5+C6 est spécifique au PID pH ;
+          // le chemin HTTP /save-config n'en a pas non plus pour l'ORP).
+          const bool orpTargetWouldChange = fabsf(value - mqttCfg.orpTarget) > 0.001f;
+          if (calSwitchBlocksModeChange(mqttCfg.calSwitchActive, orpTargetWouldChange)) {
+            xSemaphoreGiveRecursive(configMutex);
+            // feature-164 (gate pool-chemistry, 2e passage) : phrase IMPOSÉE,
+            // identique partout où ce refus apparaît (HTTP web_routes_config.cpp,
+            // MQTT mode pH/ORP, MQTT consigne pH) — ne pas reformuler sans
+            // nouveau passage du gate.
+            systemLogger.warning(
+                "Consigne ORP REFUSÉE (MQTT → " + String(value, 0) +
+                ") : Étalonnage en cours — le mode et les consignes sont "
+                "verrouillés. Le mode est rétabli à la fin de l'étalonnage, et "
+                "les consignes redeviennent modifiables au même moment.");
+            publishTargetState();  // resync HA sur la consigne RÉELLE (inchangée)
+            break;
+          }
           mqttCfg.orpTarget = value;
           saveMqttConfig();
           xSemaphoreGiveRecursive(configMutex);
           publishTargetState();
           systemLogger.info("Consigne ORP changée via MQTT: " + String(value, 0));
         } else {
-          systemLogger.warning("Consigne ORP invalide (MQTT): " + payloadStr);
+          systemLogger.warning("Consigne ORP invalide (MQTT) : " + payloadStr +
+                               " hors plage autorisée " + String(kOrpTargetPlausibleMin, 0) +
+                               " à " + String(kOrpTargetPlausibleMax, 0) + " mV");
+          publishTargetState();  // resync HA sur la consigne RÉELLE (inchangée)
         }
         break;
       }
@@ -1850,9 +1921,14 @@ void MqttManager::drainCommandQueue() {
           // une commande entrante "manual" reste un no-op souhaitable.
           if (calSwitchBlocksModeChange(mqttCfg.calSwitchActive, changed)) {
             xSemaphoreGiveRecursive(configMutex);
+            // feature-164 (gate pool-chemistry, 2e passage) : phrase IMPOSÉE,
+            // identique partout où ce refus apparaît (HTTP web_routes_config.cpp,
+            // MQTT pH/ORP) — ne pas reformuler sans nouveau passage du gate.
             systemLogger.warning(
                 "Mode régulation pH REFUSÉ (MQTT → " + payloadStr +
-                ") : étalonnage en cours — le mode est rétabli à la fin de l'étalonnage.");
+                ") : Étalonnage en cours — le mode et les consignes sont "
+                "verrouillés. Le mode est rétabli à la fin de l'étalonnage, et "
+                "les consignes redeviennent modifiables au même moment.");
             publishTargetState();  // resync HA sur le mode RÉEL (⛔ ne jamais écrire ph/orpCalSwitchPrevMode ici)
             break;
           }
@@ -1900,9 +1976,14 @@ void MqttManager::drainCommandQueue() {
           // "manual" reste un no-op souhaitable.
           if (calSwitchBlocksModeChange(mqttCfg.calSwitchActive, changed)) {
             xSemaphoreGiveRecursive(configMutex);
+            // feature-164 (gate pool-chemistry, 2e passage) : phrase IMPOSÉE,
+            // identique partout où ce refus apparaît (HTTP web_routes_config.cpp,
+            // MQTT pH/ORP) — ne pas reformuler sans nouveau passage du gate.
             systemLogger.warning(
                 "Mode régulation ORP REFUSÉ (MQTT → " + payloadStr +
-                ") : étalonnage en cours — le mode est rétabli à la fin de l'étalonnage.");
+                ") : Étalonnage en cours — le mode et les consignes sont "
+                "verrouillés. Le mode est rétabli à la fin de l'étalonnage, et "
+                "les consignes redeviennent modifiables au même moment.");
             publishTargetState();  // resync HA sur le mode RÉEL (⛔ ne jamais écrire ph/orpCalSwitchPrevMode ici)
             break;
           }

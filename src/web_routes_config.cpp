@@ -216,6 +216,15 @@ static void handleGetConfig(AsyncWebServerRequest* request) {
   doc["filtration_start"] = filtrationCfg.start;
   doc["filtration_end"] = filtrationCfg.end;
   doc["filtration_running"] = filtration.isRunning();
+  // feature-164 (gate pool-chemistry C12) — ADR-0100 : un seuil est SERVI,
+  // jamais réécrit côté client. Source UNIQUE : kFiltrationShortDurationWarnMinutes
+  // (constants.h), la MÊME constante que la comparaison et le texte du
+  // journal ci-dessous (durationMin < ...). Nom choisi pour dire ce qu'il
+  // EST : un avertissement (l'enregistrement réussit toujours), pas une
+  // limite — à ne pas confondre avec max_ph_ml_per_day ou consorts qui, eux,
+  // bloquent. HTTP-only (kHttpOnlyKeys) : constante de compilation, jamais
+  // réémise en WS (budget de trame), comme ph_target_min/_max/_step.
+  doc["filtration_short_duration_warn_min"] = kFiltrationShortDurationWarnMinutes;
   doc["lighting_feature_enabled"] = lightingCfg.featureEnabled;
   // feature-162 : lighting_mode est la SEULE autorité ; lighting_enabled et
   // lighting_schedule_enabled restent publiés en DÉRIVÉ (contrat /get-config
@@ -289,6 +298,21 @@ static void handleGetConfig(AsyncWebServerRequest* request) {
   doc["ph_offset_min"]  = kPhOffsetMin;
   doc["ph_offset_max"]  = kPhOffsetMax;
   doc["ph_offset_step"] = kPhOffsetStep;
+  // feature-164 (gate pool-chemistry, 3e passage) — ADR-0100 : un seuil est
+  // SERVI, jamais réécrit côté client. `orp_target_min/_max` manquaient ici
+  // alors que la validation serveur (C2+C4, plus bas dans ce handler) et le
+  // chemin MQTT les appliquent déjà : sans ces clés, le développeur interface
+  // n'avait d'autre choix que de les recopier en constantes JS miroir —
+  // exactement le piège de parité qu'ADR-0100 ferme. Même source UNIQUE que
+  // la validation (kOrpTargetPlausibleMin/Max, constants.h). `orp_target_step`
+  // = kOrpTargetStep (=1) : PAS une grille de calage comme kPhTargetStep (le
+  // gate a tranché « aucun pas ORP serveur, roundf entier seulement ») — servie
+  // quand même pour que l'incrément du contrôle UI corresponde exactement à la
+  // granularité réellement appliquée par le serveur (HTTP et MQTT), plutôt
+  // qu'un `1` arbitraire côté client.
+  doc["orp_target_min"]  = kOrpTargetPlausibleMin;
+  doc["orp_target_max"]  = kOrpTargetPlausibleMax;
+  doc["orp_target_step"] = kOrpTargetStep;
 
   // feature-155 (livrable A6) — constantes consommées par la fonction PURE du
   // navigateur qui calcule l'APERÇU d'écart avant validation (ADR-0099/0100) :
@@ -605,27 +629,88 @@ static void handleSaveConfig(AsyncWebServerRequest* request, uint8_t* data, size
       const String m = doc["orp_regulation_mode"].as<String>();
       if (m == "automatic" || m == "scheduled" || m == "manual") reqOrpMode = m;
     }
-    const bool phWouldChange  = (reqPhMode  != mqttCfg.phRegulationMode);
-    const bool orpWouldChange = (reqOrpMode != mqttCfg.orpRegulationMode);
+    const bool phModeWouldChange  = (reqPhMode  != mqttCfg.phRegulationMode);
+    const bool orpModeWouldChange = (reqOrpMode != mqttCfg.orpRegulationMode);
+    // feature-164 (gate pool-chemistry C10) : verrou ÉTENDU aux CONSIGNES
+    // pH/ORP. calSwitchActive est un drapeau GLOBAL (pas de distinction de
+    // canal en mémoire, cf. config.h) : une session d'étalonnage ouverte
+    // bloque donc le changement de consigne pH ET ORP, quel que soit le canal
+    // réellement en cours d'étalonnage — par canal si l'état le distinguait,
+    // global sinon (verdict pool-chemistry).
+    // ⚠️ DIT EXPLICITEMENT (verdict pool-chemistry, 2e passage) : ÉTALONNER
+    // UNE SEULE sonde (pH OU ORP) VERROUILLE LES DEUX CONSIGNES, pas seulement
+    // celle de la sonde en cours d'étalonnage. Accepté SANS spec de suivi —
+    // la session dure quelques minutes et une alerte d'oubli borne le cas
+    // pathologique d'une session restée ouverte. Changement RÉEL uniquement
+    // (valeur reçue comparée à la valeur courante), même patron que le mode
+    // ci-dessus : l'interface renvoie la consigne courante à chaque
+    // enregistrement. `.as<float>()` + isfinite() : une valeur malformée ne
+    // doit pas être prise pour un changement (ni pour une absence de
+    // changement) — la validation de bornes, plus bas, la refusera de toute
+    // façon si la session n'est pas active.
+    bool phTargetWouldChange = false;
+    if (!doc["ph_target"].isNull()) {
+      const float v = doc["ph_target"].as<float>();
+      phTargetWouldChange = isfinite(v) && fabsf(v - mqttCfg.phTarget) > 0.001f;
+    }
+    bool orpTargetWouldChange = false;
+    if (!doc["orp_target"].isNull()) {
+      const float v = doc["orp_target"].as<float>();
+      orpTargetWouldChange = isfinite(v) && fabsf(roundf(v) - mqttCfg.orpTarget) > 0.001f;
+    }
+    // bug-166 (gate pool-chemistry, 4e chemin comblé) : `pool_size` RECALCULE
+    // les DEUX consignes via applyRegulationDefaults() (regulation_defaults.h),
+    // plus bas dans ce handler — un changement de taille pendant une session
+    // d'étalonnage les déplacerait en silence, exactement le trou que ce gate
+    // ferme pour `ph_target`/`orp_target` ci-dessus. MÊME PATRON : ne refuse
+    // QUE si la taille DEMANDÉE diffère de la COURANTE (l'interface renvoie la
+    // taille courante à chaque sauvegarde — refuser sur la seule présence de
+    // la clé bloquerait toute autre sauvegarde pendant l'étalonnage). Une
+    // taille change les DEUX consignes à la fois (poolSizeFromString() ne
+    // distingue pas pH/ORP) : elle est donc ajoutée aux deux conditions
+    // ci-dessous, même règle que le drapeau global calSwitchActive qui
+    // verrouille déjà les deux canaux quelle que soit la sonde en cours
+    // d'étalonnage.
+    bool poolSizeWouldChange = false;
+    if (!doc["pool_size"].isNull()) {
+      const String psCheck = doc["pool_size"].as<String>();
+      if (psCheck == "small" || psCheck == "medium" || psCheck == "large") {
+        poolSizeWouldChange = (poolSizeFromString(psCheck.c_str()) != mqttCfg.poolSize);
+      }
+    }
+    const bool phWouldChange  = phModeWouldChange  || phTargetWouldChange  || poolSizeWouldChange;
+    const bool orpWouldChange = orpModeWouldChange || orpTargetWouldChange || poolSizeWouldChange;
     // Décision PURE (cal_manual_switch_logic.h, testée en natif) : fail-closed,
     // refuse dès que la session est ouverte ET qu'un changement réel est
     // demandé — jamais sur la seule présence de la clé (cf. commentaire ci-dessus).
     if (calSwitchBlocksModeChange(mqttCfg.calSwitchActive, phWouldChange) ||
         calSwitchBlocksModeChange(mqttCfg.calSwitchActive, orpWouldChange)) {
       xSemaphoreGiveRecursive(configMutex);
+      // feature-164 (gate pool-chemistry, 2e passage) : UN SEUL texte, qu'il
+      // s'agisse du mode OU de la consigne — le refus décrit un ÉTAT (une
+      // session ouverte), pas une action. ⛔ Ne JAMAIS faire varier cette
+      // phrase selon phWouldChange/orpWouldChange : le préfixe ci-dessous
+      // (canal concerné, IP cliente) est la SEULE marge de variation admise.
       systemLogger.warning(
           "[Config] /save-config REFUSÉ (409) depuis " + clientIpOf(request) +
-          " : changement de mode" +
-          String(phWouldChange ? " pH" : "") + String(orpWouldChange ? " ORP" : "") +
-          " refusé — étalonnage en cours (calSwitchActive).");
+          String(phWouldChange ? " (pH)" : "") + String(orpWouldChange ? " (ORP)" : "") +
+          " : Étalonnage en cours — le mode et les consignes sont "
+          "verrouillés. Le mode est rétabli à la fin de "
+          "l'étalonnage, et les consignes redeviennent modifiables au "
+          "même moment.");
       (*g_configErrors)[request] = true;
       g_configErrorStatus[request] = 409;
-      // Texte IMPOSÉ mot pour mot (gate pool-chemistry C2) — ne pas reformuler
-      // sans nouveau passage du gate.
+      // Texte IMPOSÉ mot pour mot (gate pool-chemistry, 2e passage, feature-164)
+      // — identique au systemLogger.warning ci-dessus, ne pas reformuler sans
+      // nouveau passage du gate. UN SEUL texte pour mode ET consigne (motif :
+      // le refus décrit un ÉTAT, pas une action — deux textes rouvriraient la
+      // divergence par surface qu'ADR-0108 ferme).
       g_configErrorMessages[request] =
         "{\"error\":\"\\u00c9talonnage en cours\","
-        "\"message\":\"\\u00c9talonnage en cours \\u2014 le mode est "
-        "r\\u00e9tabli \\u00e0 la fin de l'\\u00e9talonnage.\"}";
+        "\"message\":\"\\u00c9talonnage en cours \\u2014 le mode et les "
+        "consignes sont verrouill\\u00e9s. Le mode est r\\u00e9tabli \\u00e0 "
+        "la fin de l'\\u00e9talonnage, et les consignes redeviennent "
+        "modifiables au m\\u00eame moment.\"}";
       return;
     }
   }
@@ -699,6 +784,78 @@ static void handleSaveConfig(AsyncWebServerRequest* request, uint8_t* data, size
   }
 
   // ===========================================================================
+  // feature-164 (gate pool-chemistry C2+C4) — Bornes de la CONSIGNE ORP
+  // ===========================================================================
+  // `orp_target` n'était validé NULLE PART sur ce chemin (contrairement à
+  // `ph_target` ci-dessus, v2.25.0) : une chaîne JSON aurait été convertie en 0
+  // par ArduinoJson et persistée telle quelle, éteignant la chloration (ligne
+  // d'application plus bas : `mqttCfg.orpTarget = doc["orp_target"];` sans
+  // aucune garde avant ce lot). Bornes [kOrpTargetPlausibleMin ;
+  // kOrpTargetPlausibleMax] = [300 ; 950] mV — même fenêtre qu'après
+  // élargissement du chemin MQTT (condition C3+C4, mqtt_manager.cpp) et que
+  // regulationDefaultsFor() (constants.h, static_assert par taille de bassin).
+  //
+  // `.as<float>()` OBLIGATOIRE, même raison que ph_target ci-dessus : sans
+  // lui, une chaîne JSON se convertirait en 0 et passerait pour une consigne
+  // de chloration nulle.
+  //
+  // REFUS explicite, JAMAIS d'écrêtage silencieux (même patron que ph_target) :
+  // écrêter ferait croire que la consigne est prise en compte alors que la
+  // régulation viserait une autre valeur.
+  //
+  // Aucun PAS de réglage serveur pour l'ORP (contrairement à kPhTargetStep
+  // pour le pH, verdict pool-chemistry) : un seul arrondi à l'entier le plus
+  // proche (mV), pas de calage sur une grille.
+  //
+  // CE BLOC PRÉCÈDE TOUTE MUTATION de mqttCfg, même raison que ph_target :
+  // un refus après écritures partielles laisserait la config RAM divergente
+  // de la NVS.
+  if (!doc["orp_target"].isNull()) {
+    const float requestedOrpTarget = doc["orp_target"].as<float>();
+    if (!isfinite(requestedOrpTarget) ||
+        requestedOrpTarget < kOrpTargetPlausibleMin || requestedOrpTarget > kOrpTargetPlausibleMax) {
+      xSemaphoreGiveRecursive(configMutex);
+      String minStr(kOrpTargetPlausibleMin, 0);
+      String maxStr(kOrpTargetPlausibleMax, 0);
+      systemLogger.warning("Consigne ORP refusée (hors plage " + minStr + "-" + maxStr +
+                           " mV) : " + String(requestedOrpTarget, 0) + " depuis " +
+                           clientIpOf(request));
+      (*g_configErrors)[request] = true;
+      g_configErrorMessages[request] =
+        String("{\"error\":\"Consigne ORP hors plage autoris\\u00e9e\",\"message\":\""
+               "Consigne ORP hors plage autoris\\u00e9e (") + minStr +
+        " \\u00e0 " + maxStr + " mV). "
+        "En dessous, la d\\u00e9sinfection peut devenir insuffisante ; au-dessus, "
+        "le risque de sur-chloration et d'irritation augmente.\"}";
+      return;
+    }
+    // Pas de grille de réglage côté serveur pour l'ORP : kOrpTargetStep (=1)
+    // n'est PAS un calage comme kPhTargetStep, seulement la granularité de
+    // l'arrondi (mathématiquement roundf(requestedOrpTarget)), réinjectée dans
+    // le document — le bloc d'application plus bas reste l'unique point
+    // d'écriture de mqttCfg.orpTarget.
+    const float roundedOrpTarget =
+        roundf(requestedOrpTarget / kOrpTargetStep) * kOrpTargetStep;
+    if (fabsf(roundedOrpTarget - requestedOrpTarget) > 0.001f) {
+      systemLogger.info("Consigne ORP arrondie à l'entier : " +
+                        String(requestedOrpTarget, 2) + " → " +
+                        String(roundedOrpTarget, 0));
+    }
+    doc["orp_target"] = roundedOrpTarget;
+  }
+
+  // feature-164 (gate pool-chemistry C5+C6) : capturer la consigne pH AVANT
+  // toute mutation (y compris une éventuelle restoreRegulationDefaults suite à
+  // un changement de taille de bassin, bloc ci-dessous) — comparée à la valeur
+  // APRÈS application en fin de handler pour détecter un changement RÉEL.
+  // ⚠️ RÈGLE : on efface une DEMANDE (l'intégrale pH, cf. le hook différé plus
+  // bas), JAMAIS une DETTE (_sessionOnMs et les compteurs horaire/journalier/
+  // cycle de dosage ne sont PAS touchés par un changement de consigne — ce
+  // serait rouvrir des quotas déjà consommés, geste permissif, l'inverse exact
+  // de la purge d'intégrale qui, elle, RETIRE du dosage).
+  const float phTargetBefore = mqttCfg.phTarget;
+
+  // ===========================================================================
   // feature-090 — TAILLE DU BASSIN : présélection des défauts de régulation
   // ===========================================================================
   // INVARIANT ABSOLU : la taille ne sert qu'à appliquer la colonne de défauts
@@ -718,6 +875,12 @@ static void handleSaveConfig(AsyncWebServerRequest* request, uint8_t* data, size
   // appliqués (sémantique de fusion JSON). Valeur inconnue ou taille
   // inchangée : aucune modification (un vieux client qui n'envoie pas la clé
   // ne change rien).
+  // bug-166 (gate pool-chemistry, 4e chemin comblé) : un changement de taille
+  // RÉEL pendant une session d'étalonnage n'atteint JAMAIS ce bloc — le gate
+  // C10 ci-dessus (poolSizeWouldChange) a déjà `return` sur 409 dans ce cas.
+  // Ce bloc n'est donc exécuté, sous calSwitchActive, que si la taille
+  // demandée est IDENTIQUE à la courante (no-op ci-dessous, `newSize !=
+  // mqttCfg.poolSize` est faux).
   if (!doc["pool_size"].isNull()) {
     const String ps = doc["pool_size"].as<String>();
     if (ps == "small" || ps == "medium" || ps == "large") {
@@ -793,7 +956,10 @@ static void handleSaveConfig(AsyncWebServerRequest* request, uint8_t* data, size
   // Valeur déjà VALIDÉE et ALIGNÉE sur kPhTargetStep plus haut : ce point n'est
   // atteint que si la consigne est dans la fenêtre autorisée.
   if (!doc["ph_target"].isNull()) mqttCfg.phTarget = doc["ph_target"].as<float>();
-  if (!doc["orp_target"].isNull()) mqttCfg.orpTarget = doc["orp_target"];
+  // feature-164 : valeur déjà VALIDÉE et ARRONDIE à l'entier plus haut — ce
+  // point n'est atteint que si la consigne est dans la fenêtre autorisée.
+  // `.as<float>()` OBLIGATOIRE (même raison que ph_target, ligne au-dessus).
+  if (!doc["orp_target"].isNull()) mqttCfg.orpTarget = doc["orp_target"].as<float>();
   // v2.25.0 (B7) : `ph_enabled` n'est plus ACCEPTÉ en écriture. C'est un DÉRIVÉ
   // pur du mode (`mode != "manual"`, invariant projet rappelé dans
   // pump_controller.cpp) : le laisser écrivable ouvrait un second chemin capable
@@ -1125,8 +1291,85 @@ static void handleSaveConfig(AsyncWebServerRequest* request, uint8_t* data, size
       systemLogger.warning("[Filtration] Mode invalide ignoré (HTTP /save-config): " + newMode);
     }
   }
-  if (!doc["filtration_start"].isNull()) { filtrationCfg.start = doc["filtration_start"].as<String>(); filtrationConfigChanged = true; }
-  if (!doc["filtration_end"].isNull()) { filtrationCfg.end = doc["filtration_end"].as<String>(); filtrationConfigChanged = true; }
+  // ===========================================================================
+  // feature-164 (gate pool-chemistry C11) — Validation SERVEUR des horaires de
+  // filtration, absente jusqu'ici : une String brute était persistée, sans
+  // passer par timeStringToMinutes ni aucune règle de cohérence — contrairement
+  // à filtration_mode juste au-dessus.
+  // ===========================================================================
+  // Format : timeStringToMinutes(...) >= 0, MÊME garde que le chemin MQTT
+  // (mqtt_manager.cpp, InboundCmdType::FiltrationStart/End) — simple parité,
+  // aucune règle nouvelle.
+  //
+  // Cohérence : `start == end` fait tourner la filtration en Programme ZÉRO
+  // heure par jour, SILENCIEUSEMENT (schedule_logic.h, isMinutesInRange avec
+  // equalMeansAlways=false renvoie false pour start==end — aucun refus ni
+  // message n'existait pour le signaler). REFUS explicite.
+  // ⛔ `fin < début` n'est volontairement PAS refusé : schedule_logic.cpp
+  // (isMinutesInRange) traite start>end comme une plage qui ENJAMBE MINUIT
+  // (now>=start || now<end) — cas d'usage réel (ex: filtration de nuit).
+  //
+  // Évaluées sur les valeurs EFFECTIVES (celle envoyée, sinon celle déjà en
+  // vigueur) : un enregistrement qui ne modifie QUE l'heure de début doit être
+  // jugé contre la fin déjà en vigueur, et réciproquement.
+  if (!doc["filtration_start"].isNull() || !doc["filtration_end"].isNull()) {
+    const String requestedStart = !doc["filtration_start"].isNull() ?
+        doc["filtration_start"].as<String>() : filtrationCfg.start;
+    const String requestedEnd = !doc["filtration_end"].isNull() ?
+        doc["filtration_end"].as<String>() : filtrationCfg.end;
+    const int startMin = timeStringToMinutes(requestedStart.c_str());
+    const int endMin   = timeStringToMinutes(requestedEnd.c_str());
+    if (startMin < 0 || endMin < 0) {
+      xSemaphoreGiveRecursive(configMutex);
+      systemLogger.warning("[Filtration] Horaires refusés (format invalide) : \"" +
+                           requestedStart + "\" - \"" + requestedEnd + "\" depuis " +
+                           clientIpOf(request));
+      (*g_configErrors)[request] = true;
+      g_configErrorMessages[request] =
+        "{\"error\":\"Heure de filtration invalide\",\"message\":\""
+        "Heure de filtration invalide \\u2014 format attendu HH:MM.\"}";
+      return;
+    }
+    if (startMin == endMin) {
+      xSemaphoreGiveRecursive(configMutex);
+      systemLogger.warning("[Filtration] Horaires refusés (début == fin, la "
+                           "filtration ne tournerait jamais) : " + requestedStart +
+                           " - " + requestedEnd + " depuis " + clientIpOf(request));
+      (*g_configErrors)[request] = true;
+      // Texte IMPOSÉ mot pour mot (gate pool-chemistry C11, feature-164) — NE
+      // PAS reformuler : il cite l'heure fautive, le remède et un exemple.
+      // La mention « plage à cheval sur minuit acceptée » s'AJOUTE à la suite,
+      // elle ne remplace rien du texte imposé.
+      g_configErrorMessages[request] =
+        String("{\"error\":\"Heure de d\\u00e9but et de fin identiques\",\"message\":\""
+               "Heure de d\\u00e9but et heure de fin identiques (") + requestedStart +
+        ") : la filtration ne d\\u00e9marrerait jamais. Saisissez deux heures "
+        "diff\\u00e9rentes \\u2014 par exemple 00:00 et 23:59 pour filtrer en "
+        "continu. Une plage \\u00e0 cheval sur minuit (fin avant d\\u00e9but) "
+        "est en revanche accept\\u00e9e.\"}";
+      return;
+    }
+    // feature-164 (gate pool-chemistry C12, NON bloquant) — avertissement sur
+    // une durée programmée trop courte. ⛔ Jamais de `return` ici :
+    // l'enregistrement doit réussir, c'est un AVERTISSEMENT, pas un refus.
+    // Formule tolérante au passage de minuit (fin < début, plage acceptée
+    // ci-dessus) : (finMin - débutMin + 1440) % 1440 reproduit la durée
+    // EFFECTIVE de la plage, qu'elle enjambe minuit ou non.
+    // Texte IMPOSÉ mot pour mot (gate), IDENTIQUE à l'écran et au journal —
+    // ne pas reformuler. Cite la durée saisie ET le seuil (ADR-0095), jamais
+    // une mesure.
+    const int durationMin = ((endMin - startMin) + 1440) % 1440;
+    if (durationMin < (int)kFiltrationShortDurationWarnMinutes) {
+      systemLogger.warning("Filtration programmée : " + String(durationMin) +
+                           " min par jour. Sous " +
+                           String(kFiltrationShortDurationWarnMinutes) +
+                           " min, la circulation est trop courte pour que la "
+                           "régulation pH/ORP atteigne sa consigne — l'eau "
+                           "restera durablement à côté de la valeur visée.");
+    }
+    if (!doc["filtration_start"].isNull()) { filtrationCfg.start = requestedStart; filtrationConfigChanged = true; }
+    if (!doc["filtration_end"].isNull())   { filtrationCfg.end   = requestedEnd;   filtrationConfigChanged = true; }
+  }
   if (!doc["max_ph_ml_per_day"].isNull()) safetyLimits.maxPhMlPerDay = doc["max_ph_ml_per_day"];
   if (!doc["max_chlorine_ml_per_day"].isNull()) safetyLimits.maxChlorineMlPerDay = doc["max_chlorine_ml_per_day"];
   if (!doc["lighting_feature_enabled"].isNull()) lightingCfg.featureEnabled = doc["lighting_feature_enabled"];
@@ -1380,6 +1623,30 @@ static void handleSaveConfig(AsyncWebServerRequest* request, uint8_t* data, size
   // feature-021 : pH/ORP calibrés en interne par les modules EZO ; seul l'offset
   // température utilisateur est appliqué côté firmware (alias eau dans
   // SensorManager::_readDs18b20s()). Pas besoin de recalcul global ici.
+
+  // ===========================================================================
+  // feature-164 (gate pool-chemistry C5+C6) — purge de l'intégrale pH sur
+  // changement RÉEL de consigne
+  // ===========================================================================
+  // Comparaison sur la valeur APRÈS snapping/application (mqttCfg.phTarget
+  // courant), JAMAIS sur la seule présence de la clé `ph_target` : l'interface
+  // la renvoie à CHAQUE enregistrement (même valeur), ce qui purgerait
+  // l'intégrale sans rapport avec le geste de l'utilisateur.
+  // ⚠️ C5+C6 ne se contredisent PAS : l'intégrale est une DEMANDE calculée
+  // relativement à la consigne (16 200 pH·s accumulés contre 7,50 servis
+  // contre 7,20 = acide immédiat que personne n'a demandé) — la purger RETIRE
+  // du dosage, geste CONSERVATEUR. `_sessionOnMs` et les compteurs horaire/
+  // journalier/cycle sont une COMPTABILITÉ de ce qui a été PHYSIQUEMENT
+  // injecté : les remettre à zéro ROUVRIRAIT des quotas déjà consommés, geste
+  // PERMISSIF, l'inverse exact. Règle : on efface une demande, jamais une
+  // dette. ⇒ Ce bloc ne touche NI _sessionOnMs NI aucun compteur de dosage.
+  // Hook DIFFÉRÉ (invariant v2.26.0) : requestPhTargetChange() ne fait que
+  // poser un drapeau atomique — _phIntegral n'est JAMAIS écrit depuis cette
+  // tâche web ; la purge effective a lieu en tête d'update() (loopTask),
+  // via applyRegulationSpeedNow(forcePurge=true).
+  if (fabsf(mqttCfg.phTarget - phTargetBefore) > 0.001f) {
+    PumpController.requestPhTargetChange();
+  }
 
   // Libérer le mutex
   xSemaphoreGiveRecursive(configMutex);

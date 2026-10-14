@@ -313,6 +313,50 @@ corrigé en revue, voir [page-dashboard.md](page-dashboard.md#un-sélecteur-qui-
 journalisé en `warning` (voir [MQTT.md](../MQTT.md#topic-et-entité-ajoutées-en-feature-141-volume-de-secours-saisi-v2560)), jugé suffisant par le
 gate sur ces deux chemins.
 
+## Consigne ORP : champ libre, plage désormais affichée (feature-164, v2.80.0)
+
+Le champ `#orp_target` (`<input type="number">`) **existait déjà** sur cette page, mais **sans
+aucune garde** avant ce lot : ni bornes HTML (`min`/`max` étaient `0`/`1000`, des littéraux
+arbitraires), ni validation serveur — `mqttCfg.orpTarget = doc["orp_target"];` acceptait
+**n'importe quelle valeur**, y compris une chaîne JSON convertie en `0` par ArduinoJson
+(chloration éteinte sans avertissement).
+
+⚠️ **Deux corrections, pas un ajout de fonctionnalité** :
+
+- `min`/`max` sont désormais posés par `applyOrpTargetBounds()` depuis les bornes **servies** par
+  `/get-config` (`orp_target_min`/`orp_target_max`, ADR-0100 — ⛔ plus en dur), avec un repli de
+  secours `[300 ; 950]` si le firmware ne les sert pas encore.
+- **Validation serveur ajoutée** (`/save-config` **et** MQTT `{base}/orp_target/set`) : refus
+  explicite **400**/`warning` hors plage, **jamais d'écrêtage silencieux**. Détail :
+  [API.md](../API.md#bornes-de-la-consigne-orp-v2800).
+
+### ⚠️ Un champ libre n'a aucun moyen de montrer sa plage — `.field__hint` obligatoire
+
+Contrairement au pH (4 positions **visibles**, la plage se voit par construction), un champ libre
+ne montre **rien** avant que l'utilisateur ne clique Sauvegarder et reçoive un refus. ⇒
+`#orp_target_hint` affiche désormais : « Plage autorisée : {min} à {max} mV. » — sur **les deux
+surfaces** (cette page **et** la carte du [tableau de bord](page-dashboard.md#régler-la-consigne-depuis-la-carte-feature-164-v2800)),
+une plage visible d'un côté et pas de l'autre serait une incohérence nouvelle. ⛔ Pas de mention de
+pas (`kOrpTargetStep` = 1 mV, non contraignant — à la différence du pH). Masqué tant que la
+configuration n'a pas été reçue au moins une fois (jamais une plage **devinée**).
+
+### C7 étendue à la consigne — même confirmation que le passage en Arrêt
+
+Toute **baisse** de la consigne ORP pendant une chloration de secours active ouvre désormais la
+**même** confirmation mutualisée que le passage en mode Arrêt
+(`confirmOrpRescueInterruption()`) : « Chloration de secours en cours. Abaisser la consigne de
+{ancienne} à {nouvelle} mV réduira, voire interrompra, le dosage de secours. Confirmer ? ». ⛔
+**Critère = toute baisse**, jamais une comparaison à la mesure (la formulation « sous la mesure
+actuelle » a été explicitement rejetée par le gate : une mesure fluctue et rendrait la garde
+intermittente). Même friction sur la carte d'accueil et sur cette page.
+
+### Verrou d'étalonnage — `calActive` seul, et les deux canaux
+
+Le champ se désactive (⛔ jamais masqué) sur `calActive` **seul** — pas sur l'escalade de sécurité
+(propre au pH, sans équivalent ORP). ⚠️ **Étalonner la sonde pH verrouille aussi la consigne ORP** :
+`calSwitchActive` est un drapeau global, sans distinction de canal. Détail et motif :
+[pump-controller.md](../subsystems/pump-controller.md#verrou-étendu-aux-consignes-feature-164-gate-c5c6).
+
 ## Cas limites
 
 - **Filtration arrêtée / purge post-reprise (feature-061)** : valeur ORP « actuelle » à `--`, badge `#orp-page-badge` bleu « Filtration arrêtée » ou « Stabilisation depuis N min », trous dans le graphique d'historique. Ligne brute et calibration non gatées.

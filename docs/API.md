@@ -1129,7 +1129,49 @@ Six clés **en lecture seule** s'ajoutent aux 10 clés de suivi produit déjà s
 | Champ | Type | Validation |
 |-------|------|------------|
 | `orp_regulation_mode` | string | Valeurs acceptées : `"automatic"`, `"scheduled"`, `"manual"`. Toute autre valeur est ignorée. Met à jour `orp_enabled` automatiquement. |
+| `orp_target` | float | **v2.80.0 (feature-164)** — Doit être dans **[300 ; 950] mV** (`kOrpTargetPlausibleMin` / `kOrpTargetPlausibleMax` de [`constants.h`](../src/constants.h)). Hors plage, non finie ou non numérique → **HTTP 400**, **aucun** champ de la requête n'est appliqué (contrôle placé avant toute mutation). **Jamais d'écrêtage silencieux** — même patron que `ph_target`. ⚠️ **Avant ce lot, ce champ n'était validé nulle part sur ce chemin** : une chaîne JSON se convertissait en `0` et était persistée telle quelle (chloration éteinte sans avertissement). Dans la plage, la valeur est **arrondie à l'entier le plus proche** (`kOrpTargetStep` = 1 mV — ⚠️ pas une grille de calage comme `kPhTargetStep` : un seul arrondi, aucune position imposée). Voir [Bornes de la consigne ORP](#bornes-de-la-consigne-orp-v2800). |
 | `orp_daily_target_ml` | integer | Doit être ≥ 0 et ≤ `max_orp_ml_per_day` (si configuré). Retourne HTTP 400 si la limite est dépassée. |
+
+#### Bornes de la consigne ORP (v2.80.0)
+
+`orp_target` est validé **côté serveur** contre `kOrpTargetPlausibleMin` = **300 mV** et `kOrpTargetPlausibleMax` = **950 mV**, arrondie à l'entier (`kOrpTargetStep` = 1). **Mêmes bornes sur les deux chemins d'écriture** (`POST /save-config` et la commande MQTT `{base}/orp_target/set`, voir [MQTT.md](MQTT.md)) — avant ce lot, le chemin MQTT était **plus strict** ([400 ; 900], littéraux en dur), un resserrement sans justification propre : *une fenêtre resserrée interdirait la recalibration légitime après un changement de stabilisant (acide cyanurique)*.
+
+```bash
+curl -u admin:monmotdepasse -X POST -H "Content-Type: application/json" \
+  -d '{"orp_target":200}' http://poolcontroller.local/save-config
+```
+
+```json
+{
+  "error": "Consigne ORP hors plage autorisée",
+  "message": "Consigne ORP hors plage autorisée (300 à 950 mV). En dessous, la désinfection peut devenir insuffisante ; au-dessus, le risque de sur-chloration et d'irritation augmente."
+}
+```
+
+**Les bornes sont servies au client par `GET /get-config`** : `orp_target_min`, `orp_target_max`, `orp_target_step` (dérivées des mêmes constantes firmware, ADR-0100) — le frontend n'en code aucune en dur.
+
+### POST /save-config — horaires de filtration (feature-164, v2.80.0)
+
+| Champ | Type | Validation |
+|-------|------|------------|
+| `filtration_start` / `filtration_end` | string `HH:MM` | **Nouveau en v2.80.0** — avant ce lot, ces deux champs étaient affectés en **String brute**, sans passer par `timeStringToMinutes` ni aucune règle de cohérence (contrairement à `filtration_mode`, validé depuis feature-146). Format invalide → **HTTP 400**. Évaluées sur les valeurs **effectives** : un enregistrement qui ne modifie que l'un des deux champs est jugé contre l'autre, déjà en vigueur. |
+
+- **`début == fin` → refus explicite HTTP 400 (C11, bloquant)** : cette plage faisait tourner la filtration **zéro heure par jour**, **silencieusement**, sans aucun refus ni message jusqu'à ce lot (`isMinutesInRange` avec `equalMeansAlways=false` renvoie `false` pour `start==end`).
+- ⛔ **`fin < début` reste ACCEPTÉ** : `schedule_logic.cpp` (`isMinutesInRange`) traite cette plage comme **enjambant minuit** (`now >= start || now < end`) — cas d'usage réel (filtration de nuit). Ne jamais le refuser.
+- **Durée programmée courte, sous 120 min (C12, non bloquant)** : **avertissement seulement**, l'enregistrement réussit. Formule tolérante au passage de minuit : `((fin − début) + 1440) % 1440`. Même texte à l'écran et au journal (`warning`).
+
+**Corps de la réponse 400 (C11, texte imposé mot pour mot)** :
+
+```json
+{
+  "error": "Heure de début et de fin identiques",
+  "message": "Heure de début et heure de fin identiques (08:00) : la filtration ne démarrerait jamais. Saisissez deux heures différentes — par exemple 00:00 et 23:59 pour filtrer en continu. Une plage à cheval sur minuit (fin avant début) est en revanche acceptée."
+}
+```
+
+**Avertissement C12 (journal, niveau `warning`, et affiché sur les cartes Filtration)** :
+
+> « Filtration programmée : {X} min par jour. Sous 120 min, la circulation est trop courte pour que la régulation pH/ORP atteigne sa consigne — l'eau restera durablement à côté de la valeur visée. »
 
 **`POST /save-config` — mode d'installation :**
 
@@ -1199,7 +1241,7 @@ Depuis la v2.25.0, le handler de **corps** vérifie l'authentification **avant**
 | `200` | Configuration enregistrée |
 | `400` | Valeur invalide (**`ph_target` hors [7.20 ; 7.50]** — v2.25.0, `ph_offset` hors plage, débit de pesée hors plage, cible journalière > limite, JSON invalide…). **Aucun** champ n'est appliqué. |
 | `401` | Non authentifié — **aucune** modification appliquée depuis la v2.25.0 |
-| `409` | **v2.25.0** — Bascule de sécurité pH non acquittée : la requête tente de sortir du mode `manual` alors qu'une trace existe, sans `ph_auto_manual_ack: true`. **Aucune** mutation n'est appliquée (le gate est le premier bloc du handler) et la trace **survit**. |
+| `409` | **v2.25.0** — Bascule de sécurité pH non acquittée : la requête tente de sortir du mode `manual` alors qu'une trace existe, sans `ph_auto_manual_ack: true`. **Aucune** mutation n'est appliquée (le gate est le premier bloc du handler) et la trace **survit**. ⚠️ **v2.80.0** — même code pour un changement de mode **ou de consigne** pH/ORP pendant une session d'étalonnage ouverte (voir [verrou étalonnage](#payload-mixte--quel-code-sort)). |
 
 #### Bornes de la consigne pH et de l'offset (v2.25.0)
 
@@ -1227,7 +1269,7 @@ curl -u admin:monmotdepasse -X POST -H "Content-Type: application/json" \
 
 L'**offset** suit la même logique : bornes `±0.50`, pas **0.10**, hors bornes → `400`, dans la plage → **arrondi au plus proche multiple du pas** (`roundPhOffsetToStep()`). Les installations ayant enregistré une valeur libre (0.47) sont migrées au chargement NVS ; l'écart maximal introduit est de 0,05 pH, soit le bruit résiduel du filtre.
 
-**Les bornes sont servies au client par `GET /get-config`** — six champs en lecture seule, dérivés des constantes firmware : `ph_target_min`, `ph_target_max`, `ph_target_step`, `ph_offset_min`, `ph_offset_max`, `ph_offset_step`. Le frontend n'en code aucune en dur : élargir la plage ou changer le pas se fait **côté firmware seul**.
+**Les bornes sont servies au client par `GET /get-config`** — six champs en lecture seule, dérivés des constantes firmware : `ph_target_min`, `ph_target_max`, `ph_target_step`, `ph_offset_min`, `ph_offset_max`, `ph_offset_step`. ⚠️ **v2.80.0 : trois champs ORP équivalents** s'y ajoutent — `orp_target_min`, `orp_target_max`, `orp_target_step` (voir [Bornes de la consigne ORP](#bornes-de-la-consigne-orp-v2800)). Le frontend n'en code aucune en dur : élargir la plage ou changer le pas se fait **côté firmware seul**.
 
 #### Payload mixte : quel code sort ?
 
@@ -1235,9 +1277,11 @@ Si une même requête cumule plusieurs motifs de refus, l'ordre d'évaluation du
 
 1. authentification du corps (`401`) ;
 2. **gate d'acquittement de la bascule pH** (`409`) ;
-3. **v2.77.0 (bug-161, gate `pool-chemistry` C2)** — **verrou étalonnage** sur le changement de mode pH **ou** ORP (`409`), si une session de calibration est ouverte (`mqttCfg.calSwitchActive`) et qu'un changement **réel** de mode est demandé ;
+3. **verrou étalonnage** (`409`), si une session de calibration est ouverte (`mqttCfg.calSwitchActive`) — étendu en **v2.80.0 (feature-164)** : refuse désormais un changement **réel** de mode **OU de consigne** (pH ou ORP). ⚠️ **L'étalonnage d'UNE SEULE sonde verrouille les DEUX consignes** — l'appareil ne distingue pas les canaux (`calSwitchActive` est un drapeau global), acceptée par le gate sans spec de suivi (session de quelques minutes, bornée par l'alerte d'oubli) ;
 4. bornes de la consigne pH (`400`) ;
-5. autres validations de champs (`400`).
+5. **bornes de la consigne ORP (`400`, v2.80.0)** ;
+6. **cohérence des horaires de filtration (`400`, v2.80.0)** — `début == fin` ;
+7. autres validations de champs (`400`).
 
 Donc un payload contenant **à la fois** un changement de mode refusé **et** une consigne hors bornes — par exemple `{"ph_regulation_mode":"automatic","ph_target":6.8}` sous trace de sécurité active — répond **`409`**, pas `400` : le gate de mode est évalué en premier. Dans tous les cas, **aucun** champ n'est appliqué.
 
@@ -1250,16 +1294,24 @@ Donc un payload contenant **à la fois** un changement de mode refusé **et** un
 }
 ```
 
-**Corps de la réponse 409 (verrou étalonnage, v2.77.0, texte imposé par le gate)** :
+**Corps de la réponse 409 (verrou étalonnage, texte v2.80.0, imposé par le gate)** :
 
 ```json
 {
   "error": "Étalonnage en cours",
-  "message": "Étalonnage en cours — le mode est rétabli à la fin de l'étalonnage."
+  "message": "Étalonnage en cours — le mode et les consignes sont verrouillés. Le mode est rétabli à la fin de l'étalonnage, et les consignes redeviennent modifiables au même moment."
 }
 ```
 
-⚠️ Ce second verrou **refuse**, il ne **réconcilie** jamais : il ne met **jamais** à jour la mémoire de mode antérieur à l'étalonnage (`ph/orpCalSwitchPrevMode`) — un second chemin d'écriture vers cette mémoire de sécurité serait exactement le piège qu'il ferme. Détail : [pump-controller.md](subsystems/pump-controller.md#verrou-étalonnage-sur-le-changement-de-mode-bug-161-gate-c2).
+⚠️ **Texte CHANGÉ en v2.80.0** — l'ancien (« Étalonnage en cours — le mode est rétabli à la fin de l'étalonnage. », v2.77.0, ne mentionnait pas les consignes) est **périmé** : ne plus le citer, nulle part. **Un seul texte**, qu'il s'agisse d'un refus de mode ou de consigne — le refus décrit un **état** (une session ouverte), pas une action ; seul le préfixe du log (canal concerné, IP cliente) varie.
+
+⚠️ Ce verrou **refuse**, il ne **réconcilie** jamais : il ne met **jamais** à jour la mémoire de mode antérieur à l'étalonnage (`ph/orpCalSwitchPrevMode`) — un second chemin d'écriture vers cette mémoire de sécurité serait exactement le piège qu'il ferme. Détail : [pump-controller.md](subsystems/pump-controller.md#verrou-étalonnage-sur-le-changement-de-mode-bug-161-gate-c2).
+
+✅ **Couvert sur les QUATRE chemins d'écriture depuis v2.80.0** : `/save-config` (HTTP), les commandes MQTT du **mode** (feature-161 lot C), les commandes MQTT des **consignes**, et le recalcul induit par un changement de **taille de bassin** (`pool_size` → `applyRegulationDefaults()`). Même verrou, **même texte** partout.
+
+⚠️ **Le refus ne s'arme que sur un changement RÉEL** — jamais sur la simple présence de la clé. L'interface renvoie systématiquement les valeurs courantes : tester la présence refuserait **toute** sauvegarde de réglages pendant un étalonnage, soit *une garde qui bloque plus qu'elle ne protège*.
+
+⚠️ **À lire avant d'ajouter un cinquième écrivain** de `phTarget`/`orpTarget` : la garde avait d'abord été posée sur le **gestionnaire HTTP** plutôt que sur **le point où la valeur change**, et les quatre chemins ont été découverts **l'un après l'autre**. Voir [MQTT.md](MQTT.md).
 
 Acquitter puis réarmer (deux requêtes, patron de l'interface web) :
 

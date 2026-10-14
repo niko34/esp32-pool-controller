@@ -11,10 +11,10 @@ Vue d'ensemble de la piscine en temps réel. C'est la page que l'utilisateur voi
 
 La page est une **grille de cinq cartes** (classe `grid--status-cards`) — **était six** jusqu'à la v2.63.x : la carte « Modes temporaires » séparée a été **supprimée** en feature-147/v2.63.0, son unique contenu (le Boost) devenant un sous-bloc de la carte Filtration (voir [Carte Filtration — quatre boutons, mode vs état, Boost intégré](#carte-filtration--quatre-boutons-mode-vs-état-boost-intégré-feature-147-v2630)) :
 
-1. **Carte Filtration** (`#dashboard-filtration-card`) — en-tête : badge d'**état réel** de la pompe (`#detail-filtration-status`, « En marche » / « Arrêtée », ou « Hors gel » en ambre) et texte de **mode demandé** (`#detail-filtration-mode`, « Mode Auto » etc.) ; corps : **quatre boutons de mode** (Auto · Programme · Marche · Arrêt, feature-147, remplacent l'ancienne ligne « Mode » + les boutons Démarrer/Arrêter), horaires — **visibles seulement en Auto/Programme depuis feature-161** (lot B, v2.77.0, voir [section dédiée](#sélecteur-de-mode-depuis-les-cartes-ph--orp--filtration-feature-161-v2770)) —, et un sous-bloc **Boost** (feature-053), **rétrogradé en option mineure depuis feature-161**. Un lien engrenage amène vers `/filtration`.
-2. **Carte Éclairage** (`#dashboard-lighting-card`) — **sélecteur de mode Allumé/Éteint/Programme depuis feature-162 (v2.79.0)**, horaires en carte en mode Programme uniquement, badge d'état réservé à ce même mode. Lien vers `/lighting`. Voir [section dédiée](#carte-éclairage--trois-modes-feature-162-v2790).
-3. **Carte pH** (`#dashboard-ph-card`) — valeur pH courante, cible (masquée hors mode Auto depuis feature-161), badge dosage actif, mini-graphique + légende « Lissé (régulation) » / interrupteur « Brut » (v2.38.0), **jauge de position** (feature-147, v2.63.0 — voir [section dédiée](#jauges-de-position-ph--orp-feature-147-v2630)). Bandeau « Calibration requise » si la sonde n'a jamais été calibrée. **Texte de mode en en-tête et sélecteur de mode intégré depuis feature-161** (lot A, v2.77.0 — voir [section dédiée](#sélecteur-de-mode-depuis-les-cartes-ph--orp--filtration-feature-161-v2770)). Lien vers `/ph`.
-4. **Carte ORP** (`#dashboard-orp-card`) — valeur ORP courante (mV), cible (masquée hors mode Auto depuis feature-161), badge dosage actif, mini-graphique + même légende (v2.38.0), **jauge de position** (feature-147, v2.63.0 — voir section dédiée). Bandeau calibration. **Texte de mode en en-tête et sélecteur de mode intégré depuis feature-161**, miroir exact du pH. Lien vers `/orp`.
+1. **Carte Filtration** (`#dashboard-filtration-card`) — en-tête : badge d'**état réel** de la pompe (`#detail-filtration-status`, « En marche » / « Arrêtée », ou « Hors gel » en ambre) et texte de **mode demandé** (`#detail-filtration-mode`, « Mode Auto » etc.) ; corps : **quatre boutons de mode** (Auto · Programme · Marche · Arrêt, feature-147, remplacent l'ancienne ligne « Mode » + les boutons Démarrer/Arrêter), horaires en **lecture seule restreinte au mode Auto depuis feature-164** (v2.80.0) et **modifiables en carte en mode Programme** (voir [section dédiée](#régler-la-consigne-depuis-la-carte-feature-164-v2800)), et un sous-bloc **Boost** (feature-053), **rétrogradé en option mineure depuis feature-161**. Un lien engrenage amène vers `/filtration`.
+2. **Carte Éclairage** (`#dashboard-lighting-card`) — **sélecteur de mode Allumé/Éteint/Programme depuis feature-162 (v2.79.0)**, horaires en carte en mode Programme uniquement, badge d'état réservé à ce même mode. Lien vers `/lighting`. Voir [section dédiée](#carte-éclairage--trois-modes-feature-162-v2790). ⛔ **Hors périmètre de feature-164** (arbitrage utilisateur, pour ne pas accumuler deux lots sur la même carte).
+3. **Carte pH** (`#dashboard-ph-card`) — valeur pH courante, **consigne modifiable en carte en mode Auto depuis feature-164** (v2.80.0 — la ligne statique « Cible : X » a été retirée, voir [section dédiée](#régler-la-consigne-depuis-la-carte-feature-164-v2800)), badge dosage actif, mini-graphique + légende « Lissé (régulation) » / interrupteur « Brut » (v2.38.0), **jauge de position** (feature-147, v2.63.0 — voir [section dédiée](#jauges-de-position-ph--orp-feature-147-v2630)). Bandeau « Calibration requise » si la sonde n'a jamais été calibrée. **Texte de mode en en-tête et sélecteur de mode intégré depuis feature-161** (lot A, v2.77.0 — voir [section dédiée](#sélecteur-de-mode-depuis-les-cartes-ph--orp--filtration-feature-161-v2770)). Lien vers `/ph`.
+4. **Carte ORP** (`#dashboard-orp-card`) — valeur ORP courante (mV), **consigne modifiable en carte en mode Auto depuis feature-164** (champ libre + plage affichée, « Cible : X mV » retirée), badge dosage actif, mini-graphique + même légende (v2.38.0), **jauge de position** (feature-147, v2.63.0 — voir section dédiée). Bandeau calibration. **Texte de mode en en-tête et sélecteur de mode intégré depuis feature-161**, miroir exact du pH. Lien vers `/orp`.
 5. **Carte Température** (`#dashboard-temperature-card`) — valeur courante en °C, badge `#temperature-sensor-badge` (« Capteur indisponible » v2.10.5 + segments d'état mesure feature-061 itération 2), mini-graphique. Lien vers `/temperature`.
 
 Chaque mini-graphique est rendu par **uPlot** (usine `createMiniLineChart`, feature-043 — remplace Chart.js) dans un conteneur dédié, alimenté par l'historique de la **journée en cours** (depuis minuit local — v2.18.9, était une fenêtre glissante de 24 h en v2.18.4 et 3 jours avant ; points bruts + moyennes horaires selon l'ancienneté — voir [Plage « journée en cours »](#plage-des-mini-graphiques--journée-en-cours-v2189)). La coloration de la courbe est **conditionnelle par segment** (vert dans la tolérance, interpolation continue vers le rouge au-delà, gris si donnée absente — `getMiniChartRGB`, app.js).
@@ -106,12 +106,114 @@ libellé affiché ne garantit pas la même valeur sur le fil.
 
 | Mode | Contenu affiché |
 |---|---|
-| **Auto** (`automatic`) | mesure + jauge (toujours visibles) + **cible** (masquée dans les deux autres modes — rien n'est poursuivi hors Auto) |
+| **Auto** (`automatic`) | mesure + jauge (toujours visibles) + **bloc consigne ÉDITABLE** depuis la carte (feature-164, v2.80.0 — voir [section dédiée](#régler-la-consigne-depuis-la-carte-feature-164-v2800)). ⚠️ **La ligne statique « Cible : X » a été RETIRÉE DU DOM** (pas seulement masquée) : la consigne ne vit plus qu'à cet endroit. |
 | **Programme** (`scheduled`) | mesure + jauge + deux lignes en **lecture seule** : « Volume quotidien » et « Limite de sécurité » (valeurs déjà servies par `/get-config` — `ph_daily_target_ml`/`max_ph_ml_per_day` ou équivalents ORP — **rien recalculé côté client**, **aucun champ éditable sur la carte**) |
 | **Arrêt** (`manual`) | mesure + jauge + texte de conséquence, **juste après le bandeau de mesure et avant le sélecteur** (repositionné le 14/10, voir ci-dessous) : « La régulation automatique ne dose plus. L'injection manuelle reste possible depuis les réglages. » (texte imposé par le gate `pool-chemistry`, C7 — **inchangé** par le correctif du 14/10) |
 
 La **mesure et la jauge de position restent visibles dans tous les modes** — c'est une lecture de
 capteur, pas une action à suspendre.
+
+## Régler la consigne depuis la carte (feature-164, v2.80.0)
+
+Suite directe de feature-161 : *« En mode auto ou programme, il faut pouvoir modifier les valeurs
+du réglage dans les cartes. »* L'utilisateur a **exclu** le volume quotidien et la limite de
+sécurité (« les plafonds protègent, le reste informe ») : **seules les consignes pH/ORP et les
+horaires de filtration** sont concernés, **uniquement en mode Auto/Programme**.
+
+### ⚠️ ADR-0108 ne couvrait pas ce geste — une troisième catégorie
+
+Basculer le mode est une commande d'accueil ; injecter est un geste de réglage (ADR-0108). Régler
+une **consigne** n'est **ni l'un ni l'autre** : ce n'est pas une action immédiate, mais elle
+**commande le dosage à venir** — relever la consigne ORP **déclenche de la chloration**. Tranché
+par `pool-chemistry` ([ADR-0110](../adr/0110-regler-une-consigne-est-une-commande-differee.md)) :
+**éligible à la carte, mais jamais en enregistrement implicite.**
+
+### ⛔ Bouton Sauvegarder EXPLICITE — jamais d'autosave
+
+`bindAutosave()` exclut déjà les champs numériques et horaires (commentaire du code : *« pas
+d'auto-save, bouton Sauvegarder uniquement »*). Les nouveaux blocs consigne **suivent la même
+règle** — un bouton **Sauvegarder** dédié par bloc, jamais sur la même ligne qu'un champ (règle née
+du défaut de la page Produits, 2026-10-09).
+
+### Le pH garde son geste à 4 positions, l'ORP un champ libre **accompagné de sa plage**
+
+- **pH** (`#dashboard-ph-target-group`) : **même composant** que la page de réglage —
+  `.segmented--num` **sans** le cadre `.segmented` (même raison que `.mode-select`), généré depuis
+  les bornes serveur (`buildPhTargetSegments()`, généralisée pour accepter un second jeu
+  d'identifiants). La plage se voit **par construction** (4 positions visibles) : aucun texte de
+  plage n'est dû sur la carte.
+- **ORP** (`#dashboard-orp-target`) : un champ libre (`<input type="number">`) n'a **aucun** moyen
+  d'afficher sa plage par construction ⇒ `.field__hint` **obligatoire**, sur la carte **et** la
+  page de réglage : « Plage autorisée : {min} à {max} mV. » — valeurs **lues** sur
+  `orp_target_min`/`orp_target_max` (servies par `/get-config`, ADR-0100, jamais en dur), masquée
+  tant que la configuration n'a pas été reçue au moins une fois.
+
+### Verrou d'étalonnage : condition DIFFÉRENTE de celle du mode
+
+Le bloc consigne se désactive sur **`calActive` SEUL** — ⛔ **pas** `calActive || escalationActive`
+comme le sélecteur de mode. Motif (C10, confirmé par contre-vérification du gate) : une escalade
+de sécurité pH force **déjà** le mode en Arrêt (dosage stoppé) ; verrouiller aussi la consigne
+n'y protégerait rien et **ôterait à l'utilisateur le moyen de déplacer la cible pour sortir**. Un
+texte court et perceptible (`.field__hint`, « Modification désactivée pendant l'étalonnage. »)
+vit **dans** le bloc consigne lui-même (le bandeau d'étalonnage du haut est juxtaposé au
+**sélecteur de mode**, pas à ce bloc — le sélecteur entier s'intercale) ; les deux positions
+désactivées **ET** le bouton Sauvegarder passent en teinte `--warn` (daltonisme couvert, §7).
+
+### C7 étendue : toute baisse de consigne ORP pendant un secours actif
+
+Même fonction mutualisée que le passage en Arrêt (`confirmOrpRescueInterruption()`), **étendue** à
+la consigne : **toute baisse** de la consigne ORP pendant une chloration de secours active ouvre
+la confirmation — ⛔ **jamais une comparaison à la mesure** (« une mesure fluctue et rendrait la
+garde intermittente », verdict du gate ; la formulation « sous la mesure actuelle » a été
+explicitement **rejetée**). Texte imposé mot pour mot :
+
+> « Chloration de secours en cours. Abaisser la consigne de {ancienne} à {nouvelle} mV réduira,
+> voire interrompra, le dosage de secours. Confirmer ? »
+
+Boutons « Abaisser la consigne » / « Annuler ». Valeurs en **mV entiers**. **Les deux surfaces**
+(carte et page de réglage) partagent la même confirmation — même principe qu'ADR-0108 : la
+friction protège l'action, pas la surface.
+
+### Échec d'enregistrement : jamais une position que l'appareil n'a pas adoptée
+
+Même invariant que le mode : un échec (refus serveur ou panne réseau) restaure la **dernière
+consigne confirmée par le serveur** — jamais la saisie en cours. Un drapeau « saisie en cours »
+par bloc (`dashboardPhTargetDirty`, `orpTargetDirty`, `dashboardOrpTargetDirty`,
+`dashboardFiltrationDirty`) protège la frappe en cours contre une resynchronisation prématurée par
+un push WS ou un `/get-config` périodique.
+
+### La purge d'intégrale pH : décision firmware, pas une affaire d'interface
+
+Changer la consigne pH **purge le terme intégral de la régulation** côté firmware (sans toucher
+aux compteurs de dosage) — détail et motif complet dans
+[pump-controller.md](../subsystems/pump-controller.md#purge-de-lintégrale-sur-changement-runtime-de-consigne-feature-164-gate-c5c6).
+Transparent pour l'utilisateur : aucun geste supplémentaire, aucun message sur la carte.
+
+### Filtration : horaires modifiables en Programme, toujours en lecture seule en Auto
+
+La ligne « Horaires » en lecture seule (héritée de feature-161) est désormais **restreinte au seul
+mode Auto** — en Programme, les horaires deviennent **éditables juste en dessous**
+(`#dashboard-filtration-schedule-edit`, même gabarit que l'Éclairage, feature-162) : double
+affichage de la même valeur sinon. ⛔ **En Auto, les horaires restent CALCULÉS d'après la
+température** — jamais saisissables, les rendre éditables serait un **mensonge d'interface**.
+
+- **`début == fin` → refus serveur explicite (C11, HTTP 400)** : cette plage faisait tourner la
+  filtration **zéro heure par jour**, silencieusement, jusqu'à ce lot. Texte imposé mot pour mot,
+  cf. [API.md](../API.md#post-save-config--horaires-de-filtration-feature-164-v2800).
+- ⛔ **`fin < début` reste accepté** : plage qui enjambe minuit (filtration de nuit), volontaire.
+- **Durée sous 120 min → avertissement non bloquant (C12)**, même texte à l'écran (carte **et**
+  page de réglage, même fonction `renderFiltrationDurationWarning()`) et au journal (`warning`),
+  cite la durée saisie **et** le seuil (ADR-0095) : « Filtration programmée : {X} min par jour.
+  Sous 120 min, la circulation est trop courte pour que la régulation pH/ORP atteigne sa consigne
+  — l'eau restera durablement à côté de la valeur visée. »
+
+### ⚠️ Un étalonnage verrouille les DEUX consignes, quelle que soit la sonde
+
+`calSwitchActive` est un drapeau **global** (pas de distinction de canal en mémoire) : étalonner
+**une seule** sonde (pH **ou** ORP) verrouille **les deux** blocs consigne, pas seulement celui de
+la sonde en cours d'étalonnage. **Accepté par le gate sans spec de suivi** — la session dure
+quelques minutes, et l'alerte d'oubli (2 h puis 6 h) borne le cas pathologique d'une session
+restée ouverte. Détail : [pump-controller.md](../subsystems/pump-controller.md#verrou-étendu-aux-consignes-feature-164-gate-c5c6).
 
 ### Composant visuel : `.mode-select`, pas `.segmented` (correctif du 14/10)
 
@@ -191,7 +293,7 @@ Trois états **verrouillent** le sélecteur sans jamais le masquer (`disabled` +
 | État | Détection | Affichage |
 |---|---|---|
 | **Escalade de sécurité pH** (`phAutoManual*`, pH **uniquement** — pas de symétrique ORP) | `cfg.ph_auto_manual_reason` ou `cfg.ph_auto_manual_epoch` non vide (`window._config`, via `/get-config`) | Bandeau `.regul-alert--inline` au-dessus du sélecteur : « Sécurité pH : régulation arrêtée par l'appareil. Acquittez sur la page pH. » Boutons **Auto/Programme désactivés**, **Arrêt reste cliquable** (c'est la sortie du mode forcé, no-op si déjà actif) — le bouton sélectionné passe en teinte `--warn` (`.mode-select .btn:disabled.btn--primary`, depuis le 14/10 — était `.segmented__btn:disabled.is-active`), le texte du bandeau porte la même information (daltonisme couvert). ⛔ Aucun acquittement possible depuis l'accueil — le lien renvoie vers `/ph`. |
-| **Étalonnage en cours** (pH ou ORP) | `latestSensorData.cal_switch_active === true` (champ servi par `/data` **et** la trame WS `sensor_data` — ⚠️ **PAS** par `/get-config`, parité d'expression vérifiée par `test_ws_data_parity`) | Même bandeau (texte : « Étalonnage en cours — le mode est rétabli à la fin de l'étalonnage. »), mêmes segments désactivés. Refus **409 côté serveur** si une requête passe outre (voir [pump-controller.md](../subsystems/pump-controller.md#verrou-étalonnage-sur-le-changement-de-mode-bug-161-gate-c2)). |
+| **Étalonnage en cours** (pH ou ORP) | `latestSensorData.cal_switch_active === true` (champ servi par `/data` **et** la trame WS `sensor_data` — ⚠️ **PAS** par `/get-config`, parité d'expression vérifiée par `test_ws_data_parity`) | Même bandeau. ⚠️ **Texte révisé en v2.80.0 (feature-164)** : « Étalonnage en cours — le mode et les consignes sont verrouillés. Le mode est rétabli à la fin de l'étalonnage, et les consignes redeviennent modifiables au même moment. » (l'ancien ne mentionnait pas les consignes — périmé, ne plus le citer). Mêmes segments désactivés. Refus **409 côté serveur** si une requête passe outre (voir [pump-controller.md](../subsystems/pump-controller.md#verrou-étalonnage-sur-le-changement-de-mode-bug-161-gate-c2)). |
 | **Chloration de secours en cours** (ORP uniquement) | `latestSensorData.rescue_until > 0` | **Pas** un verrou — une **confirmation** s'ouvre au clic sur Arrêt : « La chloration de secours est en cours. Passer en Arrêt l'interrompt. Confirmer ? » (boutons Interrompre le secours / Annuler). Seule friction du lot — voir ci-dessous. |
 
 Un seul bandeau visible à la fois : l'escalade pH **prime** sur l'étalonnage (elle verrouille elle

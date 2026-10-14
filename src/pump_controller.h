@@ -853,9 +853,21 @@ private:
   std::atomic<bool> _phTuningChangeRequested{false};
   std::atomic<uint8_t> _regulationSpeedCode{1};
 
+  // feature-164 (gate pool-chemistry C6) : MÊME patron que
+  // `_phTuningChangeRequested` ci-dessus, pour un changement de CONSIGNE pH
+  // (mqttCfg.phTarget) plutôt que de vitesse de régulation. Distinct du
+  // drapeau de vitesse : un changement de consigne ne doit PAS retoucher
+  // Kp/Ki/integralMax, seulement purger l'intégrale (c'est une DEMANDE, pas
+  // une DETTE — cf. web_routes_config.cpp, C5+C6 du gate). Posé par
+  // requestPhTargetChange() (web async), consommé en tête d'update().
+  std::atomic<bool> _phTargetChangeRequested{false};
+
   // Application EFFECTIVE des coefficients (loopTask uniquement) : begin() et
-  // update() après consommation de `_phTuningChangeRequested`.
-  void applyRegulationSpeedNow();
+  // update() après consommation de `_phTuningChangeRequested` /
+  // `_phTargetChangeRequested`. `forcePurge` (feature-164) force la purge de
+  // l'intégrale même si Kp/Ki/integralMax ne changent pas — cas d'un
+  // changement de CONSIGNE seul, sans changement de vitesse.
+  void applyRegulationSpeedNow(bool forcePurge = false);
 
   // feature-006 : démarrages de cycle MANUELS demandés depuis les handlers web
   // async (requestManualCycleRecord). Consommés en tête d'update() (loopTask,
@@ -1071,6 +1083,17 @@ public:
   // L'écriture de phPID / de l'intégrale a lieu dans update(), sur loopTask
   // (cf. _phTuningChangeRequested) — jamais depuis async.
   void applyRegulationSpeed();
+
+  // feature-164 (gate pool-chemistry C5+C6) : DEMANDE la purge de l'intégrale
+  // pH sur un changement RÉEL de mqttCfg.phTarget. Appelable depuis N'IMPORTE
+  // QUEL contexte (web async compris) : ne fait que poser un drapeau atomique
+  // — même patron que applyRegulationSpeed() ci-dessus. L'écriture de
+  // _phIntegral a lieu dans update(), sur loopTask (invariant v2.26.0 :
+  // AUCUNE écriture de phPID/_phIntegral hors loopTask).
+  // ⛔ Ne touche NI _sessionOnMs NI les compteurs horaire/journalier/cycle de
+  // dosage : on efface une DEMANDE (l'intégrale), jamais une DETTE (ce qui a
+  // été physiquement injecté) — cf. le commentaire de web_routes_config.cpp.
+  void requestPhTargetChange();
 
   // Setters pour PID tuning
   void setPhPID(float kp, float ki, float kd);

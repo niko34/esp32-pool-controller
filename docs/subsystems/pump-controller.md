@@ -636,8 +636,41 @@ exactement le piège qu'elle ferme (seul `/calibration/enter` y écrit).
 
 | Chemin | Comportement sous session ouverte |
 |---|---|
-| `POST /save-config` (pH **et** ORP) | **409 Conflict** avant toute mutation (même emplacement que le gate `phAutoManual*` ci-dessus — **évalué après lui**, intact et prioritaire), corps JSON : `Étalonnage en cours — le mode est rétabli à la fin de l'étalonnage.` |
+| `POST /save-config` (mode pH **et** ORP) | **409 Conflict** avant toute mutation (même emplacement que le gate `phAutoManual*` ci-dessus — **évalué après lui**, intact et prioritaire). |
+| `POST /save-config` (consigne pH **et** ORP, ⚠️ **feature-164, v2.80.0**) | **Même 409**, même gate — étendu depuis le changement de mode. Voir [Verrou étendu aux consignes](#verrou-étendu-aux-consignes-feature-164-gate-c5c6) ci-dessous. |
 | Commande MQTT `ph\|orp_regulation_mode/set` | ✅ **Couvert depuis le lot C (correctif post-livraison, même jour)** — voir sous-section dédiée ci-dessous. |
+| Commande MQTT `ph\|orp_target/set` | ⚠️ **NON couvert** (feature-164) — voir [limite connue](#verrou-étendu-aux-consignes-feature-164-gate-c5c6). |
+
+⚠️ **Texte du refus CHANGÉ en v2.80.0** (feature-164) — corps JSON désormais : `Étalonnage en cours
+— le mode et les consignes sont verrouillés. Le mode est rétabli à la fin de l'étalonnage, et les
+consignes redeviennent modifiables au même moment.` **Un seul texte**, identique qu'il s'agisse
+d'un refus de mode ou de consigne (le refus décrit un **état**, pas une action) — l'ancien texte
+(« … le mode est rétabli à la fin de l'étalonnage. », sans mention des consignes) est **périmé**.
+
+#### Verrou étendu aux consignes (feature-164, gate C5/C6)
+
+⚠️ **Étendu en v2.80.0** : `calSwitchBlocksModeChange()` (même fonction pure, aucune seconde
+variante) est désormais aussi appelée pour `ph_target`/`orp_target` sur `POST /save-config` —
+`modeWouldChange` devient `targetWouldChange` (comparaison `.as<float>()` + `isfinite()` contre la
+valeur courante, > 0,001 de tolérance, même garde anti-faux-positif que pour le mode : l'interface
+renvoie la consigne courante à chaque sauvegarde).
+
+⚠️ **Lecture confirmée par le gate (C10)** : le verrou utilise **`calActive` SEUL**, jamais
+`calActive || escalationActive` — *« une escalade force déjà le mode en Arrêt : verrouiller la
+consigne n'y protégerait rien et ôterait à l'utilisateur le moyen de déplacer la cible pour
+sortir. »*
+
+⚠️ **Dit explicitement par le gate, à ne pas taire** : **étalonner une seule sonde (pH OU ORP)
+verrouille LES DEUX consignes**, pas seulement celle de la sonde en cours d'étalonnage —
+`calSwitchActive` est un drapeau **global**, sans distinction de canal en mémoire. **Accepté sans
+spec de suivi** : la session dure quelques minutes, et l'alerte d'oubli (2 h puis 6 h) borne le cas
+pathologique d'une session restée ouverte.
+
+⚠️ **Limite connue, non corrigée par ce lot** : les commandes MQTT `{base}/ph\|orp_target/set` **ne
+vérifient pas** `calSwitchActive` — une consigne envoyée par MQTT pendant un étalonnage est
+**acceptée sans refus**, contrairement au mode (couvert en feature-161 lot C) et à la consigne via
+HTTP (ce lot). Observé en lecture de code, non corrigé — à porter à un futur gate si jugé
+nécessaire. Voir [MQTT.md](../MQTT.md).
 
 Journalisation : `warning`, IP d'origine, voie(s) concernée(s) — `[Config] /save-config REFUSÉ
 (409) depuis <ip> : changement de mode pH refusé — étalonnage en cours (calSwitchActive).`
@@ -1183,6 +1216,56 @@ La coquille (`tickPhIntegralExpiry`, `applyPhIntegralVerdict` dans [`pump_contro
 | `resetDosingStates()` | `phPID = {}` restaure les **défauts de structure** (`Ki = 0`, `integralMax = 50`) : sans ré-application, la réinitialisation **désarmerait silencieusement** le terme intégral et laisserait l'ORP à `kp = 8` (26× trop agressif). `applyRegulationSpeed()` est donc rappelée. |
 | Fin de branche `scheduled` | Cette branche est **hors PID** — elle dose une quantité planifiée, aveugle à la mesure. Une intégrale entretenue pendant des jours de mode Programmée serait servie d'un bloc au retour en automatique. |
 | Péremption 24 h | Voir ci-dessus. |
+| **Changement RUNTIME de la consigne pH** (⚠️ **feature-164, v2.80.0, le point le plus important de ce lot**) | Voir [section dédiée](#purge-de-lintégrale-sur-changement-runtime-de-consigne-feature-164-gate-c5c6) ci-dessous. |
+
+### Purge de l'intégrale sur changement RUNTIME de consigne (feature-164, gate C5/C6)
+
+⚠️ **À ne jamais confondre avec un changement de vitesse de régulation** (ligne du tableau
+ci-dessus) : ici, c'est la **consigne elle-même** (`mqttCfg.phTarget`) qui change pendant que la
+régulation tourne, via `POST /save-config {"ph_target": …}` — typiquement depuis la carte du
+tableau de bord (feature-164). Avant ce lot, **rien ne purgeait l'intégrale dans ce cas** : un
+changement de consigne de 7,50 à 7,20 en marche laissait l'intégrale accumulée contre l'ancienne
+cible servir l'acide contre la nouvelle — *16 200 pH·s accumulés contre 7,50, servis contre 7,20 =
+acide immédiat que personne n'a demandé*.
+
+⚠️ **Vérification en amont (C6, réduite, pas supprimée)** : `phIntegralContextHash()` inclut bien
+`ctx.target`, mais il ne couvre que **deux** choses — le rejet d'un instantané NVS **au démarrage**
+et un verrou interne de feedforward. ⛔ **Il ne touche JAMAIS l'intégrale en RAM, à chaud.** La
+purge au changement de vitesse (tableau ci-dessus) ne se déclenche que si **Kp/Ki/integralMax**
+changent réellement — une consigne seule, sans changement de vitesse, ne les touche **pas**. D'où
+la nécessité d'un mécanisme **dédié**.
+
+#### Mécanique : un drapeau de plus, consommé au même endroit
+
+`PumpController.requestPhTargetChange()` ([`pump_controller.h`](../../src/pump_controller.h) /
+[`.cpp`](../../src/pump_controller.cpp)) — **même patron exact** que `applyRegulationSpeed()` : un
+appel depuis la tâche web (async) ne fait que poser un drapeau atomique
+(`_phTargetChangeRequested`), **jamais** d'écriture directe de `_phIntegral` hors `loopTask`
+(invariant v2.26.0, aucune exception). Le drapeau est consommé en tête d'`updateDosingCore()`, au
+même endroit que `_phTuningChangeRequested`, par `applyRegulationSpeedNow(forcePurge=true)` — un
+nouveau paramètre qui **force** la purge même quand `Kp`/`Ki`/`integralMax` ne changent pas
+(`shouldPurge = phTuningChanged || forcePurge`). Le message de log distingue la cause : `changement
+de vitesse de régulation` ou `changement de consigne pH` — même format `%.0f pH·s abandonnés`.
+
+Côté handler (`web_routes_config.cpp`) : la consigne **avant** mutation est capturée (`phTargetBefore`),
+comparée à la consigne **après** application (snapping compris) en fin de handler — comparaison sur
+la **valeur appliquée**, jamais sur la seule présence de la clé `ph_target` (l'interface la renvoie
+à chaque enregistrement, même valeur, ce qui purgerait l'intégrale sans rapport avec un geste réel).
+
+#### Le principe réutilisable : on efface une DEMANDE, jamais une DETTE
+
+⚠️ **Motif à retenir, applicable à toute future purge d'état runtime** :
+
+- **L'intégrale pH est une DEMANDE calculée** — une estimation de ce qu'il faut encore injecter
+  pour rejoindre une consigne donnée. Changer la consigne invalide le calcul : **purger RETIRE du
+  dosage**, c'est un geste **conservateur**.
+- **`_sessionOnMs` et les compteurs horaire/journalier/cycle de dosage sont une COMPTABILITÉ** de
+  ce qui a été **physiquement injecté** dans le bassin. Les remettre à zéro **ROUVRIRAIT des quotas
+  déjà consommés** — un geste **permissif**, l'inverse exact du précédent.
+- ⛔ **Ce bloc ne touche NI `_sessionOnMs` NI aucun compteur de dosage** — seule l'intégrale (une
+  demande) est purgée. Une **mutation obligatoire** a été exigée par le gate sur ce cas précis : un
+  test qui ne distinguerait pas « purger l'intégrale » de « purger aussi les compteurs » ne
+  prouverait rien.
 
 ### Surveillance de saturation (C5)
 

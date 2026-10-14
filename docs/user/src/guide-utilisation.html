@@ -522,6 +522,19 @@ passer directement en mode Marche ou Arrêt.</p>
 <p>⚠️ Pensez-y en hivernage ou pendant un entretien&nbsp;: un appareil
 laissé en mode Arrêt le reste tant que vous n'avez pas changé le mode vous-même.</p>
 
+<p><em>Depuis la version&nbsp;2.80.</em> En mode <strong>Programme</strong>, les heures de début
+et de fin se règlent aussi <strong>directement depuis la carte Filtration du tableau de bord</strong>
+(un bouton «&nbsp;Sauvegarder&nbsp;» dédié valide la saisie). Deux garde-fous&nbsp;:</p>
+<ul>
+  <li>une heure de début <strong>identique</strong> à l'heure de fin est <strong>refusée</strong>
+  — ce réglage ferait tourner la filtration zéro heure par jour, sans qu'auparavant rien ne
+  vous le signale. Une heure de fin <strong>avant</strong> l'heure de début reste en revanche
+  acceptée&nbsp;: c'est une plage qui chevauche minuit (filtration de nuit, par exemple) ;</li>
+  <li>si la durée programmée est <strong>sous 2&nbsp;heures</strong>, un message d'avertissement
+  s'affiche&nbsp;: la circulation serait trop courte pour que la régulation pH/chlore atteigne sa
+  consigne. L'enregistrement reste possible, ce n'est qu'un avertissement.</li>
+</ul>
+
 <p>Si votre installation n'est pas câblée pour que le PoolController pilote
 la filtration (chapitre&nbsp;2, étape&nbsp;3), cette page l'indique et les
 commandes sont masquées&nbsp;: l'appareil se contente alors de suivre
@@ -709,6 +722,14 @@ n'est plus un mode, c'est un geste décrit plus bas)</em>&nbsp;:</p>
   <li><strong>Arrêt</strong> — la régulation automatique ne dose plus.</li>
 </ul>
 
+<p><em>Depuis la version&nbsp;2.80.</em> En mode <strong>Auto</strong>, ces quatre positions sont
+aussi accessibles <strong>directement depuis la carte pH du tableau de bord</strong> — la ligne
+«&nbsp;Cible&nbsp;» a disparu, la consigne se règle au même endroit qu'elle s'affiche. ⚠️
+Différence avec cette page&nbsp;: sur la carte, un clic <strong>ne suffit pas</strong> — un bouton
+«&nbsp;Sauvegarder&nbsp;» dédié valide le choix, pour éviter qu'un effleurement change une
+consigne par erreur. Si un étalonnage de sonde est en cours (pH <strong>ou</strong> chlore), la
+consigne est temporairement verrouillée sur les deux cartes, avec un petit message qui le dit.</p>
+
 <p>Dans <strong>les trois modes</strong> désormais <em>(nouveau en 2.77)</em>,
 un bloc «&nbsp;Injection manuelle&nbsp;» reste disponible sur cette page&nbsp;:
 vous déclenchez vous-même une injection d'un volume choisi (bouton
@@ -884,7 +905,17 @@ pH&nbsp;: <strong>Auto</strong> (l'appareil tient votre cible en
 millivolts), <strong>Programme</strong> (volume quotidien de chlore réparti
 sur la filtration, sans regarder la mesure) et <strong>Arrêt</strong>
 (plus aucune régulation automatique — l'injection manuelle, elle, reste
-disponible dans les trois modes, voir plus haut). Le bouton «&nbsp;<strong>Calibrer la
+disponible dans les trois modes, voir plus haut).</p>
+
+<p><em>Depuis la version&nbsp;2.80.</em> En mode Auto, la consigne en millivolts se règle
+<strong>directement depuis la carte Chlore du tableau de bord</strong> (champ libre, avec sa
+plage autorisée affichée juste en dessous) ou sur cette page — la ligne «&nbsp;Cible&nbsp;» a
+disparu des deux. Un bouton «&nbsp;Sauvegarder&nbsp;» valide le changement, il n'est jamais
+appliqué au simple survol ou à la frappe. <strong>Si une chloration de secours est en cours et
+que vous baissez la consigne</strong>, une confirmation s'affiche d'abord&nbsp;: baisser la cible
+peut réduire, voire interrompre, ce dosage de secours.</p>
+
+<p>Le bouton «&nbsp;<strong>Calibrer la
 sonde</strong>&nbsp;» ouvre, comme sur la page pH, un écran dédié qui masque
 le reste de la page le temps du réglage (lien de retour en haut et en bas) —
 mais ici une seule carte, car l'ORP n'a pas de correction manuelle de mesure.

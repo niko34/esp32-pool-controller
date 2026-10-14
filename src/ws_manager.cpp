@@ -1531,8 +1531,15 @@ size_t WsManager::_buildConfigJson(char* buf, size_t cap) const {
   d["password"]         = mqttCfg.password.length() > 0 ? "******" : "";
   d["enabled"]          = mqttCfg.enabled;
   d["mqtt_connected"]   = mqttManager.isConnected();
-  d["ph_target"]        = mqttCfg.phTarget;
-  d["orp_target"]       = mqttCfg.orpTarget;
+  // feature-164 (gate pool-chemistry, 2e passage) : PARITE-CONFIG d'EXPRESSION
+  // avec /get-config (web_routes_config.cpp) — SOURCE UNIQUE, même expression
+  // littérale des deux côtés (6e occurrence du piège de parité d'expression ;
+  // sentinelle ajoutée au harnais natif pour qu'il n'y en ait pas de 7e).
+  d["ph_target"]        = roundf(mqttCfg.phTarget * 100.0f) / 100.0f;
+  // Même roundf(mqttCfg.orpTarget), choix retenu pour couvrir une valeur
+  // héritée non entière en NVS (avant la validation serveur de ce lot, le
+  // champ n'était écrit par AUCUN chemin arrondi côté HTTP).
+  d["orp_target"]       = roundf(mqttCfg.orpTarget);
   d["ph_enabled"]       = mqttCfg.phEnabled;  // dérivé : true si mode != manual
   d["ph_regulation_mode"] = mqttCfg.phRegulationMode;
   d["ph_daily_target_ml"] = mqttCfg.phDailyTargetMl;
