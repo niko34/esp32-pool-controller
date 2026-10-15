@@ -1,0 +1,545 @@
+diff --git a/src/web_routes_ota.cpp b/src/web_routes_ota.cpp
+index 0c1ac23..7de6ef2 100644
+--- a/src/web_routes_ota.cpp
++++ b/src/web_routes_ota.cpp
+@@ -30,6 +30,484 @@
+ #include <esp_partition.h>
+ #include <LittleFS.h>
+ #include <esp_task_wdt.h>
++// bug-165 : instrumentation TLS — accès bas niveau à mbedtls pour capturer la
++// chaîne de certificats REÇUE et le résultat de vérification DÉTAILLÉ avant
++// que NetworkClientSecure::connect() ne libère le contexte (mbedtls_ssl_free)
++// sur échec. Observation uniquement, aucune modification du comportement TLS.
++#include "ssl_client.h"
++#include <mbedtls/x509_crt.h>
++// bug-165 (suite) : trancher l'hypothèse ECDSA P-384/SHA-384 — observation
++// pure à l'EXÉCUTION (la config sdkconfig est une déclaration de build, pas
++// une garantie du binaire précompilé livré par pioarduino).
++#include <mbedtls/ecp.h>
++#include <mbedtls/version.h>
++// bug-165 (suite, live) : callback mbedtls_ssl_conf_verify() posé DEPUIS le
++// code du projet — ssl_client.cpp (framework) contient l'appel mais
++// COMMENTÉ ; on ne le modifie pas, on pose notre propre callback sur
++// sslclient->ssl_conf après start_ssl_client() (voir OtaDiagnosticSecureClient).
++#include <mbedtls/pk.h>
++#include <mbedtls/oid.h>
++
++// Contexte passé au callback — compteur simple, aucune allocation.
++struct Bug165LiveChainContext {
++  int certCount = 0;
++};
++
++// Appelé par mbedtls PENDANT le handshake réel, une fois par certificat de la
++// chaîne examinée (profondeur croissante depuis le pair, 0 = feuille).
++// ⚠️ Observation PURE : ne modifie jamais *flags, renvoie toujours 0 — le
++// handshake doit échouer exactement comme en production.
++static int bug165LiveVerifyCallback(void* data, mbedtls_x509_crt* crt, int depth, uint32_t* flags) {
++  Bug165LiveChainContext* ctx = static_cast<Bug165LiveChainContext*>(data);
++  ctx->certCount++;
++
++  char subjBuf[150] = {0};
++  char issBuf[150] = {0};
++  mbedtls_x509_dn_gets(subjBuf, sizeof(subjBuf), &crt->subject);
++  mbedtls_x509_dn_gets(issBuf, sizeof(issBuf), &crt->issuer);
++
++  const char* sigDesc = "?";
++  mbedtls_oid_get_sig_alg_desc(&crt->sig_oid, &sigDesc);
++
++  const char* curveName = "(non-EC ou indisponible)";
++  mbedtls_pk_type_t pkType = mbedtls_pk_get_type(&crt->pk);
++  if (pkType == MBEDTLS_PK_ECKEY || pkType == MBEDTLS_PK_ECKEY_DH || pkType == MBEDTLS_PK_ECDSA) {
++    mbedtls_ecp_keypair* ec = mbedtls_pk_ec(crt->pk);
++    if (ec != nullptr) {
++      mbedtls_ecp_group_id gid = mbedtls_ecp_keypair_get_group_id(ec);
++      const mbedtls_ecp_curve_info* ci = mbedtls_ecp_curve_info_from_grp_id(gid);
++      if (ci != nullptr) {
++        curveName = ci->name;
++      }
++    }
++  }
++
++  systemLogger.error(
++    String("[bug-165] LIVE depth=") + String(depth) +
++    " sujet=[" + String(subjBuf) + "] emetteur=[" + String(issBuf) + "]" +
++    " flags_a_ce_niveau=0x" + String(*flags, HEX) +
++    " sig=[" + String(sigDesc) + "] courbe=[" + String(curveName) + "]");
++
++  return 0;  // ne jamais forcer/corriger : observer seulement
++}
++
++// bug-165 : sous-classe diagnostique. Ré-implémente le SEUL point d'entrée
++// virtuel réellement appelé par HTTPClient::connect()
++// (NetworkClient::connect(host, port, timeout)) pour intercepter le résultat
++// du handshake AVANT le stop() qui efface ssl_ctx. Le comportement final
++// (stop() sur échec, _connected=true sur succès) est identique à
++// NetworkClientSecure::connect() — seule une capture de diagnostic est
++// insérée entre les deux.
++class OtaDiagnosticSecureClient : public WiFiClientSecure {
++ public:
++  int diagVerifyFlags = -1;              // masque mbedtls_ssl_get_verify_result()
++  char diagVerifyInfo[256] = {0};        // mbedtls_x509_crt_verify_info() en clair
++  int diagCaAnchorCount = -1;            // ancres chargées depuis GITHUB_ROOT_CA
++  int diagPeerCertCount = 0;             // profondeur de la chaîne REÇUE
++  String diagPeerChainSummary;           // sujet/émetteur par certificat reçu
++  // bug-165 (suite) : profil de vérification RÉELLEMENT configuré par
++  // start_ssl_client() (mbedtls_ssl_config_defaults) — lu, jamais supposé.
++  // `cert_profile` est un champ mbedtls MBEDTLS_PRIVATE ; sans définir
++  // MBEDTLS_ALLOW_PRIVATE_ACCESS, le nom réel du champ est `private_cert_profile`
++  // (voir mbedtls/private_access.h) — accès direct, aucune modification du
++  // framework.
++  const mbedtls_x509_crt_profile* diagCertProfile = nullptr;
++
++  int connect(const char* host, uint16_t port, int32_t timeout) override {
++    _timeout = timeout;
++    IPAddress address;
++    if (!Network.hostByName(host, address)) {
++      return 0;
++    }
++    int ret = start_ssl_client(sslclient.get(), address, port, host, _timeout,
++                                _CA_cert, _use_ca_bundle, _cert, _private_key,
++                                nullptr, nullptr, _use_insecure, _alpn_protos);
++
++    // bug-165 (suite) : capturer le profil EXACT utilisé par CETTE connexion,
++    // avant toute hypothèse.
++    diagCertProfile = sslclient->ssl_conf.private_cert_profile;
++
++    // bug-165 (suite, live) : poser le callback APRÈS start_ssl_client (qui
++    // configure ssl_conf) et AVANT le handshake — seul point d'insertion
++    // possible depuis le projet.
++    Bug165LiveChainContext liveCtx;
++    if (ret >= 0) {
++      mbedtls_ssl_conf_verify(&sslclient->ssl_conf, bug165LiveVerifyCallback, &liveCtx);
++    }
++
++    if (ret >= 0 && !_stillinPlainStart) {
++      ret = ssl_starttls_handshake(sslclient.get());
++    }
++    sslclient->last_error = ret;
++    systemLogger.info("[bug-165] LIVE maillons vus par le callback pendant le handshake reel: " +
++                      String(liveCtx.certCount));
++    collectDiagnostics();
++    if (ret < 0) {
++      stop();
++      return 0;
++    }
++    _connected = true;
++    return 1;
++  }
++
++ private:
++  void collectDiagnostics() {
++    // Ancres CA chargées dans sslclient->ca_cert (chaîne liée mbedtls).
++    diagCaAnchorCount = 0;
++    const mbedtls_x509_crt* anchor = &sslclient->ca_cert;
++    while (anchor != nullptr && anchor->raw.p != nullptr) {
++      diagCaAnchorCount++;
++      anchor = anchor->next;
++    }
++
++    // Résultat de vérification DÉTAILLÉ (peut être 0/absent si le handshake
++    // n'a pas atteint l'étape de vérification du certificat pair).
++    diagVerifyFlags = static_cast<int>(mbedtls_ssl_get_verify_result(&sslclient->ssl_ctx));
++    if (diagVerifyFlags > 0) {
++      mbedtls_x509_crt_verify_info(diagVerifyInfo, sizeof(diagVerifyInfo), "  ! ", (uint32_t)diagVerifyFlags);
++    } else {
++      diagVerifyInfo[0] = '\0';
++    }
++
++    // Chaîne de certificats REÇUE du pair (sujet + émetteur par maillon).
++    diagPeerChainSummary = "";
++    diagPeerCertCount = 0;
++    const mbedtls_x509_crt* peer = mbedtls_ssl_get_peer_cert(&sslclient->ssl_ctx);
++    while (peer != nullptr) {
++      char subjBuf[150] = {0};
++      char issBuf[150] = {0};
++      mbedtls_x509_dn_gets(subjBuf, sizeof(subjBuf), &peer->subject);
++      mbedtls_x509_dn_gets(issBuf, sizeof(issBuf), &peer->issuer);
++      diagPeerChainSummary += "#" + String(diagPeerCertCount) + " sujet=[" + String(subjBuf) +
++                              "] emetteur=[" + String(issBuf) + "] ";
++      peer = peer->next;
++      diagPeerCertCount++;
++    }
++  }
++};
++
++// bug-165 (suite) : trancher l'hypothèse ECDSA P-384/SHA-384. Observation pure,
++// exécutée à la demande (une fois par /check-update), aucune allocation
++// durable — uniquement des buffers de pile et une String locale au parsing.
++static void logMbedtlsTlsCapabilityDiagnostics() {
++  systemLogger.info(String("[bug-165] mbedtls version: ") + MBEDTLS_VERSION_STRING);
++
++  // 1. Courbes elliptiques RÉELLEMENT supportées par le binaire précompilé à
++  // l'exécution — le sdkconfig du paquet pioarduino n'est qu'une déclaration
++  // de build, pas une preuve du binaire livré.
++  String curves = "";
++  bool hasSecp384r1 = false;
++  const mbedtls_ecp_curve_info* info = mbedtls_ecp_curve_list();
++  for (; info != nullptr && info->grp_id != MBEDTLS_ECP_DP_NONE; info++) {
++    curves += String(info->name) + "(id=" + String((int)info->grp_id) + ") ";
++    if (info->grp_id == MBEDTLS_ECP_DP_SECP384R1) {
++      hasSecp384r1 = true;
++    }
++  }
++  systemLogger.info("[bug-165] Courbes EC supportees a l'execution: " + curves);
++  systemLogger.info(String("[bug-165] secp384r1 (P-384) presente: ") + (hasSecp384r1 ? "OUI" : "NON"));
++
++  // 2. Auto-vérification de l'ancre Sectigo Root E46 (ECC P-384, auto-signée)
++  // CONTRE ELLE-MÊME : même opération cryptographique (parse + vérif de
++  // signature ECDSA/SHA-384) que celle exercée par le handshake réel, mais
++  // isolée du réseau — si elle échoue ICI, la pile crypto locale est en cause,
++  // pas la chaîne reçue de GitHub.
++  mbedtls_x509_crt chain;
++  mbedtls_x509_crt_init(&chain);
++  int parseRet = mbedtls_x509_crt_parse(&chain, (const unsigned char*)GITHUB_ROOT_CA, strlen(GITHUB_ROOT_CA) + 1);
++  if (parseRet < 0) {
++    systemLogger.error("[bug-165] Echec parsing GITHUB_ROOT_CA pour auto-test (code=" + String(parseRet) + ")");
++  } else {
++    mbedtls_x509_crt* e46 = &chain;
++    char dnBuf[150];
++    bool found = false;
++    while (e46 != nullptr) {
++      mbedtls_x509_dn_gets(dnBuf, sizeof(dnBuf), &e46->subject);
++      if (strstr(dnBuf, "E46") != nullptr) {
++        found = true;
++        break;
++      }
++      e46 = e46->next;
++    }
++    if (!found) {
++      systemLogger.error("[bug-165] Ancre E46 introuvable dans GITHUB_ROOT_CA pour l'auto-test");
++    } else {
++      // Isoler ce seul maillon (couper ->next) pour que trust_ca==crt ne
++      // vérifie QUE E46 contre lui-même, sans entraîner les 4 autres ancres.
++      mbedtls_x509_crt* savedNext = e46->next;
++      e46->next = nullptr;
++      uint32_t selfFlags = 0;
++      int vret = mbedtls_x509_crt_verify(e46, e46, nullptr, nullptr, &selfFlags, nullptr, nullptr);
++      e46->next = savedNext;
++      char infoBuf[200] = {0};
++      if (selfFlags != 0) {
++        mbedtls_x509_crt_verify_info(infoBuf, sizeof(infoBuf), "  ! ", selfFlags);
++      }
++      systemLogger.info("[bug-165] Auto-verif Root E46 (P-384) contre elle-meme: ret=" + String(vret) +
++                        " flags=0x" + String(selfFlags, HEX) + " detail=[" + String(infoBuf) + "]");
++    }
++  }
++  mbedtls_x509_crt_free(&chain);
++}
++
++// ============================================================================
++// bug-165 (bissection HORS LIGNE) : chaîne RÉELLE servie par api.github.com le
++// 2026-10-14 (capturée par `openssl s_client -showcerts`, fournie par le
++// coordinateur). Reproduire le verdict NOT_TRUSTED SANS réseau, pour isoler
++// quel maillon pose problème. TEST UNIQUEMENT — n'entre dans aucun chemin de
++// production, ne touche ni github_root_ca.h ni la garde TLS.
++// ============================================================================
++static const char* kBug165Leaf =
++"-----BEGIN CERTIFICATE-----\n"
++"MIID7jCCA5SgAwIBAgIQePiujyrk10/aE6gFaAdLbzAKBggqhkjOPQQDAjBgMQsw\n"
++"CQYDVQQGEwJHQjEYMBYGA1UEChMPU2VjdGlnbyBMaW1pdGVkMTcwNQYDVQQDEy5T\n"
++"ZWN0aWdvIFB1YmxpYyBTZXJ2ZXIgQXV0aGVudGljYXRpb24gQ0EgRFYgRTM2MB4X\n"
++"DTI2MDgzMDAwMDAwMFoXDTI2MTEyNzIzNTk1OVowFzEVMBMGA1UEAwwMKi5naXRo\n"
++"dWIuY29tMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE1sM7iCBBQ4ER1JnLvGmL\n"
++"5r5BTu6wy6Brv6UhbjR03DLOqfOf60+MCCMNjM8s3c5DrJWy6DB5yhEtlxb6QSA0\n"
++"8KOCAncwggJzMB8GA1UdIwQYMBaAFBeZqATBb+QtcKgKED0D0+kauCZjMB0GA1Ud\n"
++"DgQWBBTD7jFglOUX6+JilvgIHwPAP3Q30DAOBgNVHQ8BAf8EBAMCB4AwDAYDVR0T\n"
++"AQH/BAIwADATBgNVHSUEDDAKBggrBgEFBQcDATBJBgNVHSAEQjBAMDQGCysGAQQB\n"
++"sjEBAgIHMCUwIwYIKwYBBQUHAgEWF2h0dHBzOi8vc2VjdGlnby5jb20vQ1BTMAgG\n"
++"BmeBDAECATCBhAYIKwYBBQUHAQEEeDB2ME8GCCsGAQUFBzAChkNodHRwOi8vY3J0\n"
++"LnNlY3RpZ28uY29tL1NlY3RpZ29QdWJsaWNTZXJ2ZXJBdXRoZW50aWNhdGlvbkNB\n"
++"RFZFMzYuY3J0MCMGCCsGAQUFBzABhhdodHRwOi8vb2NzcC5zZWN0aWdvLmNvbTCC\n"
++"AQUGCisGAQQB1nkCBAIEgfYEgfMA8QB3ANdtfRDRp/V3wsfpX9cAv/mCyTNaZeHQ\n"
++"swFzF8DIxWl3AAABoFAfT/cAAAQDAEgwRgIhAL+EF7Mh/01jBp2ngOoMgNp5gU4S\n"
++"LDJ9Q1Vdoqkc4+SZAiEAhdrMG/SJRbqEeTr6oW2BzjHFLOIpaMSC1KCiTPMBnKQA\n"
++"dgDIo8R/x7OtuTVrAT9qehJt4zpOQ6XGRvmXrTl1mR3PmgAAAaBQH0/+AAAEAwBH\n"
++"MEUCIQCvJFRalfmFiEGXHLKYOMJaUbik+xHxuK3YKmWG2+aJTwIgQUPuzOEAFiKj\n"
++"S40Vp0B+sLwOOL/A8f9o7ofqQ/7qzBQwIwYDVR0RBBwwGoIMKi5naXRodWIuY29t\n"
++"ggpnaXRodWIuY29tMAoGCCqGSM49BAMCA0gAMEUCIE1OmFf3DqBChbvhWFNoQAex\n"
++"CcXadL526Lfq9yHc/ZFyAiEAyel0O87R9q2DDGummwvhF8rmql1p3rC6lhWpcEtO\n"
++"Aqg=\n"
++"-----END CERTIFICATE-----\n";
++
++static const char* kBug165E36 =
++"-----BEGIN CERTIFICATE-----\n"
++"MIIDXzCCAuagAwIBAgIQNuBZ7YiN1Xrt1XC2cn+b2jAKBggqhkjOPQQDAzBfMQsw\n"
++"CQYDVQQGEwJHQjEYMBYGA1UEChMPU2VjdGlnbyBMaW1pdGVkMTYwNAYDVQQDEy1T\n"
++"ZWN0aWdvIFB1YmxpYyBTZXJ2ZXIgQXV0aGVudGljYXRpb24gUm9vdCBFNDYwHhcN\n"
++"MjEwMzIyMDAwMDAwWhcNMzYwMzIxMjM1OTU5WjBgMQswCQYDVQQGEwJHQjEYMBYG\n"
++"A1UEChMPU2VjdGlnbyBMaW1pdGVkMTcwNQYDVQQDEy5TZWN0aWdvIFB1YmxpYyBT\n"
++"ZXJ2ZXIgQXV0aGVudGljYXRpb24gQ0EgRFYgRTM2MFkwEwYHKoZIzj0CAQYIKoZI\n"
++"zj0DAQcDQgAEaKGnbAUnBYljHDmn/yUhxe3TLxKYuyzc9VXoSaCEV5F73Fhfa/Si\n"
++"/RMsmwTFW3R9s7J6JpYZFmu4do3vk/Vgl6OCAYEwggF9MB8GA1UdIwQYMBaAFNEi\n"
++"2kxZ8UtfJjiqndbu6w3D+6lhMB0GA1UdDgQWBBQXmagEwW/kLXCoChA9A9PpGrgm\n"
++"YzAOBgNVHQ8BAf8EBAMCAYYwEgYDVR0TAQH/BAgwBgEB/wIBADAdBgNVHSUEFjAU\n"
++"BggrBgEFBQcDAQYIKwYBBQUHAwIwGwYDVR0gBBQwEjAGBgRVHSAAMAgGBmeBDAEC\n"
++"ATBUBgNVHR8ETTBLMEmgR6BFhkNodHRwOi8vY3JsLnNlY3RpZ28uY29tL1NlY3Rp\n"
++"Z29QdWJsaWNTZXJ2ZXJBdXRoZW50aWNhdGlvblJvb3RFNDYuY3JsMIGEBggrBgEF\n"
++"BQcBAQR4MHYwTwYIKwYBBQUHMAKGQ2h0dHA6Ly9jcnQuc2VjdGlnby5jb20vU2Vj\n"
++"dGlnb1B1YmxpY1NlcnZlckF1dGhlbnRpY2F0aW9uUm9vdEU0Ni5wN2MwIwYIKwYB\n"
++"BQUHMAGGF2h0dHA6Ly9vY3NwLnNlY3RpZ28uY29tMAoGCCqGSM49BAMDA2cAMGQC\n"
++"MFsKnBQDh64l+v+aUYWjDCJKQMxHUUGmcwAYDIjJ9pbRYItMCIx5xu0oUb6sIfTX\n"
++"qQIwPddcsDE4KdeLu1hJdpHgdLvsHAK3vygyLGujMU9xBJCDackRT93VHEE0gppg\n"
++"NqdV\n"
++"-----END CERTIFICATE-----\n";
++
++// ⚠️ Variante CROISÉE de la Root E46 (émise par USERTrust ECC) — PAS
++// l'auto-signée de GITHUB_ROOT_CA. C'est précisément ce maillon qui est
++// suspecté.
++static const char* kBug165E46Crossed =
++"-----BEGIN CERTIFICATE-----\n"
++"MIIDRjCCAsugAwIBAgIQGp6v7G3o4ZtcGTFBto2Q3TAKBggqhkjOPQQDAzCBiDEL\n"
++"MAkGA1UEBhMCVVMxEzARBgNVBAgTCk5ldyBKZXJzZXkxFDASBgNVBAcTC0plcnNl\n"
++"eSBDaXR5MR4wHAYDVQQKExVUaGUgVVNFUlRSVVNUIE5ldHdvcmsxLjAsBgNVBAMT\n"
++"JVVTRVJUcnVzdCBFQ0MgQ2VydGlmaWNhdGlvbiBBdXRob3JpdHkwHhcNMjEwMzIy\n"
++"MDAwMDAwWhcNMzgwMTE4MjM1OTU5WjBfMQswCQYDVQQGEwJHQjEYMBYGA1UEChMP\n"
++"U2VjdGlnbyBMaW1pdGVkMTYwNAYDVQQDEy1TZWN0aWdvIFB1YmxpYyBTZXJ2ZXIg\n"
++"QXV0aGVudGljYXRpb24gUm9vdCBFNDYwdjAQBgcqhkjOPQIBBgUrgQQAIgNiAAR2\n"
++"+pmpbiDt+dd34wc7qNs9Xzjoq1WmVk/WSOrsfy2qw7LFeeyZYX8QeccCWvkEN/U0\n"
++"NSt3zn8gj1KjAIns1aeibVvjS5KToID1AZTc8GgHHs3u/iVStSBDHBv+6xnOQ6Oj\n"
++"ggEgMIIBHDAfBgNVHSMEGDAWgBQ64QmG1M8ZwpZ2dEl23OA1xmNjmjAdBgNVHQ4E\n"
++"FgQU0SLaTFnxS18mOKqd1u7rDcP7qWEwDgYDVR0PAQH/BAQDAgGGMA8GA1UdEwEB\n"
++"/wQFMAMBAf8wHQYDVR0lBBYwFAYIKwYBBQUHAwEGCCsGAQUFBwMCMBEGA1UdIAQK\n"
++"MAgwBgYEVR0gADBQBgNVHR8ESTBHMEWgQ6BBhj9odHRwOi8vY3JsLnVzZXJ0cnVz\n"
++"dC5jb20vVVNFUlRydXN0RUNDQ2VydGlmaWNhdGlvbkF1dGhvcml0eS5jcmwwNQYI\n"
++"KwYBBQUHAQEEKTAnMCUGCCsGAQUFBzABhhlodHRwOi8vb2NzcC51c2VydHJ1c3Qu\n"
++"Y29tMAoGCCqGSM49BAMDA2kAMGYCMQCMCyBit99vX2ba6xEkDe+YO7vC0twjbkv9\n"
++"PKpqGGuZ61JZryjFsp+DFpEclCVy4noCMQCwvZDXD/m2Ko1HA5Bkmz7YQOFAiNDD\n"
++"49IWa2wdT7R3DtODaSXH/BiXv8fwB9su4tU=\n"
++"-----END CERTIFICATE-----\n";
++
++static void bug165VerifyAndLog(const char* label, mbedtls_x509_crt* crt, mbedtls_x509_crt* trust) {
++  uint32_t flags = 0;
++  // cn=nullptr DÉLIBÉRÉMENT : on isole la confiance (chaîne de signatures),
++  // pas la correspondance de nom d'hôte — pour ne pas confondre NOT_TRUSTED
++  // avec CN_MISMATCH dans cette bissection.
++  int ret = mbedtls_x509_crt_verify(crt, trust, nullptr, nullptr, &flags, nullptr, nullptr);
++  char infoBuf[220] = {0};
++  if (flags != 0) {
++    mbedtls_x509_crt_verify_info(infoBuf, sizeof(infoBuf), "  ! ", flags);
++  }
++  systemLogger.error(String("[bug-165] Bissection — ") + label + " : ret=" + String(ret) +
++                     " flags=0x" + String(flags, HEX) + " detail=[" + String(infoBuf) + "]");
++}
++
++static void logMbedtlsOfflineChainBisection() {
++  systemLogger.info("[bug-165] Debut bissection hors ligne (chaine reelle GitHub du 2026-10-14)");
++
++  mbedtls_x509_crt trust;
++  mbedtls_x509_crt_init(&trust);
++  int trustRet = mbedtls_x509_crt_parse(&trust, (const unsigned char*)GITHUB_ROOT_CA, strlen(GITHUB_ROOT_CA) + 1);
++  if (trustRet < 0) {
++    systemLogger.error("[bug-165] Echec parsing GITHUB_ROOT_CA pour bissection (code=" + String(trustRet) + ")");
++    mbedtls_x509_crt_free(&trust);
++    return;
++  }
++
++  // A. Chaîne COMPLETE (leaf + E36 + E46 croisée) contre les 5 ancres
++  {
++    mbedtls_x509_crt chain;
++    mbedtls_x509_crt_init(&chain);
++    mbedtls_x509_crt_parse(&chain, (const unsigned char*)kBug165Leaf, strlen(kBug165Leaf) + 1);
++    mbedtls_x509_crt_parse(&chain, (const unsigned char*)kBug165E36, strlen(kBug165E36) + 1);
++    mbedtls_x509_crt_parse(&chain, (const unsigned char*)kBug165E46Crossed, strlen(kBug165E46Crossed) + 1);
++    bug165VerifyAndLog("A) chaine complete (leaf+E36+E46-croisee) vs 5 ancres", &chain, &trust);
++    mbedtls_x509_crt_free(&chain);
++  }
++
++  // B. leaf + E36 SEULS (sans le maillon croisé) contre les 5 ancres
++  {
++    mbedtls_x509_crt chain;
++    mbedtls_x509_crt_init(&chain);
++    mbedtls_x509_crt_parse(&chain, (const unsigned char*)kBug165Leaf, strlen(kBug165Leaf) + 1);
++    mbedtls_x509_crt_parse(&chain, (const unsigned char*)kBug165E36, strlen(kBug165E36) + 1);
++    bug165VerifyAndLog("B) leaf+E36 SANS le maillon croise vs 5 ancres", &chain, &trust);
++    mbedtls_x509_crt_free(&chain);
++  }
++
++  // C. E36 SEUL contre les 5 ancres
++  {
++    mbedtls_x509_crt chain;
++    mbedtls_x509_crt_init(&chain);
++    mbedtls_x509_crt_parse(&chain, (const unsigned char*)kBug165E36, strlen(kBug165E36) + 1);
++    bug165VerifyAndLog("C) E36 seul vs 5 ancres", &chain, &trust);
++    mbedtls_x509_crt_free(&chain);
++  }
++
++  // D. Chaîne complète contre USERTrust ECC SEULE / E. contre E46 auto-signée SEULE
++  {
++    mbedtls_x509_crt* node = &trust;
++    mbedtls_x509_crt* userTrustEcc = nullptr;
++    mbedtls_x509_crt* e46Selfsigned = nullptr;
++    char dnBuf[150];
++    while (node != nullptr) {
++      mbedtls_x509_dn_gets(dnBuf, sizeof(dnBuf), &node->subject);
++      if (userTrustEcc == nullptr && strstr(dnBuf, "USERTrust ECC") != nullptr) {
++        userTrustEcc = node;
++      }
++      if (e46Selfsigned == nullptr && strstr(dnBuf, "E46") != nullptr) {
++        e46Selfsigned = node;
++      }
++      node = node->next;
++    }
++
++    mbedtls_x509_crt chain;
++    mbedtls_x509_crt_init(&chain);
++    mbedtls_x509_crt_parse(&chain, (const unsigned char*)kBug165Leaf, strlen(kBug165Leaf) + 1);
++    mbedtls_x509_crt_parse(&chain, (const unsigned char*)kBug165E36, strlen(kBug165E36) + 1);
++    mbedtls_x509_crt_parse(&chain, (const unsigned char*)kBug165E46Crossed, strlen(kBug165E46Crossed) + 1);
++
++    if (userTrustEcc != nullptr) {
++      mbedtls_x509_crt* saved = userTrustEcc->next;
++      userTrustEcc->next = nullptr;
++      bug165VerifyAndLog("D) chaine complete vs USERTrust ECC SEULE", &chain, userTrustEcc);
++      userTrustEcc->next = saved;
++    } else {
++      systemLogger.error("[bug-165] USERTrust ECC introuvable dans GITHUB_ROOT_CA (test D)");
++    }
++
++    if (e46Selfsigned != nullptr) {
++      mbedtls_x509_crt* saved = e46Selfsigned->next;
++      e46Selfsigned->next = nullptr;
++      bug165VerifyAndLog("E) chaine complete vs E46 auto-signee SEULE", &chain, e46Selfsigned);
++      e46Selfsigned->next = saved;
++    } else {
++      systemLogger.error("[bug-165] E46 auto-signee introuvable dans GITHUB_ROOT_CA (test E)");
++    }
++
++    mbedtls_x509_crt_free(&chain);
++  }
++
++  mbedtls_x509_crt_free(&trust);
++  systemLogger.info("[bug-165] Fin bissection hors ligne");
++}
++
++// bug-165 (dernière piste) : journaliser le profil de vérification RÉELLEMENT
++// configuré par la connexion live (lu, pas supposé), puis rejouer la
++// bissection hors ligne avec la fonction et les paramètres EXACTS du chemin
++// TLS réel : mbedtls_x509_crt_verify_with_profile(), ce profil, et le nom
++// d'hôte "api.github.com" (l'offline précédent utilisait verify() + cn=null).
++static void logMbedtlsRealProfileAndReverify(const mbedtls_x509_crt_profile* profile) {
++  if (profile == nullptr) {
++    systemLogger.error("[bug-165] Profil de vérification introuvable (ssl_conf non configuré)");
++    return;
++  }
++
++  systemLogger.info(
++    String("[bug-165] Profil REEL (lu sur la connexion live) — allowed_mds=0x") + String(profile->allowed_mds, HEX) +
++    " allowed_pks=0x" + String(profile->allowed_pks, HEX) +
++    " allowed_curves=0x" + String(profile->allowed_curves, HEX) +
++    " rsa_min_bitlen=" + String(profile->rsa_min_bitlen));
++
++  // Identifier le profil connu correspondant (comparaison d'ADRESSE, pas de
++  // contenu — ce sont des tables const globales du binaire).
++  const char* knownName = "INCONNU (ni default, ni suiteb, ni none)";
++  if (profile == &mbedtls_x509_crt_profile_default) {
++    knownName = "mbedtls_x509_crt_profile_default";
++  } else if (profile == &mbedtls_x509_crt_profile_suiteb) {
++    knownName = "mbedtls_x509_crt_profile_suiteb";
++  } else if (profile == &mbedtls_x509_crt_profile_none) {
++    knownName = "mbedtls_x509_crt_profile_none";
++  }
++  systemLogger.info(String("[bug-165] Profil identifie par adresse: ") + knownName);
++
++  // Courbes nommément autorisées par ce profil, et verdict secp384r1 EXPLICITE.
++  String allowedCurveNames = "";
++  bool profileAllowsSecp384r1 = (profile->allowed_curves & MBEDTLS_X509_ID_FLAG(MBEDTLS_ECP_DP_SECP384R1)) != 0;
++  const mbedtls_ecp_curve_info* info = mbedtls_ecp_curve_list();
++  for (; info != nullptr && info->grp_id != MBEDTLS_ECP_DP_NONE; info++) {
++    if (profile->allowed_curves & MBEDTLS_X509_ID_FLAG(info->grp_id)) {
++      allowedCurveNames += String(info->name) + " ";
++    }
++  }
++  systemLogger.info("[bug-165] Courbes AUTORISEES par ce profil: " + allowedCurveNames);
++  systemLogger.info(String("[bug-165] Ce profil autorise secp384r1 (P-384): ") +
++                    (profileAllowsSecp384r1 ? "OUI" : "NON — C'EST POTENTIELLEMENT LA CAUSE"));
++
++  // Rejoue la bissection hors ligne À L'IDENTIQUE du chemin réel : fonction
++  // _with_profile(), CE profil exact, et cn="api.github.com" (pas nullptr).
++  mbedtls_x509_crt trust;
++  mbedtls_x509_crt_init(&trust);
++  int trustRet = mbedtls_x509_crt_parse(&trust, (const unsigned char*)GITHUB_ROOT_CA, strlen(GITHUB_ROOT_CA) + 1);
++  if (trustRet < 0) {
++    systemLogger.error("[bug-165] Echec parsing GITHUB_ROOT_CA pour re-verif profil reel (code=" + String(trustRet) + ")");
++    mbedtls_x509_crt_free(&trust);
++    return;
++  }
++
++  mbedtls_x509_crt chain;
++  mbedtls_x509_crt_init(&chain);
++  mbedtls_x509_crt_parse(&chain, (const unsigned char*)kBug165Leaf, strlen(kBug165Leaf) + 1);
++  mbedtls_x509_crt_parse(&chain, (const unsigned char*)kBug165E36, strlen(kBug165E36) + 1);
++  mbedtls_x509_crt_parse(&chain, (const unsigned char*)kBug165E46Crossed, strlen(kBug165E46Crossed) + 1);
++
++  uint32_t flags = 0;
++  int ret = mbedtls_x509_crt_verify_with_profile(&chain, &trust, nullptr, profile, "api.github.com",
++                                                 &flags, nullptr, nullptr);
++  char infoBuf[220] = {0};
++  if (flags != 0) {
++    mbedtls_x509_crt_verify_info(infoBuf, sizeof(infoBuf), "  ! ", flags);
++  }
++  systemLogger.error(
++    String("[bug-165] Re-verif IDENTIQUE au chemin reel (verify_with_profile + profil reel + cn=api.github.com): ") +
++    "ret=" + String(ret) + " flags=0x" + String(flags, HEX) + " detail=[" + String(infoBuf) + "]");
++
++  mbedtls_x509_crt_free(&chain);
++  mbedtls_x509_crt_free(&trust);
++}
+ 
+ // Variables pour gérer les redémarrages différés (partagées avec web_server)
+ static bool* g_restartRequested = nullptr;
+@@ -905,12 +1383,30 @@ static void handleCheckUpdate(AsyncWebServerRequest* request) {
+                     String(freeHeap) + " o, plus gros bloc=" +
+                     String(maxAlloc) + " o, client=" + clientIp + ")");
+ 
+-  WiFiClientSecure client;
++  OtaDiagnosticSecureClient client;
+   if (!ensureTimeForTls(request)) {
+     return;
+   }
+   client.setCACert(GITHUB_ROOT_CA);
+ 
++  // bug-165 : heure de l'appareil AU MOMENT du handshake — une horloge fausse
++  // produit la même erreur (-9984) qu'une ancre manquante.
++  time_t nowBeforeHandshake = time(nullptr);
++  struct tm nowTm;
++  char nowBuf[32] = {0};
++  gmtime_r(&nowBeforeHandshake, &nowTm);
++  strftime(nowBuf, sizeof(nowBuf), "%Y-%m-%d %H:%M:%S UTC", &nowTm);
++  systemLogger.info("[bug-165] Heure appareil avant handshake TLS: " + String((long)nowBeforeHandshake) +
++                    " (" + String(nowBuf) + ")");
++
++  // bug-165 (suite) : hypothèse ECDSA P-384/SHA-384 — observation hors ligne,
++  // indépendante du réseau, avant toute tentative de connexion.
++  logMbedtlsTlsCapabilityDiagnostics();
++
++  // bug-165 (suite) : reproduire NOT_TRUSTED hors ligne avec la chaîne RÉELLE
++  // capturée depuis GitHub, et bissecter sans dépendre du réseau.
++  logMbedtlsOfflineChainBisection();
++
+   HTTPClient https;
+ 
+   // Utiliser l'API GitHub pour récupérer la dernière release
+@@ -942,6 +1438,23 @@ static void handleCheckUpdate(AsyncWebServerRequest* request) {
+         errorDetail = String(" — TLS: ") + tlsErr + " (" + String(tlsCode) + ")";
+       }
+       errorDetail += String(" [") + HTTPClient::errorToString(httpCode) + "]";
++
++      // bug-165 : constat détaillé capturé AVANT la libération du contexte
++      // mbedtls (https.end() -> client.stop() -> mbedtls_ssl_free). Les 3
++      // informations demandées : chaîne reçue, verdict de vérification
++      // détaillé, nombre d'ancres CA chargées.
++      String verifyInfoStr = (client.diagVerifyFlags > 0) ? String(client.diagVerifyInfo) : String("(aucun drapeau — 0)");
++      systemLogger.error(
++        "[bug-165] Constat TLS — ancres CA chargées=" + String(client.diagCaAnchorCount) +
++        " ; certificats REÇUS du pair=" + String(client.diagPeerCertCount) +
++        " ; chaine=" + (client.diagPeerCertCount > 0 ? client.diagPeerChainSummary : String("(aucun — handshake interrompu avant réception du certificat)")) +
++        " ; verify_result=0x" + String(client.diagVerifyFlags, HEX) +
++        " detail=[" + verifyInfoStr + "]");
++
++      // bug-165 (derniere piste) : profil REEL + bissection rejouee avec la
++      // fonction/parametres exacts du chemin TLS reel (hypothese "courbe
++      // interdite par le profil, pas par la pile").
++      logMbedtlsRealProfileAndReverify(client.diagCertProfile);
+     }
+     systemLogger.error("Erreur HTTP GitHub: " + String(httpCode) + errorDetail);
+     https.end();

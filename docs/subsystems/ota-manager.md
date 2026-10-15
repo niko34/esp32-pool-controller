@@ -99,6 +99,28 @@ consigne à retenir, mais un **contrôle automatique** (voir plus bas). La règl
   repli réelle de GitHub pour les clients qui ne négocient pas ECDSA, vérifié, pas anticipé) — 5
   racines au total.
 
+  ⛔ **MAIS CELA N'A PAS SUFFI — constaté après déploiement en 2.80.1.** `/check-update` échoue
+  toujours (`step: tls_handshake`, `-9984`). ⚠️ Les deux racines sont **nécessaires** (la règle
+  reste juste, et le contrôle CI la verrouille désormais) mais **PAS suffisantes**.
+  ⇒ **bug-165 est ROUVERT.** **Six** hypothèses ont été fermées **par l'expérience** — racine
+  manquante, ordre des certificats, horloge, courbe P-384, chaîne reçue différente, profil TLS
+  restrictif — toutes consignées avec leurs chiffres dans
+  [`bug-165`](../../specs/features/todo/bug-165-recherche-de-mise-a-jour-en-ligne-echoue.md).
+
+  🚨 **Le fait central, pour qui reprendra** : **tout ce qui est reproduit hors ligne RÉUSSIT**
+  (même chaîne, mêmes ancres, même pointeur de profil, même nom d'hôte, `ret=0 flags=0x0`),
+  **et le handshake réel échoue 1,2 s plus tard sur le même binaire**. Le callback de vérification
+  ne reçoit **jamais de `depth=3`** ⇒ mbedtls **abandonne avant d'essayer l'ancre**.
+  ⚠️ **Piste non testée, la plus prometteuse** : `ssl_client.cpp:201` ne vérifie que `ret < 0`,
+  alors qu'un retour **positif** de `mbedtls_x509_crt_parse()` compte les certificats **qui ont
+  échoué à être lus** — ignoré en silence. ⇒ **Parcourir `conf->ca_chain`** (⛔ pas une analyse
+  refaite à côté) pour compter les ancres **réellement** chargées côté handshake.
+  ⚠️ L'instrumentation complète est conservée :
+  [`docs/incidents/bug-165-instrumentation-tls.patch`](../incidents/bug-165-instrumentation-tls.patch).
+
+  ⛔ **Aucune urgence opérationnelle** : `./deploy.sh ota-firmware` et le téléversement manuel
+  `POST /update` fonctionnent. Seule la recherche **en ligne** est hors service.
+
 ### ⚠️ La règle est désormais imposée en CI, pas seulement écrite
 
 [`tools/check_github_root_ca.sh`](../../tools/check_github_root_ca.sh) (job `github-root-ca` du

@@ -6,19 +6,22 @@
 
 ### Corrections
 
-- **La recherche de mise à jour en ligne (`GET /check-update`) refonctionne** (bug-165). Elle
-  échouait **systématiquement** — `{"error":"GitHub API error","code":-1}` — depuis que GitHub a
-  changé la chaîne de certificats servie par `api.github.com`.
-  ⚠️ **Cause** : mbedtls 3.x **refuse les ancres de confiance cross-signées**, et la chaîne servie
-  se termine désormais sur une variante **croisée** de « Sectigo Root E46 ». Le projet avait déjà
-  rencontré ce mécanisme le **2026-08-08** et posé la règle « toutes auto-signées » ; la chaîne a
-  changé depuis, **la règle n'avait pas été réappliquée**.
+- ⚠️ **L'échec de `GET /check-update` NOMME désormais sa cause** (bug-165). Il renvoyait un
+  `{"error":"GitHub API error","code":-1}` **muet**, alors que le détail était **déjà au journal**.
+  La réponse porte maintenant **`step`** et **`detail`**.
+  ⛔ **CE LOT NE RÉPARE PAS LA RECHERCHE DE MISE À JOUR** — elle échoue toujours, vérifié après
+  déploiement : `step: tls_handshake`, `X509 - Certificate verification failed (-9984)`.
+  ⚠️ **Rectification d'une affirmation antérieure de cette entrée** : elle annonçait que la
+  recherche « refonctionne ». **C'était faux** — le correctif a été déployé puis constaté sans
+  effet. Les deux racines ajoutées ne nuisent pas et restent justifiées ; elles ne suffisent pas.
+  ⇒ **bug-165 est ROUVERT.** Six hypothèses ont été fermées par l'expérience, elles sont
+  consignées dans la spec.
 
 ### Firmware
 
 - **Deux racines de confiance ajoutées** (3 → 5, toutes auto-signées) : Sectigo Root **E46** (ECC)
   et **R46** (RSA), expiration 2046. ⛔ Aucune des trois d'origine retirée — ISRG Root X1 ancre le
-  chemin de **téléchargement**.
+  chemin de **téléchargement**. ⚠️ **Nécessaires mais PAS suffisantes** : l'échec persiste.
 - `GET /check-update` renvoie désormais **`step`** (`tls_handshake` / `connection` / `http`) et
   **`detail`** en plus de `code`. ⚠️ Un **404** « aucune release publiée » est désormais
   **distinguable** d'un échec réseau — les deux rendaient le même `-1` opaque.

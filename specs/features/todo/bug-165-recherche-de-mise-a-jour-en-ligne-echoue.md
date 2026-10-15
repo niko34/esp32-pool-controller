@@ -214,3 +214,66 @@ L'empreinte d'**ISRG Root X1** n'était **pas** contrôlée — ⚠️ or c'est 
 `objects.githubusercontent.com` sert `*.github.io ← YR1 ← **Root YR (CROISÉE par ISRG Root X1)**`.
 **Même structure** que celle qui vient de casser la recherche. ⛔ Ajouter « ISRG Root X2 » ne
 réglerait rien — racine sans rapport. ⇒ Spec de suivi si le test après déploiement le confirme.
+
+---
+
+# ⛔ ROUVERT le 2026-10-14 — le correctif a été déployé et N'A PAS fonctionné
+
+⚠️ **La clôture ci-dessus était PRÉMATURÉE.** Le correctif (2 racines auto-signées) a été commité,
+poussé, déployé en **2.80.1**, puis **constaté sans effet** :
+```json
+{"code":-1,"step":"tls_handshake",
+ "detail":"X509 - Certificate verification failed, e.g. CRL, CA or signature check failed (-9984)"}
+```
+⚠️ **Le CHANGELOG annonçait « refonctionne » — c'était FAUX**, rectifié dans la même entrée.
+⛔ **Ce qui reste vrai et acquis** : le diagnostic. L'appareil **nomme** désormais l'étape et la
+cause, au lieu d'un `-1` muet. C'est ce qui a permis de fermer six pistes en une soirée.
+
+## ⚠️ SIX HYPOTHÈSES FERMÉES PAR L'EXPÉRIENCE — ⛔ NE PAS LES REFAIRE
+
+| # | Hypothèse | Test réellement exécuté | Résultat |
+|---|---|---|---|
+| 1 | Racine auto-signée manquante | 2 racines Sectigo ajoutées, **déployé** | ❌ même erreur |
+| 2 | Seul le 1er certificat du paquet est lu | Sectigo **placée en tête**, déployé | ❌ même erreur |
+| 3 | Horloge fausse | Journalisée : **2026-10-14 20:32 UTC**, correcte | ❌ |
+| 4 | Courbe P-384 non supportée | `mbedtls_ecp_curve_list()` à l'exécution : **secp384r1 présente (id=4)**, mbedtls **3.6.5** ; auto-vérification de E46 ⇒ **ret=0** | ❌ |
+| 5 | Chaîne reçue ≠ chaîne capturée | **Callback `mbedtls_ssl_conf_verify()` activé** : 3 maillons, **identiques** à la capture | ❌ |
+| 6 | Profil TLS plus restrictif | Profil **lu sur la connexion vivante** (`mbedtls_x509_crt_profile_default`, **secp384r1 autorisée**) ; `verify_with_profile()` avec **ce pointeur** + `cn="api.github.com"` ⇒ **ret=0, flags=0x0** | ❌ |
+
+⚠️ **Également écarté** : le paquet de certificats intégré à l'IDF n'est **pas** utilisé —
+`ssl_client.cpp:199-208` prend la branche `rootCABuff != NULL` ; le bundle n'est attaché que dans
+le `else if`.
+
+## 🚨 LE FAIT CENTRAL, à méditer avant de reprendre
+
+**Tout ce qui est reproduit hors ligne RÉUSSIT. Le handshake réel ÉCHOUE. Même binaire, à 1,2 s
+d'intervalle.** Même chaîne, mêmes ancres, **même pointeur de profil**, même nom d'hôte.
+
+⚠️ Et une observation qui n'a **pas** été exploitée : le callback live ne reçoit **jamais de
+`depth=3`**. La documentation dit qu'il est appelé pour chaque maillon **y compris l'ancre
+trouvée** ⇒ **mbedtls abandonne avant d'essayer l'ancre**.
+⚠️ **Autre observation non expliquée** : les drapeaux par profondeur ont **varié entre deux
+exécutions** (une fois les 3 niveaux à `0x8`, une fois `depth=0` à `0x0`). ⛔ Non interprété.
+
+## ⚠️ LA PISTE SUIVANTE, non testée — et c'est la plus prometteuse
+
+⛔ **Le comptage « 5 ancres chargées » portait-il sur le BON objet ?**
+Le test hors ligne parse `GITHUB_ROOT_CA` **lui-même**. Le handshake, lui, utilise
+`conf->ca_chain`, rempli par `mbedtls_x509_crt_parse()` **dans `start_ssl_client()`**
+(`ssl_client.cpp:201`).
+🚨 **Et cette ligne ne vérifie que `ret < 0`** : `mbedtls_x509_crt_parse()` renvoie, quand il est
+**positif**, le **NOMBRE DE CERTIFICATS QUI ONT ÉCHOUÉ À ÊTRE LUS** — et ce cas est **ignoré en
+silence**.
+⇒ **Vérifier en priorité** : parcourir **`conf->ca_chain`** (⛔ pas une analyse refaite à côté) et
+compter/nommer les ancres **réellement** chargées côté handshake, plus la valeur de retour du parse.
+⚠️ Si ce nombre est **inférieur à 5**, tout s'explique d'un coup.
+
+## Matériel conservé
+L'instrumentation complète (514 lignes : callback de vérification, profil, courbes, bissection
+hors ligne) est conservée en **`docs/incidents/bug-165-instrumentation-tls.patch`** — ⛔ elle n'est
+**pas** dans le firmware livré. `git apply` pour la reprendre.
+
+## Contournements disponibles — ⚠️ l'appareil reste maintenable
+⛔ **Aucune urgence opérationnelle** : `./deploy.sh ota-firmware` (réseau local) et le téléversement
+manuel `POST /update` **fonctionnent**. Seule la recherche de mise à jour **en ligne** est hors
+service.
