@@ -1,0 +1,125 @@
+diff --git a/src/web_routes_ota.cpp b/src/web_routes_ota.cpp
+index 0c1ac23..3c29452 100644
+--- a/src/web_routes_ota.cpp
++++ b/src/web_routes_ota.cpp
+@@ -30,6 +30,89 @@
+ #include <esp_partition.h>
+ #include <LittleFS.h>
+ #include <esp_task_wdt.h>
++// bug-165 (reprise, hypothese penurie memoire) : instrumentation REDUITE au
++// strict minimum (hypothese 8) -- callback de verification mbedtls +
++// mesures heap 8 bits. PAS de parsing de certificat hors ligne (ca pese
++// lourd et contaminait les mesures precedentes). Observation uniquement,
++// aucune modification du comportement TLS, ni de la garde TLS existante.
++#include "ssl_client.h"
++#include <mbedtls/x509_crt.h>
++#include "heap_metrics.h"  // heapFree8Bit() / heapLargestFreeBlock8Bit() -- PAS ESP.getFreeHeap() (bug-108 : metrique aveugle, IRAM-inclusive)
++
++// Appele par mbedtls PENDANT le handshake reel, une fois par certificat
++// examine (profondeur croissante depuis le pair, 0 = feuille). Mesure le tas
++// 8 bits A CE MOMENT PRECIS -- pas avant, pas apres. Observation PURE : ne
++// modifie jamais *flags, renvoie toujours 0.
++static int bug165LiveVerifyCallback(void* data, mbedtls_x509_crt* crt, int depth, uint32_t* flags) {
++  (void)data;
++  char subjBuf[150] = {0};
++  mbedtls_x509_dn_gets(subjBuf, sizeof(subjBuf), &crt->subject);
++  systemLogger.error(
++    String("[bug-165] LIVE depth=") + String(depth) +
++    " sujet=[" + String(subjBuf) + "]" +
++    " flags_a_ce_niveau=0x" + String(*flags, HEX) +
++    " free8=" + String(heapFree8Bit()) + " o maxAlloc8=" + String(heapLargestFreeBlock8Bit()) + " o");
++  return 0;  // ne jamais forcer/corriger : observer seulement
++}
++
++// bug-165 (reprise) : sous-classe diagnostique REDUITE. Seul ajout par
++// rapport a NetworkClientSecure::connect() : pose du callback ci-dessus et
++// mesures heap 8 bits juste avant / juste apres le handshake. Comportement
++// final (stop() sur echec, _connected=true sur succes) IDENTIQUE.
++class OtaDiagnosticSecureClient : public WiFiClientSecure {
++ public:
++  int diagVerifyFlags = -1;
++  char diagVerifyInfo[256] = {0};
++  int diagCaAnchorCount = -1;  // simple comptage sur l'objet REEL (sslclient->ca_cert), aucun reparse
++
++  int connect(const char* host, uint16_t port, int32_t timeout) override {
++    _timeout = timeout;
++    IPAddress address;
++    if (!Network.hostByName(host, address)) {
++      return 0;
++    }
++    int ret = start_ssl_client(sslclient.get(), address, port, host, _timeout,
++                                _CA_cert, _use_ca_bundle, _cert, _private_key,
++                                nullptr, nullptr, _use_insecure, _alpn_protos);
++
++    if (ret >= 0) {
++      mbedtls_ssl_conf_verify(&sslclient->ssl_conf, bug165LiveVerifyCallback, nullptr);
++    }
++
++    systemLogger.info("[bug-165] Heap 8 bits JUSTE AVANT handshake : free8=" +
++                      String(heapFree8Bit()) + " o maxAlloc8=" + String(heapLargestFreeBlock8Bit()) + " o");
++
++    if (ret >= 0 && !_stillinPlainStart) {
++      ret = ssl_starttls_handshake(sslclient.get());
++    }
++    sslclient->last_error = ret;
++
++    systemLogger.info("[bug-165] Heap 8 bits JUSTE APRES handshake (ret=" + String(ret) + ") : free8=" +
++                      String(heapFree8Bit()) + " o maxAlloc8=" + String(heapLargestFreeBlock8Bit()) + " o");
++
++    // Comptage SIMPLE sur l'objet reel (pas de reparse -- ca a contamine la
++    // mesure precedente), pour re-confirmer que les ancres sont toujours la.
++    diagCaAnchorCount = 0;
++    const mbedtls_x509_crt* anchor = &sslclient->ca_cert;
++    while (anchor != nullptr && anchor->raw.p != nullptr) {
++      diagCaAnchorCount++;
++      anchor = anchor->next;
++    }
++    diagVerifyFlags = static_cast<int>(mbedtls_ssl_get_verify_result(&sslclient->ssl_ctx));
++    if (diagVerifyFlags > 0) {
++      mbedtls_x509_crt_verify_info(diagVerifyInfo, sizeof(diagVerifyInfo), "  ! ", (uint32_t)diagVerifyFlags);
++    } else {
++      diagVerifyInfo[0] = '\0';
++    }
++
++    if (ret < 0) {
++      stop();
++      return 0;
++    }
++    _connected = true;
++    return 1;
++  }
++};
+ 
+ // Variables pour gérer les redémarrages différés (partagées avec web_server)
+ static bool* g_restartRequested = nullptr;
+@@ -905,7 +988,12 @@ static void handleCheckUpdate(AsyncWebServerRequest* request) {
+                     String(freeHeap) + " o, plus gros bloc=" +
+                     String(maxAlloc) + " o, client=" + clientIp + ")");
+ 
+-  WiFiClientSecure client;
++  // bug-165 (reprise, hypothese penurie) : metrique 8 bits (PAS ESP.getFreeHeap,
++  // cf bug-108) juste avant toute allocation liee a TLS.
++  systemLogger.info("[bug-165] Heap 8 bits AVANT ouverture TLS : free8=" +
++                    String(heapFree8Bit()) + " o maxAlloc8=" + String(heapLargestFreeBlock8Bit()) + " o");
++
++  OtaDiagnosticSecureClient client;
+   if (!ensureTimeForTls(request)) {
+     return;
+   }
+@@ -942,6 +1030,16 @@ static void handleCheckUpdate(AsyncWebServerRequest* request) {
+         errorDetail = String(" — TLS: ") + tlsErr + " (" + String(tlsCode) + ")";
+       }
+       errorDetail += String(" [") + HTTPClient::errorToString(httpCode) + "]";
++
++      // bug-165 (reprise, hypothese penurie) : constat minimal -- verdict +
++      // ancres (comptage simple, pas de reparse) + heap 8 bits de reference
++      // AU MOMENT de l'echec (avant https.end()/stop() qui libere le contexte).
++      String verifyInfoStr = (client.diagVerifyFlags > 0) ? String(client.diagVerifyInfo) : String("(aucun drapeau — 0)");
++      systemLogger.error(
++        "[bug-165] Constat — ancres CA=" + String(client.diagCaAnchorCount) +
++        " verify_result=0x" + String(client.diagVerifyFlags, HEX) +
++        " detail=[" + verifyInfoStr + "] ; heap 8 bits a l'echec : free8=" +
++        String(heapFree8Bit()) + " o maxAlloc8=" + String(heapLargestFreeBlock8Bit()) + " o");
+     }
+     systemLogger.error("Erreur HTTP GitHub: " + String(httpCode) + errorDetail);
+     https.end();

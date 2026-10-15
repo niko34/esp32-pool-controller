@@ -18,6 +18,12 @@
 // prédicat pur oomTlsGateReason() partagé avec le parachute OOM (garde PSRAM
 // LIBRE + heap avant toute session TLS sortante : /check-update, /download-update).
 #include "oom_guard_logic.h"
+// bug-165/bug-108 (v2.81.0) : la garde TLS décide désormais sur la métrique 8
+// bits RÉELLEMENT allouable (ADR-0058), jamais sur ESP.getFreeHeap()/
+// getMaxAllocHeap() (IRAM-inclusives, aveugles à la famine 8 bits visée) — et
+// sur le PLUS GROS BLOC PSRAM (contiguïté), pas la PSRAM libre totale.
+#include "heap_metrics.h"
+#include <esp_heap_caps.h>  // heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM)
 // feature-063 : include EXPLICITE de WiFiClient.h — il n'arrive plus
 // transitivement via HTTPClient.h depuis le core Arduino 3 (où WiFiClient est
 // un alias de NetworkClient).
@@ -815,32 +821,44 @@ class BudgetJsonAllocator : public ArduinoJson::Allocator {
 };
 
 // Garde commune des sessions TLS sortantes GitHub (/check-update,
-// /download-update) — bug-garde-tls-trop-permissive-sans-psram : mesure PSRAM
-// LIBRE + heap, délègue la DÉCISION au prédicat pur oomTlsGateReason (aucune
-// comparaison de seuil ici) et répond 503 avec le motif. Retourne true si la
-// requête a été refusée : l'appelant doit sortir IMMÉDIATEMENT, sans aucun
-// effet de bord.
+// /download-update) — bug-garde-tls-trop-permissive-sans-psram : mesure le
+// PLUS GROS BLOC PSRAM (contiguïté, pas la PSRAM libre totale) + heap 8 bits
+// RÉELLEMENT allouable, délègue la DÉCISION au prédicat pur oomTlsGateReason
+// (aucune comparaison de seuil ici) et répond 503 avec le motif. Retourne true
+// si la requête a été refusée : l'appelant doit sortir IMMÉDIATEMENT, sans
+// aucun effet de bord.
+//
+// bug-165/bug-108 (v2.81.0) : les TROIS mesures ont changé de nature.
+//  - psramLargestBlockBytes : heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM),
+//    PAS ESP.getFreePsram() (total, insensible à la fragmentation — un total
+//    élevé mais fragmenté n'accueillerait pas un tampon TLS de 16 Ko).
+//  - freeHeapBytes/maxAllocBytes : heapFree8Bit()/heapLargestFreeBlock8Bit()
+//    (ADR-0058), PAS ESP.getFreeHeap()/getMaxAllocHeap() (IRAM-inclusives —
+//    c'est très exactement le défaut de bug-108 : une garde qui AUTORISAIT un
+//    handshake voué à l'échec, prouvé le 15/10/2026 : ESP.getFreeHeap()=82796
+//    (autorisé) pendant que maxAlloc8 réel valait 3316 o).
 static bool refuseIfTlsGateClosed(AsyncWebServerRequest* request, const char* routeName,
-                                  const String& clientIp, uint32_t psramFreeBytes,
-                                  uint32_t freeHeap, uint32_t maxAlloc) {
-  const uint8_t reason = oomTlsGateReason(psramFreeBytes, freeHeap, maxAlloc,
-                                          kOtaTlsMinPsramBytes,
+                                  const String& clientIp, uint32_t psramLargestBlockBytes,
+                                  uint32_t freeHeapBytes, uint32_t maxAllocBytes) {
+  const uint8_t reason = oomTlsGateReason(psramLargestBlockBytes, freeHeapBytes, maxAllocBytes,
+                                          kOtaTlsMinPsramLargestBlockBytes,
                                           kCheckUpdateMinFreeHeapBytes,
                                           kCheckUpdateMinMaxAllocBytes);
   if (reason == kOomTlsGateOk) {
     return false;
   }
 
-  // WARN enrichi : motif + PSRAM LIBRE + les deux mesures heap avec leurs seuils
-  // + IP (traçabilité on-target : le refus doit être auto-explicatif dans le log).
+  // WARN enrichi : motif + plus gros bloc PSRAM + les deux mesures heap 8 bits
+  // avec leurs seuils + IP (traçabilité on-target : le refus doit être
+  // auto-explicatif dans le log).
   const char* reasonLabel = (reason == kOomTlsGateNoPsram)
-                                ? "PSRAM libre absente/insuffisante"
-                                : "mémoire insuffisante pour TLS";
-  systemLogger.warning(String(routeName) + " refusé (" + reasonLabel + ") : PSRAM libre=" +
-                       String(psramFreeBytes) + " o (min " + String(kOtaTlsMinPsramBytes) +
-                       "), heap libre=" + String(freeHeap) + " o (min " +
-                       String(kCheckUpdateMinFreeHeapBytes) + "), plus gros bloc=" +
-                       String(maxAlloc) + " o (min " +
+                                ? "plus gros bloc PSRAM absent/insuffisant"
+                                : "mémoire interne 8 bits insuffisante pour TLS";
+  systemLogger.warning(String(routeName) + " refusé (" + reasonLabel + ") : plus gros bloc PSRAM=" +
+                       String(psramLargestBlockBytes) + " o (min " + String(kOtaTlsMinPsramLargestBlockBytes) +
+                       "), heap interne 8 bits libre=" + String(freeHeapBytes) + " o (min " +
+                       String(kCheckUpdateMinFreeHeapBytes) + "), plus gros bloc interne 8 bits=" +
+                       String(maxAllocBytes) + " o (min " +
                        String(kCheckUpdateMinMaxAllocBytes) + "), client=" + clientIp);
 
   if (reason == kOomTlsGateNoPsram) {
@@ -848,7 +866,7 @@ static bool refuseIfTlsGateClosed(AsyncWebServerRequest* request, const char* ro
     // PHYSIQUEMENT différentes ; la route les discrimine ici à partir de la
     // mesure qu'elle a déjà en main (aucun seuil dupliqué : simple test de
     // nullité) pour que le front ne mente pas à l'utilisateur.
-    if (psramFreeBytes == 0) {
+    if (psramLargestBlockBytes == 0) {
       // PSRAM ABSENTE (module WROOM) → indisponibilité PERMANENTE, matérielle.
       // Message destiné à l'UTILISATEUR : ce n'est pas une panne mais une
       // caractéristique matérielle → formulation neutre, vocabulaire aligné sur
@@ -877,33 +895,68 @@ static bool refuseIfTlsGateClosed(AsyncWebServerRequest* request, const char* ro
   return true;
 }
 
+// bug-165/bug-108 (v2.81.0, condition C4 du design validé security-reviewer) :
+// observabilité du repli PSRAM→interne. Le correctif (mbedtls_psram_alloc.cpp)
+// fait obéir mbedtls à la politique PSRAM du projet, mais la PSRAM reste un
+// POOL DE TRAVAIL PARTAGÉ : si elle sature au moment d'une session TLS, les
+// allocations mbedtls retombent SILENCIEUSEMENT en RAM interne — sans ce
+// journal, une PSRAM saturée ramènerait l'appareil au défaut d'aujourd'hui
+// sans que rien ne le signale. Appelé AVANT et APRÈS chaque session TLS
+// sortante (/check-update, /download-update) : faute de pouvoir échantillonner
+// PENDANT un appel HTTPClient bloquant sans ré-instrumenter mbedtls (cf.
+// l'instrumentation complète, non embarquée, conservée en
+// docs/incidents/bug-165-instrumentation-tls.patch), le relevé « après »
+// (pris immédiatement après le retour de https.GET()/http.GET(), donc le plus
+// près possible de la fin du handshake) sert de proxy pour « pendant ».
+static void logTlsHeapWindow(const char* routeName, const char* whenLabel) {
+  const uint32_t internalLargest = heapLargestFreeBlock8Bit();
+  const uint32_t internalFree = heapFree8Bit();
+  const uint32_t psramLargest = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM);
+  systemLogger.info(String(routeName) + " : fenêtre TLS (" + whenLabel +
+                    ") — interne 8 bits libre=" + String(internalFree) +
+                    " o, plus gros bloc interne=" + String(internalLargest) +
+                    " o, plus gros bloc PSRAM=" + String(psramLargest) + " o");
+  if (internalLargest < kOtaTlsInternalFallbackWarnBytes) {
+    systemLogger.warning(String(routeName) + " : plus gros bloc interne 8 bits (" +
+                         whenLabel + ") sous " + String(kOtaTlsInternalFallbackWarnBytes) +
+                         " o (" + String(internalLargest) +
+                         " o) — repli PSRAM→interne probable pendant la session TLS "
+                         "(PSRAM peut-être saturée)");
+  }
+}
+
 static void handleCheckUpdate(AsyncWebServerRequest* request) {
   // bug-oom-accept-http-durcissement : IP client dans les logs (le crash du
   // 11/08 avait un profil TLS compatible mais l'appelant était invérifiable).
   String clientIp = request->client()->remoteIP().toString();
-  // PSRAM LIBRE (getFreePsram) et non installée (getPsramSize, constante) :
-  // une PSRAM saturée ne protège de rien, mbedTLS retomberait sur le tas interne.
-  uint32_t psramFreeBytes = ESP.getFreePsram();
-  uint32_t freeHeap = ESP.getFreeHeap();
-  uint32_t maxAlloc = ESP.getMaxAllocHeap();
+  // bug-165/bug-108 (v2.81.0) : PLUS GROS BLOC PSRAM (contiguïté — un total
+  // élevé mais fragmenté n'accueillerait pas un tampon TLS de 16 Ko) et heap
+  // 8 bits RÉELLEMENT allouable (ADR-0058, jamais ESP.getFreeHeap()/
+  // getMaxAllocHeap(), IRAM-inclusives).
+  uint32_t psramLargestBlockBytes = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM);
+  uint32_t freeHeapBytes = heapFree8Bit();
+  uint32_t maxAllocBytes = heapLargestFreeBlock8Bit();
 
-  // Garde PSRAM libre + heap AVANT la création de WiFiClientSecure : sans PSRAM
+  // Garde PSRAM + heap 8 bits AVANT la création de WiFiClientSecure : sans PSRAM
   // le handshake est voué à l'échec après avoir affamé le tas (~1 s de fenêtre
   // de crash) ; sur heap dégradé l'échec était lent et aléatoire (BIGNUM alloc
   // en cours de handshake). Refus 503 rapide et honnête à la place.
-  if (refuseIfTlsGateClosed(request, "/check-update", clientIp, psramFreeBytes,
-                            freeHeap, maxAlloc)) {
+  if (refuseIfTlsGateClosed(request, "/check-update", clientIp, psramLargestBlockBytes,
+                            freeHeapBytes, maxAllocBytes)) {
     return;
   }
 
   // bug-checkupdate-tls-core3 : l'échec observé est un manque de mémoire
   // pendant le handshake (X509 alloc failed) — tracer l'état heap AVANT la
   // session TLS pour distinguer épuisement total / fragmentation (maxAlloc).
-  // PSRAM libre tracée aussi : elle conditionne désormais l'autorisation.
-  systemLogger.info("Vérification des mises à jour GitHub... (PSRAM libre=" +
-                    String(psramFreeBytes) + " o, heap libre=" +
-                    String(freeHeap) + " o, plus gros bloc=" +
-                    String(maxAlloc) + " o, client=" + clientIp + ")");
+  // Plus gros bloc PSRAM tracé aussi : il conditionne désormais l'autorisation.
+  systemLogger.info("Vérification des mises à jour GitHub... (plus gros bloc PSRAM=" +
+                    String(psramLargestBlockBytes) + " o, heap interne 8 bits libre=" +
+                    String(freeHeapBytes) + " o, plus gros bloc interne 8 bits=" +
+                    String(maxAllocBytes) + " o, client=" + clientIp + ")");
+  // Condition C4 (bug-165/bug-108) : repère AVANT la session, pour confronter
+  // à l'APRÈS et détecter un repli PSRAM→interne survenu PENDANT le handshake.
+  logTlsHeapWindow("/check-update", "avant");
 
   WiFiClientSecure client;
   if (!ensureTimeForTls(request)) {
@@ -929,6 +982,10 @@ static void handleCheckUpdate(AsyncWebServerRequest* request) {
   https.useHTTP10(true);
 
   int httpCode = https.GET();
+  // Condition C4 : repère APRÈS le handshake (succès ou échec) — le point le
+  // plus proche de « pendant » qu'un appel HTTPClient bloquant permette de
+  // mesurer sans ré-instrumenter mbedtls.
+  logTlsHeapWindow("/check-update", "session ouverte");
 
   if (httpCode != HTTP_CODE_OK) {
     String errorDetail = "";
@@ -1137,20 +1194,24 @@ static void handleDownloadUpdate(AsyncWebServerRequest* request) {
     return;
   }
 
-  // Garde PSRAM libre + heap avant la session TLS sortante
-  // (bug-garde-tls-trop-permissive-sans-psram) : MÊME garde que /check-update.
-  // Position volontaire — après url/allowlist/digest (donc une requête mal
-  // formée reste un 400/403), mais AVANT WiFiClientSecure, setOtaInProgress(),
-  // LittleFS.end() et tout esp_partition_erase_range() : un refus n'a AUCUN
-  // effet de bord (pas de pompes gelées, pas de FS démonté, rien d'effacé).
+  // Garde PSRAM + heap 8 bits avant la session TLS sortante
+  // (bug-garde-tls-trop-permissive-sans-psram, bug-165/bug-108) : MÊME garde
+  // que /check-update. Position volontaire — après url/allowlist/digest (donc
+  // une requête mal formée reste un 400/403), mais AVANT WiFiClientSecure,
+  // setOtaInProgress(), LittleFS.end() et tout esp_partition_erase_range() :
+  // un refus n'a AUCUN effet de bord (pas de pompes gelées, pas de FS démonté,
+  // rien d'effacé).
   {
     String clientIp = request->client()->remoteIP().toString();
-    // getFreePsram() (libre) et non getPsramSize() (installée) — cf. /check-update.
+    // bug-165/bug-108 : plus gros bloc PSRAM (contiguïté) et heap 8 bits
+    // RÉELLEMENT allouable — cf. /check-update, mêmes motifs.
     if (refuseIfTlsGateClosed(request, "/download-update", clientIp,
-                              ESP.getFreePsram(), ESP.getFreeHeap(),
-                              ESP.getMaxAllocHeap())) {
+                              heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM),
+                              heapFree8Bit(), heapLargestFreeBlock8Bit())) {
       return;
     }
+    // Condition C4 : repère AVANT la session.
+    logTlsHeapWindow("/download-update", "avant");
   }
 
   // Paramètre optionnel pour contrôler le redémarrage
@@ -1189,6 +1250,8 @@ static void handleDownloadUpdate(AsyncWebServerRequest* request) {
   }
 
   int httpCode = http.GET();
+  // Condition C4 : repère APRÈS le handshake (succès ou échec) — cf. /check-update.
+  logTlsHeapWindow("/download-update", "session ouverte");
 
   if (httpCode != HTTP_CODE_OK) {
     systemLogger.error("Erreur HTTP téléchargement: " + String(httpCode));
@@ -1210,6 +1273,15 @@ static void handleDownloadUpdate(AsyncWebServerRequest* request) {
 
   WiFiClient* stream = http.getStreamPtr();
   size_t written = 0;
+  // ⚠️ INVARIANT (bug-165/bug-108, v2.81.0) : aucun tampon détenu par mbedtls
+  // ne doit être passé à Update.write() / esp_partition_write() (équivalent
+  // esp_ota_write pour la voie firmware). La copie par ce tampon de PILE
+  // (buff[512]) est STRUCTURELLE, pas incidente : stream->readBytes() copie le
+  // contenu hors de l'espace mbedtls avant toute écriture flash. C'est ce qui
+  // rend sûre la bascule PSRAM des buffers mbedtls ci-dessus — pendant
+  // l'écriture en flash, le cache qui donne accès à la PSRAM est désactivé ;
+  // si mbedtls y détenait des données à cet instant, l'appareil planterait.
+  // Ce commentaire ne change AUCUNE logique de la boucle ci-dessous.
   uint8_t buff[512];
 
   // Hachage incrémental du flux téléchargé (feature-026) — instance LOCALE

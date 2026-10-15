@@ -49,6 +49,7 @@ extern "C" bool esp_psram_check_ptr_addr(const void* p);
 #include "heap_ring.h"
 #include "fs_guard.h"     // bug-100 : drain de l'épisode de famine fichiers (ADR-0070)
 #include "heap_metrics.h"  // mesure 8 bits (mémoire réellement allouable) — trace de calibrage v2.19.0
+#include "mbedtls_psram_alloc.h"  // bug-165/bug-108 : mbedtls obéit à la politique PSRAM (v2.81.0)
 #include "heap_census.h"  // feature-128 : recensement du tas (R2) + lecture de contenu (R3, sous POOL_HEAP_PEEK)
 #include "oom_guard.h"
 #include "ping/ping_sock.h"  // esp_ping : sonde ICMP passerelle (watchdog connectivité v2.9.2)
@@ -191,6 +192,21 @@ void setup() {
   // psramFound() pour le binaire unique WROOM/WROVER-E.
   if (psramFound()) {
     heap_caps_malloc_extmem_enable(kPsramExtmemThresholdBytes);
+
+    // bug-165/bug-108 (v2.81.0) : mbedtls FORCE ses allocations en RAM INTERNE
+    // (CONFIG_MBEDTLS_INTERNAL_MEM_ALLOC=1, sdkconfig des libs pioarduino
+    // précompilées — non modifiable sans recompiler mbedtls) et consommait
+    // ~56 Ko de tas interne pendant la vérification ECDSA P-384 d'un handshake
+    // TLS sortant (maxAlloc8 mesuré à 3 316 o), alors que la PSRAM dormait.
+    // Posé ICI, JUSTE APRÈS la politique d'extension PSRAM ci-dessus et AVANT
+    // TOUTE utilisation de mbedtls (Wi-Fi compris, cf. setupWiFi() bien plus
+    // bas) : aucun code de ce fichier n'invoque mbedtls entre ce point et
+    // setupWiFi() — invariant déjà vrai avant ce lot, PRÉSERVÉ. AUCUN LOG ICI
+    // (systemLogger.begin() n'a pas encore eu lieu) ; l'état est mémorisé dans
+    // mbedtlsPsramAllocatorState() et journalisé plus bas, avec le reste des
+    // témoins de bascule PSRAM.
+    mbedtlsPsramAllocInstall();
+
     // feature-122 (A7) : LA BASCULE EST-ELLE DÉCORATIVE ? `psram_free` est
     // immobile à 4 180 340 dans 152 relevés — ce qui signifie soit que rien ne
     // part en PSRAM, soit que l'indicateur ne le voit pas. Seule preuve
@@ -311,6 +327,26 @@ void setup() {
                       " o tentées en PSRAM d'abord (repli RAM interne si refus) ; " +
                       String((unsigned long)kPsramExtmemThresholdBytes) +
                       " o et moins : RAM interne");
+    // bug-165/bug-108 (v2.81.0) : état du crochet posé plus haut, dans le même
+    // bloc psramFound(). Les trois états sont ÉCRITS EN TOUTES LETTRES (pas un
+    // simple booléen) — le projet s'est déjà fait avoir une fois par un
+    // parachute décoratif sans que rien ne le signale avant une mesure directe.
+    switch (mbedtlsPsramAllocatorState()) {
+      case kMbedtlsPsramAllocActive:
+        systemLogger.info("mbedtls : allocateur calloc/free basculé vers la PSRAM "
+                          "(témoin confirmé — bug-165/bug-108)");
+        break;
+      case kMbedtlsPsramAllocDecorative:
+        systemLogger.critical("mbedtls : crochet PSRAM posé mais DÉCORATIF (témoin "
+                              "tombé en RAM interne) — la famine du handshake TLS "
+                              "persiste, voir bug-165/bug-108");
+        break;
+      default:
+        systemLogger.critical("mbedtls : crochet PSRAM NON posé (mbedtls_platform_"
+                              "set_calloc_free refusé) — la famine du handshake TLS "
+                              "persiste, voir bug-165/bug-108");
+        break;
+    }
   } else {
     systemLogger.info("PSRAM absente — RAM interne seule (module WROOM), "
                       "politique d'allocation inchangée");

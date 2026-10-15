@@ -311,3 +311,120 @@ si elle sature, les allocations **retombent en interne**. ⇒ Le seuil doit gard
 ### 7. Hors périmètre, mais désormais mesurable
 `kOtaTlsMinPsramBytes = 1 048 576` **n'a jamais été mesuré sur WROVER réel** (ADR-0036). ⇒ Relevé
 du 14/10 : `psram_free` = **4 174 860**, soit **4 fois** le seuil. Spec de suivi possible.
+
+---
+
+# 🚨 MISE À JOUR DU 2026-10-15 — le relevé « impossible » EXISTE, et il change tout
+
+## LE CHIFFRE QUI MANQUAIT
+
+La section précédente disait : *« le relevé n°3 (pendant TLS actif) est IMPOSSIBLE aujourd'hui
+(bug-165) »*. ⇒ **Il a été obtenu.** Mesuré sur le chemin de production, firmware **propre**,
+pendant un `/check-update` réel :
+
+| Instant | `free8` | **`maxAlloc8`** |
+|---|---|---|
+| Avant ouverture TLS | 60 760 | **57 332** |
+| Juste avant le handshake | 11 296 | **10 740** |
+| **Pendant la vérification du certificat** | 4 852 | 🚨 **3 316** |
+| 13 ms après l'échec | 59 672 | **47 092** |
+
+⚠️ **Confirmé indépendamment** : `fs_guard` a relevé **le même 3 316** au même instant et suspendu
+ses ouvertures de fichiers 30 s (*« 5 refus en 30 s »*).
+
+## 🚨 LA GARDE A AUTORISÉ UNE CONNEXION QUI A ÉCHOUÉ FAUTE DE MÉMOIRE
+
+C'est la **démonstration en production** du défaut que cette spec décrit depuis septembre :
+
+| | Valeur au moment du refus |
+|---|---|
+| `ESP.getFreeHeap()` **lu par la garde** | **82 796** |
+| Seuil `kCheckUpdateMinFreeHeapBytes` | 65 536 ⇒ ✅ **autorisé** |
+| **`maxAlloc8` réel pendant le handshake** | 🚨 **3 316** |
+
+⇒ *« une garde aveugle à la famine qu'elle vise »* — ⚠️ **ce n'est plus une analyse, c'est un
+constat**. Et le motif historique de la garde se vérifie mot pour mot : *« sur heap dégradé
+l'échec était lent et aléatoire (BIGNUM alloc en cours de handshake) »*.
+
+## ⛔ CE QUE CELA CHANGE POUR CE LOT — à lire avant de coder
+
+⚠️ **Basculer la garde sur la métrique 8 bits AUJOURD'HUI refuserait TOUTE mise à jour.** Le bloc
+utilisable tombe à **3 316 o** pendant un handshake **normal** : **aucun** seuil honnête ne laisse
+passer ça. ⇒ **Une garde juste bloquerait tout** — ce qui est correct (elle refuserait une
+connexion vouée à l'échec), mais **ne répare rien**.
+
+🚨 **L'ordre des lots s'inverse** : il faut **d'abord** donner à mbedtls la mémoire qui lui manque
+(⇒ **PSRAM**, via `mbedtls_platform_set_calloc_free()` — `CONFIG_MBEDTLS_INTERNAL_MEM_ALLOC=y`
+force aujourd'hui l'allocation en **interne**, alors que **4,17 Mo de PSRAM sont libres**),
+**ensuite seulement** recalibrer la garde sur les relevés du **nouveau** régime.
+
+⛔ **Ne pas traiter bug-108 isolément.** Voir
+[`bug-165`](bug-165-recherche-de-mise-a-jour-en-ligne-echoue.md), section « cause racine ».
+
+---
+
+# ✅ RÉSOLU — absorbé par bug-165 (v2.81.0, 2026-10-15)
+
+⛔ **Non déplacé vers `done/`** — l'orchestrateur s'en charge.
+
+L'ordre annoncé ci-dessus a été suivi : le correctif mbedtls (`mbedtls_platform_set_calloc_free`,
+[ADR-0112](../../../docs/adr/0112-mbedtls-obeit-a-la-politique-psram-du-projet.md)) a été posé
+**d'abord**, puis la garde TLS recalibrée sur le **nouveau** régime mesuré.
+
+## Livrables de cette spec, vérifiés dans le code livré
+
+- **A1** — Les deux sites (`/check-update`, `/download-update`) décident désormais sur
+  `heapFree8Bit()` / `heapLargestFreeBlock8Bit()` ([`src/web_routes_ota.cpp`](../../../src/web_routes_ota.cpp)) — plus aucune lecture de
+  `ESP.getFreeHeap()`/`getMaxAllocHeap()` sur ce chemin. ✅
+- **A2** — Seuils redimensionnés sur relevés **réels** (post-correctif mbedtls, pas les relevés
+  pré-correctif qui auraient refusé tout OTA en permanence, cf. mise à jour du 2026-10-14 de cette
+  spec) : `kCheckUpdateMinFreeHeapBytes` = 32 768, `kCheckUpdateMinMaxAllocBytes` = 24 576.
+  Dérivation écrite dans `constants.h`. ✅
+- **A3** — Position vis-à-vis de l'échelle ADR-0058 explicitée : `kCheckUpdateMinMaxAllocBytes`
+  reste **au-dessus** du sommet (`kOomRearmMinMaxAllocBytes` = 18 432), **ne s'intercale pas**
+  (garde dédiée OTA) — verrouillé par `static_assert`. ✅
+- **A4** — `/get-system-info` continue de rapporter des métriques (dont le nouveau
+  `mbedtls_psram_alloc`) ; la garde décide exclusivement en 8 bits. ✅
+- **C1** — `docs/subsystems/ota-manager.md` et `oom-guard.md` mis à jour dans cette même passe. ✅
+- **C2** — [ADR-0112](../../../docs/adr/0112-mbedtls-obeit-a-la-politique-psram-du-projet.md) créé
+  (la dérivation des seuils, ET la cause racine mbedtls, contraignent durablement). [ADR-0036](../../../docs/adr/0036-psram-requise-mise-a-jour-en-ligne.md)
+  amendé par note additive. ✅
+- **D1** — Tests natifs recalibrés + **mutation validée** (T4, `mbedtlsPsramAllocVerdict`). ✅
+
+## Critère le plus important : vérifié sur l'appareil réel
+
+**« La garde ne refuse pas en régime nominal »** : `/check-update` → 200, plus gros bloc allouable
+mesuré à **40 948 o** pendant le handshake (bien au-dessus des deux seuils). **« La garde refuse en
+famine 8 bits simulée »** : couvert par les tests natifs recalibrés (quadrants heap, frontières
+inclusives). La dette « hors périmètre consigné » d'ADR-0058 est **explicitement soldée** — voir
+[ADR-0112](../../../docs/adr/0112-mbedtls-obeit-a-la-politique-psram-du-projet.md) et
+[docs/subsystems/oom-guard.md](../../../docs/subsystems/oom-guard.md#garde-tls-sortante-partagée--oomtlsgatereason-v2186--refondue-v2810-bug-165bug-108).
+
+---
+
+# ✅ RÉSOLU le 2026-10-15 par [`bug-165`](bug-165-recherche-de-mise-a-jour-en-ligne-echoue.md), v2.81.0
+
+⚠️ **Ce lot a été ABSORBÉ** : la garde ne pouvait pas être recalibrée **avant** que mbedtls cesse
+de s'étrangler en RAM interne. L'ordre imposé par l'audit : **PSRAM d'abord, recalibrage ensuite**.
+
+## LE RELEVÉ « IMPOSSIBLE » A ÉTÉ OBTENU — et il prouve le défaut
+
+| | Valeur au moment du refus |
+|---|---|
+| `ESP.getFreeHeap()` **lu par la garde** | **82 796** |
+| Seuil d'alors | 65 536 ⇒ ✅ **autorisée** |
+| **Bloc 8 bits réellement utilisable** | 🚨 **3 316** |
+
+⇒ *« une garde aveugle à la famine qu'elle vise »* **n'est plus une analyse : c'est un constat de
+production**. ⚠️ Et le motif historique se vérifie mot pour mot : *« sur heap dégradé l'échec était
+lent et aléatoire (BIGNUM alloc en cours de handshake) »*.
+
+## Livré
+- ⛔ Plus **aucune** métrique IRAM-inclusive sur un chemin de **décision** (vérifié par grep).
+- Critère PSRAM : **plus gros bloc contigu** (`kOtaTlsMinPsramLargestBlockBytes` = 40 960 =
+  2 × 16 384 + 8 192), ⛔ **plus** la PSRAM libre totale — ⚠️ **changement de nature**, pas de valeur.
+- Seuils 8 bits **24 576** / **32 768**, **dérivations écrites** et verrouillées par `static_assert`.
+- ⚠️ **Le test qui prouve le défaut existe** : métrique brute au-dessus du seuil, métrique 8 bits
+  en dessous ⇒ **l'ancien code autorise, le nouveau refuse**. Construit sur les **chiffres réels**.
+- **4 mutations tuées**, dont *« rétablir `ESP.getMaxAllocHeap()` »*, exigée mot pour mot par cette spec.
+- Dette ADR-0058 **soldée** ; **ADR-0036 amendé** (il énonçait une règle devenue fausse).

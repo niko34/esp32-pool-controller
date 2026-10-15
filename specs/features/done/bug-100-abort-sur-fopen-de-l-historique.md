@@ -147,7 +147,7 @@ preuve binaire ci-dessous).
 | Décision structurante | [`docs/adr/0070-fopen-interne-helper-unique-et-classes-de-contention.md`](../../../docs/adr/0070-fopen-interne-helper-unique-et-classes-de-contention.md) |
 | Recensement des 14 sites (**lieu durable**) | [`docs/subsystems/acces-fichiers.md`](../../../docs/subsystems/acces-fichiers.md) |
 | Périmètre borné du lot B-3 | mis à jour dans `bug-080` + `docs/subsystems/web-server.md` |
-| Spec de suivi ouverte | `specs/features/todo/bug-108-garde-tls-ota-sur-metrique-ira-inclusive.md` |
+| Spec de suivi ouverte | `specs/features/done/bug-108-garde-tls-ota-sur-metrique-ira-inclusive.md` |
 
 **Deux docs volontairement NON touchées, et c'est une conclusion, pas un oubli :**
 

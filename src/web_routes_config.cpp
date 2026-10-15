@@ -20,6 +20,7 @@
 #include "json_compat.h"
 #include "heap_metrics.h"  // v2.19.0 : mémoire RÉELLEMENT allouable (8 bits) exposée par /get-system-info
 #include "oom_guard.h"     // v2.20.2 : état d'inscription du new_handler exposé par /get-system-info
+#include "mbedtls_psram_alloc.h"  // bug-165/bug-108 (v2.81.0) : état du crochet PSRAM de mbedtls
 #include "rtc_manager.h"
 #include <sys/time.h>
 #include <WiFi.h>
@@ -2114,6 +2115,13 @@ static void handleGetSystemInfo(AsyncWebServerRequest* request) {
   //   bytes≠0     internal=false → ANOMALIE : réserve en PSRAM, parachute inerte
   doc["oom_reserve_bytes"] = (uint32_t)oomGuardReserveArmedBytes();
   doc["oom_reserve_internal"] = oomGuardReserveIsInternalRam();
+
+  // bug-165/bug-108 (v2.81.0) : témoin anti-décoratif du crochet PSRAM de
+  // mbedtls (mbedtls_platform_set_calloc_free). 0 absent / 1 actif en PSRAM /
+  // 2 décoratif (posé mais retombé en RAM interne — ANOMALIE, cf. le parachute
+  // anti-OOM qui l'a déjà été une fois). Lecture d'un atomique : ni allocation,
+  // ni log, ni parcours de tas. Ajout PUREMENT ADDITIF.
+  doc["mbedtls_psram_alloc"] = mbedtlsPsramAllocatorState();
 
   // bug-080 B-2 (condition C4 du gate pool-chemistry) : la sonde de tas doit être
   // OBSERVABLE sans attendre un crash. Sans ces champs, oomGuardProbeStats() n'a

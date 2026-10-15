@@ -1886,7 +1886,7 @@ aucune décision du firmware ne les relit :
   les deux lignes de journal `Heap masq …` (`snprintf` sur pile, aucun bloc
   contigu requis).
 
-> **⚠️ `psram_free` CHANGE DE SENS en v2.35.0.** Jusqu'ici la PSRAM était libre à ~99 % en permanence et sa valeur ne bougeait pas. Depuis la bascule des allocations de plus de 4095 o ([ADR-0061](adr/0061-bascule-psram-au-dela-de-4095-octets-reserve-parachute-en-interne.md)), **la PSRAM est un pool de travail** : `psram_free` **varie avec la charge web** (chaque fichier statique servi y prend son tampon stdio de 4096 o). Une baisse de plusieurs dizaines de Ko pendant un chargement d'interface est le comportement **attendu**, pas une anomalie. Corollaire pour un superviseur : ne pas alarmer sur une baisse de `psram_free` ; la garde TLS sortante, elle, continue d'exiger 1 Mo libre (`kOtaTlsMinPsramBytes`, [ADR-0036](adr/0036-psram-requise-mise-a-jour-en-ligne.md)).
+> **⚠️ `psram_free` CHANGE DE SENS en v2.35.0.** Jusqu'ici la PSRAM était libre à ~99 % en permanence et sa valeur ne bougeait pas. Depuis la bascule des allocations de plus de 4095 o ([ADR-0061](adr/0061-bascule-psram-au-dela-de-4095-octets-reserve-parachute-en-interne.md)), **la PSRAM est un pool de travail** : `psram_free` **varie avec la charge web** (chaque fichier statique servi y prend son tampon stdio de 4096 o). Une baisse de plusieurs dizaines de Ko pendant un chargement d'interface est le comportement **attendu**, pas une anomalie. Corollaire pour un superviseur : ne pas alarmer sur une baisse de `psram_free` ; la garde TLS sortante, elle, exige depuis la v2.81.0 un **plus gros bloc PSRAM contigu** ≥ 40 960 o (`kOtaTlsMinPsramLargestBlockBytes`, [ADR-0112](adr/0112-mbedtls-obeit-a-la-politique-psram-du-projet.md) — amende [ADR-0036](adr/0036-psram-requise-mise-a-jour-en-ligne.md), qui exigeait 1 Mo de PSRAM libre **totale**, un critère aveugle à la fragmentation et jamais réellement exploité par mbedtls avant ce correctif).
 
 > `sketch_size` (octets, `ESP.getSketchSize()`) et `ota_partition_size` (octets, taille de la partition app active) permettent de calculer l'occupation flash du firmware — affichée sur la ligne « Firmware (flash) » de la carte Infos système (v2.5.2). `sketch_size` ajouté en v2.5.2 (feature-047).
 >
@@ -3089,36 +3089,61 @@ avant que le correctif TLS ne rétablisse la connexion, **les deux cas produisai
 
 <a id="garde-tls-sortante-psram-libre--heap-v2186"></a>
 
-#### Garde TLS sortante — PSRAM libre + heap (v2.18.6, [ADR-0036](adr/0036-psram-requise-mise-a-jour-en-ligne.md))
+#### Garde TLS sortante — plus gros bloc PSRAM + heap interne 8 bits (v2.18.6 ; **refondue v2.81.0**, [ADR-0036](adr/0036-psram-requise-mise-a-jour-en-ligne.md) + [ADR-0112](adr/0112-mbedtls-obeit-a-la-politique-psram-du-projet.md))
 
-Avant la création de `WiFiClientSecure`, la route évalue le prédicat pur partagé `oomTlsGateReason()` ([subsystems/oom-guard.md](subsystems/oom-guard.md)), qui retourne un **motif** (il remplace le booléen `oomTlsGateOk` de la v2.18.5). Deux critères, évalués **dans cet ordre** :
+🚨 **Les deux critères ci-dessous ont changé de nature en v2.81.0 (bug-165/bug-108)** — la cause
+racine réelle n'était **pas** un problème de certificats (huit hypothèses l'ont supposé, toutes
+écartées) mais mbedtls 3.6.5 **forçant** ses allocations en RAM interne
+(`CONFIG_MBEDTLS_INTERNAL_MEM_ALLOC=1`), consommant ~56 Ko de tas interne pendant un handshake —
+`maxAlloc8` mesuré à **3 316 o** en pleine vérification de certificat, pendant que 4,17 Mo de
+PSRAM dormaient. Corrigé par `mbedtls_platform_set_calloc_free()`
+([`src/mbedtls_psram_alloc.cpp`](../src/mbedtls_psram_alloc.cpp)) : mbedtls obéit désormais à la
+politique PSRAM déjà posée par le projet. Détail complet :
+[subsystems/ota-manager.md](subsystems/ota-manager.md) et
+[subsystems/oom-guard.md](subsystems/oom-guard.md#-cause-racine-réelle-bug-165-2026-10-15--mbedtls-forçait-ses-allocations-en-ram-interne).
 
-1. **PSRAM libre** (`ESP.getFreePsram()`) < `kOtaTlsMinPsramBytes` (1 048 576 o = 1 Mo) → refus. Le critère porte sur la PSRAM **LIBRE**, pas sur la taille installée : une PSRAM saturée ferait retomber mbedTLS sur la RAM interne, exactement le régime de crash.
-2. Sinon, bicritère heap **inchangé** : heap libre < `kCheckUpdateMinFreeHeapBytes` (65 536 o) **OU** plus gros bloc contigu < `kCheckUpdateMinMaxAllocBytes` (20 480 o) → refus **temporaire**.
+Avant la création de `WiFiClientSecure`, la route évalue le prédicat pur partagé `oomTlsGateReason()` ([subsystems/oom-guard.md](subsystems/oom-guard.md)), qui retourne un **motif** (il remplace le booléen `oomTlsGateOk` de la v2.18.5). **Signature et logique du prédicat inchangées** — seule la **sémantique des entrées** et les **seuils** ont changé. Deux critères, évalués **dans cet ordre** :
 
-**Trois refus possibles** (v2.18.7), tous en `503 application/json` et produits par le **helper partagé** `refuseIfTlsGateClosed` — donc **identiques au caractère près sur `/check-update` et `/download-update`** :
+1. **Plus gros bloc PSRAM contigu** (`heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM)` — ⚠️ **plus** `ESP.getFreePsram()`, qui mesure le total et non la contiguïté) < `kOtaTlsMinPsramLargestBlockBytes` (40 960 o = 2×16 384 tampons SSL + 8 192 marge JSON) → refus. Un total élevé mais fragmenté n'accueillerait pas un tampon TLS de 16 Ko.
+2. Sinon, bicritère heap **interne 8 bits** (ADR-0058, ⚠️ **plus** `ESP.getFreeHeap()`/`getMaxAllocHeap()`, IRAM-inclusives) : `heapFree8Bit()` < `kCheckUpdateMinFreeHeapBytes` (32 768 o) **OU** `heapLargestFreeBlock8Bit()` < `kCheckUpdateMinMaxAllocBytes` (24 576 o) → refus **temporaire**.
 
-| `code` | Condition | Nature | `error` (texte utilisateur) | Effet interface |
+🚨 **Pourquoi ce changement de métrique était nécessaire, pas cosmétique** : la garde v2.18.6-v2.80.x lisait `ESP.getFreeHeap()` = **82 796 o** au moment d'un refus réel et **autorisait** (seuil 65 536) — pendant que le plus gros bloc 8 bits réellement allouable valait **3 316 o**. *Une garde qui mesure la mauvaise grandeur ne protège de rien. Celle-ci a lu 82 796 octets libres et autorisé une connexion, pendant que le bloc réellement utilisable valait 3 316.*
+
+**Trois refus possibles** (v2.18.7, inchangés par la refonte v2.81.0), tous en `503 application/json` et produits par le **helper partagé** `refuseIfTlsGateClosed` — donc **identiques au caractère près sur `/check-update` et `/download-update`** :
+
+| `code` | Condition (v2.81.0) | Nature | `error` (texte utilisateur) | Effet interface |
 |---|---|---|---|---|
-| `psram_required` | PSRAM **absente** (`ESP.getFreePsram() == 0`) | **Permanent** (matériel) | « La mise à jour en ligne n'est pas disponible. Votre matériel ne dispose pas d'une mémoire PSRAM (module ESP32-DevKitC-VE nécessaire). Utilisez la mise à jour manuelle. » | Bouton **neutralisé** + callout permanent dans la carte GitHub ; repli : [upload de fichier](#post-update--critical) ou `deploy.sh ota-firmware` |
-| `psram_low` | PSRAM présente mais **libre < 1 Mo** | **Temporaire**, réessayable | « La mise à jour en ligne est momentanément indisponible : la mémoire PSRAM est saturée. Réessayez dans quelques minutes ou utilisez la mise à jour manuelle. » | Toast **informatif**, bouton **non** neutralisé, rafraîchissement de l'état via `/get-system-info` |
-| `tls_low_memory` | heap libre < `kCheckUpdateMinFreeHeapBytes` **OU** maxBloc < `kCheckUpdateMinMaxAllocBytes` (motif `kOomTlsGateLowMemory`) | **Temporaire**, réessayable | « Mémoire insuffisante pour TLS, réessayez » (texte inchangé depuis la v2.18.5) | Toast **informatif**, bouton **non** neutralisé, rafraîchissement via `/get-system-info` |
+| `psram_required` | Plus gros bloc PSRAM **absent** (`== 0`) | **Permanent** (matériel) | « La mise à jour en ligne n'est pas disponible. Votre matériel ne dispose pas d'une mémoire PSRAM (module ESP32-DevKitC-VE nécessaire). Utilisez la mise à jour manuelle. » | Bouton **neutralisé** + callout permanent dans la carte GitHub ; repli : [upload de fichier](#post-update--critical) ou `deploy.sh ota-firmware` |
+| `psram_low` | Plus gros bloc PSRAM présent mais **< 40 960 o** (fragmentée ou saturée) | **Temporaire**, réessayable | « La mise à jour en ligne est momentanément indisponible : la mémoire PSRAM est saturée. Réessayez dans quelques minutes ou utilisez la mise à jour manuelle. » | Toast **informatif**, bouton **non** neutralisé, rafraîchissement de l'état via `/get-system-info` |
+| `tls_low_memory` | heap interne 8 bits libre < `kCheckUpdateMinFreeHeapBytes` **OU** plus gros bloc interne 8 bits < `kCheckUpdateMinMaxAllocBytes` (motif `kOomTlsGateLowMemory`) | **Temporaire**, réessayable | « Mémoire insuffisante pour TLS, réessayez » (texte inchangé depuis la v2.18.5) | Toast **informatif**, bouton **non** neutralisé, rafraîchissement via `/get-system-info` |
 
-La discrimination `psram_required` / `psram_low` est faite **par la route** (simple test de nullité de la PSRAM libre déjà mesurée, aucun seuil dupliqué) : le prédicat pur `oomTlsGateReason()` regroupe les deux sous le motif `kOomTlsGateNoPsram` ([subsystems/oom-guard.md](subsystems/oom-guard.md#garde-tls-sortante-partagée--oomtlsgatereason-v2186)).
+La discrimination `psram_required` / `psram_low` est faite **par la route** (simple test de nullité du plus gros bloc PSRAM déjà mesuré, aucun seuil dupliqué) : le prédicat pur `oomTlsGateReason()` regroupe les deux sous le motif `kOomTlsGateNoPsram` ([subsystems/oom-guard.md](subsystems/oom-guard.md#garde-tls-sortante-partagée--oomtlsgatereason-v2186--refondue-v2810-bug-165bug-108)).
 
 > ⚠️ **Le champ `code` est le seul contrat machine** : il est présent sur les **trois** refus (depuis la v2.18.7 — auparavant seul le refus PSRAM en portait un) et c'est le discriminant stable pour un client. Le champ `error` est un **texte destiné à l'utilisateur** et **peut être reformulé sans préavis ni changement de version majeure** — il l'a été en v2.18.7 (formulation neutre, vocabulaire aligné sur la carte « Mise à jour manuelle » de l'interface). Ne jamais tester le contenu de `error` : tester `code`. Un client doit traiter `psram_required` comme **définitif** et `psram_low` / `tls_low_memory` comme **réessayables**. Le statut `503` et la valeur `psram_required` sont, eux, inchangés depuis la v2.18.6.
 
 Les **logs** du firmware (WARN de refus, INFO nominal) restent volontairement techniques : ils sont destinés au diagnostic, pas à l'utilisateur, et ne suivent donc pas les reformulations du champ `error`.
 
-Chaque refus émet un **WARN** auto-explicatif : motif, PSRAM libre, les deux mesures heap, leurs trois seuils et l'**IP du client** :
+Chaque refus émet un **WARN** auto-explicatif : motif, plus gros bloc PSRAM, les deux mesures heap interne 8 bits, leurs trois seuils et l'**IP du client** :
 
 ```
-WARN  /check-update refusé (PSRAM libre absente/insuffisante) : PSRAM libre=0 o (min 1048576), heap libre=87708 o (min 65536), plus gros bloc=34804 o (min 20480), client=192.168.1.15
+WARN  /check-update refusé (mémoire interne 8 bits insuffisante pour TLS) : plus gros bloc PSRAM=4194304 o (min 40960), heap interne 8 bits libre=28672 o (min 32768), plus gros bloc interne 8 bits=20480 o (min 24576), client=192.168.1.15
 ```
 
-> ⚠️ **Mise à jour en ligne indisponible sans PSRAM** (rectifie la note « limitation core Arduino 3 » des versions antérieures — l'attribution correcte, établie par la mesure terrain du 2026-08-12, est l'**absence de PSRAM**, pas le core Arduino) : sur un module **WROOM** (sans PSRAM), la session TLS GitHub réclame plusieurs blocs contigus d'environ 16 Ko que la RAM interne ne fournit plus de façon fiable après quelques minutes de fonctionnement. Le handshake échouait **après** avoir affamé le tas (allocation de 100 o refusée alors que 87 Ko restaient libres = fenêtre du crash `bad_alloc` du 11/08). Depuis la v2.18.6, `/check-update` **et** `/download-update` répondent donc `503 psram_required` **immédiatement**, sans ouvrir de session. Le module du BOM PCB v2 (**ESP32-DevKitC-VE / WROVER-E, 8 Mo de PSRAM**) place ces allocations en PSRAM.
+> ⚠️ **Mise à jour en ligne indisponible sans PSRAM** (rectifie la note « limitation core Arduino 3 » des versions antérieures — l'attribution correcte, établie par la mesure terrain du 2026-08-12, est l'**absence de PSRAM**, pas le core Arduino) : sur un module **WROOM** (sans PSRAM), la session TLS GitHub réclame plusieurs blocs contigus d'environ 16 Ko que la RAM interne ne fournit plus de façon fiable après quelques minutes de fonctionnement. Depuis la v2.18.6, `/check-update` **et** `/download-update` répondent donc `503 psram_required` **immédiatement**, sans ouvrir de session. Le module du BOM PCB v2 (**ESP32-DevKitC-VE / WROVER-E, 8 Mo de PSRAM**) place désormais **réellement** ces allocations en PSRAM (depuis le correctif mbedtls v2.81.0 — avant lui, le module avait la PSRAM mais mbedtls ne l'utilisait pas).
 
-> **Note seuils** : `kOtaTlsMinPsramBytes` = 1 Mo n'a **jamais été mesuré sur WROVER réel** (valeur volontairement large, la session TLS y consomme surtout de la PSRAM) — à confirmer à la mise en service du premier module PSRAM. Les seuils heap restent dimensionnés pour la RAM interne d'un WROOM, réserve du parachute OOM déduite ([ADR-0035](adr/0035-parachute-oom-new-handler.md)).
+> **Note seuils (révisée v2.81.0)** : `kOtaTlsMinPsramLargestBlockBytes` = 40 960 o est désormais **mesuré sur WROVER réel** (plus gros bloc PSRAM observé très au-dessus, ~4 Mo) — l'ancien seuil `kOtaTlsMinPsramBytes` = 1 Mo portait la PSRAM libre **totale**, jamais mesurée sur WROVER réel, et reposait sur l'hypothèse (fausse) que mbedtls utilisait déjà la PSRAM. Les seuils heap portent désormais la métrique **8 bits** (ADR-0058), dérivation écrite dans `constants.h` et verrouillée par `static_assert`.
+
+#### Nouveau champ `/get-system-info` : `mbedtls_psram_alloc` (v2.81.0)
+
+Témoin anti-décoratif de l'allocateur PSRAM de mbedtls (ajout **purement additif**) :
+
+| Valeur | Signification |
+|---|---|
+| `0` | Crochet jamais posé (pas de PSRAM) ou refusé par mbedtls |
+| `1` | Crochet posé **et** confirmé actif en PSRAM (témoin réel) — régime nominal attendu |
+| `2` | 🚨 **ANOMALIE** — crochet posé mais le témoin est retombé en RAM interne : la famine du handshake TLS persiste malgré le correctif |
+
+Absent d'un firmware ≤ 2.80.x → traiter l'absence comme « information indisponible » (même convention que les autres champs additifs de cette route).
 
 ---
 
@@ -3158,8 +3183,8 @@ Chaque refus émet un log `CRITICAL` avec empreintes attendue/calculée.
 | Code | `code` | Cas |
 |---|---|---|
 | `503` | `psram_required` | Module **sans** PSRAM — indisponibilité **permanente**, utiliser la **mise à jour manuelle** |
-| `503` | `psram_low` | PSRAM présente mais **saturée** (< 1 Mo libre) — **réessayable** |
-| `503` | `tls_low_memory` | Heap interne momentanément dégradé — **réessayable** |
+| `503` | `psram_low` | PSRAM présente mais plus gros bloc contigu **< 40 960 o** (fragmentée ou saturée, v2.81.0 — était < 1 Mo libre total) — **réessayable** |
+| `503` | `tls_low_memory` | Heap interne **8 bits** momentanément dégradé (v2.81.0 — était la métrique IRAM-inclusive) — **réessayable** |
 
 Les corps des **trois** refus sont produits par le **même helper** (`refuseIfTlsGateClosed`) que ceux de `/check-update` : les deux routes renvoient donc, au caractère près, les mêmes textes et les mêmes valeurs de `code` — voir le [tableau détaillé plus haut](#garde-tls-sortante-psram-libre--heap-v2186). Là encore, seul `code` fait contrat ; le champ `error` est un texte utilisateur reformulable.
 

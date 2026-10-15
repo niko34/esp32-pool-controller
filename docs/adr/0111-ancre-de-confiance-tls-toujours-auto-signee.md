@@ -3,7 +3,7 @@
 - **Statut** : Accepté
 - **Date** : 2026-10-14
 - **Décideurs** : `debugger`, `security-reviewer`, `embedded-developer`, `code-reviewer`
-- **Spec(s) liée(s)** : [`bug-165`](../../specs/features/todo/bug-165-recherche-de-mise-a-jour-en-ligne-echoue.md) ; incident antérieur `bug-checkupdate-tls-core3` (2026-08-08, non tracé par un ADR à l'époque)
+- **Spec(s) liée(s)** : [`bug-165`](../../specs/features/done/bug-165-recherche-de-mise-a-jour-en-ligne-echoue.md) ; incident antérieur `bug-checkupdate-tls-core3` (2026-08-08, non tracé par un ADR à l'époque)
 
 ## Contexte
 
@@ -102,6 +102,6 @@ elle-même été mal choisie une fois.
   (`classifyOtaCheckFailure`) · [`src/web_routes_ota.cpp`](../../src/web_routes_ota.cpp)
   (`handleCheckUpdate`) · [`tools/check_github_root_ca.sh`](../../tools/check_github_root_ca.sh) ·
   [`tools/github_root_ca_vectors.py`](../../tools/github_root_ca_vectors.py)
-- Spec : [`specs/features/todo/bug-165-recherche-de-mise-a-jour-en-ligne-echoue.md`](../../specs/features/todo/bug-165-recherche-de-mise-a-jour-en-ligne-echoue.md)
+- Spec : [`specs/features/done/bug-165-recherche-de-mise-a-jour-en-ligne-echoue.md`](../../specs/features/done/bug-165-recherche-de-mise-a-jour-en-ligne-echoue.md)
 - Doc externe : [`docs/subsystems/ota-manager.md`](../subsystems/ota-manager.md#règle--une-ancre-de-confiance-est-toujours-la-variante-auto-signée-bug-checkupdate-tls-core3-bug-165-adr-0111) ·
   [`docs/BUILD.md`](../BUILD.md#intégration-continue-github-actions)

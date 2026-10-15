@@ -1269,31 +1269,88 @@ constexpr unsigned long kOomNoReserveCriticalDelayMs = 300000;  // 5 min - sans 
 // Garde des sessions TLS sortantes GitHub (/check-update, /download-update),
 // évaluée AVANT la création de WiFiClientSecure — prédicat pur oomTlsGateReason.
 //
-// CRITÈRE 1 (fail-closed) : PSRAM LIBRE requise — la mesure passée au prédicat
-// est ESP.getFreePsram(), PAS ESP.getPsramSize() (taille installée, constante et
-// jamais décroissante : une PSRAM saturée ouvrirait la garde alors que mbedTLS
-// retomberait sur la RAM interne). Mesure terrain du 12/08/2026 sur WROOM-32
-// sans PSRAM en v2.18.5 : free=87708 o et maxBloc=34804 o PASSAIENT la garde
-// bicritère, puis le handshake mbedTLS (qui réclame plusieurs blocs contigus
-// d'environ 16 Ko) fragmentait le tas jusqu'à faire échouer une allocation de
-// 100 o — soit la fenêtre exacte du crash bad_alloc du 11/08. Sans PSRAM cet
-// état est le régime NORMAL après quelques minutes : la mise à jour en ligne est
-// refusée d'emblée (BOM PCB v2 = WROVER-E : 8 Mo de PSRAM installés, ~4 Mo
-// adressables par la fenêtre de cache), l'upload manuel de fichier reste
-// disponible. Seuil à 1 Mo de LIBRE : large sur les ~4 Mo utilisables
-// (avec SPIRAM_USE_MALLOC les allocations > 4 Ko y partent), rejette 0, une
-// PSRAM résiduelle inutilisable ET une PSRAM saturée.
-// NOTE : valeur JAMAIS mesurée sur WROVER réel — à confirmer à la mise en
-// service (relever le getFreePsram() nominal avant de figer ce seuil).
-constexpr uint32_t kOtaTlsMinPsramBytes = 1048576;         // 1 Mo - PSRAM LIBRE minimale pour tenter TLS sortant
-// CRITÈRE 2 : bicritère heap historique (ADR-0032) — la session TLS GitHub coûte
-// ~58 Ko répartis (2×16 Ko de buffers I/O + parse X509 + budget JSON 8 Ko) →
-// exige heap TOTAL suffisant ET un plus gros bloc contigu décent. Valeurs
-// INCHANGÉES depuis la v2.18.5 : elles n'ont plus à porter seules la protection
-// (le critère PSRAM le fait) — à RE-MESURER au swap WROVER, où les buffers
-// mbedTLS > 4 Ko partent en PSRAM.
-constexpr uint32_t kCheckUpdateMinFreeHeapBytes = 65536;   // Heap libre total minimal pour tenter TLS
-constexpr uint32_t kCheckUpdateMinMaxAllocBytes = 20480;   // Plus gros bloc contigu minimal pour tenter TLS
+// ⚠️ bug-165/bug-108 (v2.81.0) : REFONTE COMPLÈTE de ce qui est mesuré. Cause
+// racine établie par relevé terrain (bug-165) : mbedtls 3.6.5 force ses
+// allocations en RAM INTERNE (CONFIG_MBEDTLS_INTERNAL_MEM_ALLOC=1, sdkconfig
+// des libs pioarduino précompilées) et consomme ~56 Ko de tas interne pendant
+// la vérification ECDSA P-384 — maxAlloc8 mesuré à 3 316 o en plein handshake,
+// alors qu'ESP.getFreeHeap() (métrique IRAM-inclusive) valait 82 796 o et
+// AUTORISAIT la garde : exactement le défaut décrit par bug-108, une garde
+// aveugle à la famine qu'elle vise. Le correctif associé
+// (mbedtls_platform_set_calloc_free(calloc, free), src/mbedtls_psram_alloc.cpp)
+// fait obéir mbedtls à la politique PSRAM du projet
+// (heap_caps_malloc_extmem_enable, kPsramExtmemThresholdBytes) : les deux
+// tampons d'enregistrement TLS (16 Ko chacun) partent désormais en PSRAM, et
+// seules les allocations <= kPsramExtmemThresholdBytes (1 024 o) restent en
+// RAM interne. Les trois seuils ci-dessous reflètent ce NOUVEAU partage :
+// PSRAM = critère dimensionnant (CRITÈRE 1), RAM interne 8 bits = garde
+// défensive résiduelle (CRITÈRE 2), plus sur la métrique ANCIENNE (IRAM
+// comprise) mais sur `heapFree8Bit()`/`heapLargestFreeBlock8Bit()` — c'est
+// l'absorption de bug-108 dans ce lot.
+//
+// CRITÈRE 1 (fail-closed) : PLUS GROS BLOC PSRAM LIBRE requis — et non plus
+// la PSRAM libre TOTALE. La politique ci-dessus ne déporte un bloc qu'au
+// pool le plus GROS trou disponible : un total élevé mais fragmenté
+// n'accueillerait pas un tampon TLS de 16 Ko. Mesuré via
+// `heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM)` (lecture seule, O(blocs)
+// sur le tas PSRAM, négligeable à la fréquence d'une requête OTA).
+// Dérivation (source : matériel, CONFIG_MBEDTLS_SSL_MAX_CONTENT_LEN=16384,
+// confirmé dans sdkconfig.h des libs precompilées) : les DEUX tampons d'E/S
+// SSL (in + out) de 16 384 o chacun, PLUS une marge égale à
+// kOtaCheckJsonBudgetBytes (8 192 o, ci-dessous) — le parse JSON de la réponse
+// GitHub suit immédiatement le handshake et peut emprunter au même pool avant
+// que les tampons SSL ne soient libérés. Vérifié par static_assert après la
+// déclaration de kOtaCheckJsonBudgetBytes.
+constexpr uint32_t kOtaTlsMinPsramLargestBlockBytes = 40960;  // 2×16384 + 8192 (marge JSON) - PLUS GROS BLOC PSRAM
+// CRITÈRE 2 : garde défensive RAM interne, métrique 8 BITS (ADR-0058,
+// `heapFree8Bit()`/`heapLargestFreeBlock8Bit()` — JAMAIS ESP.getFreeHeap()/
+// getMaxAllocHeap(), IRAM-inclusives et aveugles à la famine 8 bits visée).
+// Avec le correctif PSRAM ci-dessus, les seules allocations mbedtls qui
+// restent en interne sont <= kPsramExtmemThresholdBytes (1 024 o, structures
+// de session, petits BIGNUM) : la pression résiduelle sur le tas interne est
+// FAIBLE, ce seuil protège donc contre un régime déjà dégradé AVANT la
+// session TLS (ex. fragmentation causée par autre chose), pas contre le coût
+// du handshake lui-même (porté par le critère PSRAM).
+// Position vis-à-vis de l'échelle ADR-0058 (2 048 < 4 096 < 5 120 < 6 144 <
+// 8 192 < 12 288 < 18 432) : volontairement AU-DESSUS du sommet (kOomRearmMinMaxAllocBytes
+// = 18 432), d'un pas supplémentaire de 6 144 (le pas le plus courant de
+// l'échelle) — décision produit : un handshake TLS est une opération plus
+// longue qu'un réarmement de réserve, elle mérite une marge strictement
+// supérieure. Ce seuil NE S'INSÈRE PAS dans l'échelle (il ne gouverne ni
+// reboot, ni WARN, ni push WS, ni 503 statique, ni fopen — garde dédiée OTA),
+// d'où un static_assert de simple POSITION (`>`), pas d'intercalation.
+constexpr uint32_t kCheckUpdateMinMaxAllocBytes = 24576;   // = kOomRearmMinMaxAllocBytes + 6144 - plus gros bloc INTERNE 8 bits minimal
+static_assert(kCheckUpdateMinMaxAllocBytes > kOomRearmMinMaxAllocBytes,
+              "kCheckUpdateMinMaxAllocBytes doit rester AU-DESSUS du sommet de "
+              "l'echelle ADR-0058 (kOomRearmMinMaxAllocBytes) : un handshake TLS "
+              "est une operation plus longue qu'un rearmement de reserve, elle "
+              "merite une marge strictement superieure, SANS s'inserer dans "
+              "l'echelle (bug-108).");
+// Libre TOTAL interne 8 bits : doit couvrir le plus gros bloc EXIGÉ
+// (ci-dessus) PLUS le budget JSON du parse de la réponse GitHub
+// (kOtaCheckJsonBudgetBytes, ci-dessous), qui peut occuper un bloc DISTINCT
+// du même pool interne pendant la même requête /check-update. Décision
+// produit : dérivé arithmétiquement, pas mesuré isolément (ADR-0098) —
+// vérifié par static_assert après la déclaration de kOtaCheckJsonBudgetBytes.
+constexpr uint32_t kCheckUpdateMinFreeHeapBytes = 32768;   // heap libre INTERNE 8 bits minimal
+// ⚠️ DÉRIVATION RECTIFIÉE (revue de sécurité P2, 2026-10-15) : le commentaire
+// précédent rattachait les 8 192 o de marge à kOtaCheckJsonBudgetBytes. C'est
+// VRAI côté PSRAM (le JsonDocument y part, > 1024 o) mais FAUX côté INTERNE :
+// sous la politique d'allocation du projet, le parse JSON ne consomme PAS
+// l'interne. La marge reste la même et reste acceptable — c'est sa
+// JUSTIFICATION qui était erronée. Elle couvre ici les allocations internes
+// concurrentes (pile des tâches, tampons < 1024 o) pendant la session.
+
+// Condition C4 du design bug-165/bug-108 (v2.81.0) : seuil de WARN
+// d'OBSERVATION (pas une garde, aucun refus associé) signalant qu'une
+// allocation mbedtls semble être retombée en RAM interne pendant une session
+// TLS (repli PSRAM→interne, PSRAM momentanément saturée). Dérivation (source :
+// matériel, CONFIG_MBEDTLS_SSL_MAX_CONTENT_LEN=16384) : un seul tampon
+// d'enregistrement SSL tombé en interne suffit à franchir ce seuil vers le
+// bas — en dessous, le repli est quasi certain ; au-dessus, rien ne l'exclut
+// mais rien ne le signale non plus (créneau volontairement large, ce n'est
+// qu'un WARN d'observation).
+constexpr uint32_t kOtaTlsInternalFallbackWarnBytes = 16384;  // = CONFIG_MBEDTLS_SSL_MAX_CONTENT_LEN - WARN si le plus gros bloc interne descend sous ce seuil pendant une session TLS
 
 // Release notes GitHub relayées telles quelles par /check-update : le corps de
 // release n'est pas borné côté GitHub → tronquer (suffixe « … ») pour borner la
@@ -1307,6 +1364,19 @@ constexpr size_t kOtaReleaseNotesMaxChars = 2048;
 // du buffer de chaîne + pool de variants ~1 Ko) ; 8 Ko couvre large. Au-delà →
 // NoMemory → 500 propre au lieu d'une consommation non bornée.
 constexpr size_t kOtaCheckJsonBudgetBytes = 8192;
+
+// Vérifications arithmétiques des deux seuils OTA ci-dessus (bug-165/bug-108) :
+// leur dérivation est ÉCRITE au site de déclaration (ADR-0098), ce static_assert
+// garantit qu'elle reste vraie si l'une des trois constantes bouge isolément.
+static_assert(kOtaTlsMinPsramLargestBlockBytes == 2u * 16384u + kOtaCheckJsonBudgetBytes,
+              "kOtaTlsMinPsramLargestBlockBytes doit rester 2x le tampon SSL "
+              "(CONFIG_MBEDTLS_SSL_MAX_CONTENT_LEN=16384) plus la marge JSON "
+              "kOtaCheckJsonBudgetBytes (bug-165/bug-108) : la derivation ecrite "
+              "en commentaire doit rester vraie en arithmetique.");
+static_assert(kCheckUpdateMinFreeHeapBytes == kCheckUpdateMinMaxAllocBytes + kOtaCheckJsonBudgetBytes,
+              "kCheckUpdateMinFreeHeapBytes doit rester = plus gros bloc exige + "
+              "budget JSON (bug-108) : la derivation ecrite en commentaire doit "
+              "rester vraie en arithmetique.");
 
 // ============================================================================
 // SENSOR CONSTANTS - Paramètres capteurs

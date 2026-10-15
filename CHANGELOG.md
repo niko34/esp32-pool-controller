@@ -2,7 +2,77 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [2.81.0] - 2026-10-15
+
+### Corrections
+
+- 🚨 **La recherche de mise à jour en ligne (`GET /check-update`) refonctionne — pour de bon cette
+  fois.** Ce n'était **pas** un problème de certificats : huit hypothèses l'ont supposé (dont les
+  deux racines ajoutées en 2.80.1), toutes tombées. **La vraie cause** : mbedtls 3.6.5 force ses
+  allocations en RAM **interne** (`CONFIG_MBEDTLS_INTERNAL_MEM_ALLOC=1`, bibliothèques précompilées)
+  et consomme ~56 Ko de tas interne pendant la vérification d'un certificat — mesuré en production,
+  le plus gros bloc réellement allouable s'effondrait de **57 332 à 3 316 octets** pendant le
+  handshake, **pendant que 4,17 Mo de PSRAM dormaient à côté**. Confirmé indépendamment par
+  `fs_guard` (mécanisme préexistant, sans rapport), qui a vu la même valeur au même instant et
+  suspendu ses ouvertures de fichiers. *Une garde qui mesure la mauvaise grandeur ne protège de
+  rien. Celle-ci a lu 82 796 octets libres et autorisé une connexion, pendant que le bloc réellement
+  utilisable valait 3 316.*
+- **Prouvé sur l'appareil réel après correctif** : `/check-update` répond **200** ; plus gros bloc
+  allouable **40 948 o** pendant le handshake (au lieu de 3 316) ; `fs_guard` ne suspend plus rien ;
+  témoin anti-décoratif confirmé actif ; la voie de secours (téléversement manuel) re-testée et
+  toujours fonctionnelle.
+- Déclenché par le changement de plateforme (core Arduino 2 → 3, mbedtls 2.28 → 3.6.5) : la mise à
+  jour en ligne fonctionnait au tout début du projet, avant cette migration.
+
+### Firmware
+
+- **mbedtls obéit désormais à la politique PSRAM déjà posée par le projet**
+  (`mbedtls_platform_set_calloc_free(calloc, free)`) — aucun allocateur écrit, substitution à
+  l'exécution des `calloc`/`free` de la libc (déjà PSRAM-aware). Vérifié par un **témoin réel**
+  (pas supposé réussi) : `/get-system-info` expose `mbedtls_psram_alloc` (0 absent / 1 actif /
+  2 décoratif — anomalie).
+- **La garde TLS sortante (`/check-update`, `/download-update`) est recalibrée** — elle décidait
+  sur `ESP.getFreeHeap()`/`getMaxAllocHeap()` (métrique IRAM-inclusive, aveugle à la famine 8 bits
+  réelle : exactement le défaut que bug-108 décrivait depuis septembre). Elle décide désormais sur
+  le **plus gros bloc PSRAM contigu** (40 960 o, pas la PSRAM libre totale) et sur la métrique
+  **8 bits réellement allouable** (32 768 / 24 576 o). **bug-108 est absorbé et soldé par ce lot.**
+- Nouveau WARN d'observation si la mémoire interne retombe sous 16 384 o pendant une session TLS
+  (repli PSRAM→interne, PSRAM momentanément saturée).
+- Flash : **+3 868 octets**.
+
+### Limite connue, non corrigée
+
+- ⚠️ Le chemin de **téléchargement** (`objects.githubusercontent.com`) présente une structure de
+  chaîne de certificats similaire à celle qui a cassé la recherche (maillon croisé) — hypothèse
+  **non vérifiée**, à tester maintenant que la recherche fonctionne et qu'une release peut être
+  publiée. Ajouter « ISRG Root X2 » ne réglerait rien : racine sans rapport.
+
+### Documentation
+
+- `docs/subsystems/oom-guard.md` (le plus important) : cause racine réelle, correctif mbedtls,
+  recalibrage complet de la garde TLS (nouveaux seuils et leur dérivation), témoin anti-décoratif,
+  observabilité du repli PSRAM→interne.
+- `docs/subsystems/ota-manager.md` : rectification des sections qui énonçaient une règle devenue
+  fausse (mbedtls n'utilisait pas réellement la PSRAM malgré l'ancienne note).
+- `docs/API.md` : conditions des `503` recalibrées, nouveau champ `mbedtls_psram_alloc`.
+- [ADR-0036](docs/adr/0036-psram-requise-mise-a-jour-en-ligne.md) : **amendé** par une note
+  additive (un ADR accepté ne se réécrit pas) — le critère PSRAM et les seuils heap sont
+  recalibrés, la dépendance structurante à la PSRAM se resserre plutôt qu'elle ne disparaît.
+- [ADR-0112](docs/adr/0112-mbedtls-obeit-a-la-politique-psram-du-projet.md) : mbedtls alloue selon
+  la politique PSRAM du projet — alternative écartée : modifier le `sdkconfig` (impossible,
+  bibliothèques précompilées).
+
+---
+
 ## [2.80.1] - 2026-10-14
+
+> ✅ **Lu depuis [2.81.0](#2810---2026-10-15) : la recherche de mise à jour EST réparée depuis cette
+> version-là.** La présente entrée dit l'exact inverse ci-dessous (« CE LOT NE RÉPARE PAS ») et
+> **c'était vrai au moment où elle a été écrite** — la cause réelle (allocation mbedtls forcée en
+> RAM interne, pas un problème de certificats) n'a été identifiée que le 2026-10-15. Ne pas lire
+> cette entrée comme un contresens avec la suivante : les deux racines TLS ajoutées ici étaient
+> **nécessaires** (règle « toujours auto-signée », ADR-0111) mais **pas suffisantes** — il
+> manquait le correctif mbedtls de 2.81.0.
 
 ### Corrections
 
@@ -15,7 +85,8 @@
   recherche « refonctionne ». **C'était faux** — le correctif a été déployé puis constaté sans
   effet. Les deux racines ajoutées ne nuisent pas et restent justifiées ; elles ne suffisent pas.
   ⇒ **bug-165 est ROUVERT.** Six hypothèses ont été fermées par l'expérience, elles sont
-  consignées dans la spec.
+  consignées dans la spec. **Réparée depuis la [2.81.0](#2810---2026-10-15)**, cause réelle trouvée
+  ailleurs — voir cette entrée.
 
 ### Firmware
 

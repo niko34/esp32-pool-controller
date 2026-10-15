@@ -277,3 +277,167 @@ hors ligne) est conservée en **`docs/incidents/bug-165-instrumentation-tls.patc
 ⛔ **Aucune urgence opérationnelle** : `./deploy.sh ota-firmware` (réseau local) et le téléversement
 manuel `POST /update` **fonctionnent**. Seule la recherche de mise à jour **en ligne** est hors
 service.
+
+---
+
+# 🚨 CAUSE RACINE TROUVÉE — 2026-10-15 : ce n'est PAS un problème de certificats
+
+⚠️ **Les huit hypothèses précédentes cherchaient au mauvais endroit.** Piste apportée par
+l'utilisateur : *« au début du projet, la mise à jour via GitHub fonctionnait. Et à un moment, on a
+changé de framework. »*
+
+## LA MESURE — chemin de production, sans instrumentation
+
+| Instant | `free8` | **`maxAlloc8`** |
+|---|---|---|
+| Avant ouverture TLS | 60 760 | **57 332** |
+| Juste avant le handshake | 11 296 | **10 740** |
+| **Pendant la vérification du certificat** | 4 852 | 🚨 **3 316** |
+| 13 ms après l'échec | 59 672 | **47 092** |
+
+⇒ **mbedtls consomme ~56 Ko de tas INTERNE** et ne laisse que **3 316 octets contigus** au moment
+précis où il doit vérifier une signature **ECDSA P-384**. C'est **temporaire et massif**, ⛔ pas un
+manque permanent.
+
+## ⚠️ CONFIRMÉ PAR UN SECOND SYSTÈME, INDÉPENDANT
+`fs_guard` — mécanisme **préexistant** du projet, sans aucun rapport avec l'instrumentation — a
+relevé **le même chiffre (3316)** au même instant :
+> `Ouvertures de fichiers internes suspendues — maxBloc8=3316 o`
+> puis 30 s plus tard : `Ouvertures de fichiers rétablies — 5 refus en 30 s`
+
+⇒ **Deux systèmes différents, la même pénurie, sur le chemin de production.** Et
+`Alloc heap échouée x3` apparaît **même sur un firmware 100 % propre**.
+
+## CE QUE ÇA EXPLIQUE — tout, d'un coup
+
+| Observation | Explication |
+|---|---|
+| Ça marchait avant le changement de plateforme | mbedtls **2.28** consommait bien moins que **3.6.5** |
+| Tout réussit **hors ligne** | la vérification s'y fait avec **47 Ko** disponibles, pas 3 |
+| Les drapeaux **variaient** entre deux exécutions | ⚠️ une pénurie n'est **pas déterministe** |
+| Aucune racine ajoutée n'y changeait rien | ⛔ le problème n'a **jamais** été les certificats |
+| La garde TLS n'a pas refusé | 🚨 **c'est [`bug-108`](bug-108-garde-tls-ota-sur-metrique-ira-inclusive.md)** |
+
+## 🚨 bug-165 ET bug-108 SONT LE MÊME PROBLÈME
+La garde a lu `ESP.getFreeHeap()` = **82 796** (métrique IRAM-inclusive) contre un seuil de 65 536
+⇒ **elle a autorisé**. Pendant ce temps le bloc 8 bits réellement utilisable tombait à **3 316**.
+⚠️ C'est **exactement** le défaut décrit par bug-108 : *« une garde aveugle à la famine qu'elle
+vise »*. Et son motif historique le disait déjà : *« sur heap dégradé l'échec était lent et
+aléatoire (BIGNUM alloc en cours de handshake) »*.
+
+## LE REMÈDE — identifié, non encore appliqué
+
+⚠️ **`CONFIG_MBEDTLS_INTERNAL_MEM_ALLOC=y`** : mbedtls **force** ses allocations en RAM interne.
+⇒ Il s'étrangle dans ~50 Ko **pendant que 4,17 Mo de PSRAM dorment à côté** (`psram_free` mesuré).
+
+| Voie | Praticable ? |
+|---|---|
+| Changer la configuration (`MBEDTLS_EXTERNAL_MEM_ALLOC`) | ⛔ **non** — bibliothèques **précompilées** par pioarduino |
+| **`mbedtls_platform_set_calloc_free()`** à l'exécution | ✅ **oui**, depuis le code du projet |
+
+### ⚠️ TROIS RÉSERVES À INSTRUIRE AVANT DE CODER
+1. **PSRAM plus lente** — sans importance pour une mise à jour.
+2. Le détournement doit être posé **avant toute utilisation** de mbedtls — ⚠️ le Wi-Fi s'en sert
+   peut-être dès le démarrage. **À vérifier.**
+3. 🚨 **LA PLUS SÉRIEUSE** : pendant l'écriture en flash, **le cache qui donne accès à la PSRAM est
+   désactivé**. Si mbedtls y détient des données **à cet instant**, l'appareil **plante**. ⛔ Ça ne
+   concerne pas `/check-update`, mais **bien `/download-update`**. ⚠️ `pool-chemistry` n'est pas
+   concerné, mais **`security-reviewer` l'est** : c'est la chaîne OTA.
+
+## ⇒ CONSÉQUENCE POUR bug-108
+⛔ **Ne plus le traiter isolément.** Son relevé « impossible » (mémoire pendant une session TLS)
+**existe désormais** : **`maxAlloc8 = 3 316`**, mesuré. ⚠️ Et il change la donne : un seuil
+calibré sur ce chiffre **refuserait toute mise à jour** tant que la PSRAM n'est pas utilisée.
+**Les deux lots doivent être pensés ensemble.**
+
+---
+
+# ✅ CORRECTIF APPLIQUÉ ET VÉRIFIÉ — 2026-10-15 (v2.81.0), doc-writer
+
+## Le remède identifié a été codé, et bug-108 absorbé dans le même lot
+
+`mbedtls_platform_set_calloc_free(calloc, free)` posé dans `psramFound()` de `main.cpp`
+([`src/mbedtls_psram_alloc.{h,cpp}`](../../../src/mbedtls_psram_alloc.h)), **vérifié par un témoin
+réel** (allocation via le pointeur mbedtls, confirmée en PSRAM) — ⛔ **aucun allocateur écrit**,
+substitution des `calloc`/`free` de la libc, déjà PSRAM-aware. État exposé par `/get-system-info`
+(`mbedtls_psram_alloc` : 0 absent / 1 actif / 2 décoratif).
+
+**Les trois réserves posées à la clôture précédente ont été instruites** :
+1. PSRAM plus lente — sans importance pour une mise à jour (assumé, non reconsidéré).
+2. Pose avant toute utilisation de mbedtls — **vérifiée** : posée dans `psramFound()`, juste après
+   `heap_caps_malloc_extmem_enable`, avant `setupWiFi()`. Aucune utilisation de mbedtls entre les
+   deux (invariant déjà vrai, préservé).
+3. Cache PSRAM désactivé pendant l'écriture flash — **traité pour `/download-update`** : le tampon
+   de pile `buff[512]` copie le flux **hors de l'espace mbedtls** avant toute écriture, ce qui rend
+   la bascule sûre sur ce chemin (commentaire dédié posé dans `web_routes_ota.cpp`).
+
+**bug-108 absorbé, pas traité isolément** : la garde TLS sortante (`oomTlsGateReason`) est
+recalibrée dans le même lot — critère PSRAM sur le **plus gros bloc contigu** (40 960 o, mesuré
+sur WROVER réel) au lieu de la PSRAM libre totale (1 Mo, jamais mesurée), seuils heap sur la
+métrique **8 bits** (ADR-0058) au lieu de `ESP.getFreeHeap()`/`getMaxAllocHeap()`. Dette « hors
+périmètre consigné » d'ADR-0058 **soldée**.
+
+## Vérifié sur l'appareil réel, après déploiement
+
+- `GET /check-update` → **200**.
+- Plus gros bloc allouable **pendant le handshake** : **40 948 o** (contre 3 316 avant correctif).
+- `fs_guard` : **aucune suspension** d'ouverture de fichiers pendant la même fenêtre.
+- Témoin anti-décoratif : **= 1** (actif, confirmé en PSRAM).
+- Voie de secours re-testée : téléversement manuel accepté par le firmware corrigé — **aucune
+  régression**.
+
+## Documentation produite dans cette passe
+
+`docs/subsystems/oom-guard.md` (cause racine, correctif, garde recalibrée, témoin, observabilité
+du repli), `docs/subsystems/ota-manager.md` (rectification de la note WROVER devenue fausse),
+`docs/API.md` (conditions 503, nouveau champ `/get-system-info`), [ADR-0036](../../../docs/adr/0036-psram-requise-mise-a-jour-en-ligne.md)
+amendé par note additive (immuable, non réécrit), [ADR-0112](../../../docs/adr/0112-mbedtls-obeit-a-la-politique-psram-du-projet.md)
+créé, `CHANGELOG.md` [2.81.0] + rectification de la lecture de [2.80.1].
+
+⛔ Spec non déplacée vers `done/` — clôture prise en charge par l'orchestrateur.
+
+---
+
+# ✅ CLÔTURE — 2026-10-15, v2.81.0 : RÉSOLU, et bug-108 avec lui
+
+**Mesuré** (ADR-0073) : `pio run` **SUCCESS**, 0 warning · `pio test -e native` **2 208 cas /
+71 suites** · **4 mutations sur 4 tuées** · **19/19** contrôles · **5 727** liens.
+
+## LA PREUVE — sur l'appareil, vérifiée indépendamment
+
+| | Avant | Après |
+|---|---|---|
+| `/check-update` | `code:-1` | ✅ **200**, `{"no_release":true}` |
+| `maxAlloc8` pendant la session | 🚨 **3 316** | ✅ **40 948** |
+| `fs_guard` | suspension 30 s | ✅ **aucune** |
+| Témoin anti-décoratif | — | ✅ **1** (PSRAM réelle) |
+| Voie de secours | — | ✅ **re-prouvée** : le firmware corrigé accepte un téléversement |
+
+## ⚠️ CE QUE CE BUG AURA ENSEIGNÉ
+
+**1. Huit hypothèses sur neuf cherchaient au mauvais endroit.** Toutes supposaient un problème de
+**certificats** — parce que le message d'erreur disait « vérification de certificat échouée ».
+⚠️ **Le message était exact et trompeur** : la vérification échouait bien, **faute de mémoire**.
+
+**2. La bonne question n'était pas « pourquoi ça ne marche pas » mais « qu'est-ce qui a changé
+depuis que ça marchait ».** ⇒ Posée par l'**utilisateur** : *« au début du projet, la mise à jour
+fonctionnait. Et à un moment, on a changé de framework. »* C'est elle qui a tout débloqué.
+
+**3. Le remède aussi vient de l'utilisateur** : *« il n'est pas possible de déplacer ces
+allocations en PSRAM ? »* ⇒ **4,17 Mo dormaient** pendant que mbedtls s'étranglait dans 3 Ko.
+
+**4. ⚠️ Ce qui a VRAIMENT coûté du temps : l'échec était MUET.** `code: -1`, alors que le détail
+était **déjà au journal**. ⇒ Une fois le diagnostic remonté, **six pistes ont été fermées en une
+soirée** — chacune par une **mesure**, ⛔ jamais par un raisonnement.
+
+**5. Deux témoins indépendants valent mieux qu'un.** `fs_guard` — sans aucun rapport avec
+l'enquête — a vu **le même 3 316**. ⚠️ C'est ce qui a écarté l'idée que l'instrumentation
+fabriquait elle-même la pénurie qu'elle mesurait.
+
+**6. ⛔ Et une erreur de méthode, à ne pas répéter** : ma première vérification des certificats a
+conclu « ✔ » **à tort**, parce que l'outil consultait **aussi le magasin système**. ⇒ **Isoler,
+sinon on ne teste pas ce qu'on croit tester.**
+
+## Matériel conservé
+`docs/incidents/bug-165-instrumentation-tls.patch` (514 l.) et
+`bug-165-instrumentation-heap-handshake.patch` (125 l.) — ⛔ hors firmware livré.

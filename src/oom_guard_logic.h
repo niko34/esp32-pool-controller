@@ -627,16 +627,19 @@ inline bool heapIntegrityAdmitNextRun(uint32_t durationUs, uint32_t maxDurationU
 // Motifs de refus de la garde TLS sortante (retour de oomTlsGateReason).
 enum : uint8_t {
   kOomTlsGateOk = 0,        // Session TLS autorisée
-  kOomTlsGateNoPsram = 1,   // PSRAM libre absente/insuffisante (module sans PSRAM
-                            // ou PSRAM saturée) → refus matériel
-  kOomTlsGateLowMemory = 2, // PSRAM libre suffisante mais heap momentanément dégradé → réessayable
+  kOomTlsGateNoPsram = 1,   // Plus gros bloc PSRAM absent/insuffisant (module sans
+                            // PSRAM, PSRAM saturée OU trop fragmentée) → refus matériel
+  kOomTlsGateLowMemory = 2, // PSRAM suffisante mais heap INTERNE 8 bits momentanément
+                            // dégradé → réessayable
 };
 
 // Prédicat de garde avant TOUTE session TLS sortante (partagé : /check-update,
 // /download-update). Renvoie un MOTIF (pas un booléen) : l'appelant doit
 // distinguer un refus définitif (matériel) d'un refus temporaire (mémoire).
+// Prédicat PUR inchangé (ADR-0017) : bug-165/bug-108 (v2.81.0) ne touche QUE la
+// SÉMANTIQUE de ses entrées et ses seuils, jamais sa logique interne.
 //
-// 1) PSRAM LIBRE d'abord, FAIL-CLOSED (bug-garde-tls-trop-permissive-sans-psram) :
+// 1) PSRAM d'abord, FAIL-CLOSED (bug-garde-tls-trop-permissive-sans-psram) :
 //    mbedTLS réclame plusieurs blocs contigus d'environ 16 Ko. Sans PSRAM, le
 //    régime NORMAL d'un WROOM après quelques minutes (mesuré en v2.18.5 :
 //    free=87708 o, maxBloc=34804 o) PASSAIT la garde bicritère puis affamait le
@@ -646,18 +649,26 @@ enum : uint8_t {
 //    donc le maxBloc nominal d'un WROOM tombe de ~49 à ~37 Ko ; un tel seuil ne
 //    passerait QUE parachute DÉSARMÉ, c'est-à-dire précisément quand le filet
 //    anti-bad_alloc est absent. D'où : PSRAM requise, sinon upload manuel.
-//    Le critère porte sur la PSRAM LIBRE (`psramFreeBytes`), pas sur la taille
-//    installée : cette dernière est constante et ne décroît jamais, donc un
-//    module PSRAM saturé (tout consommé par SPIRAM_USE_MALLOC) ouvrirait quand
-//    même la garde alors que mbedTLS retomberait sur la RAM interne — le régime
-//    de crash exact. Sur un module de 4 Mo, exiger 1 Mo LIBRE couvre à la fois
-//    l'absence de PSRAM et sa saturation.
-// 2) Ensuite seulement, le bicritère heap historique (ADR-0032) : heap TOTAL
-//    suffisant ET plus gros bloc contigu décent. Seuils INCLUSIFS (>=).
-inline uint8_t oomTlsGateReason(uint32_t psramFreeBytes, uint32_t freeHeapBytes,
+//    ⚠️ bug-108 (v2.81.0) : `psramLargestBlockBytes` ne porte PLUS la PSRAM libre
+//    TOTALE mais le PLUS GROS BLOC CONTIGU
+//    (heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM)) — un total élevé
+//    mais fragmenté n'accueillerait pas un tampon TLS de 16 Ko. Depuis le
+//    correctif bug-165 (mbedtls_psram_alloc.cpp), les deux tampons
+//    d'enregistrement SSL (CONFIG_MBEDTLS_SSL_MAX_CONTENT_LEN=16384 chacun)
+//    partent RÉELLEMENT en PSRAM, et c'est leur contiguïté — pas leur somme —
+//    que ce critère garantit désormais (`kOtaTlsMinPsramLargestBlockBytes`).
+// 2) Ensuite seulement, le bicritère heap INTERNE 8 bits (ADR-0058, bug-108) :
+//    `freeHeapBytes`/`maxAllocBytes` sont `heapFree8Bit()`/
+//    `heapLargestFreeBlock8Bit()` (JAMAIS ESP.getFreeHeap()/getMaxAllocHeap(),
+//    IRAM-inclusives et aveugles à la famine 8 bits — c'est le défaut que
+//    bug-108 a nommé : une garde qui AUTORISAIT un handshake voué à l'échec,
+//    prouvé en production le 15/10/2026). Ce critère ne protège plus contre le
+//    coût du handshake lui-même (porté par le critère PSRAM ci-dessus) mais
+//    contre un régime interne déjà dégradé AVANT la session. Seuils INCLUSIFS (>=).
+inline uint8_t oomTlsGateReason(uint32_t psramLargestBlockBytes, uint32_t freeHeapBytes,
                                 uint32_t maxAllocBytes, uint32_t minPsramBytes,
                                 uint32_t minFreeBytes, uint32_t minMaxAllocBytes) {
-  if (psramFreeBytes < minPsramBytes) return kOomTlsGateNoPsram;
+  if (psramLargestBlockBytes < minPsramBytes) return kOomTlsGateNoPsram;
   if (freeHeapBytes < minFreeBytes || maxAllocBytes < minMaxAllocBytes) {
     return kOomTlsGateLowMemory;
   }

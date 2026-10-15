@@ -1380,7 +1380,7 @@ L'`architect` a qualifié `ESP.getFreeHeap()` / `ESP.getMaxAllocHeap()` de
 brute » par [ADR-0058](../../../docs/adr/0058-gardes-heap-metrique-8-bits.md) :
 **ce n'est pas du rapport, c'est une garde aveugle** — ces valeurs alimentent
 `oomTlsGateReason()`, un prédicat qui **refuse la requête en 503**. Spec ouverte :
-`specs/features/todo/bug-108-garde-tls-ota-sur-metrique-ira-inclusive.md`.
+`specs/features/done/bug-108-garde-tls-ota-sur-metrique-ira-inclusive.md`.
 
 ---
 
