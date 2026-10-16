@@ -205,7 +205,7 @@ Verdict `pool-chemistry` (**GO**, gravité **haute**) : l'effet de bord n'est pa
 | `/calibrate_orp` | **surdosage** | `requiredPoints = 1` : **un seul POST suffit**, la garde de calibration reste satisfaite. `reference` bornée `0..1000` mV, soit jusqu'à **±500 mV** de décalage sur une consigne de 530 mV → erreur écrêtée, régulation **P pur en saturation permanente**. |
 | `Cal,mid` puis `Cal,low` (pH) | **surdosage** | Même chaîne côté pH : mesure faussée → erreur contre 7,30 → sortie saturée → 10 min/h × 26,0 mL/min = **260 mL/h d'acide**. |
 
-> ⚠️ **Les filets de sécurité ne bornent pas, ils ralentissent.** Les gardes `kPhFloorCorrected` = **6,70** (pH corrigé), `kPhFloorRawHard` = **6,20** (pH brut) et `kPhOrpInhibit` = **7,60** (inhibition ORP) sont calculées **sur la mesure falsifiée**. Dérivées de `kPhOffsetMax`, elles couvrent l'**offset** de mesure, pas la **calibration** ([offset pH](#offset-logiciel-de-mesure-ph--feature-067)). Seules bornent réellement `maxPhMlPerDay` (défaut **300 mL/j**) et la limite horaire : elles plafonnent le **débit**, mais le quota **se réarme à minuit** — la **dérive cumulative n'a donc pas de plafond**. Le timer de stabilisation post-calibration ([`sensors.cpp:882-915`](../../src/sensors.cpp:882)) ne fait que **différer**.
+> ⚠️ **Les filets de sécurité ne bornent pas, ils ralentissent.** Les gardes `kPhFloorCorrected` = **6,70** (pH corrigé), `kPhFloorRawHard` = **5,50** (pH brut, **était 6,20** avant la v2.82.0) et `kPhOrpInhibit` = **7,60** (inhibition ORP) sont calculées **sur la mesure falsifiée**. ⚠️ **Depuis la v2.82.0, les deux premières ne dérivent plus de l'offset** : `kPhFloorRawHard` est une constante chimique **absolue** ([ADR-0113](../adr/0113-filets-ph-bruts-absolus-independants-de-loffset.md)), et l'offset n'a lui-même plus de borne ([ADR-0114](../adr/0114-correction-mesure-ph-sans-borne-de-reglage.md)). Elles couvrent l'**offset** de mesure, pas la **calibration** ([offset pH](#offset-logiciel-de-mesure-ph--feature-067)). Seules bornent réellement `maxPhMlPerDay` (défaut **300 mL/j**) et la limite horaire : elles plafonnent le **débit**, mais le quota **se réarme à minuit** — la **dérive cumulative n'a donc pas de plafond**. Le timer de stabilisation post-calibration ([`sensors.cpp:882-915`](../../src/sensors.cpp:882)) ne fait que **différer**.
 
 ### WARN throttlé — et pourquoi il l'est
 
@@ -458,9 +458,9 @@ bruit terrain à 0,36, inopérante par construction).
 
 Correction logicielle `pH corrigé = pH brut EZO + phOffset`, destinée à compenser un **écart d'implantation** de la sonde (position dans le circuit, potentiel électrique de l'eau). **La calibration interne du module Atlas EZO n'est JAMAIS touchée** : aucune commande `Cal,*` n'est émise, l'offset vit strictement **en aval** de la lecture.
 
-- Configuration : `mqttCfg.phOffset` ([`config.h`](../../src/config.h)), persistée en NVS sous la clé `ph_offset`, défaut `0.0f`. Une valeur relue hors bornes est **neutralisée à 0,00** avec un `WARN` (fail-safe).
-- Bornes : `kPhOffsetMin = -0.50f` / `kPhOffsetMax = 0.50f` ([`constants.h`](../../src/constants.h)).
-- Logique **pure** isolée dans [`src/ph_offset.h`](../../src/ph_offset.h) — `applyPhOffset(value, offset)` (NaN in → NaN out) et `isPhOffsetValid(offset)`, header self-contained sans Arduino, testé en natif (suite `test_native_ph_offset`, pattern [ADR-0017](../adr/0017-logique-metier-pure-humble-object-testabilite.md)).
+- Configuration : `mqttCfg.phOffset` ([`config.h`](../../src/config.h)), persistée en NVS sous la clé `ph_offset`, défaut `0.0f`. ⚠️ **v2.82.0 (feature-168)** : une valeur relue **non saine** (NaN/infini/\|valeur\| > `kPhOffsetScaleSpan`) est **neutralisée à 0,00** avec un `WARN` (fail-safe) — ⛔ ce n'est plus un écrêtage de borne de réglage, cette borne n'existe plus. Une valeur saine mais **inhabituelle** (ex. +9,30) est désormais **appliquée** et signalée (`phOffsetBootUnconfirmed`, bandeau + `critical` + alerte MQTT différée, voir [`docs/MQTT.md`](../MQTT.md)).
+- ⚠️ **Plus de borne de réglage depuis la v2.82.0** ([ADR-0114](../adr/0114-correction-mesure-ph-sans-borne-de-reglage.md), décision utilisateur) : `kPhOffsetMin`/`kPhOffsetMax` **n'existent plus**. Seule reste `kPhOffsetScaleSpan = 14.0f` ([`constants.h`](../../src/constants.h)), une salubrité de domaine — pas un seuil de réglage.
+- Logique **pure** isolée dans [`src/ph_offset.h`](../../src/ph_offset.h) — `applyPhOffset(value, offset)` (NaN in → NaN out) et `isPhOffsetValid(offset)` (salubrité seule depuis feature-168), header self-contained sans Arduino, testé en natif (suite `test_native_ph_offset`, pattern [ADR-0017](../adr/0017-logique-metier-pure-humble-object-testabilite.md)).
 
 ### Point d'application : EN SORTIE des accesseurs
 
@@ -600,17 +600,19 @@ Estampiller ici ne peut rendre le verdict que **plus conservateur**, jamais moin
 
 `src/ph_offset.h` (testé en natif, suite `test_native_ph_offset`, section D4) :
 
-- **`isPhOffsetStale(float offset, uint32_t offsetSeq, uint32_t calSeq)`** — `true` ssi
-  `offset != 0` **et** `offsetSeq < calSeq`. Deux séquences égales (y compris `0 == 0` au
-  premier démarrage) ne sont **pas** une préséance de l'étalonnage — `false`.
+- **`isPhOffsetStale(float offset, uint32_t offsetSeq, uint32_t calSeq, uint32_t offsetEpoch, uint32_t nowEpoch, uint32_t confirmIntervalDays, float unusualAbs)`** — ⚠️ **signature étendue en v2.82.0 (feature-168)**. `true` si **(a)** `offset != 0` **et** `offsetSeq < calSeq` (cause `calibration`, inchangée — deux séquences égales, y compris `0 == 0` au premier démarrage, ne sont **pas** une préséance de l'étalonnage) **ou (b)** `isPhOffsetExpired(...)` (cause `expiration` : correction inhabituelle — `\|offset\| > unusualAbs` — non reconfirmée depuis plus de `confirmIntervalDays` jours, fail-open si l'horloge n'est pas fiable).
+- **`isPhOffsetExpired(float offset, uint32_t offsetEpoch, uint32_t nowEpoch, uint32_t confirmIntervalDays, float unusualAbs)`** — **v2.82.0**, cause (b) isolée pour être testée indépendamment.
 - **`nextJustnessSeq(uint32_t a, uint32_t b)`** — `max(a, b) + 1`, monotone quel que soit
   l'ordre des arguments.
 
+**Accesseur unique, côté config** : `phOffsetStaleNow()` / `phOffsetStaleCause()` ([`src/config.cpp`](../../src/config.cpp), v2.82.0) ajoutent une **troisième** cause (`boot`, prioritaire) — `mqttCfg.phOffsetBootUnconfirmed`, posé par `loadMqttConfig()` quand une correction inhabituelle est relue en NVS au démarrage sans confirmation utilisateur depuis. `/get-config` et la trame WS `config` appellent **cet accesseur**, mot pour mot identique des deux côtés — 4ᵉ récidive documentée du piège de parité de ce projet (même clé, expressions divergentes), cette fois fermée par un appel unique plutôt qu'une expression dupliquée.
+
 Le verdict (`ph_offset_stale`) est **calculé par le firmware** et servi par `GET /get-config` et
 la trame WS `config` — **jamais recalculé côté client** (ADR-0100, [ADR-0102](../adr/0102-ordre-des-gestes-de-justesse-par-compteur.md)).
+Un second champ, `ph_offset_stale_cause` (`"calibration"` / `"expiration"` / `"boot"`), désigne **laquelle** des trois causes tient — le client choisit un texte différent par cause (voir [page-ph.md](../features/page-ph.md#correction-devenue-caduque-ph_tune_stale_banner)).
 Les deux séquences internes (`phOffsetSeq`/`phCalSeq`) **ne sont exposées nulle part** : seuls
-le verdict et les deux epochs (affichage) le sont. Voir [API.md](../API.md#get-get-config--write)
-et [page-ph.md](../features/page-ph.md#correction-devenue-caduque-après-un-étalonnage-ph_tune_stale_banner-feature-156-v2720).
+le verdict, la cause, et les deux epochs (affichage) le sont. Voir [API.md](../API.md#get-get-config--write)
+et [page-ph.md](../features/page-ph.md#correction-devenue-caduque-ph_tune_stale_banner).
 
 ## Trace des signaux capteurs — feature-057
 
@@ -805,7 +807,7 @@ Ajoutée **sans changer aucun comportement** ([ADR-0074](../adr/0074-temperature
 | `kSensorFrozenEpsilonPh` | `0.0005` pH | Bande figé pH = ½ LSB EZO (résolution 0.001) |
 | `kSensorFrozenEpsilonOrp` | `0.05` mV | Bande figé ORP = ½ LSB EZO (résolution 0.1) |
 | `kTempFrozenSamples` / `kTempFrozenEpsilonC` | `43200` / `0.03` °C | Figé T° eau (≈ **24 h** à 2 s, < ½ LSB DS18B20, bug-142 — était `900` / 30 min) — warning-only pour le DOSAGE, gate le planning de filtration |
-| `kPhOffsetMin` / `kPhOffsetMax` | `-0.50` / `+0.50` pH | Bornes de l'offset logiciel pH (feature-067) — validation serveur, refus 400 hors plage |
+| `kPhOffsetScaleSpan` | `14.0` pH | **v2.82.0** — Salubrité de domaine de l'offset logiciel pH (feature-168) : `NaN`/infini/\|valeur\| au-delà refusés (400). ⛔ `kPhOffsetMin`/`kPhOffsetMax` **n'existent plus** — l'offset n'a plus de borne de réglage ([ADR-0114](../adr/0114-correction-mesure-ph-sans-borne-de-reglage.md)) |
 | `kSensorTraceBufferSize` | `200` | Taille ring buffer trace signaux — 7 200 o RAM (200 × 36 o), depuis feature-153 v2.69.0 (était 300 × 28 o ≈ 8,4 Ko) |
 | `kSensorTraceMaxSamplesPerPage` | `38` | Borne d'une page de `GET /debug/sensor_trace` (**5 775 o JSON mesurés** le 2026-10-11 sur firmware déployé — v2.69.0, était 50 = 5 905 o mesurés avant ce lot) |
 | `kSensorTraceHeapMarginBytes` | `4096` | Marge entre `measureJson` et `heapLargestFreeBlock8Bit()` → 503 au lieu de `bad_alloc` (v2.10.1 ; mesure basculée depuis `ESP.getMaxAllocHeap()` en **v2.40.0**, valeur du seuil **inchangée**) |

@@ -946,7 +946,14 @@ void PumpControllerClass::tickPhGuardSurveillance() {
         phGuardBlocksAbove(phRaw, kPhCeilingRawHard, _phRawHardHighBlockActive);
     if (rawHardHigh && !_phRawHardHighBlockActive) {
       _phRawHardHighBlockActive = true;
-      newRefusal = true;
+      // feature-168 (C5bis) — ZONE D'IMPASSE : au-delà de
+      // kPhOffsetImpasseThresholdHigh, ce filet mord STRUCTURELLEMENT avant que
+      // la régulation ne puisse atteindre kPhCeilingCorrected — ce n'est plus
+      // un incident à faire remonter au compteur des 3 refus / 24 h (la
+      // bascule en manuel n'ajouterait AUCUNE protection, elle RETIRERAIT la
+      // régulation). Le refus lui-même, la cause affichée et toutes les autres
+      // gardes restent INTACTS : seule l'alimentation du compteur est exclue.
+      if (!isPhRegulationImpasseHigh(offset)) newRefusal = true;
       const String msg = "pH BRUT " + String(phRaw, 2) + " au-dessus de la butée de sécurité " +
                          String(kPhCeilingRawHard, 2) + " (offset=" + String(offset, 2) +
                          ") — injection de pH+ refusée quelle que soit la valeur "
@@ -1020,19 +1027,31 @@ void PumpControllerClass::tickPhGuardSurveillance() {
     // quand l'offset est faux. Mais sa CAUSE DE REFUS NE PREND LA MAIN QUE SI
     // ELLE EST DISCRIMINANTE — c'est-à-dire si elle mord ET que la garde
     // corrigée, elle, ne mord pas (bug-135, gate pool-chemistry 2026-10-05).
-    // Raison : kPhFloorRawHard = kPhFloorCorrected − kPhOffsetMax, donc quand
-    // offset == kPhOffsetMax, « corrigé < plancher » et « brut < butée » sont
-    // EXACTEMENT la même inégalité : les deux gardes mordent alors ensemble par
-    // CONSTRUCTION, la butée brute n'apporte aucune information supplémentaire,
-    // et son message qui ne cite que le pH brut devient illisible comparé à
-    // l'écran (incident du 2026-10-05 : bandeau « brut 5.94 < 6.20 » pendant
-    // que la carte pH affichait 6.4 corrigé — la valeur qui fait foi). Ne pas
+    // ⚠️ JUSTIFICATION RÉÉCRITE (feature-168) : avant la levée de la borne de
+    // réglage, kPhFloorRawHard DÉRIVAIT de l'offset (kPhFloorCorrected −
+    // kPhOffsetMax) — à offset == kPhOffsetMax, « corrigé < plancher » et
+    // « brut < butée » étaient EXACTEMENT la même inégalité, et les deux
+    // gardes ne pouvaient mordre ensemble qu'à CETTE borne précise. Ce n'est
+    // plus le cas : kPhFloorRawHard est désormais une constante FIXE
+    // (kPhRawFloorAbsolute), indépendante de l'offset. Le test `!low` reste
+    // indispensable, mais il est maintenant DISCRIMINANT EN PERMANENCE
+    // (comportement voulu) : pour tout offset qui ouvre un écart entre les
+    // deux seuils, les deux gardes peuvent mordre ensemble ou séparément selon
+    // la mesure du moment — ce n'est plus un cas limite isolé. Ne pas
     // restaurer l'ancienne priorité (butée brute toujours prioritaire) sans
     // repasser par pool-chemistry.
     const bool rawHard = phGuardBlocksBelow(phRaw, kPhFloorRawHard, _phRawHardBlockActive);
     if (rawHard && !_phRawHardBlockActive) {
       _phRawHardBlockActive = true;
-      newRefusal = true;
+      // feature-168 (C5) — ZONE D'IMPASSE : au-delà de
+      // kPhOffsetImpasseThreshold, ce filet mord STRUCTURELLEMENT avant que la
+      // régulation ne puisse atteindre kPhFloorCorrected — ce n'est plus un
+      // incident à faire remonter au compteur des 3 refus / 24 h (la bascule
+      // en manuel n'ajouterait AUCUNE protection, elle RETIRERAIT la
+      // régulation). Le refus lui-même, la cause affichée et toutes les
+      // autres gardes restent INTACTS : seule l'alimentation du compteur est
+      // exclue.
+      if (!isPhRegulationImpasseLow(offset)) newRefusal = true;
       // Log critique + alerte MQTT : seulement si DISCRIMINANTE. Si la garde
       // corrigée mord aussi (!low == false), le message « offset positif
       // probablement erroné » est FAUX par construction — l'offset n'est pour

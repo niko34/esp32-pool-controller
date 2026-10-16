@@ -5,11 +5,12 @@
 // On teste le COMPORTEMENT observable de la logique PURE de src/ph_offset.h
 // (ADR-0017, comme dosing_logic / measure_validity_logic) :
 //   - applyPhOffset(raw, offset)  → mesure corrigée, NaN in → NaN out
-//   - isPhOffsetValid(offset)     → offset exploitable (numérique ET dans bornes)
+//   - isPhOffsetValid(offset)     → offset exploitable (SALUBRITÉ de domaine
+//     uniquement depuis feature-168, PAS une borne de réglage, cf. D1.3)
 //
-// Le fichier couvre trois familles :
+// Le fichier couvre quatre familles :
 //
-//   D1 — Application, bornes, propagation NaN, et surtout INVARIANCE PAR
+//   D1 — Application, salubrité, propagation NaN, et surtout INVARIANCE PAR
 //        TRANSLATION du filtre réel (src/sensor_filter) : filtre(x + c) =
 //        filtre(x) + c. C'est la justification mathématique de la décision
 //        d'architecture « offset appliqué EN SORTIE des accesseurs » — elle est
@@ -18,25 +19,25 @@
 //   D2 — Non-régression du filtre pH : compteur de rejets, figé, périmé et
 //        porte STRICTEMENT identiques avec et sans offset. Le filtre ne voit
 //        que le brut ; l'offset ne peut donc pas déplacer un seuil de sécurité.
-//        feature-152 : le filtre lisse, il ne juge plus — il n'y a donc plus
-//        de latch EMI ni de rejet de pic par seuil de déviation (la médiane
-//        écarte déjà les aberrations par construction). La suite
-//        test_native_sensor_filter reste la source de vérité du module pur
-//        (ADR-0017, aucune notion d'offset) ; ici on ne vérifie que la
-//        NON-DÉPENDANCE des signaux de diagnostic à l'offset.
 //
-//   D3 — ARTICULATION offset ↔ seuils de sécurité (refonte v2.25.0) : les seuils
-//        chimiques portent sur le pH CORRIGÉ, les deux butées de dernier recours
-//        sur le pH BRUT. La machine à états elle-même
+//   D3 — ARTICULATION offset ↔ seuils de sécurité (feature-168, ADR-0098) : les
+//        seuils chimiques portent sur le pH CORRIGÉ, les deux filets de dernier
+//        recours sur le pH BRUT, FIXES (5,50 / 8,50) et INDÉPENDANTS de
+//        l'offset depuis feature-168 (ils ne DÉRIVENT plus de kPhOffsetMax, qui
+//        a disparu). La machine à états elle-même
 //        (PumpControllerClass::isPhGuardBlocking / isOrpInhibitedByPh) n'est PAS
-//        pure — voir la note en fin de fichier. Les gardes pures elles-mêmes sont
-//        couvertes par test_native_ph_guard ; ici on ne teste QUE ce qui met
-//        l'offset en jeu.
+//        pure — voir la note en fin de fichier. L'INDÉPENDANCE du filet brut
+//        lui-même (quel que soit l'offset) est verrouillée dans
+//        test_native_ph_guard (revision C11 du gate pool-chemistry) ; ici on ne
+//        teste QUE ce qui met l'offset en jeu CÔTÉ MESURE.
 //
-//   D4 — HORODATAGE DE JUSTESSE (feature-156) : isPhOffsetStale(offset,
-//        offsetSeq, calSeq) et nextJustnessSeq(a, b). Verdict « correction
-//        caduque » (antérieure au dernier étalonnage réussi, et non nulle) et
-//        monotonie de la séquence quel que soit l'ordre des deux événements.
+//   D4 — HORODATAGE DE JUSTESSE (feature-156, étendu feature-168/C10/C12) :
+//        isPhOffsetStale(offset, offsetSeq, calSeq, offsetEpoch, nowEpoch,
+//        confirmIntervalDays, unusualAbs) et nextJustnessSeq(a, b). Deux causes
+//        INDÉPENDANTES de caducité : (a) correction antérieure au dernier
+//        étalonnage réussi (feature-156, inchangée) ; (b) correction INHABITUELLE
+//        non reconfirmée depuis plus de confirmIntervalDays jours (feature-168,
+//        C10) — isPhOffsetExpired() isolément, fail-open sur horloge non fiable.
 //
 // Chaîne de production reproduite (src/sensors.cpp + pump_controller.cpp,
 // feature-152) :
@@ -102,10 +103,13 @@ void test_offset_hundredth_step_is_visible(void) {
   TEST_ASSERT_FLOAT_WITHIN(0.002f, 6.98f, applyPhOffset(6.99f, -0.01f));
 }
 
-// Aux bornes autorisées, la correction vaut exactement ±0,50 pH.
-void test_offset_at_bounds_shifts_by_half_ph(void) {
-  TEST_ASSERT_FLOAT_WITHIN(0.005f, 7.50f, applyPhOffset(7.00f, kPhOffsetMax));
-  TEST_ASSERT_FLOAT_WITHIN(0.005f, 6.50f, applyPhOffset(7.00f, kPhOffsetMin));
+// *** CRITÈRE D'ACCEPTATION DE LA SPEC *** — l'ancienne borne (±0,50) a
+// disparu : +1,00 est désormais une correction ORDINAIRE, appliquée à la
+// lettre. C'est le défaut le plus coûteux du lot (feature-168) si un écrêtage
+// résiduel traînait ailleurs : il ramènerait +1,00 à +0,50 en silence.
+void test_offset_plus_one_is_applied_exactly(void) {
+  TEST_ASSERT_FLOAT_WITHIN(0.005f, 8.00f, applyPhOffset(7.00f, 1.00f));
+  TEST_ASSERT_TRUE_MESSAGE(isPhOffsetValid(1.00f), "+1,00 doit etre une correction valide");
 }
 
 // L'offset est ADDITIF et symétrique : appliquer +c puis −c revient au brut.
@@ -129,10 +133,15 @@ void test_result_is_not_clamped_to_ph_scale(void) {
 // =============================================================================
 // Une mesure absente (capteur stale, filtre non amorcé, EZO injoignable) ne doit
 // JAMAIS devenir une valeur : sinon l'offset lèverait les gardes `isnan` qui
-// protègent le dosage, et le système doserait sur une mesure fabriquée.
+// protègent le dosage. Les offsets choisis ici n'ont plus de « bornes » dont ils
+// seraient représentatifs (feature-168) : 0,50 reste le seuil INHABITUEL
+// (kPhOffsetUnusualAbs), 14,0 l'extrémité de la SALUBRITÉ de domaine
+// (kPhOffsetScaleSpan) — deux valeurs réellement nommées, pas des bornes de
+// réglage disparues.
 
 void test_nan_raw_stays_nan_whatever_the_offset(void) {
-  const float offsets[] = {0.0f, 0.30f, -0.30f, kPhOffsetMin, kPhOffsetMax};
+  const float offsets[] = {0.0f, 0.30f, -0.30f, kPhOffsetUnusualAbs,
+                            -kPhOffsetUnusualAbs, kPhOffsetScaleSpan, -kPhOffsetScaleSpan};
   for (unsigned i = 0; i < sizeof(offsets) / sizeof(offsets[0]); ++i) {
     TEST_ASSERT_TRUE_MESSAGE(isnan(applyPhOffset(NAN, offsets[i])),
                              "mesure absente + offset => doit rester NaN");
@@ -158,8 +167,15 @@ void test_nan_raw_with_infinite_offset_stays_nan(void) {
 }
 
 // =============================================================================
-// D1.3 — isPhOffsetValid : bornes exactes, NaN, valeurs absurdes
+// D1.3 — isPhOffsetValid : SALUBRITÉ DE DOMAINE (feature-168), plus une borne
 // =============================================================================
+// ⚠️ CHANGEMENT DE NATURE (feature-168, condition C3 du gate) : avant cette
+// spec, isPhOffsetValid() REFUSAIT tout |offset| > 0,50 — une borne de réglage.
+// Depuis, elle n'écarte plus que NaN, l'infini, ou une valeur si extravagante
+// (> 14 pH, l'échelle entière) qu'elle ne peut être qu'une corruption ou une
+// faute de saisie (kPhOffsetScaleSpan). Un |offset| "inhabituel" (> 0,50,
+// kPhOffsetUnusualAbs) n'est PLUS refusé ici : il est accepté et signalé
+// AILLEURS (avertissement UI, log + alerte MQTT) — cf. ph_offset.h.
 
 void test_valid_offset_inside_range(void) {
   TEST_ASSERT_TRUE(isPhOffsetValid(0.0f));
@@ -168,55 +184,74 @@ void test_valid_offset_inside_range(void) {
   TEST_ASSERT_TRUE(isPhOffsetValid(0.01f));
 }
 
-// Frontières INCLUSES : ±0,50 exactement est accepté (0,5 est exactement
-// représentable en binaire, la comparaison est donc stricte et déterministe).
-void test_exact_bounds_are_accepted(void) {
-  TEST_ASSERT_TRUE_MESSAGE(isPhOffsetValid(kPhOffsetMax), "+0.50 doit etre accepte");
-  TEST_ASSERT_TRUE_MESSAGE(isPhOffsetValid(kPhOffsetMin), "-0.50 doit etre accepte");
+// L'ANCIENNE borne ±0,50 est désormais une correction tout à fait ORDINAIRE :
+// aucun refus, aucun écrêtage — exactement comme n'importe quelle autre valeur
+// du domaine. Verrou de non-régression : si un futur commit réintroduit un
+// refus ou un clamp à 0,50, CE test doit casser.
+void test_former_bound_of_050_is_now_an_ordinary_value(void) {
   TEST_ASSERT_TRUE(isPhOffsetValid(0.50f));
   TEST_ASSERT_TRUE(isPhOffsetValid(-0.50f));
+  TEST_ASSERT_TRUE(isPhOffsetValid(0.51f));
+  TEST_ASSERT_TRUE(isPhOffsetValid(-0.51f));
+  TEST_ASSERT_TRUE_MESSAGE(isPhOffsetValid(0.80f), "0,80 n'est plus hors domaine");
+  TEST_ASSERT_TRUE_MESSAGE(isPhOffsetValid(13.9f), "13,9 reste dans l'echelle pH");
+  TEST_ASSERT_TRUE_MESSAGE(isPhOffsetValid(-0.90f), "-0,90 reste dans l'echelle pH");
 }
 
-// Un centième au-delà → refusé des deux côtés.
-void test_just_outside_bounds_is_refused(void) {
-  TEST_ASSERT_FALSE_MESSAGE(isPhOffsetValid(0.501f), "+0.501 doit etre refuse");
-  TEST_ASSERT_FALSE_MESSAGE(isPhOffsetValid(-0.501f), "-0.501 doit etre refuse");
-  TEST_ASSERT_FALSE(isPhOffsetValid(0.51f));
-  TEST_ASSERT_FALSE(isPhOffsetValid(-0.51f));
+// Frontières EXACTES de la salubrité de domaine : ±14,0 (kPhOffsetScaleSpan)
+// INCLUSES, ±14,1 REFUSÉES. (14,0 est exactement représentable en binaire : la
+// comparaison est donc stricte et déterministe.)
+void test_exact_scale_span_bounds_are_accepted(void) {
+  TEST_ASSERT_TRUE_MESSAGE(isPhOffsetValid(kPhOffsetScaleSpan), "+14,0 doit etre accepte");
+  TEST_ASSERT_TRUE_MESSAGE(isPhOffsetValid(-kPhOffsetScaleSpan), "-14,0 doit etre accepte");
+  TEST_ASSERT_TRUE(isPhOffsetValid(13.9f));
+  TEST_ASSERT_TRUE(isPhOffsetValid(-13.9f));
+}
+
+void test_just_outside_scale_span_is_refused(void) {
+  TEST_ASSERT_FALSE_MESSAGE(isPhOffsetValid(14.01f), "+14,01 doit etre refuse");
+  TEST_ASSERT_FALSE_MESSAGE(isPhOffsetValid(-14.01f), "-14,01 doit etre refuse");
+  TEST_ASSERT_FALSE(isPhOffsetValid(14.1f));
+  TEST_ASSERT_FALSE(isPhOffsetValid(-14.1f));
 }
 
 void test_nan_offset_is_invalid(void) {
   TEST_ASSERT_FALSE_MESSAGE(isPhOffsetValid(NAN), "NaN ne doit jamais etre exploitable");
 }
 
-// Valeurs absurdes : NVS corrompue, POST malveillant, cast raté.
+// Salubrité stricte : NVS corrompue, POST malveillant, cast raté — plus
+// aucune valeur FINIE du domaine pH n'est "absurde" en soi (c'est le choix de
+// la spec), seules NaN/infini/une valeur hors échelle le restent.
 void test_absurd_offsets_are_invalid(void) {
-  TEST_ASSERT_FALSE(isPhOffsetValid(1.0f));
-  TEST_ASSERT_FALSE(isPhOffsetValid(-1.0f));
-  TEST_ASSERT_FALSE(isPhOffsetValid(14.0f));
+  TEST_ASSERT_FALSE(isPhOffsetValid(14.1f));
+  TEST_ASSERT_FALSE(isPhOffsetValid(-14.1f));
+  TEST_ASSERT_FALSE_MESSAGE(isPhOffsetValid(1e30f), "1e30 doit etre refuse (salubrite)");
+  TEST_ASSERT_FALSE(isPhOffsetValid(-1e30f));
   TEST_ASSERT_FALSE(isPhOffsetValid(1e9f));
   TEST_ASSERT_FALSE(isPhOffsetValid(-1e9f));
   TEST_ASSERT_FALSE(isPhOffsetValid(INFINITY));
   TEST_ASSERT_FALSE(isPhOffsetValid(-INFINITY));
 }
 
-// Verrou de régression sur les bornes elles-mêmes : elles ont été arbitrées avec
-// pool-chemistry — au-delà de ±0,50, l'écart ne s'explique plus par
-// l'implantation, et l'écart entre pH régulé et pH réel deviendrait dangereux.
-// ⚠️ FORMULATION CORRIGÉE (feature-155, gate 2) : cette phrase disait « c'est la
-// sonde/calibration EZO en cause » — 3e jumeau du texte qui DÉSIGNE LA SONDE
-// sans preuve (incident du 2026-08-25 : sonde SAINE déclarée à remplacer, cause
-// réelle = décalage EXTERNE). Un écart > 0,5 pH a d'autres causes au moins aussi
-// probables : test de référence périmé, lecture à la mauvaise échelle,
-// étalonnage à refaire. Les deux autres jumeaux (web_routes_config.cpp,
-// ph_offset.h) ont été corrigés dans le même lot.
-// Tout élargissement doit casser ce test et repasser par pool-chemistry.
-void test_offset_bounds_constants(void) {
-  TEST_ASSERT_FLOAT_WITHIN(1e-6f, -0.50f, kPhOffsetMin);
-  TEST_ASSERT_FLOAT_WITHIN(1e-6f, 0.50f, kPhOffsetMax);
-  TEST_ASSERT_TRUE_MESSAGE(kPhOffsetMin < kPhOffsetMax, "plage d'offset non vide");
-  // Plage symétrique : aucun biais implicite vers l'acidification.
-  TEST_ASSERT_FLOAT_WITHIN(1e-6f, 0.0f, kPhOffsetMin + kPhOffsetMax);
+// Valeurs ACCEPTÉES explicitement citées par les critères d'acceptation de la
+// spec (feature-168) : +13,9 / +1,00 / −0,90.
+void test_spec_accepted_values(void) {
+  TEST_ASSERT_TRUE(isPhOffsetValid(13.9f));
+  TEST_ASSERT_TRUE(isPhOffsetValid(1.00f));
+  TEST_ASSERT_TRUE(isPhOffsetValid(-0.90f));
+}
+
+// Les deux constantes NOMMÉES qui remplacent les anciennes bornes de réglage —
+// ⚠️ NE PAS les confondre : kPhOffsetUnusualAbs est un SIGNAL (pas un refus),
+// kPhOffsetScaleSpan est la SEULE salubrité restante. Elles ne sont plus
+// symétriques par construction d'une borne de réglage (il n'y en a plus) : ce
+// sont deux grandeurs de nature différente qui, numériquement, sont chacune
+// symétriques en elles-mêmes (±0,50 et ±14,0).
+void test_offset_named_constants(void) {
+  TEST_ASSERT_FLOAT_WITHIN(1e-6f, 0.50f, kPhOffsetUnusualAbs);
+  TEST_ASSERT_FLOAT_WITHIN(1e-6f, 14.0f, kPhOffsetScaleSpan);
+  TEST_ASSERT_TRUE_MESSAGE(kPhOffsetUnusualAbs < kPhOffsetScaleSpan,
+                           "le signal doit rester bien EN DECA de la salubrite");
 }
 
 // =============================================================================
@@ -276,9 +311,13 @@ void test_filter_translation_invariance_negative_offset(void) {
   assertTranslationInvariance(-0.30f);
 }
 
-void test_filter_translation_invariance_at_bounds(void) {
-  assertTranslationInvariance(kPhOffsetMax);
-  assertTranslationInvariance(kPhOffsetMin);
+// Offsets REPRÉSENTATIFS d'une correction large (feature-168 : il n'y a plus de
+// "bornes" dont ±0,50 serait l'extrémité) — on reste dans [0;14] après
+// translation pour ne heurter aucun bornage PHYSIQUE du filtre (les échantillons
+// sont ~7,00 ± 0,15).
+void test_filter_translation_invariance_large_offset(void) {
+  assertTranslationInvariance(1.00f);
+  assertTranslationInvariance(-1.00f);
 }
 
 // Corollaire opérationnel : un changement d'offset est pris en compte
@@ -347,11 +386,11 @@ static void runHarshScenario(PhPipeline& p, uint32_t& t) {
 void test_filter_flags_identical_with_and_without_offset(void) {
   PhPipeline noOffset(0.0f);
   PhPipeline withOffset(0.30f);
-  PhPipeline maxOffset(kPhOffsetMax);
+  PhPipeline largeOffset(1.00f);  // feature-168 : plus de "max", valeur large représentative
   uint32_t t0 = 0, t1 = 0, t2 = 0;
   runHarshScenario(noOffset, t0);
   runHarshScenario(withOffset, t1);
-  runHarshScenario(maxOffset, t2);
+  runHarshScenario(largeOffset, t2);
   TEST_ASSERT_EQUAL_UINT32(t0, t1);
   TEST_ASSERT_EQUAL_UINT32(t0, t2);
 
@@ -362,7 +401,7 @@ void test_filter_flags_identical_with_and_without_offset(void) {
   TEST_ASSERT_EQUAL_UINT8_MESSAGE(noOffset.filter.rejectedCount(),
                                   withOffset.filter.rejectedCount(),
                                   "compteur de rejets ne doit pas dependre de l'offset");
-  TEST_ASSERT_EQUAL_UINT8(noOffset.filter.rejectedCount(), maxOffset.filter.rejectedCount());
+  TEST_ASSERT_EQUAL_UINT8(noOffset.filter.rejectedCount(), largeOffset.filter.rejectedCount());
 
   // Figé, périmé, porte : mêmes verdicts de sécurité, offset ou pas.
   TEST_ASSERT_EQUAL(noOffset.filter.frozen(), withOffset.filter.frozen());
@@ -379,7 +418,7 @@ void test_filter_flags_identical_with_and_without_offset(void) {
 // Filtre non amorcé (warmup) + offset : la valeur exposée à la régulation reste
 // NaN — l'offset ne doit pas amorcer une mesure inexistante (garde fail-closed).
 void test_warmup_with_offset_still_exposes_nan(void) {
-  PhPipeline p(kPhOffsetMax);
+  PhPipeline p(1.00f);
   uint32_t t = 0;
   for (int i = 0; i < (int)kSensorFilterMedianWindow - 1; ++i) {
     p.ingest(7.00f, t);
@@ -389,23 +428,23 @@ void test_warmup_with_offset_still_exposes_nan(void) {
   }
   p.ingest(7.00f, t);  // dernier échantillon → fenêtre pleine
   TEST_ASSERT_FALSE(isnan(p.corrected(t)));
-  TEST_ASSERT_FLOAT_WITHIN(0.01f, 7.50f, p.corrected(t));
+  TEST_ASSERT_FLOAT_WITHIN(0.01f, 8.00f, p.corrected(t));
 }
 
 // =============================================================================
-// D3 — Articulation offset ↔ seuils de sécurité (refonte v2.25.0)
+// D3 — Articulation offset ↔ seuils de sécurité (feature-168)
 // =============================================================================
-// Les seuils CHIMIQUES portent désormais sur le pH CORRIGÉ (une fois l'offset
-// appliqué, la valeur EST le pH de l'eau) ; les deux BUTÉES de dernier recours
-// portent sur le pH BRUT, pour rester valides quand l'offset est FAUX. Ce bloc
-// teste ce que l'offset change — les gardes elles-mêmes (hystérésis, NaN,
-// frontières) sont couvertes par test_native_ph_guard.
+// Les seuils CHIMIQUES portent sur le pH CORRIGÉ (une fois l'offset appliqué,
+// la valeur EST le pH de l'eau) ; les deux FILETS de dernier recours portent
+// sur le pH BRUT, FIXES (5,50 / 8,50) et INDÉPENDANTS de l'offset — ils ne
+// dérivent plus d'une borne d'offset (ADR-0098). Ce bloc teste ce que l'offset
+// change côté MESURE ; l'INDÉPENDANCE du filet brut lui-même est verrouillée
+// dans test_native_ph_guard (c'est là que vit l'invariant balayé sur tout le
+// domaine, cf. revision C11 du gate).
 
 // Le seuil chimique porte sur le CORRIGÉ : le pH RÉEL protégé dans le bassin est
 // donc CONSTANT (6,70) par construction, et c'est la LECTURE BRUTE du seuil qui
-// se déplace de −offset. C'est l'inverse exact de l'ancien plancher asservi, qui
-// déplaçait le seuil pour garder le pH réel constant — même propriété chimique,
-// obtenue sans aucune arithmétique de seuil.
+// se déplace de −offset.
 void test_corrected_floor_protects_a_constant_real_ph(void) {
   for (int i = -50; i <= 50; ++i) {
     const float offset = (float)i * 0.01f;
@@ -428,79 +467,74 @@ void test_corrected_floor_protects_a_constant_real_ph(void) {
   }
 }
 
-// La butée BRUTE est dérivée de l'offset MAXIMAL : elle borne le dégât d'un
-// offset POSITIF saisi à tort, sans jamais mordre avant le seuil corrigé pour un
-// offset légitime (6,70 − 0,50 = 6,20). Une butée plus haute (6,40 avait été
-// proposée) rendrait le seuil corrigé inopérant à offset +0,50.
-void test_raw_hard_floor_is_derived_from_the_max_offset(void) {
-  TEST_ASSERT_FLOAT_WITHIN(1e-6f, 6.20f, kPhFloorRawHard);
-  TEST_ASSERT_FLOAT_WITHIN(1e-4f, kPhFloorCorrected - kPhOffsetMax, kPhFloorRawHard);
+// *** C1 DU GATE (feature-168) *** — les filets BRUTS sont désormais les
+// constantes à justification chimique PROPRE, ÉGALES aux deux absolus, sans
+// AUCUNE trace d'offset dans leur définition.
+void test_raw_hard_floor_equals_the_absolute_chemical_threshold(void) {
+  TEST_ASSERT_FLOAT_WITHIN(1e-6f, 5.50f, kPhFloorRawHard);
+  TEST_ASSERT_FLOAT_WITHIN(1e-6f, kPhRawFloorAbsolute, kPhFloorRawHard);
   TEST_ASSERT_TRUE_MESSAGE(kPhFloorRawHard < kPhFloorCorrected,
-                           "la butee brute doit rester SOUS le seuil corrige");
-  // Symétrique côté haut : butée brute = inhibition ORP + offset max.
-  TEST_ASSERT_FLOAT_WITHIN(1e-6f, 8.10f, kPhCeilingRawHard);
-  TEST_ASSERT_FLOAT_WITHIN(1e-4f, kPhOrpInhibit + kPhOffsetMax, kPhCeilingRawHard);
-  // EXIGENCE PIRE CAS côté haut, exact symétrique de celle du bas : la butée
-  // brute haute ne doit pas être SOUS le plafond corrigé ramené à l'offset le
-  // plus défavorable (le plus NÉGATIF, qui abaisse le corrigé à brut donné).
-  // Avec l'ancien plafond 7,70 l'exigence valait 8,20 et n'était PAS satisfaite ;
-  // depuis kPhHighMargin = 0,10 elle vaut 8,10 et l'est à l'ÉGALITÉ. La tolérance
-  // absorbe l'ulp entre deux expressions flottantes distinctes.
-  TEST_ASSERT_TRUE_MESSAGE(
-      kPhCeilingRawHard >= kPhCeilingCorrected - kPhOffsetMin - 1e-4f,
-      "butee brute haute sous le plafond corrige au pire offset : elle mordrait "
-      "la premiere et rendrait le plafond inoperant");
+                           "le filet brut doit rester SOUS le seuil corrige nominal");
+  TEST_ASSERT_FLOAT_WITHIN(1e-6f, 8.50f, kPhCeilingRawHard);
+  TEST_ASSERT_FLOAT_WITHIN(1e-6f, kPhRawCeilingAbsolute, kPhCeilingRawHard);
+  TEST_ASSERT_TRUE_MESSAGE(kPhCeilingCorrected < kPhCeilingRawHard,
+                           "le filet brut haut doit rester AU-DESSUS du plafond corrige nominal");
   TEST_ASSERT_TRUE_MESSAGE(kPhCeilingCorrected > kPhFloorCorrected,
                            "fenetre de dosage corrigee vide");
 }
 
-// Un offset POSITIF saisi à tort (la sonde lit juste, l'utilisateur a saisi
-// +0,50 sans raison) rend le seuil corrigé trop permissif : l'eau réelle peut
-// descendre jusqu'à la BUTÉE BRUTE avant tout refus. C'est le compromis ASSUMÉ de
-// la refonte — la butée n'est plus un plancher chimique, mais la borne du dégât
-// qu'un offset menteur peut causer. On la verrouille explicitement : 6,20 brut,
-// jamais moins, quel que soit l'offset déclaré.
-void test_wrong_positive_offset_is_bounded_by_the_raw_hard_floor(void) {
-  const float offsets[] = {0.10f, 0.30f, kPhOffsetMax, 0.80f, 5.0f};
+// Un offset positif GRAND (au-delà de l'ancienne borne ±0,50, désormais
+// ordinaire) rend le seuil corrigé trop permissif en LECTURE BRUTE, mais le
+// filet brut — FIXE, INDÉPENDANT de l'offset — continue de refuser à 5,50 pile,
+// quelle que soit la valeur corrigée affichée.
+void test_wrong_positive_offset_is_bounded_by_the_fixed_raw_floor(void) {
+  const float offsets[] = {0.10f, 0.30f, 0.50f, 0.80f, 1.00f, 5.0f};
   for (unsigned i = 0; i < sizeof(offsets) / sizeof(offsets[0]); ++i) {
     const float offset = offsets[i];
     char msg[144];
-    snprintf(msg, sizeof(msg), "offset menteur=%+.2f", (double)offset);
-    // Juste sous la butée : refus, quelle que soit la valeur AFFICHÉE (rassurante).
-    TEST_ASSERT_TRUE_MESSAGE(phGuardBlocksBelow(6.19f, kPhFloorRawHard, false), msg);
-    // Et la valeur affichée est bien, elle, trompeuse : c'est tout l'objet de la butée.
-    TEST_ASSERT_TRUE_MESSAGE(applyPhOffset(6.19f, offset) > kPhFloorCorrected - 0.51f, msg);
+    snprintf(msg, sizeof(msg), "offset=%+.2f", (double)offset);
+    // Juste sous le filet : refus, quelle que soit la valeur AFFICHÉE (rassurante).
+    TEST_ASSERT_TRUE_MESSAGE(phGuardBlocksBelow(5.49f, kPhFloorRawHard, false), msg);
+    // Et la valeur affichée est bien, elle, trompeuse (plus l'offset est grand,
+    // plus elle est éloignée du refus) : c'est tout l'objet du filet brut FIXE.
+    TEST_ASSERT_TRUE_MESSAGE(applyPhOffset(5.49f, offset) > 5.49f, msg);
   }
-  // Cas de référence : offset +0,50 menteur, eau réelle à 6,19. L'affichage
-  // annonce 6,69 (rassurant à un centième près du seuil) et c'est le BRUT qui
-  // tranche.
-  TEST_ASSERT_FLOAT_WITHIN(0.005f, 6.69f, applyPhOffset(6.19f, kPhOffsetMax));
-  TEST_ASSERT_TRUE(phGuardBlocksBelow(6.19f, kPhFloorRawHard, false));
+  // Cas de référence : offset +1,00, eau réelle à 5,49 (sous le filet).
+  // L'affichage annonce 6,49, et c'est le BRUT qui tranche — invariant du filet,
+  // pas de la consigne.
+  TEST_ASSERT_FLOAT_WITHIN(0.005f, 6.49f, applyPhOffset(5.49f, 1.00f));
+  TEST_ASSERT_TRUE(phGuardBlocksBelow(5.49f, kPhFloorRawHard, false));
 }
 
 // Miroir : un offset NÉGATIF saisi à tort masquerait une eau réellement basique
-// (chlore inactif, régulation ORP qui surdose). La butée brute HAUTE la rattrape
-// à 8,10, quelle que soit la valeur corrigée affichée.
-void test_wrong_negative_offset_is_bounded_by_the_raw_hard_ceiling(void) {
-  const float brut = 8.15f;
-  const float affiche = applyPhOffset(brut, kPhOffsetMin);
+// (chlore inactif, régulation ORP qui surdose). Le filet brut HAUT la rattrape
+// à 8,50 pile, quelle que soit la valeur corrigée affichée.
+void test_wrong_negative_offset_is_bounded_by_the_fixed_raw_ceiling(void) {
+  const float brut = 8.55f;
+  const float affiche = applyPhOffset(brut, -0.90f);
   TEST_ASSERT_FLOAT_WITHIN(0.005f, 7.65f, affiche);
   TEST_ASSERT_TRUE(phGuardBlocksAbove(brut, kPhCeilingRawHard, false));
-  // Aucun offset ne peut abaisser la butée : elle ne regarde QUE le brut.
-  TEST_ASSERT_TRUE(phGuardBlocksAbove(brut, kPhCeilingRawHard, false));
-  TEST_ASSERT_FALSE(phGuardBlocksAbove(8.05f, kPhCeilingRawHard, false));
-  // Depuis l'abaissement du plafond (kPhHighMargin 0,20 → 0,10), la valeur
-  // AFFICHÉE elle-même (7,65) refuse le pH+ : l'ancien plafond 7,70 l'autorisait
-  // encore, dans une eau où les deux gardes ORP suspendaient déjà le chlore.
+  TEST_ASSERT_FALSE(phGuardBlocksAbove(8.45f, kPhCeilingRawHard, false));
+  // La valeur AFFICHÉE elle-même (7,55) refuse déjà le pH+ au titre du seuil
+  // corrigé (7,60) — DEUX gardes voient donc cette eau, chacune sur son
+  // référentiel.
   TEST_ASSERT_TRUE_MESSAGE(phGuardBlocksAbove(affiche, kPhCeilingCorrected, false),
-                           "7,65 corrige doit refuser d'ALCALINISER");
+                           "7,55 corrige doit refuser d'ALCALINISER");
   TEST_ASSERT_TRUE(phGuardBlocksAbove(affiche, kPhOrpInhibit, false));
 }
 
-// La fenêtre de dosage est NON VIDE : entre le refus d'acidifier (6,70) et
-// l'inhibition ORP (7,60), toute la plage de consigne [7,20 ; 7,50] est libre,
-// quel que soit l'offset — sinon tout dosage serait mort-né.
-void test_dosing_window_is_never_empty_whatever_the_offset(void) {
+// La fenêtre de dosage NOMINALE (offset dans la zone non-impasse) est NON
+// VIDE : entre le refus d'acidifier (6,70) et l'inhibition ORP (7,60), toute la
+// plage de consigne [7,20 ; 7,50] est libre. ⚠️ Ce n'est PLUS vrai pour TOUT
+// offset depuis feature-168 (au-delà des seuils d'impasse, le filet brut mord
+// AVANT le seuil corrigé — c'est le comportement VOULU, signalé par une alerte
+// dédiée) : le balayage est donc borné à la zone sans impasse,
+// ]kPhOffsetImpasseThresholdHigh ; kPhOffsetImpasseThreshold[.
+void test_dosing_window_is_never_empty_in_the_non_impasse_zone(void) {
+  // Pré-condition : la zone non-impasse doit être non vide et contenir au
+  // moins [-0,50 ; 0,50] (l'ancienne plage de réglage complète).
+  TEST_ASSERT_TRUE(kPhOffsetImpasseThresholdHigh < -0.50f);
+  TEST_ASSERT_TRUE(kPhOffsetImpasseThreshold > 0.50f);
   for (int i = -50; i <= 50; ++i) {
     const float offset = (float)i * 0.01f;
     for (int c = 720; c <= 750; c += 10) {
@@ -512,9 +546,6 @@ void test_dosing_window_is_never_empty_whatever_the_offset(void) {
                (double)offset, (double)consigne, (double)brut);
       TEST_ASSERT_FALSE_MESSAGE(phGuardBlocksBelow(corrige, kPhFloorCorrected, false), msg);
       TEST_ASSERT_FALSE_MESSAGE(phGuardBlocksAbove(corrige, kPhOrpInhibit, false), msg);
-      // Le PLAFOND d'alcalinisation est désormais ALIGNÉ sur l'inhibition ORP
-      // (7,60) : la consigne haute 7,50 doit rester dosable en pH+ malgré cet
-      // abaissement, sinon un bassin à TAC bas ne pourrait plus être remonté.
       TEST_ASSERT_FALSE_MESSAGE(phGuardBlocksAbove(corrige, kPhCeilingCorrected, false), msg);
       TEST_ASSERT_FALSE_MESSAGE(phGuardBlocksBelow(brut, kPhFloorRawHard, false), msg);
       TEST_ASSERT_FALSE_MESSAGE(phGuardBlocksAbove(brut, kPhCeilingRawHard, false), msg);
@@ -522,43 +553,61 @@ void test_dosing_window_is_never_empty_whatever_the_offset(void) {
   }
 }
 
+// *** CRITÈRE D'ACCEPTATION DE LA SPEC *** — à offset +1,00 / consigne 7,20, le
+// filet brut ne mord JAMAIS en bande nominale : 7,20 − 1,00 = 6,20 > 5,50.
+void test_offset_plus_one_consigne_720_never_hits_the_raw_floor(void) {
+  const float offset = 1.00f;
+  const float brut = kPhTargetMin - offset;  // 6,20
+  TEST_ASSERT_FLOAT_WITHIN(1e-4f, 6.20f, brut);
+  TEST_ASSERT_TRUE_MESSAGE(brut > kPhFloorRawHard,
+                           "6,20 doit rester AU-DESSUS du filet brut 5,50");
+  TEST_ASSERT_FALSE(phGuardBlocksBelow(brut, kPhFloorRawHard, false));
+  TEST_ASSERT_FALSE(phGuardBlocksBelow(kPhTargetMin, kPhFloorCorrected, false));
+}
+
 // =============================================================================
-// D4 — HORODATAGE DE JUSTESSE (feature-156) : isPhOffsetStale / nextJustnessSeq
+// D4 — HORODATAGE DE JUSTESSE (feature-156, étendu feature-168 C10/C12)
 // =============================================================================
-// Le verdict « correction caduque » engage le dosage (feature-155) : une
-// correction NON NULLE posée AVANT le dernier étalonnage réussi compense un
-// état de sonde qui n'existe plus. C'est `seq` (entier croissant), PAS
-// `epoch`, qui fait foi pour l'ordre — voir config.h pour la justification
-// (indépendance à l'horloge non synchronisée et au redémarrage).
+// Le verdict « correction caduque » engage le dosage : une correction NON NULLE
+// posée AVANT le dernier étalonnage réussi (cause a) OU INHABITUELLE non
+// reconfirmée depuis plus de confirmIntervalDays jours (cause b, feature-168)
+// est caduque. `seq` (entier croissant), PAS `epoch`, fait foi pour l'ORDRE
+// étalonnage/correction (cause a) — epoch ne sert qu'à dater la cause (b).
+
+// Paramètres NOMINAUX de la cause (b), neutres pour ne tester QUE la cause (a) :
+// horloge jamais synchronisée (epoch=0 des deux côtés) ⇒ cause (b) fail-open.
+static const uint32_t kNoEpoch = 0;
+static const uint32_t kConfirmDays = 30;
+static const float kUnusual = 0.50f;
 
 void test_stale_offset_null_and_anterior_is_false(void) {
   // Offset nul (inerte) : rien à annuler, jamais caduc, même antérieur.
-  TEST_ASSERT_FALSE(isPhOffsetStale(0.0f, 1, 5));
+  TEST_ASSERT_FALSE(isPhOffsetStale(0.0f, 1, 5, kNoEpoch, kNoEpoch, kConfirmDays, kUnusual));
 }
 
 void test_stale_offset_nonzero_and_anterior_is_true(void) {
   // Correction posée (seq=1) avant un étalonnage plus récent (seq=5) : caduque.
-  TEST_ASSERT_TRUE(isPhOffsetStale(0.30f, 1, 5));
-  TEST_ASSERT_TRUE(isPhOffsetStale(-0.10f, 2, 3));
+  TEST_ASSERT_TRUE(isPhOffsetStale(0.30f, 1, 5, kNoEpoch, kNoEpoch, kConfirmDays, kUnusual));
+  TEST_ASSERT_TRUE(isPhOffsetStale(-0.10f, 2, 3, kNoEpoch, kNoEpoch, kConfirmDays, kUnusual));
 }
 
 void test_stale_offset_nonzero_and_posterior_is_false(void) {
-  // Correction posée APRÈS le dernier étalonnage : toujours à jour.
-  TEST_ASSERT_FALSE(isPhOffsetStale(0.30f, 9, 5));
+  // Correction posée APRÈS le dernier étalonnage : toujours à jour (cause a).
+  TEST_ASSERT_FALSE(isPhOffsetStale(0.30f, 9, 5, kNoEpoch, kNoEpoch, kConfirmDays, kUnusual));
 }
 
 void test_stale_equal_sequences_is_false(void) {
   // Séquences ÉGALES : aucune préséance de l'étalonnage sur la correction —
   // pas caduque. Cas limite explicitement exigé (ni l'un ni l'autre n'est
   // strictement postérieur).
-  TEST_ASSERT_FALSE(isPhOffsetStale(0.30f, 4, 4));
+  TEST_ASSERT_FALSE(isPhOffsetStale(0.30f, 4, 4, kNoEpoch, kNoEpoch, kConfirmDays, kUnusual));
 }
 
 void test_stale_both_zero_is_false(void) {
   // Aucun des deux événements ne s'est jamais produit (appareil neuf, ou
   // config antérieure à feature-156 sans ces clés NVS) : jamais caduc, même
   // avec un offset non nul hérité d'une ancienne version.
-  TEST_ASSERT_FALSE(isPhOffsetStale(0.20f, 0, 0));
+  TEST_ASSERT_FALSE(isPhOffsetStale(0.20f, 0, 0, kNoEpoch, kNoEpoch, kConfirmDays, kUnusual));
 }
 
 void test_stale_first_calibration_after_update_with_inherited_offset(void) {
@@ -567,14 +616,10 @@ void test_stale_first_calibration_after_update_with_inherited_offset(void) {
   // correction non nulle en vigueur depuis des mois — test_stale_both_zero_is_false
   // couvre déjà ce premier redémarrage : pas de fausse alerte.
   // Ici : l'étape SUIVANTE, le premier étalonnage posé APRÈS la mise à jour.
-  // nextJustnessSeq(0, 0) = 1 (cf. test_next_justness_seq_is_max_plus_one) :
-  // calSeq passe à 1, strictement > offsetSeq resté à 0 (la correction n'a pas
-  // été retouchée). La correction héritée devient caduque — c'est EXACT et
-  // c'est le comportement voulu (la spec le dit explicitement).
-  TEST_ASSERT_TRUE(isPhOffsetStale(0.30f, 0, 1));
+  TEST_ASSERT_TRUE(isPhOffsetStale(0.30f, 0, 1, kNoEpoch, kNoEpoch, kConfirmDays, kUnusual));
   // Et si la correction héritée était nulle, elle reste jamais caduque (rien
   // à annuler), même avec le même franchissement de séquence.
-  TEST_ASSERT_FALSE(isPhOffsetStale(0.0f, 0, 1));
+  TEST_ASSERT_FALSE(isPhOffsetStale(0.0f, 0, 1, kNoEpoch, kNoEpoch, kConfirmDays, kUnusual));
 }
 
 void test_next_justness_seq_is_max_plus_one(void) {
@@ -583,6 +628,67 @@ void test_next_justness_seq_is_max_plus_one(void) {
   TEST_ASSERT_EQUAL_UINT32(1, nextJustnessSeq(0, 0));  // premier événement de l'appareil
   TEST_ASSERT_EQUAL_UINT32(101, nextJustnessSeq(100, 0));
   TEST_ASSERT_EQUAL_UINT32(101, nextJustnessSeq(0, 100));
+}
+
+// =============================================================================
+// D4bis — feature-168 (C10) : DEUXIÈME CAUSE DE CADUCITÉ, isPhOffsetExpired
+// =============================================================================
+// Indépendante de l'étalonnage : une correction INHABITUELLE (|offset| > 0,50)
+// non reconfirmée depuis plus de 30 jours est caduque, QUEL QUE SOIT l'état de
+// l'étalonnage (seq ne joue aucun rôle ici, epoch seul).
+
+// Fail-open : epoch == 0 (date inconnue) ⇒ jamais caduc par cette cause, quelle
+// que soit l'ampleur de l'offset.
+void test_expired_epoch_zero_never_caduc(void) {
+  TEST_ASSERT_FALSE(isPhOffsetExpired(1.00f, 0, 1000000000UL, kConfirmDays, kUnusual));
+}
+
+// Fail-open : horloge pas encore synchronisée côté "maintenant" (nowEpoch==0).
+void test_expired_now_epoch_zero_never_caduc(void) {
+  TEST_ASSERT_FALSE(isPhOffsetExpired(1.00f, 1000000000UL, 0, kConfirmDays, kUnusual));
+}
+
+// Un offset DANS la zone habituelle (|offset| <= 0,50) n'est jamais caduc par
+// cette cause, même très ancien.
+void test_expired_offset_usual_never_caduc(void) {
+  const uint32_t posed = 1000000000UL;
+  const uint32_t farLater = posed + 365UL * 86400UL;  // un an plus tard
+  TEST_ASSERT_FALSE(isPhOffsetExpired(0.50f, posed, farLater, kConfirmDays, kUnusual));
+  TEST_ASSERT_FALSE(isPhOffsetExpired(-0.50f, posed, farLater, kConfirmDays, kUnusual));
+}
+
+// *** LES QUATRE COMBINAISONS EXIGÉES PAR LA SPEC *** — 29 j / 31 j croisés
+// avec |offset| 0,40 (habituel, jamais caduc) / 1,00 (inhabituel, caduc
+// seulement au-delà du délai).
+void test_expired_four_combinations_29_31_days_x_040_100(void) {
+  const uint32_t posed = 1000000000UL;
+  const uint32_t after29 = posed + 29UL * 86400UL;
+  const uint32_t after31 = posed + 31UL * 86400UL;
+
+  // 29 jours, offset habituel (0,40) : jamais caduc (ni le délai, ni l'ampleur).
+  TEST_ASSERT_FALSE_MESSAGE(
+      isPhOffsetExpired(0.40f, posed, after29, kConfirmDays, kUnusual),
+      "29j / 0,40 : ni le delai ni l'ampleur ne justifient la caducite");
+  // 29 jours, offset inhabituel (1,00) : délai PAS encore dépassé, pas caduc.
+  TEST_ASSERT_FALSE_MESSAGE(
+      isPhOffsetExpired(1.00f, posed, after29, kConfirmDays, kUnusual),
+      "29j / 1,00 : le delai de 30j n'est pas encore depasse");
+  // 31 jours, offset habituel (0,40) : jamais caduc par cette cause (l'ampleur
+  // manque), quel que soit le délai.
+  TEST_ASSERT_FALSE_MESSAGE(
+      isPhOffsetExpired(0.40f, posed, after31, kConfirmDays, kUnusual),
+      "31j / 0,40 : l'ampleur ne declenche jamais cette cause");
+  // 31 jours, offset inhabituel (1,00) : délai dépassé ET ampleur inhabituelle
+  // ⇒ caduc.
+  TEST_ASSERT_TRUE_MESSAGE(
+      isPhOffsetExpired(1.00f, posed, after31, kConfirmDays, kUnusual),
+      "31j / 1,00 : delai depasse ET offset inhabituel => caduc");
+}
+
+// Horloge repartie en arrière (RTC non recalée) : fail-open, pas de caducité
+// signalée sur une donnée temporelle qui n'a pas de sens.
+void test_expired_clock_went_backwards_is_false(void) {
+  TEST_ASSERT_FALSE(isPhOffsetExpired(1.00f, 2000000000UL, 1000000000UL, kConfirmDays, kUnusual));
 }
 
 void test_refusal_counter_constants(void) {
@@ -610,7 +716,11 @@ void test_refusal_counter_constants(void) {
 //   - fenêtre glissante 24 h et bascule en mode manuel au 3ᵉ refus AUTOMATIQUE,
 //   - mode Programmée : refus signalé (warn + alerte à débit limité), JAMAIS compté,
 //   - réarmement des drapeaux au changement de produit, compteur conservé,
-//   - câblage des branches d'update() AVANT canDose().
+//   - câblage des branches d'update() AVANT canDose(),
+//   - EXCLUSION du compteur des refus de filet brut SEUL en zone d'impasse
+//     (C5/C5bis) — isPhRegulationImpasseLow/High sont couvertes en pur dans
+//     test_native_ph_guard, mais leur BRANCHEMENT au compteur vit dans
+//     pump_controller.cpp (impur).
 // =============================================================================
 
 int main(int, char**) {
@@ -620,7 +730,7 @@ int main(int, char**) {
   RUN_TEST(test_positive_offset_applied_to_hundredth);
   RUN_TEST(test_negative_offset_applied_to_hundredth);
   RUN_TEST(test_offset_hundredth_step_is_visible);
-  RUN_TEST(test_offset_at_bounds_shifts_by_half_ph);
+  RUN_TEST(test_offset_plus_one_is_applied_exactly);
   RUN_TEST(test_offset_is_reversible);
   RUN_TEST(test_result_is_not_clamped_to_ph_scale);
   // D1.2 — NaN
@@ -628,29 +738,32 @@ int main(int, char**) {
   RUN_TEST(test_nan_offset_is_neutralized_and_preserves_raw);
   RUN_TEST(test_nan_raw_and_nan_offset_stays_nan);
   RUN_TEST(test_nan_raw_with_infinite_offset_stays_nan);
-  // D1.3 — validité
+  // D1.3 — validité (salubrite de domaine, feature-168)
   RUN_TEST(test_valid_offset_inside_range);
-  RUN_TEST(test_exact_bounds_are_accepted);
-  RUN_TEST(test_just_outside_bounds_is_refused);
+  RUN_TEST(test_former_bound_of_050_is_now_an_ordinary_value);
+  RUN_TEST(test_exact_scale_span_bounds_are_accepted);
+  RUN_TEST(test_just_outside_scale_span_is_refused);
   RUN_TEST(test_nan_offset_is_invalid);
   RUN_TEST(test_absurd_offsets_are_invalid);
-  RUN_TEST(test_offset_bounds_constants);
+  RUN_TEST(test_spec_accepted_values);
+  RUN_TEST(test_offset_named_constants);
   // D1.4 — invariance par translation
   RUN_TEST(test_filter_translation_invariance_positive_offset);
   RUN_TEST(test_filter_translation_invariance_negative_offset);
-  RUN_TEST(test_filter_translation_invariance_at_bounds);
+  RUN_TEST(test_filter_translation_invariance_large_offset);
   RUN_TEST(test_offset_change_is_immediate_at_output);
   // D2 — non-régression filtre (feature-152 : plus de latch/rejet de pic à tester)
   RUN_TEST(test_filter_flags_identical_with_and_without_offset);
   RUN_TEST(test_warmup_with_offset_still_exposes_nan);
-  // D3 — articulation offset / seuils de sécurité (v2.25.0)
+  // D3 — articulation offset / seuils de sécurité (feature-168)
   RUN_TEST(test_corrected_floor_protects_a_constant_real_ph);
-  RUN_TEST(test_raw_hard_floor_is_derived_from_the_max_offset);
-  RUN_TEST(test_wrong_positive_offset_is_bounded_by_the_raw_hard_floor);
-  RUN_TEST(test_wrong_negative_offset_is_bounded_by_the_raw_hard_ceiling);
-  RUN_TEST(test_dosing_window_is_never_empty_whatever_the_offset);
+  RUN_TEST(test_raw_hard_floor_equals_the_absolute_chemical_threshold);
+  RUN_TEST(test_wrong_positive_offset_is_bounded_by_the_fixed_raw_floor);
+  RUN_TEST(test_wrong_negative_offset_is_bounded_by_the_fixed_raw_ceiling);
+  RUN_TEST(test_dosing_window_is_never_empty_in_the_non_impasse_zone);
+  RUN_TEST(test_offset_plus_one_consigne_720_never_hits_the_raw_floor);
   RUN_TEST(test_refusal_counter_constants);
-  // D4 — horodatage de justesse (feature-156)
+  // D4 — horodatage de justesse (feature-156, cause a)
   RUN_TEST(test_stale_offset_null_and_anterior_is_false);
   RUN_TEST(test_stale_offset_nonzero_and_anterior_is_true);
   RUN_TEST(test_stale_offset_nonzero_and_posterior_is_false);
@@ -658,5 +771,11 @@ int main(int, char**) {
   RUN_TEST(test_stale_both_zero_is_false);
   RUN_TEST(test_stale_first_calibration_after_update_with_inherited_offset);
   RUN_TEST(test_next_justness_seq_is_max_plus_one);
+  // D4bis — péremption (feature-168, C10, cause b)
+  RUN_TEST(test_expired_epoch_zero_never_caduc);
+  RUN_TEST(test_expired_now_epoch_zero_never_caduc);
+  RUN_TEST(test_expired_offset_usual_never_caduc);
+  RUN_TEST(test_expired_four_combinations_29_31_days_x_040_100);
+  RUN_TEST(test_expired_clock_went_backwards_is_false);
   return UNITY_END();
 }

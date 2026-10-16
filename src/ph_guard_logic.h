@@ -96,8 +96,25 @@ inline bool phGuardBlocksAbove(float value, float threshold, bool wasBlocking) {
   return value > threshold;
 }
 
-// Arrondit un offset pH au plus proche multiple de kPhOffsetStep (0,1 pH) et le
-// borne à [kPhOffsetMin, kPhOffsetMax].
+// Arrondit un offset pH au plus proche multiple de kPhOffsetStep (0,1 pH).
+//
+// ⚠️ ÉCRÊTAGE RETIRÉ (feature-168) : cette fonction n'a plus de borne vers
+// laquelle clamper (kPhOffsetMin/kPhOffsetMax ont disparu) — elle ARRONDIT
+// SEULEMENT, elle ne protège plus contre rien. PRÉCONDITION : l'appelant a
+// DÉJÀ validé l'entrée par isPhOffsetValid() (salubrité de domaine, pas une
+// borne de réglage) AVANT d'appeler cette fonction — les 3 appelants du projet
+// le font tous : loadMqttConfig() (config.cpp, remise à 0 si non salubre),
+// handleSaveConfig() (web_routes_config.cpp, HTTP 400) et evaluatePhTune()
+// (ph_tune_logic.h, refus OutOfRange). Aucun n'a de choix d'aiguillage à faire,
+// donc aucune réintroduction d'écrêtage n'est possible par erreur.
+// ⚠️ Les appelants sont nommés, PAS numérotés : la première rédaction de ce
+// commentaire citait six numéros de ligne, et ils étaient DÉJÀ faux au moment
+// du commit (relevé en revue). Un pointeur périmé vers la garde du défaut le
+// plus coûteux du lot vaut moins que pas de pointeur du tout.
+// ⛔ NE PAS réintroduire de clamp ici « par prudence » : un écrêtage silencieux
+// ramènerait une correction de +1,00 à +0,50 au premier redémarrage, sans
+// qu'aucun refus ni log ne le signale — c'est le défaut le plus coûteux que
+// cette spec corrige.
 //
 // Partagée par la route de sauvegarde (le curseur UI ne produit déjà que des
 // multiples du pas, mais l'API et MQTT restent ouverts) et par la migration NVS
@@ -108,19 +125,53 @@ inline bool phGuardBlocksAbove(float value, float threshold, bool wasBlocking) {
 // Offset NaN → 0,00 (neutre), cohérent avec applyPhOffset() qui neutralise déjà
 // un offset NaN. Le résultat n'est jamais −0,0 (il s'afficherait « -0.00 »).
 //
-// @param offset Offset utilisateur en unités pH
-// @return       Offset arrondi au pas et borné
+// @param offset Offset utilisateur en unités pH, DÉJÀ validé par isPhOffsetValid()
+// @return       Offset arrondi au pas, SANS écrêtage
 inline float roundPhOffsetToStep(float offset) {
   if (isnan(offset)) return 0.0f;
-  float clamped = offset;
-  if (clamped < kPhOffsetMin) clamped = kPhOffsetMin;
-  if (clamped > kPhOffsetMax) clamped = kPhOffsetMax;
-  float snapped = roundf(clamped / kPhOffsetStep) * kPhOffsetStep;
-  // Re-bornage : l'arrondi flottant peut dépasser d'un ulp la borne d'origine.
-  if (snapped < kPhOffsetMin) snapped = kPhOffsetMin;
-  if (snapped > kPhOffsetMax) snapped = kPhOffsetMax;
+  float snapped = roundf(offset / kPhOffsetStep) * kPhOffsetStep;
   if (snapped == 0.0f) return 0.0f;  // neutralise le zéro négatif
   return snapped;
+}
+
+// ============================================================================
+// ZONE D'IMPASSE DE RÉGULATION (feature-168, C5 + C5bis)
+// ============================================================================
+// Depuis la levée de la borne de réglage de l'offset, une correction large
+// peut placer le filet BRUT (fixe) AVANT que la régulation n'atteigne son
+// seuil CORRIGÉ : ce n'est plus un incident, c'est une conséquence mécanique
+// du choix de correction. Les deux fonctions ci-dessous DISENT cette situation
+// (isPhRegulationImpasseLow/High) — elles ne bloquent rien par elles-mêmes,
+// elles signalent une zone où le filet brut mord STRUCTURELLEMENT en premier.
+// Usage UNIQUE : exclure ces refus-là du compteur des 3 refus / 24 h
+// (pump_controller.cpp) — la bascule en manuel n'y ajouterait AUCUNE
+// protection, elle RETIRERAIT la régulation sans bénéfice.
+//
+// NaN → false (politique uniforme du fichier) : un offset NaN est déjà
+// neutralisé par applyPhOffset()/roundPhOffsetToStep(), il ne doit pas
+// fabriquer une impasse fantôme.
+
+// Côté ACIDE (produit `ph_minus`). Au-delà de kPhOffsetImpasseThreshold
+// (= kPhFloorCorrected − kPhRawFloorAbsolute), le filet brut bas mord avant que
+// la régulation puisse atteindre kPhFloorCorrected.
+//
+// @param offset Offset de mesure pH en vigueur
+// @return       true si ce côté est structurellement en impasse
+inline bool isPhRegulationImpasseLow(float offset) {
+  if (isnan(offset)) return false;
+  return offset > kPhOffsetImpasseThreshold;
+}
+
+// Symétrique haut (produit `ph_plus`), cf. C5bis. Le seuil
+// kPhOffsetImpasseThresholdHigh (= kPhCeilingCorrected − kPhRawCeilingAbsolute)
+// est NÉGATIF : un offset suffisamment négatif fait mordre le filet brut haut
+// avant que la régulation puisse atteindre kPhCeilingCorrected.
+//
+// @param offset Offset de mesure pH en vigueur
+// @return       true si ce côté est structurellement en impasse
+inline bool isPhRegulationImpasseHigh(float offset) {
+  if (isnan(offset)) return false;
+  return offset <= kPhOffsetImpasseThresholdHigh;
 }
 
 // True si le diagnostic électrochimique EZO décrit une sonde pH SAINE :

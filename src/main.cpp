@@ -29,6 +29,8 @@ extern "C" bool esp_psram_check_ptr_addr(const void* p);
 #include "logger.h"
 #include "auth.h"
 #include "sensors.h"
+#include "ph_offset.h"       // feature-168 (C10) : isPhOffsetExpired() (logique pure)
+#include "ph_guard_logic.h"  // feature-168 (C6+C5bis) : isPhRegulationImpasseLow/High()
 #include "pump_controller.h"
 #include "filtration.h"
 #include "lighting.h"
@@ -501,6 +503,20 @@ void setup() {
     if (history.partitionWasAutoErased()) {
       mqttManager.publishAlert("history_partition_reset",
         "Partition historique corrompue effacée automatiquement (boot-loop détecté) — l'historique repart de zéro");
+    }
+
+    // feature-168 (C12) : alerte MQTT différée — le drapeau et le log critical
+    // ont déjà eu lieu dans loadMqttConfig() (config.cpp, avant WiFi/MQTT,
+    // outQueue inexistante à ce stade), MÊME piège que l'alerte ci-dessus.
+    if (mqttCfg.phOffsetBootUnconfirmed) {
+      String signStr = (mqttCfg.phOffset >= 0.0f) ? "+" : "";
+      String offsetStr = signStr + String(mqttCfg.phOffset, 2); offsetStr.replace('.', ',');
+      String unusualStr(kPhOffsetUnusualAbs, 2); unusualStr.replace('.', ',');
+      mqttManager.publishAlert("ph_offset_stale",
+        "[pH] Correction de mesure de " + offsetStr + " relue en mémoire au "
+        "démarrage (au-delà de " + unusualStr + "). Elle est appliquée telle "
+        "quelle — rien ne la borne. Confirmez-la ou corrigez-la : une valeur "
+        "que vous n'avez pas saisie signale une mémoire altérée.");
     }
 
     applyTimeConfig();
@@ -1789,6 +1805,73 @@ void checkSystemHealth() {
   float phOffset = sensors.getPhOffset();
   float orp = sensors.getOrp();
   float temp = sensors.getTemperature();
+
+  // feature-168 (C6 + C5bis) — ZONE D'IMPASSE DE RÉGULATION : au-delà d'un
+  // seuil de correction, le filet BRUT (fixe) mord STRUCTURELLEMENT avant que
+  // la régulation corrigée n'atteigne son seuil chimique. L'appareil le DIT au
+  // lieu de se fermer en silence (comportement attendu n°4 de la spec).
+  // Patron edge-trigger EXACT de lastPhLimitReached ci-dessus : une alerte à
+  // l'ENTRÉE en impasse seulement, AUCUN throttle temporel neuf (c'est ce
+  // patron qui a réglé le spam de la limite journalière, v2.10.1).
+  static bool lastPhImpasseLow  = false;
+  static bool lastPhImpasseHigh = false;
+  const bool isPhPlusProduct = (mqttCfg.phCorrectionType == "ph_plus");
+
+  const bool phImpasseLow = !isPhPlusProduct && isPhRegulationImpasseLow(phOffset);
+  if (phImpasseLow && !lastPhImpasseLow) {
+    String signStr = (phOffset >= 0.0f) ? "+" : "";
+    String offsetStr = signStr + String(phOffset, 2); offsetStr.replace('.', ',');
+    String consigneStr(kPhTargetMin, 2); consigneStr.replace('.', ',');
+    String brutStr(kPhTargetMin - phOffset, 2); brutStr.replace('.', ',');
+    String floorStr(kPhRawFloorAbsolute, 2); floorStr.replace('.', ',');
+    const String msg = "[pH] Impasse de régulation : avec une correction de " +
+      offsetStr + ", la consigne " + consigneStr + " exige une mesure brute de " +
+      brutStr + ", sous le refus d'acidifier fixé à " + floorStr + ". L'appareil "
+      "cessera d'acidifier avant d'atteindre la consigne.";
+    systemLogger.critical(msg);
+    mqttManager.publishAlert("ph_impasse", msg);
+  }
+  lastPhImpasseLow = phImpasseLow;
+
+  const bool phImpasseHigh = isPhPlusProduct && isPhRegulationImpasseHigh(phOffset);
+  if (phImpasseHigh && !lastPhImpasseHigh) {
+    String signStr = (phOffset >= 0.0f) ? "+" : "";
+    String offsetStr = signStr + String(phOffset, 2); offsetStr.replace('.', ',');
+    String plafondStr(kPhCeilingCorrected, 2); plafondStr.replace('.', ',');
+    String brutStr(kPhCeilingCorrected - phOffset, 2); brutStr.replace('.', ',');
+    String ceilingStr(kPhRawCeilingAbsolute, 2); ceilingStr.replace('.', ',');
+    const String msg = "[pH] Impasse de régulation : avec une correction de " +
+      offsetStr + ", le plafond " + plafondStr + " exige une mesure brute de " +
+      brutStr + ", au-dessus du refus d'alcaliniser fixé à " + ceilingStr +
+      ". L'appareil cessera d'alcaliniser avant d'atteindre le plafond.";
+    systemLogger.critical(msg);
+    mqttManager.publishAlert("ph_impasse", msg);
+  }
+  lastPhImpasseHigh = phImpasseHigh;
+
+  // feature-168 (C10) — PÉREMPTION : une correction inhabituelle non
+  // reconfirmée depuis plus de kPhOffsetConfirmIntervalDays jours. Même
+  // patron edge-trigger ; niveau WARNING (non critique, non bloquant —
+  // conforme à la décision utilisateur) à la différence de C6/C5bis/C7/C12.
+  // ⚠️ Teste isPhOffsetExpired() SEULE (pas phOffsetStaleNow()) : les causes
+  // « boot » (C12) et « calibration » (feature-156) ont CHACUNE déjà leur
+  // propre alerte dédiée à leur propre instant de transition — ajouter ce
+  // latch sur le OR des trois causes les aurait fait sonner une seconde fois.
+  static bool lastPhOffsetExpired = false;
+  const time_t nowForOffset = time(nullptr);
+  const bool phOffsetExpired = isPhOffsetExpired(
+      phOffset, mqttCfg.phOffsetEpoch,
+      (nowForOffset >= kMinValidEpoch) ? (uint32_t)nowForOffset : 0,
+      kPhOffsetConfirmIntervalDays, kPhOffsetUnusualAbs);
+  if (phOffsetExpired && !lastPhOffsetExpired) {
+    String offsetStr(phOffset, 2); offsetStr.replace('.', ',');
+    const String msg = "[pH] Correction de mesure de " + offsetStr +
+      " non revérifiée depuis plus de " + String(kPhOffsetConfirmIntervalDays) +
+      " jours : voir l'écran de réglage pH.";
+    systemLogger.warning(msg);
+    mqttManager.publishAlert("ph_offset_stale", msg);
+  }
+  lastPhOffsetExpired = phOffsetExpired;
 
   static bool lastPhAbnormal   = false;
   static bool lastOrpAbnormal  = false;

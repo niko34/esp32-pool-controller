@@ -7,9 +7,8 @@
 #include "ws_manager.h"
 #include "web_helpers.h"
 #include "heap_metrics.h"  // heapLargestFreeBlock8Bit — sans log ni alloc (bug-080)
-#include "config.h"
+#include "config.h"  // feature-168 : phOffsetStaleNow()/phOffsetStaleCause()
 #include "constants.h"
-#include "ph_offset.h"  // feature-156 : isPhOffsetStale() (logique pure)
 #include "sensors.h"
 #include "filtration.h"
 #include "measure_validity.h"
@@ -1513,6 +1512,9 @@ size_t WsManager::_buildConfigJson(char* buf, size_t cap) const {
   // RÉSERVE CONNUE : `server`, `topic`, `username` et `wifi_ssid` ne sont bornés
   // NULLE PART (/save-config ne valide aucune longueur) ; la marge est prouvée
   // sous l'hypothèse d'environ 64 o par champ. Surveiller oversizedFrameCount().
+  // feature-168 : +1 clé ph_offset_stale_cause (chaîne courte, "calibration"/
+  // "expiration"/"boot", ~40 o au pire) — absorbée par la marge ci-dessus, pas
+  // d'ajustement du gabarit documentaire.
   StaticJson<3200> doc;
   doc["type"] = "config";
   JsonObject d = doc["data"].to<JsonObject>();
@@ -1613,9 +1615,14 @@ size_t WsManager::_buildConfigJson(char* buf, size_t cap) const {
   // feature-156 : horodatage de justesse — PARITÉ OBLIGATOIRE avec /get-config
   // (mutable à l'exécution, un étalonnage ou une correction peut survenir à
   // tout moment). Voir le commentaire jumeau de web_routes_config.cpp.
+  // feature-168 : ph_offset_stale/_cause passent par l'ACCESSEUR UNIQUE
+  // phOffsetStaleNow()/phOffsetStaleCause() (config.h/.cpp) — MÊME APPEL
+  // TEXTUEL que web_routes_config.cpp, pas une expression recopiée (4ᵉ
+  // récidive documentée du piège de parité de ce projet).
   d["ph_offset_epoch"]  = mqttCfg.phOffsetEpoch;
   d["ph_cal_epoch"]     = mqttCfg.phCalEpoch;
-  d["ph_offset_stale"]  = isPhOffsetStale(mqttCfg.phOffset, mqttCfg.phOffsetSeq, mqttCfg.phCalSeq);
+  d["ph_offset_stale"]       = phOffsetStaleNow();
+  d["ph_offset_stale_cause"] = phOffsetStaleCause();
   d["temp_calibration_offset"]   = mqttCfg.tempCalibrationOffset;
   d["temp_calibration_date"]     = mqttCfg.tempCalibrationDate;
   d["temperature_enabled"]       = mqttCfg.temperatureEnabled;

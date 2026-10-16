@@ -2061,18 +2061,25 @@
   }
 
   // ---------- v2.25.0 (B1) : bornes SERVIES PAR LE SERVEUR ----------
-  // `/get-config` publie ph_target_min/_max/_step et ph_offset_min/_max/_step,
-  // dérivés des constantes firmware (constants.h). Le client n'en code AUCUNE en
-  // dur : élargir la plage ou passer de 4 à 5 positions se fait côté firmware,
-  // sans retouche de l'UI. Aucun miroir de seuil de sécurité (plancher, plafond,
+  // `/get-config` publie ph_target_min/_max/_step et ph_offset_step, dérivés
+  // des constantes firmware (constants.h). Le client n'en code AUCUNE en dur :
+  // élargir la plage ou passer de 4 à 5 positions se fait côté firmware, sans
+  // retouche de l'UI. Aucun miroir de seuil de sécurité (plancher, plafond,
   // inhibition ORP) ne subsiste ici : ces seuils sont FIXES côté firmware et ne
   // dépendent plus de l'offset — l'UI n'a plus à les recalculer.
+  //
+  // feature-168 : `offsetMin`/`offsetMax` ont DISPARU — il n'existe plus de
+  // borne de réglage sur la correction de mesure pH (décision utilisateur du
+  // 2026-10-16). `offsetStep` reste : c'est un pas de saisie, pas une limite.
+  // Les seuils d'avertissement/impasse qui remplacent les anciennes bornes
+  // sont servis séparément (voir PH_OFFSET_THRESHOLDS_FALLBACK plus bas) —
+  // sémantique différente (non bloquante), lecture distincte.
   //
   // Le repli ci-dessous n'est qu'une valeur de secours pour un firmware antérieur
   // qui ne servirait pas encore ces champs : jamais une autorité.
   const PH_BOUNDS_FALLBACK = Object.freeze({
     targetMin: 7.20, targetMax: 7.50, targetStep: 0.10,
-    offsetMin: -0.50, offsetMax: 0.50, offsetStep: 0.10,
+    offsetStep: 0.10,
   });
   let _phBounds = Object.assign({}, PH_BOUNDS_FALLBACK);
 
@@ -2095,13 +2102,55 @@
     if (isFinite(tMin) && isFinite(tMax) && isFinite(tStep) && tMin < tMax && tStep > 0) {
       next.targetMin = tMin; next.targetMax = tMax; next.targetStep = tStep;
     }
-    const oMin = _phNum(cfg?.ph_offset_min);
-    const oMax = _phNum(cfg?.ph_offset_max);
     const oStep = _phNum(cfg?.ph_offset_step);
-    if (isFinite(oMin) && isFinite(oMax) && isFinite(oStep) && oMin < oMax && oStep > 0) {
-      next.offsetMin = oMin; next.offsetMax = oMax; next.offsetStep = oStep;
+    if (isFinite(oStep) && oStep > 0) {
+      next.offsetStep = oStep;
     }
     _phBounds = next;
+  }
+
+  // ---------- feature-168 : seuils d'avertissement/impasse de la correction pH,
+  // SERVIS PAR LE SERVEUR (ADR-0100) ----------
+  // La correction de mesure pH n'est plus bornée (plus de refus de plage) —
+  // mais deux signaux NON BLOQUANTS restent calculés à partir de seuils de
+  // l'APPAREIL, jamais recopiés en dur côté client : l'« inhabituel » (ancienne
+  // borne ±0,50, conservée comme SIGNAL) et l'« impasse » (le filet brut FIXE
+  // mord avant la consigne/le plafond corrigés). Même patron de repli que
+  // PH_BOUNDS_FALLBACK ci-dessus : jamais une autorité, juste une valeur de
+  // secours avant le premier /get-config ou pour un firmware antérieur à
+  // feature-168 qui ne servirait pas encore ces six champs.
+  // ⚠️ `confirmIntervalDays` AJOUTÉ EN REVUE (C17 bis) : le texte du bandeau
+  // de péremption (`renderPhOffsetStaleBanner`, cause "expiration") citait
+  // « 30 jours » EN DUR alors que les cinq seuils voisins venaient d'être
+  // servis — exactement le défaut de C17, laissé intact dans le texte d'à
+  // côté. C'est un ENTIER (jours), jamais un décimal — pas de _fmt2 ici.
+  const PH_OFFSET_THRESHOLDS_FALLBACK = Object.freeze({
+    unusualAbs: 0.50,
+    impasseThreshold: 1.20,
+    impasseThresholdHigh: -0.90,
+    rawFloorAbsolute: 5.50,
+    rawCeilingAbsolute: 8.50,
+    confirmIntervalDays: 30,
+  });
+  let _phOffsetThresholds = Object.assign({}, PH_OFFSET_THRESHOLDS_FALLBACK);
+
+  // HTTP-seules (comme ph_offset_step ci-dessus) — absentes des trames WS,
+  // jamais retombées sur le repli entre deux /get-config. Lot incohérent OU
+  // ABSENT ignoré EN BLOC, même garde que _applyPhBounds.
+  function _applyPhOffsetThresholds(cfg) {
+    const u  = _phNum(cfg?.ph_offset_unusual_abs);
+    const it = _phNum(cfg?.ph_offset_impasse_threshold);
+    const ih = _phNum(cfg?.ph_offset_impasse_threshold_high);
+    const rf = _phNum(cfg?.ph_raw_floor_absolute);
+    const rc = _phNum(cfg?.ph_raw_ceiling_absolute);
+    const ci = _phNum(cfg?.ph_offset_confirm_interval_days);
+    if (isFinite(u) && u > 0 && isFinite(it) && it > u && isFinite(ih) && ih < 0
+        && isFinite(rf) && isFinite(rc) && rf < rc && isFinite(ci) && ci > 0) {
+      _phOffsetThresholds = {
+        unusualAbs: u, impasseThreshold: it, impasseThresholdHigh: ih,
+        rawFloorAbsolute: rf, rawCeilingAbsolute: rc, confirmIntervalDays: ci,
+      };
+    }
   }
 
   // ---------- feature-164 (correctif gate, ADR-0100) : bornes ORP SERVIES ----------
@@ -2185,8 +2234,8 @@
   let _phTuneMinFiltrationMs = PH_TUNE_CONFIG_FALLBACK.minFiltrationMs;
 
   // ph_cal_points_min / ph_tune_min_filtration_ms : HTTP-seules (comme
-  // ph_offset_min/_max/_step ci-dessus) — absentes des trames WS, jamais
-  // retombées sur le repli entre deux /get-config.
+  // ph_offset_step ci-dessus) — absentes des trames WS, jamais retombées sur
+  // le repli entre deux /get-config.
   function _applyPhTuneConfig(cfg) {
     const cpm = _phNum(cfg?.ph_cal_points_min);
     if (isFinite(cpm) && cpm >= 1) _phTuneCalPointsMin = cpm;
@@ -2210,6 +2259,32 @@
   //     c'était vrai pendant quelques heures, ça ne l'est plus : le champ est
   //     servi des deux côtés. Un firmware ANTÉRIEUR rendra `undefined`, et la
   //     bannière restera masquée : compatible en avant, rien à changer.
+  // feature-168 (C15) : TROIS causes de péremption, TROIS textes — gate
+  // pool-chemistry : « les trois causes appellent trois gestes différents ;
+  // une formule commune ne dirait quoi faire dans aucun cas. » Textes MOT
+  // POUR MOT, choisis par `ph_offset_stale_cause` (`calibration` / `expiration`
+  // / `boot`, servi par /get-config ET la trame WS, phOffsetStaleCause()).
+  // ⚠️ Le texte `boot` embarque la VALEUR relue (gabarit "+9,30" du gate) —
+  // seul ce cas-là en a besoin, formatée à 2 décimales comme le fait le
+  // firmware (`String(offset, 2)`, main.cpp/config.cpp), PAS le 1-décimale de
+  // `_fmtPh` utilisé ailleurs sur cette carte (convention d'affichage
+  // différente, assumée : ce texte reproduit un gabarit de log, pas un pH
+  // affiché).
+  function _fmtPhOffset2(v) {
+    const s = Math.abs(v).toFixed(2).replace(".", ",");
+    return (v < 0 ? "−" : "+") + s;
+  }
+  // feature-168 (C17) : MÊME convention à 2 décimales, NON SIGNÉE — pour
+  // interpoler dans le texte C8 les seuils SERVIS (ph_offset_unusual_abs,
+  // ph_raw_floor_absolute, ph_raw_ceiling_absolute) qui sont toujours
+  // positifs par construction (validés > 0 dans _applyPhOffsetThresholds).
+  // ADR-0100 : un seuil cité dans un texte figé doit être LU, jamais recopié
+  // en dur — sinon l'avertissement se déclenche au bon moment en affichant
+  // le mauvais chiffre, et rien ne compare les deux (relevé en revue, C17).
+  function _fmt2(v) {
+    return v.toFixed(2).replace(".", ",");
+  }
+
   function renderPhOffsetStaleBanner(cfg) {
     const banner = $("#ph_tune_stale_banner");
     if (!banner) return;
@@ -2222,10 +2297,31 @@
     const offset = (typeof cfg?.ph_offset === "number" && isFinite(cfg.ph_offset)) ? cfg.ph_offset : 0;
     const stale = (cfg?.ph_offset_stale === true) && (offset !== 0);
     if (!stale) { banner.hidden = true; return; }
-    const valueEl = $("#ph_tune_stale_value");
-    // feature-157 : seul le format du nombre change (une décimale) — le texte
-    // figé autour (imposé par le gate) reste intact.
-    if (valueEl) valueEl.textContent = _fmtPh(offset, true);
+    const textEl = $("#ph_tune_stale_text");
+    const cause = cfg?.ph_offset_stale_cause;
+    let text;
+    if (cause === "boot") {
+      text = "L'appareil a relu au démarrage une correction de " + _fmtPhOffset2(offset)
+        + ", bien au-delà de l'usage courant. Si vous ne l'avez pas saisie, sa mémoire "
+        + "est altérée : corrigez-la maintenant. Elle est appliquée telle quelle en attendant.";
+    } else if (cause === "expiration") {
+      // feature-168 (C17 bis, ADR-0100) : « 30 » est un ENTIER (jours),
+      // INTERPOLÉ depuis _phOffsetThresholds.confirmIntervalDays (servi par
+      // /get-config, ph_offset_confirm_interval_days) — jamais recopié en
+      // dur. Aux valeurs actuelles, rendu IDENTIQUE mot pour mot au texte figé
+      // d'origine. ⛔ Pas de décimale : String(30) === "30", pas "30,00".
+      text = "Cette correction n'a pas été revérifiée depuis plus de "
+        + String(_phOffsetThresholds.confirmIntervalDays) + " jours. Elle "
+        + "compense un décalage de l'installation, qui peut avoir changé. Faites un "
+        + "test manuel : si l'appareil affiche déjà la bonne valeur, confirmez-la telle quelle.";
+    } else {
+      // "calibration", ou cause ABSENTE (firmware antérieur à feature-168, qui
+      // ne connaissait que cette seule cause) : jamais l'inverse (compat. en avant).
+      text = "Cette correction a été posée avant l'étalonnage qui vient d'avoir lieu : "
+        + "elle compense un état de la sonde qui n'existe plus. Refaites un test manuel "
+        + "et accordez la mesure dessus, ou remettez la correction à zéro.";
+    }
+    if (textEl) textEl.textContent = text;
     banner.hidden = false;
   }
 
@@ -2299,21 +2395,37 @@
     });
   }
 
-  // Excursion du pas-à-pas autour de la lecture appareil (ergonomie — PAS un
-  // seuil de sécurité, celui-ci reste ph_offset_min/_max, servi par le serveur
-  // et utilisé dans evaluatePhTunePreview ci-dessous). ±1,00 autour de la
-  // lecture, la zone acceptable (±0,50) en étant la moitié centrale ; au-delà
-  // le pas-à-pas continue mais l'écran passe en refus expliqué. Écrêtée à
-  // l'échelle physique universelle du pH [0, 14].
-  const PH_TUNE_RANGE = 1.00;
+  // feature-168 : plus de borne sur la correction (décision utilisateur du
+  // 2026-10-16) — PH_TUNE_RANGE a DISPARU. L'excursion du pas-à-pas est
+  // désormais l'ÉCHELLE PHYSIQUE UNIVERSELLE DU pH SEULE, [0 ; 14] — ⛔ ce
+  // n'est PAS un seuil de l'appareil (ADR-0100 n'interdit pas une constante
+  // physique universelle, cf. spec feature-168 C13), c'est la même plage que
+  // tout pH-mètre affiche : rien à servir, rien qui varie d'un appareil à
+  // l'autre.
   const PH_TUNE_SCALE_FLOOR = 0;
   const PH_TUNE_SCALE_CEIL = 14;
 
   // Aperçu PUR de l'accord — ADR-0099 : pure, nommée, SANS DOM ni authFetch,
   // extractible par ancre + profondeur d'accolades. AUCUN littéral numérique
-  // hors 0 et 1 dans ce corps : les seuils (pas, bornes) viennent des
-  // PARAMÈTRES, jamais recopiés en dur (ADR-0100) — ils sont servis par
-  // /get-config (ph_offset_step, ph_offset_min, ph_offset_max).
+  // hors 0 et 1 dans ce corps : les seuils (pas, inhabituel, impasse) viennent
+  // des PARAMÈTRES, jamais recopiés en dur (ADR-0100) — ils sont servis par
+  // /get-config (ph_offset_step, ph_offset_unusual_abs,
+  // ph_offset_impasse_threshold, ph_offset_impasse_threshold_high).
+  //
+  // feature-168 : LA CORRECTION N'EST PLUS BORNÉE — « horsBornes » a disparu,
+  // cette fonction ne refuse plus rien (la seule salubrité de domaine encore
+  // vérifiée, |écart| <= 14, ne peut déjà plus être dépassée par ce
+  // pas-à-pas, cf. PH_TUNE_SCALE_FLOOR/CEIL ci-dessus — elle vit côté serveur
+  // dans isPhOffsetValid()/ph_tune_logic.h, hors de portée de cet aperçu).
+  // Deux signaux NON BLOQUANTS la remplacent :
+  //   - inhabituel : |écart| > unusualAbs — l'ANCIENNE borne ±0,50, conservée
+  //     comme SIGNAL d'un défaut matériel possible, plus un refus (C8) ;
+  //   - impasse : cet écart, une fois appliqué, pousserait le filet BRUT
+  //     (fixe) à mordre AVANT la consigne/le plafond CORRIGÉS — ecart >
+  //     impasseThreshold (acidification) OU ecart <= impasseThresholdHigh
+  //     (alcalinisation, symétrique C5bis). impasse ⇒ TOUJOURS inhabituel
+  //     (impasseThreshold > unusualAbs et impasseThresholdHigh < −unusualAbs
+  //     par construction côté firmware, cf. constants.h).
   //
   // ⚠️ `phValueRaw` DOIT être la valeur OFFICIELLE pH, échelle BRUTE (champ
   // `phValueRaw` de /data et du WS, cf. sensors.getPhValueRaw()) — JAMAIS
@@ -2322,35 +2434,25 @@
   // un écart déjà appliqué, défaut invisible à offset 0,00.
   //
   // Travaille en NOMBRE DE PAS ENTIER (et non en comparaison flottante sur une
-  // borne exacte) : ±0,50 étant un multiple du pas, cela règle le même piège
-  // que l'arrondi firmware (roundPhOffsetToStep) sans epsilon arbitraire.
+  // borne exacte) : même garde que l'arrondi firmware (roundPhOffsetToStep).
   //
   // Retour :
   //   - mesureIndisponible : true si phValueRaw n'est pas un nombre fini —
   //     aucun autre champ n'est alors signifiant ;
   //   - ecart : (valeurAmenee − phValueRaw) arrondi au pas le plus proche,
   //     SANS bornage (un dépassement doit être VISIBLE, pas absorbé) ;
-  //   - horsBornes : true si `ecart` sort de [offsetMin, offsetMax] ;
+  //   - inhabituel : true si |ecart| dépasse unusualAbs (avertissement, C8) ;
+  //   - impasse : true si cet ecart mettrait la régulation en impasse
+  //     (C6/C5bis) ;
   //   - valeurAtteinte : phValueRaw + ecart — la valeur que l'appareil va
   //     RÉELLEMENT atteindre après arrondi (Piège 1), jamais `valeurAmenee`.
-  function evaluatePhTunePreview(valeurAmenee, phValueRaw, offsetStep, offsetMin, offsetMax) {
+  function evaluatePhTunePreview(valeurAmenee, phValueRaw, offsetStep, unusualAbs, impasseThreshold, impasseThresholdHigh) {
     if (typeof phValueRaw !== "number" || !isFinite(phValueRaw)) {
-      return { mesureIndisponible: true, ecart: null, horsBornes: false, valeurAtteinte: null };
+      return { mesureIndisponible: true, ecart: null, inhabituel: false, impasse: false, valeurAtteinte: null };
     }
     const pas = (typeof offsetStep === "number" && isFinite(offsetStep) && offsetStep > 0) ? offsetStep : 1;
-    // ⚠️ LE TEST DE BORNE PORTE SUR L'ÉCART **DEMANDÉ**, PAS SUR L'ÉCART ARRONDI.
-    // C'est le MÊME contrat que le firmware (src/ph_tune_logic.h) : il compare
-    // `phReference - phValueRaw` aux bornes AVANT tout arrondi.
-    // 🔴 CORRIGÉ : la version précédente comparait des NOMBRES DE PAS ENTIERS
-    // (`Math.round(ecart/pas)` contre `Math.round(offsetMax/pas)`). Pour tout
-    // écart demandé dans ]0,50 ; 0,55], l'aperçu arrondissait à 5 pas, concluait
-    // « dans la plage » et ACTIVAIT le bouton — pendant que le serveur, lui,
-    // refusait en 400. Un bouton actif qui mène à un refus est un bouton qui
-    // ment. Trouvé par le vecteur de COHÉRENCE APERÇU ↔ SERVEUR, pas par la
-    // relecture : les deux moitiés étaient justes séparément.
     const ecartDemande = valeurAmenee - phValueRaw;
-    const horsBornes = (ecartDemande > offsetMax) || (ecartDemande < offsetMin);
-    // L'arrondi ne sert qu'à PRÉDIRE la valeur atteinte, jamais à juger la borne.
+    // L'arrondi ne sert qu'à PRÉDIRE la valeur atteinte.
     // ⚠️ `Math.round` NE REPRODUIT PAS `roundf` du firmware sur les NÉGATIFS :
     // JS arrondit les demis vers +∞ (Math.round(-3.5) === -3), le C les arrondit
     // À L'OPPOSÉ DE ZÉRO (roundf(-3.5f) === -4). Un écart négatif tombant pile
@@ -2361,7 +2463,9 @@
     const enPasArrondi = (enPas < 0) ? -Math.round(-enPas) : Math.round(enPas);
     const ecart = enPasArrondi * pas;
     const valeurAtteinte = phValueRaw + ecart;
-    return { mesureIndisponible: false, ecart, horsBornes, valeurAtteinte };
+    const inhabituel = Math.abs(ecart) > unusualAbs;
+    const impasse = (ecart > impasseThreshold) || (ecart <= impasseThresholdHigh);
+    return { mesureIndisponible: false, ecart, inhabituel, impasse, valeurAtteinte };
   }
 
   // Seul endroit, hors de la fonction pure ci-dessus, où l'arrondi au dixième
@@ -2437,15 +2541,20 @@
     const preview = evaluatePhTunePreview(
       _phTuneValue != null ? _phTuneValue : 0,
       phValueRaw,
-      _phBounds.offsetStep, _phBounds.offsetMin, _phBounds.offsetMax
+      _phBounds.offsetStep,
+      _phOffsetThresholds.unusualAbs,
+      _phOffsetThresholds.impasseThreshold,
+      _phOffsetThresholds.impasseThresholdHigh
     );
 
-    // --- Pas-à-pas : affichage + bornes d'excursion.
+    // --- Pas-à-pas : affichage + excursion. feature-168 : plus de bornage
+    // autour de la lecture live — l'excursion est l'échelle physique du pH
+    // SEULE (PH_TUNE_SCALE_FLOOR/CEIL), identique quelle que soit phValueRaw.
     const dispValue = _phTuneValue != null ? _phTuneValue : phValueRaw;
     const hasDisp = isFinite(dispValue);
     valueEl.textContent = hasDisp ? _fmtPh(dispValue, false) : "--";
-    const rangeMin = isFinite(phValueRaw) ? Math.max(PH_TUNE_SCALE_FLOOR, phValueRaw - PH_TUNE_RANGE) : PH_TUNE_SCALE_FLOOR;
-    const rangeMax = isFinite(phValueRaw) ? Math.min(PH_TUNE_SCALE_CEIL, phValueRaw + PH_TUNE_RANGE) : PH_TUNE_SCALE_CEIL;
+    const rangeMin = PH_TUNE_SCALE_FLOOR;
+    const rangeMax = PH_TUNE_SCALE_CEIL;
     valueEl.setAttribute("aria-valuemin", String(rangeMin));
     valueEl.setAttribute("aria-valuemax", String(rangeMax));
     valueEl.setAttribute("aria-valuenow", hasDisp ? String(dispValue) : String(rangeMin));
@@ -2472,10 +2581,11 @@
       }
     }
 
-    // --- Les cinq états (design arrêté) : prêt + 4 refus, dans le MÊME ORDRE
-    // qu'evaluatePhTune (src/ph_tune_logic.h) pour qu'un même jeu d'entrées
-    // produise TOUJOURS le même verdict ici et côté serveur. Textes IMPOSÉS
-    // par le gate, mot pour mot.
+    // --- feature-168 : il ne reste que TROIS refus réellement BLOQUANTS (dans
+    // le MÊME ORDRE qu'evaluatePhTune, src/ph_tune_logic.h, pour qu'un même
+    // jeu d'entrées produise TOUJOURS le même verdict ici et côté serveur).
+    // Textes IMPOSÉS par le gate, mot pour mot. Le 4e état d'avant (« hors
+    // bornes ») a disparu — AUCUN refus ne porte plus sur l'écart lui-même.
     let blockedText = "";
     if (!isFinite(phValueRaw)) {
       blockedText = "L'appareil n'a pas de mesure assez récente. Attendez qu'une valeur "
@@ -2487,17 +2597,96 @@
     } else if (calPoints == null || calPoints < _phTuneCalPointsMin) {
       blockedText = "La sonde n'a pas encore ses deux points de référence. Faites d'abord "
         + "l'étalonnage (tampon 7 puis tampon 4), puis revenez ici.";
-    } else if (preview.horsBornes) {
-      blockedText = "Trop loin de ce que l'appareil mesure. Refaites le test (bandelettes non "
-        + "périmées, lecture à la bonne échelle) et vérifiez l'étalonnage de la "
-        + "sonde avant de recommencer.";
     }
 
+    // --- feature-168 (C8) : avertissement NON BLOQUANT — remplace l'ancien
+    // refus « hors bornes ». Ne s'affiche QUE si aucun refus bloquant n'est
+    // déjà affiché (un seul message à la fois, le même #ph_tune_blocked —
+    // mutuellement exclusif, comme avant). Chapeau (eyebrow) qui bascule de
+    // mot ET de couleur selon preview.impasse (⛔ aucune 3e couleur, la boîte
+    // reste callout--warn dans les deux cas : « Le mot porte le sens, la
+    // couleur ne fait que l'appuyer » — daltonisme, étude ux-ui-designer).
     const blockedEl = $("#ph_tune_blocked");
+    const eyebrowEl = $("#ph_tune_blocked_eyebrow");
+    const leadEl = $("#ph_tune_blocked_lead");
+    const moreEl = $("#ph_tune_blocked_more");
+    const detailEl = $("#ph_tune_blocked_detail");
+    const showWarning = !blockedText && preview.mesureIndisponible === false && preview.inhabituel;
     if (blockedEl) {
-      if (blockedText) { blockedEl.textContent = blockedText; blockedEl.hidden = false; }
-      else { blockedEl.textContent = ""; blockedEl.hidden = true; }
+      if (blockedText) {
+        // Refus bloquant : texte simple, pas de chapeau ni de détail repliable.
+        if (eyebrowEl) eyebrowEl.hidden = true;
+        if (leadEl) leadEl.textContent = blockedText;
+        if (moreEl) moreEl.hidden = true;
+        blockedEl.hidden = false;
+      } else if (showWarning) {
+        // Avertissement C8, scindé lead (toujours visible) + détail repliable.
+        // ⛔ TEXTES IMPOSÉS MOT POUR MOT par le gate pool-chemistry (feature-168,
+        // 3e passe pour la variante pH− ; C16 pour la variante pH+ ajoutée
+        // ensuite) — ne pas reformuler, ne pas raccourcir. Sélection sur le
+        // type de produit DÉCLARÉ (même lecture que injectProductLabel plus
+        // bas dans ce fichier) : la mise en garde doit nommer le filet qui
+        // protège RÉELLEMENT cette installation (acidifier pour pH−,
+        // alcaliniser pour pH+), jamais les deux à la fois.
+        // feature-168 (C17, ADR-0100) : les seuils cités (0,50 / 5,50 ou 8,50
+        // / +1,20 ou −0,90) sont INTERPOLÉS depuis _phOffsetThresholds
+        // (servi par /get-config), jamais recopiés en dur — un seuil qui
+        // change ne doit jamais faire mentir ce texte. Aux valeurs par
+        // défaut, le rendu est IDENTIQUE mot pour mot au texte figé d'origine.
+        const isPhPlus = (window._config?.ph_correction_type === "ph_plus");
+        const unusualStr = _fmt2(_phOffsetThresholds.unusualAbs);
+        if (eyebrowEl) {
+          eyebrowEl.hidden = false;
+          eyebrowEl.textContent = preview.impasse ? "⚠ Impasse possible" : "Avertissement";
+          eyebrowEl.classList.toggle("callout__eyebrow--danger", preview.impasse);
+        }
+        if (leadEl) {
+          leadEl.textContent = isPhPlus
+            ? ("Au-delà de " + unusualStr + " pH, l'appareil régule sur une valeur qu'il ne "
+              + "mesure pas : si cette correction est fausse de 0,3 pH, l'eau réelle sera "
+              + "0,3 pH plus basique que la consigne.")
+            : ("Au-delà de " + unusualStr + " pH, l'appareil régule sur une valeur qu'il ne "
+              + "mesure pas : si cette correction est fausse de 0,3 pH, l'eau réelle sera "
+              + "0,3 pH plus acide que la consigne.");
+        }
+        if (detailEl) {
+          detailEl.textContent = isPhPlus
+            ? ("Un écart de cette ampleur vient de l'installation — ce "
+              + "réglage ne vaut que ce que vaut votre test. Rien ne borne cette correction ; "
+              + "le seul filet restant est le refus d'alcaliniser au-dessus de "
+              + _fmt2(_phOffsetThresholds.rawCeilingAbsolute) + " de mesure brute. "
+              + "En deçà de " + _fmtPhOffset2(_phOffsetThresholds.impasseThresholdHigh)
+              + ", ce refus survient avant le plafond : l'appareil arrêtera "
+              + "d'alcaliniser sans l'avoir atteint. Revérifiez par un test manuel après tout "
+              + "étalonnage, toute intervention sur la pompe de filtration, et au moins une "
+              + "fois par mois.")
+            : ("Un écart de cette ampleur vient de l'installation — ce "
+              + "réglage ne vaut que ce que vaut votre test. Rien ne borne cette correction ; "
+              + "le seul filet restant est le refus d'acidifier sous "
+              + _fmt2(_phOffsetThresholds.rawFloorAbsolute) + " de mesure brute. "
+              + "Au-delà de " + _fmtPhOffset2(_phOffsetThresholds.impasseThreshold)
+              + ", ce refus survient avant la consigne : l'appareil arrêtera "
+              + "d'acidifier sans l'avoir atteinte. Revérifiez par un test manuel après tout "
+              + "étalonnage, toute intervention sur la pompe de filtration, et au moins une "
+              + "fois par mois.");
+        }
+        if (moreEl) moreEl.hidden = false;
+        blockedEl.hidden = false;
+      } else {
+        if (leadEl) leadEl.textContent = "";
+        if (detailEl) detailEl.textContent = "";
+        blockedEl.hidden = true;
+      }
     }
+
+    // --- feature-168 (C14) : les deux encadrés ne s'empilent JAMAIS.
+    // #ph_tune_stakes (l'enjeu, toujours valable) disparaît dès que
+    // l'avertissement C8 ci-dessus prend le relais sur le MÊME propos — gate :
+    // « C8 est strictement plus fort sur le même propos — empiler ne protège
+    // pas, ça dilue. »
+    const stakesEl = $("#ph_tune_stakes");
+    if (stakesEl) stakesEl.hidden = showWarning;
+
     const submitBtn = $("#ph_tune_submit_btn");
     // ⚠️ `!_phTuneTouched` EST UNE GARDE, PAS UN CONFORT (relevé en revue).
     // Sans lui, « zéro appui » pouvait DÉPLACER l'offset d'un pas : la position
@@ -2509,22 +2698,32 @@
     // l'utilisateur, et une réécriture NVS à chaque clic.
     // C'est le même défaut que les trois autres de ce lot : confondre la valeur
     // AFFICHÉE (arrondie) avec la valeur qui SERT AU CALCUL (brute).
+    // feature-168 : `blockedText` SEUL désactive le bouton désormais —
+    // l'avertissement (showWarning) est NON BLOQUANT (décision utilisateur) :
+    // « Le message d'avertissement peut rester, mais je ne veux pas bloquer. »
     if (submitBtn && !_phTuneSubmitBusy) submitBtn.disabled = !!blockedText || !_phTuneTouched;
   }
 
   // Un appui = un acte (#2 du gate, hérité de feature-067) : pas d'auto-répétition.
+  // feature-168 : plus de fenêtre d'excursion dépendante de phValueRaw — le
+  // seul écrêtage restant est l'échelle physique du pH [0 ; 14] (universelle,
+  // PAS un seuil de l'appareil, cf. commentaire de PH_TUNE_SCALE_FLOOR/CEIL).
   function stepPhTune(direction) {
     _phTuneTouched = true;
     const phValueRaw = _phTuneLiveRaw();
     const base = _phTuneValue != null ? _phTuneValue
                : (isFinite(phValueRaw) ? _phTuneRoundTenth(phValueRaw) : 0);
-    let next = _phRound(base + direction * _phBounds.offsetStep);
-    const lo = isFinite(phValueRaw) ? Math.max(PH_TUNE_SCALE_FLOOR, phValueRaw - PH_TUNE_RANGE) : PH_TUNE_SCALE_FLOOR;
-    const hi = isFinite(phValueRaw) ? Math.min(PH_TUNE_SCALE_CEIL, phValueRaw + PH_TUNE_RANGE) : PH_TUNE_SCALE_CEIL;
-    _phTuneValue = clamp(next, lo, hi);
+    const next = _phRound(base + direction * _phBounds.offsetStep);
+    _phTuneValue = clamp(next, PH_TUNE_SCALE_FLOOR, PH_TUNE_SCALE_CEIL);
     renderPhTuneCard();
   }
 
+  // feature-168 : touches Début/Fin RETIRÉES (étude ux-ui-designer, « ce qui
+  // disparaît ») — elles sautaient aux anciennes bornes ±1,00 ; sans bornes,
+  // elles sauteraient directement à pH 0 ou 14, un geste qu'aucun utilisateur
+  // ne recherche. Flèches / PagePréc / PageSuiv conservées, ±1 pas, « un appui
+  // = un acte » (décision de gate : pas de répétition automatique ni d'appui
+  // long).
   function bindPhTuneStepper() {
     $("#ph_tune_dec")?.addEventListener("click", () => stepPhTune(-1));
     $("#ph_tune_inc")?.addEventListener("click", () => stepPhTune(+1));
@@ -2534,14 +2733,6 @@
         e.preventDefault(); stepPhTune(+1);
       } else if (k === "ArrowDown" || k === "ArrowLeft" || k === "PageDown") {
         e.preventDefault(); stepPhTune(-1);
-      } else if (k === "Home" || k === "End") {
-        e.preventDefault();
-        _phTuneTouched = true;
-        const phValueRaw = _phTuneLiveRaw();
-        const lo = isFinite(phValueRaw) ? Math.max(PH_TUNE_SCALE_FLOOR, phValueRaw - PH_TUNE_RANGE) : PH_TUNE_SCALE_FLOOR;
-        const hi = isFinite(phValueRaw) ? Math.min(PH_TUNE_SCALE_CEIL, phValueRaw + PH_TUNE_RANGE) : PH_TUNE_SCALE_CEIL;
-        _phTuneValue = (k === "Home") ? lo : hi;
-        renderPhTuneCard();
       }
     });
   }
@@ -3793,6 +3984,9 @@
     // feature-155 : constantes de l'accord pH sur un test manuel (calPoints
     // minimal, délai minimal de filtration) — même convention que ci-dessus.
     _applyPhTuneConfig(cfg);
+    // feature-168 : seuils d'avertissement/impasse de la correction pH — AVANT
+    // tout rendu qui les consomme (renderPhTuneCard, via evaluatePhTunePreview).
+    _applyPhOffsetThresholds(cfg);
     // feature-156 (B11/A2) : bannière persistante « correction caduque ».
     renderPhOffsetStaleBanner(cfg);
     // feature-157 : ligne + bouton « Supprimer la correction ».
@@ -9010,24 +9204,11 @@
     const orpRaw = (typeof json.orpRaw === "number" && !isNaN(json.orpRaw)) ? json.orpRaw
                  : (typeof json.orp === "number" && !isNaN(json.orp)) ? json.orp : null;
 
-    // feature-159 (code-reviewer, correctif bloquant, partie b) : auto-
-    // réparation UNE SEULE FOIS — voir le commentaire de `_calPtsKnownOnce`.
-    // Si l'écran a été ouvert pendant que `/data` n'avait pas encore répondu
-    // (ou hors ligne), `resetCalStepper()` a désactivé tous les boutons du
-    // stepper (fail-closed) ; dès que `pts` devient numérique pour la
-    // première fois, on recalcule l'acquisition réelle et on réarme les
-    // boutons avant de laisser `_calRefreshFrozenButtons()` (ci-dessous)
-    // refigure ceux réellement déjà calibrés.
-    if (!_calPtsKnownOnce.ph && typeof json.phCalPoints === "number") {
-      _calPtsKnownOnce.ph = true;
-      Object.assign(_calFrozen.ph, _calPointsAcquired("ph", json.phCalPoints));
-      ["btn-cal-ph-mid", "btn-cal-ph-low"].forEach(id => { const b = $("#" + id); if (b) b.disabled = false; });
-    }
-    if (!_calPtsKnownOnce.orp && typeof json.orpCalPoints === "number") {
-      _calPtsKnownOnce.orp = true;
-      Object.assign(_calFrozen.orp, _calPointsAcquired("orp", json.orpCalPoints));
-      { const b = $("#btn-cal-orp"); if (b) b.disabled = false; }
-    }
+    // bug-167 (BLOCAGE 3, test-engineer) : extrait dans sa propre fonction
+    // nommée (ADR-0099, extractible par ancre) — AUCUN changement de
+    // comportement, pour que le défaut historique (voir son commentaire) soit
+    // rejouable par un harnais sans dépendre du reste de cette fonction géante.
+    _calReenableOnFirstKnownPts(json);
 
     // Alimenter d'abord la fenêtre glissante (sert au lissage ET à la stabilité).
     if (phCalibrationActive && phRaw != null) pushStabilitySample("ph", phRaw);
@@ -9313,6 +9494,15 @@
   // figeage ne dépendait que de `_calActiveIdx`, remis à zéro par
   // resetCalStepper() sans consulter le firmware.
   const _calFrozen = { ph: { mid: false, low: false }, orp: { orp: false } };
+  // bug-167 (2026-10-16) : le gel doit porter sur la SESSION EN COURS, pas sur
+  // l'état HISTORIQUE de la sonde. `phCalPoints`/`orpCalPoints` comptent les
+  // points mémorisés par le module EZO — une sonde déjà calibrée en annonce 2,
+  // ce qui figeait les DEUX boutons AVANT même le premier geste et rendait
+  // toute recalibration impossible (constaté sur l'appareil, solution tampon
+  // pH 7 en main). ⛔ Tant que la session n'a rien acquis, on ne fige RIEN :
+  // c'est la demande explicite de l'utilisateur (2026-09, feature-159)
+  // « permettre à l'utilisateur de recommencer ».
+  const _calSessionAcquired = { ph: false, orp: false };
   // feature-159 (code-reviewer, correctif bloquant, partie b) : auto-réparation
   // de l'état « inconnu » fixé ci-dessus par `resetCalStepper()`, au PREMIER
   // `pts` numérique reçu après l'ouverture de l'écran — et seulement là.
@@ -9324,6 +9514,28 @@
   // — un recalcul permanent re-figerait le bouton aussitôt et annulerait le
   // geste que ce lot fournit.
   const _calPtsKnownOnce = { ph: false, orp: false };
+
+  // bug-167 (BLOCAGE 3, test-engineer) : extraite d'`updateCalibrationReadouts()`
+  // — AUCUN changement de comportement, uniquement NOMMÉE pour être testable
+  // par extraction de texte (ADR-0099). Réarme les boutons « Calibrer » au
+  // PREMIER `phCalPoints`/`orpCalPoints` numérique reçu après l'ouverture de
+  // l'écran (cf. commentaire de `_calPtsKnownOnce` ci-dessus) — et SEULEMENT
+  // réarme. ⛔ Ne doit JAMAIS re-figer depuis l'historique de la sonde : c'est
+  // EXACTEMENT le défaut que bug-167 a corrigé ici une première fois (un
+  // `Object.assign(_calFrozen[...], _calPointsAcquired(...))` re-figeait les
+  // boutons AUSSITÔT après les avoir réarmés, annulant le correctif en
+  // silence — trouvé en inspectant le DOM rendu, pas en relisant le code).
+  function _calReenableOnFirstKnownPts(json) {
+    if (!_calPtsKnownOnce.ph && typeof json.phCalPoints === "number") {
+      _calPtsKnownOnce.ph = true;
+      ["btn-cal-ph-mid", "btn-cal-ph-low"].forEach(id => { const b = $("#" + id); if (b) b.disabled = false; });
+    }
+    if (!_calPtsKnownOnce.orp && typeof json.orpCalPoints === "number") {
+      _calPtsKnownOnce.orp = true;
+      { const b = $("#btn-cal-orp"); if (b) b.disabled = false; }
+    }
+  }
+
   // État d'ÉCHEC persistant par étape (feature-159, C9) : un message tant qu'un
   // nouvel essai ou un succès ne l'a pas remplacé/effacé — jamais un simple
   // toast volatile. `null` = pas d'échec en attente.
@@ -9489,6 +9701,44 @@
     _calStabSyncPolling();
   }
 
+  // bug-167 (2ᵉ occurrence, relevée en revue le 2026-10-16) : remise à zéro de
+  // la SESSION DE CALIBRATION — `_calSessionAcquired` et `_calFrozen` — pour
+  // LES DEUX produits. Extraite de `_calSwitchEnter()` (qui faisait ce même
+  // travail jusqu'ici) : cette dernière est `async` et n'exécute sa PARTIE
+  // SYNCHRONE qu'APRÈS tout ce qui s'exécute avant son appel dans `onEnter` —
+  // or `onEnter` appelait `resetCalStepper(product)` AVANT `_calSwitchEnter`.
+  // Conséquence, reproduite en navigateur (`./tools/ui_shot.sh`, DOM rendu,
+  // PAS en relisant le code — même leçon que la 1ʳᵉ occurrence) : à la 1ʳᵉ
+  // ouverture de l'écran, `_calSessionAcquired.ph` valait déjà `false`
+  // (valeur initiale du module) ⇒ aucun défaut visible. Dès qu'un point était
+  // acquis (`completeCalStep` pose le drapeau à `true`) PUIS l'écran fermé et
+  // RÉOUVERT, `resetCalStepper("ph")` lisait le drapeau ENCORE À `true` de la
+  // session précédente (rien ne l'avait remis à zéro avant son tour) et
+  // regelait les DEUX boutons depuis l'historique de la sonde
+  // (`phCalPoints`) — très exactement le défaut que bug-167 était censé
+  // corriger, mais seulement visible à la 2ᵉ entrée. Seule échappatoire :
+  // « Recommencer le point 7.0 », qui efface aussi le point 4.00.
+  // ⛔ Appelée SEULE, cette fonction ne suffit PAS à corriger le défaut —
+  // c'est l'ORDRE (`_calEnterScreen` ci-dessous) qui protège.
+  function _calResetSessionState() {
+    _calSessionAcquired.ph = false;
+    _calSessionAcquired.orp = false;
+    _calFrozen.ph.mid = false; _calFrozen.ph.low = false; _calFrozen.orp.orp = false;
+  }
+
+  // bug-167 (2ᵉ occurrence) : POINT D'ENTRÉE UNIQUE de l'écran de calibration,
+  // appelé par les deux `onEnter` de `MAINTENANCE_PAGES` À LA PLACE de l'appel
+  // direct à `resetCalStepper()`. ⛔ L'ORDRE DE CES DEUX LIGNES EST LE
+  // CORRECTIF — ne JAMAIS les inverser : `resetCalStepper()` DÉCIDE du gel en
+  // lisant `_calSessionAcquired[product]` (cf. son propre commentaire) ; tant
+  // que la session n'a pas été remise à zéro AVANT son appel, il peut lire le
+  // drapeau d'une session précédente et geler depuis l'historique de la sonde.
+  // Protégé par test/cal_session_reentry_vectors.js (mutation c).
+  function _calEnterScreen(product) {
+    _calResetSessionState();
+    resetCalStepper(product);
+  }
+
   // feature-159 (C5) : défaut REPRODUIT puis corrigé — cette fonction réactivait
   // INCONDITIONNELLEMENT tous les boutons « Calibrer » et remettait
   // `_calActiveIdx` à 0 sans jamais consulter `phCalPoints`/`orpCalPoints` (la
@@ -9498,6 +9748,12 @@
   // l'étape 4 quand les 2 points sont déjà faits — ça réveillerait le conseil
   // transitoire #ph_cal_final_advice (feature-156) alors qu'aucun étalonnage
   // n'a eu lieu dans CETTE session.
+  // ⚠️ bug-167 (2ᵉ occurrence) : le gel « depuis l'historique » ci-dessous
+  // (`if (_calSessionAcquired[product])`) ne doit JAMAIS voir un drapeau
+  // hérité d'une session précédente — c'est `_calEnterScreen()` qui le
+  // garantit en remettant `_calSessionAcquired` à zéro AVANT d'appeler cette
+  // fonction. Appeler `resetCalStepper()` directement (en court-circuitant
+  // `_calEnterScreen`) réintroduit le défaut.
   function resetCalStepper(product) {
     _calResetStabBuffer(product);
     _calClearFailure(product); // nouvelle session : pas d'échec persistant d'une ouverture passée
@@ -9508,7 +9764,11 @@
     // (undefined/null — /data pas encore répondu, ou hors ligne) ne doit PAS
     // se comporter comme « non calibré » (fail-open découvert en revue) : la
     // même décision pure que l'auto-réparation ci-dessous (`_calPointsAcquired`).
-    Object.assign(_calFrozen[product], _calPointsAcquired(product, pts));
+    // bug-167 : ⛔ AVANT le premier point acquis DANS CETTE SESSION, aucun gel.
+    // Sinon une sonde déjà calibrée (pts=2) fige tout d'entrée.
+    if (_calSessionAcquired[product]) {
+      Object.assign(_calFrozen[product], _calPointsAcquired(product, pts));
+    }
     const known = _calIsPtsKnown(pts);
 
     const btnIds = product === "ph" ? ["btn-cal-ph-mid", "btn-cal-ph-low"] : ["btn-cal-orp"];
@@ -9536,6 +9796,7 @@
 
   // Marque une étape « calibrer » comme faite après succès EZO et passe à la suivante.
   function completeCalStep(product, idx) {
+    _calSessionAcquired[product] = true;  // bug-167 : le gel ne vaut qu'à partir d'ici
     setCalStepState(product, idx + 1);
     _calResetStabBuffer(product);
     renderStability(product);
@@ -9651,6 +9912,13 @@
   // bouton affiche l'action de rétablissement ; /calibration/exit est de
   // toute façon idempotente si aucune session n'a réellement été ouverte).
   async function _calSwitchEnter(page) {
+    // bug-167 (2ᵉ occurrence) : la remise à zéro de la session (
+    // `_calSessionAcquired`/`_calFrozen`) a été DÉPLACÉE vers
+    // `_calResetSessionState()`/`_calEnterScreen()`, appelée SYNCHRONE et EN
+    // PREMIER par `onEnter` — avant même `resetCalStepper()`. Elle ne peut
+    // plus vivre ICI : cette fonction est `async`, et sa partie synchrone ne
+    // s'exécutait qu'APRÈS que `resetCalStepper()` ait déjà lu (et agi sur)
+    // l'ancien drapeau, d'où le défaut (cf. commentaire de `_calEnterScreen`).
     _calSwitchOccurred = false;
     _calSwitchSetCloseBtnLabel(page, "Fermer");
     _calSwitchSetBackLinksLabel(page, _calSwitchBackLabel(page));
@@ -9731,7 +9999,7 @@
       // bug-160 (volet 2, REFONTE) : POST /calibration/enter ÉMIS ICI
       // UNIQUEMENT (geste humain, seul capable de basculer la régulation
       // en Manuel côté firmware).
-      onEnter: () => { resetCalStepper("ph"); renderCalibrationStatus(); _calSwitchEnter("ph"); },
+      onEnter: () => { _calEnterScreen("ph"); renderCalibrationStatus(); _calSwitchEnter("ph"); },
       // POST /calibration/exit sur sortie, succès ou non ; arrêt du ticker
       // C9 (volet 1) même si l'étape active n'a pas été quittée proprement
       // (quitte-par-le-menu, cf. _exitAllMaintenanceModes).
@@ -9743,7 +10011,7 @@
       announceId: "orp-maintenance-announce", label: "ORP",
       cardIds: ["orp-card-calibration"],
       subMaintenance: null,
-      onEnter: () => { resetCalStepper("orp"); renderCalibrationStatus(); _calSwitchEnter("orp"); },
+      onEnter: () => { _calEnterScreen("orp"); renderCalibrationStatus(); _calSwitchEnter("orp"); },
       onExit: () => { orpCalibrationActive = false; updateOrpModeControls(); _calSwitchExit("orp"); _calStabStopPolling(); },
     },
     temperature: {

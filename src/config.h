@@ -187,12 +187,25 @@ struct MqttConfig {
   uint32_t calSwitchLastAlertEpoch = 0;
   uint8_t calSwitchAlertCount = 0;
 
-  // feature-067 : offset logiciel de mesure pH (unités pH, borné
-  // [kPhOffsetMin, kPhOffsetMax]). Formule : pH_corrigé = pH_brut_EZO + phOffset.
-  // Appliqué EN SORTIE des accesseurs de SensorManager (cf. src/ph_offset.h) —
-  // la calibration électrochimique du module Atlas EZO n'est PAS touchée.
+  // feature-067 : offset logiciel de mesure pH (unités pH). Formule :
+  // pH_corrigé = pH_brut_EZO + phOffset. Appliqué EN SORTIE des accesseurs de
+  // SensorManager (cf. src/ph_offset.h) — la calibration électrochimique du
+  // module Atlas EZO n'est PAS touchée.
+  // ⚠️ feature-168 : plus AUCUNE borne de réglage (kPhOffsetMin/Max retirés,
+  // décision utilisateur) — seule la salubrité de domaine (isPhOffsetValid(),
+  // NaN/inf/|offset| > kPhOffsetScaleSpan) est encore refusée.
   // Toute écriture doit être suivie de sensors.refreshPhOffsetCache().
   float phOffset = 0.0f;              // Offset de mesure pH (défaut 0.00 = inerte)
+
+  // feature-168 (C12) : RAM UNIQUEMENT, jamais persisté. Vrai si loadConfig()
+  // a relu depuis la NVS une correction INHABITUELLE (|phOffset| >
+  // kPhOffsetUnusualAbs) sans qu'aucune action utilisateur ne l'ait confirmée
+  // depuis ce démarrage — signale une mémoire potentiellement altérée (valeur
+  // non saisie par l'utilisateur). Remis à false par le SEUL écrivain de
+  // phOffset (setPhOffsetStamped()) : toute re-saisie ou confirmation explicite
+  // ("Garder la correction") éteint le signal. Lu par phOffsetStaleNow()/
+  // phOffsetStaleCause() (config.cpp).
+  bool phOffsetBootUnconfirmed = false;
 
   // feature-156 : HORODATAGE DE JUSTESSE — deux événements indépendants, posés
   // de la correction manuelle (phOffset*) et de l'étalonnage de la sonde
@@ -688,6 +701,19 @@ void setPhOffsetStamped(float offset, const char* source);
 // et persiste. Sur timeout : error journalisé, AUCUNE mutation (jamais un seq
 // posé sans sa persistance).
 void markPhCalibrationStamped();
+
+// feature-168 (C10 + C12 + C15) — ACCESSEUR UNIQUE du verdict de péremption de
+// l'offset pH, consommé À L'IDENTIQUE par /get-config (web_routes_config.cpp)
+// ET la trame WebSocket (ws_manager.cpp) : MÊME APPEL TEXTUEL des deux côtés,
+// condition posée après le piège de parité à répétition de ce projet (même
+// clé, expressions divergentes). Combine les TROIS causes :
+//   - "boot"        : mqttCfg.phOffsetBootUnconfirmed (C12, mémoire altérée) ;
+//   - "calibration" : correction antérieure au dernier étalonnage (feature-156) ;
+//   - "expiration"  : correction inhabituelle non reconfirmée depuis 30 j (C10).
+// phOffsetStaleCause() ne désigne la cause que si phOffsetStaleNow() est vrai.
+bool phOffsetStaleNow();
+const char* phOffsetStaleCause();
+
 void applyMqttConfig();
 void sanitizePumpSelection();
 int sanitizePumpNumber(int pumpNumber, int defaultValue);

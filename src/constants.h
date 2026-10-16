@@ -1618,14 +1618,21 @@ constexpr size_t kSensorTraceHeapMarginBytes     = kHttpHeapMarginBytes;
 // pH corrigé = pH brut EZO + phOffset, appliqué EN SORTIE des accesseurs
 // (cf. src/ph_offset.h). La calibration EZO n'est jamais touchée.
 
-// Bornes de l'offset — arbitrage utilisateur validé sous conditions par
-// pool-chemistry. Justification chimique : l'offset décale la consigne EFFECTIVE
-// (cible 7,20 avec offset +0,40 → l'eau réelle est régulée à 6,80). ±0,50 pH
-// couvre un décalage d'implantation de sonde ; au-delà, le défaut vient de la
-// sonde ou de la calibration EZO et l'écart pH régulé / pH réel devient
-// dangereux (corrosion côté bas, chlore inactif côté haut).
-constexpr float kPhOffsetMin = -0.50f;
-constexpr float kPhOffsetMax =  0.50f;
+// ⚠️ BORNES DE RÉGLAGE RETIRÉES (feature-168, 2026-10-16) : kPhOffsetMin et
+// kPhOffsetMax ont existé de feature-067 à feature-168. Décision utilisateur
+// explicite (« je ne veux pas bloquer »), GO sous conditions du gate
+// pool-chemistry (2 passes) : la correction de mesure pH accepte désormais
+// TOUTE valeur finie de l'échelle pH. Ce qui reste, et pourquoi :
+//   - kPhOffsetScaleSpan (bloc « FILETS ABSOLUS SUR LE pH BRUT » plus bas) :
+//     une salubrité de DOMAINE (NaN/inf/valeurs aberrantes refusés), PAS une
+//     borne de réglage — ADR-0098/ADR-0100.
+//   - kPhOffsetUnusualAbs : l'ANCIENNE borne ±0,50, CONSERVÉE comme SIGNAL
+//     d'alerte (défaut matériel possible) — elle ne limite plus rien, elle
+//     avertit seulement.
+//   - kPhRawFloorAbsolute / kPhRawCeilingAbsolute : les deux filets chimiques
+//     sur le pH BRUT, qui ne DÉRIVENT plus de cette borne (c'était le défaut
+//     structurel que cette levée de limite a mis au jour : la correction
+//     commandait les garde-fous).
 
 // --- Accord de la mesure sur un test manuel (feature-155) ---
 // L'utilisateur AMÈNE un nombre affiché à la valeur qu'il a relevée sur son
@@ -1799,34 +1806,83 @@ constexpr float kPhFloorCorrected   = kPhTargetMin - kPhSafetyMargin;    // 6,70
 // peut pas alcaliniser au-delà du point où l'on a décidé que le chlore est
 // inactif.
 constexpr float kPhCeilingCorrected = kPhTargetMax + kPhHighMargin;      // 7,60
+// ============================================================================
+// FILETS ABSOLUS SUR LE pH BRUT (feature-168, ADR-0098)
+// ============================================================================
+// ⚠️ Jusqu'à feature-168, les deux butées brutes DÉRIVAIENT de l'offset
+// maximal autorisé (kPhOffsetMax) : lever la borne de la correction aurait
+// alors desserré ces deux garde-fous SANS QUE PERSONNE NE LE DÉCIDE — c'est le
+// défaut structurel identifié par cette spec. L'inversion : ces deux filets
+// sont maintenant les CONSTANTES NOMMÉES, à justification chimique PROPRE
+// (ADR-0098), et plus rien n'en dérive — le pH brut est leur SEULE entrée,
+// l'offset n'intervient plus dans leur valeur.
+//
+// kPhRawFloorAbsolute — sous ~5,0, l'acide (pH−) rencontrant l'hypochlorite
+// encore présent libère du CHLORE GAZEUX (réaction acide/hypochlorite) : danger
+// direct, pas seulement chimique pour l'eau. 0,5 pH de marge avant ce seuil.
+// kPhRawCeilingAbsolute — à 8,50, il ne reste que ~9 % de chlore actif (HOCl)
+// pour un pKa de 7,5 (loi de Henderson-Hasselbalch) : au-delà, alcaliniser
+// encore n'a plus de sens sanitaire, quelle que soit la correction appliquée.
+// Verdict pool-chemistry (2ᵉ passe, GO sous conditions, C1) : ces deux valeurs
+// SONT kPhFloorRawHard/kPhCeilingRawHard — identité, pas approximation.
+constexpr float kPhRawFloorAbsolute   = 5.50f;
+constexpr float kPhRawCeilingAbsolute = 8.50f;
+
 // BUTÉE BASSE sur le pH [BRUT] : ultime filet contre un offset POSITIF saisi à
 // tort (la régulation croit doser vers 7,20 alors que l'eau est déjà sous 6,7).
-// Dérivée de l'offset MAXIMAL, elle ne peut structurellement JAMAIS mordre avant
-// kPhFloorCorrected en usage légitime : 6,70 − 0,50 = 6,20. Une butée plus haute
-// (6,40 avait été proposée) bloquerait AVANT le seuil corrigé pour un offset
-// légitime de +0,50, rendant celui-ci inopérant — le static_assert l'interdit.
-constexpr float kPhFloorRawHard     = kPhFloorCorrected - kPhOffsetMax;  // 6,20
+// FIXE (feature-168) : égale à kPhRawFloorAbsolute, ne dérive plus de l'offset.
+constexpr float kPhFloorRawHard     = kPhRawFloorAbsolute;    // 5,50
 // BUTÉE HAUTE sur le pH [BRUT] : filet symétrique contre un offset NÉGATIF saisi
 // à tort, qui masquerait une eau réellement au-dessus de 7,6 et laisserait la
-// régulation ORP surdoser le chlore. Dérivée de l'offset maximal :
-// 7,60 + 0,50 = 8,10.
+// régulation ORP surdoser le chlore.
+// FIXE (feature-168) : égale à kPhRawCeilingAbsolute, ne dérive plus de l'offset.
 // DEUX POINTS D'APPLICATION, quel que soit le type de produit déclaré :
 //   (a) inhibition du dosage ORP (isOrpInhibitedByPh) — le chlore est suspendu ;
 //   (b) refus d'ALCALINISER (isPhGuardBlocking, produit `ph_plus`), symétrique de
 //       la butée brute basse appliquée au refus d'acidifier. Ajouté à la
-//       contre-visite de la v2.25.0 : sans (b), un offset −0,50 erroné laissait le
-//       pH+ pousser l'eau au-delà de 8,10 BRUT pendant que (a) inhibait le
-//       chlore — l'appareil conduisait lui-même l'eau dans une impasse
-//       sanitaire. Ce refus alimente le compteur des 3 refus / 24 h en mode
-//       automatique, comme la butée basse.
-// Avec kPhHighMargin = 0,10 la butée brute haute coïncide exactement avec le
-// plafond corrigé au pire cas d'offset (8,10 brut ⟺ 7,60 corrigé à offset
-// −0,50), relâches comprises (8,05 ⟺ 7,55) : elle ne mord donc JAMAIS avant lui.
-// C'est la symétrie de l'exigence posée sur la butée basse, et elle est
-// satisfaite sans nouvelle constante — voir le static_assert dédié.
+//       contre-visite de la v2.25.0 : sans (b), un offset négatif erroné
+//       laisserait le pH+ pousser l'eau au-delà de la butée BRUTE pendant que
+//       (a) inhibait le chlore — l'appareil conduirait lui-même l'eau dans une
+//       impasse sanitaire. Ce refus alimente le compteur des 3 refus / 24 h en
+//       mode automatique, comme la butée basse (sauf zone d'impasse, cf.
+//       kPhOffsetImpasseThresholdHigh ci-dessous).
 // Avec un produit `ph_minus`, (b) est sans objet (l'acide ne peut pas faire
 // monter le pH) : seule (a) s'applique — d'où « quel que soit le produit ».
-constexpr float kPhCeilingRawHard   = kPhOrpInhibit + kPhOffsetMax;      // 8,10
+constexpr float kPhCeilingRawHard   = kPhRawCeilingAbsolute;  // 8,50
+
+// --- Correction de mesure : plus de borne de réglage, un SIGNAL et une
+//     salubrité (feature-168, décision utilisateur du 2026-10-16) ---
+// kPhOffsetUnusualAbs — l'ANCIENNE borne ±0,50 (feature-067/pool-chemistry),
+// CONSERVÉE : au-delà, ce n'est plus une limite, mais le SIGNAL qu'un défaut
+// matériel est possible (le décalage ne s'explique alors plus simplement par
+// une implantation de sonde). Pilote l'avertissement UI (C8), le log + alerte
+// MQTT de correction inhabituelle (C7), et une des trois causes de péremption
+// (C10/C15).
+constexpr float kPhOffsetUnusualAbs = 0.50f;
+// kPhOffsetScaleSpan — SALUBRITÉ DE DOMAINE, PAS une borne de réglage : au-delà
+// de ±14 pH (l'échelle pH entière), une valeur ne peut plus être une correction
+// de mesure réelle — c'est NaN/inf/une faute de saisie. isPhOffsetValid() ne
+// refuse plus QUE cela (ADR-0100 : ce seuil n'est jamais réécrit côté client).
+constexpr float kPhOffsetScaleSpan = 14.0f;
+// kPhOffsetConfirmIntervalDays — péremption (C10) : au-delà de 30 jours sans
+// reconfirmation, une correction INHABITUELLE (|offset| > kPhOffsetUnusualAbs)
+// est signalée comme à revérifier — elle compense un décalage d'installation
+// qui peut avoir changé. Non bloquant, conforme à la décision utilisateur.
+constexpr uint32_t kPhOffsetConfirmIntervalDays = 30;
+
+// --- Zone d'IMPASSE de régulation (C5 + C5bis) ---
+// Au-delà de ces seuils, le filet BRUT (fixe) mord STRUCTURELLEMENT avant que
+// la régulation corrigée n'atteigne son seuil chimique : ce n'est plus un
+// incident, c'est une conséquence mécanique du choix de correction. Les refus
+// de filet brut SEUL, dans cette zone, sont donc EXCLUS du compteur des 3
+// refus / 24 h (isPhRegulationImpasseLow/High, ph_guard_logic.h) : la
+// bascule en manuel n'ajouterait AUCUNE protection (le filet bloque déjà),
+// elle ne ferait que RETIRER la régulation. Le compteur reste intact pour le
+// seuil CORRIGÉ et toutes les autres gardes.
+// CALCULÉES, jamais littérales : la symétrie doit survivre à toute retouche
+// des marges ci-dessus.
+constexpr float kPhOffsetImpasseThreshold     = kPhFloorCorrected   - kPhRawFloorAbsolute;    // 1,20
+constexpr float kPhOffsetImpasseThresholdHigh = kPhCeilingCorrected - kPhRawCeilingAbsolute;  // -0,90
 
 // --- Rondeur au dixième (feature-149, condition bloquante du gate) ---
 // Les causes de garde pH affichent désormais un SEUIL (constante), jamais une
@@ -1875,12 +1931,15 @@ static_assert(kPhTargetMax + kPhOrpInhibitMargin <= kPhOrpInhibit,
 static_assert(kPhSafetyMargin > 0.0f && kPhHighMargin > 0.0f &&
                   kPhOrpInhibitMargin > 0.0f,
               "Les marges de securite pH doivent etre strictement positives");
-// (iv) La butée brute basse ne doit JAMAIS mordre avant le seuil corrigé, pour
-// tout offset du domaine autorisé. Écrit en INÉGALITÉ : remonter la butée (6,40)
-// ne compile plus, l'abaisser reste possible.
-static_assert(kPhFloorRawHard <= kPhFloorCorrected - kPhOffsetMax,
-              "Butee brute basse trop haute : elle mordrait avant le seuil "
-              "corrige pour un offset legitime, rendant celui-ci inoperant");
+// ⚠️ (iv) RETIRÉ (feature-168) : « la butée brute basse ne mord jamais avant le
+// seuil corrige, pour tout offset du domaine autorisé » N'EST PLUS VRAI ET NE
+// PEUT PLUS L'ÊTRE — l'offset n'a plus de domaine borné (kPhOffsetMax a
+// disparu), donc aucune butée fixe ne peut plus dominer TOUS les offsets
+// possibles. C'est exactement l'objet de la zone d'impasse (C5,
+// kPhOffsetImpasseThreshold) : au-delà, la butée mord AVANT le seuil corrigé,
+// et l'appareil le DIT (alerte dédiée) plutôt que de se fermer en silence.
+// Remplacé par l'invariant d'ORDRE ABSOLU ci-dessous, qui ne dépend plus de
+// l'offset.
 static_assert(kPhFloorCorrected < kPhLowWarn && kPhLowWarn <= kPhTargetMin,
               "kPhLowWarn doit alerter AVANT le refus de dosage et rester sous "
               "la consigne minimale");
@@ -1898,14 +1957,20 @@ static_assert(kPhFloorRawHard > 0.0f,
 static_assert(kPhCeilingCorrected <= kPhOrpInhibit,
               "Plafond d'alcalinisation au-dessus de kPhOrpInhibit : le systeme "
               "pourrait alcaliniser une eau dont il a inhibe le chlore");
-// (ix) Symétrique de (iv) : la butée brute haute ne doit jamais mordre avant le
-// plafond corrigé, pour tout offset du domaine. Le pire cas est l'offset MINIMAL
-// (négatif), qui abaisse le pH corrigé à brut donné. La tolérance absorbe l'ulp
-// entre deux expressions flottantes distinctes qui valent la même chose en
-// décimal (piège identique au littéral 7,55 de la relâche).
-static_assert(kPhCeilingRawHard >= kPhCeilingCorrected - kPhOffsetMin - 1e-4f,
-              "Butee brute haute trop basse : elle mordrait avant le plafond "
-              "corrige pour un offset legitime, rendant celui-ci inoperant");
+// ⚠️ (ix) RETIRÉ (feature-168) : symétrique de (iv), même raison — plus de
+// domaine borné pour l'offset, donc plus d'invariant « ne mord jamais avant »
+// possible pour TOUT offset. Zone d'impasse symétrique : kPhOffsetImpasseThresholdHigh
+// (C5bis).
+//
+// (xi) INVARIANT D'ORDRE ABSOLU (remplace (iv) et (ix), feature-168) : les deux
+// filets bruts restent STRICTEMENT à l'intérieur des deux seuils corrigés, en
+// toute circonstance — c'est ce qui garantit qu'une correction NULLE (ou
+// raisonnable) laisse la régulation opérer normalement entre les deux filets,
+// quelle que soit la zone d'impasse que de GRANDES corrections peuvent ouvrir.
+static_assert(kPhRawFloorAbsolute < kPhFloorCorrected &&
+                  kPhCeilingCorrected < kPhRawCeilingAbsolute,
+              "Un filet brut absolu a franchi son seuil corrige : la regulation "
+              "serait bloquee en permanence meme a offset nul");
 // (x) Condition bloquante du gate pool-chemistry (feature-149, etendue par
 // feature-150) : les causes de garde pH ET ORP affichent un SEUIL a UNE
 // decimale (String(x,1)) -- il doit donc etre rond au dixieme, sinon

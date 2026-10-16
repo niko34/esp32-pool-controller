@@ -1,6 +1,6 @@
 # ADR-0048 — Seuils de sécurité pH fixes, dérivés de la plage de consigne, appliqués au pH corrigé
 
-- **Statut** : Accepté
+- **Statut** : Partiellement superseded by [ADR-0113](0113-filets-ph-bruts-absolus-independants-de-loffset.md) et [ADR-0114](0114-correction-mesure-ph-sans-borne-de-reglage.md) (2026-10-16, feature-168) — **les deux butées sur le pH brut ne dérivent plus de la borne de réglage de l'offset** (ADR-0113) et **cette borne de réglage n'existe plus** (ADR-0114, décision utilisateur). Les seuils sur le pH **corrigé** (consigne, refus d'acidifier/alcaliniser, inhibition ORP, avertissement 7,00) et les principes 1, 2, 5, 6, 7 ci-dessous restent inchangés et Acceptés.
 - **Date** : 2026-08-27
 - **Décideurs** : `architect`, `pool-chemistry` (GO amont + GO en contre-visite), `code-reviewer` (Approved en 2ᵉ passe), utilisateur (arbitrages du plancher asservi, de la butée 6,40 et des curseurs)
 - **Spec(s) liée(s)** : `refonte-seuils-ph-fixes-derives` (v2.25.0), `bug-plancher-ph-offset-legitime-et-securite-desarmee` (même version) ; amende [ADR-0039](0039-offset-ph-applique-en-sortie-des-accesseurs.md) (offset pH) et le filet de sécurité de feature-067

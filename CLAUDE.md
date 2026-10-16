@@ -105,11 +105,12 @@ L'idée force : **les docs ne sont pas un livrable de fin de cycle, c'est une ob
      livraison : ce chiffre a été faux pendant des semaines, corrigé le 2026-09-07, et
      périmé le soir même. **Mesure-le** :
      `ls -d test/test_native_* | wc -l` pour les suites, et le total de cas est la dernière
-     ligne de `pio test -e native`. Repère au **2026-10-11 (v2.69.0) : 67 suites / 2 098 cas**.
-     ⚠️ Le repère précédent (« 39 suites / 1 451 cas », 2026-09-07) a survécu **un mois** à
-     côté de l'avertissement qui dit de ne pas le recopier. Celui-ci périmera aussi :
-     **mesure, ne lis pas cette ligne.**
-     Couverture : `tools/coverage.sh` (gcovr). CI GitHub Actions sur push/PR — **trois workflows** : `tests-natifs.yml` (tests + couverture), `build-firmware.yml` (**`pio run -e esp32dev_core3`** — la compilation est un gate depuis feature-103) et `hygiene-specs.yml` (**12 jobs mesurés au 2026-10-11** — en compter le nombre réel, ne pas recopier ce chiffre ; `ls tools/check_*.sh` en donne l'essentiel. Tous lançables en local avant de committer, dont : `./tools/check_specs.sh` unicité d'une spec entre `todo/` · `doing/` · `done/` · `./tools/check_doc_links.sh` liens relatifs des `.md` · `./tools/check_fopen_guard.sh` aucune ouverture de fichier hors du helper unique, ADR-0070 · `./tools/check_memory_discipline.sh` ADR-0082 · `./tools/check_removed_measurement_vocabulary.sh` feature-152 · les harnais de vecteurs JS, ADR-0099). Voir [`docs/BUILD.md`](docs/BUILD.md#intégration-continue-github-actions).
+     ligne de `pio test -e native`. Repère au **2026-10-16 (v2.82.0) : 71 suites / 2 227 cas**.
+     ⚠️ Les deux repères précédents ont pourri **à côté de l'avertissement qui dit de ne pas
+     les recopier** : « 39 suites / 1 451 cas » (2026-09-07) a survécu **un mois**, et
+     « 67 suites / 2 098 cas » (2026-10-11) était faux **cinq jours plus tard**. Celui-ci
+     périmera aussi : **mesure, ne lis pas cette ligne.**
+     Couverture : `tools/coverage.sh` (gcovr). CI GitHub Actions sur push/PR — **trois workflows** : `tests-natifs.yml` (tests + couverture), `build-firmware.yml` (**`pio run -e esp32dev_core3`** — la compilation est un gate depuis feature-103) et `hygiene-specs.yml` (**19 jobs mesurés au 2026-10-16** — en compter le nombre réel, ne pas recopier ce chiffre ; `ls tools/check_*.sh` en donne l'essentiel. Tous lançables en local avant de committer, dont : `./tools/check_specs.sh` unicité d'une spec entre `todo/` · `doing/` · `done/` · `./tools/check_doc_links.sh` liens relatifs des `.md` · `./tools/check_fopen_guard.sh` aucune ouverture de fichier hors du helper unique, ADR-0070 · `./tools/check_memory_discipline.sh` ADR-0082 · `./tools/check_removed_measurement_vocabulary.sh` feature-152 · les harnais de vecteurs JS, ADR-0099). Voir [`docs/BUILD.md`](docs/BUILD.md#intégration-continue-github-actions).
    - **Valider les tests neufs par MUTATION** : casser volontairement le code qu'ils protègent et vérifier qu'ils meurent. Une suite qui ne tue aucun mutant ne prouve rien — plusieurs défauts réels de ce projet (repliement de `millis()` à 24,8 j, propagation d'une constante de pouls, terme intégral inopérant) n'ont été trouvés que par cette méthode, et trois mutations sur cinq ne tuaient rien avant l'extraction de la logique en module pur.
    - Pas de warnings nouveaux
 7. **Revue de code** (agent `code-reviewer`) avant tout commit

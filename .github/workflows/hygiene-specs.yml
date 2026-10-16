@@ -305,6 +305,24 @@ jobs:
       - name: Contrôle des vecteurs d'acquisition de calibration
         run: ./tools/check_cal_points_acquired_vectors.sh
 
+
+  cal-session-reentry-vectors:
+    name: Vecteurs « rouvrir l'écran d'étalonnage dégèle » (bug-167)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # Même script en local (`./tools/check_cal_session_reentry_vectors.sh`)
+      # et en CI. ⚠️ Ce job existe parce que bug-167 a été manqué TROIS fois,
+      # chaque fois par LECTURE STATIQUE : un seul des deux sites de gel vu ;
+      # puis un critère coché parce que la remise à zéro « existe » ; puis le
+      # défaut réel — elle s'exécutait APRÈS le calcul du gel, et
+      # `_calRefreshFrozenButtons()` n'active jamais un bouton. Lire qu'une
+      # remise à zéro existe ne dit rien sur le MOMENT où elle tourne : seul
+      # un harnais qui rejoue une 2e ouverture de l'écran le prouve.
+      - name: Contrôle des vecteurs de réentrée dans l'étalonnage
+        run: ./tools/check_cal_session_reentry_vectors.sh
   cal-stability-vectors:
     name: Vecteurs de stabilité de calibration (bug-160)
     runs-on: ubuntu-latest

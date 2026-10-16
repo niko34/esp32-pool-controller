@@ -25,7 +25,7 @@
 #include <stdint.h>
 #include <math.h>
 
-#include "constants.h"  // kPhOffsetMin / kPhOffsetMax (self-contained, sans Arduino)
+#include "constants.h"  // kPhOffsetScaleSpan (self-contained, sans Arduino)
 
 // Applique l'offset utilisateur à une mesure pH BRUTE.
 //
@@ -43,23 +43,28 @@ inline float applyPhOffset(float raw, float offset) {
   return raw + offset;
 }
 
-// True si l'offset est exploitable : numérique ET dans la plage autorisée
-// [kPhOffsetMin, kPhOffsetMax]. Bornes arbitrées avec pool-chemistry : au-delà
-// de ±0,50 pH, l'écart ne s'explique plus par l'implantation, et l'écart entre
-// pH régulé et pH réel deviendrait dangereux.
-// ⚠️ FORMULATION CORRIGÉE (feature-155) : cette phrase disait « c'est la sonde
-// ou la calibration EZO qui est en cause ». ÇA MET LA SONDE EN CAUSE, et c'est
-// très exactement le travers de l'incident du 2026-08-25 — une sonde SAINE
+// ⚠️ ANCIENNEMENT une borne de RÉGLAGE (feature-067 → feature-155), ce n'en
+// est PLUS une depuis feature-168 (décision utilisateur du 2026-10-16, GO sous
+// conditions du gate pool-chemistry, condition C3) : la correction de mesure
+// pH accepte désormais TOUTE valeur finie de l'échelle pH, sans écrêtage ni
+// refus lié à son amplitude. Ce test ne protège plus que la SALUBRITÉ de
+// domaine — NaN, infini, ou une valeur si extravagante (ex. 1e30) qu'elle ne
+// peut être qu'une corruption ou une faute de saisie, jamais une correction
+// réelle. kPhOffsetScaleSpan (= 14,0, l'échelle pH entière) n'est PAS un seuil
+// chimique : ADR-0100, ce n'est jamais réécrit côté client.
+// ⚠️ MISE EN GARDE CONSERVÉE (feature-155) : un |offset| élevé N'EST PAS, en
+// soi, une suspicion de sonde. L'incident du 2026-08-25 a vu une sonde SAINE
 // (pente 101/100, zéro −1,03) déclarée à remplacer alors que la cause était un
-// décalage EXTERNE (courants de fuite de la pompe de filtration). Un écart de
-// plus de 0,5 pH a d'AUTRES causes au moins aussi probables : test de référence
-// périmé, lecture à la mauvaise échelle, étalonnage à refaire. Ne pas désigner
-// un coupable qu'on n'a pas identifié — ni ici, ni dans un message dérivé.
-// Le jumeau de cette phrase (web_routes_config.cpp) a été corrigé dans le même
-// lot ; celui-ci avait été signalé par l'implémenteur comme hors périmètre.
+// décalage EXTERNE (courants de fuite de la pompe de filtration). Un écart
+// large a d'AUTRES causes au moins aussi probables : test de référence périmé,
+// lecture à la mauvaise échelle, étalonnage à refaire. Ne pas désigner un
+// coupable qu'on n'a pas identifié — ni ici, ni dans un message dérivé. C'est
+// désormais kPhOffsetUnusualAbs (constants.h) qui porte le SIGNAL (pas le
+// refus) d'un défaut matériel possible.
 inline bool isPhOffsetValid(float offset) {
-  if (isnan(offset)) return false;
-  return (offset >= kPhOffsetMin) && (offset <= kPhOffsetMax);
+  // isfinite() couvre déjà NaN ET infini (tous deux → false) : formule exacte
+  // de la condition C3 du gate, pas de test isnan() redondant devant.
+  return isfinite(offset) && (fabsf(offset) <= kPhOffsetScaleSpan);
 }
 
 // =============================================================================
@@ -71,15 +76,70 @@ inline bool isPhOffsetValid(float offset) {
 // ordre : voir config.h (champs phOffset*/phCal*) pour la justification
 // complète (indépendance à l'horloge et au redémarrage).
 
-// True ssi une correction non nulle en vigueur est ANTÉRIEURE au dernier
-// étalonnage réussi — donc caduque. `offset` est la valeur APPLIQUÉE
-// (mqttCfg.phOffset), `offsetSeq`/`calSeq` les séquences des deux écrivains
-// uniques (config.h). Une correction nulle (0,00 = inerte) n'est jamais
-// caduque : il n'y a rien à annuler. Deux séquences ÉGALES (aucun des deux
-// événements ne s'est jamais produit après l'autre, y compris 0 == 0 au
-// premier démarrage) ne sont PAS une préséance de l'étalonnage : faux.
-inline bool isPhOffsetStale(float offset, uint32_t offsetSeq, uint32_t calSeq) {
+// =============================================================================
+// feature-168 (C10) — DEUXIÈME CAUSE DE CADUCITÉ, INDÉPENDANTE DE L'ÉTALONNAGE
+// =============================================================================
+// Une correction INHABITUELLE (|offset| > unusualAbs) non reconfirmée depuis
+// plus de confirmIntervalDays jours est elle aussi caduque : elle compense un
+// décalage d'INSTALLATION (courants de fuite de la pompe de filtration) qui
+// peut avoir changé depuis. Non bloquant, conforme à la décision utilisateur
+// du 2026-10-16 (« je ne veux pas bloquer »).
+//
+// True ssi : (a) une correction non nulle en vigueur est ANTÉRIEURE au dernier
+// étalonnage réussi — donc caduque au sens feature-156 (`offsetSeq`/`calSeq`,
+// les séquences des deux écrivains uniques, config.h) ; une correction nulle
+// (0,00 = inerte) n'est jamais caduque par cette voie, et deux séquences
+// ÉGALES (aucun des deux événements ne s'est jamais produit après l'autre, y
+// compris 0 == 0 au premier démarrage) ne sont PAS une préséance de
+// l'étalonnage ;
+// OU (b) l'offset est INHABITUEL et n'a pas été reconfirmé depuis plus de
+// `confirmIntervalDays` jours (feature-168, C10).
+//
+// Fail-open sur horloge non fiable (paramètre EXPLICITE, pas un appel time()
+// masqué — cette fonction reste pure et testable en natif, ADR-0017) :
+// `offsetEpoch == 0` (date inconnue à la pose) ou `nowEpoch == 0` (horloge pas
+// encore synchronisée) ⇒ cause (b) jamais levée. Une horloge qui serait
+// repartie en arrière (nowEpoch < offsetEpoch, ex. RTC non recalée) fail-open
+// aussi : mieux vaut ne pas signaler qu'afficher un âge négatif.
+//
+// @param offset               Offset APPLIQUÉ (mqttCfg.phOffset)
+// @param offsetSeq            Séquence de la dernière correction (feature-156)
+// @param calSeq               Séquence du dernier étalonnage (feature-156)
+// @param offsetEpoch          Horodatage de la correction (0 = date inconnue)
+// @param nowEpoch             Horodatage courant (0 = horloge non synchronisée)
+// @param confirmIntervalDays  Péremption en jours (kPhOffsetConfirmIntervalDays)
+// @param unusualAbs           Seuil d'« inhabituel » (kPhOffsetUnusualAbs)
+inline bool isPhOffsetExpired(float offset, uint32_t offsetEpoch, uint32_t nowEpoch,
+                              uint32_t confirmIntervalDays, float unusualAbs) {
+  if (offsetEpoch == 0 || nowEpoch == 0) return false;     // horloge non fiable
+  if (nowEpoch < offsetEpoch) return false;                // horloge retour arriere
+  if (fabsf(offset) <= unusualAbs) return false;            // pas "inhabituel"
+  const uint32_t ageDays = (nowEpoch - offsetEpoch) / 86400UL;
+  return ageDays > confirmIntervalDays;
+}
+
+// Cause (a) SEULE : la correction a ete posee AVANT le dernier etalonnage, elle
+// compense un etat de sonde qui n'existe plus.
+//
+// ⚠️ Extraite en fonction propre sur revue (feature-168) : l'expression vivait
+// en DEUX exemplaires — ici et dans phOffsetStaleCause() (config.cpp), qui
+// choisit le libelle affiche. C'est le piege « meme notion, deux expressions »
+// d'un cran en dessous de celui que phOffsetStaleNow() venait d'eliminer : la
+// cause (a) aurait pu evoluer ici et laisser le libelle afficher autre chose
+// que le verdict. ⛔ Un seul endroit, desormais.
+inline bool isPhOffsetSupersededByCalibration(float offset, uint32_t offsetSeq,
+                                              uint32_t calSeq) {
   return (offset != 0) && (offsetSeq < calSeq);
+}
+
+inline bool isPhOffsetStale(float offset, uint32_t offsetSeq, uint32_t calSeq,
+                            uint32_t offsetEpoch, uint32_t nowEpoch,
+                            uint32_t confirmIntervalDays, float unusualAbs) {
+  if (isPhOffsetSupersededByCalibration(offset, offsetSeq, calSeq)) {
+    return true;                                           // cause (a) : calibration
+  }
+  return isPhOffsetExpired(offset, offsetEpoch, nowEpoch, confirmIntervalDays,
+                            unusualAbs);                   // cause (b) : expiration
 }
 
 // Prochaine séquence « justesse », toujours strictement supérieure aux deux

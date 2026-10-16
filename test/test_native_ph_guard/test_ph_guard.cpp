@@ -29,9 +29,11 @@
 //   (b) l'ABSENCE de refus fantôme sur NaN, dans les deux directions et les deux
 //       états — un refus fabriqué sur une donnée qui n'existe pas alimenterait le
 //       compteur des 3 refus / 24 h jusqu'à la bascule fail-closed ;
-//   (c) les VALEURS des seuils dérivés (6,70 / 7,60 / 6,20 / 8,10) : elles ne
-//       sont écrites nulle part en littéral dans constants.h, un glissement de
-//       marge les déplacerait SILENCIEUSEMENT sans casser un seul static_assert.
+//   (c) les VALEURS des seuils dérivés et fixes (6,70 / 7,60 / 5,50 / 8,50) :
+//       elles ne sont écrites nulle part en littéral dans constants.h (sauf
+//       les deux filets bruts, FIXES depuis feature-168/ADR-0098), un
+//       glissement de marge les déplacerait SILENCIEUSEMENT sans casser un
+//       seul static_assert.
 //
 // RÉVISION DU PLAFOND (kPhHighMargin 0,20 → 0,10, arbitrage pool-chemistry) : le
 // refus d'ALCALINISER passe de 7,70 à 7,60 et devient donc ÉGAL au seuil
@@ -40,10 +42,12 @@
 // l'eau dans l'impasse sanitaire que l'inhibition signale. Deux conséquences
 // verrouillées ici :
 //   - le plafond n'est plus STRICTEMENT sous l'inhibition mais ÉGAL : l'ordre de
-//     la fenêtre chimique se teste désormais au sens LARGE sur ce couple ;
-//   - la butée brute haute (8,10) et le plafond corrigé (7,60) mordent au même
-//     point au pire cas d'offset (−0,50), à un ulp près et du bon côté — c'est le
-//     symétrique de l'exigence déjà posée sur la butée brute basse.
+//     la fenêtre chimique se teste désormais au sens LARGE sur ce couple.
+//   ⚠️ SUPPRIMÉ (feature-168) : ce paragraphe décrivait une égalité exacte
+//   entre la butée brute haute (alors 8,10, DÉRIVÉE de l'offset) et le plafond
+//   corrigé au pire cas d'offset (−0,50). Cette égalité n'a plus de sens — le
+//   filet brut haut est désormais FIXE (8,50, ADR-0098) et INDÉPENDANT de
+//   l'offset (cf. test_filet_brut_independant_de_l_offset_sur_tout_le_domaine).
 //
 // NOTE FLOTTANTS (le projet en a déjà souffert) : les frontières « pile » sont
 // exprimées par l'EXPRESSION (`seuil + kPhGuardReleaseHysteresis`) et jamais par
@@ -190,7 +194,7 @@ void test_bas_appels_repetes_sont_idempotents(void) {
 }
 
 // La mécanique ne dépend pas du seuil : elle est IDENTIQUE sur le seuil corrigé
-// (6,70) et sur la butée brute (6,20), qui sont les deux usages de production.
+// (6,70) et sur le filet brut (5,50), qui sont les deux usages de production.
 void test_bas_meme_mecanique_sur_le_seuil_corrige_et_la_butee_brute(void) {
   const float seuils[] = {kPhFloorCorrected, kPhFloorRawHard, kPhLowWarn};
   for (unsigned i = 0; i < sizeof(seuils) / sizeof(seuils[0]); ++i) {
@@ -532,27 +536,36 @@ void test_arrondi_valeurs_a_mi_chemin_s_ecartent_de_zero(void) {
   }
 }
 
-// CLAMP aux bornes : hors plage (API, MQTT, NVS d'un firmware antérieur, cast
-// raté) → ramené à la borne, jamais au-delà.
-void test_arrondi_borne_aux_limites_d_offset(void) {
-  TEST_ASSERT_FLOAT_WITHIN(kEps, kPhOffsetMax, roundPhOffsetToStep(0.60f));
-  TEST_ASSERT_FLOAT_WITHIN(kEps, kPhOffsetMax, roundPhOffsetToStep(5.0f));
-  TEST_ASSERT_FLOAT_WITHIN(kEps, kPhOffsetMax, roundPhOffsetToStep(1e9f));
-  TEST_ASSERT_FLOAT_WITHIN(kEps, kPhOffsetMax, roundPhOffsetToStep(INFINITY));
-  TEST_ASSERT_FLOAT_WITHIN(kEps, kPhOffsetMin, roundPhOffsetToStep(-0.60f));
-  TEST_ASSERT_FLOAT_WITHIN(kEps, kPhOffsetMin, roundPhOffsetToStep(-5.0f));
-  TEST_ASSERT_FLOAT_WITHIN(kEps, kPhOffsetMin, roundPhOffsetToStep(-INFINITY));
+// *** MUTATION (a) DE LA SPEC *** — ⚠️ ÉCRÊTAGE RETIRÉ (feature-168) :
+// roundPhOffsetToStep() n'a plus de borne vers laquelle clamper
+// (kPhOffsetMin/kPhOffsetMax ont disparu avec la borne de réglage) — elle
+// ARRONDIT SEULEMENT. Ce test verrouille l'ABSENCE de clamp : une valeur très
+// au-delà de l'ancienne borne ±0,50 ressort ARRONDIE, jamais ramenée à ±0,50.
+// Motif retiré (ancien test_arrondi_borne_aux_limites_d_offset,
+// test_ph_guard.cpp:538-541 et :555) : « l'égalité filet/plafond dérivait d'une
+// borne d'offset supprimée par feature-168 » — ici le clamp lui-même, qui
+// n'a plus de borne à respecter. ⛔ Si un futur commit réintroduit un clamp ici
+// « par prudence », CE test doit casser — c'est la mutation (a) de la spec.
+void test_arrondi_ne_clampe_plus_au_dela_de_l_ancienne_borne(void) {
+  TEST_ASSERT_FLOAT_WITHIN(kEps, 0.60f, roundPhOffsetToStep(0.60f));
+  TEST_ASSERT_FLOAT_WITHIN(kEps, 5.0f,  roundPhOffsetToStep(5.0f));
+  TEST_ASSERT_FLOAT_WITHIN(kEps, 14.0f, roundPhOffsetToStep(14.0f));
+  TEST_ASSERT_FLOAT_WITHIN(kEps, -0.60f, roundPhOffsetToStep(-0.60f));
+  TEST_ASSERT_FLOAT_WITHIN(kEps, -5.0f,  roundPhOffsetToStep(-5.0f));
+  TEST_ASSERT_FLOAT_WITHIN(kEps, -14.0f, roundPhOffsetToStep(-14.0f));
 }
 
-// Le résultat reste TOUJOURS dans les bornes, y compris après l'arrondi (qui peut
-// dépasser d'un ulp), sur tout le domaine d'entrée plausible.
-void test_arrondi_le_resultat_ne_sort_jamais_des_bornes(void) {
+// Sur tout le domaine [-2 ; 2] (bien au-delà de l'ancienne borne ±0,50), le
+// résultat de l'arrondi reste à une DEMI-PAS maximum de l'entrée — c'est un
+// ARRONDI, jamais un clamp qui écraserait des entrées distinctes sur une même
+// borne.
+void test_arrondi_reste_a_un_demi_pas_de_l_entree_sur_tout_le_domaine(void) {
   for (int i = -200; i <= 200; ++i) {
     const float x = (float)i * 0.01f;
     const float r = roundPhOffsetToStep(x);
     char msg[112];
     snprintf(msg, sizeof(msg), "x=%.3f -> %.9f", (double)x, (double)r);
-    TEST_ASSERT_TRUE_MESSAGE(r >= kPhOffsetMin && r <= kPhOffsetMax, msg);
+    TEST_ASSERT_TRUE_MESSAGE(fabsf(r - x) <= (kPhOffsetStep / 2.0f) + kEps, msg);
   }
 }
 
@@ -608,17 +621,18 @@ void test_arrondi_est_idempotent_sur_tout_le_domaine(void) {
                    roundPhOffsetToStep(NAN));
 }
 
-// Toute sortie est EXACTEMENT un multiple entier du pas — c'est ce que le curseur
-// de l'interface sait afficher (5 positions par demi-plage). L'égalité bit à bit
-// est ici le sujet : `n * kPhOffsetStep` est la forme canonique produite par la
-// fonction elle-même, et la pré-condition est vérifiée avant d'en conclure.
+// Toute sortie est EXACTEMENT un multiple entier du pas — c'est ce que le
+// curseur de l'interface sait afficher. L'égalité bit à bit est ici le sujet :
+// `n * kPhOffsetStep` est la forme canonique produite par la fonction
+// elle-même. ⚠️ feature-168 : le domaine balayé dépasse largement l'ancienne
+// borne ±0,50 (plus de clamp, cf. test_arrondi_ne_clampe_plus_au_dela_de_l_ancienne_borne) —
+// l'entier `n` n'est donc PLUS borné à [-5 ; 5], seule sa forme canonique compte.
 void test_arrondi_toute_sortie_est_un_multiple_exact_du_pas(void) {
-  for (int i = -120; i <= 120; ++i) {
+  for (int i = -1500; i <= 1500; ++i) {
     const float r = roundPhOffsetToStep((float)i * 0.01f);
     const int n = (int)lrintf(r / kPhOffsetStep);
     char msg[144];
     snprintf(msg, sizeof(msg), "x=%.3f -> %.9f (n=%d)", (double)i * 0.01, (double)r, n);
-    TEST_ASSERT_TRUE_MESSAGE(n >= -5 && n <= 5, msg);
     TEST_ASSERT_TRUE_MESSAGE(r == (float)n * kPhOffsetStep, msg);
   }
 }
@@ -654,10 +668,12 @@ void test_derives_valeurs_numeriques_exactes(void) {
                                    "refus d'ALCALINISER [CORRIGE] — 7,60 et non "
                                    "7,70 : au-dela, on alcaliniserait une eau "
                                    "dont le chlore est deja declare inactif");
-  TEST_ASSERT_FLOAT_WITHIN_MESSAGE(1e-6f, 6.20f, kPhFloorRawHard,
-                                   "butee basse [BRUT]");
-  TEST_ASSERT_FLOAT_WITHIN_MESSAGE(1e-6f, 8.10f, kPhCeilingRawHard,
-                                   "butee haute [BRUT]");
+  TEST_ASSERT_FLOAT_WITHIN_MESSAGE(1e-6f, 5.50f, kPhFloorRawHard,
+                                   "filet bas [BRUT] — ADR-0098, feature-168 : "
+                                   "FIXE, n'est plus derive de l'offset");
+  TEST_ASSERT_FLOAT_WITHIN_MESSAGE(1e-6f, 8.50f, kPhCeilingRawHard,
+                                   "filet haut [BRUT] — ADR-0098, feature-168 : "
+                                   "FIXE, n'est plus derive de l'offset");
   TEST_ASSERT_FLOAT_WITHIN_MESSAGE(1e-6f, 7.60f, kPhOrpInhibit,
                                    "inhibition ORP [CORRIGE]");
   TEST_ASSERT_FLOAT_WITHIN_MESSAGE(1e-6f, 7.00f, kPhLowWarn,
@@ -684,8 +700,15 @@ void test_derives_source_unique_et_marges(void) {
   TEST_ASSERT_FLOAT_WITHIN(1e-6f, 0.10f, kPhOrpInhibitMargin);
   TEST_ASSERT_FLOAT_WITHIN(kEps, kPhFloorCorrected, kPhTargetMin - kPhSafetyMargin);
   TEST_ASSERT_FLOAT_WITHIN(kEps, kPhCeilingCorrected, kPhTargetMax + kPhHighMargin);
-  TEST_ASSERT_FLOAT_WITHIN(kEps, kPhFloorRawHard, kPhFloorCorrected - kPhOffsetMax);
-  TEST_ASSERT_FLOAT_WITHIN(kEps, kPhCeilingRawHard, kPhOrpInhibit + kPhOffsetMax);
+  // feature-168 (ADR-0098) : les filets BRUTS ne DÉRIVENT plus de l'offset —
+  // ils sont ÉGAUX aux deux absolus à justification chimique propre, sans
+  // AUCUNE trace d'offset dans leur définition (condition C1 du gate).
+  TEST_ASSERT_FLOAT_WITHIN_MESSAGE(
+      kEps, kPhFloorRawHard, kPhRawFloorAbsolute,
+      "le filet bas doit etre EGAL a l'absolu chimique, pas derive de l'offset");
+  TEST_ASSERT_FLOAT_WITHIN_MESSAGE(
+      kEps, kPhCeilingRawHard, kPhRawCeilingAbsolute,
+      "le filet haut doit etre EGAL a l'absolu chimique, pas derive de l'offset");
   // La plage de consigne doit être un nombre ENTIER de pas : sinon le curseur de
   // l'interface ne peut pas atteindre la borne haute (4 positions : 7,2 à 7,5).
   const float positions = (kPhTargetMax - kPhTargetMin) / kPhTargetStep;
@@ -737,7 +760,7 @@ void test_derives_la_butee_brute_basse_ne_mord_jamais_la_premiere(void) {
   TEST_ASSERT_EQUAL_INT_MESSAGE(101 * 201, couples, "balayage incomplet");
 }
 
-// Miroir HAUT : la butée BRUTE haute (8,10) ne peut pas mordre avant
+// Miroir HAUT : le filet BRUT haut (8,50) ne peut pas mordre avant
 // l'inhibition ORP sur le corrigé (7,60), pour tout offset du domaine — les deux
 // forment la garde ORP, dont la butée est le filet contre un offset NÉGATIF faux.
 void test_derives_la_butee_brute_haute_ne_mord_jamais_avant_l_inhibition_orp(void) {
@@ -785,111 +808,145 @@ void test_derives_le_plafond_ne_depasse_jamais_l_inhibition_orp(void) {
   }
 }
 
-// *** SYMÉTRIQUE EXACT du balayage de la butée BASSE *** — la butée BRUTE haute
-// (8,10) ne doit JAMAIS mordre STRICTEMENT avant le plafond corrigé (7,60), sur
-// tout le domaine d'offset autorisé, À L'ENTRÉE comme À LA RELÂCHE. Sinon la
-// butée rendrait le plafond inopérant : c'est un offset légitime qui serait puni,
-// et le refus alimenterait le compteur des 3 refus / 24 h jusqu'à la bascule
-// fail-closed. Pas de 0,10 = le pas de réglage réel de l'offset (kPhOffsetStep) ;
-// les valeurs intermédiaires sont inatteignables depuis l'UI, l'API et MQTT.
+// ⚠️ SUPPRIMÉ (feature-168, révision C11 du gate pool-chemistry) :
+// l'ancien test_derives_la_butee_brute_haute_ne_mord_jamais_avant_le_plafond_corrige
+// balayait le domaine kPhOffsetMin → kPhOffsetMax en affirmant que la butée
+// BRUTE haute ne mord JAMAIS avant le plafond CORRIGÉ, pour tout offset du
+// domaine autorisé. Cet invariant est devenu FAUX et ne peut plus être vrai :
+// l'offset n'a plus de domaine borné, donc aucun filet FIXE ne peut plus
+// dominer TOUS les offsets possibles (c'est exactement l'objet de la zone
+// d'impasse, C5/C5bis). Remplacé ci-dessous par l'INDÉPENDANCE : le filet BRUT
+// se déclenche EXACTEMENT à 5,50 / 8,50, QUEL QUE SOIT L'OFFSET — l'offset
+// n'entre simplement plus dans sa décision.
 //
-// Le balayage est BORNÉ PAR LE DOMAINE (kPhOffsetMin → kPhOffsetMax), et non par
-// un ±5 en dur : élargir les bornes d'offset sans revoir la butée doit faire
-// échouer CE test, pas passer dans un angle mort.
-void test_derives_la_butee_brute_haute_ne_mord_jamais_avant_le_plafond_corrige(void) {
-  const int pas = (int)lrintf((kPhOffsetMax - kPhOffsetMin) / kPhOffsetStep);
-  TEST_ASSERT_TRUE_MESSAGE(pas >= 1, "domaine d'offset vide");
-  TEST_ASSERT_FLOAT_WITHIN_MESSAGE(
-      kEps, kPhOffsetMax, kPhOffsetMin + (float)pas * kPhOffsetStep,
-      "le domaine d'offset doit tomber juste sur le pas, sinon la borne haute "
-      "n'est pas balayee");
-  int evaluations = 0;
-  for (int o = 0; o <= pas; ++o) {
-    const float offset = kPhOffsetMin + (float)o * kPhOffsetStep;
-    for (int r = 700; r <= 900; ++r) {
+// ⚠️ SUPPRIMÉ AUSSI (motif identique, approuvé par le gate) :
+// test_derives_egalite_de_la_butee_haute_et_du_plafond_a_offset_min —
+// « l'égalité filet/plafond dérivait d'une borne d'offset supprimée par
+// feature-168 » (kPhOffsetMin n'existe plus, et l'égalité qu'il vérifiait —
+// kPhCeilingRawHard == kPhCeilingCorrected − kPhOffsetMin — n'a plus de sens :
+// le filet est maintenant FIXE à 8,50, indépendamment de tout offset).
+
+// *** INDÉPENDANCE DU FILET BRUT (feature-168, révision C11 du gate) ***
+// Balayage offset ∈ [−14 ; +14] × pH BRUT ∈ [4 ; 10] (critère d'acceptation de
+// la spec) : le filet BAS se déclenche EXACTEMENT à 5,50, le filet HAUT
+// EXACTEMENT à 8,50, et ceci QUEL QUE SOIT L'OFFSET balayé — la décision ne
+// dépend QUE du BRUT, jamais du CORRIGÉ. C'est ce qui remplace l'ancien
+// invariant « ne mord jamais avant » (devenu faux au-delà des deux seuils
+// d'impasse) : ici on ne demande plus une RELATION entre deux seuils, mais
+// l'INDÉPENDANCE totale du filet vis-à-vis de l'offset.
+// *** C'EST CE TEST QUI TUE LA MUTATION (b) *** : si kPhFloorRawHard ou
+// kPhCeilingRawHard redevenaient dérivés d'un offset (ex. littéral recalé sur
+// un ancien kPhOffsetMax réintroduit), le point de déclenchement observé
+// dévierait de 5,50/8,50 et cette comparaison EXACTE casserait.
+void test_filet_brut_independant_de_l_offset_sur_tout_le_domaine(void) {
+  // Pré-condition : les deux valeurs attendues sont bien celles des constantes
+  // à justification chimique propre (ADR-0098), pas des littéraux arbitraires
+  // choisis pour faire passer ce test.
+  TEST_ASSERT_FLOAT_WITHIN(1e-6f, 5.50f, kPhFloorRawHard);
+  TEST_ASSERT_FLOAT_WITHIN(1e-6f, 8.50f, kPhCeilingRawHard);
+
+  int couples = 0;
+  for (int o = -1400; o <= 1400; o += 100) {  // pas 0,10 (kPhOffsetStep) sur [-14;14]
+    const float offset = (float)o * 0.01f;
+    for (int r = 400; r <= 1000; ++r) {       // pH BRUT [4 ; 10], pas 0,01
       const float brut = (float)r * 0.01f;
-      const float corrige = applyPhOffset(brut, offset);
-      for (int w = 0; w <= 1; ++w) {
-        const bool arme = (w != 0);
-        if (phGuardBlocksAbove(brut, kPhCeilingRawHard, arme)) {
-          char msg[192];
-          snprintf(msg, sizeof(msg),
-                   "offset=%+.2f brut=%.2f corrige=%.6f arme=%d : la butee BRUTE "
-                   "mord alors que le plafond corrige laisse passer",
-                   (double)offset, (double)brut, (double)corrige, w);
-          TEST_ASSERT_TRUE_MESSAGE(
-              phGuardBlocksAbove(corrige, kPhCeilingCorrected, arme), msg);
-        }
-        ++evaluations;
-      }
+      char msg[160];
+      snprintf(msg, sizeof(msg), "offset=%+.2f brut=%.2f", (double)offset, (double)brut);
+      // Le filet BAS mord SSI brut < 5,50 — jamais influencé par l'offset.
+      TEST_ASSERT_EQUAL_MESSAGE(brut < kPhFloorRawHard,
+                                phGuardBlocksBelow(brut, kPhFloorRawHard, false), msg);
+      // Le filet HAUT mord SSI brut > 8,50 — jamais influencé par l'offset.
+      TEST_ASSERT_EQUAL_MESSAGE(brut > kPhCeilingRawHard,
+                                phGuardBlocksAbove(brut, kPhCeilingRawHard, false), msg);
+      ++couples;
     }
   }
-  TEST_ASSERT_EQUAL_INT_MESSAGE((pas + 1) * 201 * 2, evaluations, "balayage incomplet");
+  TEST_ASSERT_EQUAL_INT_MESSAGE(29 * 601, couples, "balayage incomplet");
 }
 
-// CAS D'ÉGALITÉ (offset −0,50) : les deux gardes hautes mordent au MÊME point,
-// 8,10 brut ⟺ 7,60 corrigé, et se relâchent ensemble (8,05 ⟺ 7,55). L'égalité
-// est FRAGILE par construction — elle relie deux expressions flottantes
-// DISTINCTES — donc sa pré-condition est vérifiée bit à bit AVANT d'être
-// exploitée, comme partout ailleurs dans ce fichier.
-//
-// ÉCART D'UN ULP, DOCUMENTÉ ET FAIL-CLOSED : les CONSTANTES sont égales au bit
-// près, mais l'aller-retour brut → corrigé ne l'est pas. kPhCeilingCorrected +
-// 0,50 arrondit vers le HAUT (cas d'égalité round-to-even), si bien que
-// 8,10 brut − 0,50 vaut 7,6000004 — un ulp AU-DESSUS du plafond. Conséquence :
-// pile au point d'égalité, c'est le plafond CORRIGÉ qui mord le premier, d'un
-// ulp (4,8e-7 pH, six ordres sous le bruit du filtre). C'est le bon côté : la
-// butée brute ne devance JAMAIS le plafond, ce qui est l'invariant testé.
-void test_derives_egalite_de_la_butee_haute_et_du_plafond_a_offset_min(void) {
-  // Pré-condition 1 — les deux constantes coïncident au bit près.
-  TEST_ASSERT_TRUE_MESSAGE(
-      kPhCeilingRawHard == kPhCeilingCorrected - kPhOffsetMin,
-      "pre-condition : la butee brute haute doit valoir le plafond corrige "
-      "moins l'offset minimal, AU BIT PRES");
-  // Pré-condition 2 — les littéraux décimaux utilisés ci-dessous sont bien les
-  // mêmes flottants que les constantes (piège du littéral 7,55).
-  TEST_ASSERT_TRUE_MESSAGE(kPhCeilingRawHard == 8.10f,
-                           "pre-condition : 8.10f doit etre kPhCeilingRawHard");
-  TEST_ASSERT_TRUE_MESSAGE(kPhCeilingCorrected == 7.60f,
-                           "pre-condition : 7.60f doit etre kPhCeilingCorrected");
+// =============================================================================
+// G6bis — ZONE D'IMPASSE DE RÉGULATION (feature-168, C5 + C5bis)
+// =============================================================================
+// isPhRegulationImpasseLow/High NE BLOQUENT RIEN par elles-mêmes : elles
+// DISENT qu'au-delà d'un seuil d'offset, le filet BRUT (fixe) mord
+// STRUCTURELLEMENT avant que la régulation puisse atteindre son seuil
+// CORRIGÉ. Logique pure, testée ici aux bornes EXACTES.
 
-  const float offset = kPhOffsetMin;
+// Côté BAS : kPhOffsetImpasseThreshold = kPhFloorCorrected − kPhRawFloorAbsolute
+// (= 1,20). Entrée STRICTE (`offset > seuil`).
+void test_impasse_basse_valeur_du_seuil_calcule(void) {
+  TEST_ASSERT_FLOAT_WITHIN(1e-4f, 1.20f, kPhOffsetImpasseThreshold);
+}
 
-  // Un centième SOUS le point commun : aucune des deux gardes ne mord.
-  TEST_ASSERT_FALSE(phGuardBlocksAbove(8.09f, kPhCeilingRawHard, false));
-  TEST_ASSERT_FALSE(
-      phGuardBlocksAbove(applyPhOffset(8.09f, offset), kPhCeilingCorrected, false));
-  // Un centième AU-DESSUS : les deux mordent.
-  TEST_ASSERT_TRUE(phGuardBlocksAbove(8.11f, kPhCeilingRawHard, false));
-  TEST_ASSERT_TRUE(
-      phGuardBlocksAbove(applyPhOffset(8.11f, offset), kPhCeilingCorrected, false));
+void test_impasse_basse_pile_au_seuil_n_est_pas_en_impasse(void) {
+  TEST_ASSERT_FALSE(isPhRegulationImpasseLow(kPhOffsetImpasseThreshold));
+}
 
-  // PILE au point commun : entrée STRICTE côté brut (`v > seuil`), et le corrigé
-  // mord d'un ulp d'avance — jamais l'inverse.
-  TEST_ASSERT_FALSE(phGuardBlocksAbove(kPhCeilingRawHard, kPhCeilingRawHard, false));
-  TEST_ASSERT_TRUE_MESSAGE(
-      phGuardBlocksAbove(applyPhOffset(kPhCeilingRawHard, offset),
-                         kPhCeilingCorrected, false),
-      "au point d'egalite, c'est le plafond corrige qui doit mordre (fail-closed)");
-  // Et l'avance est bien d'un ulp, pas d'un centième : les deux gardes sont
-  // effectivement alignées à l'echelle de la mesure.
-  TEST_ASSERT_FLOAT_WITHIN_MESSAGE(
-      1e-5f, kPhCeilingCorrected, applyPhOffset(kPhCeilingRawHard, offset),
-      "les deux gardes doivent mordre au meme point a l'echelle de la mesure");
+void test_impasse_basse_un_centieme_au_dela_est_en_impasse(void) {
+  TEST_ASSERT_TRUE(isPhRegulationImpasseLow(kPhOffsetImpasseThreshold + 0.01f));
+}
 
-  // RELÂCHE — même alignement, exprimé par les EXPRESSIONS de relâche.
-  const float relacheBrute = kPhCeilingRawHard - kPhGuardReleaseHysteresis;  // 8,05
-  assertOrdreStrict(relacheBrute, kPhCeilingRawHard, "relache brute < butee brute");
-  TEST_ASSERT_FALSE_MESSAGE(phGuardBlocksAbove(relacheBrute, kPhCeilingRawHard, true),
-                            "la butee brute relache a `butee - hysteresis`");
-  TEST_ASSERT_TRUE_MESSAGE(
-      phGuardBlocksAbove(applyPhOffset(relacheBrute, offset), kPhCeilingCorrected, true),
-      "au point de relache commun, le plafond corrige doit tenir un ulp de plus "
-      "(fail-closed) — jamais relacher AVANT la butee brute");
-  // Un centième plus bas, les deux ont relâché : l'alignement vaut aussi en sortie.
-  TEST_ASSERT_FALSE(phGuardBlocksAbove(8.04f, kPhCeilingRawHard, true));
-  TEST_ASSERT_FALSE(
-      phGuardBlocksAbove(applyPhOffset(8.04f, offset), kPhCeilingCorrected, true));
+void test_impasse_basse_un_centieme_en_deca_n_est_pas_en_impasse(void) {
+  TEST_ASSERT_FALSE(isPhRegulationImpasseLow(kPhOffsetImpasseThreshold - 0.01f));
+}
+
+// Offsets usuels (zone non-impasse) et extrêmes (zone d'impasse confirmée) —
+// aucun refus fantôme sur NaN.
+void test_impasse_basse_offsets_usuels_et_extremes(void) {
+  TEST_ASSERT_FALSE(isPhRegulationImpasseLow(0.0f));
+  TEST_ASSERT_FALSE(isPhRegulationImpasseLow(0.50f));
+  TEST_ASSERT_FALSE(isPhRegulationImpasseLow(-14.0f));
+  TEST_ASSERT_TRUE(isPhRegulationImpasseLow(1.50f));
+  TEST_ASSERT_TRUE(isPhRegulationImpasseLow(14.0f));
+  TEST_ASSERT_FALSE_MESSAGE(isPhRegulationImpasseLow(NAN),
+                           "NaN ne doit jamais fabriquer une impasse fantome");
+}
+
+// Côté HAUT (C5bis) : kPhOffsetImpasseThresholdHigh = kPhCeilingCorrected −
+// kPhRawCeilingAbsolute (= −0,90, NÉGATIF). Entrée LARGE (`offset <= seuil`,
+// miroir intentionnel de la stricte du bas — un offset NUL ne doit jamais se
+// retrouver des deux côtés à la fois, et l'inclusion ici protège le cas
+// offset == seuil exact, qui EST en impasse côté haut).
+void test_impasse_haute_valeur_du_seuil_calcule(void) {
+  TEST_ASSERT_FLOAT_WITHIN(1e-4f, -0.90f, kPhOffsetImpasseThresholdHigh);
+}
+
+void test_impasse_haute_pile_au_seuil_est_en_impasse(void) {
+  TEST_ASSERT_TRUE(isPhRegulationImpasseHigh(kPhOffsetImpasseThresholdHigh));
+}
+
+void test_impasse_haute_un_centieme_au_dela_n_est_pas_en_impasse(void) {
+  // "au-delà" côté haut = PLUS GRAND (moins négatif) : hors impasse.
+  TEST_ASSERT_FALSE(isPhRegulationImpasseHigh(kPhOffsetImpasseThresholdHigh + 0.01f));
+}
+
+void test_impasse_haute_un_centieme_en_deca_est_en_impasse(void) {
+  // "en deçà" côté haut = PLUS NÉGATIF : toujours en impasse.
+  TEST_ASSERT_TRUE(isPhRegulationImpasseHigh(kPhOffsetImpasseThresholdHigh - 0.01f));
+}
+
+void test_impasse_haute_offsets_usuels_et_extremes(void) {
+  TEST_ASSERT_FALSE(isPhRegulationImpasseHigh(0.0f));
+  TEST_ASSERT_FALSE(isPhRegulationImpasseHigh(-0.50f));
+  TEST_ASSERT_FALSE(isPhRegulationImpasseHigh(14.0f));
+  TEST_ASSERT_TRUE(isPhRegulationImpasseHigh(-1.50f));
+  TEST_ASSERT_TRUE(isPhRegulationImpasseHigh(-14.0f));
+  TEST_ASSERT_FALSE_MESSAGE(isPhRegulationImpasseHigh(NAN),
+                           "NaN ne doit jamais fabriquer une impasse fantome");
+}
+
+// Les deux zones d'impasse ne se CHEVAUCHENT jamais (un offset ne peut pas être
+// simultanément "trop grand" et "trop négatif") — l'ASYMÉTRIE des deux seuils
+// (1,20 / −0,90) le garantit structurellement, vérifiée ici par construction.
+void test_impasse_les_deux_zones_ne_se_chevauchent_jamais(void) {
+  for (int o = -1500; o <= 1500; o += 10) {
+    const float offset = (float)o * 0.01f;
+    const bool low = isPhRegulationImpasseLow(offset);
+    const bool high = isPhRegulationImpasseHigh(offset);
+    char msg[80];
+    snprintf(msg, sizeof(msg), "offset=%+.2f low=%d high=%d", (double)offset, low, high);
+    TEST_ASSERT_FALSE_MESSAGE(low && high, msg);
+  }
 }
 
 // =============================================================================
@@ -1035,22 +1092,26 @@ static bool acideRefuse(float brut, float offset) {
 // TABLE de la spec : (offset −0,50 / 0 / +0,50) × (6,19 / 6,20 / 6,21 / 6,69 /
 // 6,71) en pH BRUT. Le verdict attendu est calculé à la main, seuil par seuil.
 void test_scenario_table_offset_x_brut_pour_le_dosage_acide(void) {
-  // Pré-condition flottante EXPLOITÉE par la ligne (+0,50 ; 6,20) : le corrigé
+  // Pré-condition flottante EXPLOITÉE par la ligne (+0,50 ; 6,20, valeur de
+  // table sans rapport avec le filet brut fixe 5,50) : le corrigé
   // doit tomber EXACTEMENT sur le seuil, sinon la ligne testerait autre chose que
-  // la frontière stricte.
-  TEST_ASSERT_TRUE_MESSAGE(applyPhOffset(6.20f, kPhOffsetMax) == kPhFloorCorrected,
+  // la frontière stricte. ⚠️ 0,50 n'est PLUS kPhOffsetMax (disparu, feature-168) :
+  // c'est ici un offset ORDINAIRE, choisi comme cas de table ; kPhOffsetUnusualAbs
+  // partage numériquement sa valeur (0,50) mais n'est pas, par construction, le
+  // point d'égalité du filet brut — celui-ci (5,50) est FIXE et n'intervient plus
+  // dans cette table (tous les brut testés ici, 6,19 à 6,71, restent au-dessus).
+  TEST_ASSERT_TRUE_MESSAGE(applyPhOffset(6.20f, kPhOffsetUnusualAbs) == kPhFloorCorrected,
                            "pre-condition : 6,20 brut + 0,50 doit valoir le seuil "
                            "corrige AU BIT PRES");
   struct { float offset; float brut; bool refuse; const char* pourquoi; } cas[] = {
-      // offset +0,50 : le corrigé et la butée se rejoignent PILE (marge nulle,
-      // par construction — c'est la définition de kPhFloorRawHard).
-      {  0.50f, 6.19f, true,  "brut sous la butee ET corrige 6,69 sous 6,70" },
-      {  0.50f, 6.20f, false, "brut pile a la butee, corrige pile au seuil" },
+      // offset +0,50 : valeur de table (plus "la borne maximale", feature-168).
+      {  0.50f, 6.19f, true,  "corrige 6,69 sous le seuil 6,70 (filet brut 5,50 hors jeu)" },
+      {  0.50f, 6.20f, false, "corrige pile au seuil 6,70 (filet brut 5,50 hors jeu)" },
       {  0.50f, 6.21f, false, "corrige 6,71 au-dessus du seuil" },
       {  0.50f, 6.69f, false, "corrige 7,19 : plein fonctionnement nominal" },
       {  0.50f, 6.71f, false, "corrige 7,21 : la consigne 7,20 est atteignable" },
       // offset nul : brut == corrigé, seul le seuil 6,70 décide.
-      {  0.00f, 6.19f, true,  "brut sous la butee 6,20" },
+      {  0.00f, 6.19f, true,  "6,19 < 6,70 : le seuil corrige mord (filet brut 5,50 hors jeu)" },
       {  0.00f, 6.20f, true,  "6,20 < 6,70 : le seuil corrige mord" },
       {  0.00f, 6.21f, true,  "6,21 < 6,70" },
       {  0.00f, 6.69f, true,  "6,69 < 6,70 : frontiere stricte" },
@@ -1075,9 +1136,11 @@ void test_scenario_table_offset_x_brut_pour_le_dosage_acide(void) {
 // *** CRITÈRE D'ACCEPTATION *** — offset +0,50 et consigne 7,20 (l'installation
 // du 25/08/2026) : AUCUN refus en fonctionnement nominal, c'est-à-dire sur toute
 // la descente du pH corrigé jusqu'à la bande de relâche du seuil (6,75). C'est
-// exactement ce que l'ancien plancher brut fixe interdisait.
-void test_scenario_offset_max_et_consigne_mini_ne_refusent_jamais_en_nominal(void) {
-  const float offset = kPhOffsetMax;
+// exactement ce que l'ancien plancher brut fixe interdisait. ⚠️ 0,50 n'est plus
+// "la borne maximale" (disparue, feature-168) : c'est ici l'offset HISTORIQUE de
+// l'incident, conservé comme cas de non-régression.
+void test_scenario_offset_050_et_consigne_mini_ne_refusent_jamais_en_nominal(void) {
+  const float offset = kPhOffsetUnusualAbs;
   bool bloqueCorrige = false, bloqueBrut = false;
   for (int c = 720; c >= 675; --c) {           // corrigé de 7,20 à 6,75
     const float corrige = (float)c * 0.01f;
@@ -1136,7 +1199,7 @@ void test_scenario_inhibition_orp_sur_le_corrige_avec_relache_a_755(void) {
 // légitime ne doit pas la déclencher — et un pH RÉEL de 7,61 la déclenche quel
 // que soit l'offset, ce qui est tout l'objet du changement de référentiel.
 void test_scenario_inhibition_orp_suit_le_ph_reel_et_non_la_lecture_brute(void) {
-  const float offsets[] = {kPhOffsetMin, -0.20f, 0.0f, 0.20f, kPhOffsetMax};
+  const float offsets[] = {-kPhOffsetUnusualAbs, -0.20f, 0.0f, 0.20f, kPhOffsetUnusualAbs};
   for (unsigned i = 0; i < sizeof(offsets) / sizeof(offsets[0]); ++i) {
     const float offset = offsets[i];
     char msg[128];
@@ -1153,15 +1216,16 @@ void test_scenario_inhibition_orp_suit_le_ph_reel_et_non_la_lecture_brute(void) 
   }
 }
 
-// La butée BRUTE haute est le filet contre un offset NÉGATIF faux : une eau
-// réellement à 8,15 affichée 7,65 (offset −0,50) est vue par les DEUX gardes ORP.
+// Le filet BRUT haut (FIXE, 8,50 depuis feature-168) est le dernier recours
+// contre un offset NÉGATIF faux : une eau réellement à 8,55 affichée 7,65
+// (offset −0,90) est vue par les DEUX gardes ORP.
 void test_scenario_butee_brute_haute_rattrape_un_offset_negatif_faux(void) {
-  const float brut = 8.15f;
-  const float offset = kPhOffsetMin;
+  const float brut = 8.55f;
+  const float offset = -0.90f;
   const float affiche = applyPhOffset(brut, offset);  // 7,65
   TEST_ASSERT_FLOAT_WITHIN(0.005f, 7.65f, affiche);
   TEST_ASSERT_TRUE_MESSAGE(phGuardBlocksAbove(brut, kPhCeilingRawHard, false),
-                           "butee brute haute : 8,15 > 8,10");
+                           "filet brut haut : 8,55 > 8,50");
   TEST_ASSERT_TRUE_MESSAGE(phGuardBlocksAbove(affiche, kPhOrpInhibit, false),
                            "seuil corrige : 7,65 > 7,60");
   // TROISIÈME garde depuis l'abaissement du plafond : le pH+ est refusé lui aussi.
@@ -1229,8 +1293,8 @@ int main(int, char**) {
   RUN_TEST(test_arrondi_les_valeurs_sur_la_grille_sont_inchangees);
   RUN_TEST(test_arrondi_au_plus_proche);
   RUN_TEST(test_arrondi_valeurs_a_mi_chemin_s_ecartent_de_zero);
-  RUN_TEST(test_arrondi_borne_aux_limites_d_offset);
-  RUN_TEST(test_arrondi_le_resultat_ne_sort_jamais_des_bornes);
+  RUN_TEST(test_arrondi_ne_clampe_plus_au_dela_de_l_ancienne_borne);
+  RUN_TEST(test_arrondi_reste_a_un_demi_pas_de_l_entree_sur_tout_le_domaine);
   RUN_TEST(test_arrondi_ne_produit_jamais_de_zero_negatif);
   RUN_TEST(test_arrondi_aucun_zero_negatif_sur_tout_le_domaine);
   RUN_TEST(test_arrondi_offset_nan_devient_zero_neutre);
@@ -1244,8 +1308,19 @@ int main(int, char**) {
   RUN_TEST(test_derives_la_butee_brute_basse_ne_mord_jamais_la_premiere);
   RUN_TEST(test_derives_la_butee_brute_haute_ne_mord_jamais_avant_l_inhibition_orp);
   RUN_TEST(test_derives_le_plafond_ne_depasse_jamais_l_inhibition_orp);
-  RUN_TEST(test_derives_la_butee_brute_haute_ne_mord_jamais_avant_le_plafond_corrige);
-  RUN_TEST(test_derives_egalite_de_la_butee_haute_et_du_plafond_a_offset_min);
+  RUN_TEST(test_filet_brut_independant_de_l_offset_sur_tout_le_domaine);
+  // G6bis — zone d'impasse de regulation (feature-168, C5 + C5bis)
+  RUN_TEST(test_impasse_basse_valeur_du_seuil_calcule);
+  RUN_TEST(test_impasse_basse_pile_au_seuil_n_est_pas_en_impasse);
+  RUN_TEST(test_impasse_basse_un_centieme_au_dela_est_en_impasse);
+  RUN_TEST(test_impasse_basse_un_centieme_en_deca_n_est_pas_en_impasse);
+  RUN_TEST(test_impasse_basse_offsets_usuels_et_extremes);
+  RUN_TEST(test_impasse_haute_valeur_du_seuil_calcule);
+  RUN_TEST(test_impasse_haute_pile_au_seuil_est_en_impasse);
+  RUN_TEST(test_impasse_haute_un_centieme_au_dela_n_est_pas_en_impasse);
+  RUN_TEST(test_impasse_haute_un_centieme_en_deca_est_en_impasse);
+  RUN_TEST(test_impasse_haute_offsets_usuels_et_extremes);
+  RUN_TEST(test_impasse_les_deux_zones_ne_se_chevauchent_jamais);
   // G7 — santé de la sonde
   RUN_TEST(test_sonde_cas_nominal_installation_reelle_est_saine);
   RUN_TEST(test_sonde_pentes_parfaites_et_zero_nul_sont_sains);
@@ -1267,7 +1342,7 @@ int main(int, char**) {
   RUN_TEST(test_gate_ack_explicite_neutralise_toutes_les_combinaisons);
   // G9 — scénarios de la refonte
   RUN_TEST(test_scenario_table_offset_x_brut_pour_le_dosage_acide);
-  RUN_TEST(test_scenario_offset_max_et_consigne_mini_ne_refusent_jamais_en_nominal);
+  RUN_TEST(test_scenario_offset_050_et_consigne_mini_ne_refusent_jamais_en_nominal);
   RUN_TEST(test_scenario_ph_plus_refuse_au_dessus_du_plafond_et_jamais_en_dessous);
   RUN_TEST(test_scenario_inhibition_orp_sur_le_corrige_avec_relache_a_755);
   RUN_TEST(test_scenario_inhibition_orp_suit_le_ph_reel_et_non_la_lecture_brute);

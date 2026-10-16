@@ -51,6 +51,7 @@ contexte d'origine.
 | Visualiser une mesure sur une échelle | `.gauge` (§5.8) | Carte d'accueil |
 | Expliquer pourquoi une mesure n'est pas représentative | `.sensor-badge` (§5.9) | Carte d'accueil |
 | Alerter sur une condition bloquante ou un risque | `.callout` (§5.10) | Les deux |
+| Distinguer deux niveaux de gravité dans un même `.callout`, sans empiler deux encadrés, et séparer l'essentiel du détail | `.callout__eyebrow` + `.callout__lead` + `.callout__more` (§5.10bis) | Page de réglage (pH) — généralisable |
 | Commenter un contrôle sans en faire une alerte | `.field__hint` (§5.11) | Les deux, **jamais seul porteur d'une info de sécurité** |
 | Signaler une anomalie de régulation nécessitant un acquittement | `.regul-alert` (§5.12) | Carte d'accueil et page de réglage |
 | Saisir une valeur dans un formulaire de réglage | `.field` (§5.13) | Page de réglage — ⚠️ nom repris **sans styles partagés** par `wizard.html` et `wifi.html` |
@@ -224,6 +225,16 @@ Alerte ou information qui mérite un encadré visible (fond teinté, liseré). R
 messages qui **engagent une action ou une sécurité** (gates `pool-chemistry`, bidon bas,
 calibration en cours). Ne pas en faire un habillage décoratif pour un texte purement
 informatif sans enjeu — c'est à ça que sert `.field__hint` ou `.detail-row`.
+
+### 5.10bis `.callout__eyebrow` / `.callout__lead` / `.callout__more` (v2.82.0, feature-168)
+
+**Contexte d'emploi déclaré : page de réglage pH (`#ph_tune_blocked`), généralisable à tout `.callout` qui doit distinguer deux niveaux de gravité sur le MÊME propos sans empiler deux encadrés.** Né de l'avertissement non bloquant de correction de mesure pH (dépassement de l'ancienne borne ±0,50) : au-delà d'un second seuil (« impasse »), le même encadré doit se faire plus pressant **sans changer de couleur de boîte** (⛔ pas de 3ᵉ couleur — daltonisme, §7) et sans forcer la lecture d'un pavé de texte entier à chaque ouverture.
+
+- **`.callout__eyebrow`** — chapeau de 2-3 mots (reprend la typo de `.product-card__eyebrow` : petite majuscule, 12px, 700), **toujours accompagné du texte** (« Avertissement » / « ⚠ Impasse possible ») : c'est le **mot** qui porte le sens, la variante `--danger` (couleur) ne fait que l'**appuyer**. La boîte `.callout` elle-même reste dans sa variante d'origine (`--warn`) dans les deux cas.
+- **`.callout__lead`** — première phrase, **toujours visible**, ~160 caractères : le constat minimal suffisant pour agir.
+- **`.callout__more`** (`<details>`) — reste du texte, **replié par défaut**, idiome `.tips > summary` (curseur, graisse, `list-style`) + `.linklike` (couleur accent, soulignement, hover) + cible tactile de 10px de padding vertical (`.tips > summary` seul ne la garantit pas — ne pas reconduire ce manque) + `:focus-visible`.
+
+Les trois sous-éléments sont **optionnels indépendamment** : un refus simplement bloquant n'utilise que `.callout__lead` (chapeau et détail masqués) ; l'avertissement non bloquant utilise les trois. Voir [`docs/features/page-ph.md`](features/page-ph.md#avertissement-et-impasse-de-régulation-v2820) pour l'emploi complet et les textes exacts.
 
 ### 5.11 `.field__hint`
 Texte d'aide discret (12px, `--muted`, pas de fond) attaché à **un contrôle précis** juste
@@ -535,7 +546,15 @@ le rendu au lieu de le déduire d'une feuille de style.
 ./tools/ui_shot.sh -w 1024                      # largeur desktop
 ./tools/ui_shot.sh -r '#/ph' -o /tmp/ph.png     # une autre page
 ./tools/ui_shot.sh -f cal_switch_active=true    # forcer un état rare
+./tools/ui_shot.sh -k '#ph_cal_trigger_btn'      # cliquer avant la capture (v2.82.0)
 ```
+
+⚠️ **`-k SELECTEUR` (v2.82.0)** : clique sur l'élément désigné **avant** la capture — indispensable pour
+photographier un écran situé **derrière un bouton** (sous-vue ouverte par JavaScript, panneau
+repliable, modale). Sans elle, ces écrans étaient **invisibles à l'outil**, et un brief
+d'ergonomie les concernant partait **sans image jointe** — ce que `CLAUDE.md` qualifie de brief
+incomplet (voir « L'UX n'est pas optionnel »). Plusieurs `-k` s'enchaînent dans l'ordre donné
+(ex. ouvrir le mode réglage **puis** cliquer sur un onglet à l'intérieur).
 
 ⚠️ **`-f` est le plus utile et le moins évident** : il force un champ de `/data` pour atteindre un
 état qu'on ne peut pas provoquer à la demande. C'est ainsi qu'a été vérifié le rendu **verrouillé**

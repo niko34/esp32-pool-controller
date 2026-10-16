@@ -151,7 +151,13 @@ static void handleGetConfig(AsyncWebServerRequest* request) {
   // feature-156 : +3 clés, horodatage de justesse pH (~82 o au pire cas, voir
   // le décompte jumeau de ws_manager.cpp/_buildConfigJson). La marge 3776
   // l'absorbe sans ajustement.
-  StaticJson<3776> doc;
+  // feature-168 : ph_offset_min/max RETIRÉS (-2 clés, ~-40 o) ; +6 seuils
+  // servies (ph_offset_unusual_abs, ph_offset_impasse_threshold,
+  // ph_offset_impasse_threshold_high, ph_raw_floor_absolute,
+  // ph_raw_ceiling_absolute, ph_offset_confirm_interval_days, ~190 o) et
+  // +ph_offset_stale_cause (chaîne, ~34 o)
+  // → net ≈ +144 o → marge portée à 3968.
+  StaticJson<3968> doc;
   // >>> PARITE-CONFIG:DEBUT
   // CONVENTION NORMATIVE (lue telle quelle par la sentinelle
   // test/test_native_ws_config_parity) : entre ces deux marqueurs, TOUTE clé
@@ -282,7 +288,11 @@ static void handleGetConfig(AsyncWebServerRequest* request) {
   // le dosage n'est JAMAIS recalculé côté client.
   doc["ph_offset_epoch"] = mqttCfg.phOffsetEpoch;
   doc["ph_cal_epoch"]    = mqttCfg.phCalEpoch;
-  doc["ph_offset_stale"] = isPhOffsetStale(mqttCfg.phOffset, mqttCfg.phOffsetSeq, mqttCfg.phCalSeq);
+  // feature-168 : ACCESSEUR UNIQUE, MÊME APPEL TEXTUEL que ws_manager.cpp —
+  // voir le commentaire jumeau là-bas (4ᵉ récidive documentée du piège de
+  // parité de ce projet, même clé, expressions divergentes).
+  doc["ph_offset_stale"]       = phOffsetStaleNow();
+  doc["ph_offset_stale_cause"] = phOffsetStaleCause();
 
   // v2.25.0 (B1) — BORNES DE RÉGLAGE pH servies au client.
   // L'interface construit ses contrôles (positions de la consigne, pas de
@@ -296,8 +306,22 @@ static void handleGetConfig(AsyncWebServerRequest* request) {
   doc["ph_target_min"]  = kPhTargetMin;
   doc["ph_target_max"]  = kPhTargetMax;
   doc["ph_target_step"] = kPhTargetStep;
-  doc["ph_offset_min"]  = kPhOffsetMin;
-  doc["ph_offset_max"]  = kPhOffsetMax;
+  // feature-168 : ph_offset_min/max SUPPRIMÉS — il n'existe plus de borne de
+  // réglage sur la correction de mesure pH (décision utilisateur du
+  // 2026-10-16). ADR-0100 : les textes d'avertissement de l'écran de réglage
+  // (C8/C5bis du gate pool-chemistry) citent des seuils de l'APPAREIL —
+  // aucun ne peut être écrit en dur côté client, donc tous sont servis ici.
+  doc["ph_offset_unusual_abs"]            = kPhOffsetUnusualAbs;
+  doc["ph_offset_impasse_threshold"]      = kPhOffsetImpasseThreshold;
+  doc["ph_offset_impasse_threshold_high"] = kPhOffsetImpasseThresholdHigh;
+  doc["ph_raw_floor_absolute"]            = kPhRawFloorAbsolute;
+  doc["ph_raw_ceiling_absolute"]          = kPhRawCeilingAbsolute;
+  // ⚠️ AJOUTEE EN REVUE (feature-168) : le texte du bandeau de peremption
+  // citait « 30 jours » EN DUR dans data/app.js, pendant que les cinq seuils
+  // voisins venaient d'etre servis. Porter la peremption a 60 jours aurait
+  // change le DECLENCHEMENT sans changer le TEXTE — et rien n'aurait compare
+  // les deux. Meme defaut qu'en C17, laisse intact dans le texte d'a cote.
+  doc["ph_offset_confirm_interval_days"]  = kPhOffsetConfirmIntervalDays;
   doc["ph_offset_step"] = kPhOffsetStep;
   // feature-164 (gate pool-chemistry, 3e passage) — ADR-0100 : un seuil est
   // SERVI, jamais réécrit côté client. `orp_target_min/_max` manquaient ici
@@ -1405,30 +1429,27 @@ static void handleSaveConfig(AsyncWebServerRequest* request, uint8_t* data, size
   // ils remettraient à zéro cyclesToday ou lastStopTime, ce qui permettrait de
   // contourner les limites journalières et la pause anti-cycling par simples
   // enregistrements répétés. L'offset ne touche AUCUN compteur de dosage.
+  // ⚠️ feature-168 : isPhOffsetValid() ne refuse plus qu'une SALUBRITÉ de
+  // domaine (NaN/inf/|offset| > kPhOffsetScaleSpan) — ce n'est plus une borne
+  // de réglage, et le message 400 ci-dessous ne cite donc plus de « plage »
+  // mais le refus de salubrité (décision utilisateur du 2026-10-16).
   if (doc["ph_offset"].is<float>()) {
     float requestedPhOffset = doc["ph_offset"].as<float>();
     if (!isPhOffsetValid(requestedPhOffset)) {
       xSemaphoreGiveRecursive(configMutex);
-      // Plage citée à partir des constantes (jamais de littéral dans le texte) :
-      // le message ne peut pas dériver des bornes réellement appliquées.
-      String oMinStr(kPhOffsetMin, 2); oMinStr.replace('.', ',');
-      String oMaxStr(kPhOffsetMax, 2); oMaxStr.replace('.', ',');
-      systemLogger.warning("Offset pH refusé (hors plage " + oMinStr + " à +" + oMaxStr +
-                           ") : " + String(requestedPhOffset, 2) + " depuis " +
-                           clientIpOf(request));
+      String spanStr(kPhOffsetScaleSpan, 2); spanStr.replace('.', ',');
+      systemLogger.warning("Offset pH refusé (non fini ou hors échelle pH ±" +
+                           spanStr + ") : " + String(requestedPhOffset, 2) +
+                           " depuis " + clientIpOf(request));
       // Drapeau + message : c'est le lambda de complétion qui répondra (voir le
       // commentaire de g_configErrorMessages). Ne PAS répondre ni purger ici.
       (*g_configErrors)[request] = true;
-      // feature-155 (condition 6 du gate pool-chemistry) : l'ancien texte
-      // affirmait « c'est la sonde ou sa calibration EZO qui est en cause » —
-      // exactement le malentendu de l'incident du 2026-08-25 (sonde SAINE
-      // déclarée à remplacer). Un écart hors plage peut venir d'ailleurs
-      // (valeur mal amenée, échelle de lecture confondue) ; le message ne
-      // désigne plus la sonde.
       g_configErrorMessages[request] =
-        String("{\"error\":\"Offset pH hors plage autoris\\u00e9e\",\"message\":\""
-               "Offset pH hors plage autoris\\u00e9e (") + oMinStr + " \\u00e0 +" + oMaxStr +
-        " pH). V\\u00e9rifiez la valeur avant de recommencer.\"}";
+        String("{\"error\":\"Offset pH invalide\",\"message\":\""
+               "Offset pH invalide : la valeur doit \\u00eatre un nombre fini de "
+               "l'\\u00e9chelle pH (\\u00b1") + spanStr +
+        "). Aucune borne de r\\u00e9glage ne s'applique sinon \\u2014 "
+        "v\\u00e9rifiez la valeur avant de recommencer.\"}";
       return;
     }
     // v2.25.0 (B2) — Alignement sur kPhOffsetStep par la MÊME fonction que la

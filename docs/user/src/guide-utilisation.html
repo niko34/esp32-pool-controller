@@ -860,26 +860,46 @@ qu'à l'affichage&nbsp;: c'est elle qui décidera des injections d'acide.</stron
 Un écart lié à votre installation n'est pas un signe que la sonde est
 défaillante — c'est l'objet même de cette correction.</p>
 
-<p>Quatre cas empêchent la correction, et l'appareil vous dit lequel&nbsp;:
+<p>Trois cas empêchent la correction, et l'appareil vous dit lequel&nbsp;:
 la mesure n'est pas assez récente, la <strong>filtration doit tourner depuis
-10&nbsp;minutes</strong> (un décompte s'affiche le temps d'attendre), la sonde
-n'a pas encore ses deux points d'étalonnage (dans ce cas, le geste à faire est
-juste au-dessus), ou l'écart demandé est trop important (au-delà, refaites
-votre test ou vérifiez l'étalonnage de la sonde). Cette correction est
-<strong>différente de la calibration</strong> ci-dessus&nbsp;: la calibration
-règle la sonde elle-même, la correction compense un écart de mesure propre à
-votre installation. Les deux vivent sur le même écran, mais ce sont deux
-gestes distincts.</p>
+10&nbsp;minutes</strong> (un décompte s'affiche le temps d'attendre), ou la
+sonde n'a pas encore ses deux points d'étalonnage (dans ce cas, le geste à
+faire est juste au-dessus). Cette correction est <strong>différente de la
+calibration</strong> ci-dessus&nbsp;: la calibration règle la sonde elle-même,
+la correction compense un écart de mesure propre à votre installation. Les
+deux vivent sur le même écran, mais ce sont deux gestes distincts.</p>
 
 <div class="box-alerte">
-  <span class="box-title">Correction à revoir après un étalonnage</span>
-  <p>Étalonner la sonde change son zéro et sa pente&nbsp;: une correction
-  posée <strong>avant</strong> ne compense plus un réglage qui a changé.
-  Si une correction était en vigueur, l'appareil l'affiche désormais
-  <strong>après</strong> chaque étalonnage avec deux choix clairs&nbsp;:
-  l'annuler, ou la garder. Rien n'est effacé automatiquement — c'est à vous
-  de décider, parce que cette valeur engage le dosage. Tant que vous n'avez
-  pas choisi, la correction continue de s'appliquer.</p>
+  <span class="box-title">Plus de limite sur l'écart, un avertissement à la place (nouveau en 2.82)</span>
+  <p>Il n'y a désormais <strong>plus de limite</strong> à l'écart que vous
+  pouvez amener&nbsp;: toute valeur de l'échelle pH est acceptée. Au-delà de
+  <strong>0,50</strong> d'écart, un message d'avertissement apparaît — il ne
+  bloque pas le bouton «&nbsp;Corriger&nbsp;», il vous rappelle que
+  l'appareil va réguler sur une valeur qu'il ne mesure pas lui-même, et que
+  deux filets de sécurité fixes (5,50 et 8,50 sur la mesure brute) restent le
+  seul rempart si cette correction s'avère fausse. Si l'écart devient très
+  grand, le message vous signale en plus une «&nbsp;impasse de
+  régulation&nbsp;»&nbsp;: la régulation ne pourra pas atteindre sa consigne
+  tant que la correction reste à ce niveau — ce n'est pas bloqué, c'est dit.
+  Revérifiez par un test manuel après tout étalonnage ou intervention sur la
+  pompe de filtration, et au moins une fois par mois.</p>
+</div>
+
+<div class="box-alerte">
+  <span class="box-title">Correction à revoir</span>
+  <p>Trois situations affichent la même bannière, avec un texte adapté à
+  chacune. <strong>Après un étalonnage</strong>&nbsp;: étalonner la sonde
+  change son zéro et sa pente, une correction posée <strong>avant</strong>
+  ne compense plus un réglage qui a changé. <strong>Après 30&nbsp;jours sans
+  revérification</strong>, si la correction est importante&nbsp;: elle
+  compense un décalage de votre installation qui peut avoir changé entre
+  temps. <strong>Au redémarrage</strong>, si l'appareil retrouve en mémoire
+  une correction importante que vous ne reconnaissez pas&nbsp;: c'est le
+  signe d'une mémoire altérée, à vérifier sans attendre. Dans les trois cas,
+  deux choix clairs&nbsp;: l'annuler, ou la garder. Rien n'est effacé
+  automatiquement — c'est à vous de décider, parce que cette valeur engage
+  le dosage. Tant que vous n'avez pas choisi, la correction continue de
+  s'appliquer.</p>
 </div>
 
 <h3>Le chlore (ORP)</h3>

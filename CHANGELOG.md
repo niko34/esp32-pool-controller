@@ -2,6 +2,80 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [2.82.0] - 2026-10-16
+
+### Fonctionnalités
+
+- 🚨 **La correction de mesure pH n'est plus bornée à ±0,50.** Un utilisateur dont l'eau est
+  réellement à pH 8 mais dont la sonde lit 7 (courants de fuite de la pompe de filtration,
+  phénomène déjà documenté de cette installation) peut désormais corriger de **+1,00**, ou de
+  toute autre valeur de l'échelle pH. Décision explicite de l'utilisateur, en connaissance de
+  cause, après qu'une alternative chiffrée (borne large −0,90/+1,20) lui a été présentée et
+  **refusée**.
+  ⚠️ **Contrepartie, assumée et non édulcorée** : au-delà de +1,20 (ou −0,90 côté alcalin), le
+  filet de sécurité sur la mesure **brute** — fixé à 5,50 / 8,50, lui **ne bouge plus** — mord
+  **avant** que la régulation n'atteigne sa consigne. L'appareil ne se ferme plus en silence :
+  il le **dit** (bandeau « ⚠ Impasse possible », alerte `ph_impasse`). Et si la correction
+  elle-même est fausse, le plancher sur le pH *corrigé* ne protège plus (il repose sur la
+  correction suspecte) — le filet qui reste indépendant est celui sur le pH **brut**.
+- Un avertissement non bloquant apparaît dès que la correction dépasse 0,50 (l'ancienne borne,
+  conservée comme **signal** d'un défaut matériel possible, plus comme une limite) ; une
+  correction inhabituelle non reconfirmée depuis 30 jours est signalée ; une valeur relue en
+  mémoire au démarrage sans confirmation de l'utilisateur est signalée comme potentiellement
+  altérée plutôt que silencieusement remise à zéro.
+- Le bouton **« Calibrer »** de l'écran d'étalonnage pH/ORP ne reste plus inactif à l'ouverture
+  sur une sonde déjà étalonnée : le gel des boutons porte désormais sur l'**avancement de la
+  session en cours**, pas sur l'historique de la sonde.
+
+### Firmware
+
+- **Régulation pH** : les deux filets de sécurité sur le pH brut (refus d'acidifier sous 5,50,
+  refus d'alcaliniser au-dessus de 8,50) sont désormais des constantes chimiques **absolues** —
+  ils ne dérivent plus de la borne de réglage de l'offset, qui disparaît. Corrige au passage un
+  défaut d'asymétrie latent (le filet haut protégeant un offset négatif se calculait avec la
+  borne positive).
+  Corrige aussi le défaut qui rendait ce changement nécessaire : la correction de mesure
+  commandait silencieusement les garde-fous.
+- **Régulation pH** : nouvelle « zone d'impasse » — au-delà d'un seuil de correction, les refus
+  du filet brut seul n'incrémentent plus le compteur des 3 refus / 24 h qui ferme la régulation
+  (la bascule en manuel n'y ajouterait aucune protection).
+- **Configuration** : une correction de mesure pH relue en NVS hors salubrité (NaN, infini,
+  valeur aberrante) reste neutralisée à 0 ; une valeur saine mais inhabituelle est désormais
+  **appliquée et signalée**, plus neutralisée silencieusement.
+- **MQTT** : trois alertes ajoutées — `ph_impasse` (impasse de régulation), `ph_offset_unusual`
+  (correction inhabituelle posée explicitement), `ph_offset_stale` (étendue à deux causes
+  nouvelles : péremption à 30 jours, mémoire potentiellement altérée au démarrage).
+- **API** : `GET /get-config` perd `ph_offset_min`/`ph_offset_max` (n'existent plus) et gagne
+  `ph_offset_unusual_abs`, `ph_offset_confirm_interval_days`, `ph_offset_impasse_threshold`,
+  `ph_offset_impasse_threshold_high`, `ph_raw_floor_absolute`, `ph_raw_ceiling_absolute`,
+  `ph_offset_stale_cause`. Le refus HTTP 400 sur `ph_offset` change de nature : ce n'est plus
+  « hors plage de réglage », c'est un refus de salubrité (valeur non finie ou hors échelle pH).
+- **Interface** : l'écran de correction de mesure pH perd sa borne de saisie (l'excursion du
+  pas-à-pas devient l'échelle physique du pH entière) et affiche l'avertissement/l'impasse
+  décrits ci-dessus. Les touches Début/Fin du pas-à-pas sont retirées (elles sautaient à
+  l'ancienne borne).
+- **Interface** : correction du bouton « Calibrer » figé à l'ouverture de l'écran d'étalonnage
+  sur une sonde déjà étalonnée (bug-167) — le gel portait sur `phCalPoints` (historique de la
+  sonde) au lieu de l'avancement de la session en cours.
+
+### Documentation
+
+- `docs/adr/0113-filets-ph-bruts-absolus-independants-de-loffset.md` : nouvel ADR — les deux
+  filets sur le pH brut sont des constantes chimiques absolues, plus dérivées de l'offset.
+- `docs/adr/0114-correction-mesure-ph-sans-borne-de-reglage.md` : nouvel ADR — la correction de
+  mesure pH n'a plus de borne de réglage, décision utilisateur, alternative chiffrée refusée.
+- `docs/adr/0048-...` : statut mis à jour en « partiellement superseded » par les deux ADR
+  ci-dessus.
+- `docs/adr/README.md` : index mis à jour (ADR-0113, ADR-0114, et onze entrées manquantes
+  ajoutées : ADR-0083, 0087 à 0091, 0094, 0095, 0099, 0100, 0101).
+- `docs/API.md`, `docs/MQTT.md`, `docs/subsystems/pump-controller.md`, `docs/subsystems/sensors.md` :
+  mise à jour des seuils, champs et alertes décrits ci-dessus.
+- `docs/features/page-ph.md` : réécriture des sections touchées (excursion du pas-à-pas, refus
+  bloquants, avertissement/impasse, bannière de péremption à trois causes, figeage des boutons
+  de calibration).
+- `docs/DESIGN_SYSTEM.md` : nouveaux composants `.callout__eyebrow` / `.callout__lead` /
+  `.callout__more` (§5.10bis) ; option `-k` de `tools/ui_shot.sh` documentée (§9).
+
 ## [2.81.0] - 2026-10-15
 
 ### Corrections

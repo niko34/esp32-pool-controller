@@ -9,13 +9,21 @@
 //
 // COUVERTURE EXIGÉE PAR LE GATE pool-chemistry (voir spec feature-155) :
 //
-//   🔴 T1 — écart +0,80 ⇒ REFUS OutOfRange, PAS un écrêtage à +0,50. C'est LE
-//        défaut qui vient d'être corrigé : roundPhOffsetToStep() clampe AVANT
-//        d'arrondir, donc tester sa SORTIE rendait ce refus structurellement
-//        inatteignable. On teste ici l'écart DEMANDÉ (phReference - phValueRaw),
-//        jamais la sortie de l'arrondi. Vecteur le plus important de la suite.
+//   🔴 T1 — ⚠️ CHANGEMENT DE NATURE (feature-168) : écart +0,80 ⇒ ACCEPTÉ
+//        TEL QUEL (None), PLUS un écrêtage à +0,50 — la borne de réglage
+//        ±0,50 a disparu (condition C3 du gate, isPhOffsetValid() ne refuse
+//        plus que NaN/infini/|écart| > kPhOffsetScaleSpan = 14). Ce test
+//        reste le plus important de la suite : il verrouille le fait que
+//        l'écart DEMANDÉ (phReference - phValueRaw) est bien ce qui est
+//        appliqué, SANS AUCUN écrêtage résiduel, même au-delà de l'ancienne
+//        borne. roundPhOffsetToStep() n'arrondit plus QUE — elle ne clampe
+//        plus (ph_guard_logic.h) : si un clamp était réintroduit, offsetApplied
+//        redeviendrait figé à ±0,50 malgré un écart plus grand — exactement la
+//        mutation (a) de la spec.
 //
-//   T2 — bornes EXACTES ±0,50 (acceptées) et ±0,51 (refusées).
+//   T2 — ⚠️ CHANGEMENT DE NATURE (feature-168) : ±0,50 et ±0,51 sont
+//        désormais des écarts ORDINAIRES, tous deux ACCEPTÉS (plus de borne à
+//        cette valeur) — seul le pas d'arrondi (0,10) les distingue encore.
 //   T3 — filtration 9 min 59 (refusée) vs 10 min 01 (acceptée),
 //        kPhTuneMinFiltrationMs = 600 000 ms.
 //   T4 — filtration ARRÊTÉE (filtrationRunning=false) ⇒ refus, quel que soit
@@ -46,23 +54,27 @@ static const unsigned long kNominalElapsedMs = kPhTuneMinFiltrationMs + 60000UL;
 static const int kNominalCalPoints = (int)kPhTuneCalPointsMin;  // 2
 
 // =============================================================================
-// T1 — 🔴 LE VECTEUR LE PLUS IMPORTANT : écart +0,80 ⇒ OutOfRange, PAS un
-// écrêtage silencieux à +0,50. roundPhOffsetToStep(0.80) clamperait et
-// renverrait +0,50 (valide) : si le test portait sur CETTE sortie, le refus
-// serait inatteignable. On vérifie ici que le refus porte sur l'écart DEMANDÉ.
+// T1 — 🔴 LE VECTEUR LE PLUS IMPORTANT : écart +0,80 ⇒ ACCEPTÉ TEL QUEL
+// (feature-168), PAS un écrêtage silencieux à +0,50 — la borne de réglage a
+// disparu, et roundPhOffsetToStep() n'arrondit plus QUE (son clamp a été
+// retiré, voir ph_guard_logic.h). On vérifie que l'écart DEMANDÉ (0,80, un
+// multiple exact du pas 0,10) ressort INTACT, et pas figé à l'ancienne borne.
 // =============================================================================
-void test_ecart_080_refuse_out_of_range_pas_ecretage(void) {
+void test_ecart_080_accepte_sans_ecretage(void) {
   const float phReference = kNominalPhValueRaw + 0.80f;  // 7.80
   PhTuneResult r = evaluatePhTune(phReference, kNominalPhValueRaw, true,
                                   kNominalElapsedMs, kNominalCalPoints);
-  TEST_ASSERT_EQUAL((int)PhTuneRefusal::OutOfRange, (int)r.refusal);
-  // Non-régression du piège : si un futur commit réintroduit le bug,
-  // r.refusal redeviendrait None avec offsetApplied figé à +0,50 (écrêté).
-  TEST_ASSERT_FALSE((int)r.refusal == (int)PhTuneRefusal::None);
+  TEST_ASSERT_EQUAL((int)PhTuneRefusal::None, (int)r.refusal);
+  // Non-régression de la mutation (a) de la spec : si un futur commit
+  // réintroduit l'écrêtage dans roundPhOffsetToStep(), offsetApplied
+  // redeviendrait figé à +0,50 au lieu de +0,80.
+  TEST_ASSERT_EQUAL_FLOAT(0.80f, r.offsetApplied);
 }
 
 // =============================================================================
-// T2 — bornes EXACTES ±0,50 acceptées, ±0,51 refusées.
+// T2 — ±0,50 et ±0,51 sont désormais des écarts ORDINAIRES, tous ACCEPTÉS.
+// Seul le pas d'arrondi (0,10) les distingue : 0,50 est un multiple exact
+// (ressort inchangé), 0,51 est arrondi au plus proche multiple (0,50).
 // =============================================================================
 void test_borne_exacte_plus_050_acceptee(void) {
   const float phReference = kNominalPhValueRaw + 0.50f;
@@ -80,18 +92,43 @@ void test_borne_exacte_moins_050_acceptee(void) {
   TEST_ASSERT_EQUAL_FLOAT(-0.50f, r.offsetApplied);
 }
 
-void test_borne_plus_051_refusee(void) {
+void test_ecart_051_accepte_arrondi_050(void) {
   const float phReference = kNominalPhValueRaw + 0.51f;
   PhTuneResult r = evaluatePhTune(phReference, kNominalPhValueRaw, true,
                                   kNominalElapsedMs, kNominalCalPoints);
-  TEST_ASSERT_EQUAL((int)PhTuneRefusal::OutOfRange, (int)r.refusal);
+  TEST_ASSERT_EQUAL((int)PhTuneRefusal::None, (int)r.refusal);
+  TEST_ASSERT_EQUAL_FLOAT(0.50f, r.offsetApplied);
 }
 
-void test_borne_moins_051_refusee(void) {
+void test_ecart_moins_051_accepte_arrondi_moins_050(void) {
   const float phReference = kNominalPhValueRaw - 0.51f;
   PhTuneResult r = evaluatePhTune(phReference, kNominalPhValueRaw, true,
                                   kNominalElapsedMs, kNominalCalPoints);
-  TEST_ASSERT_EQUAL((int)PhTuneRefusal::OutOfRange, (int)r.refusal);
+  TEST_ASSERT_EQUAL((int)PhTuneRefusal::None, (int)r.refusal);
+  TEST_ASSERT_EQUAL_FLOAT(-0.50f, r.offsetApplied);
+}
+
+// =============================================================================
+// T1bis — SALUBRITÉ DE DOMAINE (feature-168, C3/C4) : le SEUL refus OutOfRange
+// encore atteignable porte sur NaN/infini/|écart| > kPhOffsetScaleSpan (14,0,
+// l'échelle pH entière) — plus jamais sur une amplitude "inhabituelle".
+// =============================================================================
+void test_ecart_hors_echelle_refuse_out_of_range(void) {
+  // Écart de 14,1 (au-delà de kPhOffsetScaleSpan) : refusé.
+  PhTuneResult r1 = evaluatePhTune(kNominalPhValueRaw + 14.1f, kNominalPhValueRaw,
+                                   true, kNominalElapsedMs, kNominalCalPoints);
+  TEST_ASSERT_EQUAL((int)PhTuneRefusal::OutOfRange, (int)r1.refusal);
+
+  // Écart de 13,9 (juste EN DEÇÀ de l'échelle) : accepté.
+  PhTuneResult r2 = evaluatePhTune(kNominalPhValueRaw + 13.9f, kNominalPhValueRaw,
+                                   true, kNominalElapsedMs, kNominalCalPoints);
+  TEST_ASSERT_EQUAL((int)PhTuneRefusal::None, (int)r2.refusal);
+
+  // phReference lui-même NaN (test de référence jamais relevé proprement) :
+  // l'écart demandé devient NaN, isPhOffsetValid(NaN) => false => OutOfRange.
+  PhTuneResult r3 = evaluatePhTune(NAN, kNominalPhValueRaw, true,
+                                   kNominalElapsedMs, kNominalCalPoints);
+  TEST_ASSERT_EQUAL((int)PhTuneRefusal::OutOfRange, (int)r3.refusal);
 }
 
 // =============================================================================
@@ -213,11 +250,12 @@ void test_offset_deja_non_nul_ne_change_pas_le_calcul(void) {
 
 int main(int argc, char** argv) {
   UNITY_BEGIN();
-  RUN_TEST(test_ecart_080_refuse_out_of_range_pas_ecretage);
+  RUN_TEST(test_ecart_080_accepte_sans_ecretage);
   RUN_TEST(test_borne_exacte_plus_050_acceptee);
   RUN_TEST(test_borne_exacte_moins_050_acceptee);
-  RUN_TEST(test_borne_plus_051_refusee);
-  RUN_TEST(test_borne_moins_051_refusee);
+  RUN_TEST(test_ecart_051_accepte_arrondi_050);
+  RUN_TEST(test_ecart_moins_051_accepte_arrondi_moins_050);
+  RUN_TEST(test_ecart_hors_echelle_refuse_out_of_range);
   RUN_TEST(test_filtration_9min59_refusee);
   RUN_TEST(test_filtration_10min01_acceptee);
   RUN_TEST(test_filtration_arretee_refusee_malgre_elapsed_eleve);

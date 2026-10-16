@@ -1488,23 +1488,16 @@
                    Calibration. Deux issues explicites, jamais de fermeture silencieuse. -->
               <div class="callout callout--warn" id="ph_tune_stale_banner" role="status" aria-live="polite"
                    hidden style="margin:0 0 16px">
-                <!-- ⚠️ TEXTE IMPOSÉ MOT POUR MOT par le gate pool-chemistry (contre-visite
-                     feature-156). Le brouillon s'intitulait « Correction DÉSACTIVÉE par
-                     l'étalonnage » — C'ÉTAIT FAUX, et faux sur une valeur qui engage le
-                     dosage : `applyPhOffset` continue d'ajouter la correction à CHAQUE
-                     lecture tant que l'utilisateur n'a pas tranché. Un utilisateur rassuré
-                     par « désactivée » pouvait laisser la bannière des SEMAINES pendant que
-                     la correction périmée orientait les injections d'acide.
-                     ⛔ « reste appliquée » et « continue d'orienter le dosage » sont les deux
-                     fragments NON NÉGOCIABLES : ne pas les reformuler. -->
-                <p style="margin:0 0 8px"><strong>Correction à revoir après l'étalonnage</strong></p>
-                <p style="margin:0 0 10px">
-                  Une correction de <strong id="ph_tune_stale_value">—</strong> pH
-                  <strong>reste appliquée à la mesure</strong> : elle continue d'orienter le dosage
-                  tant que vous n'avez pas choisi. Elle a été posée <strong>avant</strong>
-                  l'étalonnage qui vient d'avoir lieu et compensait un réglage de sonde qui a
-                  changé — elle n'est peut-être plus justifiée.
-                </p>
+                <!-- feature-168 (C15) : TROIS causes de péremption (calibration /
+                     expiration / boot), TROIS textes — mot pour mot imposés par le
+                     gate pool-chemistry (« les trois causes appellent trois gestes
+                     différents ; une formule commune ne dirait quoi faire dans aucun
+                     cas »). Texte choisi par ph_offset_stale_cause, écrit dans
+                     #ph_tune_stale_text par renderPhOffsetStaleBanner() — rien de figé
+                     ici hors le titre (générique, valable pour les trois causes) et les
+                     deux actions, inchangées depuis feature-156. -->
+                <p style="margin:0 0 8px"><strong>Correction à revoir</strong></p>
+                <p style="margin:0 0 10px" id="ph_tune_stale_text"></p>
                 <div class="detail-actions">
                   <button class="btn btn--danger" type="button" id="ph_tune_stale_cancel_btn">Annuler la correction</button>
                   <button class="btn btn--secondary" type="button" id="ph_tune_stale_keep_btn">Garder la correction</button>
@@ -1518,7 +1511,12 @@
                    ⚠️ LES DEUX PHRASES DU GATE pool-chemistry (B4) SONT PRÉSERVÉES
                    MOT POUR MOT, seule la ponctuation de liaison change (point ->
                    deux-points). Ne pas les reformuler sans repasser par le gate :
-                   elles disent que cette valeur ENGAGE LE DOSAGE, pas l'affichage. -->
+                   elles disent que cette valeur ENGAGE LE DOSAGE, pas l'affichage.
+                   feature-168 (C14) : cet encadré et l'avertissement #ph_tune_blocked
+                   ci-dessous NE S'EMPILENT JAMAIS — gate : « C8 est strictement plus
+                   fort sur le même propos — empiler ne protège pas, ça dilue. »
+                   renderPhTuneCard() le masque dès que l'avertissement prend le
+                   relais (|correction| > ph_offset_unusual_abs). -->
               <div class="callout callout--info" id="ph_tune_stakes" role="note" style="margin:0 0 16px">
                 <p style="margin:0 0 8px">
                   Si votre test donne une valeur différente de celle affichée, indiquez-la ici :
@@ -1533,8 +1531,12 @@
               <!-- Pas-à-pas RÉAFFECTÉ (ex-#ph-offset-stepper, feature-067) : affiche
                    désormais une MESURE (la valeur lue sur le test), jamais un écart.
                    Pas de clavier, pas de champ libre — décision utilisateur du
-                   2026-10-11 : « il n'y a pas de saisie ». Plage et pas servis par
-                   /get-config (ph_offset_step), excursion totale ± PH_TUNE_RANGE. -->
+                   2026-10-11 : « il n'y a pas de saisie ». Pas servi par /get-config
+                   (ph_offset_step). feature-168 : plus de borne de réglage — l'excursion
+                   est l'échelle physique universelle du pH [0 ; 14] seule (ⓘ ce n'est
+                   PAS un seuil de l'appareil, ADR-0100 ne s'applique pas à une constante
+                   physique). Touches Début/Fin retirées (elles sautaient aux anciennes
+                   bornes ±1,00 ; sans bornes elles sauteraient à pH 0 ou 14). -->
               <div class="field" style="max-width:280px">
                 <span class="field__label" id="ph_tune_label">Valeur lue sur votre test</span>
                 <div class="stepper" id="ph-tune-stepper">
@@ -1553,10 +1555,27 @@
                    après arrondi (Piège 1), jamais la valeur demandée. -->
               <p class="small" id="ph_tune_result" style="margin:12px 0 0"></p>
 
-              <!-- Les CINQ états (prêt + 4 refus) — un seul callout, textes IMPOSÉS mot
-                   pour mot par le gate, jamais de mise en cause de la sonde. -->
-              <div class="callout callout--warn" id="ph_tune_blocked" role="status" aria-live="polite"
-                   hidden style="margin-top:12px"></div>
+              <!-- feature-168 : il ne reste que TROIS refus réellement BLOQUANTS (pas de
+                   mesure récente, filtration pas assez stabilisée, sonde pas calibrée),
+                   jamais de mise en cause de la sonde — et UN avertissement NON BLOQUANT
+                   (C8, |correction| > ph_offset_unusual_abs) qui réutilise le MÊME
+                   callout (un seul message affiché à la fois, mutuellement exclusifs,
+                   piloté par renderPhTuneCard()/data/app.js). Les trois refus n'emploient
+                   que #ph_tune_blocked_lead (texte simple) ; l'avertissement C8 utilise
+                   les trois sous-éléments : chapeau (eyebrow, bascule mot+couleur entre
+                   « Avertissement » et « ⚠ Impasse possible » SANS 3e couleur, la boîte
+                   reste callout--warn dans les deux cas), lead (1re phrase, ~160 car.,
+                   toujours visible) et détail repliable (reste du texte C8). Textes
+                   IMPOSÉS mot pour mot par le gate pool-chemistry. -->
+              <div class="callout callout--warn" id="ph_tune_blocked" role="status" aria-live="polite" hidden
+                   style="margin-top:12px">
+                <p class="callout__eyebrow" id="ph_tune_blocked_eyebrow" hidden></p>
+                <p class="callout__lead" id="ph_tune_blocked_lead" style="margin:0"></p>
+                <details class="callout__more" id="ph_tune_blocked_more" hidden>
+                  <summary>Pourquoi, et quoi vérifier →</summary>
+                  <p id="ph_tune_blocked_detail"></p>
+                </details>
+              </div>
 
               <!-- feature-156 : la carte visée est désormais JUSTE AU-DESSUS (DOM
                    réordonné) — texte corrigé en conséquence (« plus bas » → « ci-dessus »),

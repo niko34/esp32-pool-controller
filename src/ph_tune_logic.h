@@ -22,7 +22,8 @@
 //   1. mesure de référence indisponible (NaN)
 //   2. régime hydraulique pas établi depuis assez longtemps (filtration)
 //   3. sonde non étalonnée (calPoints insuffisants)
-//   4. écart hors bornes APRÈS calcul (arrondi au pas, kPhOffsetMin/Max)
+//   4. écart hors SALUBRITÉ de domaine (feature-168 : ce n'est plus une borne
+//      de réglage, isPhOffsetValid() ne refuse plus que NaN/inf/|écart| > 14)
 //
 // ⚠️ LOAD-BEARING depuis feature-158 (condition 8 du gate pool-chemistry) :
 // le refus n°1 (isnan) DOIT rester STRICTEMENT AVANT le refus n°2
@@ -60,7 +61,7 @@ enum class PhTuneRefusal : uint8_t {
   MeasureUnavailable       = 1,  // isnan(phValueRaw)
   FiltrationNotEstablished = 2,  // arrêtée OU trop récente
   ProbeNotCalibrated       = 3,  // calPoints < kPhTuneCalPointsMin
-  OutOfRange               = 4,  // écart hors kPhOffsetMin/Max après calcul
+  OutOfRange               = 4,  // écart hors salubrité (NaN/inf/|écart| > 14, feature-168)
 };
 
 struct PhTuneResult {
@@ -116,34 +117,30 @@ inline PhTuneResult evaluatePhTune(float phReference, float phValueRaw,
   // valeur pré-calculée par le navigateur.
   const float offsetDemande = phReference - phValueRaw;
 
-  // Refus 4/4 — écart hors ±0,50 pH. Bornes INCHANGÉES (kPhOffsetMin/Max) :
-  // kPhFloorRawHard/kPhCeilingRawHard en dérivent.
+  // Refus 4/4 — salubrité de domaine (feature-168). ⚠️ CE N'EST PLUS UNE BORNE
+  // DE RÉGLAGE : depuis feature-168, isPhOffsetValid() n'écarte plus que
+  // NaN/infini/|écart| > kPhOffsetScaleSpan (14 pH, l'échelle entière). Un
+  // écart « inhabituel » (> kPhOffsetUnusualAbs = 0,50) n'est PLUS refusé ici —
+  // il est accepté et signalé ailleurs (avertissement UI C8, log+alerte C7).
   //
-  // 🔴 CORRIGÉ : LE TEST PORTE SUR L'ÉCART **DEMANDÉ**, PAS SUR LA SORTIE DE
-  // roundPhOffsetToStep(). La version précédente écrivait
-  //     offsetRounded = roundPhOffsetToStep(phReference - phValueRaw);
-  //     if (!isPhOffsetValid(offsetRounded)) ...
-  // or roundPhOffsetToStep() **CLAMPE AVANT D'ARRONDIR** (ph_guard_logic.h) :
-  // sa sortie est donc TOUJOURS dans [kPhOffsetMin, kPhOffsetMax], et
-  // isPhOffsetValid() sur cette sortie est STRUCTURELLEMENT TOUJOURS VRAI.
-  // ⇒ Le refus OutOfRange était **MORT, INATTEIGNABLE**. Un écart de +0,80
-  // n'aurait pas été refusé : il aurait été **SILENCIEUSEMENT ÉCRÊTÉ à +0,50
-  // ET APPLIQUÉ** — l'exact inverse du critère d'acceptation de la spec, et une
-  // violation directe de l'invariant du gate « refus, JAMAIS écrêtage
-  // silencieux ». Sur une entrée qui pilote le dosage d'acide, l'utilisateur
-  // aurait vu son aperçu annoncer un refus pendant que l'appareil appliquait
-  // la moitié de sa demande. Trouvé par web-ui-developer en câblant l'aperçu
-  // client, PAS par la relecture du lot firmware.
-  // ⚠️ roundPhOffsetToStep() reste INCHANGÉE : son écrêtage est VOULU pour son
-  // autre usage (migration NVS au boot, feature-067), où il n'y a pas
-  // d'utilisateur à qui opposer un refus.
+  // 🔴 Historique (feature-155) — pourquoi ce test porte sur l'écart
+  // **DEMANDÉ**, jamais sur la sortie de roundPhOffsetToStep() : une version
+  // antérieure écrivait `isPhOffsetValid(roundPhOffsetToStep(ecart))`, or
+  // roundPhOffsetToStep() CLAMPAIT AVANT D'ARRONDIR — sa sortie était donc
+  // TOUJOURS dans la plage autorisée, rendant ce refus MORT, INATTEIGNABLE :
+  // un écart hors plage était silencieusement ÉCRÊTÉ ET APPLIQUÉ au lieu
+  // d'être refusé. ⚠️ Ce piège a CHANGÉ DE NATURE avec feature-168 :
+  // roundPhOffsetToStep() n'écrête plus DU TOUT (son clamp a été retiré, voir
+  // ph_guard_logic.h) — la leçon reste la même, vérifier EN AMONT de
+  // l'arrondi, jamais sur sa sortie.
   if (!isPhOffsetValid(offsetDemande)) {
     result.refusal = PhTuneRefusal::OutOfRange;
     return result;
   }
 
   // L'arrondi n'intervient qu'APRÈS acceptation : à ce stade l'écart est déjà
-  // dans la plage, le clamp de roundPhOffsetToStep() ne peut plus rien masquer.
+  // valide (salubrité), et roundPhOffsetToStep() n'ARRONDIT que — elle n'a
+  // plus aucun clamp susceptible de masquer quoi que ce soit (feature-168).
   const float offsetRounded = roundPhOffsetToStep(offsetDemande);
 
   result.refusal = PhTuneRefusal::None;

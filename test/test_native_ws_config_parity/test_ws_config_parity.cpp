@@ -66,9 +66,18 @@ static const HttpOnlyKey kHttpOnlyKeys[] = {
   {"ph_target_min",  "Constante de compilation (kPhTargetMin) : immuable a l'execution, app.js conserve la derniere borne recue."},
   {"ph_target_max",  "Constante de compilation (kPhTargetMax) : immuable a l'execution, app.js conserve la derniere borne recue."},
   {"ph_target_step", "Constante de compilation (kPhTargetStep) : immuable a l'execution, app.js conserve le dernier pas recu."},
-  {"ph_offset_min",  "Constante de compilation (kPhOffsetMin) : immuable a l'execution, app.js conserve la derniere borne recue."},
-  {"ph_offset_max",  "Constante de compilation (kPhOffsetMax) : immuable a l'execution, app.js conserve la derniere borne recue."},
   {"ph_offset_step", "Constante de compilation (kPhOffsetStep) : immuable a l'execution, app.js conserve le dernier pas recu."},
+  // feature-168 : ph_offset_min/max SUPPRIMES (plus de borne de reglage,
+  // decision utilisateur du 2026-10-16). Les 5 constantes qui remplacent
+  // l'ancienne paire sont, comme elle, des constantes de compilation --
+  // memes regles, ADR-0100 (seuils cites par les textes d'avertissement de
+  // l'ecran de reglage, jamais ecrits en dur cote client).
+  {"ph_offset_unusual_abs",            "Constante de compilation (kPhOffsetUnusualAbs) : immuable a l'execution, app.js conserve le dernier seuil recu."},
+  {"ph_offset_confirm_interval_days",  "Constante de compilation (kPhOffsetConfirmIntervalDays) : immuable a l'execution, app.js conserve le dernier seuil recu."},
+  {"ph_offset_impasse_threshold",      "Constante de compilation (kPhOffsetImpasseThreshold) : immuable a l'execution, app.js conserve le dernier seuil recu."},
+  {"ph_offset_impasse_threshold_high", "Constante de compilation (kPhOffsetImpasseThresholdHigh) : immuable a l'execution, app.js conserve le dernier seuil recu."},
+  {"ph_raw_floor_absolute",            "Constante de compilation (kPhRawFloorAbsolute) : immuable a l'execution, app.js conserve le dernier seuil recu."},
+  {"ph_raw_ceiling_absolute",          "Constante de compilation (kPhRawCeilingAbsolute) : immuable a l'execution, app.js conserve le dernier seuil recu."},
   // feature-164 (gate pool-chemistry, 3e passage, ADR-0100) : bornes de la
   // consigne ORP servies au client, miroir EXACT du triplet ph_target_*
   // ci-dessus -- memes regles (constante de compilation, jamais en WS).

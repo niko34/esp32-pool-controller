@@ -507,7 +507,7 @@ Source : `PumpController.getPhDoseBlockedCode()` / `getOrpDoseBlockedCode()` (le
 
 | Champ | Type | Message | Description |
 |-------|------|---------|-------------|
-| `ph_offset` | float | **`config`** (pas `sensor_data`) | Offset logiciel de mesure pH, tel que persisté en NVS. Plage `[−0.50, +0.50]`, défaut `0`. `pH corrigé = pH brut EZO + ph_offset`. Miroir exact de `GET /get-config` — c'est un **paramètre**, pas une mesure : il n'a rien à faire dans le push temps réel 5 s. |
+| `ph_offset` | float | **`config`** (pas `sensor_data`) | Offset logiciel de mesure pH, tel que persisté en NVS. ⚠️ **v2.82.0 (feature-168) : plus de plage de réglage** (`[−0.50, +0.50]` avant cette version) — toute valeur finie de l'échelle pH, salubrité seule (`±14,0`). Défaut `0`. `pH corrigé = pH brut EZO + ph_offset`. Miroir exact de `GET /get-config` — c'est un **paramètre**, pas une mesure : il n'a rien à faire dans le push temps réel 5 s. |
 
 Émis par `_buildConfigJson()` ([`ws_manager.cpp`](../../src/ws_manager.cpp)) depuis `mqttCfg.phOffset`. Le broadcast `config` est déclenché par `POST /save-config` : l'UI voit donc la nouvelle valeur **sans reload**, et le champ de saisie `#ph_offset` est re-synchronisé — **sauf s'il a le focus**, pour ne pas écraser une saisie en cours ([page-ph.md](../features/page-ph.md#carte--correction-de-la-mesure-ph--feature-067-v2200)).
 
@@ -515,7 +515,7 @@ Source : `PumpController.getPhDoseBlockedCode()` / `getOrpDoseBlockedCode()` (le
 
 Marge du buffer `_buildConfigJson()` portée à **2368 octets** (+1 champ ≈ 24 octets).
 
-> ⚠️ **Asymétrie assumée (v2.25.0)** : les six bornes `ph_target_min/_max/_step` et `ph_offset_min/_max/_step` sont servies par `GET /get-config` mais **PAS** par la trame `config` du WebSocket — ce sont des constantes de compilation, invariantes pour un firmware donné, et le budget de trame est mieux dépensé ailleurs. C'est une **exception documentée** à la règle de parité ci-dessus, tolérable uniquement parce que le client la connaît : `_applyPhBounds()` ignore **en bloc** un lot absent ou incohérent (borne inversée, pas nul) et **conserve les bornes déjà connues**. Sans cette précaution, chaque push `config` ferait retomber l'UI sur ses valeurs de repli entre deux appels à `/get-config`.
+> ⚠️ **Asymétrie assumée (v2.25.0 ; champs HTTP-seuls remaniés v2.82.0)** : `ph_target_min/_max/_step` et `ph_offset_step` sont servis par `GET /get-config` mais **PAS** par la trame `config` du WebSocket — ce sont des constantes de compilation, invariantes pour un firmware donné, et le budget de trame est mieux dépensé ailleurs. **v2.82.0 (feature-168)** : `ph_offset_min`/`ph_offset_max` **disparaissent** (plus de borne de réglage) ; six champs les remplacent dans cette même liste HTTP-seule — `ph_offset_unusual_abs`, `ph_offset_confirm_interval_days`, `ph_offset_impasse_threshold`, `ph_offset_impasse_threshold_high`, `ph_raw_floor_absolute`, `ph_raw_ceiling_absolute` (consultés à l'ouverture de l'écran de réglage, pas besoin d'un push temps réel). C'est une **exception documentée** à la règle de parité ci-dessus, tolérable uniquement parce que le client la connaît : `_applyPhBounds()` ignore **en bloc** un lot absent ou incohérent (borne inversée, pas nul) et **conserve les bornes déjà connues**. Sans cette précaution, chaque push `config` ferait retomber l'UI sur ses valeurs de repli entre deux appels à `/get-config`.
 
 ## Champs `config` ajoutés en v2.23.0 — caractérisation des pompes (feature-074, correctif on-target)
 
@@ -726,7 +726,8 @@ Chacune est inscrite dans la table `kHttpOnlyKeys` de la sentinelle **avec un mo
 | Clé HTTP-seule | Motif déclaré |
 |----------------|---------------|
 | `ph_target_min` / `ph_target_max` / `ph_target_step` | **Constantes de compilation** (`kPhTarget*`) : immuables à l'exécution ; `app.js` conserve la dernière borne reçue |
-| `ph_offset_min` / `ph_offset_max` / `ph_offset_step` | **Constantes de compilation** (`kPhOffset*`), même raison |
+| `ph_offset_step` | **Constante de compilation** (`kPhOffsetStep`), même raison. ⛔ `ph_offset_min`/`ph_offset_max` **n'existent plus** depuis la v2.82.0 (feature-168, décision utilisateur — plus de borne de réglage) |
+| `ph_offset_unusual_abs`, `ph_offset_confirm_interval_days`, `ph_offset_impasse_threshold` / `_high`, `ph_raw_floor_absolute`, `ph_raw_ceiling_absolute` | **v2.82.0** — Constantes de compilation citées par les textes d'avertissement de l'écran de réglage et par la péremption à 30 jours ; consultées **à la demande** (ouverture de l'écran), pas besoin d'un push temps réel |
 | `regulation_defaults_by_size` | **Table de compilation** (`kRegulationDefaultsBySize`, 3 colonnes) : immuable **et** ~525 o de trame **par push** |
 | `regulation_defaults` | **Dérivable côté client** : `pool_size` est désormais dans la trame et `by_size` est en cache (`syncRegulationDefaults()`, [`data/app.js`](../../data/app.js)). L'extraire de `fillRegulationDefaults` coûterait **+703 o** de trame pour une valeur calculable |
 

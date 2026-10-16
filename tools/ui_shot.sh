@@ -13,6 +13,13 @@
 #   ./tools/ui_shot.sh -r '#/ph' -o /tmp/ph.png # une autre page
 #   ./tools/ui_shot.sh -f cal_switch_active=true    # forcer un champ de /data
 #   ./tools/ui_shot.sh -c lighting_mode=scheduled   # forcer un champ de /get-config
+#   ./tools/ui_shot.sh -k '#ph_cal_trigger_btn'     # cliquer avant la capture
+#
+# L'option -k photographie un ecran situe DERRIERE un bouton (sous-vue ouverte
+# par JavaScript, panneau repliable, modale). Sans elle, ces ecrans etaient
+# invisibles a l'outil : un brief d'ergonomie les concernant partait sans image,
+# ce que CLAUDE.md qualifie de brief incomplet. Plusieurs -k s'enchainent dans
+# l'ordre donne.
 #
 # ⚠️ Les données recopiées contiennent le SSID Wi-Fi et l'identifiant MQTT.
 #    Elles vont dans un dossier TEMPORAIRE, jamais dans le dépôt.
@@ -24,8 +31,9 @@ ROUTE=""
 OUT=""
 declare -a FORCE=()
 declare -a FORCE_CFG=()
+declare -a CLICKS=()
 
-while getopts "w:h:r:o:f:c:" opt; do
+while getopts "w:h:r:o:f:c:k:" opt; do
   case "$opt" in
     w) WIDTH="$OPTARG" ;;
     h) HEIGHT="$OPTARG" ;;
@@ -33,6 +41,7 @@ while getopts "w:h:r:o:f:c:" opt; do
     o) OUT="$OPTARG" ;;
     f) FORCE+=("$OPTARG") ;;
     c) FORCE_CFG+=("$OPTARG") ;;
+    k) CLICKS+=("$OPTARG") ;;
     *) grep '^#' "$0" | sed 's/^# \?//' >&2; exit 2 ;;
   esac
 done
@@ -94,7 +103,14 @@ else:
     try:
         doc[key] = int(val)
     except ValueError:
-        doc[key] = val
+        # Les valeurs decimales doivent rester NUMERIQUES : converties en
+        # chaine, elles cassent le typage attendu par l'application et l'etat
+        # vise n'est jamais atteint (constate le 2026-10-16 en photographiant
+        # une correction pH de -0,7).
+        try:
+            doc[key] = float(val)
+        except ValueError:
+            doc[key] = val
 json.dump(doc, open(path, 'w'))
 PY
 }
@@ -112,6 +128,13 @@ done
 
 # Port libre.
 PORT="$(python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1]);s.close()')"
+UI_SHOT_CLICK=""
+for k in "${CLICKS[@]:-}"; do
+  [[ -z "$k" ]] && continue
+  UI_SHOT_CLICK+="$k"$'\n'
+  echo "   clic programmé : $k"
+done
+export UI_SHOT_CLICK
 python3 "$REPO/tools/ui_shot_server.py" "$PORT" "$REPO/data" "$TMP/api" &
 SRV=$!
 for _ in $(seq 1 40); do

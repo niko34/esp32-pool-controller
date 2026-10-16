@@ -393,7 +393,7 @@ Les conditions sont évaluées dans l'ordre suivant. Le premier `false` rencontr
 
 ## Gardes de sécurité pH (refonte v2.25.0)
 
-Décision, alternatives écartées et asymétries assumées : [ADR-0048](../adr/0048-seuils-ph-fixes-derives-de-la-plage-de-consigne.md).
+Décision, alternatives écartées et asymétries assumées : [ADR-0048](../adr/0048-seuils-ph-fixes-derives-de-la-plage-de-consigne.md) (seuils sur le pH corrigé, toujours en vigueur). ⚠️ **v2.82.0 (feature-168)** — les deux filets sur le pH **brut** ne dérivent plus de la borne de réglage de l'offset (qui a disparu, décision utilisateur) : [ADR-0113](../adr/0113-filets-ph-bruts-absolus-independants-de-loffset.md) (filets absolus) et [ADR-0114](../adr/0114-correction-mesure-ph-sans-borne-de-reglage.md) (offset sans borne) supersèdent partiellement l'ADR-0048 sur ce point. Voir [Zone d'impasse de régulation (v2.82.0)](#zone-dimpasse-de-régulation-v2820) plus bas.
 
 L'offset logiciel pH ([ADR-0039](../adr/0039-offset-ph-applique-en-sortie-des-accesseurs.md)) **déplace l'entrée de la régulation** : `canDose(0)`, le calcul d'erreur et le PID consomment `getPhFiltered()`, c'est-à-dire la valeur **corrigée** (`brut + ph_offset`). Les gardes de cette section encadrent ce risque, en amont de `canDose()` dans `update()` : quand une garde bloque, `canDose()` n'est pas évalué et `_lastRefusalCause` porte la cause de la garde.
 
@@ -412,34 +412,54 @@ Le pH brut ne garde qu'un rôle : **deux butées de dernier recours**, qui doive
 | Refus d'**ALCALINISER** (`ph_plus`) | `7,60` | corrigé | `kPhCeilingCorrected = kPhTargetMax + kPhHighMargin` (0,10) |
 | Inhibition du dosage ORP | `7,60` (relâche ≈ 7,55) | corrigé | `kPhOrpInhibit` — littéral à justification chimique propre |
 | Avertissement d'eau acide, **non bloquant** | `7,00` | corrigé | `kPhLowWarn` — littéral à justification chimique propre |
-| **Butée basse** | `6,20` | **brut** | `kPhFloorRawHard = kPhFloorCorrected − kPhOffsetMax` |
-| **Butée haute** | `8,10` | **brut** | `kPhCeilingRawHard = kPhOrpInhibit + kPhOffsetMax` |
-| Offset pH | `−0,50` → `+0,50`, pas `0,10` | — | `kPhOffsetMin` / `kPhOffsetMax` / `kPhOffsetStep` |
+| **Filet bas** | `5,50` | **brut** | ⚠️ **v2.82.0** : `kPhFloorRawHard = kPhRawFloorAbsolute` — constante chimique ABSOLUE, ne dérive plus de l'offset ([ADR-0113](../adr/0113-filets-ph-bruts-absolus-independants-de-loffset.md)) |
+| **Filet haut** | `8,50` | **brut** | ⚠️ **v2.82.0** : `kPhCeilingRawHard = kPhRawCeilingAbsolute` — idem, absolue |
+| Offset pH | **toute valeur finie de l'échelle pH** (`±14,0`, salubrité de domaine) | — | ⚠️ **v2.82.0 : PLUS DE BORNE DE RÉGLAGE** (`kPhOffsetMin`/`kPhOffsetMax` supprimés, décision utilisateur — [ADR-0114](../adr/0114-correction-mesure-ph-sans-borne-de-reglage.md)). Seule `isPhOffsetValid()` (NaN/inf/\|valeur\| > `kPhOffsetScaleSpan`) refuse encore quelque chose. Pas `kPhOffsetStep` inchangé. |
 | Hystérésis de relâche | `0,05` | — | `kPhGuardReleaseHysteresis`, commune à **toutes** les gardes |
 
-**Aucun seuil n'est écrit en littéral**, hors les deux exceptions ci-dessus. Le calcul est délégué au module **pur** [`src/ph_guard_logic.h`](../../src/ph_guard_logic.h) — deux comparateurs symétriques avec hystérésis (`phGuardBlocksBelow` / `phGuardBlocksAbove`), pattern Humble Object [ADR-0017](../adr/0017-logique-metier-pure-humble-object-testabilite.md), tests natifs dans `test/test_native_ph_guard/`.
+**Aucun seuil n'est écrit en littéral**, hors les deux exceptions chimiques (`kPhOrpInhibit`, `kPhLowWarn`) et les deux filets bruts, eux-mêmes littéraux **à justification chimique propre** depuis la v2.82.0 (ADR-0098). Le calcul est délégué au module **pur** [`src/ph_guard_logic.h`](../../src/ph_guard_logic.h) — deux comparateurs symétriques avec hystérésis (`phGuardBlocksBelow` / `phGuardBlocksAbove`), pattern Humble Object [ADR-0017](../adr/0017-logique-metier-pure-humble-object-testabilite.md), tests natifs dans `test/test_native_ph_guard/`.
 
-#### Pourquoi les butées brutes valent exactement 6,20 et 8,10
+#### Pourquoi les filets bruts valent exactement 5,50 et 8,50 (v2.82.0)
 
-Chaque butée est placée à **exactement l'offset maximal** de son seuil corrigé. Conséquence : à l'offset extrême, butée et seuil mordent **au même point** et se relâchent ensemble — aucune ne peut rendre l'autre inopérante.
+⚠️ **Jusqu'à la v2.82.0 (feature-168)**, chaque butée était placée à **exactement l'offset maximal** de son seuil corrigé — la dérivation garantissait qu'à l'offset extrême, butée et seuil mordaient **au même point**. La levée de la borne de réglage de l'offset ([ADR-0114](../adr/0114-correction-mesure-ph-sans-borne-de-reglage.md)) a rendu cette dérivation intenable : **la correction commandait les gardes**, et l'élargir aurait desserré les filets sans décision explicite. Les deux filets sont donc devenus des **constantes chimiques absolues** ([ADR-0113](../adr/0113-filets-ph-bruts-absolus-independants-de-loffset.md)) :
 
-| Offset | Butée basse 6,20 [BRUT] équivaut à | Seuil bas 6,70 [CORRIGÉ] | Verdict |
-|---:|---:|---:|---|
-| `+0,50` | `6,70` corrigé | `6,70` | mordent ensemble |
-| `0,00` | `6,20` corrigé | `6,70` | le seuil corrigé mord d'abord |
-| `−0,50` | `5,70` corrigé | `6,70` | le seuil corrigé mord d'abord |
+- **5,50** : sous ~5,0, l'acide (pH−) rencontrant l'hypochlorite encore présent libère du **chlore gazeux** — danger direct. 0,5 pH de marge avant ce seuil.
+- **8,50** : à 8,50, il ne reste que ~9 % de chlore actif (HOCl) pour un pKa de 7,5 (Henderson-Hasselbalch) : au-delà, alcaliniser n'a plus de sens sanitaire.
 
-> Une butée **plus haute** (6,40 avait été proposée) mordrait AVANT le seuil corrigé pour un offset **légitime** de `+0,50` (6,40 brut = 6,90 corrigé > 6,70), rendant l'offset inopérant et réintroduisant par la bande la dépendance qu'on venait de supprimer. Le `static_assert` est écrit en **inégalité** : la remonter ne compile plus, l'abaisser reste possible.
+Conséquence : **l'ancienne propriété « ne mord jamais avant le seuil corrigé, pour tout offset » n'est plus garantie** — le domaine de l'offset n'étant plus borné, de grandes corrections peuvent faire mordre le filet brut **avant** que la régulation n'atteigne son seuil chimique. C'est la **zone d'impasse**, voir [ci-dessous](#zone-dimpasse-de-régulation-v2820). À offset nul ou raisonnable, les filets restent strictement à l'intérieur des seuils corrigés (invariant d'ordre absolu, voir plus bas).
+
+> Historique (jusqu'à la v2.81.x) : une butée **plus haute** (6,40 avait été proposée pour le filet bas, alors dérivé) aurait mordu AVANT le seuil corrigé pour un offset légitime de `+0,50`, rendant l'offset inopérant. Ce raisonnement reste la justification de l'**ordre absolu** ci-dessous, désormais vérifié indépendamment de l'offset.
 
 #### Invariants verrouillés à la compilation
 
-Trois `static_assert` de [`constants.h`](../../src/constants.h) — toute retouche d'une valeur oblige à relire la justification chimique, pas seulement à recompiler :
+[`constants.h`](../../src/constants.h) — toute retouche d'une valeur oblige à relire la justification chimique, pas seulement à recompiler :
 
 1. `kPhTargetMax + kPhOrpInhibitMargin <= kPhOrpInhibit` — la consigne haute ne peut **pas atteindre** le seuil d'inhibition ORP. Sinon, une eau maintenue à la consigne inhiberait le chlore **en permanence** : panne sanitaire silencieuse.
 2. `kPhCeilingCorrected <= kPhOrpInhibit` — le plafond d'alcalinisation ne peut **pas dépasser** l'inhibition ORP. Sinon l'appareil alcaliniserait une eau dont il vient de décider que le chlore y est inactif. Verrou **dédié** : celui de `kPhOrpInhibitMargin` ne protège que la consigne, pas le plafond.
-3. `kPhFloorRawHard <= kPhFloorCorrected − kPhOffsetMax` et son symétrique haut — chaque butée brute ne peut **pas mordre avant** son seuil corrigé, pour tout offset du domaine.
+3. ⚠️ **v2.82.0 — REMPLACÉ** : `kPhRawFloorAbsolute < kPhFloorCorrected && kPhCeilingCorrected < kPhRawCeilingAbsolute` (invariant d'**ordre absolu**, indépendant de l'offset). L'ancien invariant « chaque butée brute ne mord jamais avant son seuil corrigé, pour tout offset du domaine » **n'est plus vérifiable** depuis que le domaine de l'offset n'est plus borné — il est remplacé par un ordre qui garantit qu'à offset nul ou raisonnable, la régulation opère normalement entre les deux filets, quelle que soit la zone d'impasse que de grandes corrections peuvent ouvrir.
 
 S'y ajoutent les gardes de cohérence : bornes non inversées, marges strictement positives, `kPhLowWarn` compris entre le seuil bas et la consigne minimale, hystérésis non nulle et plus petite que la plus petite marge.
+
+### Zone d'impasse de régulation (v2.82.0)
+
+⚠️ **feature-168, conséquence directe de la levée de la borne de réglage de l'offset** ([ADR-0114](../adr/0114-correction-mesure-ph-sans-borne-de-reglage.md)). Au-delà d'un certain écart, le filet brut (fixe) mord **structurellement avant** que la régulation corrigée n'atteigne son seuil chimique — ce n'est plus un incident isolé, c'est une conséquence mécanique du choix de correction. L'appareil le **dit** (alerte MQTT `ph_impasse`, voir [MQTT.md](../MQTT.md)) au lieu de se fermer en silence.
+
+| Côté | Seuil d'entrée en impasse | Valeur | Dérivation |
+|---|---|---:|---|
+| Acide (`ph_minus`) | `offset > kPhOffsetImpasseThreshold` | `1,20` | `kPhFloorCorrected − kPhRawFloorAbsolute` (calculée, jamais littérale) |
+| Base (`ph_plus`) | `offset <= kPhOffsetImpasseThresholdHigh` | `−0,90` | `kPhCeilingCorrected − kPhRawCeilingAbsolute` (calculée) |
+
+Deux fonctions pures, [`src/ph_guard_logic.h`](../../src/ph_guard_logic.h) : `isPhRegulationImpasseLow(offset)` / `isPhRegulationImpasseHigh(offset)`. Usage **unique** : exclure les refus du filet brut **seul** (discriminant, pas doublé par la garde corrigée) du compteur des 3 refus / 24 h — en zone d'impasse, la bascule en manuel n'ajouterait **aucune** protection (le filet bloque déjà), elle **retirerait** la régulation sans bénéfice. Le compteur reste **intact** pour le seuil corrigé et toutes les autres gardes.
+
+Alerte dédiée (`main.cpp`, edge-triggered à l'**entrée** en impasse seulement, même patron que `ph_limit`) :
+
+```
+[pH] Impasse de régulation : avec une correction de +1,40, la consigne 7,20 exige une
+mesure brute de 5,80, sous le refus d'acidifier fixé à 5,50. L'appareil cessera
+d'acidifier avant d'atteindre la consigne.
+```
+
+Les deux seuils sont servis par `GET /get-config` (`ph_offset_impasse_threshold`, `ph_offset_impasse_threshold_high`), jamais écrits en dur côté client (ADR-0100) — ils pilotent le chapeau « ⚠ Impasse possible » de l'avertissement de l'écran de réglage (voir [page-ph.md](../features/page-ph.md)).
 
 ### Surveillance INCONDITIONNELLE, séparée de la décision
 
@@ -464,12 +484,14 @@ Le seuil appliqué dépend du **produit déclaré** (`phCorrectionType`) : un ac
 
 ⚠️ **Asymétrie assumée entre produits depuis la v2.55.1.** Côté **base** (`ph_plus`), la butée brute reste évaluée en premier et prime inconditionnellement dans le journal et dans la cause exposée (comportement historique, inchangé). Côté **acide** (`ph_minus`), la priorité est désormais **discriminante** — voir [ci-dessous](#priorité-des-causes-pour-lacide-discriminante-depuis-v2551). Les deux chemins ne sont pas symétriques : seul le chemin acide a été corrigé, parce que c'est lui qui a produit l'incident du 2026-10-05 (bug-135). Harmoniser le chemin base sur la même règle n'est pas fait et resterait à instruire via `pool-chemistry` si un incident analogue s'y produisait.
 
-| Produit | Butée [BRUT] | Seuil chimique [CORRIGÉ] |
+| Produit | Filet [BRUT] | Seuil chimique [CORRIGÉ] |
 |---|---|---|
-| `ph_minus` (acide) | `phRaw < 6,20` → refus | `ph < 6,70` → refus d'acidifier |
-| `ph_plus` (base) | `phRaw > 8,10` → refus | `ph > 7,60` → refus d'alcaliniser |
+| `ph_minus` (acide) | `phRaw < 5,50` → refus | `ph < 6,70` → refus d'acidifier |
+| `ph_plus` (base) | `phRaw > 8,50` → refus | `ph > 7,60` → refus d'alcaliniser |
 
-> **Durcissement v2.25.0** : le `ph_plus` n'était gardé par **aucun** seuil jusqu'ici. Rien n'empêchait le système d'alcaliniser l'eau dans la zone où il inhibe lui-même le chlore. La butée brute haute a été ajoutée en contre-visite : sans elle, un offset `−0,50` erroné laissait le pH+ pousser l'eau au-delà de 8,10 brut pendant que l'inhibition ORP suspendait le chlore — l'appareil conduisait lui-même l'eau dans une impasse sanitaire.
+> **Durcissement v2.25.0** : le `ph_plus` n'était gardé par **aucun** seuil jusqu'ici. Rien n'empêchait le système d'alcaliniser l'eau dans la zone où il inhibe lui-même le chlore. La butée brute haute a été ajoutée en contre-visite : sans elle, un offset `−0,50` erroné laissait le pH+ pousser l'eau au-delà de la butée brute pendant que l'inhibition ORP suspendait le chlore — l'appareil conduisait lui-même l'eau dans une impasse sanitaire.
+>
+> ⚠️ **v2.82.0** : les valeurs `6,20`/`8,10` de cette section (historiques, dérivées de l'ancienne borne d'offset) sont devenues `5,50`/`8,50` (constantes absolues, [ADR-0113](../adr/0113-filets-ph-bruts-absolus-independants-de-loffset.md)). Les exemples de messages ci-dessous citant `6.20`/`8.10`/`6.18`/`8.14` décrivent le **mécanisme** (inchangé) ; seules les valeurs numériques diffèrent désormais.
 
 **Changement de produit** : les cinq drapeaux d'hystérésis sont réarmés (le seuil ET la direction changent, les drapeaux deviennent caducs), mais le **compteur de refus n'est PAS réinitialisé** — une anomalie durable ne s'effface pas d'un changement de réglage.
 
@@ -522,9 +544,11 @@ Textes de **cause de refus** (`setGuardRefusalCause`, exposée au WS / au bandea
 
 > ⚠️ **Défaut non traité, repéré pendant cette documentation (hors périmètre feature-149, à router vers `code-reviewer`/`embedded-developer`)** : les quatre nouveaux textes se terminent désormais par un point (`…suspendu.`), alors que l'ancien format ne s'achevait jamais par une ponctuation. Le message `ph_guard_scheduled` (ligne 1191) concatène `"Dosage pH programmé refusé — " + String(_lastRefusalCause[0]) + ". Le volume quotidien…"` : avec un texte de cause qui se termine déjà par un point, le message publié affiche désormais **deux points consécutifs** (`…dosage acide suspendu.. Le volume…`). Inoffensif fonctionnellement, mais visible dans le journal et sur MQTT.
 
-⚠️ **Conséquence** : le texte « offset positif probablement erroné » (log + alerte MQTT de la butée brute) ne peut désormais survenir qu'avec `offset < kPhOffsetMax` — un offset `== kPhOffsetMax` (le cas le plus fréquent en pratique, celui de l'incident) ne le déclenche plus jamais puisque les deux gardes mordent alors systématiquement ensemble. Ce message n'est donc plus un bruit de fond : sa simple apparition signale une **divergence entre deux lectures** du pH brut (butée sur un échantillon instantané, garde corrigée sur la valeur filtrée) — c'est le mécanisme même que `bug-135` continue d'instruire (fenêtre glissante sur la butée brute, hors périmètre de ce correctif).
+⚠️ **Conséquence, valable jusqu'à la v2.81.x** : le texte « offset positif probablement erroné » (log + alerte MQTT de la butée brute) ne pouvait désormais survenir qu'avec `offset < kPhOffsetMax` — un offset `== kPhOffsetMax` (le cas le plus fréquent en pratique, celui de l'incident) ne le déclenchait plus jamais puisque les deux gardes mordaient alors systématiquement ensemble. Ce message n'était donc plus un bruit de fond : sa simple apparition signalait une **divergence entre deux lectures** du pH brut (butée sur un échantillon instantané, garde corrigée sur la valeur filtrée) — c'est le mécanisme même que `bug-135` continue d'instruire (fenêtre glissante sur la butée brute, hors périmètre de ce correctif).
 
-Non touché par ce correctif : les seuils (6,20 / 6,70), l'hystérésis (0,05), `blocked = rawHard || low`, le chemin **base** (`ph_plus`, toujours prioritaire sur la butée brute, voir asymétrie ci-dessus).
+⚠️ **v2.82.0 (feature-168)** : ce raisonnement est **caduc**, `kPhOffsetMax` n'existe plus et `kPhFloorRawHard` ne dérive plus de l'offset ([ADR-0113](../adr/0113-filets-ph-bruts-absolus-independants-de-loffset.md)). Le filet brut (5,50) et le seuil corrigé (6,70) peuvent désormais se déclencher ensemble ou séparément pour **une plage continue d'offsets**, pas uniquement à une borne précise — le test `!low` (discriminance) reste indispensable, mais il est **structurellement** actif pour tout offset qui ouvre un écart entre les deux seuils, plus seulement au cas limite de l'incident du 2026-10-05.
+
+Non touché par ce correctif : les seuils (`5,50`/`6,70` depuis la v2.82.0, `6,20`/`6,70` avant), l'hystérésis (0,05), `blocked = rawHard || low`, le chemin **base** (`ph_plus`, toujours prioritaire sur la butée brute, voir asymétrie ci-dessus).
 
 #### Escalade — 3 refus en 24 h, mode `automatic` uniquement
 
@@ -568,11 +592,13 @@ Les bornes sont appliquées sur les **trois** chemins d'écriture :
 | Commande MQTT `ph_target/set` | **Refus** + `warning` + `publishTargetState()` pour resynchroniser Home Assistant sur la consigne réelle. Voir [MQTT.md](../MQTT.md). |
 | Chargement NVS (`loadMqttConfig`) | **Clamp** + log + **réécriture NVS immédiate** (installations existantes, ancienne commande MQTT, NVS corrompue). |
 
-L'**offset** suit la même logique : bornes `±0,50`, pas `0,10`, arrondi au plus proche multiple par la fonction pure `roundPhOffsetToStep()` — partagée par la route de sauvegarde et par la **migration NVS** des installations ayant enregistré une valeur libre (0,47 → 0,50). L'écart maximal introduit est de 0,05 pH, soit le bruit résiduel du filtre : aucun effet mesurable sur la régulation. Offset `NaN` ⇒ 0,00 (neutre), jamais `−0,0`.
+⚠️ **L'offset n'a PLUS de borne de réglage depuis la v2.82.0** (feature-168, décision utilisateur — [ADR-0114](../adr/0114-correction-mesure-ph-sans-borne-de-reglage.md)). *Historique (jusqu'à la v2.81.x)* : bornes `±0,50`, pas `0,10`. *Depuis la v2.82.0* : **toute valeur finie** de l'échelle pH est acceptée — seule la **salubrité de domaine** est refusée (`NaN`/infini/\|valeur\| > `kPhOffsetScaleSpan` = 14,0). Dans tous les cas, l'offset est **arrondi** au plus proche multiple de `kPhOffsetStep` = **0,10** par la fonction pure `roundPhOffsetToStep()` — partagée par la route de sauvegarde et par la **migration NVS** ; elle **n'écrête plus** depuis feature-168 (elle clampait avant, ⛔ ne pas réintroduire ce clamp : cf. [ADR-0114](../adr/0114-correction-mesure-ph-sans-borne-de-reglage.md)). L'écart maximal introduit par l'arrondi est de 0,05 pH, soit le bruit résiduel du filtre. Offset `NaN` ⇒ 0,00 (neutre), jamais `−0,0`.
 
-**Bornes servies au client, jamais codées en dur.** `GET /get-config` publie six champs dérivés des constantes firmware — `ph_target_min`, `ph_target_max`, `ph_target_step`, `ph_offset_min`, `ph_offset_max`, `ph_offset_step`. Le frontend n'en code aucune : élargir la plage ou passer de 4 à 5 positions se fait **côté firmware seul**. Aucun miroir de seuil de sécurité ne subsiste côté client — les seuils sont fixes et ne dépendent plus de l'offset, il n'y a plus rien à recalculer ([page-ph.md](../features/page-ph.md)).
+**Bornes servies au client, jamais codées en dur.** `GET /get-config` publie `ph_target_min`, `ph_target_max`, `ph_target_step`, `ph_offset_step`, dérivés des constantes firmware. ⛔ **`ph_offset_min`/`ph_offset_max` n'existent plus** depuis la v2.82.0 — ils sont remplacés par six champs qui servent les seuils d'**avertissement**, de **péremption** et d'**impasse** (`ph_offset_unusual_abs`, `ph_offset_confirm_interval_days`, `ph_offset_impasse_threshold`, `ph_offset_impasse_threshold_high`, `ph_raw_floor_absolute`, `ph_raw_ceiling_absolute`), jamais écrits en dur côté client (ADR-0100) et cités par les textes d'avertissement de l'écran de réglage. Le frontend n'en code aucun : élargir la plage de consigne ou changer un seuil se fait **côté firmware seul** ([page-ph.md](../features/page-ph.md)).
 
-**Suppressions** : `phRawFloorFor()`, `kPhRealFloorTarget`, `kPhRawFloorAbsolute`, `kPhOffsetWideThreshold`, `checkPhTargetReachable()`, `isPhTargetUnreachable()`, `kPhTargetFloorMarginMin` et l'alerte MQTT `ph_target_unreachable` **n'existent plus** : la marge est devenue structurelle (garantie par les `static_assert`), il n'y a donc plus rien à détecter à l'exécution.
+**Suppressions v2.25.0** : `phRawFloorFor()`, `kPhRealFloorTarget`, `kPhOffsetWideThreshold`, `checkPhTargetReachable()`, `isPhTargetUnreachable()`, `kPhTargetFloorMarginMin` et l'alerte MQTT `ph_target_unreachable` **n'existent plus** depuis cette version : la marge sur la consigne est devenue structurelle (garantie par les `static_assert`), il n'y a donc plus rien à détecter à l'exécution.
+
+⚠️ **Collision de nom à ne pas confondre** : la liste ci-dessus (v2.25.0) comptait `kPhRawFloorAbsolute` parmi les symboles supprimés — c'était alors une constante **différente**, retirée de la formule du plancher continu abandonnée. **La v2.82.0 (feature-168) introduit une constante portant EXACTEMENT LE MÊME NOM**, `kPhRawFloorAbsolute`, avec un sens et une valeur différents : le filet chimique **absolu** sur le pH brut (**5,50**), qui remplace la dérivation de `kPhFloorRawHard` — voir [Pourquoi les filets bruts valent exactement 5,50 et 8,50](#pourquoi-les-filets-bruts-valent-exactement-550-et-850-v2820) plus haut et [ADR-0113](../adr/0113-filets-ph-bruts-absolus-independants-de-loffset.md).
 
 #### Persistance de la bascule automatique en manuel (v2.20.3)
 
@@ -749,7 +775,7 @@ Deux seuils, **OU logique**, appliqués aux branches automatique **et** programm
 | Seuil | Référentiel | Rôle |
 |---|---|---|
 | `kPhOrpInhibit` = `7,60` (relâche ≈ 7,55) | **corrigé** | chlore peu actif → la régulation ORP surdoserait |
-| `kPhCeilingRawHard` = `8,10` (relâche `8,05`) | **brut** | butée inconditionnelle contre un offset **négatif** saisi à tort, qui masquerait une eau réellement haute |
+| `kPhCeilingRawHard` = `8,50` (relâche `8,45`) — ⚠️ **était `8,10`/`8,05` avant la v2.82.0**, dérivée de l'ancienne borne d'offset ; constante absolue depuis feature-168, [ADR-0113](../adr/0113-filets-ph-bruts-absolus-independants-de-loffset.md) | **brut** | butée inconditionnelle contre un offset **négatif** saisi à tort, qui masquerait une eau réellement haute |
 
 > La relâche est écrite `kPhOrpInhibit − kPhGuardReleaseHysteresis` et **jamais** en littéral `7.55f` : en `float` l'expression vaut 7,5499997, donc à 7,55 pile la garde bloque encore. Écart de 3e−7 pH, cinq ordres sous le bruit du filtre, et il penche du côté **bloquant** — fail-closed.
 
@@ -765,7 +791,7 @@ Deux correctifs de revue v2.25.0, tous deux issus de cas observés :
 
 **Anti-rafale d'alertes** : une alerte est émise **uniquement** si la gravité du motif courant **dépasse** celle déjà signalée dans l'épisode (butée brute `3` > seuil corrigé `2` > mesure absente `1`). La re-qualification ne va donc jamais en dégradation, et une gravité déjà signalée ne réémet rien. La mémoire n'est remise à zéro qu'à la **levée** de l'inhibition — jamais avant, sinon l'épisode se scinderait et la rafale reviendrait.
 
-**Libellés honnêtes** : quand la mesure est retombée **dans la bande de relâche** (l'hystérésis peut rester armée après un effacement de latch), le message ne prétend pas « au-dessus de 8,10 » mais « maintenu dans la bande d'hystérésis de la butée 8,10 (relâche à 8,05) ». Et l'offset n'est mis en cause que s'il est réellement **négatif** : à offset ≥ 0 le pH corrigé est au moins égal au brut, l'eau est réellement haute, et accuser l'offset est un contresens (c'est l'accusation que recevait le bassin à offset 0,00).
+**Libellés honnêtes** : quand la mesure est retombée **dans la bande de relâche** (l'hystérésis peut rester armée après un effacement de latch), le message ne prétend pas « au-dessus de la butée » mais « maintenu dans la bande d'hystérésis de la butée » (valeurs actuelles : **8,50**, relâche à **8,45** — `8,10`/`8,05` avant la v2.82.0). Et l'offset n'est mis en cause que s'il est réellement **négatif** : à offset ≥ 0 le pH corrigé est au moins égal au brut, l'eau est réellement haute, et accuser l'offset est un contresens (c'est l'accusation que recevait le bassin à offset 0,00).
 
 #### Règle : une cause latchée ne porte jamais une mesure vive (v2.57.1)
 
@@ -779,6 +805,8 @@ Deux correctifs de revue v2.25.0, tous deux issus de cas observés :
 |---|---|---|
 | `pH trop élevé (8.28) — dosage chlore suspendu` | `pH trop élevé (seuil 7.60) — dosage chlore suspendu` | `pH trop élevé (seuil 7.6) — dosage chlore suspendu` ([`pump_controller.cpp:1524`](../../src/pump_controller.cpp:1524), `kPhOrpInhibit`) |
 | `pH brut en butée haute (8.14) — dosage chlore suspendu` | `pH brut en butée haute (butée 8.10) — dosage chlore suspendu` | `pH brut en butée haute (butée 8.1) — dosage chlore suspendu` ([`pump_controller.cpp:1487`](../../src/pump_controller.cpp:1487), `kPhCeilingRawHard`) |
+
+⚠️ **Valeurs historiques** : le tableau ci-dessus documente un changement de **format** (nombre de décimales), à l'époque où `kPhCeilingRawHard` valait `8,10`. Depuis la v2.82.0 (feature-168), cette constante vaut **`8,50`** ([ADR-0113](../adr/0113-filets-ph-bruts-absolus-independants-de-loffset.md)) — le format (une décimale) et le mécanisme sont inchangés, seule la valeur numérique diffère ; le texte produit aujourd'hui est `pH brut en butée haute (butée 8.5) — dosage chlore suspendu`.
 
 ⚠️ **feature-150 (2026-10-10)** : ces deux textes sont passés de deux à **une** décimale, pour la
 même raison que les causes pH ci-dessous — `kPhCeilingRawHard` est la **même constante** que
@@ -829,18 +857,23 @@ Une injection **en cours** n'est pas interrompue par un changement d'offset : le
 
 | Constante | Valeur | Rôle |
 |---|---:|---|
-| `kPhOffsetMin` / `kPhOffsetMax` / `kPhOffsetStep` | `−0.50` / `+0.50` / `0.10` pH | Bornes et pas de l'**offset** (validation serveur, refus 400, arrondi au pas) |
+| `kPhOffsetStep` | `0.10` pH | Pas d'arrondi de l'**offset** (`roundPhOffsetToStep()`, sans écrêtage depuis feature-168). ⛔ `kPhOffsetMin`/`kPhOffsetMax` **n'existent plus** depuis la v2.82.0 (décision utilisateur, [ADR-0114](../adr/0114-correction-mesure-ph-sans-borne-de-reglage.md)) |
+| `kPhOffsetScaleSpan` | `14.0` pH | **v2.82.0** — Salubrité de domaine (pas une borne de réglage) : `isPhOffsetValid()` refuse `NaN`/infini/\|offset\| au-delà. Jamais servie au client (ADR-0100) |
+| `kPhOffsetUnusualAbs` | `0.50` pH | **v2.82.0** — Ancienne borne de réglage (feature-067→feature-155), conservée comme **SIGNAL** d'un défaut matériel possible : pilote l'avertissement UI, le log+alerte MQTT `ph_offset_unusual`, une cause de péremption |
+| `kPhOffsetImpasseThreshold` / `…High` | `1.20` / `−0.90` pH (calculées) | **v2.82.0** — Seuils d'entrée en **zone d'impasse** (`kPhFloorCorrected − kPhRawFloorAbsolute` / `kPhCeilingCorrected − kPhRawCeilingAbsolute`), voir [Zone d'impasse de régulation](#zone-dimpasse-de-régulation-v2820) |
+| `kPhOffsetConfirmIntervalDays` | `30` jours | **v2.82.0** — Péremption d'une correction inhabituelle non reconfirmée (cause `expiration` de `ph_offset_stale`) |
 | `kPhTargetMin` / `kPhTargetMax` / `kPhTargetStep` | `7.20` / `7.50` / `0.10` pH | **v2.25.0** — Plage et pas de la **consigne** pH, source unique dont tout dérive (HTTP 400, refus MQTT, clamp NVS, auto-discovery HA, `/get-config`) |
 | `kPhSafetyMargin` | `0.50` pH | **v2.25.0** — Distance consigne basse ↔ refus d'ACIDIFIER |
 | `kPhHighMargin` | `0.10` pH | **v2.25.0** — Distance consigne haute ↔ refus d'ALCALINISER (asymétrie assumée) |
 | `kPhOrpInhibitMargin` | `0.10` pH | **v2.25.0** — Garde-fou **structurel** consigne haute ↔ inhibition ORP. N'entre dans **aucun** calcul de dosage : n'existe que pour le `static_assert` |
 | `kPhFloorCorrected` | `6.70` pH (dérivé) | **v2.25.0** — Refus d'**ACIDIFIER** (`ph_minus`) sur le pH **CORRIGÉ** |
 | `kPhCeilingCorrected` | `7.60` pH (dérivé) | **v2.25.0** — Refus d'**ALCALINISER** (`ph_plus`) sur le pH **CORRIGÉ** |
-| `kPhFloorRawHard` | `6.20` pH (dérivé) | **v2.25.0** — **Butée basse** sur le pH **BRUT** (offset positif saisi à tort) |
-| `kPhCeilingRawHard` | `8.10` pH (dérivé) | **v2.25.0** — **Butée haute** sur le pH **BRUT** : inhibition ORP **et** refus d'alcaliniser (offset négatif saisi à tort) |
+| `kPhRawFloorAbsolute` / `kPhRawCeilingAbsolute` | `5.50` / `8.50` pH (littéraux, justification chimique propre) | **v2.82.0** — Les deux filets chimiques **absolus** sur le pH **BRUT** ([ADR-0113](../adr/0113-filets-ph-bruts-absolus-independants-de-loffset.md)). ⚠️ Un symbole `kPhRawFloorAbsolute` **différent** a existé puis disparu en v2.25.0 — collision de nom, voir [la note dédiée](#bornes-de-la-consigne-ph-et-de-loffset-v2250) |
+| `kPhFloorRawHard` | `5.50` pH (= `kPhRawFloorAbsolute`, identité) | **v2.82.0** — **Filet bas** sur le pH **BRUT** (offset positif saisi à tort). Était `6.20`, dérivé de `kPhOffsetMax`, jusqu'à la v2.81.x |
+| `kPhCeilingRawHard` | `8.50` pH (= `kPhRawCeilingAbsolute`, identité) | **v2.82.0** — **Filet haut** sur le pH **BRUT** : inhibition ORP **et** refus d'alcaliniser (offset négatif saisi à tort). Était `8.10`, dérivé de `kPhOffsetMax`, jusqu'à la v2.81.x |
 | `kPhOrpInhibit` | `7.60` pH | Seuil d'inhibition du dosage ORP — **sur le pH CORRIGÉ** depuis la v2.25.0 |
 | `kPhLowWarn` | `7.00` pH | **v2.25.0** — Avertissement d'eau acide **NON BLOQUANT** sur le pH CORRIGÉ (ne compte ni ne bloque rien) |
-| `kPhGuardReleaseHysteresis` | `0.05` pH | **v2.25.0** — Hystérésis de relâche **commune à toutes** les gardes pH (basses, hautes, butées brutes, inhibition ORP) |
+| `kPhGuardReleaseHysteresis` | `0.05` pH | **v2.25.0** — Hystérésis de relâche **commune à toutes** les gardes pH (basses, hautes, filets bruts, inhibition ORP) |
 | `kPhSlopeHealthyMinPct` / `kPhSlopeHealthyMaxPct` | `90` / `110` % | **v2.25.0** — Fenêtre de pente « sonde saine » (message d'escalade) ; **v2.70.0** : servie au navigateur ([ADR-0100](../adr/0100-un-seuil-de-sante-est-servi-jamais-reecrit-cote-client.md)), affichée critère par critère sur [page-ph.md](../features/page-ph.md) |
 | `kPhZeroHealthyMaxMv` | `15` mV | **v2.25.0** — \|zéro\| maximal d'une sonde saine (≈ 0,25 pH) ; **v2.70.0** : idem, servie et affichée |
 | `kPhGuardRefusalMax` | `3` | Refus tolérés dans la fenêtre avant bascule en manuel (mode `automatic` **seul**) |

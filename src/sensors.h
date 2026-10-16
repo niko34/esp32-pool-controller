@@ -366,7 +366,9 @@ private:
   // de la config (refreshPhOffsetCache). Lue dans les getters CHAUDS (loopTask +
   // handlers async/MQTT) : jamais de xSemaphoreTake dans un getter — la copie est
   // un float 32 bits aligné, donc lecture/écriture atomique sur Xtensa LX6
-  // (même contrat que _lastPh). Toujours dans [kPhOffsetMin, kPhOffsetMax].
+  // (même contrat que _lastPh). ⚠️ feature-168 : plus de borne de réglage —
+  // seulement salubre (isPhOffsetValid(), NaN/inf/|valeur| > kPhOffsetScaleSpan
+  // refusés en amont).
   float _phOffset = 0.0f;
 
   // ===== feature-152 : filtres pH / ORP (chaîne à 5 étages) =====
