@@ -112,9 +112,25 @@ Trouve le binaire — le chemin exact dépend de l'environnement :
 
     ls .pio/build/*/firmware.bin
 
-Prends celui de `esp32dev_core3` (environnement de production). Copie-le sous un
-nom parlant pour l'asset, par exemple `firmware-<version>.bin` : un asset nommé
-`firmware.bin` est indistinguable d'une release à l'autre une fois téléchargé.
+Prends celui de `esp32dev_core3` (environnement de production).
+
+🔴 **JOINS-LE SOUS DEUX NOMS, ET JOINS AUSSI `littlefs.bin`.** Ce n'est pas un
+confort, c'est ce qui fait marcher la mise à jour en ligne :
+
+| Asset | Pourquoi |
+|---|---|
+| `firmware.bin` | ⛔ **NOM EXACT exigé** par `web_routes_ota.cpp` (`if (name == "firmware.bin")`). Sans lui, l'appareil trouve la release mais **aucune URL de firmware**. |
+| `littlefs.bin` | ⛔ **NOM EXACT exigé** de même (`littlefs.bin`). Sans lui, l'interface web n'est **jamais** mise à jour en ligne. Le construire avec `./build_fs.sh`. |
+| `firmware-<version>.bin` | Confort humain : un `firmware.bin` téléchargé est indistinguable d'une version à l'autre. |
+| `firmware-<version>.elf` | Symboles de débogage (voir ci-dessous). |
+
+⚠️ **ORIGINE DE CETTE RÈGLE (2026-10-16)** : entre v2.18.7 et v2.42.0, les assets
+ont été renommés `firmware-<version>.bin` — raison valable en soi — et
+`littlefs.bin` a cessé d'être joint. ⛔ **Personne n'a vu que l'updater cherchait
+les anciens noms.** La mise à jour en ligne a été silencieusement cassée pendant
+**six semaines**, et le défaut n'est apparu qu'en la testant pour de vrai.
+⇒ ⛔ Ne retire jamais `firmware.bin` ni `littlefs.bin` de cette liste sans avoir
+d'abord changé `web_routes_ota.cpp`.
 
 **Joins aussi l'ELF** — c'est lui qui porte les symboles, et **sans lui un
 coredump de cette version est indécodable**. `esp-coredump` vérifie le SHA256 de
@@ -138,9 +154,16 @@ nom, ex. `guide-d-utilisation-v2.42.pdf`).
     gh release create <version> \
       --title "<version> — <titre court>" \
       --notes-file <fichier de notes dans le scratchpad> \
+      .pio/build/esp32dev_core3/firmware.bin \
+      .pio/build/esp32dev_core3/littlefs.bin \
       <firmware-<version>.bin> \
       <firmware-<version>.elf> \
       docs/user/*.pdf
+
+Puis **vérifie la liste des assets** — `firmware.bin` et `littlefs.bin` doivent y
+figurer **au nom exact** :
+
+    gh release view <version> --json assets -q '.assets[].name'
 
 Écris les notes dans un fichier du répertoire scratchpad et utilise
 `--notes-file` : les notes multi-lignes passées en `--notes` sur la ligne de
@@ -155,6 +178,10 @@ flash relevée à l'étape 2.
 ## Rappels
 
 - Le dépôt est **privé** : les assets ne sont téléchargeables que par toi.
+  ⚠️ **Et c'est pourquoi la mise à jour EN LIGNE depuis l'appareil ne marche pas** :
+  l'API GitHub répond **404** sur un dépôt privé sans authentification, et
+  l'appareil n'envoie aucun jeton. Il affiche alors « Aucune release disponible ».
+  ⛔ Ce n'est **pas** un défaut de la release — voir bug-169.
 - N'invente jamais un numéro de version : demande-le.
 - Si une étape échoue après la création du tag, **dis-le explicitement** — un tag
   poussé sans release derrière est un état à corriger à la main
