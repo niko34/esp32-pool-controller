@@ -301,6 +301,97 @@ void test_T19_nominal_all_ok_allowed(void) {
 }
 
 // =============================================================================
+// feature-163 (gate pool-chemistry G2/G6) — garde CalibrationSessionOpen (rang 3)
+// =============================================================================
+// Session d'étalonnage OUVERTE (mqttCfg.calSessionOpen, persisté) : refuse TOUT
+// dosage, quel que soit le mode. Rang 3 — DERRIÈRE watchdog (1) et présence
+// d'eau (2, causes ABSOLUES), DEVANT NaN/calibration/mode (4, 5, 7) : pendant
+// une session, ces trois-là sont des CONSÉQUENCES de l'acte d'étalonner
+// (Cal,clear efface la calibration, Cal,mid fait dériver la lecture) —
+// les annoncer accuserait la sonde d'une panne qu'elle n'a pas (ADR-0095).
+
+// Cas de base : session ouverte, tout le reste OK → refus propre.
+void test_F163_refusal_calibration_session_open(void) {
+  DoseInputs in = validInputs();
+  in.calSessionOpen = true;
+  DoseDecision d = evaluateDose(in);
+  TEST_ASSERT_FALSE(d.allowed);
+  TEST_ASSERT_EQUAL(DoseRefusal::CalibrationSessionOpen, d.cause);
+}
+
+// ⭐ Rang 3 OBSERVABLE, pas théorique : mesure NaN ET session ouverte → la
+// cause rendue est CalibrationSessionOpen, PAS ReadingNaN.
+void test_F163_rang3_devant_reading_nan(void) {
+  DoseInputs in = validInputs();
+  in.calSessionOpen = true;
+  in.reading = NAN;
+  DoseDecision d = evaluateDose(in);
+  TEST_ASSERT_FALSE(d.allowed);
+  TEST_ASSERT_EQUAL(DoseRefusal::CalibrationSessionOpen, d.cause);
+}
+
+// Session ouverte ET calibration insuffisante (calPoints=0) ET mode non
+// automatique, simultanément → la cause reste CalibrationSessionOpen (devant
+// les trois conséquences de l'étalonnage).
+void test_F163_rang3_devant_calibration_et_mode(void) {
+  DoseInputs in = validInputs();
+  in.calSessionOpen = true;
+  in.calPoints = 0;
+  in.modeAutomatic = false;
+  DoseDecision d = evaluateDose(in);
+  TEST_ASSERT_FALSE(d.allowed);
+  TEST_ASSERT_EQUAL(DoseRefusal::CalibrationSessionOpen, d.cause);
+}
+
+// ⭐ Persistance au boot (trou G1 du verdict pool-chemistry) : calSessionOpen
+// vrai ET mode régulation DÉJÀ "manual" (modeAutomatic=false — simule le cas
+// où calSwitchActive est resté faux car pH+ORP étaient déjà en manual à
+// l'entrée en calibration) → la garde TIENT : la cause reste
+// CalibrationSessionOpen, jamais ModeNotAutomatic. C'est exactement le trou
+// que calSwitchActive laissait ouvert, dans le cas où l'utilisateur est le
+// plus prudent.
+void test_F163_persistance_boot_session_ouverte_mode_deja_manual(void) {
+  DoseInputs in = validInputs();
+  in.calSessionOpen = true;
+  in.modeAutomatic = false;
+  DoseDecision d = evaluateDose(in);
+  TEST_ASSERT_FALSE(d.allowed);
+  TEST_ASSERT_EQUAL(DoseRefusal::CalibrationSessionOpen, d.cause);
+}
+
+// Non-masquage : watchdog inactif (1) + session ouverte (3) → la cause reste
+// WatchdogInactive. Les causes ABSOLUES passent toujours AVANT.
+void test_F163_non_masquage_watchdog_devant_session(void) {
+  DoseInputs in = validInputs();
+  in.watchdogActive = false;
+  in.calSessionOpen = true;
+  DoseDecision d = evaluateDose(in);
+  TEST_ASSERT_FALSE(d.allowed);
+  TEST_ASSERT_EQUAL(DoseRefusal::WatchdogInactive, d.cause);
+}
+
+// Non-masquage : absence d'eau (2) + session ouverte (3) → la cause reste
+// FiltrationOff.
+void test_F163_non_masquage_eau_devant_session(void) {
+  DoseInputs in = validInputs();
+  in.waterPresent = false;
+  in.calSessionOpen = true;
+  DoseDecision d = evaluateDose(in);
+  TEST_ASSERT_FALSE(d.allowed);
+  TEST_ASSERT_EQUAL(DoseRefusal::FiltrationOff, d.cause);
+}
+
+// Session FERMÉE (valeur par défaut) : AUCUN refus nouveau — comportement
+// inchangé, non-régression explicite du champ ajouté.
+void test_F163_session_fermee_aucun_refus_nouveau(void) {
+  DoseInputs in = validInputs();
+  in.calSessionOpen = false;  // explicite, même si c'est déjà le défaut
+  DoseDecision d = evaluateDose(in);
+  TEST_ASSERT_TRUE(d.allowed);
+  TEST_ASSERT_EQUAL(DoseRefusal::None, d.cause);
+}
+
+// =============================================================================
 // T20 — Deadband : pas de démarrage si error <= startThreshold
 // =============================================================================
 void test_T20_deadband_no_start_below_or_at_threshold(void) {
@@ -1157,6 +1248,77 @@ void test_F161_automatic_inject_in_progress_devant_already_injecting(void) {
   TEST_ASSERT_EQUAL(ManualInjectRefusal::AutomaticInjectInProgress, d.cause);
 }
 
+// =============================================================================
+// feature-163 (gate pool-chemistry G2/G6) — garde CalibrationSessionOpen (rang 3)
+// =============================================================================
+// Même garde côté injection MANUELLE : rang 3, AVANT StabilizationActive
+// (ex-rang 3, décalée en 4) — pendant une session, la stabilisation post-cal
+// finira de toute façon par s'armer à la FERMETURE de la calibration ; la
+// cause annoncée pendant la session doit porter sur l'acte en cours, pas sur
+// sa conséquence différée.
+
+void test_F163_manual_refusal_calibration_session_open(void) {
+  ManualInjectInputs in = validManualInputs();
+  in.calSessionOpen = true;
+  ManualInjectDecision d = evaluateManualInject(in);
+  TEST_ASSERT_FALSE(d.allowed);
+  TEST_ASSERT_EQUAL(ManualInjectRefusal::CalibrationSessionOpen, d.cause);
+  TEST_ASSERT_FLOAT_WITHIN(kFloatEps, 0.0f, d.remainingMl);
+}
+
+// Rang 3 devant StabilizationActive (4) : session ouverte + stabilisation en
+// cours simultanément → la cause reste CalibrationSessionOpen.
+void test_F163_manual_rang3_devant_stabilization(void) {
+  ManualInjectInputs in = validManualInputs();
+  in.calSessionOpen = true;
+  in.stabilizationActive = true;
+  ManualInjectDecision d = evaluateManualInject(in);
+  TEST_ASSERT_FALSE(d.allowed);
+  TEST_ASSERT_EQUAL(ManualInjectRefusal::CalibrationSessionOpen, d.cause);
+}
+
+// Rang 3 devant AutomaticInjectInProgress (5, bug-161) et AlreadyInjecting (6)
+// simultanément → la cause reste CalibrationSessionOpen (devant tout, hors
+// causes ABSOLUES).
+void test_F163_manual_rang3_devant_automatic_et_already_injecting(void) {
+  ManualInjectInputs in = validManualInputs();
+  in.calSessionOpen = true;
+  in.automaticInjectInProgress = true;
+  in.alreadyInjecting = true;
+  ManualInjectDecision d = evaluateManualInject(in);
+  TEST_ASSERT_FALSE(d.allowed);
+  TEST_ASSERT_EQUAL(ManualInjectRefusal::CalibrationSessionOpen, d.cause);
+}
+
+// Non-masquage : watchdog (1) devant session ouverte (3) — cause ABSOLUE.
+void test_F163_manual_non_masquage_watchdog_devant_session(void) {
+  ManualInjectInputs in = validManualInputs();
+  in.watchdogActive = false;
+  in.calSessionOpen = true;
+  ManualInjectDecision d = evaluateManualInject(in);
+  TEST_ASSERT_FALSE(d.allowed);
+  TEST_ASSERT_EQUAL(ManualInjectRefusal::WatchdogInactive, d.cause);
+}
+
+// Non-masquage : absence d'eau (2) devant session ouverte (3) — cause ABSOLUE.
+void test_F163_manual_non_masquage_eau_devant_session(void) {
+  ManualInjectInputs in = validManualInputs();
+  in.waterPresent = false;
+  in.calSessionOpen = true;
+  ManualInjectDecision d = evaluateManualInject(in);
+  TEST_ASSERT_FALSE(d.allowed);
+  TEST_ASSERT_EQUAL(ManualInjectRefusal::FiltrationOff, d.cause);
+}
+
+// Session FERMÉE : aucun refus nouveau — non-régression explicite.
+void test_F163_manual_session_fermee_aucun_refus_nouveau(void) {
+  ManualInjectInputs in = validManualInputs();
+  in.calSessionOpen = false;
+  ManualInjectDecision d = evaluateManualInject(in);
+  TEST_ASSERT_TRUE(d.allowed);
+  TEST_ASSERT_EQUAL(ManualInjectRefusal::None, d.cause);
+}
+
 // -----------------------------------------------------------------------------
 // (e) AC3 — Partage anti-rafale AUTO/MANUEL via le ring buffer commun.
 // -----------------------------------------------------------------------------
@@ -1528,6 +1690,50 @@ void test_F011_planned_flow_diagnostic(void) {
   d = evaluateScheduledDose(in);
   TEST_ASSERT_TRUE(isnan(d.plannedFlowMlPerMin));
   TEST_ASSERT_FALSE(d.doseNow);
+}
+
+// =============================================================================
+// feature-163 (gate pool-chemistry G3/G6) — garde CalibrationSessionOpen
+// =============================================================================
+// Entrée fail-closed : posée À CÔTÉ de watchdogActive. Le mode Programmé ne
+// passe PAS par canDose()/evaluateDose() — c'est le SEUL point où cette garde
+// peut fermer ce chemin (condition G3 du gate pool-chemistry).
+
+// Session ouverte seule, tout le reste OK → refus fail-closed (même forme
+// que watchdog/horizon/débit : {false, -1, 0, NAN}).
+void test_F163_scheduled_refusal_calibration_session_open(void) {
+  ScheduledDoseInputs in = validScheduledInputs();
+  in.calSessionOpen = true;
+  assertScheduledRefusal(evaluateScheduledDose(in));
+}
+
+// Session ouverte ET plan déjà en cours de fenêtre (prevWindowIndex valide,
+// cumul loin de la cible) → refus fail-closed quand même (aucune exception).
+void test_F163_scheduled_session_ouverte_devant_plan_en_cours(void) {
+  ScheduledDoseInputs in = validScheduledInputs();
+  in.calSessionOpen = true;
+  in.prevWindowIndex = 40;         // même fenêtre que nowMin=600 → 600/15
+  in.prevStopTargetMl = 200.0f;
+  in.dailyInjectedMl = 50.0f;      // largement sous la cible d'arrêt
+  assertScheduledRefusal(evaluateScheduledDose(in));
+}
+
+// Non-régression : watchdog inactif seul (session FERMÉE) bloque toujours de
+// façon identique — le champ ajouté ne change rien au chemin existant.
+void test_F163_scheduled_watchdog_toujours_bloquant_session_fermee(void) {
+  ScheduledDoseInputs in = validScheduledInputs();
+  in.calSessionOpen = false;
+  in.watchdogActive = false;
+  assertScheduledRefusal(evaluateScheduledDose(in));
+}
+
+// Session FERMÉE, watchdog actif, tout le reste OK : AUCUN refus nouveau —
+// non-régression explicite du champ ajouté.
+void test_F163_scheduled_session_fermee_aucun_refus_nouveau(void) {
+  ScheduledDoseInputs in = validScheduledInputs();
+  in.calSessionOpen = false;
+  ScheduledDoseDecision d = evaluateScheduledDose(in);
+  TEST_ASSERT_TRUE(d.doseNow);
 }
 
 // =============================================================================
@@ -3468,6 +3674,14 @@ int main(int, char **) {
   RUN_TEST(test_T18_guard_priority_order);
   // T19 — cas nominal autorisé.
   RUN_TEST(test_T19_nominal_all_ok_allowed);
+  // feature-163 (gate G2/G6) — garde CalibrationSessionOpen (evaluateDose).
+  RUN_TEST(test_F163_refusal_calibration_session_open);
+  RUN_TEST(test_F163_rang3_devant_reading_nan);
+  RUN_TEST(test_F163_rang3_devant_calibration_et_mode);
+  RUN_TEST(test_F163_persistance_boot_session_ouverte_mode_deja_manual);
+  RUN_TEST(test_F163_non_masquage_watchdog_devant_session);
+  RUN_TEST(test_F163_non_masquage_eau_devant_session);
+  RUN_TEST(test_F163_session_fermee_aucun_refus_nouveau);
   // T20 — deadband de démarrage.
   RUN_TEST(test_T20_deadband_no_start_below_or_at_threshold);
   // feature-037 — computePidPure (cœur PID pur, Option Y).
@@ -3523,6 +3737,13 @@ int main(int, char **) {
   RUN_TEST(test_F161_watchdog_devant_automatic_inject_in_progress);
   RUN_TEST(test_F161_filtration_off_devant_automatic_inject_in_progress);
   RUN_TEST(test_F161_automatic_inject_in_progress_devant_already_injecting);
+  // feature-163 (gate G2/G6) — garde CalibrationSessionOpen (evaluateManualInject).
+  RUN_TEST(test_F163_manual_refusal_calibration_session_open);
+  RUN_TEST(test_F163_manual_rang3_devant_stabilization);
+  RUN_TEST(test_F163_manual_rang3_devant_automatic_et_already_injecting);
+  RUN_TEST(test_F163_manual_non_masquage_watchdog_devant_session);
+  RUN_TEST(test_F163_manual_non_masquage_eau_devant_session);
+  RUN_TEST(test_F163_manual_session_fermee_aucun_refus_nouveau);
   RUN_TEST(test_F006_manual_start_visible_in_shared_ring);
   RUN_TEST(test_F006_stabilization_independent_of_remaining_seconds);
   // feature-011 — evaluateScheduledDose (répartition 24 h programmée).
@@ -3538,6 +3759,11 @@ int main(int, char **) {
   RUN_TEST(test_F011_horizon_une_minute_fin_de_journee);
   RUN_TEST(test_F011_meme_fenetre_conserve_stop_target);
   RUN_TEST(test_F011_planned_flow_diagnostic);
+  // feature-163 (gate G3/G6) — garde CalibrationSessionOpen (evaluateScheduledDose).
+  RUN_TEST(test_F163_scheduled_refusal_calibration_session_open);
+  RUN_TEST(test_F163_scheduled_session_ouverte_devant_plan_en_cours);
+  RUN_TEST(test_F163_scheduled_watchdog_toujours_bloquant_session_fermee);
+  RUN_TEST(test_F163_scheduled_session_fermee_aucun_refus_nouveau);
   // feature-053 — Mode Boost : cible ORP effective.
   RUN_TEST(test_F053_orp_boost_off_target_unchanged);
   RUN_TEST(test_F053_orp_boost_on_automatic_adds_delta);

@@ -57,6 +57,18 @@ static uint8_t readTestDutyParam(AsyncWebServerRequest* req) {
 }
 
 static bool injectionAllowedOrReject(AsyncWebServerRequest* req, const char* tag) {
+  // feature-163 (gate pool-chemistry G4) : refus INCONDITIONNEL pendant une
+  // session d'étalonnage ouverte — le test de pompe démarre une pompe doseuse
+  // comme n'importe quel autre chemin recensé par le gate (G4 : « test de
+  // pompe »). AVANT la garde filtration : ⛔ pas calSwitchActive (resterait
+  // faux si pH+ORP étaient déjà "manual" à l'entrée, cf. dosing_logic.h).
+  if (mqttCfg.calSessionOpen) {
+    systemLogger.critical(String("[Sécurité] ") + tag +
+                          " refusé : étalonnage en cours (session de calibration ouverte)");
+    req->send(409, "application/json",
+              "{\"error\":\"calibration_session_open\",\"message\":\"Étalonnage en cours — injection refusée tant que la session de calibration est ouverte.\"}");
+    return false;
+  }
   // feature-056 : source UNIQUE resolveWaterPresent() (Managed/Powered/External).
   if (filtration.resolveWaterPresence().waterPresent) return true;
   systemLogger.critical(String("[Sécurité] ") + tag +
@@ -96,6 +108,10 @@ static bool manualInjectGuardOrReject(AsyncWebServerRequest* req, bool isPh,
   ManualInjectInputs in = {};
   in.watchdogActive = (esp_task_wdt_status(loopTaskHandle) == ESP_OK);
   in.waterPresent = filtration.resolveWaterPresence().waterPresent;  // feature-056 : source UNIQUE
+  // feature-163 (gate pool-chemistry G2) : session de calibration OUVERTE —
+  // SEUL prédicat lu, ⛔ pas calSwitchActive (resterait faux si pH+ORP étaient
+  // déjà "manual" à l'entrée en étalonnage, cf. dosing_logic.h).
+  in.calSessionOpen = mqttCfg.calSessionOpen;
   unsigned long stabS = PumpController.getStabilizationRemainingS(logicalIdx);
   in.stabilizationActive = (stabS > 0);
   in.stabilizationRemainingS = (uint32_t)stabS;
@@ -134,6 +150,12 @@ static bool manualInjectGuardOrReject(AsyncWebServerRequest* req, bool isPh,
     case ManualInjectRefusal::FiltrationOff:
       code = "filtration_off";
       msg = "Filtration arrêtée — injection refusée pour sécurité chimique (pas de circulation = surdosage local).";
+      break;
+    case ManualInjectRefusal::CalibrationSessionOpen:
+      // feature-163 (gate pool-chemistry G5) : texte IMPOSÉ mot pour mot — ne
+      // pas reformuler sans nouveau passage du gate pool-chemistry.
+      code = "calibration_session_open";
+      msg = "Étalonnage en cours — injection refusée tant que la session de calibration est ouverte.";
       break;
     case ManualInjectRefusal::StabilizationActive:
       code = "stabilization_in_progress";

@@ -376,20 +376,21 @@ Les conditions sont évaluées dans l'ordre suivant. Le premier `false` rencontr
 | 1 | **Index pompe valide** | `pumpIndex` ∉ {0, 1} | bug interne |
 | 2 | **Watchdog actif** | wdt non initialisé | sécurité hardware |
 | 3 | **Présence d'eau** | `filtration.resolveWaterPresence().waterPresent == false` | eau ne circule pas — risque bouchon doseuse / injection en eau stagnante. **Source unique** selon le mode d'installation (feature-056, voir [Présence d'eau selon le mode d'installation](#présence-deau-selon-le-mode-dinstallation-feature-056)) |
-| 4 | **Valeur officielle non NaN** | `getPhFiltered()` ou `getOrpFiltered()` = NaN | feature-152 (v2.68.0) : le PID consomme la valeur officielle (**corrigée** côté pH depuis feature-067) ; NaN = warmup non amorcé / sonde figée / mesure périmée / porte fermée. La cause exposée est **qualifiée** en 4 codes distincts (15-18) selon l'état interne du filtre — **seule garde restante** depuis feature-152, qui a retiré les gardes 4b/4c ci-dessous |
-| ~~4b~~ | ~~Filtre prêt~~ (feature-025) | — | **RETIRÉE en v2.68.0** (feature-152) — `isPhFilterReady()`/`isOrpFilterReady()` n'existent plus : `isnan()` de la garde 4 ci-dessus encapsule désormais directement warmup, sonde figée, péremption et porte fermée |
-| ~~4c~~ | ~~Capteur stable~~ (feature-025) | — | **RETIRÉE en v2.68.0** — `isPhFilterUnstable()`/`isOrpFilterUnstable()` n'existent plus : la médiane écarte les aberrations par construction, sans jugement d'instabilité séparé (verdict `pool-chemistry` : ce mécanisme se posait sur du bruit normal, il n'inhibait pas un danger) |
-| 5 | **EZO calibré** | `cal_points < 2` (pH) ou `< 1` (ORP). `-1` (bus down) bloque. | pool-chemistry **cond #2** : régulation auto inhibée tant que calibration incomplète |
-| 6 | **Pas de stabilisation post-cal** | `isStabilizationTimerActive(pumpIndex)` = true | pool-chemistry **cond #3** : 5 min pH / 3 min ORP après calibration EZO |
-| 6b | **Pas de pause mélange** (feature-025) | `isPhMixingDelayActive()` / `isOrpMixingDelayActive()` | homogénéisation du bassin après injection (15 min pH / 20 min ORP) — gate **indépendante** de la stabilisation post-cal |
-| 7 | **Mode régulation = `automatic`** | mode `manual` ou `scheduled` | la branche `scheduled` a sa propre logique, ne passe pas par `canDose` |
-| 8 | **Limite journalière non atteinte** | `dailyXxxInjectedMl >= maxXxxMlPerDay` | sécurité chimique config |
-| 9 | **Limite horaire non atteinte** | `usedMs >= xxxLimitMinutes × 60000` dans la fenêtre 1 h glissante (limite à 0 = désactivée) | sécurité chimique config |
-| 10 | **Anti-rafale court terme** (Pass 3.5) | > 6 cycles/min OU > 20 cycles/15 min | anti-emballement PID — voir [Ring buffer anti-rafale](#ring-buffer-anti-rafale) |
+| 4 | **Session d'étalonnage OUVERTE** (feature-163, gate G2) | `mqttCfg.calSessionOpen == true` | ⛔ pas `calSwitchActive` (resterait faux si pH+ORP étaient déjà `manual` à l'entrée en calibration) — voir [Garde rang 4 — session d'étalonnage ouverte](#garde-rang-4--session-détalonnage-ouverte-tous-modes-feature-163-adr-0115) |
+| 5 | **Valeur officielle non NaN** | `getPhFiltered()` ou `getOrpFiltered()` = NaN | feature-152 (v2.68.0) : le PID consomme la valeur officielle (**corrigée** côté pH depuis feature-067) ; NaN = warmup non amorcé / sonde figée / mesure périmée / porte fermée. La cause exposée est **qualifiée** en 4 codes distincts (15-18) selon l'état interne du filtre — **seule garde restante** depuis feature-152, qui a retiré les gardes 5b/5c ci-dessous |
+| ~~5b~~ | ~~Filtre prêt~~ (feature-025) | — | **RETIRÉE en v2.68.0** (feature-152) — `isPhFilterReady()`/`isOrpFilterReady()` n'existent plus : `isnan()` de la garde 5 ci-dessus encapsule désormais directement warmup, sonde figée, péremption et porte fermée |
+| ~~5c~~ | ~~Capteur stable~~ (feature-025) | — | **RETIRÉE en v2.68.0** — `isPhFilterUnstable()`/`isOrpFilterUnstable()` n'existent plus : la médiane écarte les aberrations par construction, sans jugement d'instabilité séparé (verdict `pool-chemistry` : ce mécanisme se posait sur du bruit normal, il n'inhibait pas un danger) |
+| 6 | **EZO calibré** | `cal_points < 2` (pH) ou `< 1` (ORP). `-1` (bus down) bloque. | pool-chemistry **cond #2** : régulation auto inhibée tant que calibration incomplète |
+| 7 | **Pas de stabilisation post-cal** | `isStabilizationTimerActive(pumpIndex)` = true | pool-chemistry **cond #3** : 5 min pH / 3 min ORP après calibration EZO |
+| 7b | **Pas de pause mélange** (feature-025) | `isPhMixingDelayActive()` / `isOrpMixingDelayActive()` | homogénéisation du bassin après injection (15 min pH / 20 min ORP) — gate **indépendante** de la stabilisation post-cal |
+| 8 | **Mode régulation = `automatic`** | mode `manual` ou `scheduled` | la branche `scheduled` a sa propre logique, ne passe pas par `canDose` |
+| 9 | **Limite journalière non atteinte** | `dailyXxxInjectedMl >= maxXxxMlPerDay` | sécurité chimique config |
+| 10 | **Limite horaire non atteinte** | `usedMs >= xxxLimitMinutes × 60000` dans la fenêtre 1 h glissante (limite à 0 = désactivée) | sécurité chimique config |
+| 11 | **Anti-rafale court terme** (Pass 3.5) | > 6 cycles/min OU > 20 cycles/15 min | anti-emballement PID — voir [Ring buffer anti-rafale](#ring-buffer-anti-rafale) |
 
-> **Conditions #1, #2, #3, #5, #6** issues du checklist `pool-chemistry` validé en cadrage feature-021. **Condition #10** ajoutée en correctif Pass 3.5. **Condition #4 (valeur officielle), #6b** ajoutées en feature-025 — toutes **fail-closed** et **prioritaires** : elles s'ajoutent aux gardes existantes sans les contourner. **#4b et #4c retirées en v2.68.0** (feature-152) : leur rôle est entièrement couvert par #4 depuis que la valeur officielle encapsule directement warmup, sonde figée, péremption et porte fermée.
+> **Conditions #1, #2, #3, #6, #7** issues du checklist `pool-chemistry` validé en cadrage feature-021. **Condition #11** ajoutée en correctif Pass 3.5. **Condition #5 (valeur officielle), #7b** ajoutées en feature-025 — toutes **fail-closed** et **prioritaires** : elles s'ajoutent aux gardes existantes sans les contourner. **#5b et #5c retirées en v2.68.0** (feature-152) : leur rôle est entièrement couvert par #5 depuis que la valeur officielle encapsule directement warmup, sonde figée, péremption et porte fermée. **Condition #4** ajoutée en **feature-163 (v2.83.0)** : voir [Garde rang 4 — session d'étalonnage ouverte](#garde-rang-4--session-détalonnage-ouverte-tous-modes-feature-163-adr-0115).
 >
-> **L'ordre et le contenu de `canDose()` sont INCHANGÉS par feature-067 comme par la refonte v2.25.0.** Les gardes pH sont évaluées **en amont**, jamais à l'intérieur : aucune valeur d'énum `DoseRefusal` n'est ajoutée, aucune garde existante n'est déplacée. feature-152 (v2.68.0) retire les gardes #4b/#4c **sans déplacer** les autres — leur numérotation reste un historique de revue, pas un contrat figé comme celui de `DoseRefusal`.
+> **L'ordre et le contenu de `canDose()` sont INCHANGÉS par feature-067 comme par la refonte v2.25.0.** Les gardes pH sont évaluées **en amont**, jamais à l'intérieur : aucune valeur d'énum `DoseRefusal` n'est ajoutée, aucune garde existante n'est déplacée. feature-152 (v2.68.0) retire les gardes #5b/#5c **sans déplacer** les autres ; feature-163 (v2.83.0) **insère** la condition #4 — leur numérotation reste un historique de revue, pas un contrat figé comme celui de `DoseRefusal`.
 
 ## Gardes de sécurité pH (refonte v2.25.0)
 
@@ -755,11 +756,17 @@ ou un second chemin d'écriture même dérivé, fait échouer le test.
 Deux défauts **constatés** pendant l'instruction du lot C, volontairement **non corrigés** ici —
 ce sont des limites connues, pas des oublis :
 
-- **Aucun garde-fou indépendant du mode** n'existe au niveau de `canDose()` pour refuser **tout**
-  dosage tant qu'un étalonnage est ouvert. Les gardes posées (HTTP, MQTT, purge au boot) protègent
-  **trois chemins nommés**, pas « le dosage pendant un étalonnage » comme propriété générale — un
-  futur quatrième chemin d'écriture du mode qui ne passerait pas par `calSwitchBlocksModeChange()`
-  rouvrirait le même risque.
+- ✅ **RÉSOLU par feature-163 (v2.83.0)** — *limite constatée ici, corrigée au premier lot suivant qui
+  l'a instruite.* Un garde-fou **indépendant du mode** existe désormais au point d'usage final de
+  chaque fonction de dosage (`evaluateDose`, `evaluateManualInject`, `evaluateScheduledDose`,
+  `injectionAllowedOrReject`) : `mqttCfg.calSessionOpen`, posé inconditionnellement à
+  `/calibration/enter`. Il ne dépend plus de l'exhaustivité d'une liste de chemins d'écriture du
+  mode — voir [Garde rang 4 — session d'étalonnage ouverte](#garde-rang-4--session-détalonnage-ouverte-tous-modes-feature-163-adr-0115)
+  et [ADR-0115](../adr/0115-une-garde-sur-etat-partage-vit-au-point-dusage-final.md). *Historique
+  (avant v2.83.0)* : les gardes posées (HTTP, MQTT, purge au boot) protégeaient **trois chemins
+  nommés**, pas « le dosage pendant un étalonnage » comme propriété générale — un quatrième chemin
+  (le mode Programmé) et un cinquième (`bug-170`, routes `/pumpN/duty/:duty`, non corrigé) ont
+  depuis confirmé le risque.
 - **Côté `ph_plus` (base), aucun plancher bas n'existe** : un tampon pH 4,0 déclencherait une
   injection de base sans aucune garde pour l'arrêter (asymétrie avec le plafond haut déjà couvert
   par l'inhibition ORP ci-dessous).
@@ -922,33 +929,34 @@ Cette valeur est résolue par la fonction **pure** `resolveWaterPresent(WaterPre
 
 ### Causes de refus (code machine ↔ String FR)
 
-`enum class DoseRefusal` ([`dosing_logic.h`](../../src/dosing_logic.h)) — l'ordre des valeurs **suit l'ordre des gardes** de `canDose()` ; les valeurs 15-18 **qualifient** la garde #4. La coquille traduit chaque valeur en une chaîne française (les valeurs runtime — points de calibration, mode, nombre de cycles — sont réinjectées au moment du formatage), **et** publie la valeur numérique telle quelle sur `/data` + WS.
+`enum class DoseRefusal` ([`dosing_logic.h`](../../src/dosing_logic.h)) — l'ordre des valeurs **suit l'ordre des gardes** de `canDose()` ; les valeurs 15-18 **qualifient** la garde #5. La coquille traduit chaque valeur en une chaîne française (les valeurs runtime — points de calibration, mode, nombre de cycles — sont réinjectées au moment du formatage), **et** publie la valeur numérique telle quelle sur `/data` + WS.
 
-> ⚠️ **CONTRAT DE SÉRIALISATION FIGÉ ([ADR-0049](../adr/0049-code-machine-de-cause-de-refus-et-etat-interne-du-filtre.md), amendé par [ADR-0097](../adr/0097-le-filtre-lisse-le-dosage-juge.md))** : ces valeurs sont **écrites explicitement** dans l'énum, **jamais renumérotées**, **jamais insérées au milieu** — toute cause nouvelle s'**ajoute à la fin** (prochaine valeur disponible : **23**), une cause retirée reste **réservée, jamais recyclée**. **18 `static_assert`** (23 avant v2.68.0 — six retirés avec les codes ci-dessous, zéro ajouté) verrouillent la correspondance valeur par valeur en tête de [`pump_controller.cpp`](../../src/pump_controller.cpp), et un `static_assert` supplémentaire garantit que l'énum ne rejoindra jamais la sentinelle `kDoseBlockedCodeGuard` = 250.
+> ⚠️ **CONTRAT DE SÉRIALISATION FIGÉ ([ADR-0049](../adr/0049-code-machine-de-cause-de-refus-et-etat-interne-du-filtre.md), amendé par [ADR-0097](../adr/0097-le-filtre-lisse-le-dosage-juge.md))** : ces valeurs sont **écrites explicitement** dans l'énum, **jamais renumérotées**, **jamais insérées au milieu** — toute cause nouvelle s'**ajoute à la fin** (prochaine valeur disponible : **25**, depuis que **24** a été prise par `CalibrationSessionOpen` en feature-163), une cause retirée reste **réservée, jamais recyclée**. **19 `static_assert`** (18 avant feature-163, 23 avant v2.68.0 — six retirés avec les codes ci-dessous, un ajouté par feature-163) verrouillent la correspondance valeur par valeur en tête de [`pump_controller.cpp`](../../src/pump_controller.cpp), et un `static_assert` supplémentaire garantit que l'énum ne rejoindra jamais la sentinelle `kDoseBlockedCodeGuard` = 250.
 
 | Code | `DoseRefusal` | Garde | Cause FR (réinjectée) |
 |---:|---|---|---|
 | 0 | `None` | — | *(aucun refus — publié `null`)* |
 | 1 | `WatchdogInactive` | #2 | watchdog inactif |
 | 2 | `FiltrationOff` | #3 | filtration arrêtée (présence d'eau résolue par `resolveWaterPresent`) |
-| 3 | `ReadingNaN` | #4 | valeur officielle indisponible (**état du filtre indéterminé**) |
-| ~~4~~ | ~~`FilterNotReady`~~ | ~~#4b~~ | **RETIRÉ en v2.68.0** (feature-152) — la garde séparée a disparu, jamais recyclé |
-| ~~5~~ | ~~`FilterUnstable`~~ | ~~#4c~~ | **RETIRÉ en v2.68.0** — la médiane écarte les aberrations par construction, jamais recyclé |
-| 6 | `CalibrationInsufficient` | #5 | calibration insuffisante (`cal=X, requis=Y`) |
-| 7 | `StabilizationActive` | #6 | stabilisation post-calibration en cours |
-| 8 | `MixingActive` | #6b | pause mélange en cours |
-| 9 | `ModeNotAutomatic` | #7 | mode régulation != automatic (`X`) |
-| 10 | `DailyLimit` | #8 | limite journalière pH / ORP atteinte |
-| 11 | `HourlyLimit` | #9 | limite horaire atteinte |
-| 12 | `CyclesPerDay` | #9 | limite cycles/jour atteinte |
-| 13 | `BurstPerMinute` | #10 | anti-rafale : N cycles dans la dernière minute |
-| 14 | `BurstPer15Min` | #10 | anti-rafale : N cycles dans les 15 dernières minutes |
-| 15 | `ReadingNaNWarmup` | #4 | valeur officielle indisponible : fenêtre de lissage en cours |
-| 16 | `ReadingNaNFrozen` | #4 | valeur officielle indisponible : **sonde figée** |
-| 17 | `ReadingNaNStale` | #4 | valeur officielle indisponible : **plus aucune mesure acceptée** |
-| 18 | `ReadingNaNGateClosed` | #4 | valeur officielle indisponible : mesures non représentatives |
-| ~~19~~-~~22~~ | ~~`FilterWarmup`/`FilterFrozen`/`FilterStale`/`FilterGateClosed`~~ | ~~#4b~~ | **RETIRÉS en v2.68.0** — qualifiaient la garde #4b, qui a disparu avec eux. Jamais recyclés |
+| 3 | `ReadingNaN` | #5 | valeur officielle indisponible (**état du filtre indéterminé**) |
+| ~~4~~ | ~~`FilterNotReady`~~ | ~~#5b~~ | **RETIRÉ en v2.68.0** (feature-152) — la garde séparée a disparu, jamais recyclé |
+| ~~5~~ | ~~`FilterUnstable`~~ | ~~#5c~~ | **RETIRÉ en v2.68.0** — la médiane écarte les aberrations par construction, jamais recyclé |
+| 6 | `CalibrationInsufficient` | #6 | calibration insuffisante (`cal=X, requis=Y`) |
+| 7 | `StabilizationActive` | #7 | stabilisation post-calibration en cours |
+| 8 | `MixingActive` | #7b | pause mélange en cours |
+| 9 | `ModeNotAutomatic` | #8 | mode régulation != automatic (`X`) |
+| 10 | `DailyLimit` | #9 | limite journalière pH / ORP atteinte |
+| 11 | `HourlyLimit` | #10 | limite horaire atteinte |
+| 12 | `CyclesPerDay` | #10 | limite cycles/jour atteinte |
+| 13 | `BurstPerMinute` | #11 | anti-rafale : N cycles dans la dernière minute |
+| 14 | `BurstPer15Min` | #11 | anti-rafale : N cycles dans les 15 dernières minutes |
+| 15 | `ReadingNaNWarmup` | #5 | valeur officielle indisponible : fenêtre de lissage en cours |
+| 16 | `ReadingNaNFrozen` | #5 | valeur officielle indisponible : **sonde figée** |
+| 17 | `ReadingNaNStale` | #5 | valeur officielle indisponible : **plus aucune mesure acceptée** |
+| 18 | `ReadingNaNGateClosed` | #5 | valeur officielle indisponible : mesures non représentatives |
+| ~~19~~-~~22~~ | ~~`FilterWarmup`/`FilterFrozen`/`FilterStale`/`FilterGateClosed`~~ | ~~#5b~~ | **RETIRÉS en v2.68.0** — qualifiaient la garde #5b, qui a disparu avec eux. Jamais recyclés |
 | ~~23~~ | ~~`CalibrationHold`~~ | — | **N'A JAMAIS ÉTÉ LIVRÉ** — envisagé pour `bug-160` (volet 2) au moment du mécanisme de bail (`cal_hold_logic`), **ABANDONNÉ avant tout déploiement** (décision utilisateur du 2026-10-13, remplacé par une bascule explicite de régulation en `manual`, voir [plus bas](#bascule-de-régulation-en-manuel-pendant-une-calibration-bug-160-volet-2)). Le code 23 n'est **jamais recyclé**, bien qu'aucune release n'ait jamais contenu `DoseRefusal::CalibrationHold` |
+| 24 | `CalibrationSessionOpen` | #4 | **AJOUTÉ en feature-163 (v2.83.0)** — session de calibration OUVERTE (`mqttCfg.calSessionOpen`). ⚠️ **L'ordinal (24, fin d'énumération) et le rang d'évaluation (#4) sont deux axes INDÉPENDANTS** : voir [Garde rang 4 — session d'étalonnage ouverte](#garde-rang-4--session-détalonnage-ouverte-tous-modes-feature-163-adr-0115) |
 | 250 | *(sentinelle `kDoseBlockedCodeGuard`)* | — | cause posée par une **garde de sécurité pH/ORP** ou par l'escalade (hors `canDose`) |
 
 **Aucun libellé ne mélange plus deux causes.** L'ancienne phrase « lecture pH/ORP filtrée indisponible (NaN) » recouvrait plusieurs causes physiques, et l'interface en extrayait un fragment de texte : une **vraie panne d'EZO** s'affichait « Stabilisation du filtre ». Le code 3 subsiste pour le cas où l'état du filtre n'a **pas** été collecté (`DoseFilterState::Unknown`) et dit alors explicitement qu'il ne sait pas — pire cas : une cause **imprécise**, jamais une panne maquillée en état normal. **Depuis v2.68.0** (feature-152), il n'existe plus qu'**une seule** famille de qualification (15-18, garde #4) : la garde #4b et ses quatre qualifications symétriques (19-22) ont disparu avec le mécanisme « filtre non prêt » séparé.
@@ -1037,22 +1045,132 @@ Incident fondateur (2026-10-02) : après des pluies diluviennes, les deux voies 
 |---|-------|----------|-----------------|
 | 1 | Watchdog actif | wdt inactif sur `loopTask` | — |
 | 2 | Présence d'eau | `resolveWaterPresence().waterPresent == false` (feature-056 : `managed`→filtration commandée, `powered`→toujours vrai, `external`→signal récent) | — |
-| 3 | Stabilisation post-cal | fenêtre active **pour la pompe visée** | — |
-| 4 | **Injection automatique en cours** (bug-161, gate C1) | `PumpController.isPhDosing()` / `isOrpDosing()` vrai **sur cette pompe** | — |
-| 5 | Double démarrage | injection manuelle déjà active sur cette pompe | — |
-| 6 | Limite journalière **prédictive** | `cumul + volume demandé > max` (limite ≤ 0 = illimité) | `==` **acceptée** (strict `>`) ; `remaining_ml` renseigné dans le refus |
-| 7 | Limite horaire **prédictive** | `usedMs + durée demandée > limite` (limite 0 = illimité) | `==` acceptée (strict `>`) ; budget **partagé** avec l'auto ([ADR-0020](../adr/0020-budget-horaire-dosage-unique.md)) |
-| 8 | Cycles/jour | `cyclesToday >= maxCyclesPerDay` (compteur partagé auto + manuel) | `>=` (identique à l'auto) |
-| 9 | Anti-rafale 1 min | `>= 6` démarrages dans la fenêtre (ring partagé) | `>=` |
-| 10 | Anti-rafale 15 min | `>= 20` démarrages dans la fenêtre (ring partagé) | `>=` |
+| 3 | **Session d'étalonnage OUVERTE** (feature-163, gate G2) | `mqttCfg.calSessionOpen == true` | ⛔ pas `calSwitchActive` — voir [Garde rang 4 — session d'étalonnage ouverte](#garde-rang-4--session-détalonnage-ouverte-tous-modes-feature-163-adr-0115) (le rang d'évaluation manuel est 3, distinct du rang 4 côté `canDose()`) |
+| 4 | Stabilisation post-cal | fenêtre active **pour la pompe visée** | — |
+| 5 | **Injection automatique en cours** (bug-161, gate C1) | `PumpController.isPhDosing()` / `isOrpDosing()` vrai **sur cette pompe** | — |
+| 6 | Double démarrage | injection manuelle déjà active sur cette pompe | — |
+| 7 | Limite journalière **prédictive** | `cumul + volume demandé > max` (limite ≤ 0 = illimité) | `==` **acceptée** (strict `>`) ; `remaining_ml` renseigné dans le refus |
+| 8 | Limite horaire **prédictive** | `usedMs + durée demandée > limite` (limite 0 = illimité) | `==` acceptée (strict `>`) ; budget **partagé** avec l'auto ([ADR-0020](../adr/0020-budget-horaire-dosage-unique.md)) |
+| 9 | Cycles/jour | `cyclesToday >= maxCyclesPerDay` (compteur partagé auto + manuel) | `>=` (identique à l'auto) |
+| 10 | Anti-rafale 1 min | `>= 6` démarrages dans la fenêtre (ring partagé) | `>=` |
+| 11 | Anti-rafale 15 min | `>= 20` démarrages dans la fenêtre (ring partagé) | `>=` |
 
 **Volontairement absents** (le manuel est aveugle à la mesure — l'opérateur assume la décision chimique) : gardes NaN / filtre capteur / calibration / mode de régulation / pause mélange. Le volume/durée évalués sont **post-plafonnement** `kManualInjectMaxDurationS` (condition pool-chemistry #3 : on évalue ce qui sera vraiment injecté).
 
-### Garde rang 4 — injection automatique en cours (bug-161, gate C1)
+### Garde rang 4 — session d'étalonnage ouverte, TOUS modes (feature-163, ADR-0115)
+
+⚠️ **Historique du trou, en trois actes.** bug-160 (volet 2) protégeait l'étalonnage en
+**basculant le mode** de régulation en `manual` à l'entrée (`POST /calibration/enter`), puis
+verrouillait **chaque chemin nommé** capable de réécrire ce mode — HTTP (`/save-config`), MQTT
+(`ph|orp_regulation_mode/set`), écriture directe d'`orp_enabled` (feature-161, lot C). ⚠️ **Cette
+liste s'est révélée fausse trois fois**, et le gate `pool-chemistry` en a trouvé une **quatrième**
+en instruisant cette spec : le mode **Programmé** ne passe pas par `canDose()`/`evaluateDose()` —
+aucune des gardes ci-dessus ne pouvait donc jamais le voir. Et une **cinquième** hors périmètre de
+ce lot : les routes `/pumpN/duty/:duty` (`bug-170`, ouvert en critique, voir plus bas).
+
+⇒ **Changement de méthode, pas seulement un chemin de plus fermé.** La garde ne protège plus un
+**mode** qu'il faut rattraper sur chaque chemin d'écriture : elle est posée **au point d'usage
+final** de la décision de dosage elle-même — `evaluateDose()`, `evaluateManualInject()`,
+`evaluateScheduledDose()` et `injectionAllowedOrReject()` (test de pompe). Peu importe **qui** a
+changé le mode et **comment**, la pompe ne part pas tant que la session est ouverte. Voir
+[ADR-0115](../adr/0115-une-garde-sur-etat-partage-vit-au-point-dusage-final.md) pour la règle
+généralisée.
+
+#### Le prédicat : `mqttCfg.calSessionOpen`, PAS `calSwitchActive`
+
+🔴 **Le trou que la spec elle-même n'avait pas vu** (trouvé par le gate `pool-chemistry`) :
+`calSwitchActive` reste **faux** quand pH **et** ORP sont **déjà** en `manual` à l'entrée en
+calibration — `/calibration/enter` n'ouvre alors **aucune** session de bascule (rien à mémoriser,
+rien à restaurer). C'est exactement le cas où l'utilisateur est **le plus prudent** (régulation
+déjà coupée avant même d'étalonner) — et c'est exactement le cas où une garde fondée sur
+`calSwitchActive` serait **morte**.
+
+⇒ Un drapeau **distinct et persisté**, `mqttCfg.calSessionOpen` (NVS `cal_sess_open`, défaut
+`false`), posé **inconditionnellement** par `/calibration/enter` — y compris quand ni pH ni ORP ne
+basculent — et effacé par `/calibration/exit`, **qu'une bascule de mode ait eu lieu ou non**. C'est
+le **seul** prédicat lu par les trois fonctions pures de dosage.
+
+- **Persisté** : la garde tient **dès le boot** si l'appareil redémarre pendant une session ouverte
+  — pas de mécanisme neuf requis, la relecture NVS suffit (`config.cpp`).
+- **Exclu de la purge défensive** de `calSwitchActive` (`config.cpp:643-655`) : cette purge ne vise
+  que la **trace de bascule de mode** ; `calSessionOpen` doit rester actif tant que
+  `/calibration/exit` n'a pas été appelé, y compris si `phRegulationMode`/`orpRegulationMode` ont
+  déjà quitté `manual` par un autre chemin.
+
+#### Rang d'évaluation : 4 (`canDose()`/`evaluateDose`), 3 (`evaluateManualInject`), fail-closed (`evaluateScheduledDose`)
+
+| Fonction | Rang | Justification ([ADR-0095](../adr/0095-une-cause-de-garde-cite-un-seuil-pas-une-mesure.md)) |
+|---|---|---|
+| `evaluateDose()` (canDose #4) | **Derrière** watchdog (1) et présence d'eau (2, causes **absolues**), **devant** NaN (5), calibration insuffisante (6), mode (8) | pendant une session, ces trois-là sont des **conséquences** de l'acte d'étalonner (`Cal,clear` efface la calibration, `Cal,mid` fait dériver la lecture) — les annoncer **accuserait la sonde** d'une panne qu'elle n'a pas |
+| `evaluateManualInject()` | **Derrière** watchdog (1) et présence d'eau (2), **devant** stabilisation post-cal (4, ex-rang 3) | pendant une session, la stabilisation post-cal **finira de toute façon** par s'armer à la fermeture de la calibration — la cause annoncée doit porter sur l'acte **en cours**, pas sur sa conséquence différée |
+| `evaluateScheduledDose()` | **À côté de** `watchdogActive`, dans l'entrée fail-closed (pas de rang numéroté — cette fonction n'a pas de liste ordonnée comme les deux autres) | **seul** point où cette garde peut fermer ce chemin, puisque le Programmé ne passe pas par `canDose()`/`evaluateDose()` |
+
+⚠️ **Ordinal de l'énum ⛔ indépendant du rang d'évaluation** (même patron que la garde rang 5
+ci-dessous) : `DoseRefusal::CalibrationSessionOpen = 24` et
+`ManualInjectRefusal::CalibrationSessionOpen = 11`, ajoutés **en fin d'énumération** — aucune
+valeur existante renumérotée.
+
+#### Fermeture d'un cycle Programmé déjà actif (G3)
+
+Le mode `scheduled` n'étant pas gardé par `canDose()`, une session de calibration ouverte **pendant**
+qu'un cycle Programmé tourne devait être fermée par un chemin séparé : `mqttCfg.calSessionOpen` a
+été ajouté à la conjonction de suspension globale d'`updateDosingCore()`
+(`!filtrationOk || stabilizationActive || flowAssistSuspend || mqttCfg.calSessionOpen`), aux côtés
+de la perte de filtration et de la stabilisation post-cal — **même fermeture rituelle** (pause
+mélange armée, pompes coupées, comptabilité réglée). L'interruption **immédiate** d'une session déjà
+en cours **à l'entrée** en calibration reste couverte par le drapeau one-shot
+`_calEntryInterruptRequested` existant (gate 5, C6) ; ce bloc-ci couvre le cas où la session
+**s'ouvre pendant** qu'un cycle Programmé est en cours.
+
+#### Test de pompe (G4) — `injectionAllowedOrReject()`
+
+`/pump1/on` et `/pump2/on` partagent `injectionAllowedOrReject()` avec le reste des routes de test
+: la garde `calSessionOpen` y est posée **avant** la garde filtration (refus **inconditionnel**,
+aucune exception). ⚠️ **`/pump1/duty/:duty` et `/pump2/duty/:duty` n'appellent PAS cette fonction**
+— elles démarrent `setManualPump()` directement, **sans aucune garde**, ni celle-ci ni la
+filtration. C'est **ce lot qui a trouvé ce 5ᵉ chemin** en recensant tous les démarrages de pompe
+possibles ; il a été jugé **hors périmètre** de feature-163 et ouvert séparément en
+[`bug-170`](../../specs/features/todo/bug-170-routes-duty-demarrent-une-pompe-sans-aucune-garde.md)
+(critique, non corrigé à ce jour).
+
+#### Textes imposés (G5)
+
+- Log `critical`, émis **une fois** par transition (même anti-spam que `logRefusalOnce()`) :
+  `[Sécurité] Dosage refusé : étalonnage en cours (session de calibration ouverte) — aucune
+  injection tant que la session n'est pas fermée`
+- Libellé de cause (réinjecté dans les réponses texte/`/data`) : `étalonnage en cours (session de
+  calibration ouverte)`
+- Corps HTTP **409** (injection manuelle **et** test de pompe) :
+  `{"error":"calibration_session_open","message":"Étalonnage en cours — injection refusée tant que
+  la session de calibration est ouverte."}`
+
+Voir [API.md](../API.md#codes-de-refus-409-v260).
+
+#### Limite assumée, pas un oubli
+
+⛔ **Décision explicite de l'utilisateur (2026-10-17)**, non reprise par ce lot :
+- **Chloration de secours pendant un étalonnage** : **non gérée** — le refus de dosage s'applique
+  **sans exception**, secours compris. *« L'étalonnage n'est pas censé durer longtemps. »*
+- **Session jamais refermée** : **aucun mécanisme neuf** (pas d'expiration, pas de fermeture
+  automatique) — une session laissée ouverte gèle **tout** dosage, secours compris, jusqu'à sa
+  fermeture manuelle. Les avertissements déjà présents sur l'écran de calibration (bandeau, alerte
+  d'oubli 2 h puis 6 h — voir [page-ph.md](../features/page-ph.md#bandeau-de-bascule-en-manuel-ph-cal-switch-banner--orp-cal-switch-banner-bug-160)) font foi.
+
+#### Testabilité native (feature-163)
+
+17 tests dédiés dans `test/test_native_dosing/test_dosing_decision.cpp` (préfixe `test_F163_*`) :
+7 sur `evaluateDose` (refus de base, rang 4 devant NaN/calibration/mode simultanés, persistance au
+boot avec mode déjà `manual`, non-masquage des causes absolues, non-régression session fermée), 6
+sur `evaluateManualInject` (même patron, rang 3 devant stabilisation/injection auto/déjà en cours),
+4 sur `evaluateScheduledDose` (refus fail-closed, devant un plan déjà en cours de fenêtre,
+non-régression). **165 `RUN_TEST` au total dans ce fichier au 2026-10-17** (était 148 avant ce lot
+— à **mesurer**, pas à recopier, cf. CLAUDE.md ADR-0073).
+
+### Garde rang 5 — injection automatique en cours (bug-161, gate C1)
 
 ⚠️ **Ce trou existait depuis feature-006, mais était INATTEIGNABLE** : `web_routes_control.cpp`
 ne regardait jusqu'ici que `manualInjectPh.active` / `manualInjectOrp.active` (double démarrage
-**manuel**, rang 5) — jamais un dosage **automatique** en cours. En pratique, cela ne mordait
+**manuel**, rang 6) — jamais un dosage **automatique** en cours. En pratique, cela ne mordait
 jamais : le bouton d'injection manuelle restait **masqué** tant que le mode n'était pas `manual`
 (`app.js`, `updatePhModeControls()`/`updateOrpModeControls()`), et le mode automatique ne pouvait
 donc jamais être actif en même temps que le bouton visible.
@@ -1068,19 +1186,21 @@ sur la **même pompe**. Le gate `pool-chemistry` a donc imposé une garde `Autom
 > restriction d'affichage que l'on s'apprêtait à lever. Une simplification d'interface a failli
 > ouvrir un chemin de dosage.
 
-**Pourquoi le rang 4, précisément** (`web_routes_control.cpp:103`, `dosing_logic.h` /
-`dosing_logic.cpp`) :
+**Pourquoi le rang 5, précisément** (`web_routes_control.cpp:103`, `dosing_logic.h` /
+`dosing_logic.cpp`) — ⚠️ **était le rang 4 avant feature-163** (v2.83.0), décalé d'un cran par
+l'insertion de la [garde rang 3, session d'étalonnage ouverte](#garde-rang-4--session-détalonnage-ouverte-tous-modes-feature-163-adr-0115) :
 
-- **Derrière** Watchdog (1) et Présence d'eau (2) : une cause **absolue** (rien ne doit jamais
-  injecter sans watchdog ou sans eau) ne doit jamais être masquée par une cause plus bénigne.
-- **Devant** le double démarrage manuel (5) et les quotas (6-10, [ADR-0095](../adr/0095-une-cause-de-garde-cite-un-seuil-pas-une-mesure.md)
+- **Derrière** Watchdog (1), Présence d'eau (2) et session d'étalonnage ouverte (3, feature-163) :
+  une cause **absolue** (rien ne doit jamais injecter sans watchdog, sans eau, ou pendant un
+  étalonnage) ne doit jamais être masquée par une cause plus bénigne.
+- **Devant** le double démarrage manuel (6) et les quotas (7-11, [ADR-0095](../adr/0095-une-cause-de-garde-cite-un-seuil-pas-une-mesure.md)
   : « la cause annoncée doit être celle qui mord en premier ») : un chevauchement avec l'automatique
   est une cause plus informative qu'un quota, s'il se produit en même temps.
 
 ⚠️ **Contrat de numérotation verrouillé par `static_assert`** (`dosing_logic.cpp`) : l'**ordinal**
 de `ManualInjectRefusal::AutomaticInjectInProgress` (`= 10`, en **fin d'énumération**, pour ne
 renuméroter aucune valeur existante — elles sont persistées indirectement via le code machine
-JSON du refus) est **indépendant** du **rang d'évaluation** (4, documenté par les commentaires
+JSON du refus) est **indépendant** du **rang d'évaluation** (5, documenté par les commentaires
 numérotés d'`evaluateManualInject()`). Toute cause future s'ajoute à la fin de l'énum, quel que
 soit son rang d'évaluation réel — ne **jamais** renuméroter ni insérer au milieu.
 
@@ -1089,9 +1209,10 @@ soit son rang d'évaluation réel — ne **jamais** renuméroter ni insérer au 
 [API.md](../API.md#codes-de-refus-409-v260).
 
 **Testabilité native** : 5 tests dédiés (`test/test_native_dosing/test_dosing_decision.cpp`,
-préfixe `test_F161_*`) — refus seul, devant les quotas (5-10), derrière Watchdog (1) et
-FiltrationOff (2), devant AlreadyInjecting (5). `evaluateManualInject` compte désormais **22**
-tests dédiés au total (17 `test_F006_*` + 5 `test_F161_*`, était 17 avant ce lot).
+préfixe `test_F161_*`) — refus seul, devant les quotas (7-11), derrière Watchdog (1) et
+FiltrationOff (2), devant AlreadyInjecting (6). `evaluateManualInject` compte désormais **28**
+tests dédiés au total (17 `test_F006_*` + 5 `test_F161_*` + 6 `test_F163_manual_*`, était 22 avant
+feature-163 — voir [Testabilité native (feature-163)](#testabilité-native-feature-163) ci-dessus).
 
 ⚠️ **bug-160 (volet 2, REFONTE 2026-10-13)** : pas de garde dédiée ici pour la calibration — une
 injection manuelle déjà active est **interrompue immédiatement** par `POST /calibration/enter`
@@ -1109,7 +1230,12 @@ repose sur l'interruption à l'entrée, pas sur un refus à la demande suivante.
 
 **Garde watchdog et tâches** : les handlers AsyncWebServer tournent dans `async_tcp`, non abonnée à la TWDT — `esp_task_wdt_status(NULL)` y renverrait toujours NOT_FOUND. La garde interroge donc `esp_task_wdt_status(loopTaskHandle)` (la tâche qui exécute le dosage).
 
-**Routes de test `/pump1/on`, `/pump2/on`** : gardées **uniquement** sur la filtration (helper `injectionAllowedOrReject()`, pas de volume demandé → pas de garde volumétrique), désormais au **même format 409 JSON** (`filtration_off`). Leur temps de marche consomme le budget horaire partagé (cf. ci-dessus).
+**Routes de test `/pump1/on`, `/pump2/on`** : gardées sur la filtration **et**, depuis feature-163
+(v2.83.0), sur la session d'étalonnage ouverte — helper `injectionAllowedOrReject()`, pas de volume
+demandé → pas de garde volumétrique —, au **même format 409 JSON** (`filtration_off` /
+`calibration_session_open`). Leur temps de marche consomme le budget horaire partagé (cf.
+ci-dessus). ⚠️ **`/pump1/duty/:duty` et `/pump2/duty/:duty` n'ont AUCUNE de ces deux gardes** —
+voir [bug-170](#test-de-pompe-g4--injectionallowedorreject) ci-dessus.
 
 > ✅ **Bypass `pump_test` UART : FERMÉ en v2.17.0 (feature-065)**. Jusqu'en v2.16.x, l'action `run_action/pump_test` du protocole écran LVGL (`uart_commands`, supprimé) appelait `setManualPump()` **sans passer par `evaluateManualInject()`** — bypass assumé car l'écran n'a jamais été déployé (condition pool-chemistry #4, feature-006 : « à garder si l'écran est mis en service »). Le retrait complet du support écran supprime cette voie non gardée : **toutes** les activations manuelles restantes passent par les gardes web.
 
@@ -1117,7 +1243,7 @@ repose sur l'interruption à l'entrée, pas sur un refus à la demande suivante.
 
 **Routes d'arrêt** (`/ph/inject/stop`, `/orp/inject/stop`, `/pump[12]/off`) : **inconditionnelles** — pouvoir arrêter en toute circonstance, y compris pendant une stabilisation.
 
-**Crédit plancher à la fin naturelle (v2.9.1)** : le cumul journalier de sécurité (`dailyPhInjectedMl` / `dailyOrpInjectedMl`) est alimenté par **intégration débit × temps** (`updateSafetyTracking` à l'époque — depuis v2.21.0 : `accountPumpVolume` + `creditInjectedVolume`, voir [Comptabilité du volume](#comptabilité-du-volume-p4)), qui perd systématiquement quelques dixièmes de mL aux bornes d'une injection manuelle volumée : arrondi de `durationS` à la seconde entière, tranche entre le démarrage réel (handler async) et le premier tick de comptage, et surtout **dernière tranche jamais comptée** (`updateManualInject()` coupe la pompe à l'expiration → au tick suivant le delta final est jeté). La garde d'acceptation raisonnant, elle, en **volume exact** (garde #6, frontière `==` acceptée), demander exactement le reliquat du quota (limite 50 mL, injection 50 mL) laissait le cumul à 49,x → `ph/orp_limit_reached` jamais latché, badge dashboard « Cumul 98 % » figé.
+**Crédit plancher à la fin naturelle (v2.9.1)** : le cumul journalier de sécurité (`dailyPhInjectedMl` / `dailyOrpInjectedMl`) est alimenté par **intégration débit × temps** (`updateSafetyTracking` à l'époque — depuis v2.21.0 : `accountPumpVolume` + `creditInjectedVolume`, voir [Comptabilité du volume](#comptabilité-du-volume-p4)), qui perd systématiquement quelques dixièmes de mL aux bornes d'une injection manuelle volumée : arrondi de `durationS` à la seconde entière, tranche entre le démarrage réel (handler async) et le premier tick de comptage, et surtout **dernière tranche jamais comptée** (`updateManualInject()` coupe la pompe à l'expiration → au tick suivant le delta final est jeté). La garde d'acceptation raisonnant, elle, en **volume exact** (garde #7, frontière `==` acceptée), demander exactement le reliquat du quota (limite 50 mL, injection 50 mL) laissait le cumul à 49,x → `ph/orp_limit_reached` jamais latché, badge dashboard « Cumul 98 % » figé.
 
 Correctif : à l'acceptation, la route mémorise dans `ManualInjectState` le cumul au départ (`startCumulMl`) et le volume promis post-plafonnement (`creditMl = effectiveMl`) ([`web_routes_control.cpp:335`](../../src/web_routes_control.cpp:335)). À la **fin naturelle** (expiration de `durationMs`), `updateManualInject()` appelle `creditManualInjectionFloor(idx, startCumulMl, creditMl)` ([`pump_controller.cpp:675`](../../src/pump_controller.cpp:675)) qui **planche** le registre de sécurité :
 
@@ -1146,7 +1272,7 @@ Le refus `daily_limit` ne subsiste que si le reliquat est **nul ou < 1 s de pomp
 
 > Cohérence : la garde filtration reproduit **exactement** la condition #3 de `canDose()` — elle consomme la même source unique `filtration.resolveWaterPresence().waterPresent` (feature-056). En mode `powered` (ex-`continu`), l'alimentation 12 V des pompes suit la filtration au niveau matériel → présence d'eau présumée `true` en permanence ; en `external`, la présence dépend du signal récent (fail-safe OFF).
 
-**Testabilité native** : `evaluateManualInject` est couverte par **22 tests** dédiés (`test/test_native_dosing/test_dosing_decision.cpp`, préfixes `test_F006_*` (17) et `test_F161_*` (5, garde rang 4 — voir [section dédiée](#garde-rang-4--injection-automatique-en-cours-bug-161-gate-c1)) — 148 `RUN_TEST` au total dans ce fichier au 2026-10-13, à **mesurer** plutôt qu'à recopier, cf. CLAUDE.md ADR-0073) : une cause de refus par test + nominal, reliquat, frontières `==` acceptées, limites 0/≤0 = illimité, ordre de priorité des gardes, partage du ring anti-rafale avec l'auto. `dosing_logic.cpp` reste à **100 % des lignes**.
+**Testabilité native** : `evaluateManualInject` est couverte par **28 tests** dédiés (`test/test_native_dosing/test_dosing_decision.cpp`, préfixes `test_F006_*` (17), `test_F161_*` (5, garde rang 5 — voir [section dédiée](#garde-rang-5--injection-automatique-en-cours-bug-161-gate-c1)) et `test_F163_manual_*` (6, garde rang 3 — voir [section dédiée](#garde-rang-4--session-détalonnage-ouverte-tous-modes-feature-163-adr-0115)) — **165 `RUN_TEST` au total dans ce fichier au 2026-10-17**, à **mesurer** plutôt qu'à recopier, cf. CLAUDE.md ADR-0073) : une cause de refus par test + nominal, reliquat, frontières `==` acceptées, limites 0/≤0 = illimité, ordre de priorité des gardes, partage du ring anti-rafale avec l'auto. `dosing_logic.cpp` reste à **100 % des lignes**.
 
 ### Ring buffer anti-rafale
 
@@ -2316,6 +2442,16 @@ coquille dans [`src/web_routes_calibration.cpp`](../../src/web_routes_calibratio
 (`POST /calibration/enter` / `POST /calibration/exit`) et dans
 `PumpControllerClass::tickCalSwitchAlert()` (alerte d'oubli, ci-dessous).
 
+⚠️ **Depuis feature-163 (v2.83.0)**, ce mécanisme de bascule de **mode** n'est plus la seule
+protection : un champ distinct et persisté, `mqttCfg.calSessionOpen` (NVS `cal_sess_open`), s'ouvre
+**inconditionnellement** à `/calibration/enter` — y compris quand `calSwitchActive` ci-dessous reste
+`false` (cas pH **et** ORP déjà en `manual` à l'entrée) — et referme directement les fonctions de
+dosage, indépendamment du mode. Voir
+[Garde rang 4 — session d'étalonnage ouverte](#garde-rang-4--session-détalonnage-ouverte-tous-modes-feature-163-adr-0115).
+Le mécanisme de bascule décrit ci-dessous (`calSwitchActive`) reste la source du **bandeau UI** et
+de l'**alerte d'oubli** ; `calSessionOpen` n'a ni l'un ni l'autre — c'est une garde silencieuse,
+pas une surface visible.
+
 ### `POST /calibration/enter` — à l'entrée dans l'écran
 
 Appelée par `onEnter` de l'écran de calibration (`data/app.js`, `_calSwitchEnter`). Sous
@@ -2936,7 +3072,11 @@ Logique pure (à chaque tick) :
 3. **Bornage budget horaire partagé** ([ADR-0020](../adr/0020-budget-horaire-dosage-unique.md)) : `v` est plafonné par `(hourlyLimitMs − usedMs)` converti en mL via le débit effectif ; l'excédent se reporte aux fenêtres suivantes.
 4. **Report anti short-cycling** : si la durée d'injection de `v` est < `minInjectionTimeMs` (30 s, `pumpProtection`), `v = 0` pour cette fenêtre — le volume se reporte naturellement (moins de fenêtres restantes → doses plus longues). Effet visible avec une **pompe rapide et une petite cible** : les premières fenêtres sont reportées, les injections démarrent quand l'horizon se resserre.
 5. **Snapshot `stopTargetMl = dailyInjectedMl + v`** figé à l'entrée de fenêtre ; `doseNow` réévalué **à chaque tick** contre `min(stopTargetMl, cible effective)` — une baisse de cible ou de plafond mi-fenêtre arrête l'injection immédiatement.
-6. **Fail-closed** : watchdog inactif, horizon ≤ 0, débit effectif ≤ 0 ou fenêtre ≤ 0 → refus (`{false, -1, 0, NAN}`), débit planifié `NAN`.
+6. **Fail-closed** : watchdog inactif, **session d'étalonnage ouverte** (`calSessionOpen`,
+   feature-163, v2.83.0 — voir [Garde rang 4](#garde-rang-4--session-détalonnage-ouverte-tous-modes-feature-163-adr-0115),
+   même traitement que le watchdog, aucun log dédié : c'est le **seul** point où cette garde peut
+   fermer ce chemin, le Programmé ne passant pas par `canDose()`/`evaluateDose()`), horizon ≤ 0,
+   débit effectif ≤ 0 ou fenêtre ≤ 0 → refus (`{false, -1, 0, NAN}`), débit planifié `NAN`.
 
 Côté coquille (`pump_controller.cpp`) :
 
@@ -2949,7 +3089,7 @@ Côté coquille (`pump_controller.cpp`) :
 - **Reliquat à minuit** : `tickDailyRollover()` logge en `info` le volume non injecté (`[Scheduled] Reliquat pH perdu au passage de minuit : X mL non injectés`) puis réarme les fenêtres (`_*SchedWindowIdx = -1`). **Pas de rattrapage J+1** (décision produit, ADR-0021).
 - **Diagnostic WS** : accesseurs publics `getPhScheduledPlannedFlow()` / `getOrpScheduledPlannedFlow()` (débit moyen planifié restant `remaining / horizon`, mL/min ; `NAN` hors scheduled / hors plage / heure invalide) → champs WS `ph/orp_scheduled_flow_ml_per_min` (`null` si `NAN`).
 
-**Tests natifs** : 12 tests `evaluateScheduledDose` ([`test/test_native_dosing/test_dosing_decision.cpp`](../../test/test_native_dosing/test_dosing_decision.cpp)) + 5 tests `remainingRangeMinutes` ([`test/test_native_schedule/test_schedule_logic.cpp`](../../test/test_native_schedule/test_schedule_logic.cpp)) — 152 tests au total.
+**Tests natifs** : 16 tests `evaluateScheduledDose` ([`test/test_native_dosing/test_dosing_decision.cpp`](../../test/test_native_dosing/test_dosing_decision.cpp) — 12 avant feature-163, +4 `test_F163_scheduled_*` en v2.83.0, voir [Testabilité native (feature-163)](#testabilité-native-feature-163)) + 5 tests `remainingRangeMinutes` ([`test/test_native_schedule/test_schedule_logic.cpp`](../../test/test_native_schedule/test_schedule_logic.cpp)).
 
 ### Warnings edge-triggered
 

@@ -57,9 +57,12 @@ static_assert(static_cast<int>(DoseRefusal::ReadingNaNGateClosed) == 18, "DoseRe
 // mécanisme de bail qui le rendait atteignable (en théorie seulement : il
 // était déjà inatteignable par evaluateDose(), cf. dosing_logic.h) a été
 // ABANDONNÉ au profit d'une bascule explicite de régulation. JAMAIS recyclé.
+// feature-163 (gate pool-chemistry G2) : AJOUTÉ EN FIN (valeur 24) — session
+// de calibration ouverte, évaluée au RANG 3 d'evaluateDose() (cf. dosing_logic.h).
+static_assert(static_cast<int>(DoseRefusal::CalibrationSessionOpen) == 24, "DoseRefusal renuméroté");
 // La sentinelle « cause posée par une garde » ne doit jamais collisionner avec
 // une valeur de l'énum (elle serait traduite en cause de canDose côté client).
-static_assert(static_cast<int>(DoseRefusal::ReadingNaNGateClosed) < kDoseBlockedCodeGuard,
+static_assert(static_cast<int>(DoseRefusal::CalibrationSessionOpen) < kDoseBlockedCodeGuard,
               "kDoseBlockedCodeGuard collisionne avec DoseRefusal : relever la sentinelle");
 
 // Définitions des membres statiques
@@ -742,6 +745,18 @@ void PumpControllerClass::logRefusalOnce(int pumpIndex, const String& cause,
   if (strcmp(_lastRefusalCause[pumpIndex], next) != 0) {
     systemLogger.info(String("[Dosage ") + (pumpIndex == 0 ? "pH" : "ORP") +
                       "] Refus : " + cause);
+    // feature-163 (gate pool-chemistry G5) : escalade CRITIQUE imposée mot pour
+    // mot, EN PLUS du log générique ci-dessus — un refus de dosage pendant une
+    // session d'étalonnage est un événement de sécurité, pas un état
+    // opérationnel courant. Posée dans ce MÊME bloc de transition (réutilise le
+    // anti-spam existant) : une seule ligne par chaîne (pH, ORP) à l'ouverture
+    // de la garde, pas à chaque tour de update(). Chaîne LITTÉRALE : aucune
+    // allocation (ADR-0082).
+    if (code == DoseRefusal::CalibrationSessionOpen) {
+      systemLogger.critical("[Sécurité] Dosage refusé : étalonnage en cours "
+                            "(session de calibration ouverte) — aucune "
+                            "injection tant que la session n'est pas fermée");
+    }
     strlcpy(_lastRefusalCause[pumpIndex], next, kDoseBlockedReasonMaxLen);
   }
 
@@ -1638,7 +1653,11 @@ bool PumpControllerClass::canDose(int pumpIndex) {
   // 2. Présence d'eau (feature-056) : source UNIQUE resolveWaterPresent() selon
   // le mode d'installation (Managed=commandé, Powered=présumé, External=signal frais).
   in.waterPresent = filtration.resolveWaterPresence().waterPresent;
-  // 3. VALEUR OFFICIELLE (feature-152 : le PID auto consomme la valeur
+  // 3. feature-163 (gate pool-chemistry G2) : session d'étalonnage OUVERTE
+  // (mqttCfg.calSessionOpen, PERSISTÉ — cf. config.h). SEUL prédicat lu, ⛔ pas
+  // calSwitchActive (resterait faux si pH+ORP étaient déjà "manual" à l'entrée).
+  in.calSessionOpen = mqttCfg.calSessionOpen;
+  // 4. VALEUR OFFICIELLE (feature-152 : le PID auto consomme la valeur
   // officielle, qui encapsule déjà warmup/figé/périmé/porte fermée → NaN).
   in.reading = (pumpIndex == 0) ? sensors.getPhFiltered()
                                 : sensors.getOrpFiltered();
@@ -1707,6 +1726,10 @@ bool PumpControllerClass::canDose(int pumpIndex) {
       break;
     case DoseRefusal::FiltrationOff:
       cause = "filtration arrêtée";
+      break;
+    case DoseRefusal::CalibrationSessionOpen:
+      // feature-163 (gate pool-chemistry G5) : libellé IMPOSÉ mot pour mot.
+      cause = "étalonnage en cours (session de calibration ouverte)";
       break;
     // v2.25.1 — LIBELLÉS DÉCONFLATÉS. Les deux anciennes phrases mélangeaient
     // chacune plusieurs causes physiques (« warmup / EZO injoignable ») : l'UI en
@@ -3775,19 +3798,49 @@ void PumpControllerClass::updateDosingCore(unsigned long now) {
   // MÊME chemin de fermeture (aucune duplication) — mêmes garanties que la
   // perte de filtration : auto + scheduled refermés, manuel préservé.
   // bug-160 (volet 2, REFONTE 2026-10-13) : la suspension pendant une
-  // calibration n'emprunte PLUS ce chemin — elle est désormais portée par le
-  // MODE (mqttCfg.ph/orpRegulationMode == "manual"), qui ferme chaque branche
-  // via sa propre conjonction `phMode == "automatic"`/`orpMode == "automatic"`
-  // plus bas (défense en profondeur inchangée). L'interruption IMMÉDIATE d'une
-  // session déjà ouverte à l'entrée reste couverte par le drapeau one-shot
-  // `_calEntryInterruptRequested` consommé plus haut (gate 5, C6).
-  if (!filtrationOk || stabilizationActive || flowAssistSuspend) {
+  // calibration n'empruntait PLUS ce chemin pour auto/scheduled — elle était
+  // portée par le MODE (mqttCfg.ph/orpRegulationMode == "manual"), qui ferme
+  // chaque branche via sa propre conjonction `phMode == "automatic"`/
+  // `orpMode == "automatic"` plus bas (défense en profondeur inchangée).
+  // feature-163 (gate pool-chemistry G3) : AJOUTÉ ICI — `mqttCfg.calSessionOpen`
+  // referme AUSSI une session Programmée déjà ACTIVE (le mode `scheduled` ne
+  // bascule JAMAIS en "manual" à l'entrée en étalonnage, contrairement à
+  // `automatic` : sans ce bloc, une injection programmée en cours aurait
+  // continué pendant toute la session). L'interruption IMMÉDIATE d'une session
+  // déjà ouverte à l'entrée reste couverte par le drapeau one-shot
+  // `_calEntryInterruptRequested` consommé plus haut (gate 5, C6) ; ce bloc-ci
+  // couvre le cas où la session s'ouvre PENDANT qu'un cycle Programmé tourne.
+  if (!filtrationOk || stabilizationActive || flowAssistSuspend || mqttCfg.calSessionOpen) {
+    // ⚠️ feature-163, correctif de revue (B1) : LE REFUS NE DOIT PAS ÊTRE MUET.
+    // Ce bloc `return` AVANT canDose() et evaluateScheduledDose() : le
+    // `critical` imposé par le gate (G5) et le libellé de cause 24 posés plus
+    // bas sont donc INATTEIGNABLES par ce chemin. Sans la transition ci-dessous,
+    // une session d'étalonnage gèle TOUTE la régulation sans une seule ligne au
+    // journal — très exactement le travers que cette spec corrige, et ce
+    // qu'ADR-0107 interdit (suspension persistante INVISIBLE).
+    // Scénario réel : pH+ORP déjà en « manuel », session ouverte, puis Home
+    // Assistant arme la chloration de secours — l'entité HA confirme « armé »,
+    // et zéro millilitre n'est injecté de toute la session.
+    // ⛔ Texte IMPOSÉ mot pour mot (G5). Littéral `const char*` : aucune String
+    // temporaire, aucune allocation (ADR-0082). Latch écrit par loopTask seule.
+    static bool sCalSessionRefusalLogged = false;
+    if (mqttCfg.calSessionOpen) {
+      if (!sCalSessionRefusalLogged) {
+        systemLogger.critical("[Sécurité] Dosage refusé : étalonnage en cours "
+                              "(session de calibration ouverte) — aucune "
+                              "injection tant que la session n'est pas fermée");
+        sCalSessionRefusalLogged = true;
+      }
+    } else {
+      sCalSessionRefusalLogged = false;
+    }
     // Arrêter le dosage en cours si l'eau n'est plus présente / stabilisation
-    // active / assistant de mesure du débit en cours
+    // active / assistant de mesure du débit en cours / étalonnage en cours
     if (phDosingState.active || orpDosingState.active) {
       const char* reason = !filtrationOk ? "eau absente (filtration arrêtée / signal externe périmé)"
                          : stabilizationActive ? "stabilisation post-cal en cours"
-                                               : "assistant de mesure du débit";
+                         : flowAssistSuspend ? "assistant de mesure du débit"
+                                             : "étalonnage en cours (session de calibration ouverte)";
       systemLogger.info(String("Dosage suspendu (") + reason + ")");
       // v2.26.0 : cette suspension FERME la session pH — le produit déjà injecté
       // n'a pas été homogénéisé, la pause mélange doit donc être armée ici aussi.
@@ -3861,7 +3914,9 @@ void PumpControllerClass::updateDosingCore(unsigned long now) {
   // l'appareil, et où l'ancienne implémentation devenait muette.
   //
   // Les seules sorties d'update() en amont (OTA, mode maintenance, capteurs non
-  // initialisés, eau absente, stabilisation post-cal, assistant de débit) sont
+  // initialisés, eau absente, stabilisation post-cal, assistant de débit,
+  // ⚠️ et depuis feature-163 : ÉTALONNAGE EN COURS — la sonde trempe dans un
+  // tampon, surveiller là produirait de fausses escalades de plancher acide) sont
   // volontairement conservées : la sonde y est hors circulation ou la mesure non
   // représentative — surveiller là produirait de FAUSSES alertes, et l'appareil
   // n'y dose de toute façon rien. L'ordre surveillance → décision est garanti
@@ -4627,6 +4682,9 @@ void PumpControllerClass::updateDosingCore(unsigned long now) {
           sin.hourlyLimitMs = (uint32_t)phLimitMs;
           sin.minInjectionTimeMs = (uint32_t)pumpProtection.minInjectionTimeMs;
           sin.watchdogActive = (esp_task_wdt_status(NULL) == ESP_OK);
+          // feature-163 (gate pool-chemistry G3) : session d'étalonnage ouverte,
+          // même traitement que watchdogActive (entrée fail-closed d'evaluateScheduledDose).
+          sin.calSessionOpen = mqttCfg.calSessionOpen;
           sin.prevWindowIndex = _phSchedWindowIdx;
           sin.prevStopTargetMl = _phSchedStopTargetMl;
 
@@ -5103,6 +5161,9 @@ void PumpControllerClass::updateDosingCore(unsigned long now) {
           sin.hourlyLimitMs = (uint32_t)orpLimitMs;
           sin.minInjectionTimeMs = (uint32_t)pumpProtection.minInjectionTimeMs;
           sin.watchdogActive = (esp_task_wdt_status(NULL) == ESP_OK);
+          // feature-163 (gate pool-chemistry G3) : session d'étalonnage ouverte,
+          // même traitement que watchdogActive (entrée fail-closed d'evaluateScheduledDose).
+          sin.calSessionOpen = mqttCfg.calSessionOpen;
           sin.prevWindowIndex = _orpSchedWindowIdx;
           sin.prevStopTargetMl = _orpSchedStopTargetMl;
 

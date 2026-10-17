@@ -2,6 +2,49 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [2.83.0] - 2026-10-17
+
+### Firmware
+
+- 🚨 **Aucun dosage ne part plus pendant un étalonnage — quel que soit le mode, et peu importe
+  comment le mode a été changé.** Jusqu'ici, l'étalonnage était protégé en **basculant le mode de
+  régulation** en Manuel, puis en verrouillant chaque chemin capable de le réécrire (web, MQTT,
+  écriture directe). Cette liste s'est révélée incomplète à plusieurs reprises, et le mode
+  **Programmé** ne passait par aucune des gardes existantes. Une garde **indépendante**,
+  `calSessionOpen`, est désormais posée au point de décision de chaque dosage (automatique,
+  programmé, manuel, secours, test de pompe) : elle ne dépend plus de savoir par où le mode
+  pourrait être changé.
+- **Régulation** : trou corrigé — si pH **et** ORP étaient **déjà** en Manuel au moment d'ouvrir
+  l'écran d'étalonnage, l'ancienne protection restait inactive (rien à basculer). C'était
+  exactement le cas où l'utilisateur est le plus prudent. La nouvelle garde protège aussi ce cas.
+- **API** : nouveau refus **409 `calibration_session_open`** sur `/ph/inject/start`,
+  `/orp/inject/start`, `/pump1/on`, `/pump2/on` — pendant une session de calibration ouverte.
+  ⚠️ **Limite assumée, décision explicite** : la chloration de secours **n'est pas exemptée** —
+  elle aussi est refusée pendant un étalonnage (l'étalonnage dure quelques minutes, le croisement
+  n'est pas traité comme un cas particulier). Une session **jamais refermée** gèle le dosage
+  indéfiniment ; aucune expiration automatique n'a été ajoutée, les avertissements déjà présents
+  sur l'écran de calibration (bandeau, alerte d'oubli) restent la seule protection contre l'oubli.
+
+### Documentation
+
+- `docs/adr/0115-une-garde-sur-etat-partage-vit-au-point-dusage-final.md` : nouvel ADR — une garde
+  sur un état partagé se pose au point d'usage final, jamais sur chaque chemin d'écriture connu.
+- `docs/adr/README.md` : index mis à jour (ADR-0115).
+- `docs/API.md` : nouveau code 409 `calibration_session_open` (table des refus manuels), avertissement
+  sur `/pump1/on`/`/pump2/on`, et sur `/pump1/duty`/`/pump2/duty` — ces deux dernières routes ne
+  vérifient **ni** la présence d'eau **ni** l'étalonnage (`bug-170`, ouvert en critique, non
+  corrigé dans ce lot).
+- `docs/subsystems/pump-controller.md` : nouvelle garde documentée (rang 4 côté régulation
+  automatique, rang 3 côté injection manuelle, entrée fail-closed côté mode Programmé), tables de
+  gardes et d'énumérations renumérotées en conséquence, limite connue de bug-161 marquée résolue.
+- `specs/features/done/feature-069-investigation-materielle-sonde-ph.md` et
+  `specs/features/done/feature-137-perturbation-de-mode-commun-sur-les-electrodes.md` : clôturées
+  comme hors périmètre logiciel — ⚠️ les deux défauts matériels (transitoire de reprise de
+  filtration, perturbation de mode commun sur les électrodes pH/ORP) restent **entiers**, le
+  logiciel les compense, il ne les corrige pas. Nouveau point d'entrée matériel : `kicad/README.md`.
+
+---
+
 ## [2.82.0] - 2026-10-16
 
 ### Fonctionnalités

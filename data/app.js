@@ -8053,6 +8053,15 @@
     // _measuresWaitText(json), voir les 2 points d'appel (_doseBlockInfo,
     // _renderDosePill) : ne pas reformuler ici sans reformuler là-bas.
     18: { tone: 'normal',  label: 'Reprise automatique à venir', chip: 'Reprise à venir', stab: true },
+    // 19-23 : codes firmware RETIRÉS, ne jamais recycler (cf. dosing_logic.h).
+    // feature-163 — relevé en revue : sans cette entrée, le code 24 s'affichait
+    // « Cause inconnue (code 24) » (repli volontaire de _doseBlockInfo).
+    // tone 'normal' et NON 'fault' : un étalonnage est un acte DÉLIBÉRÉ de
+    // l'utilisateur, pas une panne — même traitement que « Stabilisation
+    // post-calibration ». ⚠️ La formulation dit ce que l'appareil FAIT, pas
+    // qu'il refuse : pendant un étalonnage la sonde trempe dans un tampon,
+    // doser sur cette lecture serait l'erreur.
+    24: { tone: 'normal',  label: 'Étalonnage en cours — aucune injection', chip: 'Étalonnage' },
     // feature-092 — sentinelle 250 (cause de GARDE) : le message firmware porte
     // des valeurs runtime (seuils, mesure) et reste cité tel quel ; la pastille
     // des cartes « Débit d'injection » a besoin d'un libellé COURT, il vit donc

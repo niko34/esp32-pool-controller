@@ -187,6 +187,27 @@ struct MqttConfig {
   uint32_t calSwitchLastAlertEpoch = 0;
   uint8_t calSwitchAlertCount = 0;
 
+  // feature-163 (gate pool-chemistry G1) : GARDE DE DOSAGE — session de
+  // calibration OUVERTE, DISTINCTE de calSwitchActive ci-dessus (qui ne porte
+  // que sur la trace de BASCULE DE MODE). ⚠️ Piège trouvé par le gate :
+  // calSwitchActive reste FAUX quand pH et ORP sont DÉJÀ en "manual" à
+  // l'entrée (/calibration/enter n'ouvre alors aucune session de bascule) —
+  // exactement le cas où l'utilisateur est le PLUS prudent. calSessionOpen,
+  // lui, est posé INCONDITIONNELLEMENT à /calibration/enter (quel que soit
+  // l'état de calSwitchActive) et effacé à /calibration/exit. C'est le SEUL
+  // prédicat lu par evaluateDose/evaluateManualInject/evaluateScheduledDose
+  // (dosing_logic.h) — aucun dosage (auto, programmé, manuel, secours, test
+  // pompe) ne doit s'exécuter tant qu'il est vrai.
+  // PERSISTÉ : la garde doit tenir DÈS LE BOOT si l'appareil redémarre pendant
+  // une session ouverte — c'est la réponse au cas limite « session restée
+  // ouverte après un redémarrage » de la spec. ⛔ EXCLU de la purge de
+  // cohérence défensive de calSwitchActive (config.cpp) : cette purge ne vise
+  // QUE la trace de bascule de mode, jamais cette garde — la garder active
+  // tant que /calibration/exit n'a pas été appelé est le comportement VOULU,
+  // y compris si phRegulationMode/orpRegulationMode ont déjà quitté "manual"
+  // par un autre chemin.
+  bool calSessionOpen = false;
+
   // feature-067 : offset logiciel de mesure pH (unités pH). Formule :
   // pH_corrigé = pH_brut_EZO + phOffset. Appliqué EN SORTIE des accesseurs de
   // SensorManager (cf. src/ph_offset.h) — la calibration électrochimique du

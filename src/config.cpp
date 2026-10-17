@@ -325,6 +325,11 @@ void saveMqttConfig() {
   prefs.putULong("cal_sw_alert_ep", mqttCfg.calSwitchLastAlertEpoch);
   prefs.putUChar("cal_sw_alert_n", mqttCfg.calSwitchAlertCount);
 
+  // feature-163 (gate G1) : garde de dosage, PERSISTÉE INDÉPENDAMMENT de
+  // cal_sw_active (cf. config.h — calSessionOpen peut rester vrai alors que
+  // calSwitchActive est resté faux depuis l'entrée).
+  prefs.putBool("cal_sess_open", mqttCfg.calSessionOpen);
+
   // feature-021 (Pass 4a) : calibration pH/ORP entièrement gérée par les modules
   // Atlas EZO (NVS interne au module). Aucune clé NVS pH/ORP côté ESP32.
 
@@ -558,6 +563,16 @@ void loadMqttConfig() {
   // `orpRegulationMode` chargé — PLUS BAS dans cette fonction (section
   // "Régulation ORP"), pas ici : à ce point, il ne porte encore que sa valeur
   // par défaut de l'initialiseur de membre.
+
+  // feature-163 (gate G1) : GARDE DE DOSAGE, relue INDÉPENDAMMENT de
+  // cal_sw_active. Clé absente (config antérieure à ce lot) → false = aucune
+  // session ouverte — rétrocompatible. ⛔ AUCUNE cohérence défensive ici,
+  // CONTRAIREMENT à calSwitchActive ci-dessus : cette garde doit rester VRAIE
+  // tant que /calibration/exit n'a pas été appelé, même si phRegulationMode/
+  // orpRegulationMode ont déjà quitté "manual" par un autre chemin — c'est
+  // exactement le cas du piège trouvé par le gate (pH+ORP déjà "manual" à
+  // l'entrée, calSwitchActive resté faux, calSessionOpen seul porte la garde).
+  mqttCfg.calSessionOpen = prefs.getBool("cal_sess_open", false);
 
   // feature-021 (Pass 4a) : purge silencieuse des anciennes clés de calibration
   // pH/ORP. La calibration est désormais entièrement stockée dans les modules

@@ -117,7 +117,19 @@ DoseDecision evaluateDose(const DoseInputs& in) {
     return { false, DoseRefusal::FiltrationOff };
   }
 
-  // 3. Valeur officielle non NaN (fail-closed). feature-152 : FUSION des
+  // 3. feature-163 (gate pool-chemistry G2) : session d'étalonnage OUVERTE.
+  // Placée DERRIÈRE les deux causes ABSOLUES (watchdog, eau) mais DEVANT
+  // NaN/calibration/mode (ADR-0095) : pendant une session, ces trois-là sont
+  // des CONSÉQUENCES de l'acte d'étalonner (Cal,clear efface la calibration,
+  // Cal,mid fait dériver la lecture) — les annoncer accuserait la sonde d'une
+  // panne qu'elle n'a pas. Couvre AUSSI le cas où calSwitchActive est resté
+  // faux (pH+ORP déjà "manual" à l'entrée) : calSessionOpen est posé
+  // INCONDITIONNELLEMENT par /calibration/enter (cf. config.h).
+  if (in.calSessionOpen) {
+    return { false, DoseRefusal::CalibrationSessionOpen };
+  }
+
+  // 4. Valeur officielle non NaN (fail-closed). feature-152 : FUSION des
   // anciennes gardes 3/3b/3c — la valeur officielle de sensor_filter est déjà
   // NaN dans tous les cas qui bloquaient séparément auparavant (fenêtre
   // incomplète, sonde figée, mesure périmée, porte fermée) ; la médiane
@@ -128,47 +140,47 @@ DoseDecision evaluateDose(const DoseInputs& in) {
     return { false, qualifyReadingNaN(in.filterState) };
   }
 
-  // 4. Calibration suffisante (pH ≥ 2 points, ORP ≥ 1 ; -1 si injoignable → bloqué).
+  // 5. Calibration suffisante (pH ≥ 2 points, ORP ≥ 1 ; -1 si injoignable → bloqué).
   if (in.calPoints < in.requiredPoints) {
     return { false, DoseRefusal::CalibrationInsufficient };
   }
 
-  // 5. Pas de stabilisation post-calibration en cours.
+  // 6. Pas de stabilisation post-calibration en cours.
   if (in.stabilizationActive) {
     return { false, DoseRefusal::StabilizationActive };
   }
 
-  // 5b. Pas de pause mélange hydraulique active (gate indépendante).
+  // 6b. Pas de pause mélange hydraulique active (gate indépendante).
   if (in.mixingActive) {
     return { false, DoseRefusal::MixingActive };
   }
 
-  // 6. Mode régulation = automatic.
+  // 7. Mode régulation = automatic.
   if (!in.modeAutomatic) {
     return { false, DoseRefusal::ModeNotAutomatic };
   }
 
-  // 7. Limite journalière non atteinte.
+  // 8. Limite journalière non atteinte.
   if (in.dailyInjectedMl >= in.maxDailyMl) {
     return { false, DoseRefusal::DailyLimit };
   }
 
-  // 8. Limite horaire non atteinte (0 = pas de limite).
+  // 9. Limite horaire non atteinte (0 = pas de limite).
   if (in.hourlyLimitMs > 0 && in.usedMs >= in.hourlyLimitMs) {
     return { false, DoseRefusal::HourlyLimit };
   }
 
-  // 9. Anti-cycling : cyclesToday < maxCyclesPerDay.
+  // 10. Anti-cycling : cyclesToday < maxCyclesPerDay.
   if (in.cyclesToday >= in.maxCyclesPerDay) {
     return { false, DoseRefusal::CyclesPerDay };
   }
 
-  // 10. Anti-rafale court terme (fenêtre 1 min).
+  // 11. Anti-rafale court terme (fenêtre 1 min).
   if (in.cyclesLastMin >= in.maxCyclesPerMin) {
     return { false, DoseRefusal::BurstPerMinute };
   }
 
-  // 10b. Anti-rafale court terme (fenêtre 15 min).
+  // 11b. Anti-rafale court terme (fenêtre 15 min).
   if (in.cyclesLast15Min >= in.maxCyclesPer15Min) {
     return { false, DoseRefusal::BurstPer15Min };
   }
@@ -397,6 +409,7 @@ static_assert(static_cast<int>(ManualInjectRefusal::MaxCyclesPerDay) == 7, "Manu
 static_assert(static_cast<int>(ManualInjectRefusal::BurstPerMinute) == 8, "ManualInjectRefusal renuméroté");
 static_assert(static_cast<int>(ManualInjectRefusal::BurstPer15Min) == 9, "ManualInjectRefusal renuméroté");
 static_assert(static_cast<int>(ManualInjectRefusal::AutomaticInjectInProgress) == 10, "ManualInjectRefusal renuméroté");
+static_assert(static_cast<int>(ManualInjectRefusal::CalibrationSessionOpen) == 11, "ManualInjectRefusal renuméroté");
 
 // =============================================================================
 // evaluateManualInject — gardes d'injection manuelle PURES (feature-006)
@@ -419,7 +432,18 @@ ManualInjectDecision evaluateManualInject(const ManualInjectInputs& in) {
     return { false, ManualInjectRefusal::FiltrationOff, 0.0f };
   }
 
-  // 3. Pas de stabilisation post-calibration en cours (par pompe).
+  // 3. feature-163 (gate pool-chemistry G2) : session d'étalonnage OUVERTE —
+  // AVANT la stabilisation post-cal (rang historique 3, décalée en 4) :
+  // pendant une session, StabilizationActive finira de toute façon par devenir
+  // vraie (elle ARME la stabilisation à la FERMETURE de la calibration) — la
+  // cause annoncée pendant la session doit porter sur l'acte en cours, pas sur
+  // sa conséquence différée. Couvre AUSSI le cas où calSwitchActive est resté
+  // faux (pH+ORP déjà "manual" à l'entrée, cf. dosing_logic.h).
+  if (in.calSessionOpen) {
+    return { false, ManualInjectRefusal::CalibrationSessionOpen, 0.0f };
+  }
+
+  // 4. Pas de stabilisation post-calibration en cours (par pompe).
   if (in.stabilizationActive) {
     return { false, ManualInjectRefusal::StabilizationActive, 0.0f };
   }
@@ -431,26 +455,26 @@ ManualInjectDecision evaluateManualInject(const ManualInjectInputs& in) {
   // manuelle ALREADY ACTIVE directement à l'entrée (gate 5, C6) — ce n'est plus
   // une garde évaluée ici à chaque nouvelle demande.
 
-  // 4. bug-161 (gate pool-chemistry C1) : pas d'injection AUTOMATIQUE en cours
+  // 5. bug-161 (gate pool-chemistry C1) : pas d'injection AUTOMATIQUE en cours
   // sur cette pompe. Le bouton d'injection manuelle était masqué hors du mode
   // `manual` (app.js, updatePhModeControls/updateOrpModeControls) — ce trou
   // était donc INATTEIGNABLE. Ce lot lève ce masquage (l'injection manuelle
   // n'est plus conditionnée au mode) : SANS cette garde, on pourrait injecter
   // à la main PAR-DESSUS un dosage automatique en cours. ⚠️ ORDRE LOAD-BEARING :
   // reste DERRIÈRE Watchdog (1) et FiltrationOff (2) — une cause bénigne ne
-  // doit jamais masquer une cause absolue — et DEVANT les quotas (5-10,
+  // doit jamais masquer une cause absolue — et DEVANT les quotas (6-11,
   // ADR-0095 : la cause annoncée doit être celle qui mord). Place AVANT
   // AlreadyInjecting (double start MANUEL, question distincte).
   if (in.automaticInjectInProgress) {
     return { false, ManualInjectRefusal::AutomaticInjectInProgress, 0.0f };
   }
 
-  // 5. Pas de double démarrage (une injection manuelle est déjà en cours).
+  // 6. Pas de double démarrage (une injection manuelle est déjà en cours).
   if (in.alreadyInjecting) {
     return { false, ManualInjectRefusal::AlreadyInjecting, 0.0f };
   }
 
-  // 6. Limite journalière PRÉDICTIVE : refuser si le cumul + volume demandé
+  // 7. Limite journalière PRÉDICTIVE : refuser si le cumul + volume demandé
   // DÉPASSERAIT la limite. Frontière `cumul + volume == max` ACCEPTÉE
   // (STRICT >) — frontière figée pool-chemistry feature-006. maxDailyMl ≤ 0
   // = illimité (pas de garde journalière).
@@ -458,25 +482,25 @@ ManualInjectDecision evaluateManualInject(const ManualInjectInputs& in) {
     return { false, ManualInjectRefusal::DailyLimit, remaining };
   }
 
-  // 7. Limite horaire PRÉDICTIVE : mêmes conventions que l'auto (0 = illimité) ;
+  // 8. Limite horaire PRÉDICTIVE : mêmes conventions que l'auto (0 = illimité) ;
   // frontière `usedMs + durée == limite` ACCEPTÉE (STRICT >) — figée
   // pool-chemistry feature-006. Budget usedMs PARTAGÉ avec l'auto.
   if (in.hourlyLimitMs > 0 && (in.usedMs + in.requestedDurationMs > in.hourlyLimitMs)) {
     return { false, ManualInjectRefusal::HourlyLimit, 0.0f };
   }
 
-  // 8. Anti-cycling journalier : frontière >= (à la limite → refus), identique
-  // à la garde 9 d'evaluateDose (compteur partagé auto + manuel).
+  // 9. Anti-cycling journalier : frontière >= (à la limite → refus), identique
+  // à la garde 10 d'evaluateDose (compteur partagé auto + manuel).
   if (in.cyclesToday >= in.maxCyclesPerDay) {
     return { false, ManualInjectRefusal::MaxCyclesPerDay, 0.0f };
   }
 
-  // 9. Anti-rafale fenêtre 1 min : frontière >= (identique à l'auto, ring partagé).
+  // 10. Anti-rafale fenêtre 1 min : frontière >= (identique à l'auto, ring partagé).
   if (in.cyclesLastMin >= in.maxCyclesPerMin) {
     return { false, ManualInjectRefusal::BurstPerMinute, 0.0f };
   }
 
-  // 10. Anti-rafale fenêtre 15 min : frontière >= (identique à l'auto, ring partagé).
+  // 11. Anti-rafale fenêtre 15 min : frontière >= (identique à l'auto, ring partagé).
   if (in.cyclesLast15Min >= in.maxCyclesPer15Min) {
     return { false, ManualInjectRefusal::BurstPer15Min, 0.0f };
   }
@@ -494,8 +518,12 @@ ScheduledDoseDecision evaluateScheduledDose(const ScheduledDoseInputs& in) {
   // Fail-closed (condition n°4 watchdog ; condition n°2 horizon) : watchdog
   // inactif, hors plage / horizon nul, débit non configuré, ou fenêtre invalide
   // (garde défensive anti division par zéro) → aucune injection.
+  // feature-163 (gate pool-chemistry G3) : session d'étalonnage OUVERTE placée
+  // À CÔTÉ de watchdogActive — MÊME traitement fail-closed, aucun log dédié
+  // (le mode Programmé ne passe pas par canDose()/evaluateDose(), c'est le
+  // SEUL point où cette garde peut fermer ce chemin).
   // windowIndex=-1 force le recalcul du volume au retour en plage.
-  if (!in.watchdogActive || in.horizonMinutes <= 0 ||
+  if (!in.watchdogActive || in.calSessionOpen || in.horizonMinutes <= 0 ||
       in.effectiveFlowMlPerMin <= 0.0f || in.windowMinutes <= 0) {
     return { false, -1, 0.0f, NAN };
   }

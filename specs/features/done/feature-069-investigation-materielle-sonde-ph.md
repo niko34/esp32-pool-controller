@@ -2,7 +2,7 @@
 - **ID** : feature-069
 - **Slug** : investigation-materielle-sonde-ph
 - **Type** : investigation (matérielle + protocole humain ; firmware léger éventuel)
-- **Statut** : todo — **déclenchée le 2026-09-04** (item **N1** du plan `specs/plan-2026-09-regulation-et-robustesse.md`) ; la condition de déclenchement d'origine (3 cycles arrêt/reprise relevés) est remplie par les matins des 02, 03 et 04/09
+- **Statut** : **CLÔTURÉE le 2026-10-17** — ⛔ hors périmètre logiciel : investigation **matérielle**, du ressort de celui qui conçoit le PCB. ⚠️ Le phénomène reste **NON EXPLIQUÉ** (voir « Clôture » en fin de document).
 - **Priorité** : haute
 - **Version cible** : N/A (investigation ; un éventuel correctif fera l'objet d'une spec dédiée)
 - **Dernière mise à jour** : 2026-09-04
@@ -222,3 +222,43 @@ contre 5,60 le 02/09 et 5,97 le 04/09), pas les précédents.
    témoin accessible de ce qui traverse la mesure. Précédent à garder en tête :
    la garde « présence d'eau » ne voit pas ce qui se passe dans la chambre
    (incident du bypass fermé, 23/08/2026).
+
+
+---
+
+## Clôture — 2026-10-17 : du ressort de CELUI QUI CONÇOIT LE PCB, pas du logiciel
+
+**Décision de l'utilisateur**, ce jour : *« ces investigations sont du ressort de l'humain qui
+conçoit le PCB »*.
+
+⚠️ **Et la spec le disait déjà sans qu'on le lise** : ses agents requis sont `spec-reader`,
+`pool-chemistry` et `doc-writer` — ⛔ **aucun développeur**. Il n'y a **rien à coder** ici. Ce
+qu'elle demande, ce sont des **relevés physiques** : bandelettes au refoulement *et* au bassin
+pendant le transitoire, observation d'air à la buse, étalons, mesure de pente. ⇒ Cela exige
+**une personne au bord du bassin avec des instruments**, ⛔ pas une session de travail.
+
+### 🔴 CE QUI RESTE NON EXPLIQUÉ — ⛔ ne pas lire cette clôture comme une résolution
+
+Le transitoire de reprise **n'a reçu aucune explication**. Trois matins (02, 03, 04/09), même
+signature : brut **normal** à la remise en circulation, puis plongeon à **5,60-5,71** quelques
+minutes plus tard, retour à la normale en **30 à 48 min**, ⚠️ **l'ORP plongeant en parallèle**
+(−56 à −74 mV).
+
+⛔ **Les cinq hypothèses H1→H5 restent toutes ouvertes.** ⚠️ Aucun relevé départageant n'a été
+fait.
+
+⚠️ **Un élément est arrivé APRÈS la rédaction** et n'a jamais été reporté ici : le matin du
+**05/09 a été contaminé par de l'air dans la filtration** (niveau d'eau bas) — condition
+**nouvelle**, absente le 04/09 après-midi. ⇒ Cela **renforce H1/H2** (chambre désamorcée, bulles
+piégées) ⛔ **sans les démontrer**, et ⛔ **interdit d'agréger ce matin-là aux trois autres**.
+
+### Ce qu'il faudrait pour trancher, le jour où quelqu'un reprend le sujet
+⛔ **Deux** bandelettes simultanées — **bassin** et **refoulement** — à t+2 et t+15 min après la
+reprise. C'est le seul relevé qui sépare « l'eau est réellement acide » (**H4**) de « la sonde
+lit faux » (**H1/H2/H5**). ⚠️ Tout le reste en découle.
+
+⚠️ **Préalable de sécurité** : régulation pH en **manuel** pendant toute manipulation de sonde.
+
+### Où le sujet continue de vivre
+⇒ `kicad/README.md` (point d'entrée matériel) · [[feature-137]] (même famille : perturbation de
+mode commun) · bug-135 (la butée brute se déclenche sur ces lectures isolées).

@@ -670,8 +670,9 @@ est désormais visible dans les trois modes**, avec un texte imposé au-dessus d
 d'injecter à la main **par-dessus un dosage automatique en cours** — le trou existait déjà dans
 `evaluateManualInject()`, mais était **caché** par le masquage du bouton hors mode `manual` (le
 mode automatique ne pouvait jamais être actif en même temps que le bouton visible). Une **nouvelle
-garde serveur** (rang 4, `AutomaticInjectInProgress`) a donc été ajoutée **avant** de démasquer —
-voir [pump-controller.md](../subsystems/pump-controller.md#garde-rang-4--injection-automatique-en-cours-bug-161-gate-c1).
+garde serveur** (`AutomaticInjectInProgress`, rang 4 à l'origine — **rang 5 depuis feature-163,
+v2.83.0**, décalée par l'insertion de la garde d'étalonnage) a donc été ajoutée **avant** de
+démasquer — voir [pump-controller.md](../subsystems/pump-controller.md#garde-rang-5--injection-automatique-en-cours-bug-161-gate-c1).
 C'est le défaut le plus intéressant du lot : une simplification d'interface a failli ouvrir un
 chemin de dosage qui n'avait jamais été accessible en pratique.
 
@@ -861,6 +862,15 @@ La réinitialisation à chaque changement de solution (et à chaque geste « Rec
 ⚠️ **REFONTE du 2026-10-13 (décision utilisateur)** : un premier mécanisme (bandeau à deux états,
 bail/plafond/réfractaire) a été conçu puis **abandonné avant tout déploiement**. Voir
 [ADR-0107](../adr/0107-etat-visible-et-persistant-plutot-que-suspension-invisible.md).
+
+⚠️ **v2.83.0 (feature-163)** — ce bandeau annonce « aucun dosage pendant l'étalonnage », mais sa
+**condition d'affichage** (ci-dessous) est l'état **optimiste** de la bascule de mode, pas la
+garantie elle-même. Cette garantie repose désormais sur un drapeau **distinct**,
+`mqttCfg.calSessionOpen`, qui s'ouvre **même quand aucun bandeau n'apparaît** — notamment quand pH
+et ORP étaient **déjà** en Manuel à l'entrée (cas ci-dessous, « Aucune bascule »). Le bandeau reste
+une information sur le **mode** ; la garde de dosage, elle, est inconditionnelle. Voir
+[pump-controller.md](../subsystems/pump-controller.md#garde-rang-4--session-détalonnage-ouverte-tous-modes-feature-163-adr-0115)
+et [ADR-0115](../adr/0115-une-garde-sur-etat-partage-vit-au-point-dusage-final.md).
 
 À l'entrée dans l'écran de calibration (pH ou ORP), le firmware bascule la régulation **pH ET
 ORP en `manual`** — mais **seulement si elle ne l'est pas déjà** (correctif du 2026-10-13,

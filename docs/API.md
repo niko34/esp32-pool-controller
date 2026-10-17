@@ -2158,7 +2158,7 @@ v2.68.0 (feature-152)** — voir l'amendement complet plus haut :
 
 `phDoseBlockedCode` / `orpDoseBlockedCode` transportent la cause de refus sous forme d'**entier**, à côté du texte. Motif : l'interface web déduisait auparavant la catégorie du refus en cherchant des **fragments de texte** dans la phrase française. Deux défauts de production en sont résultés — « EZO indisponible » affiché pendant ~6 min au démarrage sur une sonde saine (le mot « indispo » du libellé de warmup correspondait), et une **vraie panne d'EZO** affichée « Stabilisation du filtre » (le libellé `FilterNotReady` mélangeait « warmup » et « EZO injoignable » dans une seule phrase). Voir [ADR-0049](adr/0049-code-machine-de-cause-de-refus-et-etat-interne-du-filtre.md).
 
-> ⚠️ **CONTRAT DE SÉRIALISATION FIGÉ.** Ces valeurs sont celles de `enum class DoseRefusal` ([`src/dosing_logic.h`](../src/dosing_logic.h)), écrites **explicitement** dans l'énum. Elles ne sont **jamais renumérotées** et **jamais insérées au milieu** : toute cause nouvelle s'ajoute **à la fin**, et une cause retirée du firmware reste **réservée**. **18** `static_assert` (**23 avant v2.68.0** — six retirés avec les codes `4`, `5`, `19`-`22`, zéro ajouté : feature-152 est un lot de retrait) verrouillent la correspondance valeur par valeur dans [`src/pump_controller.cpp`](../src/pump_controller.cpp).
+> ⚠️ **CONTRAT DE SÉRIALISATION FIGÉ.** Ces valeurs sont celles de `enum class DoseRefusal` ([`src/dosing_logic.h`](../src/dosing_logic.h)), écrites **explicitement** dans l'énum. Elles ne sont **jamais renumérotées** et **jamais insérées au milieu** : toute cause nouvelle s'ajoute **à la fin**, et une cause retirée du firmware reste **réservée**. **19** `static_assert` (**18** avant feature-163 ; **23 avant v2.68.0** — six retirés avec les codes `4`, `5`, `19`-`22`, un ajouté par feature-163) verrouillent la correspondance valeur par valeur dans [`src/pump_controller.cpp`](../src/pump_controller.cpp).
 
 | Code | Cause | Registre |
 |---:|---|---|
@@ -2181,7 +2181,9 @@ v2.68.0 (feature-152)** — voir l'amendement complet plus haut :
 | `16` | Valeur officielle NaN — **sonde figée** | panne |
 | `17` | Valeur officielle NaN — **plus aucune mesure acceptée** | panne |
 | `18` | Valeur officielle NaN — **mesures non représentatives** (purge / eau à l'arrêt) | normal |
-| ~~`19`~~-~~`22`~~ | **RETIRÉS en v2.68.0** — qualifiaient la garde séparée « filtre non prêt » (code `4`), qui a disparu avec elle. Jamais recyclés. Prochaine valeur disponible : `23`. | — |
+| ~~`19`~~-~~`22`~~ | **RETIRÉS en v2.68.0** — qualifiaient la garde séparée « filtre non prêt » (code `4`), qui a disparu avec elle. Jamais recyclés. | — |
+| ~~`23`~~ | **N'A JAMAIS ÉTÉ LIVRÉ** — envisagé pour `bug-160` (volet 2) au moment du mécanisme de bail, abandonné avant tout déploiement. Jamais recyclé. | — |
+| `24` | **AJOUTÉ en v2.83.0 (feature-163)** — session de calibration ouverte (`calibration_session_open`). Voir [tableau des codes de refus manuel](#codes-de-refus-409-v260) et [pump-controller.md](subsystems/pump-controller.md#garde-rang-4--session-détalonnage-ouverte-tous-modes-feature-163-adr-0115). Prochaine valeur disponible : `25`. | normal |
 | `250` | Cause posée par une **garde de sécurité pH/ORP** ou par l'escalade | panne |
 
 Les codes `15`-`18` **qualifient** la cause générique `3` : quatre états physiquement distincts
@@ -2388,6 +2390,8 @@ curl -u admin:monmotdepasse -X POST http://poolcontroller.local/pump1/off
 > ⚠️ **Garde filtration (v2.1.2)** : `/pump1/on` retourne **`409 Conflict`** si la filtration est arrêtée et que `regulationMode != "continu"`. `/pump1/off` reste inconditionnel (pouvoir arrêter en toute circonstance).
 >
 > **v2.6.0** : le corps du 409 passe du texte brut au **JSON structuré** `{"error":"filtration_off","message":"…"}` — même format que les refus de `/ph/inject/start` (voir [tableau des codes](#codes-de-refus-409-v260)). Les routes de test `/pumpN/on` ne vérifient **que** la filtration (pas les limites volumétriques : pas de volume demandé), mais le temps de marche **consomme le budget horaire partagé** ([ADR-0020](adr/0020-budget-horaire-dosage-unique.md)).
+>
+> ⚠️ **v2.83.0 (feature-163)** : `/pump1/on` et `/pump2/on` partagent désormais `injectionAllowedOrReject()` avec `/ph|orp/inject/start` — elles refusent aussi en **409 `calibration_session_open`** si une session de calibration est ouverte, **avant** même la vérification de filtration. Voir [tableau des codes](#codes-de-refus-409-v260).
 
 ---
 
@@ -2413,6 +2417,18 @@ Règle la puissance PWM d'une pompe (0–255).
 ```bash
 curl -u admin:monmotdepasse -X POST http://poolcontroller.local/pump1/duty/128
 ```
+
+> 🔴 **`bug-170` (ouvert, critique, non corrigé)** : contrairement à **toutes** les autres routes
+> de démarrage de pompe de cette page (`/pumpN/on`, `/ph|orp/inject/start`), ces deux routes
+> appellent `setManualPump()` **directement**, après la seule authentification. ⛔ **Aucune garde
+> de présence d'eau, aucune limite journalière ou horaire, aucun plafond de débit, et aucune garde
+> d'étalonnage** (`calibration_session_open`, v2.83.0) — une pompe doseuse peut démarrer à un
+> rapport cyclique arbitraire **sans circulation d'eau**, ce que `injectionAllowedOrReject()`
+> refuse partout ailleurs. Voir
+> [`bug-170`](../specs/features/todo/bug-170-routes-duty-demarrent-une-pompe-sans-aucune-garde.md)
+> et [ADR-0115](adr/0115-une-garde-sur-etat-partage-vit-au-point-dusage-final.md) (ce chemin en est
+> l'exemple-même de « chemin pas encore fermé »). **Ne pas utiliser ces routes sur une
+> installation en service** tant que ce bug reste ouvert.
 
 ---
 
@@ -2454,8 +2470,9 @@ Format du corps (`application/json`) :
 |---------|-------------------------------------|-------------------|
 | `watchdog_inactive` | Watchdog inactif sur la tâche de dosage (`loopTask`) — règle absolue | — |
 | `filtration_off` | Filtration arrêtée et `regulationMode != "continu"` | — |
+| `calibration_session_open` | **v2.83.0 (feature-163)** — une session de calibration est **ouverte** (`mqttCfg.calSessionOpen`, posée inconditionnellement par `POST /calibration/enter`, quel que soit le mode de régulation). Garde **rang 3** — derrière Watchdog/Présence d'eau, **devant** la stabilisation post-cal et tout le reste (voir [pump-controller.md](subsystems/pump-controller.md#garde-rang-4--session-détalonnage-ouverte-tous-modes-feature-163-adr-0115)). Refus **inconditionnel**, aucune exception (y compris chloration de secours). Émet un `critical` `[Sécurité] Dosage refusé : étalonnage en cours (session de calibration ouverte) — aucune injection tant que la session n'est pas fermée`. Message : « Étalonnage en cours — injection refusée tant que la session de calibration est ouverte. » | — |
 | `stabilization_in_progress` | Stabilisation post-calibration en cours **pour la pompe visée** | `seconds_remaining` (int) |
-| `automatic_inject_in_progress` | **v2.77.0 (bug-161, gate `pool-chemistry` C1)** — une injection **automatique** est en cours sur cette pompe (`PumpController.isPhDosing()` / `isOrpDosing()`). Garde **rang 4** — derrière Watchdog/Présence d'eau/Stabilisation, **devant** le double démarrage manuel et les quotas. Ce trou était inatteignable tant que le bouton d'injection manuelle restait masqué hors du mode `manual` (feature-161 lève ce masquage) — voir [pump-controller.md](subsystems/pump-controller.md#garde-rang-4--injection-automatique-en-cours-bug-161-gate-c1). Message : « Une injection automatique est en cours — réessayez dans un instant. » | — |
+| `automatic_inject_in_progress` | **v2.77.0 (bug-161, gate `pool-chemistry` C1)** — une injection **automatique** est en cours sur cette pompe (`PumpController.isPhDosing()` / `isOrpDosing()`). Garde **rang 5** (était rang 4 avant v2.83.0, décalée par l'insertion de `calibration_session_open` en rang 3) — derrière Watchdog/Présence d'eau/session d'étalonnage/Stabilisation, **devant** le double démarrage manuel et les quotas. Ce trou était inatteignable tant que le bouton d'injection manuelle restait masqué hors du mode `manual` (feature-161 lève ce masquage) — voir [pump-controller.md](subsystems/pump-controller.md#garde-rang-5--injection-automatique-en-cours-bug-161-gate-c1). Message : « Une injection automatique est en cours — réessayez dans un instant. » | — |
 | `already_injecting` | Une injection manuelle est déjà en cours sur cette pompe (double start) | — |
 | `daily_limit` | Reliquat journalier **nul ou < 1 s de pompe** (sinon la demande est **écrêtée** au reliquat et acceptée — v2.9.2 ; frontière `==` **acceptée** ; limite ≤ 0 = illimité) | `remaining_ml` (int, reliquat arrondi **vers le bas** depuis v2.9.2 — le message ne promet jamais plus que disponible) |
 | `hourly_limit` | `usedMs + durée demandée > *_limit_minutes × 60000` (budget **partagé** auto + manuel ; frontière `==` acceptée ; limite 0 = illimité) | — |
@@ -2886,6 +2903,14 @@ verrou de sécurité ci-dessus, **aucune bascule** n'a lieu non plus si la boucl
 changer. Si **ni** le pH **ni** l'ORP ne basculent (les deux étaient déjà en `manual`), aucune
 session de bascule ne s'ouvre : pas de bandeau côté client, pas d'alerte d'oubli armée.
 
+⚠️ **v2.83.0 (feature-163)** — **indépendamment de tout ce qui précède**, cette route ouvre
+**inconditionnellement** la garde de dosage `mqttCfg.calSessionOpen` (persistée, NVS
+`cal_sess_open`) : aucune injection (automatique, programmée, manuelle, de secours, ou test de
+pompe) ne passe plus tant qu'elle est ouverte, **y compris dans le cas ci-dessus** où ni le pH ni
+l'ORP ne basculent de mode — c'est précisément le cas que la bascule de mode seule ne protégeait
+pas. Voir [tableau des codes 409](#codes-de-refus-409-v260) (`calibration_session_open`) et
+[pump-controller.md](subsystems/pump-controller.md#garde-rang-4--session-détalonnage-ouverte-tous-modes-feature-163-adr-0115).
+
 **Payload** : aucun (POST sans corps).
 
 **Réponse 200** :
@@ -2920,6 +2945,11 @@ en Manuel et seul l'ORP est restauré.
 
 **Payload** : aucun (POST sans corps). Idempotente : appelée sans session ouverte (double clic,
 session jamais ouverte), répond 200 sans rien muter.
+
+⚠️ **v2.83.0 (feature-163)** — referme **inconditionnellement** `mqttCfg.calSessionOpen`, **que**
+`calSwitchActive` soit actif ou non. C'est le seul chemin de fermeture (aucune expiration, aucun
+mécanisme de relâche automatique) — une session laissée ouverte gèle **tout** dosage, secours
+compris, jusqu'à cet appel.
 
 **Réponse 200** (session ouverte, restauration effectuée) :
 

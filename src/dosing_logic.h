@@ -163,12 +163,18 @@ enum class DoseRefusal : uint8_t {
   ReadingNaNWarmup = 15,       // fenêtre de lissage en cours de remplissage
   ReadingNaNFrozen = 16,       // capteur figé (PANNE)
   ReadingNaNStale = 17,        // aucune mesure acceptée / trop ancienne (PANNE)
-  ReadingNaNGateClosed = 18   // mesures déclarées non représentatives (purge/eau à l'arrêt)
+  ReadingNaNGateClosed = 18,  // mesures déclarées non représentatives (purge/eau à l'arrêt)
   // 19, 20, 21, 22 : RETIRÉS (feature-152), ne jamais recycler.
   // 23 (CalibrationHold) : RETIRÉ bug-160 (volet 2, REFONTE 2026-10-13) — le
   // mécanisme de bail (cal_hold_logic) qui le justifiait est ABANDONNÉ au
   // profit d'une bascule explicite de régulation (mqttCfg.ph/orpRegulationMode
   // == "manual"). JAMAIS recyclé.
+  // feature-163 (gate pool-chemistry G2) : AJOUTÉ EN FIN (valeur 24, cf.
+  // commentaire ci-dessus) — ⛔ aucune renumérotation des valeurs existantes.
+  // Évaluée au RANG 3 dans evaluateDose() (immédiatement après la présence
+  // d'eau, AVANT la garde NaN) : le rang d'évaluation et l'ordinal de l'énum
+  // sont deux axes INDÉPENDANTS, même patron que ManualInjectRefusal ci-dessous.
+  CalibrationSessionOpen = 24  // session de calibration OUVERTE (mqttCfg.calSessionOpen)
 };
 
 // Entrées POD de la décision de dosage. Tous les champs sont collectés par la
@@ -177,6 +183,14 @@ struct DoseInputs {
   bool watchdogActive;          // esp_task_wdt_status(NULL) == ESP_OK
   bool waterPresent;            // feature-056 : source UNIQUE resolveWaterPresent()
                                 // (Managed=commandé, Powered=présumé, External=signal frais)
+  // feature-163 (gate G2/G6) : session d'étalonnage OUVERTE (mqttCfg.calSessionOpen,
+  // PERSISTÉ — cf. config.h). INITIALISEUR DE MEMBRE (même patron que filterState
+  // ci-dessous) : les fixtures de test existantes construisent `DoseInputs in;`
+  // sans valeur-initialiser l'agrégat et ne renseignent pas ce champ — sans ce
+  // défaut à false, elles liraient une valeur INDÉTERMINÉE et pourraient refuser
+  // le dosage de façon aléatoire. La collecte réelle (canDose) l'écrase toujours
+  // explicitement.
+  bool calSessionOpen = false;
   // feature-152 : VALEUR OFFICIELLE de sensor_filter — sensors.getPhFiltered() /
   // getOrpFiltered(). NaN encapsule déjà warmup, sonde figée, péremption et
   // porte fermée : une seule garde (isnan) suffit désormais (les anciennes
@@ -495,13 +509,24 @@ enum class ManualInjectRefusal {
   // des valeurs ci-dessus) — évalué au RANG 4 dans evaluateManualInject()
   // (immédiatement après StabilizationActive, avant AlreadyInjecting) : le
   // rang d'évaluation et l'ordinal de l'énum sont deux axes INDÉPENDANTS ici.
-  AutomaticInjectInProgress = 10  // une injection AUTOMATIQUE est en cours sur cette pompe
+  AutomaticInjectInProgress = 10, // une injection AUTOMATIQUE est en cours sur cette pompe
+  // feature-163 (gate pool-chemistry G2) : AJOUTÉ EN FIN D'ÉNUMÉRATION (⛔
+  // aucune renumérotation des valeurs ci-dessus) — évalué au RANG 3 dans
+  // evaluateManualInject() (AVANT StabilizationActive, immédiatement après la
+  // présence d'eau) : même patron d'indépendance rang/ordinal qu'au-dessus.
+  CalibrationSessionOpen = 11    // session de calibration OUVERTE (mqttCfg.calSessionOpen)
 };
 
 // Entrées POD collectées par la coquille (web_routes_control) AVANT l'appel.
 struct ManualInjectInputs {
   bool watchdogActive;             // esp_task_wdt_status(NULL) == ESP_OK
   bool waterPresent;               // feature-056 : resolveWaterPresent() (source UNIQUE)
+  // feature-163 (gate G2/G6) : session d'étalonnage OUVERTE (mqttCfg.calSessionOpen,
+  // PERSISTÉ). INITIALISEUR DE MEMBRE : les fixtures existantes construisent
+  // `ManualInjectInputs in;` SANS valeur-initialiser l'agrégat (cf. test natif) —
+  // sans ce défaut à false, elles liraient une valeur INDÉTERMINÉE. La collecte
+  // réelle (web_routes_control.cpp) l'écrase toujours explicitement.
+  bool calSessionOpen = false;
   bool stabilizationActive;        // isStabilizationTimerActive(pumpIndex)
   uint32_t stabilizationRemainingS;// secondes restantes (formatage 409 uniquement,
                                    // non utilisé par la décision — recopié tel quel)
@@ -580,6 +605,15 @@ struct ScheduledDoseInputs {
   uint32_t hourlyLimitMs;      // limite horaire ; 0 = illimité (convention auto)
   uint32_t minInjectionTimeMs; // durée min d'injection (anti short-cycling, 30 s)
   bool watchdogActive;         // esp_task_wdt_status(NULL) == ESP_OK (condition n°4)
+  // feature-163 (gate pool-chemistry G3/G6) : session d'étalonnage OUVERTE
+  // (mqttCfg.calSessionOpen, PERSISTÉ) — placée À CÔTÉ de watchdogActive dans
+  // l'entrée fail-closed d'evaluateScheduledDose (même traitement : aucun log
+  // dédié, cf. canDose()/evaluateDose() pour la cause détaillée). INITIALISEUR
+  // DE MEMBRE : les fixtures existantes construisent `ScheduledDoseInputs in;`
+  // SANS valeur-initialiser l'agrégat — sans ce défaut à false, elles liraient
+  // une valeur INDÉTERMINÉE. La collecte réelle (pump_controller.cpp) l'écrase
+  // toujours explicitement.
+  bool calSessionOpen = false;
   int prevWindowIndex;         // index de fenêtre du tick précédent (-1 = aucun)
   float prevStopTargetMl;      // cible d'arrêt cumulée de la fenêtre courante
 };

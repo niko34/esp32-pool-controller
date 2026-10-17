@@ -318,6 +318,19 @@ void setupCalibrationRoutes(AsyncWebServer* server) {
     bool phSwitched = mqttCfg.phCalSwitchApplied;
     bool orpSwitched = mqttCfg.orpCalSwitchApplied;
 
+    // feature-163 (gate pool-chemistry G1) : la GARDE DE DOSAGE s'ouvre
+    // INCONDITIONNELLEMENT, y compris quand pH et ORP sont DÉJÀ en "manual" et
+    // qu'aucune bascule de mode n'a lieu ci-dessous (calSwitchActive resterait
+    // alors faux — c'est le trou trouvé par le gate). calSessionOpen est le
+    // SEUL prédicat lu par evaluateDose/evaluateManualInject/
+    // evaluateScheduledDose : aucun dosage ne doit passer tant qu'il est vrai.
+    const bool calSessionWasOpen = mqttCfg.calSessionOpen;
+    mqttCfg.calSessionOpen = true;
+    if (!calSessionWasOpen) {
+      systemLogger.info("[Etalonnage] Garde de dosage activée (session de "
+                        "calibration ouverte) depuis " + clientIpOf(req));
+    }
+
     if (!mqttCfg.calSwitchActive) {
       const bool phSafetyTraceActive = (mqttCfg.phAutoManualReason.length() > 0) ||
                                        (mqttCfg.phAutoManualEpoch != 0);
@@ -374,7 +387,6 @@ void setupCalibrationRoutes(AsyncWebServer* server) {
                                           : "déjà en Manuel, inchangée")) +
                           " ; ORP " +
                           (applyOrp ? "basculée en Manuel" : "déjà en Manuel, inchangée"));
-        saveMqttConfig();
       } else {
         phSwitched = false;
         orpSwitched = false;
@@ -383,6 +395,12 @@ void setupCalibrationRoutes(AsyncWebServer* server) {
                           " : pH et ORP déjà en Manuel, aucune bascule");
       }
     }
+
+    // feature-163 (gate G1) : SAUVEGARDE UNIQUE, inconditionnelle — persiste
+    // calSessionOpen même quand ni pH ni ORP ne basculent (le cas qui a motivé
+    // ce lot). Déplacée hors du bloc `if (applyPh || applyOrp)` ci-dessus (qui
+    // ne sauvegardait auparavant QUE les champs de bascule de mode).
+    saveMqttConfig();
 
     xSemaphoreGiveRecursive(configMutex);
 
@@ -424,6 +442,12 @@ void setupCalibrationRoutes(AsyncWebServer* server) {
   // le pH reste en Manuel et seul l'ORP est restauré.
   // Idempotente : appelée sans session ouverte (double clic, jamais ouverte),
   // répond 200 sans rien muter.
+  // feature-163 (gate pool-chemistry G1) : referme la GARDE DE DOSAGE
+  // (calSessionOpen) INCONDITIONNELLEMENT, y compris quand calSwitchActive est
+  // resté faux (cas « pH+ORP déjà manual » à l'entrée, cf. /calibration/enter)
+  // — calSessionOpen est le SEUL prédicat lu par les trois fonctions pures de
+  // dosage, il doit donc se refermer peu importe si une bascule de mode a eu
+  // lieu ou non.
   server->on("/calibration/exit", HTTP_POST, [](AsyncWebServerRequest* req) {
     REQUIRE_AUTH(req, RouteProtection::WRITE);
 
@@ -433,7 +457,18 @@ void setupCalibrationRoutes(AsyncWebServer* server) {
       return;
     }
 
+    const bool calSessionWasOpen = mqttCfg.calSessionOpen;
+    mqttCfg.calSessionOpen = false;
+
     if (!mqttCfg.calSwitchActive) {
+      // Trou du gate (G1) : calSwitchActive peut être resté faux pendant toute
+      // la session (pH+ORP déjà "manual" à l'entrée) — calSessionOpen est
+      // alors la SEULE trace à refermer et à persister ici.
+      if (calSessionWasOpen) {
+        saveMqttConfig();
+        systemLogger.info("[Etalonnage] Garde de dosage désactivée (fermeture "
+                          "de l'écran de calibration) depuis " + clientIpOf(req));
+      }
       xSemaphoreGiveRecursive(configMutex);
       StaticJson<128> resp;
       resp["success"] = true;

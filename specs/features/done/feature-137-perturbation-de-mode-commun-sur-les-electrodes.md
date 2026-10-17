@@ -4,7 +4,7 @@
 - **ID** : feature-137
 - **Slug** : perturbation-de-mode-commun-sur-les-electrodes
 - **Type** : **étude matérielle** — pas un lot logiciel
-- **Statut** : todo — **chantier hors firmware**, à instruire avant toute décision
+- **Statut** : **CLÔTURÉE le 2026-10-17** — ⛔ hors périmètre logiciel : étude **matérielle**, du ressort de celui qui conçoit le PCB. ⚠️ La perturbation reste **ENTIÈRE** et le logiciel la **compense** au lieu de la corriger (voir « Clôture »).
 - **Priorité** : normale — aucune urgence, mais c'est la **seule voie** qui assainirait le signal à la source
 - **Version cible** : N/A (matériel)
 - **Dernière mise à jour** : 2026-09-20
@@ -220,3 +220,41 @@ stationnaire sur l'année — température, état de la pompe, vieillissement de
 - La modification effective du PCB : elle relève de `/release-pcb` et d'une
   décision de l'utilisateur, pas de cette étude.
 - L'offset pH : il corrige un décalage de mesure, **il n'est pas en cause**.
+
+
+---
+
+## Clôture — 2026-10-17 : du ressort de CELUI QUI CONÇOIT LE PCB, pas du logiciel
+
+**Décision de l'utilisateur**, ce jour : *« ces investigations sont du ressort de l'humain qui
+conçoit le PCB »*.
+
+⚠️ **La spec le déclarait déjà elle-même** : *« étude matérielle — pas un lot logiciel »*,
+*« chantier hors firmware »*, `embedded-developer` **non coché** (*« a priori aucun code »*), et
+l'architecte convoqué *« pour l'instruction, pas pour concevoir du firmware »*. ⇒ La clôture ne
+change pas sa nature, elle **cesse de la faire attendre dans un backlog logiciel**.
+
+### 🔴 CE QUI RESTE ENTIER — et ce que ça coûte tous les jours
+
+La perturbation de **mode commun** sur les deux électrodes **n'est ni expliquée ni corrigée**.
+⚠️ C'est elle qui rend le pH brut **anti-corrélé et presque à deux niveaux**, et c'est la **seule
+voie** qui assainirait le signal **à la source**.
+
+⚠️ **Conséquence concrète, mesurée le 2026-10-16** : l'eau réelle était à **pH 8**, la sonde
+lisait **6,9** dans le circuit de filtration. ⇒ Une correction de mesure de **+1,00** a été posée
+(v2.82.0, [[offset-ph-nature-et-non-suspicion]]) — ⚠️ **le double de l'ancienne borne de
+l'appareil**, qui a dû être **retirée** pour la rendre possible (ADR-0114).
+
+⛔ **Le logiciel ne corrige donc PAS le défaut : il le compense.** ⚠️ Et il le compense sur une
+grandeur qui **décide des injections d'acide**. Tant que la cause est là, la justesse du dosage
+repose sur l'exactitude d'une correction saisie à la main.
+
+### Ce qu'il faudrait instruire, le jour où une révision du PCB est envisagée
+⚠️ Les pistes sont dans le corps de la spec. ⛔ Elles ne sont **pas** départagées — la campagne de
+bruit (feature-097) **caractérise** le phénomène, elle ne l'**explique** pas.
+⚠️ Rappel : ⛔ **les sources KiCad sont GELÉES sauf demande explicite** (règle 5 de `CLAUDE.md`).
+
+### Où le sujet continue de vivre
+⇒ `kicad/README.md` (point d'entrée matériel) · [[feature-069]] (le transitoire de reprise,
+clôturée le même jour pour la même raison) · bug-135 (la butée brute, **même cause**) ·
+feature-097 (le bruit y est mesuré) · ADR-0084.
