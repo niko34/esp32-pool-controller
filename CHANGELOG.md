@@ -2,6 +2,67 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [2.85.0] - 2026-10-18
+
+> ℹ️ **Dernier obstacle à la mise à jour en ligne depuis le passage du dépôt en public** (voir
+> `2.84.0` ci-dessous pour `bug-169`) : l'API GitHub répondait déjà `200`, mais `/check-update`
+> échouait quand même — et de façon de plus en plus probable au fil des releases.
+
+### Firmware
+
+- 🚨 **`bug-173` corrigé — `/check-update` tronquait silencieusement la réponse GitHub, et le
+  défaut s'aggravait tout seul à chaque release.** Constaté en production le jour même du passage
+  du dépôt en public : `ERROR Erreur parsing JSON GitHub: IncompleteInput`, 55 ms après
+  l'ouverture de la session TLS — bien trop court pour lire les 16 756 o de la réponse. Cause :
+  le parse **en flux** (ADR-0032, extension 2026-08-04) traitait un `read()` rendant `-1` (tampon
+  réseau TLS **transitoirement** vide, pas une fin de document) comme la fin du document. Plus le
+  projet publie (assets, notes de release), plus la réponse grossit, plus l'échec devenait
+  **certain** — sans qu'aucune ligne de code ne change. Corrigé en mémorisant la réponse dans un
+  tampon **PSRAM borné** (`kOtaCheckResponseMaxBytes` = 128 Ko, dimensionné sur le
+  `content-length`) avant de la parser (filtre ArduinoJson et budget `kOtaCheckJsonBudgetBytes`
+  conservés à l'identique) ; lecture bornée en taille **et** en durée
+  (`kOtaCheckResponseReadTimeoutMs` = 15 s), décidée par une fonction pure testée nativement et
+  par mutation ; placement en PSRAM **vérifié** (`esp_ptr_external_ram()`), jamais supposé. Trois
+  refus désormais distingués explicitement (trop gros / trop lent / incomplet) — jamais un
+  document partiel accepté en silence. Voir [ADR-0119](docs/adr/0119-reponse-check-update-bufferisee-en-psram-bornee.md)
+  (révise, sans l'annuler, l'extension 2026-08-04 d'[ADR-0032](docs/adr/0032-reponses-http-bornees.md) :
+  le parse en flux n'était pas une erreur en 2026-08-04, c'est le contexte mémoire qui a changé
+  depuis [ADR-0112](docs/adr/0112-mbedtls-obeit-a-la-politique-psram-du-projet.md)).
+- **OTA** : nouveau code de refus `psram_low` sur `/check-update` quand le bloc PSRAM nécessaire
+  au tampon de lecture ci-dessus manque **transitoirement** — distinct de `psram_required`
+  (absence **permanente** de PSRAM), jamais confondu avec lui : l'un gèle durablement la mise à
+  jour en ligne côté interface, l'autre invite à réessayer.
+- 🔴 **Commentaire de sécurité corrigé, sans changer l'ordre qu'il justifiait.**
+  `docs/subsystems/ota-manager.md` (et un commentaire jumeau dans `web_routes_ota.cpp`)
+  affirmaient que « la tâche AsyncTCP n'est pas abonnée au watchdog » — justification de l'ordre
+  imposé en v2.20.1 (réarmer le dosage avant tout remontage du filesystem). Vérifié dans la
+  bibliothèque pendant l'instruction de ce lot : elle **l'est** (`CONFIG_ASYNC_TCP_USE_WDT = 1`
+  par défaut). L'ordre lui-même **n'a pas changé** — il reste défendable pour une autre raison —
+  mais sa justification d'origine était fausse, et deux revues indépendantes se sont contredites
+  dessus. `pool-chemistry` est invité à reconfirmer cet ordre sur la base du fait corrigé
+  (`bug-175`, nouvelle spec).
+
+### Documentation
+
+- `docs/API.md` : contrat `/check-update` mis à jour (buffering PSRAM au lieu du parse en flux,
+  nouveaux cas d'erreur « trop gros » / « trop lent » / « incomplet », second site d'émission de
+  `psram_low`).
+- `docs/adr/0032-reponses-http-bornees.md` : note datée 2026-10-18 ajoutée sur l'extension
+  2026-08-04 — **non supersédée**, renvoie à l'ADR-0119.
+- `docs/adr/0119-reponse-check-update-bufferisee-en-psram-bornee.md` **[nouveau]** : trade-off
+  tampon PSRAM borné vs envelopper le flux vs bibliothèque tierce.
+- `docs/subsystems/ota-manager.md` : flow `/check-update` réécrit (buffering PSRAM), section
+  « ORDRE IMPOSÉ » corrigée (prémisse watchdog), note sur l'absence d'échéance d'inactivité de
+  `/download-update` (non corrigée dans ce lot, cf. `bug-174`), confirmation que `/download-update`
+  ne porte pas le défaut de `/check-update` (boucle pilotée par `content-length`, SHA-256 vérifié
+  avant activation).
+- Deux specs de durcissement ouvertes dans `specs/features/todo/` : `bug-174` (échéance
+  d'inactivité sur `/download-update`, conséquence mesurée : voie FS déjà effacée au moment d'un
+  panic watchdog) et `bug-175` (reconfirmation par `pool-chemistry` de l'ordre dosage/montage FS
+  dont la prémisse était fausse).
+
+---
+
 ## [2.84.0] - 2026-10-18
 
 > ℹ️ **Pourquoi 2.84.0 et pas 2.83.0.** La 2.83.0 a été **déployée en cours de

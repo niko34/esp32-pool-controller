@@ -1378,6 +1378,30 @@ static_assert(kCheckUpdateMinFreeHeapBytes == kCheckUpdateMinMaxAllocBytes + kOt
               "budget JSON (bug-108) : la derivation ecrite en commentaire doit "
               "rester vraie en arithmetique.");
 
+// bug-173 (ADR-0032 révisé par ADR-0112) : tampon PSRAM qui mémorise la
+// réponse BRUTE de /check-update avant parsing. Le lecteur de flux
+// d'ArduinoJson traite un read() qui rend -1 (tampon réseau TLS
+// transitoirement vide, PAS fin de document) comme une fin de fichier — ce qui
+// tronquait en silence un corps de 16,7 Ko. ArduinoJson parse désormais depuis
+// CE TAMPON (filtre conservé), plus depuis le flux TLS.
+// Borne NOMMÉE : la réponse GitHub est une entrée TIERCE, jamais de confiance
+// aveugle sur sa taille. Mesuré le 2026-10-18 : content-length=16 756 o (6
+// assets, notes=3 800 o) — cette réponse GROSSIT à chaque release (assets +
+// notes). Marge x8 pour ne pas avoir à rouvrir ce fichier à la prochaine
+// croissance : 128 Ko reste négligeable face aux ~4,1 Mo de PSRAM libres
+// mesurés le même jour (ADR-0112 : mbedtls alloue en PSRAM depuis ce lot — la
+// contrainte mémoire qui interdisait de bufferiser, ADR-0032, ~35 Ko de RAM
+// INTERNE en plus de la session TLS, a disparu : ADR-0032 n'était pas fausse,
+// son contexte a changé).
+constexpr size_t kOtaCheckResponseMaxBytes = 131072;  // 128 Ko - x8 la taille mesurée (16 756 o, 2026-10-18)
+
+// Échéance totale de la lecture bornée du corps de /check-update depuis le
+// flux TLS vers le tampon PSRAM ci-dessus (bug-173). Large marge volontaire :
+// un timeout agressif rejouerait le symptôme corrigé (conclure à une fin de
+// lecture alors que les données arrivent encore, juste lentement) pour une
+// connexion simplement lente plutôt que coupée.
+constexpr unsigned long kOtaCheckResponseReadTimeoutMs = 15000;  // 15 s - marge large pour 16,7 à 128 Ko sur TLS
+
 // ============================================================================
 // SENSOR CONSTANTS - Paramètres capteurs
 // ============================================================================

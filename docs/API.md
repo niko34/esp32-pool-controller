@@ -3102,11 +3102,25 @@ Champs additifs v2.11.0 : `firmware_digest` / `filesystem_digest` — empreintes
 
 La réponse contient aussi `release_name`, `published_at` et `release_notes` (corps de la release GitHub). Depuis la v2.10.4 ([ADR-0032](adr/0032-reponses-http-bornees.md)), `release_notes` est **tronqué à 2048 caractères** (`kOtaReleaseNotesMaxChars`) avec suffixe « … » : le corps d'une release n'est pas borné côté GitHub, la troncature borne la réponse HTTP construite en RAM. Depuis la v2.16.1, la coupe respecte les **frontières UTF-8** (un accent/emoji coupé en deux produisait un JSON invalide côté navigateur).
 
-Depuis la v2.16.1 ([ADR-0032, extension 2026-08-04](adr/0032-reponses-http-bornees.md#extension-2026-08-04--check-update-parse-en-flux-entrant-v2161)), la réponse GitHub est parsée **en flux** (filtre limité aux champs consommés + budget mémoire `kOtaCheckJsonBudgetBytes` = 8192 o) au lieu d'être chargée entière en RAM. **Le contrat de la route est inchangé** (mêmes champs). Nouveau cas d'erreur :
+🚨 **Depuis la v2.85.0 (`bug-173`), la réponse GitHub n'est PLUS parsée en flux** — le parse en
+flux introduit par la v2.16.1 ([ADR-0032, extension 2026-08-04](adr/0032-reponses-http-bornees.md#extension-2026-08-04--check-update-parse-en-flux-entrant-v2161))
+tronquait silencieusement une réponse en croissance régulière (assets, notes de release) : le
+lecteur de flux d'ArduinoJson traite un `read()` qui rend `-1` (tampon réseau TLS **transitoirement**
+vide, pas une fin de document) comme une fin de fichier — constaté en production le 2026-10-18, 55 ms
+après l'ouverture TLS pour une réponse de 16 756 o. La réponse est désormais **mémorisée dans un
+tampon PSRAM borné** (`kOtaCheckResponseMaxBytes` = 128 Ko, dimensionné sur le `content-length`
+annoncé — entrée tierce, jamais de confiance aveugle) puis **parsée depuis ce tampon** une fois
+complète. **Le filtre ArduinoJson et le budget `kOtaCheckJsonBudgetBytes` (8192 o) du document
+résultat sont conservés à l'identique** — seule l'étape d'acquisition du corps a changé. **Le
+contrat de la route est inchangé** (mêmes champs). Détail et alternatives écartées :
+[ADR-0119](adr/0119-reponse-check-update-bufferisee-en-psram-bornee.md). Nouveaux cas d'erreur :
 
 | Code | Corps | Cas |
 |---|---|---|
-| `500` | `{"error":"GitHub response too large"}` | Corps de release GitHub dépassant le budget JSON (8 Ko) — refus propre, pas de consommation mémoire non bornée |
+| `500` | `{"error":"GitHub response exceeds read buffer"}` | Réponse GitHub dépassant `kOtaCheckResponseMaxBytes` (128 Ko) — entrée tierce anormalement grosse, refus nommé |
+| `500` | `{"error":"GitHub response read timeout"}` | Lecture plus lente que `kOtaCheckResponseReadTimeoutMs` (15 s) — abandon propre, pas de blocage indéfini de la tâche réseau |
+| `500` | `{"error":"GitHub response incomplete"}` | Connexion fermée / flux terminé avant d'avoir atteint le `content-length` annoncé — **jamais** un document partiel accepté silencieusement (c'est le symptôme même de `bug-173`) |
+| `503` | `{"error":"…","code":"psram_low"}` | Bloc PSRAM contigu insuffisant **pour allouer ce tampon de lecture** — condition **transitoire**, réessayable. ⚠️ Même code `psram_low` que la garde TLS sortante ci-dessous, mais point de garde **différent** (allocation du tampon de réponse, après l'ouverture de la session TLS) : la sémantique côté client (temporaire, réessayable) est identique, le site ne se distingue pas depuis la seule réponse HTTP |
 
 **Diagnostics (v2.16.2)** : chaque appel logge l'état heap **avant** l'ouverture de la session TLS ; un échec côté client (code HTTP négatif) logge le détail mbedtls (`lastError`, message + code) et le libellé `errorToString` au lieu d'un « -1 » muet. Depuis la v2.18.5, le log INFO nominal inclut aussi l'**IP du client** (attribution des appels TLS — le crash OOM du 11/08 avait un profil TLS compatible mais l'appelant était invérifiable) ; depuis la v2.18.6 il inclut la **PSRAM libre**, qui conditionne l'autorisation :
 
@@ -3188,6 +3202,8 @@ Avant la création de `WiFiClientSecure`, la route évalue le prédicat pur part
 | `tls_low_memory` | heap interne 8 bits libre < `kCheckUpdateMinFreeHeapBytes` **OU** plus gros bloc interne 8 bits < `kCheckUpdateMinMaxAllocBytes` (motif `kOomTlsGateLowMemory`) | **Temporaire**, réessayable | « Mémoire insuffisante pour TLS, réessayez » (texte inchangé depuis la v2.18.5) | Toast **informatif**, bouton **non** neutralisé, rafraîchissement via `/get-system-info` |
 
 La discrimination `psram_required` / `psram_low` est faite **par la route** (simple test de nullité du plus gros bloc PSRAM déjà mesuré, aucun seuil dupliqué) : le prédicat pur `oomTlsGateReason()` regroupe les deux sous le motif `kOomTlsGateNoPsram` ([subsystems/oom-guard.md](subsystems/oom-guard.md#garde-tls-sortante-partagée--oomtlsgatereason-v2186--refondue-v2810-bug-165bug-108)).
+
+> ⚠️ **Depuis la v2.85.0 (`bug-173`), `psram_low` a un SECOND site d'émission sur `/check-update`** : l'allocation du tampon PSRAM borné qui mémorise la réponse GitHub (ci-dessus). Ce n'est **pas** cette garde TLS sortante (franchie plus tôt, avant même l'ouverture de la session) — c'est une allocation distincte, après la session TLS. Jamais `psram_required` sur ce second site : la PSRAM existe, c'est un bloc contigu qui manque **transitoirement**.
 
 > ⚠️ **Le champ `code` est le seul contrat machine** : il est présent sur les **trois** refus (depuis la v2.18.7 — auparavant seul le refus PSRAM en portait un) et c'est le discriminant stable pour un client. Le champ `error` est un **texte destiné à l'utilisateur** et **peut être reformulé sans préavis ni changement de version majeure** — il l'a été en v2.18.7 (formulation neutre, vocabulaire aligné sur la carte « Mise à jour manuelle » de l'interface). Ne jamais tester le contenu de `error` : tester `code`. Un client doit traiter `psram_required` comme **définitif** et `psram_low` / `tls_low_memory` comme **réessayables**. Le statut `503` et la valeur `psram_required` sont, eux, inchangés depuis la v2.18.6.
 

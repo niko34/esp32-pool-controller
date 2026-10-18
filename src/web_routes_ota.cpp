@@ -24,6 +24,11 @@
 // sur le PLUS GROS BLOC PSRAM (contiguïté), pas la PSRAM libre totale.
 #include "heap_metrics.h"
 #include <esp_heap_caps.h>  // heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM)
+// bug-173 : lecture bornée de la réponse /check-update dans un tampon PSRAM
+// (logique PURE, testable en natif — ADR-0017) + témoin anti-décoratif de
+// placement PSRAM, même idiome que mbedtls_psram_alloc.cpp.
+#include "ota_response_buffer_logic.h"
+#include <esp_memory_utils.h>  // esp_ptr_external_ram
 // feature-063 : include EXPLICITE de WiFiClient.h — il n'arrive plus
 // transitivement via HTTPClient.h depuis le core Arduino 3 (où WiFiClient est
 // un alias de NetworkClient).
@@ -1049,11 +1054,187 @@ static void handleCheckUpdate(AsyncWebServerRequest* request) {
     return;
   }
 
-  // bug-checkupdate-heap-tls (ADR-0032) : la réponse GitHub (~10 Ko, croît à
-  // chaque release) n'est PLUS chargée entière en RAM (l'ancien getString() +
-  // parse complet culminait à ~35 Ko en plus des ~48 Ko de la session TLS →
-  // échec systématique sur heap fragmenté). Parse EN FLUX avec filtre : seuls
-  // les champs réellement consommés sont retenus.
+  // bug-173 (ADR-0032 révisé par ADR-0112) : la réponse GitHub n'est PLUS
+  // parsée EN FLUX. Le lecteur de flux d'ArduinoJson traite un read() qui rend
+  // -1 (tampon réseau TLS transitoirement vide, PAS fin de document) comme une
+  // fin de fichier — prouvé en production le 2026-10-18 (55 ms entre
+  // l'ouverture TLS et "IncompleteInput", bien trop court pour avoir lu
+  // 16,7 Ko). Elle est désormais mémorisée dans un tampon PSRAM BORNÉ
+  // (kOtaCheckResponseMaxBytes), puis parsée DEPUIS CE TAMPON — filtre
+  // ArduinoJson conservé à l'identique, seuls les champs listés ci-dessous
+  // entrent dans le document.
+  //
+  // ADR-0032 avait délibérément écarté le chargement intégral en RAM
+  // (getString() culminait à ~35 Ko de RAM INTERNE, en plus des ~48 Ko de la
+  // session TLS → échec systématique sur tas fragmenté). Ce n'était PAS une
+  // erreur : c'est le CONTEXTE qui a changé — depuis ADR-0112, mbedtls alloue
+  // en PSRAM (~4,1 Mo libres mesurés le même jour), et le tampon ci-dessous
+  // est alloué EXPLICITEMENT en PSRAM (MALLOC_CAP_SPIRAM, aucun repli
+  // implicite vers l'interne), placement VÉRIFIÉ par esp_ptr_external_ram()
+  // plutôt que supposé (le projet a déjà eu un parachute « en PSRAM » resté
+  // décoratif faute de vérification).
+  int declaredContentLength = https.getSize();  // entrée TIERCE : indicatif, jamais de confiance aveugle
+
+  // ⚠️ TAILLE AJUSTÉE À LA RÉPONSE ANNONCÉE (relevé en revue) : allouer 128 Ko
+  // à chaque appel alors que la réponse en fait ~17 divise par ~8 la PSRAM
+  // contiguë exigée, et rend d'autant plus rare le refus transitoire ci-dessous.
+  // ⛔ `declaredContentLength` reste une entrée TIERCE : il ne sert qu'à
+  // DIMENSIONNER, jamais à valider. Un pair qui annoncerait moins que ce qu'il
+  // envoie est REFUSÉ — ⚠️ mais pas toujours par la même cause (relevé en
+  // revue de sécurité) : selon le découpage des paquets, soit une lecture
+  // atteint la capacité et rend « trop gros », soit l'arrêt anticipé sur
+  // `declared` tombe d'abord et le parse échoue ensuite en `IncompleteInput`.
+  // ⇒ Les deux refusent — fail-closed tenu — ⛔ mais ne pas promettre ici un
+  // verdict déterministe qui n'en est pas un.
+  // ⚠️ `+1` : la capacité UTILE du prédicat d'arrêt est `capacity - 1` (il
+  // refuse dès `bytesRead >= capacity`), donc une réponse de exactement
+  // `declaredContentLength` octets doit pouvoir entrer.
+  // Absent ou nul (⛔ `getSize()` rend -1 quand l'en-tête manque) ⇒ borne pleine.
+  const size_t bufferCapacity =
+      (declaredContentLength > 0 &&
+       static_cast<size_t>(declaredContentLength) + 1 < kOtaCheckResponseMaxBytes)
+          ? static_cast<size_t>(declaredContentLength) + 1
+          : kOtaCheckResponseMaxBytes;
+
+  uint8_t* rawBuffer = static_cast<uint8_t*>(
+      heap_caps_malloc(bufferCapacity, MALLOC_CAP_SPIRAM));
+  if (rawBuffer == nullptr) {
+    // Refus EXPLICITE : jamais de repli silencieux vers la RAM interne — ce
+    // serait exactement le défaut qu'ADR-0032 avait corrigé.
+    // 🔴 CODE `psram_low`, ⛔ SURTOUT PAS `psram_required` (relevé en revue).
+    // ⚠️ `psram_required` est un CONTRAT MACHINE qui signifie « ce matériel n'a
+    // PAS de PSRAM » : docs/API.md impose au client de le traiter comme
+    // DÉFINITIF, et data/app.js grise alors « Vérifier » ET « Installer » sans
+    // jamais les réarmer. Or ICI la PSRAM existe — c'est un bloc contigu de
+    // 128 Ko qui manque à cet instant, condition TRANSITOIRE (fragmentation,
+    // session TLS en PSRAM depuis ADR-0112).
+    // ⇒ L'émettre ici afficherait « matériel incompatible » sur un WROVER sain
+    // et sortirait l'utilisateur de la mise à jour en ligne jusqu'au
+    // rechargement de la page. `psram_low` est déjà la sémantique « saturée,
+    // réessayez » (toast + loadSystemInfo(), aucun verrouillage).
+    // ⛔ Et le texte ⛔ n'affirme RIEN sur le matériel.
+    systemLogger.error("/check-update : bloc PSRAM contigu indisponible pour le tampon de réponse (" +
+                       String(bufferCapacity) + " o demandés) — condition transitoire");
+    https.end();
+    request->send(503, "application/json",
+                  "{\"error\":\"Mémoire PSRAM momentanément insuffisante pour lire la réponse "
+                  "GitHub — réessayez dans un instant\","
+                  "\"code\":\"psram_low\"}");
+    return;
+  }
+  if (!esp_ptr_external_ram(rawBuffer)) {
+    // Témoin anti-décoratif (même idiome que mbedtls_psram_alloc.cpp) :
+    // MALLOC_CAP_SPIRAM ne devrait JAMAIS atterrir ailleurs qu'en PSRAM — si
+    // ça arrivait quand même, refus plutôt que de parser depuis un tampon dont
+    // la localisation réelle n'a pas été confirmée.
+    systemLogger.critical("/check-update : tampon de réponse alloué hors PSRAM malgré "
+                          "MALLOC_CAP_SPIRAM — refus (jamais de parse non vérifié)");
+    heap_caps_free(rawBuffer);
+    https.end();
+    sendErrorResponse(request, 500, "Internal buffer placement error");
+    return;
+  }
+
+  // Lecture BORNÉE : boucle tant que la connexion est exploitable (ouverte OU
+  // des octets restent immédiatement disponibles) ET que l'échéance totale
+  // n'est pas atteinte — décision déléguée au prédicat pur
+  // otaBufferedReadNextAction (ota_response_buffer_logic.h), testé nativement
+  // par mutation. `dataAvailable` est TOUJOURS revérifié : un read() qui rend
+  // 0 octet immédiatement disponible ne signifie PAS "fin du document", c'est
+  // très exactement le défaut corrigé par ce bug.
+  WiFiClient& rawStream = https.getStream();
+  size_t bytesRead = 0;
+  const unsigned long readStartMs = millis();
+  size_t readIterations = 0;
+  OtaBufferedReadAction stopAction = OtaBufferedReadAction::kContinue;
+  for (;;) {
+    // ⚠️ available() lu UNE SEULE fois par itération (relevé en revue) : deux
+    // lectures pouvaient rendre >0 puis 0, donnant toRead == 0, readBytes() == 0
+    // et un tour de boucle SANS vTaskDelay ⇒ boucle chaude sur async_tcp
+    // jusqu'à l'échéance.
+    const int availableNow = rawStream.available();
+    const bool dataAvailable = availableNow > 0;
+    const bool deadlineExceeded =
+        (millis() - readStartMs) >= kOtaCheckResponseReadTimeoutMs;  // immunisé au repliement de millis()
+    stopAction = otaBufferedReadNextAction(bytesRead, bufferCapacity,
+                                          https.connected(), dataAvailable, deadlineExceeded);
+    if (stopAction != OtaBufferedReadAction::kContinue) break;
+
+    // ⚠️ ARRÊT NORMAL SUR content-length (relevé en revue) : sans lui, la seule
+    // sortie du chemin nominal est la fermeture par le pair. `useHTTP10(true)`
+    // envoie bien `Connection: close`, donc ça se termine AUJOURD'HUI — mais un
+    // intermédiaire qui n'honore pas la fermeture ferait tourner la boucle
+    // jusqu'aux 15 s, bloquerait la tâche async_tcp pendant ce temps, puis
+    // rendrait un verdict « trop lent » FAUX alors que le document était
+    // complet. ⛔ `declaredContentLength` reste une entrée TIERCE : on ne s'en
+    // sert que pour s'arrêter PLUS TÔT, jamais pour valider le contenu (le
+    // contrôle de cohérence a lieu après la boucle).
+    if (declaredContentLength > 0 &&
+        bytesRead >= static_cast<size_t>(declaredContentLength)) {
+      stopAction = OtaBufferedReadAction::kStopOk;
+      break;
+    }
+
+    if (dataAvailable) {
+      const size_t toRead = min(static_cast<size_t>(availableNow),
+                                bufferCapacity - bytesRead);
+      const int n = rawStream.readBytes(reinterpret_cast<char*>(rawBuffer + bytesRead), toRead);
+      if (n > 0) bytesRead += static_cast<size_t>(n);
+    } else {
+      vTaskDelay(pdMS_TO_TICKS(10));
+    }
+    // ⚠️ Watchdog nourri une itération sur 16 (⛔ PAS à chaque tour — la
+    // formulation d'origine était fausse, relevé en revue).
+    // 🔴 ET IL PROTÈGE RÉELLEMENT : la tâche AsyncTCP **EST** abonnée au TWDT.
+    // Vérifié dans la bibliothèque, ⛔ pas supposé : `CONFIG_ASYNC_TCP_USE_WDT`
+    // vaut **1** par défaut (AsyncTCP.h:41-42), le `#undef` d'AsyncTCP.cpp:18
+    // est à l'intérieur d'un bloc `LIBRETINY` (autre plateforme), et
+    // `platformio.ini` ne surcharge rien ⇒ `esp_task_wdt_add(NULL)` à
+    // AsyncTCP.cpp:322 s'exécute bel et bien.
+    // ⚠️ Deux revues se sont contredites sur ce point ; l'une s'appuyait sur un
+    // commentaire de CE fichier qui est faux (corrigé, voir plus bas). ⛔ Sans
+    // ce nourrissage, une lecture lente de 15 s dépasserait les 30 s du TWDT
+    // en cumulé avec le handshake.
+    if ((++readIterations % 16) == 0) {
+      esp_task_wdt_reset();
+    }
+  }
+  https.end();
+
+  const bool lengthMismatch = otaBufferedReadLengthMismatch(bytesRead, declaredContentLength);
+  const OtaBufferedReadResult readResult = otaBufferedReadResultFor(stopAction, lengthMismatch);
+
+  if (readResult != OtaBufferedReadResult::kOk) {
+    heap_caps_free(rawBuffer);
+    // Distinction EXPLICITE dans le journal (bug-173) : un refus muet ou
+    // ambigu est le travers récurrent de ce projet.
+    switch (readResult) {
+      case OtaBufferedReadResult::kTooLarge:
+        systemLogger.error("/check-update : réponse GitHub trop grosse (> " +
+                           String(kOtaCheckResponseMaxBytes) + " o) — refusée");
+        sendErrorResponse(request, 500, "GitHub response exceeds read buffer");
+        break;
+      case OtaBufferedReadResult::kTimedOut:
+        systemLogger.error("/check-update : lecture de la réponse GitHub trop lente (> " +
+                           String(kOtaCheckResponseReadTimeoutMs) + " ms, lu " +
+                           String(bytesRead) + " o) — abandonnée");
+        sendErrorResponse(request, 500, "GitHub response read timeout");
+        break;
+      case OtaBufferedReadResult::kIncomplete:
+      default:
+        systemLogger.error("/check-update : réponse GitHub incomplète (lu " + String(bytesRead) +
+                           " / annoncé " + String(declaredContentLength) +
+                           " o) — pair coupé ou flux tronqué");
+        sendErrorResponse(request, 500, "GitHub response incomplete");
+        break;
+    }
+    return;
+  }
+
+  systemLogger.info("/check-update : réponse GitHub lue intégralement (" + String(bytesRead) + " o, PSRAM)");
+
+  // Filtre ArduinoJson CONSERVÉ à l'identique (bug-173) : seuls les champs
+  // réellement consommés entrent dans le document.
   JsonDocument filter;
   filter["tag_name"] = true;
   filter["name"] = true;
@@ -1065,9 +1246,14 @@ static void handleCheckUpdate(AsyncWebServerRequest* request) {
 
   BudgetJsonAllocator budgetAlloc(kOtaCheckJsonBudgetBytes);
   JsonDocument doc(&budgetAlloc);
+  // `rawBuffer` est passé en `const char*` : ArduinoJson copie les chaînes
+  // dans le document (StringBuilder) plutôt que de référencer le tampon en
+  // place (ce zero-copy n'existe que pour un `char*` MUTABLE) — le tampon peut
+  // donc être libéré juste après, sans pointeur pendant dans `doc`.
   DeserializationError error = deserializeJson(
-      doc, https.getStream(), DeserializationOption::Filter(filter));
-  https.end();
+      doc, reinterpret_cast<const char*>(rawBuffer), bytesRead,
+      DeserializationOption::Filter(filter));
+  heap_caps_free(rawBuffer);
 
   if (error) {
     if (error == DeserializationError::NoMemory) {
@@ -1378,9 +1564,19 @@ static void handleDownloadUpdate(AsyncWebServerRequest* request) {
                             String(expectedHex) + ", calculée " + String(computedHex) +
                             ") — redémarrage annulé");
       // ORDRE IMPOSÉ (gate pool-chemistry 2.20.1) : réarmer le dosage AVANT le
-      // montage. La tâche AsyncTCP n'est PAS abonnée au watchdog — un montage
-      // long ou un panic lfs_alloc sur image corrompue laisserait sinon les
-      // pompes inhibées sans reboot possible.
+      // montage — ⛔ ORDRE INCHANGÉ, il reste juste.
+      // 🔴 MAIS SA JUSTIFICATION ÉTAIT FAUSSE (relevé en revue de sécurité,
+      // 2026-10-18, vérifié dans la bibliothèque) : elle affirmait que « la
+      // tâche AsyncTCP n'est PAS abonnée au watchdog ». ⚠️ Elle L'EST :
+      // `CONFIG_ASYNC_TCP_USE_WDT` vaut 1 par défaut (AsyncTCP.h:41-42), le
+      // `#undef` d'AsyncTCP.cpp:18 ne s'applique qu'à LIBRETINY, et
+      // `platformio.ini` ne surcharge rien.
+      // ⇒ Un montage long ou un panic PROVOQUE donc bien un reboot. L'ordre
+      // reste néanmoins le bon : le réarmement est un drapeau RAM, et le faire
+      // avant garantit l'état sûr **sans dépendre** du reboot pour y arriver.
+      // ⚠️ À faire reconfirmer par `pool-chemistry` : sa décision reposait sur
+      // une prémisse inexacte, même si la conclusion tient. ⛔ Ne pas changer
+      // cet ordre sans son verdict.
       PumpController.setOtaInProgress(false);  // Appariement du setOtaInProgress(true)
       // Remontage best-effort : la partition contient une image corrompue,
       // LittleFS échouera probablement (l'UI restera servie depuis le cache

@@ -115,6 +115,30 @@ Pic mémoire du handler : ~35 Ko → **≤ 8 Ko**, hors session TLS (~48 Ko, inc
 
 Verrouillage additionnel : **tout corps de réponse d'API externe dont la taille dépend de données distantes doit être parsé en flux avec budget — un `getString()` sur un tel corps est un défaut de revue**, symétrique de la règle sur les réponses sortantes.
 
+> **Note datée 2026-10-18 (v2.85.0, bug-173) — le parse « en flux » de `/check-update` ci-dessus
+> est RÉVISÉ, cette extension n'est PAS supersédée.** Incident de production le jour même du
+> passage du dépôt en public : le lecteur de flux d'ArduinoJson traite un `read()` qui rend `-1`
+> comme une **fin de document**, alors que sur TLS le tampon réseau se vide **transitoirement**
+> au milieu d'un transfert — 55 ms après l'ouverture TLS, bien trop court pour avoir lu les
+> 16 756 o de la réponse, le parseur concluait à tort que le document était fini. Un défaut qui
+> **s'aggrave tout seul** : plus le projet publie (assets, notes de release), plus la réponse
+> GitHub grossit, plus la fenêtre TLS creuse devient probable, sans qu'aucune ligne de code ne
+> change.
+>
+> ⚠️ **La décision du 2026-08-04 n'était pas fausse** : `getString()` + parse complet culminait
+> alors à ~35 Ko de RAM **interne**, en plus des ~48 Ko de la session TLS, sur un tas qui n'avait
+> aucun moyen de placer ce volume ailleurs. C'est le **contexte** qui a changé — depuis
+> [ADR-0112](0112-mbedtls-obeit-a-la-politique-psram-du-projet.md), mbedtls alloue en PSRAM
+> (~4,1 Mo libres mesurés le même jour que l'incident), rendant un tampon de 16,7 Ko (borné à
+> 128 Ko, `kOtaCheckResponseMaxBytes`) négligeable.
+>
+> La réponse GitHub est désormais **mémorisée dans un tampon PSRAM borné** (taille **et** durée
+> de lecture, prédicat pur testé par mutation) **avant** d'être parsée depuis ce tampon — le
+> flux TLS n'est plus jamais présenté directement au parseur JSON. Filtre ArduinoJson et budget
+> `BudgetJsonAllocator`/`kOtaCheckJsonBudgetBytes` **conservés à l'identique** : seule l'étape
+> d'acquisition du corps change. Détail complet, alternatives écartées et conséquences :
+> [ADR-0119](0119-reponse-check-update-bufferisee-en-psram-bornee.md).
+
 ## Références
 
 - Code : `src/web_routes_data.cpp` (`handleGetLogs`, `handleDownloadLogs`, `handleGetHistory`), `src/web_routes_ota.cpp` (`handleCheckUpdate`, `BudgetJsonAllocator`), `src/ota_check_logic.h` (`AllocBudget`, `utf8SafeCutLen`), `src/logs_page.h`, `src/logs_export_chunk.h`, `src/logger.h` (`forEachRecentLog` visiteur `bool`, `getLogEntryByIndex`), `src/constants.h` (`kHttpHeapMarginBytes`, `kLogsMaxEntriesPerPage`, `kLogsPageHardCap`, `kLogExportLineMaxBytes`, `kHistoryPointJsonMaxBytes`, `kOtaReleaseNotesMaxChars`, `kOtaCheckJsonBudgetBytes`)

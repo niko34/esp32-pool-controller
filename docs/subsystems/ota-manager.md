@@ -37,7 +37,59 @@ bool isEnabled() const;
 
 ## Flow OTA HTTP (UI → firmware)
 
-1. Client appelle `GET /check-update` → le firmware interroge l'API GitHub Releases pour comparer la version courante (`FIRMWARE_VERSION` dans [`version.h`](../../src/version.h)) à la dernière release. La réponse relaie aussi les empreintes SHA-256 des assets (`firmware_digest` / `filesystem_digest`, champ `digest` de l'API GitHub). Depuis la v2.16.1 ([ADR-0032, extension 2026-08-04](../adr/0032-reponses-http-bornees.md#extension-2026-08-04--check-update-parse-en-flux-entrant-v2161)), la réponse GitHub (~10 Ko, croissante à chaque release) est parsée **en flux** (`useHTTP10(true)` + filtre 7 champs) sur un `JsonDocument` à allocateur **plafonné net** (`BudgetJsonAllocator`, `kOtaCheckJsonBudgetBytes` = 8192 o) — pic mémoire du handler ≤ 8 Ko hors session TLS (~48 Ko incompressible) ; corps hors budget → `500` « GitHub response too large » + log dédié. Les notes de release sont tronquées à `kOtaReleaseNotesMaxChars` (2048) sur **frontière UTF-8** (`utf8SafeCutLen`, [`ota_check_logic.h`](../../src/ota_check_logic.h)).
+1. Client appelle `GET /check-update` → le firmware interroge l'API GitHub Releases pour comparer la version courante (`FIRMWARE_VERSION` dans [`version.h`](../../src/version.h)) à la dernière release. La réponse relaie aussi les empreintes SHA-256 des assets (`firmware_digest` / `filesystem_digest`, champ `digest` de l'API GitHub).
+
+   🚨 **La réponse GitHub n'est PLUS parsée en flux depuis la v2.85.0 (`bug-173`, [ADR-0032 révisé
+   par ADR-0119](../adr/0032-reponses-http-bornees.md#extension-2026-08-04--check-update-parse-en-flux-entrant-v2161))**
+   — le parse en flux de la v2.16.1 traitait un `read()` qui rend `-1` (tampon réseau TLS
+   **transitoirement** vide, pas une fin de document) comme la fin du document, tronquant en
+   silence la réponse. Mesuré en production le 2026-10-18 : 55 ms entre l'ouverture TLS et
+   `IncompleteInput`, pour une réponse de 16 756 o — ⛔ bien trop court pour l'avoir lue. Et le
+   défaut **s'aggravait tout seul** : plus le projet publie, plus la réponse grossit, plus la
+   fenêtre TLS creuse devient probable, sans qu'aucune ligne de code ne change.
+
+   Correctif : la réponse est **mémorisée dans un tampon alloué explicitement en PSRAM**
+   (`heap_caps_malloc(…, MALLOC_CAP_SPIRAM)`, dimensionné sur le `content-length` annoncé — entrée
+   tierce, borné à `kOtaCheckResponseMaxBytes` = 128 Ko, ×8 la taille mesurée le jour de
+   l'incident), **lue par une boucle bornée en taille ET en durée** (`kOtaCheckResponseReadTimeoutMs`
+   = 15 s — large marge volontaire, un timeout agressif rejouerait le symptôme corrigé pour une
+   connexion simplement lente), dont la **décision** à chaque itération est une fonction **pure**
+   testée nativement et par mutation (`otaBufferedReadNextAction`,
+   [`ota_response_buffer_logic.h`](../../src/ota_response_buffer_logic.h), [ADR-0017](../adr/0017-logique-metier-pure-humble-object-testabilite.md)) :
+   une absence de donnée **transitoire** (`available() == 0`, connexion ouverte) n'est **jamais**
+   confondue avec une fin de document — c'est très exactement le défaut corrigé. Le placement
+   réel du tampon est **vérifié** par `esp_ptr_external_ram()` (témoin anti-décoratif, même idiome
+   que [`mbedtls_psram_alloc.cpp`](../../src/mbedtls_psram_alloc.cpp)) avant tout usage : jamais
+   de parse depuis un tampon dont la localisation n'a pas été confirmée.
+
+   Trois issues anormales, **distinguées explicitement au journal et dans la réponse HTTP**
+   (jamais un refus muet ou ambigu) : réponse **trop grosse** (> `kOtaCheckResponseMaxBytes`),
+   lecture **trop lente** (> `kOtaCheckResponseReadTimeoutMs`), réponse **incomplète**
+   (connexion fermée avant la fin attendue du `content-length` — le symptôme même de ce bug,
+   refusé plutôt qu'accepté partiellement). Un échec d'allocation du tampon PSRAM répond `503
+   psram_low` (**transitoire**, réessayable — ⛔ jamais `psram_required`, qui affirmerait à tort
+   l'absence de PSRAM sur un module qui en a).
+
+   **Ce qui ne change pas** : une fois le corps acquis, il est parsé depuis ce tampon (pas depuis
+   le flux TLS) avec le **même** filtre ArduinoJson (7 champs) et le **même** `JsonDocument` à
+   allocateur **plafonné net** (`BudgetJsonAllocator`, `kOtaCheckJsonBudgetBytes` = 8192 o) —
+   corps hors budget → `500` « GitHub response too large » + log dédié. Les notes de release
+   sont tronquées à `kOtaReleaseNotesMaxChars` (2048) sur **frontière UTF-8** (`utf8SafeCutLen`,
+   [`ota_check_logic.h`](../../src/ota_check_logic.h)).
+
+   ⚠️ **Pourquoi bufferiser une réponse tierce ne rouvre pas un risque d'intégrité** (relevé en
+   revue de sécurité) : la session est **TLS épinglée** (5 racines auto-signées, [ADR-0111](../adr/0111-ancre-de-confiance-tls-toujours-auto-signee.md))
+   — un DNS détourné produit un **échec de handshake**, pas un corps hostile reçu avec succès. Le
+   seul pair réellement capable de servir un contenu arbitraire est celui qui **contrôle la
+   release GitHub elle-même** ; seule [feature-151](../../specs/features/todo/feature-151-signature-de-l-image-ota.md)
+   (signature de l'image) répond à ce cas, puisque l'URL et l'empreinte SHA-256 sortent du **même**
+   JSON. Détail complet et alternatives écartées (envelopper le flux, bibliothèque tierce) :
+   [ADR-0119](../adr/0119-reponse-check-update-bufferisee-en-psram-bornee.md).
+
+   ⚠️ **`/download-update` ne porte PAS ce défaut** : le téléchargement du `.bin` est piloté par
+   une boucle sur `content-length` qui écrit directement dans la partition flash (jamais de
+   parse JSON en flux), et l'intégrité est vérifiée par comparaison SHA-256 **avant** toute
+   activation de l'image — voir [Vérification d'intégrité SHA-256](#vérification-dintégrité-sha-256-feature-026-adr-0022) ci-dessous.
 
    **Diagnostics (v2.16.2, spec `bug-checkupdate-tls-core3`)** : le handler logge l'état heap **avant** d'ouvrir la session TLS. ⚠️ **Métrique CHANGÉE en v2.81.0 (bug-165/bug-108)** : le log portait `ESP.getFreeHeap()` / `ESP.getMaxAllocHeap()` (IRAM-inclusives, aveugles à la famine 8 bits réelle — c'est exactement le défaut qui a laissé passer un handshake voué à l'échec, voir [Règle — une ancre de confiance…](#règle--une-ancre-de-confiance-est-toujours-la-variante-auto-signée-bug-checkupdate-tls-core3-bug-165-adr-0111) ci-dessous pour le contexte TLS, et [oom-guard.md](oom-guard.md#garde-tls-sortante-partagée--oomtlsgatereason-v2186--refondue-v2810-bug-165bug-108) pour le détail de la garde) ; il porte désormais « heap interne 8 bits libre=… o, plus gros bloc interne 8 bits=… o » (`heapFree8Bit()` / `heapLargestFreeBlock8Bit()`, ADR-0058) **et** « plus gros bloc PSRAM=… o » (`heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM)`). Sur un code HTTP négatif (échec client TLS/socket), le log « Erreur HTTP GitHub » porte le détail mbedtls (`client.lastError()`, message + code) et le libellé `HTTPClient::errorToString()`.
 
@@ -311,9 +363,33 @@ Chaque `PumpController.setOtaInProgress(true)` a son `false` sur **tous** les ch
 
 ### ORDRE IMPOSÉ — `setOtaInProgress(false)` AVANT tout `LittleFS.begin()` (v2.20.1)
 
-Sur **tous** les chemins terminaux, le réarmement du dosage précède le remontage du filesystem. Ce n'est pas un détail de style : ces handlers s'exécutent sur la **tâche AsyncTCP, qui n'est pas abonnée au watchdog**. Un montage LittleFS long — ou qui panique sur une partition à moitié écrasée — laisserait les pompes doseuses **inhibées sans redémarrage possible** : le watchdog ne peut pas sauver une tâche à laquelle il n'est pas abonné. En libérant le dosage d'abord, le pire cas d'un montage bloquant reste une interface web indisponible, pas une régulation chimique morte.
+Sur **tous** les chemins terminaux, le réarmement du dosage précède le remontage du filesystem.
 
-Gate `pool-chemistry`. L'existant du chemin URL (`/download-update`) a été corrigé dans ce sens en même temps. **Ne pas réordonner en revue.**
+🔴 **Correction d'une prémisse fausse (relevée en revue de sécurité, 2026-10-18, `bug-173`) —
+l'ORDRE reste INCHANGÉ, seule sa justification était inexacte.** Ce paragraphe affirmait que ces
+handlers s'exécutent sur « la tâche AsyncTCP, qui n'est **pas** abonnée au watchdog ». ⚠️ Vérifié
+dans la bibliothèque, pas supposé : `CONFIG_ASYNC_TCP_USE_WDT` vaut **1** par défaut
+(`AsyncTCP.h:41-42`), le `#undef` de `AsyncTCP.cpp:18` ne s'applique qu'à la plateforme
+**LibreTiny** (hors ce projet), et
+`platformio.ini` ne surcharge rien ⇒ `esp_task_wdt_add(NULL)` (`AsyncTCP.cpp:322`) s'exécute bel
+et bien. **La tâche AsyncTCP EST abonnée au watchdog.**
+
+⇒ Un montage LittleFS long ou un panic sur une partition à moitié écrasée **provoque donc un
+redémarrage** par le watchdog (30 s, `kWatchdogTimeoutSec`), au lieu de laisser la tâche
+indéfiniment bloquée. **L'ordre reste néanmoins le bon** : le réarmement du dosage est un drapeau
+RAM, et le poser **avant** le remontage garantit l'état sûr **sans dépendre** du redémarrage pour
+y arriver — un redémarrage n'efface pas plus vite une inhibition déjà levée que de ne pas en avoir
+eu besoin.
+
+⚠️ **Deux revues se sont contredites sur ce point factuel pendant l'instruction de `bug-173`** :
+l'une s'appuyait sur ce commentaire, qui était faux. ⇒ **`pool-chemistry` doit reconfirmer cet
+ordre** : sa décision de la v2.20.1 reposait sur une prémisse inexacte, même si sa conclusion
+tient toujours. Spec de suivi :
+[`bug-175-reconfirmer-ordre-dosage-avant-montage-fs.md`](../../specs/features/todo/bug-175-reconfirmer-ordre-dosage-avant-montage-fs.md).
+**Verdict en attente** — cette note disparaîtra au profit de la confirmation datée une fois la
+spec traitée.
+
+Gate `pool-chemistry`. L'existant du chemin URL (`/download-update`) a été corrigé dans ce sens en même temps. **Ne pas réordonner en revue** — y compris à la lumière de cette correction.
 
 <a id="une-seule-erreur-journalisee-par-session-v2201"></a>
 
@@ -385,6 +461,13 @@ L'historique est **préservé** pendant une OTA filesystem car il vit sur une pa
 - **Partition pleine** : refus au moment du `Update.begin()` → erreur HTTP 500 (corps `FAIL: démarrage de la mise à jour impossible (<errorString>)`), log `ERROR`, dosage réarmé et filesystem remonté.
 - **Image filesystem envoyée en type « firmware »** (le piège corrigé en v2.20.1) : refus `400` au premier octet, **aucun** effet de bord — pompes jamais inhibées, filesystem jamais démonté, aucun redémarrage. Une ligne de journal.
 - **Version GitHub < locale** : pas de mise à jour proposée côté UI (comparaison semver).
+- ⚠️ **`/download-update` : aucune échéance d'INACTIVITÉ sur la boucle de lecture** (relevé en
+  revue de sécurité pendant `bug-173`, non corrigé dans ce lot — hors périmètre explicite). Seul
+  filet : le watchdog de la tâche AsyncTCP (30 s), qui **panique** plutôt que d'abandonner
+  proprement. Conséquence mesurée côté filesystem : la partition `spiffs` est **déjà effacée** au
+  moment où ce blocage se produirait ⇒ redémarrage sur un FS **vide**, interface indisponible
+  jusqu'à un nouvel OTA filesystem. Spec de durcissement :
+  [`bug-174-download-update-sans-echeance-dinactivite.md`](../../specs/features/todo/bug-174-download-update-sans-echeance-dinactivite.md).
 
 ## Fichiers liés
 
@@ -396,8 +479,9 @@ L'historique est **préservé** pendant une OTA filesystem car il vit sur une pa
 - [`test/sha256_vectors.js`](../../test/sha256_vectors.js) / [`tools/check_sha256_vectors.sh`](../../tools/check_sha256_vectors.sh) — vecteurs du SHA-256 JS extrait de `data/app.js`
 - [`src/ota_type_logic.h`](../../src/ota_type_logic.h) — logique pure du type d'image (`inferOtaKindFromFilename`, `checkOtaFirstByte` — 29 tests natifs `test/test_native_ota_type/`) ; miroir JS `detectUpdateType()` dans [`data/app.js`](../../data/app.js)
 - [`src/ota_check_logic.h`](../../src/ota_check_logic.h) — logique pure `/check-update` (`AllocBudget`, `utf8SafeCutLen`, `classifyOtaCheckFailure` depuis bug-165 — 20 tests natifs `test/test_native_ota_check/`, à mesurer plutôt qu'à recopier, ADR-0073)
+- [`src/ota_response_buffer_logic.h`](../../src/ota_response_buffer_logic.h) — logique pure de la lecture bornée du corps de `/check-update` dans un tampon PSRAM (`otaBufferedReadNextAction`, `otaBufferedReadLengthMismatch`, `otaBufferedReadResultFor` — bug-173, [ADR-0119](../adr/0119-reponse-check-update-bufferisee-en-psram-bornee.md), tests natifs `test/test_native_ota_response_buffer/`, à mesurer plutôt qu'à recopier, ADR-0073)
 - [`src/github_root_ca.h`](../../src/github_root_ca.h) — **5 racines auto-signées** (3 depuis v2.16.2, +2 Sectigo E46/R46 depuis bug-165, 2026-10-14) : USERTrust RSA + USERTrust ECC (github.com / api.github.com, exp. 2038), ISRG Root X1 (objects.githubusercontent.com, exp. 2035), Sectigo Public Server Authentication Root E46 (ECC, exp. 2046) + Root R46 (RSA, exp. 2046) — chaîne ECC/RSA actuelle d'api.github.com — empreintes SHA-256 vérifiées, sources consignées dans le header, conformité imposée en CI par [`tools/check_github_root_ca.sh`](../../tools/check_github_root_ca.sh) (voir [règle dédiée](#règle--une-ancre-de-confiance-est-toujours-la-variante-auto-signée-bug-checkupdate-tls-core3-bug-165-adr-0111) ci-dessus)
 - [`partitions.csv`](../../partitions.csv)
 - [docs/UPDATE_GUIDE.md](../UPDATE_GUIDE.md)
-- [ADR-0007](../adr/0007-table-partitions-custom.md), [ADR-0022](../adr/0022-verification-integrite-ota.md), [ADR-0096](../adr/0096-empreinte-sha256-obligatoire-sur-post-update.md)
+- [ADR-0007](../adr/0007-table-partitions-custom.md), [ADR-0022](../adr/0022-verification-integrite-ota.md), [ADR-0096](../adr/0096-empreinte-sha256-obligatoire-sur-post-update.md), [ADR-0119](../adr/0119-reponse-check-update-bufferisee-en-psram-bornee.md)
 - [`specs/features/done/feature-118-authenticite-de-l-image-ota.md`](../../specs/features/done/feature-118-authenticite-de-l-image-ota.md), [`specs/features/todo/feature-151-signature-de-l-image-ota.md`](../../specs/features/todo/feature-151-signature-de-l-image-ota.md)
