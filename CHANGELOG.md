@@ -2,7 +2,20 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
-## [2.83.0] - 2026-10-17
+## [2.84.0] - 2026-10-18
+
+> ℹ️ **Pourquoi 2.84.0 et pas 2.83.0.** La 2.83.0 a été **déployée en cours de
+> développement** sur l'appareil, puis **complétée** par trois lots (suppression des routes
+> `/pumpN/duty`, correction de la fausse alerte d'impasse, cause de refus héritée) sans que le
+> numéro ne bouge. ⚠️ **Deux binaires différents portaient donc le même numéro** — un numéro de
+> version qui n'identifie plus le code ne sert à rien. La 2.83.0 **n'a jamais été publiée en
+> release** ; tout son contenu est repris ici.
+>
+> ⭐ **Première release depuis que le dépôt est public** : c'est aussi la première où la **mise à
+> jour en ligne** peut fonctionner (voir `bug-169` — l'API GitHub répondait **404** sur un dépôt
+> privé, et les binaires n'étaient plus publiés sous les noms que l'appareil cherche).
+
+### Contenu repris de la 2.83.0 (jamais publiée)
 
 ### Firmware
 
