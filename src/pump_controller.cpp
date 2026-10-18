@@ -60,10 +60,33 @@ static_assert(static_cast<int>(DoseRefusal::ReadingNaNGateClosed) == 18, "DoseRe
 // feature-163 (gate pool-chemistry G2) : AJOUTÉ EN FIN (valeur 24) — session
 // de calibration ouverte, évaluée au RANG 3 d'evaluateDose() (cf. dosing_logic.h).
 static_assert(static_cast<int>(DoseRefusal::CalibrationSessionOpen) == 24, "DoseRefusal renuméroté");
+// bug-172 (gate pool-chemistry H3) : AJOUTÉ EN FIN (valeur 25) — n'est JAMAIS
+// retourné par evaluateDose()/canDose() (aucun rang dans sa cascade 2→15) ;
+// qualifie UNIQUEMENT la cascade de suspension globale evaluateSuspendCause()
+// (dosing_logic.h/.cpp), évaluée depuis updateDosingCore(). Présent ici pour
+// la complétude du switch ci-dessous (-Werror=switch, voir le case dédié).
+static_assert(static_cast<int>(DoseRefusal::FlowAssistSuspend) == 25, "DoseRefusal renuméroté");
 // La sentinelle « cause posée par une garde » ne doit jamais collisionner avec
 // une valeur de l'énum (elle serait traduite en cause de canDose côté client).
-static_assert(static_cast<int>(DoseRefusal::CalibrationSessionOpen) < kDoseBlockedCodeGuard,
+static_assert(static_cast<int>(DoseRefusal::FlowAssistSuspend) < kDoseBlockedCodeGuard,
               "kDoseBlockedCodeGuard collisionne avec DoseRefusal : relever la sentinelle");
+
+// =============================================================================
+// bug-172 — textes de cause PARTAGÉS (source UNIQUE, gate pool-chemistry H2)
+// =============================================================================
+// Réutilisés tels quels par le switch de canDose() (ci-dessous) ET par la
+// cascade de suspension globale d'updateDosingCore() (evaluateSuspendCause,
+// dosing_logic.h) : une seule occurrence littérale par texte, pour qu'une
+// future reformulation ne puisse jamais diverger entre les deux appelants
+// (« deux voix pour un même fait », relevé par le gate). Les trois premiers
+// textes existaient déjà dans canDose() avant bug-172 ; seul le quatrième
+// (FlowAssistSuspend) est neuf.
+static const char* const kCauseFiltrationOff = "filtration arrêtée";
+static const char* const kCauseCalibrationSessionOpen =
+    "étalonnage en cours (session de calibration ouverte)";
+static const char* const kCauseStabilizationActive = "stabilisation post-calibration en cours";
+static const char* const kCauseFlowAssistSuspend =
+    "mesure du débit en cours — dosage suspendu";
 
 // Définitions des membres statiques
 bool PumpControllerClass::_dailyLoaded = false;
@@ -799,6 +822,62 @@ void PumpControllerClass::resetRefusalLogState(int pumpIndex) {
   _sensorFaultAlerted[pumpIndex] = false;
   _sensorFaultActive[pumpIndex] = false;
   _refusalCauseFromGuard[pumpIndex] = false;
+}
+
+// bug-172 — pose la cause de la SUSPENSION GLOBALE (evaluateSuspendCause,
+// dosing_logic.h) depuis updateDosingCore(). Edge-trigger STRICT sur le CODE,
+// AVANT toute construction de String : ADR-0082, ce bloc tourne à CHAQUE tick,
+// et les quatre textes dépassent la SSO de WString (14 octets) — les
+// reconstruire à chaque tick fractionnerait le tas 8 bits exactement comme le
+// journal avant feature-129. Le chemin PROPRIÉTAIRE canDose (logRefusalOnce)
+// est emprunté explicitement : ⛔ jamais setGuardRefusalCause, dont la
+// sentinelle 250 est réservée aux gardes chimiques (gate pool-chemistry H4).
+void PumpControllerClass::postSuspendCause(int pumpIndex, DoseRefusal cause) {
+  if (pumpIndex < 0 || pumpIndex > 1) return;
+  // 🔴 bug-172, correctif de revue — RANG 0 DE LA CASCADE : une cause de GARDE
+  // CHIMIQUE n'est JAMAIS écrasée (propriété D1, sentinelle 250).
+  //
+  // ⚠️ SANS cette ligne, le correctif de bug-172 était PIRE que le défaut qu'il
+  // corrige. Chaîne établie en revue :
+  //   logRefusalOnce() pose inconditionnellement _refusalCauseFromGuard=false
+  //   ⇒ la garde PERD la propriété. Or elle ne re-pose sa cause que sur un
+  //   FRONT, et pendant la suspension tickPhGuardSurveillance() ne tourne pas
+  //   (elle est APRÈS le `return`) ⇒ ses latches sortent INCHANGÉS ⇒ aucun
+  //   front au retour. Et canDose() est derrière `!isPhGuardBlocking(true)`
+  //   ⇒ il n'est pas appelé quand une garde mord. clearGuardRefusalCause()
+  //   est alors un no-op : la cause chimique est perdue DÉFINITIVEMENT.
+  //   ⇒ Scénario : pH sous le plancher à 20 h, filtration coupée à 23 h,
+  //     reprise à 9 h ⇒ l'écran annonce « filtration arrêtée » TOUTE LA
+  //     JOURNÉE, filtration en marche, cause chimique effacée. Pire encore en
+  //     mode Programmé/manuel, où canDose() n'est appelé à AUCUN tick.
+  //
+  // ⚠️ L'ordre H1 du gate n'est PAS enfreint : dans le chemin réel,
+  // isPhGuardBlocking() est évalué AVANT canDose() — une garde qui mord masque
+  // DÉJÀ « filtration arrêtée ». Cette ligne RÉTABLIT cet ordre.
+  // ⛔ L'alternative (latch de sortie + re-post forcé) a été REFUSÉE par le
+  // gate pour une raison CHIMIQUE, pas de confort : réarmer les latches
+  // réalimenterait `newRefusal` et le compteur des 3 refus / 24 h, dont
+  // l'escalade BASCULE LA RÉGULATION EN MANUEL. Un correctif d'affichage ne
+  // peut pas créer un chemin vers un changement de mode de régulation.
+  if (_refusalCauseFromGuard[pumpIndex]) return;
+  if (static_cast<uint8_t>(cause) == _lastRefusalCode[pumpIndex]) return;  // inchangé : aucune allocation
+  const char* text;
+  switch (cause) {
+    case DoseRefusal::FiltrationOff:          text = kCauseFiltrationOff; break;
+    case DoseRefusal::CalibrationSessionOpen: text = kCauseCalibrationSessionOpen; break;
+    case DoseRefusal::StabilizationActive:    text = kCauseStabilizationActive; break;
+    case DoseRefusal::FlowAssistSuspend:      text = kCauseFlowAssistSuspend; break;
+    default:
+      // DoseRefusal::None (ou toute autre valeur) : evaluateSuspendCause() ne
+      // le retourne pas depuis l'appelant (cf. updateDosingCore(), appelé
+      // seulement quand une des quatre conditions est vraie) — rien à poser.
+      return;
+  }
+  // Seul point où une String est construite ici : UNIQUEMENT sur un
+  // changement de code réel (transition, événement rare), jamais en régime
+  // stable. logRefusalOnce() prend la propriété de la chaîne (canDose
+  // propriétaire, _refusalCauseFromGuard=false) et horodate la transition.
+  logRefusalOnce(pumpIndex, text, cause);
 }
 
 // D1 — pose une cause de refus au nom d'une GARDE de sécurité (surveillance
@@ -1725,11 +1804,11 @@ bool PumpControllerClass::canDose(int pumpIndex) {
       cause = "watchdog inactif";
       break;
     case DoseRefusal::FiltrationOff:
-      cause = "filtration arrêtée";
+      cause = kCauseFiltrationOff;
       break;
     case DoseRefusal::CalibrationSessionOpen:
       // feature-163 (gate pool-chemistry G5) : libellé IMPOSÉ mot pour mot.
-      cause = "étalonnage en cours (session de calibration ouverte)";
+      cause = kCauseCalibrationSessionOpen;
       break;
     // v2.25.1 — LIBELLÉS DÉCONFLATÉS. Les deux anciennes phrases mélangeaient
     // chacune plusieurs causes physiques (« warmup / EZO injoignable ») : l'UI en
@@ -1774,7 +1853,7 @@ bool PumpControllerClass::canDose(int pumpIndex) {
               ", requis=" + String(in.requiredPoints) + ")";
       break;
     case DoseRefusal::StabilizationActive:
-      cause = "stabilisation post-calibration en cours";
+      cause = kCauseStabilizationActive;
       break;
     case DoseRefusal::MixingActive:
       cause = "pause mélange en cours";
@@ -1799,6 +1878,14 @@ bool PumpControllerClass::canDose(int pumpIndex) {
     case DoseRefusal::BurstPer15Min:
       cause = "anti-rafale : " + String(in.cyclesLast15Min) +
               " cycles dans les 15 dernières minutes";
+      break;
+    case DoseRefusal::FlowAssistSuspend:
+      // bug-172 : JAMAIS retourné par evaluateDose() — FlowAssistSuspend ne
+      // qualifie que la cascade de suspension globale (evaluateSuspendCause(),
+      // updateDosingCore()). Présent ici pour la seule complétude du switch
+      // (-Werror=switch) ; texte identique à kCauseFlowAssistSuspend (H2 :
+      // une seule voix pour cette cause).
+      cause = kCauseFlowAssistSuspend;
       break;
     case DoseRefusal::None:
       // Inatteignable (traité plus haut) — présent pour la complétude du switch.
@@ -3791,7 +3878,15 @@ void PumpControllerClass::updateDosingCore(unsigned long now) {
   // La garde "automatic + capteur valide + calibration" est appliquée plus bas dans
   // les branches dédiées (canDose(0) et canDose(1)) — défense en profondeur.
   // feature-056 : source UNIQUE resolveWaterPresent() (Managed/Powered/External).
-  bool filtrationOk = filtration.resolveWaterPresence().waterPresent;
+  // bug-172, correctif de revue (mineur 1) : on garde l'OBJET, pas seulement
+  // le booléen. ⚠️ `.stale` distingue « filtration arrêtée » d'un « signal
+  // externe PÉRIMÉ » — deux situations DIFFÉRENTES pour l'exploitant, et en
+  // mode External « filtration arrêtée » est une affirmation que l'appareil
+  // NE PEUT PAS faire : il ne commande pas la pompe, il a perdu un signal.
+  // Le journal est la seule trace qui les sépare (le champ d'API, lui, disait
+  // déjà « filtration arrêtée » et ⛔ ne change pas).
+  const WaterPresence waterPresence = filtration.resolveWaterPresence();
+  bool filtrationOk = waterPresence.waterPresent;
   bool stabilizationActive = isStabilizationTimerActive(0) ||
                              isStabilizationTimerActive(1);
   // feature-075 : la suspension « assistant de mesure du débit » emprunte ce
@@ -3811,6 +3906,18 @@ void PumpControllerClass::updateDosingCore(unsigned long now) {
   // `_calEntryInterruptRequested` consommé plus haut (gate 5, C6) ; ce bloc-ci
   // couvre le cas où la session s'ouvre PENDANT qu'un cycle Programmé tourne.
   if (!filtrationOk || stabilizationActive || flowAssistSuspend || mqttCfg.calSessionOpen) {
+    // bug-172 (gate pool-chemistry H1) : cascade UNIQUE de la cause de
+    // suspension — eau (rang 2) > étalonnage (rang 3) > stabilisation
+    // (rang 6) > assistant de débit (aucun rang dans canDose(), dernier).
+    // Calculée UNE SEULE fois ici : le texte du journal de transition
+    // ci-dessous ET la cause PUBLIÉE (postSuspendCause, en bas de ce bloc) en
+    // dérivent TOUS LES DEUX. Avant bug-172, un ternaire séparé (ordre
+    // eau → stabilisation → assistant → étalonnage) CONTREDISAIT le rang 3 de
+    // l'étalonnage : un état où plusieurs conditions étaient vraies à la fois
+    // pouvait nommer DEUX causes différentes pour le même état, selon le
+    // chemin emprunté (défaut trouvé par le gate).
+    const DoseRefusal suspendCause = evaluateSuspendCause(
+        filtrationOk, mqttCfg.calSessionOpen, stabilizationActive, flowAssistSuspend);
     // ⚠️ feature-163, correctif de revue (B1) : LE REFUS NE DOIT PAS ÊTRE MUET.
     // Ce bloc `return` AVANT canDose() et evaluateScheduledDose() : le
     // `critical` imposé par le gate (G5) et le libellé de cause 24 posés plus
@@ -3837,10 +3944,15 @@ void PumpControllerClass::updateDosingCore(unsigned long now) {
     // Arrêter le dosage en cours si l'eau n'est plus présente / stabilisation
     // active / assistant de mesure du débit en cours / étalonnage en cours
     if (phDosingState.active || orpDosingState.active) {
-      const char* reason = !filtrationOk ? "eau absente (filtration arrêtée / signal externe périmé)"
-                         : stabilizationActive ? "stabilisation post-cal en cours"
-                         : flowAssistSuspend ? "assistant de mesure du débit"
-                                             : "étalonnage en cours (session de calibration ouverte)";
+      // ⚠️ Le JOURNAL est plus précis que le champ d'API, volontairement :
+      // sur la cause « eau », il distingue un signal externe PÉRIMÉ d'une
+      // filtration réellement arrêtée. Deux littéraux, ⛔ aucune allocation.
+      const char* reason =
+          (suspendCause == DoseRefusal::FiltrationOff)
+              ? (waterPresence.stale ? "signal externe périmé" : kCauseFiltrationOff)
+          : (suspendCause == DoseRefusal::CalibrationSessionOpen) ? kCauseCalibrationSessionOpen
+          : (suspendCause == DoseRefusal::StabilizationActive)    ? kCauseStabilizationActive
+                                                                  : kCauseFlowAssistSuspend;
       systemLogger.info(String("Dosage suspendu (") + reason + ")");
       // v2.26.0 : cette suspension FERME la session pH — le produit déjà injecté
       // n'a pas été homogénéisé, la pause mélange doit donc être armée ici aussi.
@@ -3854,6 +3966,15 @@ void PumpControllerClass::updateDosingCore(unsigned long now) {
       // suivante doit comptabiliser son propre premier débit réel.
       _phCycleCounted = false;
     }
+    // bug-172 : la cause affichée (ph/orpDoseBlockedReason) ne doit plus être
+    // HÉRITÉE du dernier appel de canDose() — posée ici pour LES DEUX pompes,
+    // MÊME sans injection en cours (c'était précisément le cas qui échouait :
+    // l'utilisateur a vu « pause mélange » affichée alors que la filtration
+    // était à l'arrêt, parce que ce bloc sortait avant canDose() sans jamais
+    // réécrire la cause). Edge-trigger interne (postSuspendCause) : aucune
+    // allocation hors transition réelle (ADR-0082).
+    postSuspendCause(0, suspendCause);
+    postSuspendCause(1, suspendCause);
     // Ne pas arrêter les pompes en mode manuel (test développement)
     if (!manualMode[0]) applyPumpDuty(0, 0);
     if (!manualMode[1]) applyPumpDuty(1, 0);

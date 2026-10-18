@@ -306,6 +306,25 @@ jobs:
         run: ./tools/check_cal_points_acquired_vectors.sh
 
 
+  dose-suspend-outranks-mixing-vectors:
+    name: Vecteurs « une cause de suspension prime sur le mélange » (bug-172)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # Même script en local (`./tools/check_dose_suspend_outranks_mixing_vectors.sh`)
+      # et en CI. ⚠️ Origine : l'utilisateur a vu « pause mélange en cours » et
+      # un décompte de 207 s pendant que la filtration était ARRÊTÉE. La cause
+      # affichée était héritée du dernier tick, et le décompte était lu sur le
+      # seul compteur de mélange — sans regarder si une cause plus grave était
+      # active. ⚠️ Le décompte n'était PAS périmé (il est recalculé à chaque
+      # sérialisation et décroît vraiment) : il était SUBORDONNÉ. ⇒ Ces vecteurs
+      # verrouillent le fait qu'une cause de suspension (2, 7, 24, 25) PRIME sur
+      # l'affichage du mélange, et qu'un vrai mélange (code 8) ⛔ n'est JAMAIS tu.
+      - name: Contrôle de la priorité des causes sur le décompte mélange
+        run: ./tools/check_dose_suspend_outranks_mixing_vectors.sh
+
   no-dynamic-pump-routes:
     name: Aucun routage dynamique vers un actionneur (bug-170, ADR-0117)
     runs-on: ubuntu-latest

@@ -54,6 +54,42 @@
   ni `data/`, ni aucun script) — reliquat des essais de débit, retiré avec
   `handleDynamicPumpRoutes()` et le routage dynamique d'`onNotFound()` qui les servait. Pour
   piloter une pompe à la main : `/pumpN/on` et `/pumpN/off`, qui portent les gardes.
+- 🚨 **L'appareil affichait une raison de refus FAUSSE pendant une suspension globale de dosage
+  (`bug-172`), constaté sur l'appareil le 2026-10-18** : la carte pH annonçait « pause mélange en
+  cours » avec un décompte de 207 s **alors que la filtration était arrêtée** — la vraie cause, de
+  priorité supérieure. Le bloc qui coupe les pompes sur perte d'eau, étalonnage ouvert,
+  stabilisation post-calibration ou assistant de mesure du débit sortait **avant** le calcul normal
+  de la cause de refus, qui conservait donc la valeur du **dernier** calcul réel — parfois
+  totalement périmée. ⚠️ Ce mécanisme avait déjà été repéré en revue de feature-163 la veille, mais
+  seule sa moitié « journal » avait été corrigée alors ; la moitié « cause affichée » restait
+  ouverte. Une cascade dédiée (`evaluateSuspendCause()`) calcule désormais la cause réelle à chaque
+  tick, pour les **deux** pompes, **même sans injection en cours** — c'était précisément le cas qui
+  échouait.
+- **Nouveau code de refus `25`** (`FlowAssistSuspend`, « mesure du débit en cours — dosage
+  suspendu ») — jusqu'ici cette cause n'était jamais exposée en dehors du journal.
+- Le gate `pool-chemistry` a trouvé un second défaut en instruisant ce correctif : la cascade
+  existante (pour le seul journal) ordonnait eau → stabilisation → assistant → étalonnage, à
+  l'inverse du rang 3 de l'étalonnage dans la décision de dosage — selon le chemin emprunté,
+  l'appareil pouvait nommer deux causes différentes pour le même état. Corrigé dans le même lot.
+- 🔴 **Un troisième défaut, trouvé en revue avant livraison** : la première version du correctif
+  écrasait aussi les causes posées par une **garde chimique** (pH/ORP hors seuil) pendant toute la
+  durée d'une suspension, et la garde ne reprenait jamais la main au retour (elle ne tourne pas
+  pendant la suspension, et ne re-pose sa cause que sur un front). Scénario concret : pH sous le
+  plancher à 20 h, filtration coupée à 23 h, reprise à 9 h ⇒ l'écran aurait annoncé « filtration
+  arrêtée » toute la journée, cause chimique effacée — pire encore en mode Programmé ou Manuel.
+  Corrigé en posant la règle au **rang 0** de la cascade : une cause de garde chimique n'est
+  **jamais** écrasée par la suspension globale. L'alternative (réarmer les latches de garde à la
+  reprise) a été écartée pour une raison chimique et non de confort : elle réalimenterait le
+  compteur des 3 refus / 24 h, dont l'escalade bascule la régulation en manuel — un correctif
+  d'affichage ne doit jamais ouvrir un chemin vers un changement de mode de régulation.
+- Côté interface, le décompte de pause mélange se tait désormais tant qu'une des quatre causes de
+  suspension globale (filtration arrêtée, étalonnage, stabilisation, assistant de débit) est
+  servie. ⚠️ Correction d'une explication erronée écrite dans un premier temps : ce décompte
+  **continuait à s'écouler réellement** (il est recalculé à chaque trame depuis l'échéance de
+  mélange, jamais hérité) — la raison de le taire n'est pas qu'il serait faux, c'est qu'une des
+  quatre causes ci-dessus est de **priorité supérieure**, et qu'annoncer « Pause mélange » à sa
+  place masquerait la condition qui commande réellement l'attente. Le décompte de stabilisation,
+  lui, reste affiché sans cette garde : il n'a pas de cause concurrente de rang supérieur ici.
 
 ### Documentation
 
@@ -95,6 +131,28 @@
   comme hors périmètre logiciel — ⚠️ les deux défauts matériels (transitoire de reprise de
   filtration, perturbation de mode commun sur les électrodes pH/ORP) restent **entiers**, le
   logiciel les compense, il ne les corrige pas. Nouveau point d'entrée matériel : `kicad/README.md`.
+- `docs/adr/0118-une-sortie-anticipee-publie-la-cause-quelle-rend-inatteignable.md` : nouvel ADR —
+  tout `return` anticipé qui rend une fonction de décision exposée inatteignable doit poser
+  lui-même l'observable qu'il court-circuite, jamais laisser la valeur du dernier appel réel en
+  place.
+- `docs/adr/README.md` : index mis à jour (ADR-0118).
+- `docs/API.md` : nouveau code de refus `25` (`FlowAssistSuspend`), avertissement explicite sur la
+  publication du code de refus pendant la suspension globale, compteur de `static_assert` mis à
+  jour (20, était 19).
+- `docs/subsystems/pump-controller.md` : nouvelle section documentant `evaluateSuspendCause()`, son
+  ordre dérivé des rangs d'`evaluateDose()`, le changement de texte du journal (perte assumée de la
+  mention « signal externe périmé »), le correctif de revue au rang 0 (une cause de garde chimique
+  n'est jamais écrasée par la suspension), et la priorité d'affichage côté client sur la pause
+  mélange — ⚠️ **avec correction d'une première rédaction erronée** qui décrivait à tort
+  `*_mix_remaining_s` / `*MixingDelayActive` comme « rémanents » alors qu'ils sont recalculés en
+  temps réel à la sérialisation.
+- `docs/features/page-dashboard.md` : priorité de la cause de suspension sur la pause mélange
+  documentée (bug-172), avec la même correction que ci-dessus ; dette d'ergonomie relevée (trois
+  rendus différents du même fait sur les cartes pH/ORP) ; note de drift signalée (hors périmètre)
+  sur la section « Statut dosage des cartes pH/ORP », qui décrit un widget retiré par le chantier
+  de simplification.
+- `docs/API.md` : note sur la précédence d'une cause de garde chimique (sentinelle `250`) pendant
+  la suspension globale.
 
 ---
 

@@ -961,7 +961,7 @@ Cette valeur est résolue par la fonction **pure** `resolveWaterPresent(WaterPre
 
 `enum class DoseRefusal` ([`dosing_logic.h`](../../src/dosing_logic.h)) — l'ordre des valeurs **suit l'ordre des gardes** de `canDose()` ; les valeurs 15-18 **qualifient** la garde #5. La coquille traduit chaque valeur en une chaîne française (les valeurs runtime — points de calibration, mode, nombre de cycles — sont réinjectées au moment du formatage), **et** publie la valeur numérique telle quelle sur `/data` + WS.
 
-> ⚠️ **CONTRAT DE SÉRIALISATION FIGÉ ([ADR-0049](../adr/0049-code-machine-de-cause-de-refus-et-etat-interne-du-filtre.md), amendé par [ADR-0097](../adr/0097-le-filtre-lisse-le-dosage-juge.md))** : ces valeurs sont **écrites explicitement** dans l'énum, **jamais renumérotées**, **jamais insérées au milieu** — toute cause nouvelle s'**ajoute à la fin** (prochaine valeur disponible : **25**, depuis que **24** a été prise par `CalibrationSessionOpen` en feature-163), une cause retirée reste **réservée, jamais recyclée**. **19 `static_assert`** (18 avant feature-163, 23 avant v2.68.0 — six retirés avec les codes ci-dessous, un ajouté par feature-163) verrouillent la correspondance valeur par valeur en tête de [`pump_controller.cpp`](../../src/pump_controller.cpp), et un `static_assert` supplémentaire garantit que l'énum ne rejoindra jamais la sentinelle `kDoseBlockedCodeGuard` = 250.
+> ⚠️ **CONTRAT DE SÉRIALISATION FIGÉ ([ADR-0049](../adr/0049-code-machine-de-cause-de-refus-et-etat-interne-du-filtre.md), amendé par [ADR-0097](../adr/0097-le-filtre-lisse-le-dosage-juge.md))** : ces valeurs sont **écrites explicitement** dans l'énum, **jamais renumérotées**, **jamais insérées au milieu** — toute cause nouvelle s'**ajoute à la fin** (prochaine valeur disponible : **26**, depuis que **25** a été prise par `FlowAssistSuspend` en bug-172), une cause retirée reste **réservée, jamais recyclée**. **20 `static_assert`** (19 avant bug-172, 18 avant feature-163, 23 avant v2.68.0 — six retirés avec les codes ci-dessous, un ajouté par feature-163, un ajouté par bug-172) verrouillent la correspondance valeur par valeur en tête de [`pump_controller.cpp`](../../src/pump_controller.cpp), et un `static_assert` supplémentaire garantit que l'énum ne rejoindra jamais la sentinelle `kDoseBlockedCodeGuard` = 250.
 
 | Code | `DoseRefusal` | Garde | Cause FR (réinjectée) |
 |---:|---|---|---|
@@ -987,6 +987,7 @@ Cette valeur est résolue par la fonction **pure** `resolveWaterPresent(WaterPre
 | ~~19~~-~~22~~ | ~~`FilterWarmup`/`FilterFrozen`/`FilterStale`/`FilterGateClosed`~~ | ~~#5b~~ | **RETIRÉS en v2.68.0** — qualifiaient la garde #5b, qui a disparu avec eux. Jamais recyclés |
 | ~~23~~ | ~~`CalibrationHold`~~ | — | **N'A JAMAIS ÉTÉ LIVRÉ** — envisagé pour `bug-160` (volet 2) au moment du mécanisme de bail (`cal_hold_logic`), **ABANDONNÉ avant tout déploiement** (décision utilisateur du 2026-10-13, remplacé par une bascule explicite de régulation en `manual`, voir [plus bas](#bascule-de-régulation-en-manuel-pendant-une-calibration-bug-160-volet-2)). Le code 23 n'est **jamais recyclé**, bien qu'aucune release n'ait jamais contenu `DoseRefusal::CalibrationHold` |
 | 24 | `CalibrationSessionOpen` | #4 | **AJOUTÉ en feature-163 (v2.83.0)** — session de calibration OUVERTE (`mqttCfg.calSessionOpen`). ⚠️ **L'ordinal (24, fin d'énumération) et le rang d'évaluation (#4) sont deux axes INDÉPENDANTS** : voir [Garde rang 4 — session d'étalonnage ouverte](#garde-rang-4--session-détalonnage-ouverte-tous-modes-feature-163-adr-0115) |
+| 25 | `FlowAssistSuspend` | *(aucun — ne qualifie QUE `evaluateSuspendCause()`)* | **AJOUTÉ en bug-172 (v2.83.0)** — assistant de mesure du débit en cours (dosage suspendu). ⚠️ **N'est JAMAIS retourné par `evaluateDose()`** : aucun rang dans sa cascade 2→15, ce code ne peut donc jamais passer devant une garde rangée. Voir [Cascade de la suspension globale](#cascade-de-la-suspension-globale--evaluatesuspendcause-bug-172-v2830) |
 | 250 | *(sentinelle `kDoseBlockedCodeGuard`)* | — | cause posée par une **garde de sécurité pH/ORP** ou par l'escalade (hors `canDose`) |
 
 **Aucun libellé ne mélange plus deux causes.** L'ancienne phrase « lecture pH/ORP filtrée indisponible (NaN) » recouvrait plusieurs causes physiques, et l'interface en extrayait un fragment de texte : une **vraie panne d'EZO** s'affichait « Stabilisation du filtre ». Le code 3 subsiste pour le cas où l'état du filtre n'a **pas** été collecté (`DoseFilterState::Unknown`) et dit alors explicitement qu'il ne sait pas — pire cas : une cause **imprécise**, jamais une panne maquillée en état normal. **Depuis v2.68.0** (feature-152), il n'existe plus qu'**une seule** famille de qualification (15-18, garde #4) : la garde #4b et ses quatre qualifications symétriques (19-22) ont disparu avec le mécanisme « filtre non prêt » séparé.
@@ -1047,6 +1048,150 @@ Incident fondateur (2026-10-02) : après des pluies diluviennes, les deux voies 
 - Aucun mutex nouveau : écriture par `loopTask` seul, lecture alignée par `async_tcp` ; pire cas une durée en retard d'un tour de loop, jamais une décision de dosage (même course bénigne assumée que `_sensorFaultSinceMs`).
 
 > ⚠️ **Invariant** : toute évolution future de la décision de dosage **passe par `dosing_logic`** et doit conserver l'équivalence stricte (table d'équivalence validée par `pool-chemistry`). La logique pure est verrouillée par les tests natifs (`test/test_native_dosing/`, dont un **verrou de non-régression** du bug pause-mélange v2.2.5 : une injection auto dure **≥ `minInjectionTimeMs`** avant que la pause ne s'arme). Voir [BUILD.md](../BUILD.md) pour `pio test -e native`.
+
+### Cascade de la suspension globale — `evaluateSuspendCause()` (bug-172, v2.83.0)
+
+**Le défaut.** Constaté sur l'appareil le 2026-10-18 : `/data` affichait `orpDoseBlockedReason:
+"pause mélange en cours"` avec un décompte de 207 s **en même temps que** `water_present: false`
+— la filtration était arrêtée, la vraie cause de rang supérieur. Cause racine : le bloc de
+suspension globale d'`updateDosingCore()` (`!filtrationOk || stabilizationActive ||
+flowAssistSuspend || mqttCfg.calSessionOpen`) coupe les pompes et `return`-e **avant**
+`canDose()`/`evaluateDose()`. Ni `evaluateDose()` ni `setGuardRefusalCause()` ne sont donc jamais
+appelés pendant la suspension, et `_lastRefusalCause[]` conserve la valeur du **dernier appel réel**
+de `canDose()` — celle d'un état qui n'a plus cours. **La cause affichée n'était pas calculée,
+elle était héritée.**
+
+⚠️ **Déjà relevé, corrigé pour une seule moitié.** La revue de feature-163, la veille, avait
+identifié **ce même mécanisme** (point bloquant B1 : « le `return` précède `canDose()`, le
+`critical` imposé et le libellé de cause sont inatteignables ») — mais la correction livrée alors
+n'a ajouté qu'une transition **journalisée** avant le `return` (voir plus bas, « texte du journal
+»). La moitié « cause **affichée** » (`ph/orpDoseBlockedReason`/`Code`, consommée par
+`/data`/WebSocket/UI) est restée ouverte, et c'est elle que l'utilisateur a vue le lendemain. Voir
+[ADR-0118](../adr/0118-une-sortie-anticipee-publie-la-cause-quelle-rend-inatteignable.md), qui
+généralise la règle : toute sortie anticipée qui rend une fonction de décision exposée
+inatteignable doit poser elle-même l'observable qu'elle court-circuite.
+
+**Le correctif** : `DoseRefusal evaluateSuspendCause(bool filtrationOk, bool calSessionOpen, bool
+stabilizationActive, bool flowAssistSuspend)` ([`dosing_logic.h`](../../src/dosing_logic.h) /
+[`.cpp`](../../src/dosing_logic.cpp)) — fonction **pure**, appelée depuis le bloc de suspension
+globale lui-même, au point exact du court-circuit :
+
+```
+!filtrationOk         → FiltrationOff           (rang 2, comme evaluateDose())
+calSessionOpen         → CalibrationSessionOpen  (rang 3, comme evaluateDose())
+stabilizationActive    → StabilizationActive     (rang 6, comme evaluateDose())
+flowAssistSuspend       → FlowAssistSuspend       (AUCUN rang dans evaluateDose() — dernier)
+sinon                   → None (cas théorique : le bloc appelant n'entre que si l'OR est vrai)
+```
+
+🔴 **Un second défaut, trouvé par le gate `pool-chemistry` en instruisant ce correctif** : l'ancienne
+construction locale (pour le seul journal, uniquement quand une injection était en cours) ordonnait
+eau → **stabilisation → assistant → étalonnage**, contredisant le **rang 3** de l'étalonnage dans
+`evaluateDose()` — selon le chemin emprunté, l'appareil pouvait nommer **deux causes différentes
+pour le même état**. `evaluateSuspendCause()` dérive désormais son ordre **explicitement** des
+rangs documentés d'`evaluateDose()`, le même patron d'indépendance ordinal/rang que la garde rang 4
+ci-dessus : ⛔ un futur réordonnancement de l'un sans l'autre reproduirait ce défaut (dette nommée,
+[ADR-0118](../adr/0118-une-sortie-anticipee-publie-la-cause-quelle-rend-inatteignable.md)).
+
+**Appelée pour les DEUX pompes, à CHAQUE tick, MÊME sans injection en cours** — c'est précisément
+le cas qui échouait : l'utilisateur n'avait aucune session de dosage ouverte au moment du constat.
+Transport côté coquille : `postSuspendCause(int pumpIndex, DoseRefusal cause)` — edge-trigger
+**strict sur le code**, avant toute construction de `String` (ADR-0082, ce bloc tourne à chaque
+tick) : `if (static_cast<uint8_t>(cause) == _lastRefusalCode[pumpIndex]) return;` avant d'écrire
+quoi que ce soit. Chemin d'écriture **propriétaire de `canDose()`** (`logRefusalOnce()`,
+`_refusalCauseFromGuard = false`) — ⛔ jamais `setGuardRefusalCause()`, dont la sentinelle `250`
+est réservée aux gardes chimiques pH/ORP et collisionnerait avec la traduction côté client des
+codes `canDose()`.
+
+Les quatre textes exposés (`kCauseFiltrationOff`, `kCauseCalibrationSessionOpen`,
+`kCauseStabilizationActive`, `kCauseFlowAssistSuspend`) viennent d'une **source unique** partagée
+avec `canDose()` : aucune reformulation locale, pour ne jamais produire deux voix pour un même
+fait. Code neuf : `DoseRefusal::FlowAssistSuspend = 25` (voir [table ci-dessus](#causes-de-refus-code-machine--string-fr))
+— jamais exposé auparavant en dehors du journal.
+
+#### Texte du journal — changement assumé, et sa perte
+
+Le texte de transition journalisé (« Dosage suspendu (…) ») change de source : avant bug-172, la
+cause « eau » y était formulée *« eau absente (filtration arrêtée / signal externe périmé) »* ; elle
+devient *« filtration arrêtée »* (`kCauseFiltrationOff`, la même chaîne que `canDose()`). ⚠️ C'est
+le prix de la source unique — mais la mention du **signal externe périmé** (mode `External`, sonde
+de filtration tierce signalée en HTTP/MQTT) est **perdue** dans ce texte de journal précis. Le champ
+d'API `ph/orpDoseBlockedReason`, lui, **n'a pas changé** : il disait déjà « filtration arrêtée »
+(`canDose()` ne distinguait pas non plus staleness externe et absence réelle dans ce libellé).
+
+#### Rang 0 de la cascade — une cause de garde chimique n'est jamais écrasée (correctif de revue)
+
+🔴 **Régression introduite par la première version de ce correctif, trouvée en revue avant
+livraison.** `postSuspendCause()` emprunte le chemin **propriétaire** de `canDose()`
+(`logRefusalOnce()`), qui pose inconditionnellement `_refusalCauseFromGuard[pumpIndex] = false`
+(propriété D1 : « `canDose()` prend la propriété de la chaîne »). Sans garde supplémentaire, cet
+appel **écrasait aussi les causes posées par une garde chimique** (`setGuardRefusalCause()`,
+sentinelle `250`, pH/ORP hors seuil) dès que la suspension globale démarrait — et la garde ne
+**reprenait jamais la main** à la sortie :
+
+1. Une garde ne re-pose sa cause que sur un **front** (`tickPhGuardSurveillance()`).
+2. Cette surveillance **ne tourne pas** pendant la suspension globale (elle est placée **après** le
+   `return` qui ferme le bloc) : ses latches, dont `_refusalCauseFromGuard`, sortent donc
+   **strictement inchangés** de la coupure, quelle que soit sa durée.
+3. `canDose()` lui-même est appelé **derrière** `!isPhGuardBlocking(true)` : tant que la garde mord,
+   il n'est jamais invoqué, et `clearGuardRefusalCause()` ne peut donc pas se représenter.
+
+**Scénario concret** : pH sous le plancher à 20 h, filtration coupée à 23 h, reprise à 9 h ⇒ l'écran
+aurait annoncé « filtration arrêtée » **toute la journée**, filtration de nouveau en marche, **cause
+chimique effacée** — pire encore en mode Programmé ou Manuel, où `canDose()` n'est appelé à **aucun**
+tick.
+
+**Correctif retenu** (`postSuspendCause()`) : une ligne de garde en **rang 0** de la cascade, avant
+toute autre logique — `if (_refusalCauseFromGuard[pumpIndex]) return;` — de sorte qu'**une cause de
+garde chimique n'est jamais écrasée** par la suspension globale. Cet ordre ne contredit pas H1 (gate
+`pool-chemistry`) : dans le chemin réel, `isPhGuardBlocking()` est déjà évalué **avant** `canDose()`
+— une garde qui mord masque déjà « filtration arrêtée » ; cette ligne **rétablit** cet ordre pour le
+chemin de suspension, qui le contournait.
+
+⚠️ **L'alternative (réarmer les latches de garde à la reprise de `canDose()`) a été refusée pour une
+raison chimique, pas de confort** : elle réalimenterait `newRefusal` et le compteur des 3 refus /
+24 h, dont l'escalade **bascule la régulation en manuel**. Un correctif d'affichage ne doit jamais
+ouvrir un chemin vers un changement de **mode de régulation**.
+
+Vérifié par un test **structurel** (lecture du texte livré, pas une exécution) :
+[`test/test_native_dose_suspend_guard_priority/`](../../test/test_native_dose_suspend_guard_priority/test_dose_suspend_guard_priority.cpp)
+— `PumpControllerClass` n'étant pas instanciable en natif (FreeRTOS/LEDC/I2C EZO/LittleFS), ce test
+retrouve le corps de `postSuspendCause()` dans le fichier réel et vérifie que la ligne de garde
+précède toute autre instruction. **Mutation tuée** : retirer cette ligne fait échouer le test.
+**Limite assumée** : un test structurel protège d'une régression par **distraction** (la ligne
+supprimée par erreur dans un futur refactor), pas d'un contournement délibéré — un test on-target
+(scénario ci-dessus) fermerait ce doute, non exécutable depuis ce conteneur (aucun port série).
+
+#### Priorité d'affichage côté client — le décompte se tait, la pause reste réelle
+
+🔴 **Correction d'une explication erronée apportée pendant ce même cycle.** Une première version de
+cette section (et des commentaires associés dans `data/app.js`) affirmait que `*_mix_remaining_s` /
+`*MixingDelayActive` étaient « rémanents » ou « plus recalculés » pendant la suspension globale.
+⛔ **C'est faux**, et la capture `/data` de la spec le prouvait elle-même : `isPhMixingDelayActive()`
+/ `isOrpMixingDelayActive()` / `getMixingRemainingS()` (plus haut dans ce document) sont des getters
+**purs**, appelés **au moment de la sérialisation** (`ws_manager.cpp`, `web_routes_data.cpp`) contre
+l'échéance `_mixingEndMs[pompe]` et l'horloge courante — jamais mis à jour par `updateDosingCore()`.
+Ils décroissent donc **réellement** et retombent à `0` tout seuls. Les 207 s que l'utilisateur a vues
+étaient une pause mélange **vraie**, armée par le bloc de suspension lui-même à l'arrêt de la pompe.
+
+**La vraie raison de taire le décompte** : tant que l'un des quatre codes de suspension globale
+(`2` filtration arrêtée, `7` stabilisation, `24` étalonnage, `25` assistant de mesure du débit) est
+servi, cette cause **prime** sur la pause mélange — annoncer « Pause mélange : 4 min » pendant que
+la filtration est arrêtée affiche une information **exacte mais subordonnée**, à la place de la
+cause qui commande réellement l'attente. Ce n'est pas une question de fraîcheur de donnée, c'est une
+question de **priorité d'affichage**. ⚠️ Le modèle « ces champs sont périmés » n'est pas qu'une
+formulation maladroite : c'est en présumant ces champs morts que le défaut de rang 0 ci-dessus est
+passé inaperçu en première relecture — personne n'a vérifié ce qui se passerait si un code de
+suspension, un décompte de mélange bien réel, et une cause de garde chimique coexistaient.
+
+`_doseSuspendOutranksMixing(code)` (`data/app.js`, renommée depuis `_isDoseSuspendRemanentCode()`
+pour refléter cette correction) est la liste **unique** de ces quatre codes ; ses deux points d'appel
+(`dosingStabOrMixSegment()`, `_renderDosePill()`) masquent le segment « Pause mélange » tant que l'un
+d'eux est servi, même si son décompte est réel — le code `8` (`MixingActive`, un vrai mélange en
+cours, hors suspension) n'y figure **pas** : il garde son propre décompte légitime. Vecteurs dédiés
+(ADR-0099) : `test/dose_suspend_outranks_mixing_vectors.js`,
+`./tools/check_dose_suspend_outranks_mixing_vectors.sh` (renommés pour la même raison). Voir
+[page-dashboard.md](../features/page-dashboard.md#priorité-dune-cause-de-suspension-sur-la-pause-mélange-bug-172-v2830).
 
 ### Calcul proportionnel pur (`computePidPure`)
 

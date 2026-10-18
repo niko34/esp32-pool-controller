@@ -5275,6 +5275,21 @@
     // (firmware antérieur sans champs par pompe).
     const remainS = data[`${sensor}_stab_remaining_s`] ?? (data.stabilization_remaining_s || 0);
     if (remainS > 0) return { priority: 0.8, variant: 'info', text: fmt('Stabilisation', remainS), live: false };
+    // bug-172 (H5) : tant que le bloc de suspension globale
+    // (updateDosingCore, src/pump_controller.cpp) sert l'un de ses QUATRE
+    // codes de blocage — 2 filtration arrêtée, 24 étalonnage, 7 stabilisation,
+    // 25 assistant de mesure du débit —, *_mix_remaining_s et
+    // *MixingDelayActive sont SUBORDONNÉS : la cause de suspension PRIME.
+    // ⛔ Ils ne sont PAS périmés — ils sont calculés à la SÉRIALISATION depuis
+    // `_mixingEndMs[]` (pump_controller.cpp) et décroissent réellement. Seul
+    // le couple code/texte était hérité. ⇒ Afficher « Pause mélange · 4 min »
+    // filtration arrêtée, c'est montrer un fait EXACT mais subordonné à la
+    // place de la cause qui commande réellement l'attente — c'est ce que
+    // l'utilisateur a vu. On tait donc le solde mélange ici ; le code 7 garde
+    // son propre décompte légitime via `remainS` ci-dessus, déjà retourné
+    // avant d'arriver ici (sa fin, elle, est déterministe).
+    const block = _doseBlockInfo(data, sensor);
+    if (_doseSuspendOutranksMixing(block.code)) return null;
     // Pause mélange hydraulique post-injection (feature-025) ; repli sur le
     // booléen *MixingDelayActive (firmware plus ancien, sans temps restant).
     const mixS = data[`${sensor}_mix_remaining_s`] || 0;
@@ -6630,7 +6645,34 @@
         tone = entry.toneOrp || "normal";
       }
     }
-    const mixing = (data[`${prefix}MixingDelayActive`] === true);
+    // bug-172 (H5, second site) : mêmes codes de suspension globale que
+    // dosingStabOrMixSegment() ci-dessus — tant que l'un d'eux est servi,
+    // 🔴 CORRECTION DE LA RAISON (revue, 2026-10-18) — la première version de
+    // ce commentaire disait que *MixingDelayActive / *_mix_remaining_s étaient
+    // « rémanents ». ⛔ C'est FAUX, et la capture /data de la spec le prouvait
+    // elle-même : ces deux champs sont calculés AU MOMENT DE LA SÉRIALISATION
+    // depuis l'échéance `_mixingEndMs[]` (pump_controller.cpp), pas par
+    // updateDosingCore(). ⇒ Ils décroissent RÉELLEMENT et tombent à 0 tout
+    // seuls. Les 207 s que l'utilisateur a vus étaient une pause mélange
+    // VRAIE, armée par le bloc de suspension lui-même.
+    //
+    // ⚠️ Ce qui était hérité, c'était le COUPLE code/texte — rien d'autre.
+    //
+    // ⇒ La VRAIE raison de taire le décompte : une cause de suspension
+    // (filtration, étalonnage, stabilisation, mesure du débit) PRIME sur la
+    // pause mélange. Annoncer « Pause mélange · 4 min » quand la filtration
+    // est arrêtée, c'est afficher une information exacte mais SUBORDONNÉE, à
+    // la place de la cause qui commande réellement l'attente.
+    //
+    // ⚠️ Pourquoi cette nuance compte, et pas seulement sur le papier : le
+    // modèle « ces champs sont périmés » est précisément ce qui a laissé
+    // passer un défaut plus grave en revue. Et combiné à un code lui-même
+    // périmé, il ferait taire une pause mélange qui COURT VRAIMENT —
+    // information vivante masquée par une donnée morte.
+    // On ignore la branche « mélange » dans ce cas : la pastille retombe sur
+    // la branche générique `tone === "normal" && short` juste en dessous, qui
+    // nomme la VRAIE cause (`short`, issue de `info` = `_doseBlockInfo`).
+    const mixing = !_doseSuspendOutranksMixing(info.code) && (data[`${prefix}MixingDelayActive`] === true);
     const remain = _doseNum(data[`${prefix}_mix_remaining_s`]);
     let cls = "";
     let txt;
@@ -8104,6 +8146,12 @@
     // qu'il refuse : pendant un étalonnage la sonde trempe dans un tampon,
     // doser sur cette lecture serait l'erreur.
     24: { tone: 'normal',  label: 'Étalonnage en cours — aucune injection', chip: 'Étalonnage' },
+    // bug-172 (H3, gate pool-chemistry) — sans cette entrée, le code 25
+    // s'afficherait « Cause inconnue (code 25) ». tone 'normal' et NON
+    // 'fault', même traitement que le code 24 ci-dessus : l'assistant de
+    // mesure du débit est un acte DÉLIBÉRÉ de l'utilisateur, pas une panne.
+    // Libellé imposé par le gate, tel quel.
+    25: { tone: 'normal',  label: 'Mesure du débit en cours' },
     // feature-092 — sentinelle 250 (cause de GARDE) : le message firmware porte
     // des valeurs runtime (seuils, mesure) et reste cité tel quel ; la pastille
     // des cartes « Débit d'injection » a besoin d'un libellé COURT, il vit donc
@@ -8178,6 +8226,26 @@
   //   12 Limite cycles/jour        → idem
   //   15,18 (famille « stab »)     → measureStateSegments() (measures_valid)
   const DOSE_BLOCK_CODE_ALREADY_SOURCED = new Set([2, 3, 7, 8, 10, 11, 12, 15, 18]);
+
+  // bug-172 (H5) : liste UNIQUE des codes de suspension globale
+  // (updateDosingCore, src/pump_controller.cpp) pour lesquels
+  // *_mix_remaining_s / *MixingDelayActive sont SUBORDONNÉS à la cause de
+  // suspension. ⛔ ATTENTION : ils ne sont PAS périmés — calculés à la
+  // SÉRIALISATION depuis `_mixingEndMs[]`, ils décroissent vraiment et
+  // tombent à 0 seuls. Seul le couple code/texte était hérité.
+  // ⇒ Ce que l'utilisateur a vu — « pause mélange » + 207 s, filtration
+  // arrêtée — était une pause mélange RÉELLE, affichée à la place de la cause
+  // dominante. ⚠️ La formulation « valeur rémanente » a figuré ici : elle est
+  // FAUSSE, et c'est elle qui a laissé passer un défaut plus grave en revue. Fonction PURE, extraite et
+  // vérifiée par vecteurs (ADR-0099) via
+  // tools/check_dose_suspend_outranks_mixing_vectors.sh — les DEUX points d'appel
+  // (dosingStabOrMixSegment, _renderDosePill) doivent la consommer, jamais
+  // réécrire la liste en dur localement.
+  //   2  FiltrationOff          7  StabilizationActive
+  //  24  CalibrationSessionOpen 25 FlowAssistSuspend
+  function _doseSuspendOutranksMixing(code) {
+    return code === 2 || code === 7 || code === 24 || code === 25;
+  }
 
   // Traduit le couple (code, texte) servi pour `prefix` en { code, label, tone }.
   // SÉMANTIQUE STRICTE des états du champ code (clé absente ≠ null ≠ 0) :

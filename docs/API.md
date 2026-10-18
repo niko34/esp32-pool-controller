@@ -2161,7 +2161,7 @@ v2.68.0 (feature-152)** — voir l'amendement complet plus haut :
 
 `phDoseBlockedCode` / `orpDoseBlockedCode` transportent la cause de refus sous forme d'**entier**, à côté du texte. Motif : l'interface web déduisait auparavant la catégorie du refus en cherchant des **fragments de texte** dans la phrase française. Deux défauts de production en sont résultés — « EZO indisponible » affiché pendant ~6 min au démarrage sur une sonde saine (le mot « indispo » du libellé de warmup correspondait), et une **vraie panne d'EZO** affichée « Stabilisation du filtre » (le libellé `FilterNotReady` mélangeait « warmup » et « EZO injoignable » dans une seule phrase). Voir [ADR-0049](adr/0049-code-machine-de-cause-de-refus-et-etat-interne-du-filtre.md).
 
-> ⚠️ **CONTRAT DE SÉRIALISATION FIGÉ.** Ces valeurs sont celles de `enum class DoseRefusal` ([`src/dosing_logic.h`](../src/dosing_logic.h)), écrites **explicitement** dans l'énum. Elles ne sont **jamais renumérotées** et **jamais insérées au milieu** : toute cause nouvelle s'ajoute **à la fin**, et une cause retirée du firmware reste **réservée**. **19** `static_assert` (**18** avant feature-163 ; **23 avant v2.68.0** — six retirés avec les codes `4`, `5`, `19`-`22`, un ajouté par feature-163) verrouillent la correspondance valeur par valeur dans [`src/pump_controller.cpp`](../src/pump_controller.cpp).
+> ⚠️ **CONTRAT DE SÉRIALISATION FIGÉ.** Ces valeurs sont celles de `enum class DoseRefusal` ([`src/dosing_logic.h`](../src/dosing_logic.h)), écrites **explicitement** dans l'énum. Elles ne sont **jamais renumérotées** et **jamais insérées au milieu** : toute cause nouvelle s'ajoute **à la fin**, et une cause retirée du firmware reste **réservée**. **20** `static_assert` (**19** avant bug-172 ; **18** avant feature-163 ; **23 avant v2.68.0** — six retirés avec les codes `4`, `5`, `19`-`22`, un ajouté par feature-163, un ajouté par bug-172) verrouillent la correspondance valeur par valeur dans [`src/pump_controller.cpp`](../src/pump_controller.cpp).
 
 | Code | Cause | Registre |
 |---:|---|---|
@@ -2186,7 +2186,8 @@ v2.68.0 (feature-152)** — voir l'amendement complet plus haut :
 | `18` | Valeur officielle NaN — **mesures non représentatives** (purge / eau à l'arrêt) | normal |
 | ~~`19`~~-~~`22`~~ | **RETIRÉS en v2.68.0** — qualifiaient la garde séparée « filtre non prêt » (code `4`), qui a disparu avec elle. Jamais recyclés. | — |
 | ~~`23`~~ | **N'A JAMAIS ÉTÉ LIVRÉ** — envisagé pour `bug-160` (volet 2) au moment du mécanisme de bail, abandonné avant tout déploiement. Jamais recyclé. | — |
-| `24` | **AJOUTÉ en v2.83.0 (feature-163)** — session de calibration ouverte (`calibration_session_open`). Voir [tableau des codes de refus manuel](#codes-de-refus-409-v260) et [pump-controller.md](subsystems/pump-controller.md#garde-rang-4--session-détalonnage-ouverte-tous-modes-feature-163-adr-0115). Prochaine valeur disponible : `25`. | normal |
+| `24` | **AJOUTÉ en v2.83.0 (feature-163)** — session de calibration ouverte (`calibration_session_open`). Voir [tableau des codes de refus manuel](#codes-de-refus-409-v260) et [pump-controller.md](subsystems/pump-controller.md#garde-rang-4--session-détalonnage-ouverte-tous-modes-feature-163-adr-0115). | normal |
+| `25` | **AJOUTÉ en v2.83.0 (bug-172)** — assistant de mesure du débit en cours (dosage suspendu). ⚠️ **N'est JAMAIS retourné par `evaluateDose()`** (aucun rang dans sa cascade de gardes) : ce code qualifie **uniquement** la cascade de la suspension globale `evaluateSuspendCause()`, voir [pump-controller.md](subsystems/pump-controller.md#cascade-de-la-suspension-globale--evaluatesuspendcause-bug-172-v2830). Prochaine valeur disponible : `26`. | normal |
 | `250` | Cause posée par une **garde de sécurité pH/ORP** ou par l'escalade | panne |
 
 Les codes `15`-`18` **qualifient** la cause générique `3` : quatre états physiquement distincts
@@ -2198,6 +2199,20 @@ prêt » (code `4`) ; cette garde a disparu avec la refonte de la chaîne de mes
 code `3` subsiste et signifie explicitement « le firmware ne sait pas » (état non collecté). Le
 code `250` (`kDoseBlockedCodeGuard`) couvre les messages porteurs de **valeurs runtime** (seuils,
 mesures), non énumérables : le client se rabat alors sur `*DoseBlockedReason`.
+
+> ⚠️ **bug-172 (v2.83.0) — la cause est désormais posée AUSSI pendant la suspension globale du
+> dosage**, pas seulement par `canDose()`. Avant ce correctif, le bloc qui coupe les pompes sur
+> perte d'eau, étalonnage ouvert, stabilisation post-calibration ou assistant de mesure du débit
+> sortait **avant** `canDose()` sans jamais recalculer `ph/orpDoseBlockedCode` : le champ
+> conservait la valeur du **dernier** appel réel de `canDose()`, parfois complètement périmée
+> (constaté en production : code `8` « pause mélange » affiché, décompte inclus, pendant que la
+> filtration était à l'arrêt). Le code publié pendant cette suspension vient désormais d'une
+> cascade dédiée (`evaluateSuspendCause()`), recalculée à **chaque** tick pour les **deux** pompes
+> — voir [pump-controller.md](subsystems/pump-controller.md#cascade-de-la-suspension-globale--evaluatesuspendcause-bug-172-v2830)
+> et [ADR-0118](adr/0118-une-sortie-anticipee-publie-la-cause-quelle-rend-inatteignable.md).
+> ⚠️ **Précédence** : une cause de **garde chimique** (sentinelle `250`, pH/ORP hors seuil) n'est
+> **jamais** remplacée par un code de cette cascade, même pendant toute la durée d'une suspension —
+> correctif de revue, voir [pump-controller.md](subsystems/pump-controller.md#rang-0-de-la-cascade--une-cause-de-garde-chimique-nest-jamais-écrasée-correctif-de-revue).
 
 **Règles de consommation client** (sémantique stricte : clé absente ≠ `null` ≠ `0`) :
 

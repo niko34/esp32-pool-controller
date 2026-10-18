@@ -174,8 +174,22 @@ enum class DoseRefusal : uint8_t {
   // Évaluée au RANG 3 dans evaluateDose() (immédiatement après la présence
   // d'eau, AVANT la garde NaN) : le rang d'évaluation et l'ordinal de l'énum
   // sont deux axes INDÉPENDANTS, même patron que ManualInjectRefusal ci-dessous.
-  CalibrationSessionOpen = 24  // session de calibration OUVERTE (mqttCfg.calSessionOpen)
+  CalibrationSessionOpen = 24, // session de calibration OUVERTE (mqttCfg.calSessionOpen)
+  // bug-172 (gate pool-chemistry H3) : AJOUTÉ EN FIN (valeur 25) — ⛔ aucune
+  // renumérotation. N'est JAMAIS retourné par evaluateDose() (aucun rang dans
+  // sa cascade 2→15) : ne qualifie QUE la cascade de suspension globale
+  // evaluateSuspendCause() ci-dessous, évaluée en DERNIER (après l'eau, la
+  // session d'étalonnage et la stabilisation) — faute de rang dans canDose(),
+  // elle ne peut jamais passer devant une garde rangée.
+  FlowAssistSuspend = 25       // assistant de mesure du débit en cours (dosage suspendu)
 };
+
+// pool-chemistry (bug-172, gate H3) : complétude de l'énum verrouillée par
+// cette sentinelle — relevée en MÊME temps que kDoseBlockedCodeGuard
+// (constants.h) si une future valeur venait à s'en approcher.
+constexpr int kDoseRefusalMaxValue = 25;
+static_assert(static_cast<int>(DoseRefusal::FlowAssistSuspend) == kDoseRefusalMaxValue,
+              "DoseRefusal::FlowAssistSuspend renuméroté — kDoseRefusalMaxValue doit suivre");
 
 // Entrées POD de la décision de dosage. Tous les champs sont collectés par la
 // coquille canDose() depuis les globals AVANT l'appel à evaluateDose().
@@ -231,6 +245,34 @@ struct DoseDecision {
 // pumpIndex invalide, reste dans la coquille). Première garde en échec →
 // cause correspondante ; sinon { true, None }. Fail-closed strict.
 DoseDecision evaluateDose(const DoseInputs& in);
+
+// =============================================================================
+// evaluateSuspendCause — cascade PURE de la SUSPENSION GLOBALE (bug-172)
+// =============================================================================
+// Avant bug-172, le bloc de suspension globale d'updateDosingCore() (eau
+// absente / session d'étalonnage ouverte / stabilisation post-cal / assistant
+// de mesure du débit) coupait les pompes et sortait AVANT canDose() : la cause
+// affichée (`ph/orpDoseBlockedReason`) n'était donc jamais recalculée pendant
+// la suspension — elle restait celle du DERNIER appel de canDose(), c'est-à-
+// dire HÉRITÉE d'un état qui n'a plus cours (ex. « pause mélange » affichée
+// alors que la filtration est à l'arrêt).
+//
+// Cette fonction est la source UNIQUE de la cause de suspension — appelée à
+// CHAQUE tick par la coquille (updateDosingCore()), pour LES DEUX pompes,
+// MÊME sans injection en cours. ⚠️ pool-chemistry (gate H1) : ordre calqué sur
+// les RANGS d'evaluateDose() ci-dessus — eau (rang 2) devant étalonnage
+// (rang 3) devant stabilisation (rang 6) — ⛔ volontairement DIFFÉRENT de
+// l'ancien ordre « eau → stabilisation → assistant → étalonnage » construit
+// dans updateDosingCore() (qui CONTREDISAIT le rang 3 de l'étalonnage).
+// `flowAssistSuspend` est évalué EN DERNIER : il n'a AUCUN rang dans
+// evaluateDose() (ce n'est pas une garde de canDose()), il ne peut donc
+// jamais passer devant une garde rangée.
+//
+// Ne retourne DoseRefusal::None que si aucune des quatre conditions n'est
+// vraie — cas qui ne se présente pas en pratique : la coquille n'appelle
+// cette fonction que depuis l'intérieur du bloc déjà gardé par leur OR.
+DoseRefusal evaluateSuspendCause(bool filtrationOk, bool calSessionOpen,
+                                 bool stabilizationActive, bool flowAssistSuspend);
 
 // Hystérésis de démarrage (extrait pur de shouldStartDosing).
 // true ssi cyclesToday < maxCyclesPerDay ET error > startThreshold.

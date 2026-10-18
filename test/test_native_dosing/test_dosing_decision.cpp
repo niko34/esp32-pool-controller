@@ -392,6 +392,63 @@ void test_F163_session_fermee_aucun_refus_nouveau(void) {
 }
 
 // =============================================================================
+// bug-172 (gate pool-chemistry H1) — evaluateSuspendCause : cascade UNIQUE de
+// la cause de SUSPENSION GLOBALE d'updateDosingCore(). Ordre VERROUILLÉ, calqué
+// sur les rangs d'evaluateDose() : eau (rang 2) > étalonnage (rang 3) >
+// stabilisation (rang 6) > assistant de débit (aucun rang, dernier).
+// =============================================================================
+
+// Seule condition vraie : chacune nomme sa propre cause (aucune n'en masque
+// une autre quand elle est seule).
+void test_BUG172_suspend_cause_filtration_off_seule(void) {
+  TEST_ASSERT_EQUAL(DoseRefusal::FiltrationOff,
+                    evaluateSuspendCause(false, false, false, false));
+}
+void test_BUG172_suspend_cause_cal_session_seule(void) {
+  TEST_ASSERT_EQUAL(DoseRefusal::CalibrationSessionOpen,
+                    evaluateSuspendCause(true, true, false, false));
+}
+void test_BUG172_suspend_cause_stabilisation_seule(void) {
+  TEST_ASSERT_EQUAL(DoseRefusal::StabilizationActive,
+                    evaluateSuspendCause(true, false, true, false));
+}
+void test_BUG172_suspend_cause_flow_assist_seul(void) {
+  TEST_ASSERT_EQUAL(DoseRefusal::FlowAssistSuspend,
+                    evaluateSuspendCause(true, false, false, true));
+}
+
+// Aucune condition vraie : None (défensif — la coquille n'appelle cette
+// fonction que depuis l'intérieur du bloc déjà gardé par leur OR).
+void test_BUG172_suspend_cause_aucune_condition_none(void) {
+  TEST_ASSERT_EQUAL(DoseRefusal::None, evaluateSuspendCause(true, false, false, false));
+}
+
+// ⭐ Rang 2 OBSERVABLE : eau absente + LES TROIS AUTRES conditions vraies en
+// même temps → la cause reste FiltrationOff. C'est exactement la contradiction
+// relevée sur l'appareil (water_present=false ET « pause mélange » affichée).
+void test_BUG172_suspend_cause_eau_devant_tout(void) {
+  TEST_ASSERT_EQUAL(DoseRefusal::FiltrationOff,
+                    evaluateSuspendCause(false, true, true, true));
+}
+
+// ⭐ Rang 3 OBSERVABLE : étalonnage devant stabilisation ET assistant de
+// débit, simultanément. C'est le défaut trouvé par le gate : l'ancien
+// ternaire d'updateDosingCore() ordonnait eau → stabilisation → assistant →
+// étalonnage, et aurait nommé StabilizationActive ici — CONTREDISANT le
+// rang 3 de l'étalonnage dans evaluateDose().
+void test_BUG172_suspend_cause_cal_session_devant_stabilisation_et_assistant(void) {
+  TEST_ASSERT_EQUAL(DoseRefusal::CalibrationSessionOpen,
+                    evaluateSuspendCause(true, true, true, true));
+}
+
+// Rang 6 : stabilisation devant l'assistant de débit (aucun rang dans
+// evaluateDose(), toujours dernier).
+void test_BUG172_suspend_cause_stabilisation_devant_assistant(void) {
+  TEST_ASSERT_EQUAL(DoseRefusal::StabilizationActive,
+                    evaluateSuspendCause(true, false, true, true));
+}
+
+// =============================================================================
 // T20 — Deadband : pas de démarrage si error <= startThreshold
 // =============================================================================
 void test_T20_deadband_no_start_below_or_at_threshold(void) {
@@ -3682,6 +3739,16 @@ int main(int, char **) {
   RUN_TEST(test_F163_non_masquage_watchdog_devant_session);
   RUN_TEST(test_F163_non_masquage_eau_devant_session);
   RUN_TEST(test_F163_session_fermee_aucun_refus_nouveau);
+  // bug-172 (gate pool-chemistry H1) — evaluateSuspendCause, cascade de la
+  // suspension globale.
+  RUN_TEST(test_BUG172_suspend_cause_filtration_off_seule);
+  RUN_TEST(test_BUG172_suspend_cause_cal_session_seule);
+  RUN_TEST(test_BUG172_suspend_cause_stabilisation_seule);
+  RUN_TEST(test_BUG172_suspend_cause_flow_assist_seul);
+  RUN_TEST(test_BUG172_suspend_cause_aucune_condition_none);
+  RUN_TEST(test_BUG172_suspend_cause_eau_devant_tout);
+  RUN_TEST(test_BUG172_suspend_cause_cal_session_devant_stabilisation_et_assistant);
+  RUN_TEST(test_BUG172_suspend_cause_stabilisation_devant_assistant);
   // T20 — deadband de démarrage.
   RUN_TEST(test_T20_deadband_no_start_below_or_at_threshold);
   // feature-037 — computePidPure (cœur PID pur, Option Y).

@@ -189,6 +189,23 @@ DoseDecision evaluateDose(const DoseInputs& in) {
   return { true, DoseRefusal::None };
 }
 
+// =============================================================================
+// evaluateSuspendCause — cascade PURE de la suspension globale (bug-172)
+// =============================================================================
+// Ordre VERROUILLÉ par le gate pool-chemistry (H1) : eau (rang 2) devant
+// étalonnage (rang 3) devant stabilisation (rang 6), calqué sur evaluateDose()
+// ci-dessus — ⛔ ne jamais réordonner sans repasser par pool-chemistry.
+// `flowAssistSuspend` est évalué EN DERNIER : aucun rang dans evaluateDose(),
+// il ne peut donc jamais passer devant une garde rangée.
+DoseRefusal evaluateSuspendCause(bool filtrationOk, bool calSessionOpen,
+                                 bool stabilizationActive, bool flowAssistSuspend) {
+  if (!filtrationOk) return DoseRefusal::FiltrationOff;
+  if (calSessionOpen) return DoseRefusal::CalibrationSessionOpen;
+  if (stabilizationActive) return DoseRefusal::StabilizationActive;
+  if (flowAssistSuspend) return DoseRefusal::FlowAssistSuspend;
+  return DoseRefusal::None;
+}
+
 bool shouldStartDosingPure(float error, float startThreshold,
                            unsigned int cyclesToday, unsigned int maxCyclesPerDay) {
   // 1. Nombre de cycles par jour (le warning éventuel reste dans la coquille).

@@ -709,6 +709,71 @@ Depuis **v2.19.1**, le statut affiche aussi la **pause mélange hydraulique** po
 
 > **v2.25.1 — la ligne de statut se tait quand le badge capteur fait déjà foi.** Quand `measures_valid === false`, le badge capteur affiche déjà « Reprise automatique dans N min » (« Stabilisation depuis N min » avant la v2.62.0) ; descendre jusqu'à la cause de refus firmware juxtaposait **deux messages contradictoires** sur la même carte. Le statut est donc masqué — mais **uniquement** pour la famille « stabilisation des mesures » (codes de refus marqués `stab` : préchauffage du filtre, mesures non représentatives). Une **panne** (sonde figée, sonde muette) ou tout autre motif reste dit, badge ou pas. La cause de refus est lue depuis `ph/orpDoseBlockedCode` (code machine) et non plus par analyse du texte français — même mécanisme que le chip d'état filtre, voir [page-ph.md](page-ph.md#chip-détat-filtre-feature-025) et [ADR-0049](../adr/0049-code-machine-de-cause-de-refus-et-etat-interne-du-filtre.md).
 
+## Priorité d'une cause de suspension sur la pause mélange (bug-172, v2.83.0)
+
+> ⚠️ **Hors périmètre de ce lot, mais à savoir en lisant la section suivante** : le widget décrit
+> ci-dessous (`#ph-dosing-status` / `#orp-dosing-status`, `getDosingStopReason()`,
+> `updateDosingStatus()`) **a été retiré** par le chantier de simplification — ces identifiants et
+> fonctions n'existent plus dans `data/app.js` (commentaire du code : « `getDosingStopReason()` et
+> `dedupDosingReason()` sont SUPPRIMÉES »). Les faits qu'il portait (stabilisation, pause mélange,
+> limites) migrent dans les **segments du badge composé** (`composeSensorBadge()`, voir
+> [section dédiée](#badge-multi-états-des-cartes-ph--orp-ph-sensor-badge-orp-sensor-badge)), via
+> `dosingCountdownSegment()` et `dosingStabOrMixSegment()` (app.js). Cette page n'a pas été mise à
+> jour sur ce point par ce lot — correction ponctuelle hors périmètre de bug-172.
+
+Constaté sur l'appareil le **2026-10-18** : la carte pH affichait « Pause mélange : 3 min 27 s »
+(`ph_mix_remaining_s`, via `dosingStabOrMixSegment()`) **alors que la filtration était arrêtée** —
+la vraie cause, de priorité supérieure. Un utilisateur qui attend la fin de cette « pause » attend
+pour rien : la vraie cause ne s'écoule pas avec le temps.
+
+🔴 **Correction d'une explication erronée.** Une première rédaction de cette section décrivait
+`*_mix_remaining_s` / `*MixingDelayActive` comme « rémanents » ou « plus recalculés » pendant la
+suspension. ⛔ **C'est faux** — la capture `/data` ci-dessus le prouve elle-même : le champ
+décroissait bel et bien avec le temps (207 s, puis 3 min 27 s à un relevé suivant). Ces deux champs
+sont des **getters purs** (`isPhMixingDelayActive()`, `getMixingRemainingS()`,
+`src/pump_controller.cpp`) appelés **au moment de la sérialisation** `/data`/WebSocket contre
+l'échéance `_mixingEndMs[pompe]` — jamais par `updateDosingCore()`. Ils décroissent réellement et
+tombent à `0` tout seuls : **la pause mélange que l'utilisateur a vue était vraie.**
+
+**La vraie cause du défaut** : une cause de suspension globale (filtration arrêtée, étalonnage en
+cours, stabilisation post-calibration, assistant de mesure du débit) **prime** sur la pause mélange.
+Afficher « Pause mélange : X min » alors que la filtration est arrêtée montre une information
+**exacte mais subordonnée**, à la place de la cause qui commande réellement l'attente — un défaut de
+**priorité d'affichage**, pas de fraîcheur de donnée. Voir
+[pump-controller.md](../subsystems/pump-controller.md#cascade-de-la-suspension-globale--evaluatesuspendcause-bug-172-v2830)
+et [ADR-0118](../adr/0118-une-sortie-anticipee-publie-la-cause-quelle-rend-inatteignable.md) pour le
+correctif côté firmware : la cause de refus elle-même (`ph/orpDoseBlockedReason`), **elle**, était
+réellement héritée — c'est ce défaut-là, distinct de celui-ci, qu'`evaluateSuspendCause()` corrige.
+
+**Côté client** : `_doseSuspendOutranksMixing(code)` (`data/app.js`, renommée depuis
+`_isDoseSuspendRemanentCode()` pour refléter cette correction) est la liste **unique** des quatre
+codes de suspension globale (`2` filtration arrêtée, `7` stabilisation, `24` étalonnage, `25`
+assistant de mesure du débit) pour lesquels le segment « Pause mélange » doit se **taire** plutôt
+que s'afficher, même si son décompte est réel — la cause réelle (nommée par ailleurs dans le badge)
+prime. Ses deux points d'appel :
+
+- `dosingStabOrMixSegment()` — ne retourne **plus** le segment « Pause mélange » tant qu'un de ces
+  quatre codes est servi.
+- `_renderDosePill()` — même garde côté pastille de la carte « Débit d'injection ».
+
+**Le code `8` (`MixingActive`, un vrai mélange en cours, hors suspension) n'est volontairement PAS
+dans cette liste** : son décompte reste légitime et continue de s'afficher normalement. De même, le
+décompte de **stabilisation** (`remainS`, code `7`, retourné **avant** d'atteindre le test de
+priorité dans `dosingStabOrMixSegment()`) reste affiché : lui aussi s'écoule réellement, et n'a pas
+de cause concurrente de rang supérieur à ce point du code.
+
+Vérifié par des vecteurs dédiés (patron ADR-0099) : `test/dose_suspend_outranks_mixing_vectors.js`,
+`./tools/check_dose_suspend_outranks_mixing_vectors.sh` (renommés pour la même raison que la
+fonction) — extraient et évaluent le code réellement livré de `_doseSuspendOutranksMixing()`, jamais
+une recopie.
+
+⚠️ **Dette d'ergonomie relevée, non traitée par ce lot** : trois composants des cartes pH/ORP
+rendent le même fait de trois façons différentes — une durée **écoulée** (bandeau de durée de
+refus, voir [pump-controller.md](../subsystems/pump-controller.md#durée-du-refus-courant-par-voie-feature-138-v2540)),
+**aucune** durée (la pastille « Débit d'injection », un simple libellé), et un **compte à rebours**
+(ce segment). Cette incohérence de rendu est distincte du défaut de priorité corrigé ci-dessus ;
+elle appelle une passe `ux-ui-designer` dédiée, pas un correctif de ce lot.
+
 ## Statut dosage des cartes pH/ORP — commandé vs effectif (v2.21.1)
 
 > Itération 3 de bug-dosage-fantome ([ADR-0045](../adr/0045-etat-impulsion-expose-en-calendrier.md)). Avant : `data/app.js` faisait un **OU** de `ph_dosing` (session — l'intention) et `ph_inject_remaining_s` (manuel minuté) → la carte affichait « Injection en cours » pendant les **repos** du train d'impulsions ([dosage en proportionnel de temps](../subsystems/pump-controller.md#dosage-en-proportionnel-de-temps-itération-2-v2210)), alors que la pompe ne tournait pas. C'est cette conflation qui a masqué le dosage fantôme d'origine.

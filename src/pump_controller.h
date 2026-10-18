@@ -321,6 +321,18 @@ private:
   void logRefusalOnce(int pumpIndex, const String& cause, DoseRefusal code);
   void resetRefusalLogState(int pumpIndex);
 
+  // bug-172 — pose la cause de la SUSPENSION GLOBALE (evaluateSuspendCause,
+  // dosing_logic.h) via le chemin PROPRIÉTAIRE canDose (logRefusalOnce),
+  // JAMAIS setGuardRefusalCause (sentinelle 250 réservée aux gardes
+  // chimiques, gate pool-chemistry H4). Appelée à CHAQUE tick par
+  // updateDosingCore() pour les DEUX pompes, y compris sans injection en
+  // cours. Edge-trigger STRICT sur le CODE (comparaison d'entiers) AVANT tout
+  // accès à logRefusalOnce() : ADR-0082, aucune String n'est construite tant
+  // que le code ne change pas (les quatre textes dépassent la SSO de
+  // WString — les construire à chaque tick fractionnerait le tas comme le
+  // journal avant feature-129).
+  void postSuspendCause(int pumpIndex, DoseRefusal cause);
+
   // ===== Gardes de sécurité pH (pool-chemistry, refonte v2.25.0) =============
   // Les seuils CHIMIQUES portent sur le pH CORRIGÉ (brut + offset) : une fois
   // l'offset appliqué, la valeur EST le pH de l'eau, et un seuil chimique doit

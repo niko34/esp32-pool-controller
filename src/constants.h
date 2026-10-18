@@ -2073,10 +2073,16 @@ constexpr size_t kDoseBlockedReasonMaxLen = 96;
 // procédé faisait matcher « indispo » de « lecture filtrée indisponible » avec
 // « EZO indisponible » : cause fausse affichée sur une sonde saine).
 //
-// Les valeurs 0..18 sont celles de `DoseRefusal` (dosing_logic.h, contrat de
+// Les valeurs 0..25 sont celles de `DoseRefusal` (dosing_logic.h, contrat de
 // sérialisation figé) — 4, 5 et 19-22 sont des numéros RETIRÉS (feature-152,
 // fusion des gardes « filtre non prêt » / « capteur instable » dans la garde
-// unique de lecture NaN) et ne seront JAMAIS recyclés. Les deux sentinelles
+// unique de lecture NaN) et ne seront JAMAIS recyclés.
+// ⚠️ Ce commentaire disait « 0..18 » : il était PÉRIMÉ depuis feature-163
+// (code 24, étalonnage) et l'est resté une semaine, relevé en livrant
+// bug-172 (code 25, mesure du débit). ⛔ Le prochain qui ajoute un code
+// MET CE CHIFFRE À JOUR — une énumération documentée qui s'arrête avant la
+// fin est pire qu'absente : elle fait croire qu'on l'a lue.
+//   24 = étalonnage en cours (feature-163) · 25 = mesure du débit (bug-172) Les deux sentinelles
 // ci-dessous couvrent les causes qui
 // ne viennent PAS de canDose() :
 //   kDoseBlockedCodeNone  = dosage non refusé (le champ est publié `null`) ;
