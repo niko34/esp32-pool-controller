@@ -45,6 +45,15 @@
   servi mais **arrondi** à l'affichage (`1.2`) : à l'offset de production ci-dessus, `1.2 > 1.2`
   vaut faux en JavaScript, et l'écran affichait « Avertissement » pendant que le firmware
   publiait « Impasse » en critique — deux verdicts opposés sur le même état.
+- 🔴 **`bug-170` corrigé — par suppression, pas par l'ajout d'une garde.** `POST
+  /pump1/duty/:duty` et `POST /pump2/duty/:duty` démarraient une pompe doseuse à un rapport
+  cyclique arbitraire avec pour **seul** contrôle l'authentification : aucune garde de présence
+  d'eau, de limite journalière/horaire, ni d'étalonnage — alors que la route voisine `/pumpN/on`
+  passe par `injectionAllowedOrReject()`. Elles posaient en outre `manualMode[i]`, ce qui
+  empêchait le bloc de suspension globale de couper la pompe. Rien ne les appelait (vérifié :
+  ni `data/`, ni aucun script) — reliquat des essais de débit, retiré avec
+  `handleDynamicPumpRoutes()` et le routage dynamique d'`onNotFound()` qui les servait. Pour
+  piloter une pompe à la main : `/pumpN/on` et `/pumpN/off`, qui portent les gardes.
 
 ### Documentation
 
@@ -52,9 +61,18 @@
   sur un état partagé se pose au point d'usage final, jamais sur chaque chemin d'écriture connu.
 - `docs/adr/README.md` : index mis à jour (ADR-0115).
 - `docs/API.md` : nouveau code 409 `calibration_session_open` (table des refus manuels), avertissement
-  sur `/pump1/on`/`/pump2/on`, et sur `/pump1/duty`/`/pump2/duty` — ces deux dernières routes ne
-  vérifient **ni** la présence d'eau **ni** l'étalonnage (`bug-170`, ouvert en critique, non
-  corrigé dans ce lot).
+  sur `/pump1/on`/`/pump2/on`. `/pump1/duty`/`/pump2/duty` : **suppression documentée** (`bug-170`,
+  2026-10-18) — les deux routes ne vérifiaient **ni** la présence d'eau **ni** l'étalonnage et ont
+  été retirées plutôt que gardées.
+- `docs/adr/0117-un-routage-dynamique-generique-ne-sert-jamais-un-actionneur.md` : nouvel ADR —
+  un routage dynamique générique (`onNotFound`) ne doit jamais servir un actionneur, parce qu'il
+  échappe par construction à l'inventaire des routes gardées.
+- `docs/adr/README.md` : index mis à jour (ADR-0117).
+- `docs/subsystems/pump-controller.md` : les deux avertissements sur `/pumpN/duty/:duty`
+  (« n'appellent pas la garde », « aucune des deux gardes ») réécrits au passé — le chemin a
+  disparu.
+- `specs/features/done/bug-170-routes-duty-demarrent-une-pompe-sans-aucune-garde.md` : clôturée —
+  résolution par suppression des deux routes, pas par l'ajout d'une garde.
 - `docs/subsystems/pump-controller.md` : nouvelle garde documentée (rang 4 côté régulation
   automatique, rang 3 côté injection manuelle, entrée fail-closed côté mode Programmé), tables de
   gardes et d'énumérations renumérotées en conséquence, limite connue de bug-161 marquée résolue.

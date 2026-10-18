@@ -32,9 +32,10 @@ static std::atomic<uint32_t> sStaticRefusalCount{0};     // refus cumulés depui
 // Ce n'est PAS « la mesure du dernier refus » : _attachHandler (WebServer.cpp:147)
 // évalue `h->filter(request) && h->canHandle(request)`, donc le filtre tourne
 // AVANT le contrôle de méthode. Une requête POST qui atteint la position de la
-// garde (les routes pompes dynamiques servies par onNotFound, p. ex.
-// /pump1/duty/) exécute le filtre — et donc ce store — alors qu'elle ne sera
-// jamais refusée. La valeur reste juste pour ce qu'on en fait (l'ordre de
+// garde exécute le filtre — et donc ce store — alors qu'elle ne sera jamais
+// refusée. (L'exemple cité ici était `/pump1/duty/`, servie par onNotFound :
+// route SUPPRIMÉE le 2026-10-18, bug-170. Le mécanisme décrit, lui, vaut
+// toujours pour toute requête atteignant la position de la garde.) La valeur reste juste pour ce qu'on en fait (l'ordre de
 // grandeur du tas au moment où la garde s'est armée), mais ne pas la lire comme
 // un instantané du refus lui-même.
 static std::atomic<uint32_t> sStaticRefusalMaxAlloc{0};
@@ -128,9 +129,12 @@ void WebServerManager::setupRoutes() {
   // → _searchFile(), donc serveStatic TOUCHE LE FS DÈS canHandle. Seul un
   // handler antérieur est réellement en amont du fopen().
   //
-  // Les routes dynamiques des pompes (onNotFound) sont HTTP_POST : hors
-  // matcher, donc jamais interceptées — aucune commande de dosage ne peut être
-  // avalée par cette garde GET-only.
+  // Les routes de commande de pompe (/pumpN/on|off, /ph|orp/inject/*) sont
+  // HTTP_POST : hors matcher, donc jamais interceptées — aucune commande de
+  // dosage ne peut être avalée par cette garde GET-only.
+  // (Jusqu'au 2026-10-18, l'exemple canonique était les routes dynamiques
+  // servies par onNotFound — SUPPRIMÉES, bug-170 / ADR-0117. La conclusion
+  // ci-dessus est inchangée : seule la prémisse a changé.)
   // NUANCE À NE PAS PERDRE : le matcher protège de l'INTERCEPTION, pas de
   // l'ÉVALUATION. _attachHandler (WebServer.cpp:147) teste
   // `h->filter(request) && h->canHandle(request)` : le filtre passe AVANT le
@@ -243,15 +247,15 @@ void WebServerManager::setupRoutes() {
       return false;
     });
 
-  // Handler global pour routes dynamiques et 404
+  // Handler 404.
   // IMPORTANT: Doit être déclaré en DERNIER pour ne pas intercepter les autres routes
+  // bug-170 (2026-10-18) : il n'y a PLUS de route dynamique. `/pumpN/duty/:duty`
+  // démarrait une pompe doseuse sans aucune garde — et posait `manualMode[i]`,
+  // ce qui empêchait même le blocage global de la couper. Supprimées : rien ne
+  // les appelait. ⛔ Ne pas réintroduire de routage dynamique ici sans gate
+  // `pool-chemistry` : c'est ce mécanisme qui avait permis à un chemin de
+  // démarrage de pompe d'échapper à TOUTES les gardes pendant des mois.
   server->onNotFound([](AsyncWebServerRequest *req) {
-    // Essayer les routes dynamiques des pompes
-    if (handleDynamicPumpRoutes(req)) {
-      return;
-    }
-
-    // 404 pour les autres routes non trouvées
     req->send(404, "text/plain", "Not Found");
   });
 }

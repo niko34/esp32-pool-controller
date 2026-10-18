@@ -188,7 +188,7 @@ Le flag `maintenanceInhibit` ([`pump_controller.h:53`](../../src/pump_controller
 |---|---|
 | Régulation **auto** + **scheduled** | Court-circuit en tête d'`update()` ([`pump_controller.cpp:798`](../../src/pump_controller.cpp:798)) — pompes forcées à 0 chaque cycle |
 | Injection **manuelle web** (`/ph\|orp/inject/start`) | Refus **409** `maintenance_mode` dans `manualInjectGuardOrReject()` ([`web_routes_control.cpp:67`](../../src/web_routes_control.cpp:67)), **avant** d'armer `manualInject*.active` (sinon `creditManualInjectionFloor()` créditerait un volume jamais versé) |
-| Test web (`/pumpN/on`, `/pumpN/duty/*`) | `setManualPump()` — point de passage **unique** de toute activation manuelle directe — court-circuité ([`pump_controller.cpp:1574`](../../src/pump_controller.cpp:1574)) : sans cette garde, `setManualPump()` énergiserait la pompe via `ledcWrite()` depuis la tâche web jusqu'au prochain `update()` |
+| Test web (`/pumpN/on`, paramètre optionnel `?duty=N`) | `setManualPump()` — point de passage **unique** de toute activation manuelle directe — court-circuité ([`pump_controller.cpp:1574`](../../src/pump_controller.cpp:1574)) : sans cette garde, `setManualPump()` énergiserait la pompe via `ledcWrite()` depuis la tâche web jusqu'au prochain `update()` |
 
 > ⚠️ **Condition pool-chemistry C2** : l'inhibition doit couvrir **auto + scheduled + manuel web + test** (et toute future source d'activation). Fermer `update()` seul ne suffit pas — `setManualPump()` active la pompe **immédiatement** hors cycle `update()`, d'où la garde dédiée à ce point de passage unique. *(Jusqu'en v2.16.x, la voie « manuel UART » de l'écran externe était couverte au même point ; elle a disparu avec le retrait de l'écran en v2.17.0, feature-065.)*
 
@@ -793,8 +793,10 @@ ce sont des limites connues, pas des oublis :
   et [ADR-0115](../adr/0115-une-garde-sur-etat-partage-vit-au-point-dusage-final.md). *Historique
   (avant v2.83.0)* : les gardes posées (HTTP, MQTT, purge au boot) protégeaient **trois chemins
   nommés**, pas « le dosage pendant un étalonnage » comme propriété générale — un quatrième chemin
-  (le mode Programmé) et un cinquième (`bug-170`, routes `/pumpN/duty/:duty`, non corrigé) ont
-  depuis confirmé le risque.
+  (le mode Programmé) et un cinquième (routes `/pumpN/duty/:duty`, sans aucune garde) ont depuis
+  confirmé le risque. ✅ **Le cinquième chemin a été fermé par suppression des deux routes**
+  (`bug-170`, 2026-10-18) — voir [Test de pompe (G4)](#test-de-pompe-g4--injectionallowedorreject)
+  ci-dessous.
 - **Côté `ph_plus` (base), aucun plancher bas n'existe** : un tampon pH 4,0 déclencherait une
   injection de base sans aucune garde pour l'arrêter (asymétrie avec le plafond haut déjà couvert
   par l'inhibition ORP ci-dessous).
@@ -1093,8 +1095,9 @@ verrouillait **chaque chemin nommé** capable de réécrire ce mode — HTTP (`/
 (`ph|orp_regulation_mode/set`), écriture directe d'`orp_enabled` (feature-161, lot C). ⚠️ **Cette
 liste s'est révélée fausse trois fois**, et le gate `pool-chemistry` en a trouvé une **quatrième**
 en instruisant cette spec : le mode **Programmé** ne passe pas par `canDose()`/`evaluateDose()` —
-aucune des gardes ci-dessus ne pouvait donc jamais le voir. Et une **cinquième** hors périmètre de
-ce lot : les routes `/pumpN/duty/:duty` (`bug-170`, ouvert en critique, voir plus bas).
+aucune des gardes ci-dessus ne pouvait donc jamais le voir. Une **cinquième** avait été trouvée
+hors périmètre de ce lot : les routes `/pumpN/duty/:duty` (`bug-170`, voir plus bas) — ✅ **fermée
+depuis par suppression des deux routes**, pas par l'ajout d'une garde.
 
 ⇒ **Changement de méthode, pas seulement un chemin de plus fermé.** La garde ne protège plus un
 **mode** qu'il faut rattraper sur chaque chemin d'écriture : elle est posée **au point d'usage
@@ -1154,12 +1157,21 @@ en cours **à l'entrée** en calibration reste couverte par le drapeau one-shot
 
 `/pump1/on` et `/pump2/on` partagent `injectionAllowedOrReject()` avec le reste des routes de test
 : la garde `calSessionOpen` y est posée **avant** la garde filtration (refus **inconditionnel**,
-aucune exception). ⚠️ **`/pump1/duty/:duty` et `/pump2/duty/:duty` n'appellent PAS cette fonction**
-— elles démarrent `setManualPump()` directement, **sans aucune garde**, ni celle-ci ni la
-filtration. C'est **ce lot qui a trouvé ce 5ᵉ chemin** en recensant tous les démarrages de pompe
-possibles ; il a été jugé **hors périmètre** de feature-163 et ouvert séparément en
-[`bug-170`](../../specs/features/todo/bug-170-routes-duty-demarrent-une-pompe-sans-aucune-garde.md)
-(critique, non corrigé à ce jour).
+aucune exception).
+
+✅ **`/pump1/duty/:duty` et `/pump2/duty/:duty` SUPPRIMÉES (2026-10-18, `bug-170`)**, avec
+`handleDynamicPumpRoutes()` et le routage dynamique d'`onNotFound()` qui les servait. Elles
+**n'appelaient PAS** `injectionAllowedOrReject()` — elles démarraient `setManualPump()`
+directement, après la seule authentification, **sans aucune garde** (ni présence d'eau, ni
+limite journalière/horaire, ni étalonnage). C'est **feature-163** qui avait trouvé ce 5ᵉ chemin
+en recensant tous les démarrages de pompe possibles ; jugé **hors périmètre** à l'époque et ouvert
+séparément en
+[`bug-170`](../../specs/features/done/bug-170-routes-duty-demarrent-une-pompe-sans-aucune-garde.md).
+**Résolu par suppression, pas par l'ajout d'une garde** : rien dans `data/` ni ailleurs n'appelait
+ces routes (reliquat des essais de débit), et elles posaient en plus `manualMode[i]` — ce qui
+empêchait le bloc de suspension globale (`!manualMode[i]`) de couper la pompe en cas
+d'étalonnage ouvert ou de perte de filtration. Pour démarrer/arrêter une pompe à la main :
+`/pumpN/on` et `/pumpN/off`, qui portent les gardes. Voir [ADR-0117](../adr/0117-un-routage-dynamique-generique-ne-sert-jamais-un-actionneur.md).
 
 #### Textes imposés (G5)
 
@@ -1262,8 +1274,9 @@ repose sur l'interruption à l'entrée, pas sur un refus à la demande suivante.
 (v2.83.0), sur la session d'étalonnage ouverte — helper `injectionAllowedOrReject()`, pas de volume
 demandé → pas de garde volumétrique —, au **même format 409 JSON** (`filtration_off` /
 `calibration_session_open`). Leur temps de marche consomme le budget horaire partagé (cf.
-ci-dessus). ⚠️ **`/pump1/duty/:duty` et `/pump2/duty/:duty` n'ont AUCUNE de ces deux gardes** —
-voir [bug-170](#test-de-pompe-g4--injectionallowedorreject) ci-dessus.
+ci-dessus). ✅ **`/pump1/duty/:duty` et `/pump2/duty/:duty`, qui n'avaient AUCUNE de ces deux
+gardes, ont été SUPPRIMÉES** — voir [Test de pompe (G4)](#test-de-pompe-g4--injectionallowedorreject)
+ci-dessus.
 
 > ✅ **Bypass `pump_test` UART : FERMÉ en v2.17.0 (feature-065)**. Jusqu'en v2.16.x, l'action `run_action/pump_test` du protocole écran LVGL (`uart_commands`, supprimé) appelait `setManualPump()` **sans passer par `evaluateManualInject()`** — bypass assumé car l'écran n'a jamais été déployé (condition pool-chemistry #4, feature-006 : « à garder si l'écran est mis en service »). Le retrait complet du support écran supprime cette voie non gardée : **toutes** les activations manuelles restantes passent par les gardes web.
 

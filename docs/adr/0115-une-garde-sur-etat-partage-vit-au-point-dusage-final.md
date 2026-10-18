@@ -3,7 +3,7 @@
 - **Statut** : Accepté
 - **Date** : 2026-10-17
 - **Décideurs** : `pool-chemistry` (gate), utilisateur
-- **Spec(s) liée(s)** : [feature-163](../../specs/features/done/feature-163-refus-de-dosage-pendant-un-etalonnage.md) · [bug-160](../../specs/features/done/bug-160-l-indicateur-de-stabilite-ment-et-le-dosage-ne-se-suspend-pas.md) · [bug-170](../../specs/features/todo/bug-170-routes-duty-demarrent-une-pompe-sans-aucune-garde.md) (confirme la thèse, hors périmètre du correctif) · [ADR-0107](0107-etat-visible-et-persistant-plutot-que-suspension-invisible.md)
+- **Spec(s) liée(s)** : [feature-163](../../specs/features/done/feature-163-refus-de-dosage-pendant-un-etalonnage.md) · [bug-160](../../specs/features/done/bug-160-l-indicateur-de-stabilite-ment-et-le-dosage-ne-se-suspend-pas.md) · [bug-170](../../specs/features/done/bug-170-routes-duty-demarrent-une-pompe-sans-aucune-garde.md) (confirme la thèse, hors périmètre du correctif) · [ADR-0107](0107-etat-visible-et-persistant-plutot-que-suspension-invisible.md)
 
 ## Contexte
 
@@ -102,6 +102,6 @@ pas tant que ce drapeau est vrai.
   [`src/pump_controller.cpp`](../../src/pump_controller.cpp) (fermeture d'un cycle Programmé actif,
   textes de refus).
 - Spec : [`specs/features/doing/feature-163-refus-de-dosage-pendant-un-etalonnage.md`](../../specs/features/done/feature-163-refus-de-dosage-pendant-un-etalonnage.md),
-  [`specs/features/todo/bug-170-routes-duty-demarrent-une-pompe-sans-aucune-garde.md`](../../specs/features/todo/bug-170-routes-duty-demarrent-une-pompe-sans-aucune-garde.md).
+  [`specs/features/todo/bug-170-routes-duty-demarrent-une-pompe-sans-aucune-garde.md`](../../specs/features/done/bug-170-routes-duty-demarrent-une-pompe-sans-aucune-garde.md).
 - Doc : [`docs/subsystems/pump-controller.md`](../subsystems/pump-controller.md#garde-rang-4--session-détalonnage-ouverte-tous-modes-feature-163-adr-0115),
   [`docs/API.md`](../API.md#codes-de-refus-409-v260).

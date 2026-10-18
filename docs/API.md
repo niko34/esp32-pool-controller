@@ -2413,25 +2413,23 @@ curl -u admin:monmotdepasse -X POST http://poolcontroller.local/pump2/off
 
 ---
 
-### POST /pump1/duty/:duty, /pump2/duty/:duty — WRITE
+### POST /pump1/duty/:duty, /pump2/duty/:duty — RETIRÉES (`bug-170`, 2026-10-18)
 
-Règle la puissance PWM d'une pompe (0–255).
-
-```bash
-curl -u admin:monmotdepasse -X POST http://poolcontroller.local/pump1/duty/128
-```
-
-> 🔴 **`bug-170` (ouvert, critique, non corrigé)** : contrairement à **toutes** les autres routes
-> de démarrage de pompe de cette page (`/pumpN/on`, `/ph|orp/inject/start`), ces deux routes
-> appellent `setManualPump()` **directement**, après la seule authentification. ⛔ **Aucune garde
-> de présence d'eau, aucune limite journalière ou horaire, aucun plafond de débit, et aucune garde
-> d'étalonnage** (`calibration_session_open`, v2.83.0) — une pompe doseuse peut démarrer à un
-> rapport cyclique arbitraire **sans circulation d'eau**, ce que `injectionAllowedOrReject()`
-> refuse partout ailleurs. Voir
-> [`bug-170`](../specs/features/todo/bug-170-routes-duty-demarrent-une-pompe-sans-aucune-garde.md)
-> et [ADR-0115](adr/0115-une-garde-sur-etat-partage-vit-au-point-dusage-final.md) (ce chemin en est
-> l'exemple-même de « chemin pas encore fermé »). **Ne pas utiliser ces routes sur une
-> installation en service** tant que ce bug reste ouvert.
+> ⛔ **Ces deux routes n'existent plus.** Elles réglaient la puissance PWM d'une pompe (0–255) en
+> appelant `setManualPump()` **directement**, après la seule authentification — **aucune** garde
+> de présence d'eau, de limite journalière/horaire, ni d'étalonnage, contrairement à **toutes**
+> les autres routes de démarrage de pompe de cette page (`/pumpN/on`, `/ph|orp/inject/start`).
+> Elles posaient en outre `manualMode[i]`, ce qui empêchait le bloc de suspension globale de
+> couper la pompe (`!manualMode[i]`) — une pompe démarrée ainsi continuait de tourner jusqu'à un
+> arrêt explicite, filtration arrêtée ou étalonnage ouvert ou non.
+>
+> **Supprimées plutôt que gardées** : rien ne les appelait (ni `data/`, ni aucun script),
+> reliquat des essais de débit. **À la place** : `POST /pumpN/on` (paramètre optionnel `?duty=N`,
+> voir ci-dessus) et `POST /pumpN/off`, qui portent les mêmes gardes que le reste du dosage
+> (`injectionAllowedOrReject()` — présence d'eau, étalonnage ouvert).
+>
+> Voir [`bug-170`](../specs/features/done/bug-170-routes-duty-demarrent-une-pompe-sans-aucune-garde.md)
+> et [ADR-0117](adr/0117-un-routage-dynamique-generique-ne-sert-jamais-un-actionneur.md).
 
 ---
 

@@ -89,7 +89,7 @@ Un filtre posé sur `serveStatic` **n'aurait pas marché**, pour deux raisons in
 |---|---|---|
 | **Servi** | les **19 routes `HTTP_GET`** déclarées avant : `/auth/status`, `/auth/token`, `/auth/ap-password`, `/data`, `/get-config`, `/get-logs`, `/download-logs`, `/get-history`, `/get-kpi`, `/get-system-info`, `/time-now`, `/wifi/status`, `/wifi/scan`, `/check-update`, `/coredump/info`, `/coredump/download`, `/sensors/onewire/scan`, `/debug/sensor_filter_state`, `/debug/sensor_trace` | premier match gagne |
 | **Servi** | `/ws` | déclaré avant **et** `canHandle` exige `isHTTP()` |
-| **Servi** | toutes les routes `HTTP_POST`, dont les routes pompes dynamiques (`onNotFound`) | hors du matcher `HTTP_GET` |
+| **Servi** | toutes les routes `HTTP_POST` | hors du matcher `HTTP_GET` |
 | **Refusé (503)** | `/`, `/index.html`, `/login.html`, `/wifi.html`, `/wizard.html`, `/config`, `/config.html` et tout `serveStatic` (CSS, JS, images, polices) | déclarées après |
 
 **Aucune liste d'exemption n'est maintenue** : une liste s'oublie, l'ordre d'enregistrement se voit en lisant `setupRoutes()` de haut en bas.

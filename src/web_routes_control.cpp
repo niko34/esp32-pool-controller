@@ -1162,38 +1162,33 @@ void setupControlRoutes(AsyncWebServer* server) {
   });
 }
 
-// Handler pour routes dynamiques des pompes - à appeler depuis le onNotFound principal
-// PROTÉGÉ par authentification
-bool handleDynamicPumpRoutes(AsyncWebServerRequest* req) {
-  String url = req->url();
-
-  // Gérer /pump1/duty/:duty
-  if (req->method() == HTTP_POST && url.startsWith("/pump1/duty/")) {
-    if (!authManager.checkAuth(req, RouteProtection::WRITE)) {
-      return true; // Route traitée (auth échouée)
-    }
-    String dutyStr = url.substring(12); // Après "/pump1/duty/"
-    int duty = dutyStr.toInt();
-    if (duty < 0) duty = 0;
-    if (duty > 255) duty = 255;
-    PumpController.setManualPump(0, duty);
-    req->send(200, "text/plain", "OK");
-    return true;
-  }
-
-  // Gérer /pump2/duty/:duty
-  if (req->method() == HTTP_POST && url.startsWith("/pump2/duty/")) {
-    if (!authManager.checkAuth(req, RouteProtection::WRITE)) {
-      return true; // Route traitée (auth échouée)
-    }
-    String dutyStr = url.substring(12); // Après "/pump2/duty/"
-    int duty = dutyStr.toInt();
-    if (duty < 0) duty = 0;
-    if (duty > 255) duty = 255;
-    PumpController.setManualPump(1, duty);
-    req->send(200, "text/plain", "OK");
-    return true;
-  }
-
-  return false;
-}
+// =============================================================================
+// handleDynamicPumpRoutes() — SUPPRIMÉE le 2026-10-18 (bug-170)
+// =============================================================================
+// Elle servait `/pump1/duty/:duty` et `/pump2/duty/:duty` : démarrage d'une
+// pompe DOSEUSE à un rapport cyclique arbitraire, avec pour SEUL contrôle
+// l'authentification.
+//
+// ⛔ Ni garde de présence d'eau, ni limite journalière/horaire, ni garde
+// d'étalonnage — alors que la route voisine `/pumpN/on` passe, elle, par
+// `injectionAllowedOrReject()`. Deux routes, le même actionneur, deux niveaux
+// de sécurité opposés.
+//
+// 🔴 PIRE : elles posaient `manualMode[i]`, et le bloc de suspension globale
+// d'`updateDosingCore()` ne coupe une pompe que `if (!manualMode[i])`. Une
+// pompe démarrée par cette route continuait donc de tourner — filtration
+// arrêtée ou non, étalonnage ouvert ou non — jusqu'à un arrêt EXPLICITE.
+//
+// Découvertes en recensant les chemins de démarrage de pompe pour feature-163 :
+// c'était le CINQUIÈME, après trois chemins de mode déjà fermés un par un et
+// le mode Programmé trouvé par le gate. ⚠️ L'histoire de ce sujet est une suite
+// de listes qu'on croyait exhaustives.
+//
+// ⛔ SUPPRIMÉES plutôt que gardées : rien ne les appelait (ni `data/`, ni aucun
+// script — vérifié), elles étaient un reliquat des essais de débit, et le
+// projet a une direction écrite : « ce qui a servi à concevoir n'a plus à
+// rester affiché ; retirer fait partie du travail courant ».
+// ⇒ Moins de code, moins de surface, une incohérence qui DISPARAÎT au lieu
+//   d'être rattrapée. Pour piloter une pompe à la main : `/pumpN/on` et
+//   `/pumpN/off`, qui portent les gardes.
+// =============================================================================

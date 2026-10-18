@@ -306,6 +306,23 @@ jobs:
         run: ./tools/check_cal_points_acquired_vectors.sh
 
 
+  no-dynamic-pump-routes:
+    name: Aucun routage dynamique vers un actionneur (bug-170, ADR-0117)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # Même script en local (`./tools/check_no_dynamic_pump_routes.sh`) et en
+      # CI. ⚠️ Ce job existe parce qu'ADR-0117 est une règle ÉCRITE : sans
+      # contrôle, rien n'empêche de recâbler `onNotFound` « comme avant ». Les
+      # routes supprimées démarraient une pompe doseuse sans aucune garde, et
+      # posaient `manualMode[i]` — ce qui empêchait même le blocage global de
+      # la couper. Patron de check_no_peek_flag.sh : ce qui a été retiré reste
+      # retiré.
+      - name: Contrôle de l'absence de routage dynamique
+        run: ./tools/check_no_dynamic_pump_routes.sh
+
   cal-session-reentry-vectors:
     name: Vecteurs « rouvrir l'écran d'étalonnage dégèle » (bug-167)
     runs-on: ubuntu-latest
