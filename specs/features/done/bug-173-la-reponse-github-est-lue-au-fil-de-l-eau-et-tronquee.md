@@ -4,8 +4,9 @@
 - **ID** : bug-173
 - **Slug** : la-reponse-github-est-lue-au-fil-de-l-eau-et-tronquee
 - **Type** : bug — **la mise à jour en ligne échoue**, pour une cause **distincte** de bug-169
-- **Statut** : doing — démarrée le 2026-10-18, **implémentée + revue (code + sécurité) le
-  2026-10-18** ; reste ouverte faute du test sur l'appareil réel (critère n°1, non coché)
+- **Statut** : **CLÔTURÉE le 2026-10-18** (v2.85.0) — livrée, revues **code + sécurité** passées,
+  et ⭐ **vérifiée sur l'appareil réel**. ⚠️ Le téléchargement/flash en ligne reste à exercer à la
+  prochaine release.
 - **Priorité** : **haute** — ⚠️ c'est le **dernier** obstacle : le dépôt est public depuis
   aujourd'hui, l'API répond **200**, les binaires portent les bons noms
 - **Version cible** : 2.85.0
@@ -118,10 +119,12 @@ lieu de la contourner, et la contrainte qui l'interdisait a disparu.
 - [ ] Endpoint HTTP (⚠️ comportement, ⛔ pas la route) · [ ] UI · [ ] WS · [ ] MQTT
 
 ## Critères d'acceptation
-- [ ] ⭐ **Sur l'appareil réel** : `/check-update` rend `update_available` et les **deux** URL
-      (`firmware.bin`, `littlefs.bin`) — ⛔ **le test qui compte**, ⚠️ **NON ATTESTÉ** : rien ne
-      prouve encore que le correctif fonctionne sur le matériel, seulement en natif. **C'est la
-      seule raison pour laquelle cette spec reste en `doing/`.**
+- [x] ⭐ **Sur l'appareil réel** — ✅ **PASSÉ le 2026-10-18**, firmware **2.85.0** déployé :
+      `/check-update` rend les **deux** URL (`firmware.bin`, `littlefs.bin`), les **deux**
+      empreintes SHA-256, `release_name` et `published_at`. ⛔ **Plus aucune erreur de lecture.**
+      ⚠️ `update_available: false` est **correct** : l'appareil tourne déjà la dernière version.
+      ⛔ **Ce qui reste NON exercé de bout en bout** : le **téléchargement** et le **flash** par
+      la mise à jour en ligne — ils ne pourront l'être qu'à la **prochaine** release.
 - [x] Réponse **tronquée** par le pair ⇒ erreur **explicite**, ⛔ jamais un document partiel
       accepté (`OtaBufferedReadResult::kIncomplete` → `500 "GitHub response incomplete"`)
 - [x] Réponse **au-delà de la borne** ⇒ refus **nommé** (`kStopTooLarge` → `500 "GitHub response
@@ -205,3 +208,24 @@ cette spec.
   s'est révélée fausse pendant cette instruction, voir Notes techniques ci-dessous) — spec de
   suivi distincte, `bug-175`, pour ne pas mélanger un correctif de commentaire avec une décision
   de sécurité qui doit être reconfirmée par le bon agent.
+
+
+## Vérification sur l'appareil — 2026-10-18, après déploiement de la 2.85.0
+
+```
+firmware_version : 2.85.0
+GET /check-update →
+  firmware_url    : …/releases/download/v2.85.0/firmware.bin
+  filesystem_url  : …/releases/download/v2.85.0/littlefs.bin
+  firmware_digest : sha256:1321916d…
+  update_available: false   (⚠️ correct : déjà à la dernière version)
+```
+⛔ Aucune erreur `IncompleteInput`. ⭐ **Les trois obstacles de la mise à jour en ligne sont
+levés** : dépôt privé (bug-169, levé en le rendant public) · noms d'assets (bug-170) · lecture au
+fil de l'eau (ce bug).
+
+⚠️ **Observation à ne pas perdre** : les **notes de release sont tronquées** dans la réponse — le
+budget d'analyse JSON est à **8 Ko** (`kOtaCheckJsonBudgetBytes`) et les notes en font ~3,8 Ko
+avant filtrage. ⛔ Sans conséquence fonctionnelle (seul le début s'affiche), mais ⚠️ **des notes
+plus longues feraient échouer le parse pour dépassement de budget**, avec un refus propre.
+⇒ À surveiller si les notes s'allongent.

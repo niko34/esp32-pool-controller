@@ -3,9 +3,10 @@
 ## Métadonnées
 - **ID** : bug-169
 - **Slug** : mise-a-jour-en-ligne-aveugle-sur-depot-prive
-- **Type** : bug — **fonction annoncée qui ne fonctionne pas**, et qui le dit mal
-- **Statut** : todo
-- **Priorité** : normale — contournable par OTA local (`./deploy.sh ota-all`),
+- **Type** : bug — ⚠️ **PÉRIMÈTRE RÉDUIT le 2026-10-18** : il ne reste que « **qui le dit
+  mal** ». La fonction, elle, **marche**.
+- **Statut** : todo — ⚠️ **la cause BLOQUANTE est levée**, voir « Ce qui est résolu » 
+- **Priorité** : normale — ⚠️ **plus un blocage, un défaut d'HONNÊTETÉ de l'affichage** ;
   ⚠️ mais la fonction **existe dans l'interface** et répond « vous êtes à jour »
 - **Version cible** : à définir
 - **Dernière mise à jour** : 2026-10-16
@@ -33,6 +34,31 @@
 - [x] test-engineer
 - [x] code-reviewer
 - [x] doc-writer
+
+## ✅ CE QUI EST RÉSOLU — 2026-10-18
+
+⭐ **L'obstacle bloquant a disparu : l'utilisateur a rendu le dépôt PUBLIC.**
+⇒ L'API GitHub répond **200** sans authentification (mesuré), et `/check-update` **aboutit** sur
+l'appareil réel en **2.85.0** : les deux URL, les deux empreintes, le nom de la release.
+
+⚠️ **Et ce bug n'était que le PREMIER de trois obstacles**, découverts l'un après l'autre —
+⛔ aucun n'était visible tant que le précédent n'était pas levé :
+1. **Dépôt privé** ⇒ API **404** — *ce bug*, levé.
+2. **Noms d'assets** : l'appareil cherche `firmware.bin`/`littlefs.bin`, la procédure publiait
+   `firmware-<version>.bin` et ne joignait plus le second — **bug-170**, corrigé.
+3. **Réponse lue au fil de l'eau** ⇒ `IncompleteInput` — **bug-173**, corrigé.
+
+⇒ ⚠️ **Les options A/B/C ci-dessous sont donc SANS OBJET** : l'utilisateur a tranché pour A
+(dépôt public). ⛔ Ne pas les réinstruire.
+
+## 🔴 CE QUI RESTE — et c'est le seul périmètre de cette spec
+
+⛔ **L'appareil dit encore « vous êtes à jour » dans des cas où il n'a RIEN comparé.**
+⚠️ Le scénario qui mord maintenant est le **3ᵉ** de la liste ci-dessous : une release trouvée
+**sans asset utilisable** (c'est **exactement** ce qui s'est produit pendant six semaines avec
+bug-170) serait **encore** annoncée comme « à jour ».
+⇒ ⚠️ **Un défaut d'affichage qui a MASQUÉ un défaut réel pendant six semaines** n'est pas
+cosmétique.
 
 ## Description
 
