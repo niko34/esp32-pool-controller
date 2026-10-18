@@ -157,6 +157,9 @@ static void handleGetConfig(AsyncWebServerRequest* request) {
   // ph_raw_ceiling_absolute, ph_offset_confirm_interval_days, ~190 o) et
   // +ph_offset_stale_cause (chaîne, ~34 o)
   // → net ≈ +144 o → marge portée à 3968.
+  // Correctif 2026-10-17 (fausse alerte pH) : +2 clés booléennes ph_impasse_low/
+  // _high (~47 o, voir le décompte jumeau de ws_manager.cpp) — chemin
+  // documentaire, aucun plafond dur ici, pas d'ajustement du gabarit.
   StaticJson<3968> doc;
   // >>> PARITE-CONFIG:DEBUT
   // CONVENTION NORMATIVE (lue telle quelle par la sentinelle
@@ -293,6 +296,18 @@ static void handleGetConfig(AsyncWebServerRequest* request) {
   // parité de ce projet, même clé, expressions divergentes).
   doc["ph_offset_stale"]       = phOffsetStaleNow();
   doc["ph_offset_stale_cause"] = phOffsetStaleCause();
+
+  // Correctif 2026-10-17 (fausse alerte pH) : le VERDICT d'impasse de
+  // régulation, calculé ICI par le firmware pour l'offset EN VIGUEUR — jamais
+  // recalculé côté client (ADR-0100). Avant ces deux clés, l'écran recomparait
+  // un seuil SERVI mais ARRONDI (ph_offset_impasse_threshold*) à l'offset :
+  // deux verdicts opposés pouvaient coexister sur le même état (l'un disant
+  // « avertissement », l'autre « impasse »). MÊME EXPRESSION que
+  // ws_manager.cpp (parité de canal).
+  doc["ph_impasse_low"]  = (mqttCfg.phCorrectionType != "ph_plus") &&
+                            isPhRegulationImpasseLow(mqttCfg.phOffset);
+  doc["ph_impasse_high"] = (mqttCfg.phCorrectionType == "ph_plus") &&
+                            isPhRegulationImpasseHigh(mqttCfg.phOffset);
 
   // v2.25.0 (B1) — BORNES DE RÉGLAGE pH servies au client.
   // L'interface construit ses contrôles (positions de la consigne, pas de

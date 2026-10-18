@@ -8,6 +8,7 @@
 #include "web_helpers.h"
 #include "heap_metrics.h"  // heapLargestFreeBlock8Bit — sans log ni alloc (bug-080)
 #include "config.h"  // feature-168 : phOffsetStaleNow()/phOffsetStaleCause()
+#include "ph_guard_logic.h"  // correctif 2026-10-17 : isPhRegulationImpasseLow/High()
 #include "constants.h"
 #include "sensors.h"
 #include "filtration.h"
@@ -888,6 +889,10 @@ size_t WsManager::_buildSensorJson(char* buf, size_t cap) const {
   //   Delta net : −100 + 58 = −42 o.
   // Pire cas de trame : 3589 − 42 = 3547 o, SOUS kWsFrameBufBytes = 4096 o
   // (aucun bump supplémentaire). MARGE RÉSIDUELLE : 4096 − 3547 = 549 o.
+  // feature-163 (v2.83.0), RECOMPTE :
+  //     "cal_session_open":false,                     → +26 o (ajouté)
+  //   Pire cas : 3547 + 26 = 3573 o, toujours SOUS 4096 o.
+  //   MARGE RÉSIDUELLE : 4096 − 3573 = 523 o. ⛔ Aucun bump nécessaire.
   StaticJson<4096> doc;
   doc["type"] = "sensor_data";
   JsonObject d = doc["data"].to<JsonObject>();
@@ -1416,6 +1421,14 @@ size_t WsManager::_buildSensorJson(char* buf, size_t cap) const {
   // test_ws_data_parity).
   d["cal_switch_active"] = mqttCfg.calSwitchActive;
   d["cal_switch_epoch"] = (unsigned long)mqttCfg.calSwitchEpoch;
+  // feature-163 (v2.83.0) : « un etalonnage est ouvert » — le predicat REEL de
+  // la garde de dosage, distinct de cal_switch_active (« j'ai bascule la
+  // regulation en Manuel »), qui reste FAUX si pH ET ORP etaient DEJA en Arret
+  // a l'entree. Le bandeau de securite lisait cal_switch_active : il ne
+  // s'affichait donc PAS dans le seul cas pour lequel feature-163 existe.
+  // PARITE /data <-> WS sur L'EXPRESSION, pas seulement la cle (kSharedExpr,
+  // test_ws_data_parity).
+  d["cal_session_open"] = mqttCfg.calSessionOpen;
   // <<< PARITE-DATA:FIN
 
   d["time_synced"]   = (time(nullptr) >= kMinValidEpoch);
@@ -1495,9 +1508,11 @@ size_t WsManager::_buildConfigJson(char* buf, size_t cap) const {
   //   → +82 o au pire cas (uint32 saturés + booléen).
   // TAILLE SÉRIALISÉE de la trame complète (87 clés, format compact) : ≈ 2180 o
   // en nominal, ≈ 3095 o au PIRE CAS (chaînes libres à 64 caractères, uint32
-  // saturés, flottants à 9 chiffres, raison de bascule à 427 o) → MARGE ≈ 489 o
-  // sous le seul plafond DUR, sWsFrameBuf (kWsFrameBufBytes = 3584 o,
-  // constants.h). Gabarit documentaire porté 2944 → 3008 → 3072 → 3200.
+  // saturés, flottants à 9 chiffres, raison de bascule à 427 o).
+  // ⚠️ Le plafond DUR est sWsFrameBuf (kWsFrameBufBytes, constants.h:434) :
+  // il vaut 4096 o — ce bloc annonçait 3584 o, valeur PÉRIMÉE depuis le
+  // relèvement, corrigée le 2026-10-17. Voir le pire cas CUMULÉ en bas de bloc,
+  // qui fait foi. Gabarit documentaire porté 2944 → 3008 → 3072 → 3200.
   // POURQUOI CE CHIFFRE COMPTE : c'est lui que lira le prochain contributeur pour
   // arbitrer son ajout. Avec l'ancienne valeur, il aurait cru disposer de 285 o
   // qui n'existent pas. Et le pire cas de longueur coïncide avec l'ESCALADE DE
@@ -1515,6 +1530,24 @@ size_t WsManager::_buildConfigJson(char* buf, size_t cap) const {
   // feature-168 : +1 clé ph_offset_stale_cause (chaîne courte, "calibration"/
   // "expiration"/"boot", ~40 o au pire) — absorbée par la marge ci-dessus, pas
   // d'ajustement du gabarit documentaire.
+  // Correctif 2026-10-17 (fausse alerte pH) : +2 clés booléennes, VERDICT
+  // d'impasse de régulation calculé par le firmware (ADR-0100) :
+  //   "ph_impasse_low":false,   → 2+14+1+5+1 =  23 o
+  //   "ph_impasse_high":false,  → 2+15+1+5+1 =  24 o
+  //   → +47 o au pire cas, absorbé par la marge ci-dessus, pas d'ajustement.
+  //
+  // 🔴 PIRE CAS CUMULÉ, RESTITUÉ (relevé en revue, 2026-10-17) — ⚠️ les trois
+  // ajouts ci-dessus se sont chacun contentés d'écrire « absorbé par la marge »
+  // SANS redonner le total. C'est le schéma que docs/subsystems/ws-manager.md
+  // décrit comme « n'a pas tenu quatre lots de suite » : au 4ᵉ, plus personne ne
+  // sait où l'on en est.
+  //   base ≈ 3095 o  +  feature-168 (~40 o)  +  correctif 2026-10-17 (47 o)
+  //   = ≈ 3182 o au PIRE CAS.
+  // ⚠️ ET LE PLAFOND CITÉ PLUS HAUT ÉTAIT PÉRIMÉ : kWsFrameBufBytes vaut
+  // 4096 o (constants.h:434), pas 3584 — relevé depuis, sans que ce bloc soit
+  // mis à jour. ⇒ MARGE RÉELLE : 4096 − 3182 = ≈ 914 o.
+  // ⛔ Le prochain qui ajoute une clé RESTITUE le nouveau total ici. Un
+  // décompte qu'on n'additionne jamais ne protège de rien.
   StaticJson<3200> doc;
   doc["type"] = "config";
   JsonObject d = doc["data"].to<JsonObject>();
@@ -1623,6 +1656,12 @@ size_t WsManager::_buildConfigJson(char* buf, size_t cap) const {
   d["ph_cal_epoch"]     = mqttCfg.phCalEpoch;
   d["ph_offset_stale"]       = phOffsetStaleNow();
   d["ph_offset_stale_cause"] = phOffsetStaleCause();
+  // Correctif 2026-10-17 (fausse alerte pH) : MÊME EXPRESSION que
+  // web_routes_config.cpp — voir le commentaire jumeau là-bas.
+  d["ph_impasse_low"]  = (mqttCfg.phCorrectionType != "ph_plus") &&
+                          isPhRegulationImpasseLow(mqttCfg.phOffset);
+  d["ph_impasse_high"] = (mqttCfg.phCorrectionType == "ph_plus") &&
+                          isPhRegulationImpasseHigh(mqttCfg.phOffset);
   d["temp_calibration_offset"]   = mqttCfg.tempCalibrationOffset;
   d["temp_calibration_date"]     = mqttCfg.tempCalibrationDate;
   d["temperature_enabled"]       = mqttCfg.temperatureEnabled;

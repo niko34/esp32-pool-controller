@@ -798,6 +798,39 @@ Une clé ajoutée à la trame `config`, **entre les marqueurs de parité** :
 
 Détail firmware complet : [docs/subsystems/lighting.md](lighting.md).
 
+## v2.83.0 — trois clés neuves, dont DEUX VERDICTS (et la sentinelle qui les verrouille)
+
+⚠️ **Dette rattrapée** : ces clés avaient été ajoutées à la trame sans être documentées ici — relevé en revue le 2026-10-17. CLAUDE.md fait pourtant de ce fichier la cible obligatoire d'un « nouveau message WebSocket ».
+
+### `cal_session_open` — trame `sensor_data` (feature-163)
+
+| Champ | Type | Pourquoi il est partagé |
+|-------|------|--------------------------|
+| `cal_session_open` | `bool` | « Un étalonnage est ouvert ». ⚠️ **À ne pas confondre avec `cal_switch_active`**, qui ne dit que « j'ai basculé la régulation en Manuel » — et qui reste **faux** quand pH **et** ORP étaient **déjà en Arrêt** à l'entrée. Le bandeau de sécurité lisait ce second drapeau : il ne s'affichait donc **pas** dans le seul cas pour lequel feature-163 existe, pendant que le dosage était bel et bien gelé. |
+
+⚠️ Sous `kSharedExpr` de `test_native_ws_data_parity` : **parité d'EXPRESSION**, pas seulement de clé.
+
+### `ph_impasse_low` / `ph_impasse_high` — trame `config` (correctif du 2026-10-17)
+
+| Champ | Type | Pourquoi il est partagé |
+|-------|------|--------------------------|
+| `ph_impasse_low` | `bool` | **Verdict** calculé par le firmware : la correction en vigueur place-t-elle le filet brut **avant** la consigne (côté acide) ? |
+| `ph_impasse_high` | `bool` | Idem côté basique. |
+
+⭐ **Ce sont des VERDICTS, pas des réglages** — et c'est tout l'enjeu. Avant ce correctif, le client **recomparait lui-même** le seuil servi. Or ce seuil vaut `1,1999998` côté firmware et lui était transmis **arrondi à `1.2`** : l'écran concluait « avertissement » pendant que l'appareil journalisait « impasse » en `CRITICAL` et publiait une alerte MQTT. **Deux verdicts opposés sur le même état.**
+⇒ [ADR-0100](../adr/0100-un-seuil-de-sante-est-servi-jamais-reecrit-cote-client.md) : un verdict qui engage le dosage n'est **jamais** recalculé côté client. Voir aussi [ADR-0116](../adr/0116-tolerance-de-comparaison-dun-seuil-flottant-derive.md).
+
+⚠️ `ph_offset_impasse_threshold` / `_high` **restent servis** (HTTP-seuls) : l'**aperçu prospectif** du pas-à-pas en a besoin, puisqu'aucun verdict firmware n'existe pour une valeur **pas encore soumise**.
+
+### L'axe (j) de la sentinelle — ajouté dans le même geste
+
+`test_native_ws_config_parity` vérifiait l'**égalité d'expression** sur une liste blanche de 5 clés seulement. Les deux verdicts neufs n'y étaient pas — ⛔ ni `ph_offset_stale`/`ph_offset_stale_cause`, dont le commentaire les présente pourtant comme « 4ᵉ récidive documentée du piège ».
+
+⇒ **Axe (j)**, 4 clés : `ph_impasse_low`, `ph_impasse_high`, `ph_offset_stale`, `ph_offset_stale_cause`.
+⭐ **Validé par mutation** : inverser les deux opérandes d'un `&&` côté WS — ⚠️ ce qui donne **exactement le même résultat** — fait **échouer** le test. La sentinelle verrouille la **forme**, pas seulement la valeur.
+
+⚠️ **L'angle mort demeure** : l'égalité d'expression n'est vérifiée que pour des clés **nommées**, des deux côtés (`kSharedExpr`, `kLightingExprKeys`, `kRegulationTargetExprKeys`, `kVerdictExprKeys`). Toute clé partagée **hors** de ces listes peut diverger sans qu'aucun test ne le voie — et une clé n'y entre **qu'après** qu'un bug a été constaté. ⇒ Le mécanisme est **réactif par construction**, ce qui explique les **6 récidives**. Le fermer demanderait d'inverser la structure : comparer **toutes** les clés partagées par défaut, avec une liste d'**exceptions justifiées** — même modèle que `kHttpOnlyKeys`, qui est déjà en opt-out.
+
 ## feature-093 (v2.34.0) — persistance de l'intégrale pH : AUCUN champ nouveau
 
 La restauration de l'intégrale pH au démarrage ([pump-controller.md](pump-controller.md#3-persistance-nvs-conditionnelle-r1-r7)) ne publie **rien de neuf** : les champs `ph_integral`, `ph_integral_term`, `ph_integral_pct` et `ph_integral_saturated` (v2.26.0) suffisent — une valeur restaurée s'y lit comme n'importe quelle autre. Toute la traçabilité (motif de rejet, âge en temps de filtration, motif d'écriture) passe par le **journal système**, donc par `broadcastLog`.

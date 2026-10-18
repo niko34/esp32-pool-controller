@@ -155,11 +155,17 @@ inline float roundPhOffsetToStep(float offset) {
 // (= kPhFloorCorrected − kPhRawFloorAbsolute), le filet brut bas mord avant que
 // la régulation puisse atteindre kPhFloorCorrected.
 //
+// ⚠️ Tolérance kPhImpasseEpsilon (correctif 2026-10-17) : kPhOffsetImpasseThreshold
+// est un seuil DÉRIVÉ en float (≈1,1999998 et non 1,2 exact) — comparer au bit
+// près a produit une fausse alerte CRITICAL en production sur un offset de
+// +1,20 pile (écart réel ~2,4e-7 pH, pas une impasse). Voir le commentaire de
+// kPhImpasseEpsilon (constants.h) pour la justification complète.
+//
 // @param offset Offset de mesure pH en vigueur
 // @return       true si ce côté est structurellement en impasse
 inline bool isPhRegulationImpasseLow(float offset) {
   if (isnan(offset)) return false;
-  return offset > kPhOffsetImpasseThreshold;
+  return offset > kPhOffsetImpasseThreshold + kPhImpasseEpsilon;
 }
 
 // Symétrique haut (produit `ph_plus`), cf. C5bis. Le seuil
@@ -167,11 +173,14 @@ inline bool isPhRegulationImpasseLow(float offset) {
 // est NÉGATIF : un offset suffisamment négatif fait mordre le filet brut haut
 // avant que la régulation puisse atteindre kPhCeilingCorrected.
 //
+// ⚠️ Même tolérance kPhImpasseEpsilon que isPhRegulationImpasseLow(), même
+// raison (correctif 2026-10-17) — le défaut touchait les DEUX côtés.
+//
 // @param offset Offset de mesure pH en vigueur
 // @return       true si ce côté est structurellement en impasse
 inline bool isPhRegulationImpasseHigh(float offset) {
   if (isnan(offset)) return false;
-  return offset <= kPhOffsetImpasseThresholdHigh;
+  return offset < kPhOffsetImpasseThresholdHigh - kPhImpasseEpsilon;
 }
 
 // True si le diagnostic électrochimique EZO décrit une sonde pH SAINE :

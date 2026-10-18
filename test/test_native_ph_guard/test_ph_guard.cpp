@@ -871,9 +871,25 @@ void test_filet_brut_independant_de_l_offset_sur_tout_le_domaine(void) {
 // DISENT qu'au-delà d'un seuil d'offset, le filet BRUT (fixe) mord
 // STRUCTURELLEMENT avant que la régulation puisse atteindre son seuil
 // CORRIGÉ. Logique pure, testée ici aux bornes EXACTES.
+//
+// CORRECTIF 2026-10-17 (verdict pool-chemistry, cf. constants.h) : une FAUSSE
+// ALERTE CRITICAL est survenue en production à l'offset réel +1,20 — le seuil
+// kPhOffsetImpasseThreshold est un DÉRIVÉ flottant (7,20f-0,50f-5,50f =
+// 1,1999998..., pas 1,2 exact) et comparait au bit près. Les deux comparaisons
+// portent désormais une tolérance kPhImpasseEpsilon = kPhOffsetStep*0,5 = 0,05 :
+//   bas  : offset > kPhOffsetImpasseThreshold     + kPhImpasseEpsilon
+//   haut : offset < kPhOffsetImpasseThresholdHigh - kPhImpasseEpsilon
+// Et le `<=` historique du côté haut est devenu `<` strict (il portait LE MÊME
+// défaut : le cas pile-au-seuil mordait sur un bruit de représentation, pas sur
+// une vraie impasse). CONSÉQUENCE SUR CE FICHIER : trois tests qui verrouillaient
+// l'ANCIENNE frontière (bit-à-bit, `<=`) sont devenus FAUX par construction et
+// sont réécrits ci-dessous pour exprimer la NOUVELLE frontière (seuil ± epsilon).
+// Rien n'est assoupli : la zone de sécurité réelle (±1,20 / ±0,90, pas
+// d'exploitation) est strictement identique, seule la comparaison bit-à-bit du
+// bruit flottant a été retirée.
 
 // Côté BAS : kPhOffsetImpasseThreshold = kPhFloorCorrected − kPhRawFloorAbsolute
-// (= 1,20). Entrée STRICTE (`offset > seuil`).
+// (= 1,20). Entrée STRICTE avec tolérance (`offset > seuil + epsilon`).
 void test_impasse_basse_valeur_du_seuil_calcule(void) {
   TEST_ASSERT_FLOAT_WITHIN(1e-4f, 1.20f, kPhOffsetImpasseThreshold);
 }
@@ -882,12 +898,55 @@ void test_impasse_basse_pile_au_seuil_n_est_pas_en_impasse(void) {
   TEST_ASSERT_FALSE(isPhRegulationImpasseLow(kPhOffsetImpasseThreshold));
 }
 
-void test_impasse_basse_un_centieme_au_dela_est_en_impasse(void) {
-  TEST_ASSERT_TRUE(isPhRegulationImpasseLow(kPhOffsetImpasseThreshold + 0.01f));
+// *** CAS DE PRODUCTION (fausse alerte CRITICAL réelle) *** : offset saisi
+// littéralement à 1,20 — PAS la constante kPhOffsetImpasseThreshold elle-même
+// (1,1999998...), mais la valeur que l'utilisateur tape et qui traverse
+// roundPhOffsetToStep(). Les deux flottants diffèrent de ~2,4e-7 ; sans la
+// tolérance, `1.20f > kPhOffsetImpasseThreshold` est VRAI et déclenche
+// l'impasse à tort. C'est exactement l'incident constaté : DOIT rester FAUX.
+void test_impasse_basse_offset_production_1_20_n_est_pas_en_impasse(void) {
+  TEST_ASSERT_FALSE_MESSAGE(isPhRegulationImpasseLow(1.20f),
+      "fausse alerte de production reproduite : offset litteral 1.20 ne doit "
+      "jamais declencher l'impasse basse");
+}
+
+// ANCIEN test (supprimé) : "un centieme au-dela est en impasse" affirmait que
+// seuil+0,01 (1,21) était une impasse. FAUX désormais : 0,01 < kPhImpasseEpsilon
+// (0,05) — c'est DANS la tolérance, donc toujours du bruit potentiel, jamais
+// une impasse franche. Remplacé par un test qui nomme explicitement ce
+// changement de verdict.
+void test_impasse_basse_un_centieme_au_dela_est_sous_tolerance_pas_impasse(void) {
+  TEST_ASSERT_FALSE_MESSAGE(
+      isPhRegulationImpasseLow(kPhOffsetImpasseThreshold + 0.01f),
+      "0,01 est SOUS kPhImpasseEpsilon (0,05) : ce n'est plus une impasse "
+      "depuis le correctif 2026-10-17 (etait VRAI avant)");
 }
 
 void test_impasse_basse_un_centieme_en_deca_n_est_pas_en_impasse(void) {
   TEST_ASSERT_FALSE(isPhRegulationImpasseLow(kPhOffsetImpasseThreshold - 0.01f));
+}
+
+// Frontière EXACTE de la tolérance : pile à seuil+epsilon (1,25), la
+// comparaison est STRICTE (`>`) donc PAS en impasse ; juste au-delà (1,26),
+// l'impasse redevient vraie. Ce sont ces deux tests qui tueraient un retrait
+// de l'epsilon (cf. rapport de mutation).
+void test_impasse_basse_pile_a_seuil_plus_epsilon_n_est_pas_en_impasse(void) {
+  TEST_ASSERT_FALSE(isPhRegulationImpasseLow(
+      kPhOffsetImpasseThreshold + kPhImpasseEpsilon));
+}
+
+void test_impasse_basse_juste_au_dela_de_seuil_plus_epsilon_est_en_impasse(void) {
+  TEST_ASSERT_TRUE(isPhRegulationImpasseLow(
+      kPhOffsetImpasseThreshold + kPhImpasseEpsilon + 0.01f));
+}
+
+// Matrice exigée par le gate pool-chemistry (correctif 2026-10-17) : trois
+// points nommés explicitement, dont 1,20 = LE cas de production.
+void test_impasse_basse_matrice_offsets_bas(void) {
+  TEST_ASSERT_FALSE_MESSAGE(isPhRegulationImpasseLow(1.10f), "offset=1.10");
+  TEST_ASSERT_FALSE_MESSAGE(isPhRegulationImpasseLow(1.20f),
+                             "offset=1.20 (cas de production)");
+  TEST_ASSERT_TRUE_MESSAGE(isPhRegulationImpasseLow(1.30f), "offset=1.30");
 }
 
 // Offsets usuels (zone non-impasse) et extrêmes (zone d'impasse confirmée) —
@@ -903,16 +962,32 @@ void test_impasse_basse_offsets_usuels_et_extremes(void) {
 }
 
 // Côté HAUT (C5bis) : kPhOffsetImpasseThresholdHigh = kPhCeilingCorrected −
-// kPhRawCeilingAbsolute (= −0,90, NÉGATIF). Entrée LARGE (`offset <= seuil`,
-// miroir intentionnel de la stricte du bas — un offset NUL ne doit jamais se
-// retrouver des deux côtés à la fois, et l'inclusion ici protège le cas
-// offset == seuil exact, qui EST en impasse côté haut).
+// kPhRawCeilingAbsolute (= −0,90, NÉGATIF). Entrée LARGE historique
+// (`offset <= seuil`) devenue STRICTE avec tolérance (`offset < seuil - epsilon`,
+// correctif 2026-10-17) : le `<=` portait LE MÊME défaut de bit-à-bit que le
+// côté bas — le cas pile-au-seuil ne doit plus mordre sur du bruit flottant.
 void test_impasse_haute_valeur_du_seuil_calcule(void) {
   TEST_ASSERT_FLOAT_WITHIN(1e-4f, -0.90f, kPhOffsetImpasseThresholdHigh);
 }
 
-void test_impasse_haute_pile_au_seuil_est_en_impasse(void) {
-  TEST_ASSERT_TRUE(isPhRegulationImpasseHigh(kPhOffsetImpasseThresholdHigh));
+// ANCIEN test (supprimé) : "pile au seuil est en impasse" affirmait VRAI avec
+// l'ancien `<=`. Avec le `<` strict + tolérance, le seuil EXACT n'est plus en
+// impasse — il faut désormais s'en écarter d'au moins l'epsilon. Remplacé pour
+// nommer explicitement le changement de verdict.
+void test_impasse_haute_pile_au_seuil_n_est_plus_en_impasse(void) {
+  TEST_ASSERT_FALSE_MESSAGE(
+      isPhRegulationImpasseHigh(kPhOffsetImpasseThresholdHigh),
+      "le `<=` historique incluait a tort le seuil exact (bruit flottant) ; "
+      "le `<` strict + epsilon l'exclut depuis le correctif 2026-10-17 "
+      "(etait VRAI avant)");
+}
+
+// Symétrique du cas de production côté bas : offset littéral -0,90 (saisi tel
+// quel, pas la constante dérivée) ne doit jamais déclencher l'impasse haute.
+void test_impasse_haute_offset_production_moins_0_90_n_est_pas_en_impasse(void) {
+  TEST_ASSERT_FALSE_MESSAGE(isPhRegulationImpasseHigh(-0.90f),
+      "offset litteral -0.90 (symetrique du cas de production) ne doit pas "
+      "declencher l'impasse haute");
 }
 
 void test_impasse_haute_un_centieme_au_dela_n_est_pas_en_impasse(void) {
@@ -920,9 +995,35 @@ void test_impasse_haute_un_centieme_au_dela_n_est_pas_en_impasse(void) {
   TEST_ASSERT_FALSE(isPhRegulationImpasseHigh(kPhOffsetImpasseThresholdHigh + 0.01f));
 }
 
-void test_impasse_haute_un_centieme_en_deca_est_en_impasse(void) {
-  // "en deçà" côté haut = PLUS NÉGATIF : toujours en impasse.
-  TEST_ASSERT_TRUE(isPhRegulationImpasseHigh(kPhOffsetImpasseThresholdHigh - 0.01f));
+// ANCIEN test (supprimé) : "un centieme en deca est en impasse" affirmait VRAI
+// pour seuil-0,01 (-0,91). FAUX désormais : 0,01 < kPhImpasseEpsilon (0,05),
+// toujours dans la tolérance. Remplacé pour nommer le changement de verdict.
+void test_impasse_haute_un_centieme_en_deca_est_sous_tolerance_pas_impasse(void) {
+  TEST_ASSERT_FALSE_MESSAGE(
+      isPhRegulationImpasseHigh(kPhOffsetImpasseThresholdHigh - 0.01f),
+      "0,01 est SOUS kPhImpasseEpsilon (0,05) : ce n'est plus une impasse "
+      "depuis le correctif 2026-10-17 (etait VRAI avant)");
+}
+
+// Frontière EXACTE de la tolérance côté haut : pile à seuil-epsilon (-0,95),
+// comparaison STRICTE (`<`) donc PAS en impasse ; juste au-delà (-0,96),
+// l'impasse redevient vraie.
+void test_impasse_haute_pile_a_seuil_moins_epsilon_n_est_pas_en_impasse(void) {
+  TEST_ASSERT_FALSE(isPhRegulationImpasseHigh(
+      kPhOffsetImpasseThresholdHigh - kPhImpasseEpsilon));
+}
+
+void test_impasse_haute_juste_au_dela_de_seuil_moins_epsilon_est_en_impasse(void) {
+  TEST_ASSERT_TRUE(isPhRegulationImpasseHigh(
+      kPhOffsetImpasseThresholdHigh - kPhImpasseEpsilon - 0.01f));
+}
+
+// Matrice exigée par le gate pool-chemistry (correctif 2026-10-17), symétrique
+// de la matrice basse.
+void test_impasse_haute_matrice_offsets_hauts(void) {
+  TEST_ASSERT_FALSE_MESSAGE(isPhRegulationImpasseHigh(-0.80f), "offset=-0.80");
+  TEST_ASSERT_FALSE_MESSAGE(isPhRegulationImpasseHigh(-0.90f), "offset=-0.90");
+  TEST_ASSERT_TRUE_MESSAGE(isPhRegulationImpasseHigh(-1.00f), "offset=-1.00");
 }
 
 void test_impasse_haute_offsets_usuels_et_extremes(void) {
@@ -1312,13 +1413,21 @@ int main(int, char**) {
   // G6bis — zone d'impasse de regulation (feature-168, C5 + C5bis)
   RUN_TEST(test_impasse_basse_valeur_du_seuil_calcule);
   RUN_TEST(test_impasse_basse_pile_au_seuil_n_est_pas_en_impasse);
-  RUN_TEST(test_impasse_basse_un_centieme_au_dela_est_en_impasse);
+  RUN_TEST(test_impasse_basse_offset_production_1_20_n_est_pas_en_impasse);
+  RUN_TEST(test_impasse_basse_un_centieme_au_dela_est_sous_tolerance_pas_impasse);
   RUN_TEST(test_impasse_basse_un_centieme_en_deca_n_est_pas_en_impasse);
+  RUN_TEST(test_impasse_basse_pile_a_seuil_plus_epsilon_n_est_pas_en_impasse);
+  RUN_TEST(test_impasse_basse_juste_au_dela_de_seuil_plus_epsilon_est_en_impasse);
+  RUN_TEST(test_impasse_basse_matrice_offsets_bas);
   RUN_TEST(test_impasse_basse_offsets_usuels_et_extremes);
   RUN_TEST(test_impasse_haute_valeur_du_seuil_calcule);
-  RUN_TEST(test_impasse_haute_pile_au_seuil_est_en_impasse);
+  RUN_TEST(test_impasse_haute_pile_au_seuil_n_est_plus_en_impasse);
+  RUN_TEST(test_impasse_haute_offset_production_moins_0_90_n_est_pas_en_impasse);
   RUN_TEST(test_impasse_haute_un_centieme_au_dela_n_est_pas_en_impasse);
-  RUN_TEST(test_impasse_haute_un_centieme_en_deca_est_en_impasse);
+  RUN_TEST(test_impasse_haute_un_centieme_en_deca_est_sous_tolerance_pas_impasse);
+  RUN_TEST(test_impasse_haute_pile_a_seuil_moins_epsilon_n_est_pas_en_impasse);
+  RUN_TEST(test_impasse_haute_juste_au_dela_de_seuil_moins_epsilon_est_en_impasse);
+  RUN_TEST(test_impasse_haute_matrice_offsets_hauts);
   RUN_TEST(test_impasse_haute_offsets_usuels_et_extremes);
   RUN_TEST(test_impasse_les_deux_zones_ne_se_chevauchent_jamais);
   // G7 — santé de la sonde

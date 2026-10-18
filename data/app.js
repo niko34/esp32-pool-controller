@@ -2407,10 +2407,11 @@
 
   // Aperçu PUR de l'accord — ADR-0099 : pure, nommée, SANS DOM ni authFetch,
   // extractible par ancre + profondeur d'accolades. AUCUN littéral numérique
-  // hors 0 et 1 dans ce corps : les seuils (pas, inhabituel, impasse) viennent
-  // des PARAMÈTRES, jamais recopiés en dur (ADR-0100) — ils sont servis par
-  // /get-config (ph_offset_step, ph_offset_unusual_abs,
-  // ph_offset_impasse_threshold, ph_offset_impasse_threshold_high).
+  // hors 0 et 1 dans ce corps : les seuils (pas, inhabituel, impasse,
+  // tolérance) viennent des PARAMÈTRES, jamais recopiés en dur (ADR-0100) —
+  // ils sont servis par /get-config (ph_offset_step, ph_offset_unusual_abs,
+  // ph_offset_impasse_threshold, ph_offset_impasse_threshold_high) ou DÉRIVÉS
+  // d'un champ servi par l'appelant (impasseEpsilon, voir plus bas).
   //
   // feature-168 : LA CORRECTION N'EST PLUS BORNÉE — « horsBornes » a disparu,
   // cette fonction ne refuse plus rien (la seule salubrité de domaine encore
@@ -2422,10 +2423,22 @@
   //     comme SIGNAL d'un défaut matériel possible, plus un refus (C8) ;
   //   - impasse : cet écart, une fois appliqué, pousserait le filet BRUT
   //     (fixe) à mordre AVANT la consigne/le plafond CORRIGÉS — ecart >
-  //     impasseThreshold (acidification) OU ecart <= impasseThresholdHigh
-  //     (alcalinisation, symétrique C5bis). impasse ⇒ TOUJOURS inhabituel
-  //     (impasseThreshold > unusualAbs et impasseThresholdHigh < −unusualAbs
-  //     par construction côté firmware, cf. constants.h).
+  //     impasseThreshold + impasseEpsilon (acidification) OU ecart <
+  //     impasseThresholdHigh − impasseEpsilon (alcalinisation, symétrique
+  //     C5bis, comparaison STRICTE des deux côtés). impasse ⇒ TOUJOURS
+  //     inhabituel (impasseThreshold > unusualAbs et impasseThresholdHigh <
+  //     −unusualAbs par construction côté firmware, cf. constants.h).
+  //
+  // ⚠️ Correctif 2026-10-17 (fausse alerte pH, production) : `impasseThreshold`
+  // est un seuil DÉRIVÉ en float côté firmware (≈1,1999998, pas 1,2 exact) —
+  // comparer sans tolérance a produit un verdict CRITICAL à tort sur un
+  // offset de +1,20 pile (écart réel ~2,4e-7 pH). MÊME tolérance que
+  // `isPhRegulationImpasseLow()`/`isPhRegulationImpasseHigh()`
+  // (`ph_guard_logic.h`, `kPhImpasseEpsilon = kPhOffsetStep / 2`) : `impasseEpsilon`
+  // est à fournir par l'appelant, DÉRIVÉ du pas servi (`ph_offset_step`),
+  // JAMAIS écrit en dur (ADR-0100, défaut C17 déjà corrigé deux fois dans ce
+  // projet) — c'est pourquoi il n'est pas calculé ICI (le `/2` vivrait comme
+  // littéral interdit dans ce corps) mais reçu en paramètre.
   //
   // ⚠️ `phValueRaw` DOIT être la valeur OFFICIELLE pH, échelle BRUTE (champ
   // `phValueRaw` de /data et du WS, cf. sensors.getPhValueRaw()) — JAMAIS
@@ -2443,14 +2456,15 @@
   //     SANS bornage (un dépassement doit être VISIBLE, pas absorbé) ;
   //   - inhabituel : true si |ecart| dépasse unusualAbs (avertissement, C8) ;
   //   - impasse : true si cet ecart mettrait la régulation en impasse
-  //     (C6/C5bis) ;
+  //     (C6/C5bis), tolérance de bruit flottant comprise ;
   //   - valeurAtteinte : phValueRaw + ecart — la valeur que l'appareil va
   //     RÉELLEMENT atteindre après arrondi (Piège 1), jamais `valeurAmenee`.
-  function evaluatePhTunePreview(valeurAmenee, phValueRaw, offsetStep, unusualAbs, impasseThreshold, impasseThresholdHigh) {
+  function evaluatePhTunePreview(valeurAmenee, phValueRaw, offsetStep, unusualAbs, impasseThreshold, impasseThresholdHigh, impasseEpsilon) {
     if (typeof phValueRaw !== "number" || !isFinite(phValueRaw)) {
       return { mesureIndisponible: true, ecart: null, inhabituel: false, impasse: false, valeurAtteinte: null };
     }
     const pas = (typeof offsetStep === "number" && isFinite(offsetStep) && offsetStep > 0) ? offsetStep : 1;
+    const epsilon = (typeof impasseEpsilon === "number" && isFinite(impasseEpsilon) && impasseEpsilon >= 0) ? impasseEpsilon : 0;
     const ecartDemande = valeurAmenee - phValueRaw;
     // L'arrondi ne sert qu'à PRÉDIRE la valeur atteinte.
     // ⚠️ `Math.round` NE REPRODUIT PAS `roundf` du firmware sur les NÉGATIFS :
@@ -2464,7 +2478,7 @@
     const ecart = enPasArrondi * pas;
     const valeurAtteinte = phValueRaw + ecart;
     const inhabituel = Math.abs(ecart) > unusualAbs;
-    const impasse = (ecart > impasseThreshold) || (ecart <= impasseThresholdHigh);
+    const impasse = (ecart > impasseThreshold + epsilon) || (ecart < impasseThresholdHigh - epsilon);
     return { mesureIndisponible: false, ecart, inhabituel, impasse, valeurAtteinte };
   }
 
@@ -2538,13 +2552,18 @@
 
     const calPoints = (typeof data.phCalPoints === "number") ? data.phCalPoints : null;
 
+    // Correctif 2026-10-17 : tolérance DÉRIVÉE du pas servi (ph_offset_step),
+    // jamais écrite en dur — voir le commentaire d'evaluatePhTunePreview
+    // ci-dessus pour la justification complète (parité avec kPhImpasseEpsilon,
+    // ph_guard_logic.h).
     const preview = evaluatePhTunePreview(
       _phTuneValue != null ? _phTuneValue : 0,
       phValueRaw,
       _phBounds.offsetStep,
       _phOffsetThresholds.unusualAbs,
       _phOffsetThresholds.impasseThreshold,
-      _phOffsetThresholds.impasseThresholdHigh
+      _phOffsetThresholds.impasseThresholdHigh,
+      _phBounds.offsetStep / 2
     );
 
     // --- Pas-à-pas : affichage + excursion. feature-168 : plus de bornage
@@ -2599,11 +2618,34 @@
         + "l'étalonnage (tampon 7 puis tampon 4), puis revenez ici.";
     }
 
+    // --- Correctif 2026-10-17 (fausse alerte pH, ADR-0100) : tant que
+    // l'utilisateur n'a pas touché le pas-à-pas (_phTuneTouched === false),
+    // cette carte affiche l'état de la correction EN VIGUEUR — un verdict qui
+    // engage le dosage n'est JAMAIS recalculé côté client (ADR-0100). Le
+    // firmware sert `ph_impasse_low`/`ph_impasse_high` (booléens déjà
+    // comparés avec sa propre tolérance de bruit flottant, cf.
+    // `isPhRegulationImpasseLow/High`, ph_guard_logic.h) sur /get-config ET la
+    // trame WS "config" (ws_manager.cpp) : on les LIT au lieu de relire
+    // `preview.impasse`, qui ne reflèterait de toute façon l'offset EN
+    // VIGUEUR qu'arrondi au dixième par `_phTuneRoundTenth` — même défaut de
+    // représentation que celui corrigé ici. Dès le premier appui +/-,
+    // l'utilisateur prévisualise une valeur PAS ENCORE SOUMISE : aucun
+    // verdict firmware n'existe pour elle, l'aperçu LOCAL (tolérance
+    // comprise, cf. evaluatePhTunePreview) reprend la main — c'est voulu,
+    // confirmé par le gate. Clés absentes (firmware antérieur à ce
+    // correctif) : repli sur l'aperçu local, jamais un blocage.
+    const _servedImpasseLow = window._config?.ph_impasse_low;
+    const _servedImpasseHigh = window._config?.ph_impasse_high;
+    const _impasseServieConnue = typeof _servedImpasseLow === "boolean" && typeof _servedImpasseHigh === "boolean";
+    const impasseAffichee = (!_phTuneTouched && _impasseServieConnue)
+      ? (_servedImpasseLow || _servedImpasseHigh)
+      : preview.impasse;
+
     // --- feature-168 (C8) : avertissement NON BLOQUANT — remplace l'ancien
     // refus « hors bornes ». Ne s'affiche QUE si aucun refus bloquant n'est
     // déjà affiché (un seul message à la fois, le même #ph_tune_blocked —
     // mutuellement exclusif, comme avant). Chapeau (eyebrow) qui bascule de
-    // mot ET de couleur selon preview.impasse (⛔ aucune 3e couleur, la boîte
+    // mot ET de couleur selon impasseAffichee (⛔ aucune 3e couleur, la boîte
     // reste callout--warn dans les deux cas : « Le mot porte le sens, la
     // couleur ne fait que l'appuyer » — daltonisme, étude ux-ui-designer).
     const blockedEl = $("#ph_tune_blocked");
@@ -2637,8 +2679,8 @@
         const unusualStr = _fmt2(_phOffsetThresholds.unusualAbs);
         if (eyebrowEl) {
           eyebrowEl.hidden = false;
-          eyebrowEl.textContent = preview.impasse ? "⚠ Impasse possible" : "Avertissement";
-          eyebrowEl.classList.toggle("callout__eyebrow--danger", preview.impasse);
+          eyebrowEl.textContent = impasseAffichee ? "⚠ Impasse possible" : "Avertissement";
+          eyebrowEl.classList.toggle("callout__eyebrow--danger", impasseAffichee);
         }
         if (leadEl) {
           leadEl.textContent = isPhPlus
@@ -9977,14 +10019,24 @@
     const el = $("#" + id);
     if (!el) return;
     const view = $("#" + MAINTENANCE_PAGES[page].viewId);
-    // ⚠️ DEUX conditions, pas une (relevé en revue, 2026-10-13) : le bandeau
-    // affirme « la régulation a été mise en Manuel ». Le gater sur le seul mode
-    // réglage le ferait MENTIR quand /calibration/enter a échoué (503 mutex) —
-    // il annoncerait une bascule pendant que le bouton affiche « Fermer »,
-    // c'est-à-dire l'absence de bascule. Un texte qui affirme ce qui n'a pas eu
-    // lieu est un défaut, pas une approximation.
+    // ⚠️ DEUX conditions, pas une — l'esprit du relevé du 2026-10-13 tient, sa
+    // justification a changé (2026-10-17, nouveau gate).
+    // AVANT : on gatait sur `_calSwitchOccurred` (« j'ai basculé la régulation »).
+    // ⛔ Ce prédicat est OPTIMISTE : il reste FAUX quand pH ET ORP étaient DÉJÀ
+    // en Arrêt — l'appareil n'a rien eu à basculer. Le bandeau ne s'affichait
+    // donc PAS dans le seul cas pour lequel feature-163 existe, pendant que le
+    // dosage, lui, était bel et bien gelé.
+    // MAINTENANT : `cal_session_open`, le prédicat RÉEL de la garde de dosage —
+    // le même booléen que celui qu'`evaluateDose` consulte côté firmware.
+    // ⚠️ Lu sur /data (latestSensorData), PAS sur window._config : parité
+    // d'EXPRESSION /data ↔ WS garantie par test_ws_data_parity.
+    // ⚠️ La garde « mode réglage » reste nécessaire : si /calibration/enter
+    // échoue (503 mutex), `cal_session_open` est faux ET le dosage n'est pas
+    // gelé — les deux restent cohérents, c'est ce que protégeait déjà le gate
+    // antérieur.
     const inMaintenance = !!(view && view.classList.contains("is-flow-maintenance"));
-    el.hidden = !(inMaintenance && _calSwitchOccurred);
+    const sessionOpen = (latestSensorData || {}).cal_session_open === true;
+    el.hidden = !(inMaintenance && sessionOpen);
   }
 
   // ==========================================================================

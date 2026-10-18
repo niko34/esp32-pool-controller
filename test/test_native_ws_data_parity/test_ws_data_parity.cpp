@@ -1330,6 +1330,12 @@ static const SharedExprKey kSharedExpr[] = {
     "bail ABANDONNE). Une divergence d'expression ferait apparaitre et "
     "disparaitre le bandeau de securite au rythme des deux cadences (~5 s / "
     "~30 s)." },
+  { "cal_session_open",
+    "feature-163 (v2.83.0) : pilote le bandeau de securite d'etalonnage depuis "
+    "le predicat REEL (une session est ouverte), la ou cal_switch_active ne dit "
+    "que « j'ai bascule la regulation ». Une divergence d'expression ferait "
+    "apparaitre et disparaitre le bandeau au rythme des deux cadences, dans le "
+    "cas meme ou le dosage est gele sans que rien ne le dise." },
   { "cal_switch_epoch",
     "bug-160 (volet 2, REFONTE 2026-10-13) : date de la bascule affichee dans "
     "le bandeau et utilisee par l'alerte d'oubli (C4). Meme risque de "

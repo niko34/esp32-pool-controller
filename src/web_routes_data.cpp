@@ -722,6 +722,14 @@ static void handleGetData(AsyncWebServerRequest* request) {
   // bouton de fermeture côté UI (lot B, hors périmètre de ce lot).
   doc["cal_switch_active"] = mqttCfg.calSwitchActive;
   doc["cal_switch_epoch"] = (unsigned long)mqttCfg.calSwitchEpoch;
+  // feature-163 (v2.83.0) : « un etalonnage est ouvert » — le predicat REEL de
+  // la garde de dosage, distinct de cal_switch_active (« j'ai bascule la
+  // regulation en Manuel »), qui reste FAUX si pH ET ORP etaient DEJA en Arret
+  // a l'entree. Le bandeau de securite lisait cal_switch_active : il ne
+  // s'affichait donc PAS dans le seul cas pour lequel feature-163 existe.
+  // PARITE /data <-> WS sur L'EXPRESSION, pas seulement la cle (kSharedExpr,
+  // test_ws_data_parity).
+  doc["cal_session_open"] = mqttCfg.calSessionOpen;
   // <<< PARITE-DATA:FIN
   doc["ph_daily_ml"] = safetyLimits.dailyPhInjectedMl;
   doc["orp_daily_ml"] = safetyLimits.dailyOrpInjectedMl;

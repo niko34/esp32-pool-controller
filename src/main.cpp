@@ -1819,15 +1819,24 @@ void checkSystemHealth() {
 
   const bool phImpasseLow = !isPhPlusProduct && isPhRegulationImpasseLow(phOffset);
   if (phImpasseLow && !lastPhImpasseLow) {
+    // ⚠️ Correctif 2026-10-17 (fausse alerte constatée en production) : le
+    // texte citait kPhTargetMin (7,20, la CONSIGNE) comme seuil comparé au
+    // brut, alors que la condition réelle (isPhRegulationImpasseLow) porte
+    // sur kPhFloorCorrected (6,70, le REFUS D'ACIDIFIER) — un message
+    // auto-contradictoire («6,00 exige... sous 5,50» alors que 6,00 n'est pas
+    // sous 5,50). Le message HAUT, symétrique, citait déjà le bon seuil
+    // (kPhCeilingCorrected) : lui n'est pas touché.
     String signStr = (phOffset >= 0.0f) ? "+" : "";
     String offsetStr = signStr + String(phOffset, 2); offsetStr.replace('.', ',');
-    String consigneStr(kPhTargetMin, 2); consigneStr.replace('.', ',');
-    String brutStr(kPhTargetMin - phOffset, 2); brutStr.replace('.', ',');
-    String floorStr(kPhRawFloorAbsolute, 2); floorStr.replace('.', ',');
+    String floorCorrectedStr(kPhFloorCorrected, 2); floorCorrectedStr.replace('.', ',');
+    String brutStr(kPhFloorCorrected - phOffset, 2); brutStr.replace('.', ',');
+    String floorRawStr(kPhRawFloorAbsolute, 2); floorRawStr.replace('.', ',');
+    String targetMinStr(kPhTargetMin, 2); targetMinStr.replace('.', ',');
     const String msg = "[pH] Impasse de régulation : avec une correction de " +
-      offsetStr + ", la consigne " + consigneStr + " exige une mesure brute de " +
-      brutStr + ", sous le refus d'acidifier fixé à " + floorStr + ". L'appareil "
-      "cessera d'acidifier avant d'atteindre la consigne.";
+      offsetStr + ", le refus d'acidifier " + floorCorrectedStr +
+      " (pH corrigé) exige une mesure brute de " + brutStr +
+      ", sous le filet brut fixé à " + floorRawStr + ". L'appareil "
+      "cessera d'acidifier avant d'atteindre la consigne " + targetMinStr + ".";
     systemLogger.critical(msg);
     mqttManager.publishAlert("ph_impasse", msg);
   }

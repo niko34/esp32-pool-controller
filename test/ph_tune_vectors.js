@@ -21,11 +21,22 @@
 //   - inhabituel : |écart| > unusualAbs (l'ANCIENNE borne ±0,50, conservée
 //     comme SIGNAL, plus un refus) ;
 //   - impasse : l'écart pousserait le filet BRUT (fixe) à mordre AVANT la
-//     consigne/le plafond CORRIGÉS — ecart > impasseThreshold (acidifier) OU
-//     ecart <= impasseThresholdHigh (alcaliniser, symétrique C5bis).
+//     consigne/le plafond CORRIGÉS — ecart > impasseThreshold + epsilon
+//     (acidifier) OU ecart < impasseThresholdHigh − epsilon (alcaliniser,
+//     symétrique C5bis, comparaison STRICTE des deux côtés).
 // La SIGNATURE change en conséquence : plus d'offsetMin/offsetMax, mais
 // offsetStep/unusualAbs/impasseThreshold/impasseThresholdHigh — tous SERVIS
 // par /get-config (ADR-0100), jamais recopiés en dur côté client.
+//
+// 🔴 Correctif 2026-10-17 (fausse alerte pH EN PRODUCTION) : un offset de
+// +1,20 pile a déclenché un CRITICAL firmware à tort (`impasseThreshold` est
+// dérivé en float côté C, ≈1,1999998, pas 1,2 exact) — et l'écran affichait
+// l'INVERSE (« Avertissement », faute de tolérance locale alors que le seuil
+// qui lui est servi est arrondi à 1,2 pile). La signature gagne un 7e
+// paramètre, `impasseEpsilon` — MÊME tolérance que `kPhImpasseEpsilon`
+// (`ph_guard_logic.h`, = `kPhOffsetStep / 2`), DÉRIVÉE du pas servi par
+// l'appelant (jamais calculée dans le corps testé : un `/2` y serait un
+// littéral interdit par l'assertion structurelle ci-dessous).
 //
 // CE QUE CE FICHIER VISE (patron `test/sha256_vectors.js`, feature-118 ;
 // `test/trace_logic_vectors.js`, feature-153 ; `test/ph_health_vectors.js`,
@@ -53,10 +64,14 @@
 //     feature-155 où ce même vecteur était hors bornes et bloquant ;
 //   - écart EXACTEMENT à unusualAbs (+0,50/-0,50) : inhabituel=false (borne
 //     incluse dans la zone calme, comparaison stricte `>`) ;
-//   - au-delà de impasseThreshold (+1,20) : impasse=true ET inhabituel=true
-//     (l'impasse est TOUJOURS un sur-ensemble de l'inhabituel) ;
-//   - à/sous impasseThresholdHigh (-0,90) : impasse=true (côté alcalinisant,
-//     C5bis — comparaison `<=`, contrairement au côté bas qui est `>` strict) ;
+//   - au-delà de impasseThreshold + tolérance (+1,30) : impasse=true ET
+//     inhabituel=true (l'impasse est TOUJOURS un sur-ensemble de l'inhabituel) ;
+//   - 🔴 PILE à impasseThreshold (+1,20, cas de PRODUCTION) : impasse=false —
+//     c'est tout l'objet du correctif du 2026-10-17 ;
+//   - sous impasseThresholdHigh − tolérance (-1,00) : impasse=true (côté
+//     alcalinisant, C5bis, comparaison STRICTE comme le côté bas) ;
+//   - 🔴 PILE à impasseThresholdHigh (-0,90, symétrique du cas de PRODUCTION) :
+//     impasse=false — même tolérance que le côté bas ;
 //   - écart +0,80 : l'aperçu ne MASQUE rien — ecart et valeurAtteinte
 //     reflètent la demande NON écrêtée (aucun bornage, feature-168) ;
 //   - valeurAtteinte = phValueRaw + ecart, jamais valeurAmenee (Piège 1,
@@ -84,7 +99,7 @@ const appJsSource = fs.readFileSync(APP_JS_PATH, "utf8");
 
 const previewSource = extractBalancedFromAnchor(
   appJsSource,
-  "function evaluatePhTunePreview(valeurAmenee, phValueRaw, offsetStep, unusualAbs, impasseThreshold, impasseThresholdHigh) {",
+  "function evaluatePhTunePreview(valeurAmenee, phValueRaw, offsetStep, unusualAbs, impasseThreshold, impasseThresholdHigh, impasseEpsilon) {",
   "{",
   "}"
 ).text;
@@ -142,6 +157,11 @@ const UNUSUAL_ABS = 0.5;
 const IMPASSE_THRESHOLD = 1.2;
 const IMPASSE_THRESHOLD_HIGH = -0.9;
 const STEP = 0.1;
+// Correctif 2026-10-17 : MÊME tolérance que kPhImpasseEpsilon
+// (ph_guard_logic.h, = kPhOffsetStep / 2) — DÉRIVÉE du pas ci-dessus, jamais
+// une valeur indépendante (c'est le pas SERVI qui fixe la tolérance côté
+// firmware comme côté aperçu).
+const IMPASSE_EPSILON = STEP / 2;
 
 // =============================================================================
 // Assertion structurelle (ADR-0100) : aucun littéral numérique hors 0 et 1
@@ -202,17 +222,17 @@ const STEP = 0.1;
 
 check(
   "phValueRaw NaN -> mesureIndisponible",
-  evaluatePhTunePreview(7.4, NaN, STEP, UNUSUAL_ABS, IMPASSE_THRESHOLD, IMPASSE_THRESHOLD_HIGH),
+  evaluatePhTunePreview(7.4, NaN, STEP, UNUSUAL_ABS, IMPASSE_THRESHOLD, IMPASSE_THRESHOLD_HIGH, IMPASSE_EPSILON),
   { mesureIndisponible: true, ecart: null, inhabituel: false, impasse: false, valeurAtteinte: null }
 );
 check(
   "phValueRaw undefined -> mesureIndisponible",
-  evaluatePhTunePreview(7.4, undefined, STEP, UNUSUAL_ABS, IMPASSE_THRESHOLD, IMPASSE_THRESHOLD_HIGH),
+  evaluatePhTunePreview(7.4, undefined, STEP, UNUSUAL_ABS, IMPASSE_THRESHOLD, IMPASSE_THRESHOLD_HIGH, IMPASSE_EPSILON),
   { mesureIndisponible: true, ecart: null, inhabituel: false, impasse: false, valeurAtteinte: null }
 );
 check(
   "phValueRaw chaîne -> mesureIndisponible",
-  evaluatePhTunePreview(7.4, "7.13", STEP, UNUSUAL_ABS, IMPASSE_THRESHOLD, IMPASSE_THRESHOLD_HIGH),
+  evaluatePhTunePreview(7.4, "7.13", STEP, UNUSUAL_ABS, IMPASSE_THRESHOLD, IMPASSE_THRESHOLD_HIGH, IMPASSE_EPSILON),
   { mesureIndisponible: true, ecart: null, inhabituel: false, impasse: false, valeurAtteinte: null }
 );
 
@@ -221,13 +241,13 @@ check(
 // Bornes EXACTES ±0,50 incluses (comparaison stricte `>` dans la fonction).
 // =============================================================================
 {
-  const r = evaluatePhTunePreview(7.5, 7.0, STEP, UNUSUAL_ABS, IMPASSE_THRESHOLD, IMPASSE_THRESHOLD_HIGH);
+  const r = evaluatePhTunePreview(7.5, 7.0, STEP, UNUSUAL_ABS, IMPASSE_THRESHOLD, IMPASSE_THRESHOLD_HIGH, IMPASSE_EPSILON);
   checkFloat("écart +0,50 (borne incluse) : ecart", r.ecart, 0.5);
   checkBool("écart +0,50 (borne incluse) : inhabituel=false", r.inhabituel, false);
   checkBool("écart +0,50 (borne incluse) : impasse=false", r.impasse, false);
 }
 {
-  const r = evaluatePhTunePreview(6.5, 7.0, STEP, UNUSUAL_ABS, IMPASSE_THRESHOLD, IMPASSE_THRESHOLD_HIGH);
+  const r = evaluatePhTunePreview(6.5, 7.0, STEP, UNUSUAL_ABS, IMPASSE_THRESHOLD, IMPASSE_THRESHOLD_HIGH, IMPASSE_EPSILON);
   checkFloat("écart -0,50 (borne incluse) : ecart", r.ecart, -0.5);
   checkBool("écart -0,50 (borne incluse) : inhabituel=false", r.inhabituel, false);
   checkBool("écart -0,50 (borne incluse) : impasse=false", r.impasse, false);
@@ -241,57 +261,78 @@ check(
 // vecteur était un refus bloquant « hors bornes »).
 // =============================================================================
 {
-  const r = evaluatePhTunePreview(7.6, 7.0, STEP, UNUSUAL_ABS, IMPASSE_THRESHOLD, IMPASSE_THRESHOLD_HIGH);
+  const r = evaluatePhTunePreview(7.6, 7.0, STEP, UNUSUAL_ABS, IMPASSE_THRESHOLD, IMPASSE_THRESHOLD_HIGH, IMPASSE_EPSILON);
   checkBool("écart +0,60 : inhabituel=true", r.inhabituel, true);
   checkBool("écart +0,60 : impasse=false", r.impasse, false);
   checkBool("écart +0,60 : mesureIndisponible=false (jamais un refus)", r.mesureIndisponible, false);
 }
 {
-  const r = evaluatePhTunePreview(6.4, 7.0, STEP, UNUSUAL_ABS, IMPASSE_THRESHOLD, IMPASSE_THRESHOLD_HIGH);
+  const r = evaluatePhTunePreview(6.4, 7.0, STEP, UNUSUAL_ABS, IMPASSE_THRESHOLD, IMPASSE_THRESHOLD_HIGH, IMPASSE_EPSILON);
   checkBool("écart -0,60 : inhabituel=true", r.inhabituel, true);
   checkBool("écart -0,60 : impasse=false", r.impasse, false);
 }
 
 // =============================================================================
-// Impasse basse (acidification) : ecart > impasseThreshold (+1,20), STRICT.
-// impasse ⇒ TOUJOURS inhabituel (sur-ensemble). ⚠️ Pas de test à la borne
-// EXACTE +1,20 ici (contrairement au côté haut, -0,90, plus bas) : en virgule
-// flottante, un ecart "nominal 1,20" obtenu par arrondi au pas (12 × 0,10)
-// n'est PAS bit-à-bit identique au littéral 1.2 reçu en paramètre — il tombe
-// très légèrement AU-DESSUS (12*0.1 !== 1.2 en IEEE-754 double précision).
-// Une assertion à la borne exacte serait donc soit non représentative, soit
-// un artefact de cette quantification précise plutôt qu'une preuve de la
-// comparaison stricte `>`. Deux valeurs à marge claire de part et d'autre
-// suffisent à prouver le franchissement du seuil.
+// Impasse basse (acidification) : ecart > impasseThreshold + epsilon, STRICT.
+// impasse ⇒ TOUJOURS inhabituel (sur-ensemble).
+//
+// 🔴 Correctif 2026-10-17 : la borne EXACTE +1,20 est maintenant TESTABLE
+// (elle ne l'était pas avant epsilon — un ecart "nominal 1,20" obtenu par
+// arrondi au pas, 12 × 0,10, tombe très légèrement AU-DESSUS du littéral 1.2
+// en IEEE-754 double précision, 12*0.1 !== 1.2 — une comparaison SANS marge
+// aurait donc pu faire basculer ce vecteur selon le bruit de quantification).
+// C'est EXACTEMENT le vecteur de PRODUCTION qui a motivé ce correctif :
+// impasse DOIT être false ici, epsilon absorbant ce bruit des deux côtés.
 // =============================================================================
 {
-  const r = evaluatePhTunePreview(8.1, 7.0, STEP, UNUSUAL_ABS, IMPASSE_THRESHOLD, IMPASSE_THRESHOLD_HIGH);
+  const r = evaluatePhTunePreview(8.1, 7.0, STEP, UNUSUAL_ABS, IMPASSE_THRESHOLD, IMPASSE_THRESHOLD_HIGH, IMPASSE_EPSILON);
   checkFloat("écart +1,10 (sous l'impasse basse) : ecart", r.ecart, 1.1, 1e-6);
   checkBool("écart +1,10 : impasse=false", r.impasse, false);
   checkBool("écart +1,10 : inhabituel=true", r.inhabituel, true);
 }
 {
-  const r = evaluatePhTunePreview(8.3, 7.0, STEP, UNUSUAL_ABS, IMPASSE_THRESHOLD, IMPASSE_THRESHOLD_HIGH);
-  checkFloat("écart +1,30 (au-delà de l'impasse basse) : ecart", r.ecart, 1.3);
+  // 🔴 CAS DE PRODUCTION (2026-10-17) : offset +1,20 PILE sur le seuil —
+  // DOIT rester impasse=false. Sans la tolérance `IMPASSE_EPSILON`, ce
+  // vecteur bascule à true (bruit de quantification 12*0.1 > 1.2) : c'est
+  // exactement le mutant à tuer en retirant la tolérance (cf. rapport).
+  const r = evaluatePhTunePreview(8.2, 7.0, STEP, UNUSUAL_ABS, IMPASSE_THRESHOLD, IMPASSE_THRESHOLD_HIGH, IMPASSE_EPSILON);
+  checkFloat("écart +1,20 (PILE au seuil, cas de production) : ecart", r.ecart, 1.2, 1e-6);
+  checkBool("écart +1,20 (cas de production) : impasse=false (tolérance)", r.impasse, false);
+  checkBool("écart +1,20 : inhabituel=true", r.inhabituel, true);
+}
+{
+  const r = evaluatePhTunePreview(8.3, 7.0, STEP, UNUSUAL_ABS, IMPASSE_THRESHOLD, IMPASSE_THRESHOLD_HIGH, IMPASSE_EPSILON);
+  checkFloat("écart +1,30 (au-delà de l'impasse basse, hors tolérance) : ecart", r.ecart, 1.3);
   checkBool("écart +1,30 : impasse=true", r.impasse, true);
   checkBool("écart +1,30 : inhabituel=true (impasse ⇒ inhabituel)", r.inhabituel, true);
 }
 
 // =============================================================================
-// Impasse haute (alcalinisation, C5bis) : ecart <= impasseThresholdHigh
-// (-0,90), comparaison LARGE (<=) — contrairement au côté bas (`>` strict).
+// Impasse haute (alcalinisation, C5bis) : ecart < impasseThresholdHigh −
+// epsilon, comparaison STRICTE — même forme que le côté bas depuis le
+// correctif 2026-10-17 (avant : `<=`, asymétrie corrigée).
 // =============================================================================
 {
-  const r = evaluatePhTunePreview(6.1, 7.0, STEP, UNUSUAL_ABS, IMPASSE_THRESHOLD, IMPASSE_THRESHOLD_HIGH);
-  checkFloat("écart -0,90 (borne EXACTE, impasse LARGE) : ecart", r.ecart, -0.9);
-  checkBool("écart -0,90 (borne exacte) : impasse=true (comparaison <=)", r.impasse, true);
-  checkBool("écart -0,90 (borne exacte) : inhabituel=true", r.inhabituel, true);
-}
-{
-  const r = evaluatePhTunePreview(6.2, 7.0, STEP, UNUSUAL_ABS, IMPASSE_THRESHOLD, IMPASSE_THRESHOLD_HIGH);
-  checkFloat("écart -0,80 (juste avant l'impasse haute) : ecart", r.ecart, -0.8);
+  const r = evaluatePhTunePreview(6.2, 7.0, STEP, UNUSUAL_ABS, IMPASSE_THRESHOLD, IMPASSE_THRESHOLD_HIGH, IMPASSE_EPSILON);
+  checkFloat("écart -0,80 (sous l'impasse haute) : ecart", r.ecart, -0.8);
   checkBool("écart -0,80 : impasse=false", r.impasse, false);
   checkBool("écart -0,80 : inhabituel=true", r.inhabituel, true);
+}
+{
+  // 🔴 CAS SYMÉTRIQUE DU CAS DE PRODUCTION : -0,90 PILE sur le seuil haut —
+  // AVANT ce correctif, la comparaison `<=` en faisait un impasse=true
+  // (même borne EXACTE qu'avant, assertion volontairement déplacée ici).
+  // DOIT devenir impasse=false, même tolérance que le côté bas.
+  const r = evaluatePhTunePreview(6.1, 7.0, STEP, UNUSUAL_ABS, IMPASSE_THRESHOLD, IMPASSE_THRESHOLD_HIGH, IMPASSE_EPSILON);
+  checkFloat("écart -0,90 (PILE au seuil, symétrique du cas de production) : ecart", r.ecart, -0.9);
+  checkBool("écart -0,90 (symétrique production) : impasse=false (tolérance)", r.impasse, false);
+  checkBool("écart -0,90 : inhabituel=true", r.inhabituel, true);
+}
+{
+  const r = evaluatePhTunePreview(6.0, 7.0, STEP, UNUSUAL_ABS, IMPASSE_THRESHOLD, IMPASSE_THRESHOLD_HIGH, IMPASSE_EPSILON);
+  checkFloat("écart -1,00 (au-delà de l'impasse haute, hors tolérance) : ecart", r.ecart, -1.0);
+  checkBool("écart -1,00 : impasse=true", r.impasse, true);
+  checkBool("écart -1,00 : inhabituel=true", r.inhabituel, true);
 }
 
 // =============================================================================
@@ -299,7 +340,7 @@ check(
 // la demande NON écrêtée (aucun bornage, feature-168).
 // =============================================================================
 {
-  const r = evaluatePhTunePreview(7.8, 7.0, STEP, UNUSUAL_ABS, IMPASSE_THRESHOLD, IMPASSE_THRESHOLD_HIGH);
+  const r = evaluatePhTunePreview(7.8, 7.0, STEP, UNUSUAL_ABS, IMPASSE_THRESHOLD, IMPASSE_THRESHOLD_HIGH, IMPASSE_EPSILON);
   checkFloat("écart +0,80 : ecart NON écrêté", r.ecart, 0.8);
   checkBool("écart +0,80 : inhabituel=true", r.inhabituel, true);
   checkBool("écart +0,80 : impasse=false (sous +1,20)", r.impasse, false);
@@ -312,7 +353,7 @@ check(
 // soit 0,30 (pasAmene = round(0,32/0,1) = round(3,2) = 3 -> 0,30).
 // =============================================================================
 {
-  const r = evaluatePhTunePreview(7.45, 7.13, STEP, UNUSUAL_ABS, IMPASSE_THRESHOLD, IMPASSE_THRESHOLD_HIGH);
+  const r = evaluatePhTunePreview(7.45, 7.13, STEP, UNUSUAL_ABS, IMPASSE_THRESHOLD, IMPASSE_THRESHOLD_HIGH, IMPASSE_EPSILON);
   checkFloat("7,45/7,13 : ecart arrondi au pas", r.ecart, 0.3, 1e-4);
   checkBool("7,45/7,13 : inhabituel=false", r.inhabituel, false);
   checkFloat("7,45/7,13 : valeurAtteinte = 7,43 (PAS 7,45)", r.valeurAtteinte, 7.43, 1e-4);
@@ -344,7 +385,7 @@ const parityVectors = [
 ];
 
 for (const v of parityVectors) {
-  const preview = evaluatePhTunePreview(v.ref, v.raw, STEP, UNUSUAL_ABS, IMPASSE_THRESHOLD, IMPASSE_THRESHOLD_HIGH);
+  const preview = evaluatePhTunePreview(v.ref, v.raw, STEP, UNUSUAL_ABS, IMPASSE_THRESHOLD, IMPASSE_THRESHOLD_HIGH, IMPASSE_EPSILON);
   const mirrorEcart = mirrorRoundToStep(v.ref - v.raw, STEP);
   checkFloat(
     `parité aperçu/firmware (ref=${v.ref}, raw=${v.raw}) : ecart identique à l'arrondi C`,

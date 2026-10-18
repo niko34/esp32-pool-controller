@@ -447,20 +447,48 @@ S'y ajoutent les gardes de cohérence : bornes non inversées, marges strictemen
 
 | Côté | Seuil d'entrée en impasse | Valeur | Dérivation |
 |---|---|---:|---|
-| Acide (`ph_minus`) | `offset > kPhOffsetImpasseThreshold` | `1,20` | `kPhFloorCorrected − kPhRawFloorAbsolute` (calculée, jamais littérale) |
-| Base (`ph_plus`) | `offset <= kPhOffsetImpasseThresholdHigh` | `−0,90` | `kPhCeilingCorrected − kPhRawCeilingAbsolute` (calculée) |
+| Acide (`ph_minus`) | `offset > kPhOffsetImpasseThreshold + kPhImpasseEpsilon` | `1,20 + 0,05` | `kPhFloorCorrected − kPhRawFloorAbsolute` (calculée, jamais littérale) |
+| Base (`ph_plus`) | `offset < kPhOffsetImpasseThresholdHigh − kPhImpasseEpsilon` | `−0,90 − 0,05` | `kPhCeilingCorrected − kPhRawCeilingAbsolute` (calculée) |
+
+⚠️ **Tolérance `kPhImpasseEpsilon` = `kPhOffsetStep × 0,5` = 0,05 (correctif 2026-10-17, fausse
+alerte `CRITICAL` constatée en production).** `kPhOffsetImpasseThreshold` est un seuil **dérivé**
+en virgule flottante (`7,20f − 0,50f − 5,50f` ≈ **1,1999998**, pas 1,2 exact). La comparaison
+d'origine, au bit près, déclenchait l'impasse sur un offset saisi de **+1,20 pile** — un écart
+réel de ~2,4×10⁻⁷ pH, pas une impasse. Tout offset passe par `roundPhOffsetToStep()` avant
+d'atteindre ces comparaisons : une impasse **réelle** est donc toujours à au moins
+`kPhOffsetStep` (0,10) du seuil, aucune valeur de la grille ne pouvant être plus proche.
+`kPhImpasseEpsilon` (0,05) absorbe le bruit de représentation (200 000× au-dessus) tout en
+restant 2× sous le plus petit écart réel possible (0,10) — aucune ambiguïté entre bruit et
+impasse véritable. Le côté haut, qui comparait en `<=` (large), passe au `<` strict : il portait
+**le même** défaut de comparaison bit-à-bit, mais n'a pas produit de fausse alerte (son message
+était déjà exact). Voir [ADR-0116](../adr/0116-tolerance-de-comparaison-dun-seuil-flottant-derive.md)
+et le commentaire de `kPhImpasseEpsilon` dans [`constants.h`](../../src/constants.h).
 
 Deux fonctions pures, [`src/ph_guard_logic.h`](../../src/ph_guard_logic.h) : `isPhRegulationImpasseLow(offset)` / `isPhRegulationImpasseHigh(offset)`. Usage **unique** : exclure les refus du filet brut **seul** (discriminant, pas doublé par la garde corrigée) du compteur des 3 refus / 24 h — en zone d'impasse, la bascule en manuel n'ajouterait **aucune** protection (le filet bloque déjà), elle **retirerait** la régulation sans bénéfice. Le compteur reste **intact** pour le seuil corrigé et toutes les autres gardes.
 
 Alerte dédiée (`main.cpp`, edge-triggered à l'**entrée** en impasse seulement, même patron que `ph_limit`) :
 
 ```
-[pH] Impasse de régulation : avec une correction de +1,40, la consigne 7,20 exige une
-mesure brute de 5,80, sous le refus d'acidifier fixé à 5,50. L'appareil cessera
-d'acidifier avant d'atteindre la consigne.
+[pH] Impasse de régulation : avec une correction de +1,30, le refus d'acidifier 6,70
+(pH corrigé) exige une mesure brute de 5,40, sous le filet brut fixé à 5,50. L'appareil
+cessera d'acidifier avant d'atteindre la consigne 7,20.
 ```
 
-Les deux seuils sont servis par `GET /get-config` (`ph_offset_impasse_threshold`, `ph_offset_impasse_threshold_high`), jamais écrits en dur côté client (ADR-0100) — ils pilotent le chapeau « ⚠ Impasse possible » de l'avertissement de l'écran de réglage (voir [page-ph.md](../features/page-ph.md)).
+⚠️ **Texte réécrit le 2026-10-17** : la version précédente citait la **consigne** (7,20) comme
+seuil comparé au brut, alors que la condition (`isPhRegulationImpasseLow`) porte sur le **refus
+d'acidifier** — le plancher **corrigé** `kPhFloorCorrected` (6,70). Message devenu
+arithmétiquement faux dans certains cas (« 6,00 exige … sous 5,50 » alors que 6,00 n'est pas sous
+5,50) — constaté en production. Le message côté haut (symétrique) citait déjà le bon seuil
+(`kPhCeilingCorrected`, 7,60) : inchangé.
+
+Les deux seuils sont servis par `GET /get-config` (`ph_offset_impasse_threshold`, `ph_offset_impasse_threshold_high`), jamais écrits en dur côté client (ADR-0100). Le **verdict** d'impasse
+pour l'offset en vigueur — `ph_impasse_low` / `ph_impasse_high`, calculé par le firmware avec
+`kPhImpasseEpsilon` compris — est servi **à l'identique** par `GET /get-config` **et** la trame
+WS `config` (correctif 2026-10-17, voir [API.md](../API.md#get-get-config--write)) : l'écran pilote
+désormais le chapeau « ⚠ Impasse possible » de l'avertissement de réglage sur ce verdict, pas
+sur une recomparaison locale au seuil arrondi — c'est cette recomparaison qui affichait
+« Avertissement » pendant que le firmware publiait « Impasse » en `CRITICAL` (voir
+[page-ph.md](../features/page-ph.md)).
 
 ### Surveillance INCONDITIONNELLE, séparée de la décision
 

@@ -1349,15 +1349,22 @@
                faire », ni le bleu neutre (callout--info) ni le vert de succès ne
                porteraient ce sens. Texte IMPOSÉ mot pour mot (gate 5) : ⛔ aucune
                icône, aucune reformulation, aucune décoration.
-               feature-161 (lot A) : vérifié — « mise en Manuel » ici décrit un
-               ÉTAT TECHNIQUE basculé par le firmware (bug-160), pas le libellé
-               du sélecteur ("Arrêt" dans ce lot). Verrouillé par un gate
-               antérieur : INCHANGÉ. -->
+               ⚠️ TEXTE RÉÉCRIT le 2026-10-17 (nouveau gate pool-chemistry) :
+               l'ancienne formulation affirmait « la régulation a été mise en
+               Manuel ». ⛔ FAUX quand pH ET ORP étaient DÉJÀ en Arrêt — rien
+               n'avait été basculé, et le bandeau ne s'affichait même pas, alors
+               que le dosage était bel et bien gelé (feature-163). Le texte porte
+               désormais l'INFORMATION DE SÉCURITÉ en premier (vraie dans tous
+               les cas), nomme le geste (fermer la session) et ⛔ ne promet
+               AUCUNE reprise automatique. Gaté sur `cal_session_open` seul.
+               ⛔ Toujours : aucune icône, aucune décoration, texte STRICTEMENT
+               identique sur les deux pages (c'est la MÊME session, elle gèle
+               les deux boucles). -->
           <div class="callout callout--warn flow-maintenance" id="ph-cal-switch-banner"
                role="status" aria-live="polite" hidden>
-            La régulation pH et chlore a été mise en Manuel : aucun dosage pendant
-            l'étalonnage. Elle ne repartira pas toute seule. Utilisez le bouton
-            ci-dessous pour la rétablir.
+            Aucun dosage pH ni chlore tant que cet étalonnage est ouvert. Rien ne
+            repart tout seul : quand vous avez terminé, fermez l'étalonnage avec le
+            bouton ci-dessous.
           </div>
 
           <!-- feature-156 : la carte Calibration quitte la vue courante pour le mode
@@ -1939,9 +1946,9 @@
                texte INCHANGÉ. -->
           <div class="callout callout--warn flow-maintenance" id="orp-cal-switch-banner"
                role="status" aria-live="polite" hidden>
-            La régulation pH et chlore a été mise en Manuel : aucun dosage pendant
-            l'étalonnage. Elle ne repartira pas toute seule. Utilisez le bouton
-            ci-dessous pour la rétablir.
+            Aucun dosage pH ni chlore tant que cet étalonnage est ouvert. Rien ne
+            repart tout seul : quand vous avez terminé, fermez l'étalonnage avec le
+            bouton ci-dessous.
           </div>
 
           <!-- Carte Calibration — quitte la vue courante pour le mode réglage

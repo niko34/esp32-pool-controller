@@ -1884,6 +1884,24 @@ constexpr uint32_t kPhOffsetConfirmIntervalDays = 30;
 constexpr float kPhOffsetImpasseThreshold     = kPhFloorCorrected   - kPhRawFloorAbsolute;    // 1,20
 constexpr float kPhOffsetImpasseThresholdHigh = kPhCeilingCorrected - kPhRawCeilingAbsolute;  // -0,90
 
+// Tolérance de comparaison de la zone d'impasse (correctif 2026-10-17, verdict
+// pool-chemistry) : fausse alerte CRITICAL constatée en production à l'offset
+// +1,20, message auto-contradictoire (« 6,00 exige... sous 5,50 » alors que
+// 6,00 n'est PAS sous 5,50). CAUSE RACINE, MESURÉE : kPhOffsetImpasseThreshold
+// est un seuil DÉRIVÉ en float (7,20f − 0,50f − 5,50f = 1,1999998093, pas
+// 1,2 exact) ; comparer au bit près un offset saisi de +1,20 (1,2000000477)
+// déclenche l'impasse sur un écart réel de ~2,4e-7 pH — du bruit de
+// représentation, pas une impasse.
+// Tout offset passe par roundPhOffsetToStep() (ph_guard_logic.h) avant
+// d'atteindre ces comparaisons : il est donc TOUJOURS un multiple de
+// kPhOffsetStep. Une impasse RÉELLE est donc nécessairement à ≥ kPhOffsetStep
+// du seuil (aucune valeur de la grille n'est plus proche). Fixer la tolérance
+// à la MOITIÉ du pas absorbe le bruit flottant (≈2,4e-7, 200 000× sous cette
+// tolérance) tout en restant 2× SOUS le plus petit écart réel possible :
+// aucune ambiguïté entre bruit et impasse véritable. Elle absorbe aussi
+// l'arrondi de sérialisation JSON (ex. offset 1.2 reçu du client).
+constexpr float kPhImpasseEpsilon = kPhOffsetStep * 0.5f;  // 0,05
+
 // --- Rondeur au dixième (feature-149, condition bloquante du gate) ---
 // Les causes de garde pH affichent désormais un SEUIL (constante), jamais une
 // mesure, avec UNE SEULE décimale (`String(x, 1)`). Ce helper vérifie à la

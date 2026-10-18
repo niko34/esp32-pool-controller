@@ -711,6 +711,40 @@ void test_i_regulation_target_expression_partagee_identique_des_deux_cotes(void)
 }
 
 // ---------------------------------------------------------------------------
+// AXE (j) — VERDICTS CALCULES servis sur les DEUX canaux (2026-10-17).
+//
+// ⚠️ Ces quatre cles ne sont pas des reglages : ce sont des VERDICTS que le
+// firmware calcule, et que le client a interdiction de recalculer (ADR-0100).
+// Une divergence d'expression ferait OSCILLER l'affichage au rythme des deux
+// cadences, sans qu'aucune charge prise isolement ne paraisse fausse.
+//
+// ph_impasse_low / ph_impasse_high : ajoutees par le correctif de la FAUSSE
+// ALERTE du 2026-10-17 — une alerte CRITICAL d'« impasse de regulation » etait
+// partie en production (et en MQTT) sur un ecart de 0,00000024 pH, pendant que
+// l'ecran, lui, affichait « avertissement » parce qu'il recomparait un seuil
+// servi ARRONDI. C'est precisement la divergence que cet axe verrouille.
+//
+// ph_offset_stale / ph_offset_stale_cause : ajoutees dans le meme geste sur
+// recommandation de revue. Leur propre commentaire dans le code les presente
+// comme « 4e recidive documentee du piege » — elles n'etaient pourtant sous
+// AUCUNE sentinelle d'expression. Un accesseur unique les protege aujourd'hui
+// (phOffsetStaleNow/phOffsetStaleCause) ; ce test verrouille le fait qu'on
+// continue de l'appeler a l'identique des deux cotes.
+// ---------------------------------------------------------------------------
+static const char* kVerdictExprKeys[] = {
+  "ph_impasse_low", "ph_impasse_high",
+  "ph_offset_stale", "ph_offset_stale_cause",
+};
+static const size_t kVerdictExprKeysCount =
+    sizeof(kVerdictExprKeys) / sizeof(kVerdictExprKeys[0]);
+
+void test_j_verdicts_calcules_expression_partagee_identique_des_deux_cotes(void) {
+  for (size_t i = 0; i < kVerdictExprKeysCount; ++i) {
+    assertExpressionParity(kVerdictExprKeys[i], "correctif 2026-10-17");
+  }
+}
+
+// ---------------------------------------------------------------------------
 
 int main(int, char**) {
   UNITY_BEGIN();
@@ -723,5 +757,6 @@ int main(int, char**) {
   RUN_TEST(test_g_orp_enabled_derive_jamais_ecrit_directement);
   RUN_TEST(test_h_lighting_expression_partagee_identique_des_deux_cotes);
   RUN_TEST(test_i_regulation_target_expression_partagee_identique_des_deux_cotes);
+  RUN_TEST(test_j_verdicts_calcules_expression_partagee_identique_des_deux_cotes);
   return UNITY_END();
 }

@@ -24,6 +24,27 @@
   n'est pas traité comme un cas particulier). Une session **jamais refermée** gèle le dosage
   indéfiniment ; aucune expiration automatique n'a été ajoutée, les avertissements déjà présents
   sur l'écran de calibration (bandeau, alerte d'oubli) restent la seule protection contre l'oubli.
+- 🚨 **Fausse alerte `CRITICAL` « Impasse de régulation pH » corrigée.** Constatée en production
+  le 2026-10-17 au soir : à un offset de +1,20, l'appareil a journalisé et publié en MQTT une
+  alerte qui ne tenait pas — « … exige une mesure brute de 6,00, sous le refus d'acidifier fixé
+  à 5,50 », alors que **6,00 n'est pas sous 5,50**. L'alerte était fausse, et a pu déclencher une
+  automation Home Assistant. Cause : `kPhOffsetImpasseThreshold` est un seuil **dérivé** en
+  virgule flottante (≈ 1,1999998, pas 1,2 exact) comparé **au bit près** à l'offset saisi — un
+  écart réel de ~0,00000024 pH suffisait à déclencher l'impasse. Corrigé par une tolérance
+  `kPhImpasseEpsilon` (0,05, la moitié du pas de saisie) qui absorbe ce bruit sans jamais masquer
+  une impasse réelle (toute impasse réelle est à au moins 0,10 pH du seuil, la grille des offsets
+  saisissables). Le côté haut (alcalinisation) portait le **même** défaut de comparaison (`<=` au
+  lieu de `<`) mais pas la fausse alerte elle-même — son texte était déjà exact.
+- **Régulation pH** : le texte de l'alerte `ph_impasse` côté acidification citait la **consigne**
+  (7,20) là où la condition réelle porte sur le **refus d'acidifier** (plancher corrigé, 6,70) —
+  un message arithmétiquement faux, indépendamment du défaut de seuil ci-dessus. Réécrit pour
+  citer le bon seuil ; le message côté alcalinisation, déjà exact, est inchangé.
+- **pH** : le verdict d'impasse (`ph_impasse_low` / `ph_impasse_high`) est désormais **calculé
+  par le firmware** et servi par `GET /get-config` **et** la trame WebSocket `config` — l'écran
+  cesse de le recalculer de son côté (ADR-0100). Avant ce correctif, l'écran relisait un seuil
+  servi mais **arrondi** à l'affichage (`1.2`) : à l'offset de production ci-dessus, `1.2 > 1.2`
+  vaut faux en JavaScript, et l'écran affichait « Avertissement » pendant que le firmware
+  publiait « Impasse » en critique — deux verdicts opposés sur le même état.
 
 ### Documentation
 
@@ -37,6 +58,20 @@
 - `docs/subsystems/pump-controller.md` : nouvelle garde documentée (rang 4 côté régulation
   automatique, rang 3 côté injection manuelle, entrée fail-closed côté mode Programmé), tables de
   gardes et d'énumérations renumérotées en conséquence, limite connue de bug-161 marquée résolue.
+- `docs/adr/0116-tolerance-de-comparaison-dun-seuil-flottant-derive.md` : nouvel ADR — un seuil
+  dérivé en virgule flottante ne se compare jamais par égalité stricte ; la tolérance se dérive de
+  la grille de saisie qui produit la valeur comparée, jamais du bruit machine.
+- `docs/adr/README.md` : index mis à jour (ADR-0116).
+- `docs/API.md` : nouveaux champs `ph_impasse_low` / `ph_impasse_high` sur `GET /get-config` et la
+  trame WS `config` (verdict d'impasse servi, ADR-0100).
+- `docs/MQTT.md` : message `ph_impasse` corrigé (côté acidification) et tolérance de comparaison
+  documentée.
+- `docs/subsystems/pump-controller.md` : table des seuils d'entrée en impasse mise à jour
+  (tolérance `kPhImpasseEpsilon`, comparaison strictement inégale des deux côtés), message
+  d'alerte corrigé.
+- `docs/features/page-ph.md` : section « Avertissement et impasse de régulation » mise à jour —
+  le chapeau lit désormais le verdict servi par le firmware pour la correction en vigueur, et ne
+  recalcule localement que l'aperçu d'une valeur pas encore soumise.
 - `specs/features/done/feature-069-investigation-materielle-sonde-ph.md` et
   `specs/features/done/feature-137-perturbation-de-mode-commun-sur-les-electrodes.md` : clôturées
   comme hors périmètre logiciel — ⚠️ les deux défauts matériels (transitoire de reprise de
