@@ -384,6 +384,100 @@ void test_formdata_sha256_precedes_update_file(void) {
   free(src);
 }
 
+// =============================================================================
+// [G5] web_routes_ota.cpp, feature-151 D1 (revue de sécurité du 2026-10-18,
+// condition B2) : l'appel d'authenticité de /update (computeOtaAuthenticityVerdict
+// invoqué avec le littéral "/update") doit précéder (a) la prise de propriété
+// de la session (`g_uploadOwner = request;`) ET (b) le pré-contrôle de l'octet
+// magique (`checkOtaFirstByte(`).
+// =============================================================================
+// (Numérotation G5/G6, pas G4/G5 comme demandé en revue : un [G4] existe déjà
+// dans ce même fichier depuis feature-118 lot B — web_server.cpp, cache
+// control — et ne correspond PAS au marqueur feature-151 décrit ici. Garder
+// deux [G4] différents dans le même fichier aurait été plus trompeur que de
+// renuméroter. Même patron d'extraction textuelle, même esprit.)
+//
+// SCÉNARIO PROTÉGÉ : il y a toute la campagne D2 entre D1 et D3. D1 ne refuse
+// rien (aucun comportement observable ne casse si l'ordre est inversé), donc
+// un refactor qui déplacerait ce bloc après la prise de propriété ou après le
+// pré-contrôle magique passerait TOUTES les suites existantes — et D3
+// grefferait alors son `if` de refus au mauvais endroit (après que l'image a
+// déjà été acceptée comme propriétaire de la session, voire déjà commencé à
+// être flashée).
+// =============================================================================
+void test_update_authenticity_call_precedes_owner_and_magic_check(void) {
+  long len = 0;
+  char* src = readProjectFile("src/web_routes_ota.cpp", &len);
+  TEST_ASSERT_NOT_NULL_MESSAGE(
+      src, "src/web_routes_ota.cpp introuvable — la garde structurelle est aveugle");
+
+  const char* authCall = "logOtaAuthenticityVerdict(\"/update\", authenticity);";
+  const char* ownerAssign = "g_uploadOwner = request;";
+  const char* magicCheck = "checkOtaFirstByte(";
+
+  TEST_ASSERT_EQUAL_INT_MESSAGE(
+      1, countIn(src, authCall),
+      "l'appel d'authenticite de /update doit apparaitre EXACTEMENT une fois");
+  TEST_ASSERT_EQUAL_INT_MESSAGE(1, countIn(src, ownerAssign),
+      "g_uploadOwner = request; doit apparaitre EXACTEMENT une fois (prise de propriete)");
+  TEST_ASSERT_EQUAL_INT_MESSAGE(1, countIn(src, magicCheck),
+      "checkOtaFirstByte( doit apparaitre EXACTEMENT une fois (pre-controle de l'octet magique)");
+
+  const long authIdx = indexOf(src, authCall);
+  const long ownerIdx = indexOf(src, ownerAssign);
+  const long magicIdx = indexOf(src, magicCheck);
+  TEST_ASSERT_TRUE_MESSAGE(authIdx >= 0 && ownerIdx >= 0 && magicIdx >= 0,
+                            "marqueurs introuvables dans web_routes_ota.cpp");
+
+  TEST_ASSERT_TRUE_MESSAGE(
+      authIdx < magicIdx,
+      "REGRESSION feature-151 D1 (condition B2) : l'appel d'authenticite de "
+      "/update doit precede checkOtaFirstByte( — place DEFINITIVE pour D3, "
+      "Q0 du verdict security-reviewer P1");
+  TEST_ASSERT_TRUE_MESSAGE(
+      authIdx < ownerIdx,
+      "REGRESSION feature-151 D1 (condition B2) : l'appel d'authenticite de "
+      "/update doit precede g_uploadOwner = request;");
+
+  free(src);
+}
+
+// =============================================================================
+// [G6] web_routes_ota.cpp, feature-151 D1 (revue de sécurité du 2026-10-18,
+// condition B2) : l'appel d'authenticité de /download-update doit précéder
+// l'appel à refuseIfTlsGateClosed(request, "/download-update" — la garde
+// PSRAM/heap avant la session TLS sortante.
+// =============================================================================
+void test_download_authenticity_call_precedes_tls_gate(void) {
+  long len = 0;
+  char* src = readProjectFile("src/web_routes_ota.cpp", &len);
+  TEST_ASSERT_NOT_NULL_MESSAGE(
+      src, "src/web_routes_ota.cpp introuvable — la garde structurelle est aveugle");
+
+  const char* authCall = "logOtaAuthenticityVerdict(\"/download-update\", authenticity);";
+  const char* tlsGateCall = "refuseIfTlsGateClosed(request, \"/download-update\"";
+
+  TEST_ASSERT_EQUAL_INT_MESSAGE(
+      1, countIn(src, authCall),
+      "l'appel d'authenticite de /download-update doit apparaitre EXACTEMENT une fois");
+  TEST_ASSERT_EQUAL_INT_MESSAGE(
+      1, countIn(src, tlsGateCall),
+      "l'appel refuseIfTlsGateClosed(.../download-update) doit apparaitre EXACTEMENT une fois");
+
+  const long authIdx = indexOf(src, authCall);
+  const long tlsGateIdx = indexOf(src, tlsGateCall);
+  TEST_ASSERT_TRUE_MESSAGE(authIdx >= 0 && tlsGateIdx >= 0,
+                            "marqueurs introuvables dans web_routes_ota.cpp");
+
+  TEST_ASSERT_TRUE_MESSAGE(
+      authIdx < tlsGateIdx,
+      "REGRESSION feature-151 D1 (condition B2) : l'appel d'authenticite de "
+      "/download-update doit precede refuseIfTlsGateClosed(...), AVANT tout "
+      "esp_partition_erase_range()/LittleFS.end() — place DEFINITIVE pour D3");
+
+  free(src);
+}
+
 // -----------------------------------------------------------------------------
 // Runner
 // -----------------------------------------------------------------------------
@@ -395,5 +489,7 @@ int main(int argc, char** argv) {
   RUN_TEST(test_kabsent_branch_before_owner_and_outside_len_check);
   RUN_TEST(test_serve_static_sets_no_cache_control);
   RUN_TEST(test_formdata_sha256_precedes_update_file);
+  RUN_TEST(test_update_authenticity_call_precedes_owner_and_magic_check);
+  RUN_TEST(test_download_authenticity_call_precedes_tls_gate);
   return UNITY_END();
 }

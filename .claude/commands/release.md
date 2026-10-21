@@ -57,6 +57,46 @@ commande publierait R3 sans qu'aucun fichier du dépôt n'ait changé.
 
     ./tools/check_release_artefacts.sh
 
+### 2ter. SIGNER les deux binaires (feature-151) — ⚠️ exige la phrase de passe de l'utilisateur
+
+⛔ **Le contrôle de l'étape 2bis REFUSE désormais une release non signée** (contrôle S2) :
+sans `.sig`, `/check-update` servirait une URL de signature **vide** et l'appareil n'aurait
+rien à vérifier — ⚠️ la fonctionnalité mourrait **en silence**, exactement comme
+`littlefs.bin` pendant six semaines (bug-170).
+
+⚠️ **Construire le système de fichiers d'abord** (`./build_fs.sh`), sinon `littlefs.bin`
+n'existe pas et le contrôle échoue.
+
+Pour **chacun** des deux binaires, construire le manifeste **exactement** comme le firmware
+le re-sérialise, puis signer :
+
+```bash
+V=$(sed -n 's/.*FIRMWARE_VERSION[[:space:]]*"\([^"]*\)".*/\1/p' src/version.h)
+B=.pio/build/esp32dev_core3
+
+for pair in "firmware:$B/firmware.bin" "filesystem:$B/littlefs.bin"; do
+  genre=${pair%%:*}; bin=${pair#*:}
+  d=$(sha256sum "$bin" | awk '{print $1}')
+  printf '%s' "pool-ota/1 $genre $V sha256:$d" > /tmp/m.txt
+  openssl dgst -sha256 -sign "${OTA_SIGNING_KEY:-$HOME/.pool-ota/signing_key.pem}" \
+    -out "$bin.sig" /tmp/m.txt
+done
+```
+
+⚠️ **`printf '%s'`, JAMAIS `echo`** : `echo` ajoute un saut de ligne final, la signature ne
+correspondrait plus, et le diagnostic serait « signature invalide » — ⛔ indistinguable d'une
+mauvaise clé. C'est **le** piège identifié par l'audit.
+
+⚠️ **L'utilisateur devra saisir sa phrase de passe DEUX fois** (une par binaire). ⛔ Ne jamais
+la passer en argument ni en variable d'environnement. ⛔ Ne jamais la stocker.
+
+⚠️ **Signer APRÈS la compilation finale** : recompiler ensuite change l'empreinte et invalide
+la signature. Le contrôle S2 le détecte, mais autant ne pas y arriver.
+
+⇒ **Relancer `./tools/check_release_artefacts.sh`** : il vérifie les deux signatures contre la
+clé publique **EXTRAITE DE `src/constants.h`** — donc celle que l'appareil utilisera
+réellement, ⛔ pas un fichier à côté.
+
 ⚠️ **Une instruction « arrête » en prose ici ne serait pas une garantie** —
 rien ne forcerait l'exécutant à s'arrêter. C'est pourquoi ce contrôle est un
 **script à code de sortie**, pas un paragraphe : si la commande sort en erreur
@@ -121,6 +161,8 @@ confort, c'est ce qui fait marcher la mise à jour en ligne :
 |---|---|
 | `firmware.bin` | ⛔ **NOM EXACT exigé** par `web_routes_ota.cpp` (`if (name == "firmware.bin")`). Sans lui, l'appareil trouve la release mais **aucune URL de firmware**. |
 | `littlefs.bin` | ⛔ **NOM EXACT exigé** de même (`littlefs.bin`). Sans lui, l'interface web n'est **jamais** mise à jour en ligne. Le construire avec `./build_fs.sh`. |
+| `firmware.bin.sig` | ⛔ **NOM EXACT exigé** (feature-151). Sans lui, `/check-update` sert une URL de signature **VIDE** et l'appareil n'a **rien à vérifier** — ⚠️ la fonctionnalité meurt **en silence**. |
+| `littlefs.bin.sig` | ⛔ Idem pour le système de fichiers. |
 | `firmware-<version>.bin` | Confort humain : un `firmware.bin` téléchargé est indistinguable d'une version à l'autre. |
 | `firmware-<version>.elf` | Symboles de débogage (voir ci-dessous). |
 
@@ -129,7 +171,7 @@ ont été renommés `firmware-<version>.bin` — raison valable en soi — et
 `littlefs.bin` a cessé d'être joint. ⛔ **Personne n'a vu que l'updater cherchait
 les anciens noms.** La mise à jour en ligne a été silencieusement cassée pendant
 **six semaines**, et le défaut n'est apparu qu'en la testant pour de vrai.
-⇒ ⛔ Ne retire jamais `firmware.bin` ni `littlefs.bin` de cette liste sans avoir
+⇒ ⛔ Ne retire jamais `firmware.bin`, `littlefs.bin` ni leurs `.sig` de cette liste sans avoir
 d'abord changé `web_routes_ota.cpp`.
 
 **Joins aussi l'ELF** — c'est lui qui porte les symboles, et **sans lui un
@@ -155,12 +197,14 @@ nom, ex. `guide-d-utilisation-v2.42.pdf`).
       --title "<version> — <titre court>" \
       --notes-file <fichier de notes dans le scratchpad> \
       .pio/build/esp32dev_core3/firmware.bin \
+      .pio/build/esp32dev_core3/firmware.bin.sig \
       .pio/build/esp32dev_core3/littlefs.bin \
+      .pio/build/esp32dev_core3/littlefs.bin.sig \
       <firmware-<version>.bin> \
       <firmware-<version>.elf> \
       docs/user/*.pdf
 
-Puis **vérifie la liste des assets** — `firmware.bin` et `littlefs.bin` doivent y
+Puis **vérifie la liste des assets** — `firmware.bin`, `littlefs.bin` et leurs **`.sig`** doivent y
 figurer **au nom exact** :
 
     gh release view <version> --json assets -q '.assets[].name'

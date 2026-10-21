@@ -28,6 +28,19 @@ src/idf_component.yml.orig
 # Couverture de tests (rapport gcovr, généré par ./tools/coverage.sh)
 coverage/
 
+# feature-151 : signature OTA — clés et fichiers de signature, JAMAIS
+# versionnés. La clé privée vit hors dépôt (OTA_SIGNING_KEY,
+# ~/.pool-ota/signing_key.pem par défaut) ; les .sig sont des artefacts de
+# release, attachés comme assets GitHub par /release (comme les .bin).
+# ⚠️ Motifs RESTREINTS À LA RACINE (revue de sécurité, 2026-10-18) — PAS
+# *.pem/*.sig globaux : un motif générique masquerait SILENCIEUSEMENT un
+# futur fichier légitime versionné ailleurs dans l'arbre (ex. une ancre TLS
+# en .pem dans docs/incidents/, ou tout .sig hors de ce mécanisme). Le seul
+# emplacement RÉEL où ce mécanisme dépose un fichier DANS le dépôt est la
+# racine (la clé privée elle-même vit hors dépôt par défaut).
+/*.pem
+/*.sig
+
 # Node.js
 node_modules/
 

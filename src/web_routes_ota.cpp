@@ -29,6 +29,20 @@
 // placement PSRAM, même idiome que mbedtls_psram_alloc.cpp.
 #include "ota_response_buffer_logic.h"
 #include <esp_memory_utils.h>  // esp_ptr_external_ram
+// feature-151 D1 : vérification d'AUTHENTICITÉ (signature à clé publique) —
+// JOURNALISE SEULEMENT, ne refuse rien (le refus est D3, hors périmètre de ce
+// lot). Modules purs testables en natif (grammaire manifeste, base64,
+// plancher, combinaison du verdict) + wrapper mbedtls non testable en natif.
+#include "ota_manifest_logic.h"
+#include "ota_base64_logic.h"
+#include "ota_authenticity_logic.h"
+#include "ota_signature.h"
+// feature-151 D1, lot B1 (revue de sécurité du 2026-10-18) : la signature
+// n'autorisait AUCUNE image en particulier — ce module PUR ferme ce trou en
+// liant l'empreinte DÉCLARÉE par le manifeste à une empreinte connue
+// indépendamment (paramètre déjà fourni, ou empreinte réellement calculée).
+// JOURNALISE SEULEMENT, comme le reste de D1.
+#include "ota_manifest_binding_logic.h"
 // feature-063 : include EXPLICITE de WiFiClient.h — il n'arrive plus
 // transitivement via HTTPClient.h depuis le core Arduino 3 (où WiFiClient est
 // un alias de NetworkClient).
@@ -38,6 +52,7 @@
 #include <Update.h>
 #include <ArduinoJson.h>
 #include <time.h>
+#include <string.h>  // strlen (feature-151 D1, computeOtaAuthenticityVerdict)
 #include <esp_partition.h>
 #include <LittleFS.h>
 #include <esp_task_wdt.h>
@@ -57,6 +72,12 @@ static const size_t ALLOWED_OTA_HOSTS_COUNT = sizeof(ALLOWED_OTA_HOSTS) / sizeof
 void initOtaContext(bool* restartRequested, unsigned long* restartRequestedTime) {
   g_restartRequested = restartRequested;
   g_restartRequestedTime = restartRequestedTime;
+  // feature-151 D1 : traçabilité terrain — confirme QUELLE clé publique un
+  // firmware donné embarque réellement (empreinte figée au build, pas
+  // recalculée ici : voir constants.h, ADR-0098).
+  systemLogger.info(String("[feature-151 D1] Clé publique de signature OTA embarquée — "
+                           "empreinte SHA-256 (DER) : ") +
+                    kOtaSigningPublicKeyFingerprint);
 }
 
 static bool isTimeSynchronized() {
@@ -117,6 +138,19 @@ static OtaStreamHasher g_uploadHasher;          // Hachage incrémental du flux 
 static size_t g_uploadLastLog = 0;              // Throttle du log de progression (fix AC5)
 static uint8_t g_uploadExpected[32];            // Empreinte attendue (param sha256)
 static bool g_uploadHasExpected = false;        // Param sha256 fourni ET valide
+// feature-151 D1, lot B1 : empreinte DÉCLARÉE par un manifeste PARSÉ (champ
+// sha256Hex, 64 hex minuscules + NUL — PAS pré-décodé en binaire : le
+// décodage vit dans ota_manifest_binding_logic.cpp, seul endroit autorisé à
+// appeler parseOtaSha256Param en dehors du site UNIQUE que la garde
+// structurelle G1 impose à web_routes_ota.cpp). ALIMENTÉE à index==0, dans le
+// même bloc que le calcul d'authenticité, CONSOMMÉE à `final` pour la
+// liaison manifeste ↔ octets réellement écrits. ⚠️ Statique à dessein (comme
+// g_uploadExpected) : doit survivre entre les chunks de CETTE requête.
+// ⚠️ D3 réutilisera CETTE PAIRE comme SOURCE de g_uploadExpected (ne fera que
+// « basculer la source », condition 10 du verdict security-reviewer P1) — ne
+// pas la fusionner avec g_uploadExpected ni la renommer sans en tenir compte.
+static char g_uploadManifestSha256Hex[65];
+static bool g_uploadManifestDigestValid = false;
 // g_uploadDigestInvalid a été retiré (feature-118 lot A) : le refus
 // « empreinte malformée » est désormais tranché et appliqué à index==0,
 // AVANT `g_uploadOwner = request` (voir parseOtaSha256Param) — il n'atteint
@@ -393,6 +427,148 @@ static void logOtaUploadIntegrityVerdict(OtaUploadIntegrityVerdict verdict) {
   }
 }
 
+// =============================================================================
+// feature-151 D1 : vérification d'AUTHENTICITÉ — JOURNALISE SEULEMENT.
+// =============================================================================
+// ⛔ Cette fonction ne doit JAMAIS produire de refus — Q0 du verdict
+// security-reviewer P1 : le chemin d'ACCEPTATION doit être prouvé sur le
+// terrain (D2) AVANT que le chemin de REFUS n'existe (D3). D3 réutilisera
+// cette MÊME fonction à l'identique ; seul l'appelant ajoutera un
+// `if (otaAuthenticityIsRejected(verdict))` (condition 10 : octet pour octet
+// identique entre D1 et D3 sur le vérificateur, la clé, la grammaire).
+//
+// Paramètres attendus (form-data, mêmes conventions que le `sha256` existant
+// de feature-118) : `manifest` (texte brut "pool-ota/1 ...") et `signature`
+// (base64 standard, 512 caractères sans padding pour RSA-3072). Absents sur
+// le chemin normal aujourd'hui (aucun outillage ne les envoie encore côté
+// page web, hors périmètre de ce lot) : verdict kAbsent, journalisé en INFO,
+// sans aucune conséquence.
+//
+// Résultat complet de computeOtaAuthenticityVerdict() — le verdict seul ne
+// suffit plus depuis le lot B1 (revue de sécurité du 2026-10-18) : l'appelant
+// a aussi besoin (a) des champs du manifeste PARSÉ, pour la liaison
+// manifeste ↔ image (voir ota_manifest_binding_logic.h), et (b) des octets
+// canoniques re-sérialisés, pour diagnostiquer en journal un refus sans
+// jamais exposer de secret (le manifeste est public — M2, revue du
+// 2026-10-18). Struct plutôt qu'une pile d'arguments de sortie : copie
+// uniquement sur la pile, aucune allocation.
+struct OtaAuthenticityComputation {
+  OtaAuthenticityVerdict verdict = OtaAuthenticityVerdict::kAbsent;
+  OtaManifestFields fields{};
+  bool fieldsValid = false;              // true seulement si parseOtaManifest == kOk
+  char canonical[kOtaManifestMaxLen] = {0};
+  size_t canonicalLen = 0;               // 0 si jamais calculé (parse ou décodage signature en échec)
+};
+
+static OtaAuthenticityComputation computeOtaAuthenticityVerdict(bool manifestPresent,
+                                                                bool signaturePresent,
+                                                                const char* manifestRaw,
+                                                                const char* signatureRaw,
+                                                                OtaManifestKind expectedKind) {
+  OtaAuthenticityComputation result;
+  OtaManifestFields fields{};
+  OtaManifestParseVerdict parseVerdict = OtaManifestParseVerdict::kMalformed;
+  bool signatureDecodeOk = false;
+  OtaCryptoVerdict cryptoVerdict = OtaCryptoVerdict::kImpossible;
+
+  if (manifestPresent && signaturePresent) {
+    parseVerdict = parseOtaManifest(manifestRaw, &fields);
+
+    uint8_t signatureBytes[kOtaSignatureMaxBytes];
+    const size_t signatureLen =
+        otaBase64Decode(signatureRaw, strlen(signatureRaw), signatureBytes, sizeof(signatureBytes));
+    // RSA-3072 → EXACTEMENT kOtaSignatureMaxBytes octets décodés, jamais moins.
+    signatureDecodeOk = (signatureLen == kOtaSignatureMaxBytes);
+
+    if (parseVerdict == OtaManifestParseVerdict::kOk && signatureDecodeOk) {
+      // Re-sérialisation CANONIQUE depuis les champs parsés — la signature
+      // porte sur CES octets, jamais sur `manifestRaw` tel que reçu.
+      const size_t canonicalLen =
+          serializeOtaManifest(fields, result.canonical, sizeof(result.canonical));
+      if (canonicalLen > 0) {
+        cryptoVerdict = otaVerifySignature(reinterpret_cast<const uint8_t*>(result.canonical),
+                                           canonicalLen, signatureBytes, signatureLen);
+        result.canonicalLen = canonicalLen;
+      }
+      // canonicalLen == 0 (buffer insuffisant) ne devrait jamais survenir vu
+      // kOtaManifestMaxLen — cryptoVerdict reste kImpossible par défaut.
+    }
+  }
+
+  // Champs exposés DÈS que le manifeste PARSE (indépendamment du verdict
+  // cryptographique) : la liaison manifeste ↔ image (B1) est une question
+  // DIFFÉRENTE de l'authenticité de la signature, et doit rester observable
+  // même si la signature est invalide — pour en distinguer la cause en
+  // journal (une image non liée à un manifeste par ailleurs invalide n'est
+  // pas plus grave qu'un manifeste déjà rejeté pour une autre raison).
+  if (parseVerdict == OtaManifestParseVerdict::kOk) {
+    result.fields = fields;
+    result.fieldsValid = true;
+  }
+
+  result.verdict = combineOtaAuthenticityVerdict(
+      manifestPresent, signaturePresent, parseVerdict, signatureDecodeOk, cryptoVerdict,
+      fields.kind, expectedKind, fields.major, fields.minor, fields.patch,
+      kOtaVersionFloorDefaultMajor, kOtaVersionFloorDefaultMinor, kOtaVersionFloorDefaultPatch);
+  return result;
+}
+
+// Journalisation du verdict d'authenticité — WARNING si D3 aurait refusé,
+// INFO sinon. Le texte rappelle EXPLICITEMENT qu'aucun refus n'est appliqué
+// (D1) : un opérateur qui lirait seulement le niveau WARNING ne doit pas
+// croire à tort qu'un flash a été bloqué.
+//
+// M2 (revue de sécurité, 2026-10-18) : le piège du LF final (un manifeste
+// signé via `echo` au lieu de `printf`, cf. ota_update.sh) produit un verdict
+// kInvalid STRICTEMENT indistinguable en apparence d'une mauvaise clé — alors
+// que c'est l'échec d'outillage le plus probable d'une première signature
+// manuelle. Dès que `canonical` a été calculé (parse + décodage signature
+// réussis), ces octets sont journalisés : le manifeste circule déjà en clair
+// dans la requête HTTP, ce n'est PAS un secret — les exposer permet à
+// l'opérateur de les comparer en quelques secondes à ce que son `printf` a
+// réellement signé.
+static void logOtaAuthenticityVerdict(const char* routeName,
+                                      const OtaAuthenticityComputation& computation) {
+  const bool wouldReject = otaAuthenticityIsRejected(computation.verdict);
+  const String msg = String("[feature-151 D1] ") + routeName + " — authenticité OTA : " +
+                     otaAuthenticityVerdictLabel(computation.verdict) +
+                     " — D3 refuserait : " + (wouldReject ? "oui" : "non") +
+                     " — AUCUN refus appliqué (D1, vérification seule)";
+  if (wouldReject) {
+    systemLogger.warning(msg);
+    if (computation.canonicalLen > 0) {
+      systemLogger.warning(String("[feature-151 D1] ") + routeName +
+                           " — octets canoniques re-sérialisés par l'appareil (comparer avec "
+                           "ce qui a été signé) : \"" + computation.canonical + "\"");
+    }
+  } else {
+    systemLogger.info(msg);
+  }
+}
+
+// =============================================================================
+// feature-151 D1, lot B1 : liaison manifeste ↔ image — JOURNALISE SEULEMENT.
+// =============================================================================
+// ⛔ Même principe que logOtaAuthenticityVerdict : AUCUN refus. Un verdict
+// d'authenticité « valide » prouve que LE MANIFESTE a été signé par la bonne
+// clé — jamais que l'image reçue est CELLE qu'il décrit (B1, revue de
+// sécurité du 2026-10-18 : sans cette liaison, un manifeste signé pour
+// l'image A, envoyé avec l'image B et un paramètre sha256/digest=<B>,
+// obtenait un verdict d'authenticité « valide »).
+static void logOtaManifestBindingVerdict(const char* routeName, const char* stage,
+                                         OtaManifestBindingVerdict verdict) {
+  const bool divergent = otaManifestBindingIsDivergent(verdict);
+  const String msg = String("[feature-151 D1 B1] ") + routeName + " — liaison manifeste/image (" +
+                     stage + ") : " + otaManifestBindingVerdictLabel(verdict) +
+                     " — D3 refuserait : " + (divergent ? "oui" : "non") +
+                     " — AUCUN refus appliqué (D1, vérification seule)";
+  if (divergent) {
+    systemLogger.warning(msg);
+  } else {
+    systemLogger.info(msg);
+  }
+}
+
 static void handleOtaUpdate(AsyncWebServerRequest* request, const String& filename, size_t index, uint8_t* data, size_t len, bool final) {
   // GARDE D'AUTHENTIFICATION — PREMIÈRE INSTRUCTION, avant tout effet de bord
   // (bug-117). Évaluée à CHAQUE fragment, pas seulement à index == 0 : un client
@@ -454,6 +630,44 @@ static void handleOtaUpdate(AsyncWebServerRequest* request, const String& filena
       systemLogger.info("Type de mise à jour: Filesystem (détection nom fichier)");
     } else {
       systemLogger.info("Type de mise à jour: Firmware (détection nom fichier)");
+    }
+
+    // ---- feature-151 D1 : vérification d'AUTHENTICITÉ — JOURNALISE SEULEMENT --
+    // Placée ici à dessein : AVANT le pré-contrôle de l'octet magique,
+    // `g_uploadOwner`, `setOtaInProgress(true)`, `LittleFS.end()` et
+    // `Update.begin()` — place DÉFINITIVE pour D3 (Q0 du verdict
+    // security-reviewer P1), mais ⛔ AUCUN `return` de refus ici : D1 ne fait
+    // que calculer et journaliser le verdict que D3 appliquera.
+    // GARDE STRUCTURELLE : test/test_native_ota_order_guard (guard [G5]) fige
+    // cette place — ne pas la déplacer sans mettre à jour ce test.
+    {
+      const OtaManifestKind expectedKind =
+          (cmd == U_SPIFFS) ? OtaManifestKind::kFilesystem : OtaManifestKind::kFirmware;
+      const bool manifestPresent = request->hasParam("manifest", true);
+      const bool signaturePresent = request->hasParam("signature", true);
+      const String manifestRaw =
+          manifestPresent ? request->getParam("manifest", true)->value() : String();
+      const String signatureRaw =
+          signaturePresent ? request->getParam("signature", true)->value() : String();
+      const OtaAuthenticityComputation authenticity = computeOtaAuthenticityVerdict(
+          manifestPresent, signaturePresent, manifestRaw.c_str(), signatureRaw.c_str(),
+          expectedKind);
+      logOtaAuthenticityVerdict("/update", authenticity);
+
+      // ---- lot B1 : liaison manifeste ↔ image (revue de sécurité, 2026-10-18) --
+      // Mémorise le hex DÉCLARÉ (PAS pré-décodé : voir le commentaire de
+      // g_uploadManifestSha256Hex plus haut — le décodage vit dans
+      // ota_manifest_binding_logic.cpp pour préserver l'unicité de l'appel à
+      // parseOtaSha256Param dans CE fichier, garde structurelle G1). Statique
+      // à dessein : doit survivre jusqu'au chunk `final`, seul endroit où
+      // l'empreinte RÉELLEMENT calculée sur les octets écrits existe
+      // (comparaison 2/2, plus bas dans ce fichier). D3 n'aura qu'à BASCULER
+      // LA SOURCE de g_uploadExpected vers cette paire — ne pas la réécrire.
+      g_uploadManifestDigestValid = authenticity.fieldsValid;
+      if (authenticity.fieldsValid) {
+        memcpy(g_uploadManifestSha256Hex, authenticity.fields.sha256Hex,
+               sizeof(g_uploadManifestSha256Hex));
+      }
     }
 
     // ---- Pré-contrôle de l'octet magique (2.20.1) --------------------------
@@ -573,6 +787,19 @@ static void handleOtaUpdate(AsyncWebServerRequest* request, const String& filena
       });
       return;
     }
+
+    // feature-151 D1, lot B1 : liaison manifeste ↔ image — comparaison 1/2, au
+    // paramètre `sha256` déjà PARSÉ ci-dessus (g_uploadExpected). Placée ICI,
+    // après les deux `return` malformée/absente : shaParamVerdict ne peut plus
+    // valoir que kParsed à ce point (même garantie que le commentaire plus bas
+    // sur g_uploadHasExpected), donc g_uploadExpected est rempli. AUCUN nouvel
+    // appel à parseOtaSha256Param ici — réemploi direct du résultat déjà
+    // calculé (la garde structurelle G1 exige que cet appel reste un site
+    // UNIQUE dans ce fichier). ⛔ JOURNALISE SEULEMENT.
+    logOtaManifestBindingVerdict(
+        "/update", "paramètre sha256 (index==0)",
+        otaManifestBindingVerdict(g_uploadManifestDigestValid, g_uploadManifestSha256Hex,
+                                  /*comparedDigestValid=*/true, g_uploadExpected));
 
     g_uploadOwner = request;
 
@@ -705,6 +932,18 @@ static void handleOtaUpdate(AsyncWebServerRequest* request, const String& filena
     char computedHex[kOtaSha256HexLen + 1];
     sha256ToHex(computed, computedHex, sizeof(computedHex));
     systemLogger.info("Empreinte SHA-256 de l'image reçue: " + String(computedHex));
+
+    // feature-151 D1, lot B1 : comparaison 2/2 — l'empreinte DÉCLARÉE par le
+    // manifeste (si un manifeste authentifiable a été reçu à index==0) contre
+    // l'empreinte RÉELLEMENT calculée sur les octets écrits en flash. C'est
+    // ICI, et seulement ici, que la liaison manifeste ↔ image peut être
+    // tranchée avec certitude (comparaison 1/2 plus haut ne portait que sur le
+    // paramètre déclaré par l'appelant, pas sur ce qui a été effectivement
+    // écrit). ⛔ JOURNALISE SEULEMENT.
+    logOtaManifestBindingVerdict(
+        "/update", "empreinte calculée (final)",
+        otaManifestBindingVerdict(g_uploadManifestDigestValid, g_uploadManifestSha256Hex,
+                                  /*comparedDigestValid=*/true, computed));
 
     // feature-118 lot B : verdict d'authenticité tracé ici — la DÉCISION pour
     // NON CONFORME a lieu juste en dessous (comparaison, déjà en vigueur
@@ -1287,6 +1526,13 @@ static void handleCheckUpdate(AsyncWebServerRequest* request) {
   // au moment du téléchargement (/download-update), pas ici.
   String firmwareDigest = "";
   String filesystemDigest = "";
+  // feature-151 D1 : URL des fichiers de signature `.sig`, SI présents parmi
+  // les assets de la release — champs ADDITIFS (chaîne vide si absents,
+  // aucune rupture de contrat pour un client qui les ignore). Relayés pour
+  // que /download-update ait un jour quelque chose à vérifier (D1 ne les
+  // exploite pas encore côté page web, hors périmètre de ce lot).
+  String firmwareSigUrl = "";
+  String filesystemSigUrl = "";
 
   JsonArray assets = doc["assets"];
   for (JsonObject asset : assets) {
@@ -1297,6 +1543,10 @@ static void handleCheckUpdate(AsyncWebServerRequest* request) {
     } else if (name == "littlefs.bin") {
       filesystemUrl = asset["browser_download_url"].as<String>();
       filesystemDigest = asset["digest"] | "";
+    } else if (name == "firmware.bin.sig") {
+      firmwareSigUrl = asset["browser_download_url"].as<String>();
+    } else if (name == "littlefs.bin.sig") {
+      filesystemSigUrl = asset["browser_download_url"].as<String>();
     }
   }
 
@@ -1310,6 +1560,10 @@ static void handleCheckUpdate(AsyncWebServerRequest* request) {
   // Champs additifs (feature-026) : relayés par l'UI vers /download-update
   response["firmware_digest"] = firmwareDigest;
   response["filesystem_digest"] = filesystemDigest;
+  // Champs additifs (feature-151 D1) : URL des fichiers `.sig`, vides si la
+  // release n'en contient pas (releases publiées avant ce lot).
+  response["firmware_sig_url"] = firmwareSigUrl;
+  response["filesystem_sig_url"] = filesystemSigUrl;
   response["release_name"] = doc["name"];
   response["published_at"] = doc["published_at"];
   // bug-crash-getlogs-badalloc (audit) : le corps de release GitHub n'est pas
@@ -1380,13 +1634,69 @@ static void handleDownloadUpdate(AsyncWebServerRequest* request) {
     return;
   }
 
+  // Déterminer le type de mise à jour en fonction de l'URL — hissé ICI
+  // (feature-151 D1, avant tout le reste) : la vérification d'authenticité
+  // ci-dessous a besoin du genre ATTENDU pour détecter un éventuel « genre
+  // discordant », et doit elle-même précéder la garde PSRAM/heap et tout
+  // effet de bord (condition 2 du verdict security-reviewer P1).
+  bool isFilesystem = (url.indexOf("littlefs") >= 0 || url.indexOf("filesystem") >= 0);
+
+  // feature-151 D1, lot B1 : hex DÉCLARÉ par un manifeste PARSÉ, portée locale
+  // à CETTE requête (handleDownloadUpdate est synchrone, pas de chunks à
+  // traverser — pas besoin de statique ici, à la différence de
+  // g_uploadManifestSha256Hex côté /update). PAS pré-décodé en binaire (voir
+  // le commentaire de g_uploadManifestSha256Hex, web_routes_ota.cpp) : le
+  // décodage vit dans ota_manifest_binding_logic.cpp. Alimentée dans le bloc
+  // D1 ci-dessous, CONSOMMÉE plus bas (comparaison 2/2, une fois le flux
+  // téléchargé et son empreinte RÉELLEMENT calculée).
+  char manifestSha256Hex[65];
+  bool manifestDigestValid = false;
+
+  // ---- feature-151 D1 : vérification d'AUTHENTICITÉ — JOURNALISE SEULEMENT --
+  // AVANT refuseIfTlsGateClosed (Q0/condition 1 du verdict security-reviewer
+  // P1) et avant tout esp_partition_erase_range()/LittleFS.end() : place
+  // DÉFINITIVE pour D3, mais ⛔ AUCUN `return` de refus ici — D1 ne fait que
+  // calculer et journaliser le verdict que D3 appliquera. Mêmes paramètres
+  // `manifest`/`signature` que /update ; absents aujourd'hui sur ce chemin
+  // (la page web ne les envoie pas encore, hors périmètre de ce lot) →
+  // verdict kAbsent, journalisé en INFO, sans conséquence.
+  // GARDE STRUCTURELLE : test/test_native_ota_order_guard (guard [G6]) fige
+  // cette place — ne pas la déplacer sans mettre à jour ce test.
+  {
+    const OtaManifestKind expectedKind =
+        isFilesystem ? OtaManifestKind::kFilesystem : OtaManifestKind::kFirmware;
+    const bool manifestPresent = request->hasParam("manifest", true);
+    const bool signaturePresent = request->hasParam("signature", true);
+    const String manifestRaw =
+        manifestPresent ? request->getParam("manifest", true)->value() : String();
+    const String signatureRaw =
+        signaturePresent ? request->getParam("signature", true)->value() : String();
+    const OtaAuthenticityComputation authenticity = computeOtaAuthenticityVerdict(
+        manifestPresent, signaturePresent, manifestRaw.c_str(), signatureRaw.c_str(),
+        expectedKind);
+    logOtaAuthenticityVerdict("/download-update", authenticity);
+
+    // ---- lot B1 : liaison manifeste ↔ image — comparaison 1/2 ---------------
+    // Au paramètre `digest` DÉJÀ décodé ci-dessus (`expectedHash`) : contrairement
+    // à /update, ce décodage a déjà eu lieu AVANT ce bloc (la route exige le
+    // digest en fail-closed dès l'entrée) — aucune relecture de requête nécessaire.
+    manifestDigestValid = authenticity.fieldsValid;
+    if (authenticity.fieldsValid) {
+      memcpy(manifestSha256Hex, authenticity.fields.sha256Hex, sizeof(manifestSha256Hex));
+    }
+    logOtaManifestBindingVerdict(
+        "/download-update", "paramètre digest (avant téléchargement)",
+        otaManifestBindingVerdict(manifestDigestValid, manifestSha256Hex,
+                                  /*comparedDigestValid=*/true, expectedHash));
+  }
+
   // Garde PSRAM + heap 8 bits avant la session TLS sortante
   // (bug-garde-tls-trop-permissive-sans-psram, bug-165/bug-108) : MÊME garde
-  // que /check-update. Position volontaire — après url/allowlist/digest (donc
-  // une requête mal formée reste un 400/403), mais AVANT WiFiClientSecure,
-  // setOtaInProgress(), LittleFS.end() et tout esp_partition_erase_range() :
-  // un refus n'a AUCUN effet de bord (pas de pompes gelées, pas de FS démonté,
-  // rien d'effacé).
+  // que /check-update. Position volontaire — après url/allowlist/digest/
+  // authenticité (donc une requête mal formée reste un 400/403), mais AVANT
+  // WiFiClientSecure, setOtaInProgress(), LittleFS.end() et tout
+  // esp_partition_erase_range() : un refus n'a AUCUN effet de bord (pas de
+  // pompes gelées, pas de FS démonté, rien d'effacé).
   {
     String clientIp = request->client()->remoteIP().toString();
     // bug-165/bug-108 : plus gros bloc PSRAM (contiguïté) et heap 8 bits
@@ -1406,9 +1716,6 @@ static void handleDownloadUpdate(AsyncWebServerRequest* request) {
     String restartParam = request->getParam("restart", true)->value();
     shouldRestart = (restartParam == "true" || restartParam == "1");
   }
-
-  // Déterminer le type de mise à jour en fonction de l'URL
-  bool isFilesystem = (url.indexOf("littlefs") >= 0 || url.indexOf("filesystem") >= 0);
 
   if (isFilesystem) {
     systemLogger.info("Téléchargement mise à jour filesystem depuis GitHub");
@@ -1555,6 +1862,15 @@ static void handleDownloadUpdate(AsyncWebServerRequest* request) {
     // tronqué (coupure WiFi) — l'empreinte d'un flux incomplet ne correspondra pas.
     uint8_t computedFs[32];
     hasher.finish(computedFs);
+
+    // feature-151 D1, lot B1 : comparaison 2/2 — l'empreinte DÉCLARÉE par le
+    // manifeste (si authentifiable) contre l'empreinte RÉELLEMENT téléchargée
+    // et écrite en partition. ⛔ JOURNALISE SEULEMENT.
+    logOtaManifestBindingVerdict(
+        "/download-update", "empreinte calculée (fichier filesystem reçu)",
+        otaManifestBindingVerdict(manifestDigestValid, manifestSha256Hex,
+                                  /*comparedDigestValid=*/true, computedFs));
+
     if (!sha256Equal(computedFs, expectedHash)) {
       char expectedHex[kOtaSha256HexLen + 1];
       char computedHex[kOtaSha256HexLen + 1];
@@ -1667,6 +1983,14 @@ static void handleDownloadUpdate(AsyncWebServerRequest* request) {
     // (couvre aussi le téléchargement tronqué par une coupure WiFi).
     uint8_t computedFw[32];
     hasher.finish(computedFw);
+
+    // feature-151 D1, lot B1 : comparaison 2/2 — voir le commentaire jumeau de
+    // la branche filesystem ci-dessus. ⛔ JOURNALISE SEULEMENT.
+    logOtaManifestBindingVerdict(
+        "/download-update", "empreinte calculée (fichier firmware reçu)",
+        otaManifestBindingVerdict(manifestDigestValid, manifestSha256Hex,
+                                  /*comparedDigestValid=*/true, computedFw));
+
     if (!sha256Equal(computedFw, expectedHash)) {
       char expectedHex[kOtaSha256HexLen + 1];
       char computedHex[kOtaSha256HexLen + 1];

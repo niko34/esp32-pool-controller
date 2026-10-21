@@ -264,7 +264,7 @@ conditions du P1 ci-dessus sont reprises une à une ; celles qui concernent le l
 | 6 | Formulation de la doc (intégrité du transfert, pas sécurité) | **Livré par ce tour** — `docs/API.md`, `docs/subsystems/ota-manager.md`, [ADR-0096](../../docs/adr/0096-empreinte-sha256-obligatoire-sur-post-update.md) portent les trois phrases et le constat de non-satisfaction de la règle n° 6 |
 | 7 | ADR-0081 relu | **Livré par ce tour** — ligne datée du 2026-10-10, déclencheur déplacé vers `feature-151` |
 | 8 | Messages d'erreur (ordre des champs) | **Livré** — `kOtaSha256MissingMessage` préparé pour le lot B (pas encore utilisé) ; message « malformée » explicite ; `ota_update.sh` affiche un indice ciblé (`[O3]`) sur un refus `400` mentionnant sha256/empreinte |
-| 9 | Spec de suivi créée avant clôture | **Livré par ce tour** — `specs/features/todo/feature-151-signature-de-l-image-ota.md` |
+| 9 | Spec de suivi créée avant clôture | **Livré par ce tour** — `specs/features/doing/feature-151-signature-de-l-image-ota.md` |
 
 **Zéro régression confirmée** : `pio test -e native` — **65 suites / 2 152 cas, tous verts**
 (mesuré le 2026-10-10, ne pas recopier ce chiffre aux cycles suivants — ADR-0073, le

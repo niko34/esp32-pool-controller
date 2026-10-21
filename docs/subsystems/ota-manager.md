@@ -81,7 +81,7 @@ bool isEnabled() const;
    revue de sécurité) : la session est **TLS épinglée** (5 racines auto-signées, [ADR-0111](../adr/0111-ancre-de-confiance-tls-toujours-auto-signee.md))
    — un DNS détourné produit un **échec de handshake**, pas un corps hostile reçu avec succès. Le
    seul pair réellement capable de servir un contenu arbitraire est celui qui **contrôle la
-   release GitHub elle-même** ; seule [feature-151](../../specs/features/todo/feature-151-signature-de-l-image-ota.md)
+   release GitHub elle-même** ; seule [feature-151](../../specs/features/doing/feature-151-signature-de-l-image-ota.md)
    (signature de l'image) répond à ce cas, puisque l'URL et l'empreinte SHA-256 sortent du **même**
    JSON. Détail complet et alternatives écartées (envelopper le flux, bibliothèque tierce) :
    [ADR-0119](../adr/0119-reponse-check-update-bufferisee-en-psram-bornee.md).
@@ -234,9 +234,9 @@ Règle de sécurité #6 (« toujours vérifier la signature/CRC avant flash »),
 
 ## Lot A — empreinte envoyée systématiquement, verdict journalisé (v2.66.0, feature-118, [ADR-0096](../adr/0096-empreinte-sha256-obligatoire-sur-post-update.md))
 
-**Ce que ce lot prouve, et ce qu'il ne prouve pas** — à ne jamais diluer : l'empreinte est **calculée par l'appelant** ; elle prouve que l'image écrite est celle qu'il a envoyée, **pas qui l'a produite**. Pour le **firmware**, l'IDF vérifie déjà l'image à l'activation ; l'empreinte ajoute la détection du **mauvais fichier**. Pour le **filesystem**, elle est la **seule** vérification d'intégrité. **La règle de sécurité n° 6 de `CLAUDE.md` n'est PAS satisfaite par ce lot** ; elle le sera par la signature (spec de suivi [feature-151](../../specs/features/todo/feature-151-signature-de-l-image-ota.md)). Le mot « sécurité » ne qualifie jamais ce mécanisme — le terme imposé est **« intégrité du transfert »**.
+**Ce que ce lot prouve, et ce qu'il ne prouve pas** — à ne jamais diluer : l'empreinte est **calculée par l'appelant** ; elle prouve que l'image écrite est celle qu'il a envoyée, **pas qui l'a produite**. Pour le **firmware**, l'IDF vérifie déjà l'image à l'activation ; l'empreinte ajoute la détection du **mauvais fichier**. Pour le **filesystem**, elle est la **seule** vérification d'intégrité. **La règle de sécurité n° 6 de `CLAUDE.md` n'est PAS satisfaite par ce lot** ; elle le sera par la signature (spec de suivi [feature-151](../../specs/features/doing/feature-151-signature-de-l-image-ota.md)). Le mot « sécurité » ne qualifie jamais ce mécanisme — le terme imposé est **« intégrité du transfert »**.
 
-**Trois issues arbitrées** (détail et coûts chiffrés : [ADR-0096](../adr/0096-empreinte-sha256-obligatoire-sur-post-update.md)) : empreinte obligatoire + SHA-256 JS embarqué (**retenue**), empreinte obligatoire sauf page web exemptée (écartée — le firmware ne peut **structurellement pas** distinguer la page web d'un `curl`, tout provient de l'appelant), signature à clé publique (reportée à [feature-151](../../specs/features/todo/feature-151-signature-de-l-image-ota.md), coût le plus élevé mais seule option qui réponde à la règle n° 6).
+**Trois issues arbitrées** (détail et coûts chiffrés : [ADR-0096](../adr/0096-empreinte-sha256-obligatoire-sur-post-update.md)) : empreinte obligatoire + SHA-256 JS embarqué (**retenue**), empreinte obligatoire sauf page web exemptée (écartée — le firmware ne peut **structurellement pas** distinguer la page web d'un `curl`, tout provient de l'appelant), signature à clé publique (reportée à [feature-151](../../specs/features/doing/feature-151-signature-de-l-image-ota.md), coût le plus élevé mais seule option qui réponde à la règle n° 6).
 
 **Côté page web** (`data/app.js`) : SHA-256 pur JS (`createSha256`/`sha256OfFile`), car `crypto.subtle` exige un contexte sécurisé (HTTPS/`localhost`), indisponible sur HTTP clair en LAN. Hachage incrémental par tranches de 256 Kio (jamais le fichier entier en RAM). Le champ `sha256` est ajouté au `FormData` **avant** `update_file` — un champ placé après le fichier se lirait comme **absent** côté firmware (le multipart est lu au fil de l'eau). Un échec de calcul **bloque l'envoi à l'écran**, sans repli silencieux. Vecteurs de test versionnés : [`test/sha256_vectors.js`](../../test/sha256_vectors.js) (chaîne vide, « abc », 55/56/64/65 octets, bloc > 1 Mo entier et fragmenté), extraits **du texte réel livré** dans `data/app.js` (pas une recopie — une divergence future est structurellement impossible), exécutés par [`tools/check_sha256_vectors.sh`](../../tools/check_sha256_vectors.sh). **Confirmé sur navigateur mobile** (essai on-target du 2026-10-11, image de 1,87 Mo) : c'était l'inconnue de tout l'arbitrage, elle est levée.
 
@@ -250,7 +250,7 @@ Règle de sécurité #6 (« toujours vérifier la signature/CRC avant flash »),
 
 ## Lot B — empreinte obligatoire, refus effectif (v2.67.0, feature-118, [ADR-0096](../adr/0096-empreinte-sha256-obligatoire-sur-post-update.md))
 
-**Ce que ce lot change par rapport au lot A : la décision devient réelle.** `otaUploadIntegrityVerdict()` ne change pas, mais `otaUploadIntegrityIsRejected()` (renommée depuis `otaUploadWouldLotBReject()` — ce n'est plus une projection, c'est la décision appliquée) est désormais **suivie d'effet** : `kAbsent` et `kNonConform` sont refusés (`kMalformed` l'était déjà depuis le lot A). **Ce que ce mécanisme prouve reste inchangé depuis le lot A** — intégrité du transfert, pas authenticité d'origine ; la règle n° 6 de `CLAUDE.md` reste non satisfaite, voir [feature-151](../../specs/features/todo/feature-151-signature-de-l-image-ota.md).
+**Ce que ce lot change par rapport au lot A : la décision devient réelle.** `otaUploadIntegrityVerdict()` ne change pas, mais `otaUploadIntegrityIsRejected()` (renommée depuis `otaUploadWouldLotBReject()` — ce n'est plus une projection, c'est la décision appliquée) est désormais **suivie d'effet** : `kAbsent` et `kNonConform` sont refusés (`kMalformed` l'était déjà depuis le lot A). **Ce que ce mécanisme prouve reste inchangé depuis le lot A** — intégrité du transfert, pas authenticité d'origine ; la règle n° 6 de `CLAUDE.md` reste non satisfaite, voir [feature-151](../../specs/features/doing/feature-151-signature-de-l-image-ota.md).
 
 **Refus « absente », même patron que « malformée »** : `OtaSha256ParamVerdict::kAbsent` déclenche désormais, à la **même place** que le refus « malformée » (`index==0`, hors du bloc `if (len >= 1)`, avant `g_uploadOwner = request`), `markUploadRejected(request)` puis `failOtaUpload(request, 400, kOtaSha256MissingMessage, true)`. **`markUploadRejected` est non négociable** : sans lui, `Update.hasError()` resterait faux et le lambda de réponse servirait « OK » avec un **redémarrage parasite**, alors que l'upload a été refusé — défaut qualifié le plus grave de ce lot par `security-reviewer`. Garde structurelle dédiée : [`test/test_native_ota_order_guard/`](../../test/test_native_ota_order_guard/) (tests `G3`) vérifie les trois propriétés (avant `g_uploadOwner`, hors du bloc `len >= 1`, `markUploadRejected` bien appelé dans la branche).
 
@@ -272,6 +272,268 @@ La vérification initiale de cette parade avait elle-même été faite à tort (
 ⛔ **La cause réelle de l'incident du 2026-10-11 n'était PAS un défaut d'en-tête HTTP, mais un onglet déjà ouvert avant le déploiement.** Aucun en-tête ne rattrape ce cas — la page était déjà chargée en mémoire du navigateur. Le remède est le **rechargement forcé** ; le filet de sécurité est le **message** (ci-dessus), pas une parade cache.
 
 **Zéro régression** : `pio test -e native` — **66 suites / 2 156 cas, tous verts** (mesuré au 2026-10-11, ne pas recopier ce chiffre aux cycles suivants — ADR-0073). `pio run -e esp32dev_core3` : **SUCCESS**, aucun nouveau warning. 4 mutations tuées sur le lot B, dont le retrait de `markUploadRejected` (qui ferait répondre « OK » **et** planifier un redémarrage parasite).
+
+<a id="d1--authenticite-par-signature-journalise-seulement-feature-151-verdict-security-reviewer-p1"></a>
+
+## D1 — authenticité par signature, JOURNALISE SEULEMENT (feature-151, verdict `security-reviewer` P1)
+
+⛔ **Principe directeur, à ne jamais diluer** : *le chemin d'ACCEPTATION doit être prouvé sur le
+terrain AVANT que le chemin de REFUS n'existe.* L'OTA est le **seul** canal de déploiement de ce
+projet (pas de port série) : un firmware qui **exigerait** une signature, livré avec un outillage
+cassé ou une clé perdue, rendrait l'appareil **définitivement non déployable** — l'exigence ne
+s'éprouve qu'au déploiement **suivant**, trop tard pour revenir en arrière une fois le firmware
+en place. D1 vérifie donc **tout** ce que D3 vérifiera, calcule le verdict complet, le
+**journalise** — et ⛔ **ne refuse rien**. Le découpage complet (D0 → D5) et son arbitrage
+`security-reviewer` P1 : [`specs/features/doing/feature-151-signature-de-l-image-ota.md`](../../specs/features/doing/feature-151-signature-de-l-image-ota.md).
+
+| # | Contenu | Statut |
+|---|---|---|
+| **D0** | Paire RSA-3072 générée **hors dépôt** par l'utilisateur, clé publique embarquée | Fait (2026-10-18) |
+| **D1** | Vérifie et **journalise seulement** — ⛔ jamais de refus. Outillage complet dans ce lot | **Ce lot** |
+| **D2** | Preuve terrain : 4 combinaisons (script × page) × (firmware × FS) + 2 essais négatifs, tous journalisés | À venir — **condition d'existence de D3** |
+| **D3** | Refus **activé**. Plancher inerte à 0.0.0. Interrupteur de secours (bouton d'urgence) | Hors périmètre de ce lot |
+| **D4** | Bump sans effet, 4 déploiements acceptés — premier déploiement réellement filtré | Hors périmètre |
+| **D5** | Relèvement du plancher (geste explicite) | Hors périmètre |
+
+### 🔴 Ce que cette signature protège, et ce qu'elle ne protège PAS
+
+⭐ **Gain réel, une fois D3 actif** : contre la **chaîne GitHub/TLS** — compte ou dépôt compromis,
+jeton `gh` ou CI fuité, CDN, autorité de certification. ⚠️ Tous ces acteurs obtiennent un `digest`
+SHA-256 conforme **gratuitement** (GitHub le calcule lui-même à l'upload de l'asset) ; ⛔ **aucun
+ne peut produire la signature**, qui exige la clé privée restée hors dépôt. S'y ajoute la
+protection contre le **retour en arrière** vers une version vulnérable (plancher de version).
+
+⛔ **Ce que cette signature NE ferme PAS : le vecteur « jeton admin volé ».** L'interrupteur de
+secours prévu en D3 (indispensable contre une clé perdue, ou un défaut du vérificateur lui-même)
+est posable par une requête **authentifiée** : un porteur du jeton admin fait **deux requêtes au
+lieu d'une** pour obtenir l'exécution de code arbitraire, au lieu d'une seule aujourd'hui.
+**Ne jamais présenter cette feature comme fermant ce vecteur-là** — le gain réel est la chaîne
+GitHub/TLS décrite ci-dessus, pas le jeton.
+
+### Garde 1 — authenticité du manifeste, et sa place
+
+⚠️ **Il existe une SECONDE garde depuis le lot B1** (correction de revue du 2026-10-18) — voir
+[B1 — la signature ne liait rien à l'image](#b1--la-signature-ne-liait-rien-a-limage-feature-151-correction-de-revue-du-2026-10-18)
+plus bas. Cette section ne décrit que la première : l'authenticité du manifeste lui-même.
+
+Les deux endroits qui écrivent une partition applicative ou filesystem portent la **même**
+vérification, au même point relatif — avant toute prise de propriété de la session et tout
+`Update.begin()`/effacement :
+
+1. **`handleOtaUpdate()` / `POST /update`** ([`src/web_routes_ota.cpp`](../../src/web_routes_ota.cpp)) — placée **avant** le pré-contrôle de l'octet magique, `g_uploadOwner`, `setOtaInProgress(true)`, `LittleFS.end()` et `Update.begin()`. Le genre attendu (`OtaManifestKind::kFirmware`/`kFilesystem`) est déduit de `cmd` (`U_SPIFFS` ou non), **même source** que celle qui choisit déjà la partition d'écriture.
+2. **`handleDownloadUpdate()` / `POST /download-update`** (même fichier) — placée **avant** `refuseIfTlsGateClosed` (donc avant toute session TLS sortante) et avant tout `esp_partition_erase_range()`/`LittleFS.end()`. Le genre attendu est déduit de la **même** sous-chaîne d'URL (`littlefs`/`filesystem`) que celle qui choisit déjà la partition — c'est **cette** cohérence que le verdict `kKindMismatch` protège : un manifeste `firmware` reçu par un appelant `filesystem` (ou l'inverse) est détecté, même si aucune des deux routes ne s'en sert encore pour refuser en D1.
+
+Dans les deux cas, une fonction interne commune (`computeOtaAuthenticityVerdict`, statique dans
+`web_routes_ota.cpp`) calcule le verdict ; `logOtaAuthenticityVerdict()` le journalise (`WARNING`
+si D3 l'aurait refusé, `INFO` sinon, préfixe `[feature-151 D1]`, rappelant explicitement
+qu'**aucun refus n'est appliqué** — pour qu'un opérateur lisant un `WARNING` ne croie pas à tort
+qu'un flash a été bloqué).
+
+### Le manifeste et sa re-sérialisation canonique
+
+La signature ne porte **jamais** sur l'image (~1,5 Mo), mais sur un **manifeste d'une ligne** :
+
+```
+pool-ota/1 <firmware|filesystem> <MAJ.MIN.PATCH> sha256:<64 hex minuscules>
+```
+
+Grammaire **stricte** ([`src/ota_manifest_logic.h`](../../src/ota_manifest_logic.h)) : exactement
+4 jetons séparés par un seul espace, genre = l'un des deux littéraux exacts (casse sensible),
+version `\d{1,5}\.\d{1,5}\.\d{1,5}` sans préfixe `v` ni zéro de tête, hex de 64 caractères
+**strictement minuscules**. ⛔ Aucun LF, aucun espace de tête/queue/double.
+
+⭐ **L'appareil ne vérifie jamais la signature sur la chaîne brute reçue** : il la **parse**
+(`parseOtaManifest`) puis la **re-sérialise** depuis les champs extraits
+(`serializeOtaManifest`) — c'est sur **ces octets canoniques** que porte la signature. Ce
+découpage est ce qui permettra à D3 de n'ajouter qu'un `if` de refus sans toucher à la grammaire
+elle-même (condition 10 du verdict P1 : le diff D1→D3 ne touche **que** le prédicat de décision).
+Piège d'outillage connu, déjà évité à la main lors de D0 : `echo` ajoute un LF final, `printf
+'%s'` non — `ota_update.sh` utilise `printf '%s'`.
+
+### Schéma cryptographique et clé embarquée
+
+**RSA-3072 / PKCS#1 v1.5 / SHA-256**, via `mbedtls_pk_verify`
+([`src/ota_signature.h`](../../src/ota_signature.h)/`.cpp`) — choix mesuré **dans l'ELF** :
+`mbedtls_pk_verify`, `pk_parse_public_key`, `rsa_pkcs1_verify` déjà présents, accélération
+matérielle MPI/SHA déjà active. Ed25519 est **absent** de mbedtls sur ce projet (seules les
+tables X25519 existent) et aurait exigé une dépendance neuve sur le chemin OTA. Signature de
+**384 octets** bruts, encodée en base64 standard **sans padding** (512 caractères — 384 est un
+multiple de 3) ; décodeur strict dédié
+([`src/ota_base64_logic.h`](../../src/ota_base64_logic.h)), refuse tout caractère hors alphabet
+et tout padding mal placé.
+
+⚠️ **Temps constant sans objet** : la vérification se fait à **clé publique**, aucun secret ne
+circule côté vérificateur — ne pas réintroduire cette exigence par réflexe (point établi par
+l'audit `security-reviewer` P1).
+
+**Clé publique embarquée** au format DER (SubjectPublicKeyInfo, 422 octets,
+`kOtaSigningPublicKeyDer` dans [`src/constants.h`](../../src/constants.h)), générée **hors
+dépôt** par l'utilisateur le 2026-10-18 (RSA 3072 bits). La clé **privée** correspondante n'est
+**jamais** présente dans ce dépôt — chiffrée AES-256-CBC, deux copies hors-ligne, phrase de passe
+connue de l'utilisateur seul. **Empreinte SHA-256 du DER** (pour vérifier **quelle** clé un
+firmware donné embarque réellement) :
+
+```
+844449550704da06b085d24a8ae2b079a349730d520e61824dc2816956a57ebb
+```
+
+Cette empreinte (`kOtaSigningPublicKeyFingerprint`) est journalisée **une fois** au démarrage,
+depuis `initOtaContext()` — traçabilité terrain, pas un calcul au boot (la chaîne est littérale,
+pas recalculée depuis le DER).
+
+### Le verdict à sept issues
+
+`OtaAuthenticityVerdict` ([`src/ota_authenticity_logic.h`](../../src/ota_authenticity_logic.h)) —
+ordre de priorité **fixe** (absent > malformé > crypto > genre > plancher > valide), condition 9
+du verdict `security-reviewer` P1 : sans cette granularité, la preuve terrain D2 et le
+déploiement filtré D4 ne sauraient pas distinguer un défaut d'**outillage** d'une clé
+**différente** ou d'un simple **retour en arrière**.
+
+| Verdict | Signification |
+|---|---|
+| `kAbsent` | `manifest` ou `signature` non fournis par l'appelant — cas normal aujourd'hui (aucun appelant officiel côté page web ne les envoie encore) |
+| `kMalformed` | Manifeste hors grammaire, ou signature base64 invalide/de mauvaise longueur |
+| `kVerificationImpossible` | Échec de l'**outillage** cryptographique lui-même (clé embarquée inparsable, allocation mbedtls refusée) — **distinct** d'une signature simplement invalide : sans cette distinction, D2/D4 ne sauraient pas si c'est la clé, l'outillage, ou le tas qui a échoué |
+| `kInvalid` | Signature cryptographiquement rejetée — clé de signature différente, ou données altérées |
+| `kKindMismatch` | Genre signé par le manifeste (`firmware`/`filesystem`) ≠ genre attendu par la route appelante |
+| `kBelowFloor` | Version signée strictement inférieure au plancher anti-retour en arrière |
+| `kValid` | Signature, genre et plancher valides — **PAS** une preuve que l'image reçue est celle que le manifeste décrit (voir B1 ci-dessous) |
+
+🔴 **Correction d'un commentaire inexact (revue de sécurité, 2026-10-18)** : ce tableau qualifiait
+auparavant `kValid` d'« authenticité et cohérence intégrales ». ⚠️ **C'était faux** tant que la
+liaison décrite ci-dessous n'était vérifiée nulle part : `kValid` ne prouve que la signature du
+**manifeste**, jamais que l'**image reçue** correspond à ce manifeste.
+
+<a id="b1--la-signature-ne-liait-rien-a-limage-feature-151-correction-de-revue-du-2026-10-18"></a>
+
+### B1 — la signature ne liait rien à l'image (défaut trouvé en revue, corrigé le 2026-10-18)
+
+🔴 **Le défaut** : l'empreinte du manifeste était extraite, re-sérialisée, **signée**… puis
+**jetée**. L'empreinte réellement comparée (par le mécanisme d'intégrité de feature-118) restait
+celle fournie en **paramètre** par l'appelant (`sha256` sur `/update`, `digest` sur
+`/download-update`), jamais celle déclarée par le manifeste signé. ⚠️ **Scénario** : un manifeste
+authentiquement signé pour une image **A**, envoyé avec une image **B** et un paramètre
+`sha256`/`digest=<B>`, obtenait un verdict d'authenticité **« valide »**. 🔴 **Conséquence réelle,
+établie en revue** : D3 n'aurait **pas** pu se réduire à l'ajout d'un simple `if` de refus — il
+aurait fallu remanier la structure de la décision pour y introduire cette comparaison manquante.
+**La condition 10 du verdict `security-reviewer` P1** (« le diff D1→D3 ne touche QUE le prédicat de
+décision ») **aurait été violée sans que rien ne le signale.**
+
+**Garde 2 — liaison manifeste ↔ image, et sa place.** Module pur
+[`src/ota_manifest_binding_logic.h`](../../src/ota_manifest_binding_logic.h)/`.cpp`
+(`otaManifestBindingVerdict`, trois issues : `kSkipped` — rien à comparer, `kBound` — l'empreinte
+déclarée correspond, `kUnbound` — divergence, la signature ne lie **pas** cette image). Appliquée à
+**deux** points sur **chacune** des deux routes — **quatre comparaisons au total** :
+
+| # | Route | Moment | Comparaison |
+|---|---|---|---|
+| 1 | `POST /update` | Arrivée du manifeste (`index==0`, après le `sha256` déjà parsé) | Empreinte déclarée par le manifeste ↔ paramètre `sha256` déjà fourni par l'appelant |
+| 2 | `POST /update` | `final`, après calcul réel | Empreinte déclarée par le manifeste ↔ empreinte **réellement calculée** sur les octets écrits en flash |
+| 3 | `POST /download-update` | Avant téléchargement | Empreinte déclarée par le manifeste ↔ paramètre `digest` déjà décodé |
+| 4 | `POST /download-update` | Après téléchargement (branche firmware ou filesystem) | Empreinte déclarée par le manifeste ↔ empreinte **réellement calculée** sur le flux téléchargé et écrit |
+
+La comparaison 1/3 (déclaratif) ne prouve que la **cohérence de l'appelant avec lui-même** ; seule
+la comparaison 2/4 (après calcul réel) tranche avec certitude si l'image **effectivement écrite**
+est celle que le manifeste décrit — les deux sont journalisées pour distinguer, en D2, un appelant
+qui se contredit lui-même d'un appelant dont le transfert a été altéré en route. Décodage hex du
+champ du manifeste fait **dans** `ota_manifest_binding_logic.cpp`, en réutilisant
+`parseOtaSha256Param` — **jamais** un second appel dans `web_routes_ota.cpp`, pour ne pas rompre la
+garde structurelle `[G1]` (feature-118) qui exige un site d'appel **unique**. ⛔ **Journalise
+seulement** (`logOtaManifestBindingVerdict`, préfixe `[feature-151 D1 B1]`, `WARNING` si
+`kUnbound`, `INFO` sinon) — aucun refus, même règle que la Garde 1.
+
+**Garde structurelle `[G5]`/`[G6]` (`test/test_native_ota_order_guard/`)** — figent **textuellement**
+la **place** des deux blocs d'appel de la Garde 1 (le texte source, pas le comportement observable).
+Raison : entre D1 et D3 il y a **toute la campagne terrain D2**. D1 ne refusant rien, un refactor
+qui déplacerait un de ces blocs après la prise de propriété de session (`/update`) ou après la
+garde TLS (`/download-update`) ne ferait échouer **aucune** suite existante — et D3 greffrait alors
+son `if` de refus au **mauvais endroit**. Numérotés **`[G5]`/`[G6]`**, pas `[G4]`/`[G5]` : un
+`[G4]` existe déjà dans le même fichier depuis feature-118 lot B (le `.setCacheControl` de
+`serveStatic`), sans rapport avec feature-151 — renuméroter l'existant aurait été plus trompeur que
+de conserver deux `[G4]` d'origines différentes dans le même fichier.
+
+**Diagnostic du piège du LF final.** Les **octets canoniques re-sérialisés** par l'appareil sont
+désormais journalisés dès qu'un verdict d'authenticité est **rejeté** (`logOtaAuthenticityVerdict`,
+[`src/web_routes_ota.cpp`](../../src/web_routes_ota.cpp)). Motif : un manifeste signé via `echo`
+(qui ajoute un retour à la ligne final) au lieu de `printf '%s'` produit un verdict `kInvalid`
+**strictement indiscernable** d'une mauvaise clé sans ce diagnostic — c'est l'échec d'outillage le
+plus probable d'une première signature manuelle. Aucun secret exposé : le manifeste circule déjà en
+clair dans la requête HTTP.
+
+**Fichiers neufs de ce lot** :
+[`src/ota_manifest_binding_logic.h`](../../src/ota_manifest_binding_logic.h)/`.cpp`,
+[`test/test_native_ota_manifest_binding/`](../../test/test_native_ota_manifest_binding/).
+
+### Plancher de version — inerte en D1
+
+`otaVersionBelowFloor()` ([`src/ota_manifest_logic.h`](../../src/ota_manifest_logic.h)) existe et
+est déjà appelée dès D1, mais contre un plancher **figé à 0.0.0**
+(`kOtaVersionFloorDefaultMajor/Minor/Patch`, [`src/constants.h`](../../src/constants.h)) — jamais
+franchi par une version réelle du projet, donc `kBelowFloor` ne peut **jamais** survenir en D1.
+Aucune persistance NVS, aucun endpoint d'administration : ce sera D3/D5 (hors périmètre de ce
+lot), qui remplaceront ces deux constantes par une valeur persistée **sans toucher au prédicat
+pur lui-même** (même condition 10).
+
+### `ota_update.sh` — signe, et refuse d'envoyer sans outillage
+
+Chaque envoi est désormais **signé** : le script construit le manifeste canonique, le signe
+(`openssl dgst -sha256 -sign`) avec la clé privée locale (`$OTA_SIGNING_KEY`, défaut
+`~/.pool-ota/signing_key.pem`, `0600`), encode la signature en base64 et l'ajoute au multipart
+**avant** la partie fichier. ⛔ **Fail-closed** (condition 11 du verdict P1) : le script **refuse
+d'envoyer quoi que ce soit** si `openssl` est absent, ou si la clé est introuvable — vérifié en
+tête de script, **avant** toute invite de mot de passe admin ou tout appel réseau. ⚠️ La phrase
+de passe de la clé (chiffrée) est demandée par `openssl` lui-même, de façon **interactive** —
+jamais en argument, jamais en variable d'environnement (historique du shell, `/proc`), jamais
+écrite sur disque (décision utilisateur du 2026-10-18, « option B » : le vrai secret est cette
+phrase de passe, gardée dans la tête de l'utilisateur).
+
+⚠️ **Mode `both` : deux fichiers ⇒ deux signatures ⇒ deux saisies de phrase de passe**, annoncées
+**avant** la première invite (« Envoi firmware + filesystem ⇒ 2 signatures ⇒ la phrase de passe de
+la clé sera demandée 2 fois »). **Fusionner les deux saisies en une seule a été refusé** (revue de
+sécurité, 2026-10-18) : cela exigerait de garder la clé privée **déchiffrée en mémoire** entre les
+deux opérations de signature, ce qui romprait exactement la propriété que la décision B (ci-dessus)
+vient de choisir — le vrai secret ne doit jamais survivre plus longtemps que l'appel `openssl`
+strict qui en a besoin. Coût opérationnel assumé, pas un oubli.
+
+⚠️ **La version inscrite dans le manifeste est lue dans `src/version.h` de l'arbre de travail**, pas
+dans le binaire réellement envoyé (`$FIRMWARE_PATH`/`$FILESYSTEM_PATH`). Rien ne garantit qu'un
+`pio run` a suivi la dernière édition de `version.h` — un build oublié ferait signer une version
+déclarée qui ne correspond pas à l'image effectivement flashée. **Écart assumé** : mitigation
+actuelle, toujours compiler (`pio run`) immédiatement avant d'envoyer. Ce deviendra un **champ de
+sécurité réel** le jour où le plancher anti-retour en arrière (D5) s'appuiera sur cette version — à
+durcir à ce moment-là, pas avant.
+
+### `/check-update` — relais additif des URL `.sig`
+
+`firmware_sig_url` / `filesystem_sig_url` (chaîne vide si absents) relaient les assets
+`firmware.bin.sig` / `littlefs.bin.sig` de la release GitHub, pour que `/download-update` ait un
+jour quelque chose à vérifier. **Champs additifs**, non encore exploités côté page web en D1.
+
+### Honnêteté de la preuve par mutation
+
+Deux faits à consigner, plutôt que les lisser :
+
+- **Deux contrôles ont été retirés** de la logique pure pendant l'écriture de ce lot, après qu'une
+  mutation volontaire de chacun n'a fait mourir **aucun** test — preuve qu'ils étaient
+  **redondants** avec un contrôle déjà présent ailleurs dans la cascade. Un contrôle qu'aucune
+  mutation ne tue ne prouve rien : il a été retiré plutôt que conservé comme fausse garantie.
+- **Une mutation est restée non concluante** : le test ciblé est resté vert, mais par un **effet
+  de bord d'un comportement indéfini** du code muté, pas parce que le contrôle visé aurait
+  réellement rattrapé le défaut introduit. Le contrôle correspondant a néanmoins été **conservé**
+  — sa nécessité ne dépend pas de ce test précis — mais un « vert » obtenu de cette façon n'est
+  **pas une preuve**, et ne doit pas être compté comme tel dans un futur bilan de couverture par
+  mutation.
+
+### Tests natifs
+
+Quatre modules purs, testables en natif ([ADR-0017](../adr/0017-logique-metier-pure-humble-object-testabilite.md)) :
+[`test/test_native_ota_manifest/`](../../test/test_native_ota_manifest/) (grammaire + re-sérialisation),
+[`test/test_native_ota_base64/`](../../test/test_native_ota_base64/) (décodeur strict),
+[`test/test_native_ota_authenticity/`](../../test/test_native_ota_authenticity/) (combinateur de
+verdict), [`test/test_native_ota_manifest_binding/`](../../test/test_native_ota_manifest_binding/)
+(lot B1 — liaison manifeste ↔ image). Le vérificateur mbedtls lui-même (`src/ota_signature.cpp`)
+n'est **pas** testable en natif (mbedtls indisponible côté hôte) — logique volontairement réduite à
+un appel direct à `mbedtls_pk_verify`, sans branche métier propre à tester isolément.
 
 <a id="authentification-du-handler-dupload-v2462"></a>
 
@@ -342,7 +604,7 @@ Consigné pour **ne pas re-auditer la même route** : la question ne se rouvre q
 
 ### Ce que ce correctif ne fait PAS
 
-Il apporte l'**autorisation** de l'appelant, pas l'**authenticité** de l'image. La comparaison SHA-256 de l'upload manuel est désormais **obligatoire** (lot B, v2.67.0) — mais une empreinte **fournie par l'appelant** prouve l'intégrité du **transfert**, jamais l'authenticité de l'image, obligatoire ou non : elle ne dit rien de qui l'a produite. La règle de sécurité n° 6 de `CLAUDE.md` (« vérifier la signature/CRC avant flash ») n'est donc **toujours pas** satisfaite sur ce chemin : traité par [`feature-118`](../../specs/features/done/feature-118-authenticite-de-l-image-ota.md) (lots A et B livrés), la signature reste ouverte dans [feature-151](../../specs/features/todo/feature-151-signature-de-l-image-ota.md).
+Il apporte l'**autorisation** de l'appelant, pas l'**authenticité** de l'image. La comparaison SHA-256 de l'upload manuel est désormais **obligatoire** (lot B, v2.67.0) — mais une empreinte **fournie par l'appelant** prouve l'intégrité du **transfert**, jamais l'authenticité de l'image, obligatoire ou non : elle ne dit rien de qui l'a produite. La règle de sécurité n° 6 de `CLAUDE.md` (« vérifier la signature/CRC avant flash ») n'est donc **toujours pas** satisfaite sur ce chemin : traité par [`feature-118`](../../specs/features/done/feature-118-authenticite-de-l-image-ota.md) (lots A et B livrés), la signature reste ouverte dans [feature-151](../../specs/features/doing/feature-151-signature-de-l-image-ota.md).
 
 ### Verrou anti-upload concurrent (`/update`)
 
@@ -476,6 +738,12 @@ L'historique est **préservé** pendant une OTA filesystem car il vit sur une pa
 - [`src/ota_integrity.h`](../../src/ota_integrity.h) / [`src/ota_integrity_logic.h`](../../src/ota_integrity_logic.h) — vérification d'intégrité SHA-256 (`parseOtaSha256Param`, `otaUploadIntegrityVerdict`, `otaUploadIntegrityIsRejected` — feature-118 lots A/B, 22+13 tests natifs `test/test_native_ota_integrity/` + `test/test_native_ota_sha256_param/`)
 - [`test/test_native_ota_order_guard/`](../../test/test_native_ota_order_guard/) — garde structurelle (ordre du contrôle sha256 avant prise de propriété, refus « absente » hors du bloc `len >= 1` et `markUploadRejected` présent, `.setCacheControl` chaîné sur `serveStatic`, ordre des champs du `FormData`)
 - [`test/test_native_ota_update_fail_closed/`](../../test/test_native_ota_update_fail_closed/) — garde structurelle du fail-closed de `ota_update.sh` (échec de hachage avant l'appel `curl`)
+- [`src/ota_manifest_logic.h`](../../src/ota_manifest_logic.h)/`.cpp` — grammaire et re-sérialisation canonique du manifeste, plancher de version (`test/test_native_ota_manifest/`)
+- [`src/ota_base64_logic.h`](../../src/ota_base64_logic.h)/`.cpp` — décodeur base64 strict de la signature (`test/test_native_ota_base64/`)
+- [`src/ota_authenticity_logic.h`](../../src/ota_authenticity_logic.h)/`.cpp` — combinateur du verdict d'authenticité à sept issues (`test/test_native_ota_authenticity/`)
+- [`src/ota_signature.h`](../../src/ota_signature.h)/`.cpp` — vérification mbedtls RSA-3072/PKCS#1 v1.5/SHA-256
+- [`src/ota_manifest_binding_logic.h`](../../src/ota_manifest_binding_logic.h)/`.cpp` — lot B1, liaison manifeste ↔ image (`test/test_native_ota_manifest_binding/`)
+- [`test/test_native_ota_order_guard/`](../../test/test_native_ota_order_guard/) — gardes structurelles `[G5]`/`[G6]` (place des appels d'authenticité feature-151 D1, en plus des gardes `[G1]`-`[G4]` de feature-118)
 - [`test/sha256_vectors.js`](../../test/sha256_vectors.js) / [`tools/check_sha256_vectors.sh`](../../tools/check_sha256_vectors.sh) — vecteurs du SHA-256 JS extrait de `data/app.js`
 - [`src/ota_type_logic.h`](../../src/ota_type_logic.h) — logique pure du type d'image (`inferOtaKindFromFilename`, `checkOtaFirstByte` — 29 tests natifs `test/test_native_ota_type/`) ; miroir JS `detectUpdateType()` dans [`data/app.js`](../../data/app.js)
 - [`src/ota_check_logic.h`](../../src/ota_check_logic.h) — logique pure `/check-update` (`AllocBudget`, `utf8SafeCutLen`, `classifyOtaCheckFailure` depuis bug-165 — 20 tests natifs `test/test_native_ota_check/`, à mesurer plutôt qu'à recopier, ADR-0073)
@@ -483,5 +751,5 @@ L'historique est **préservé** pendant une OTA filesystem car il vit sur une pa
 - [`src/github_root_ca.h`](../../src/github_root_ca.h) — **5 racines auto-signées** (3 depuis v2.16.2, +2 Sectigo E46/R46 depuis bug-165, 2026-10-14) : USERTrust RSA + USERTrust ECC (github.com / api.github.com, exp. 2038), ISRG Root X1 (objects.githubusercontent.com, exp. 2035), Sectigo Public Server Authentication Root E46 (ECC, exp. 2046) + Root R46 (RSA, exp. 2046) — chaîne ECC/RSA actuelle d'api.github.com — empreintes SHA-256 vérifiées, sources consignées dans le header, conformité imposée en CI par [`tools/check_github_root_ca.sh`](../../tools/check_github_root_ca.sh) (voir [règle dédiée](#règle--une-ancre-de-confiance-est-toujours-la-variante-auto-signée-bug-checkupdate-tls-core3-bug-165-adr-0111) ci-dessus)
 - [`partitions.csv`](../../partitions.csv)
 - [docs/UPDATE_GUIDE.md](../UPDATE_GUIDE.md)
-- [ADR-0007](../adr/0007-table-partitions-custom.md), [ADR-0022](../adr/0022-verification-integrite-ota.md), [ADR-0096](../adr/0096-empreinte-sha256-obligatoire-sur-post-update.md), [ADR-0119](../adr/0119-reponse-check-update-bufferisee-en-psram-bornee.md)
-- [`specs/features/done/feature-118-authenticite-de-l-image-ota.md`](../../specs/features/done/feature-118-authenticite-de-l-image-ota.md), [`specs/features/todo/feature-151-signature-de-l-image-ota.md`](../../specs/features/todo/feature-151-signature-de-l-image-ota.md)
+- [ADR-0007](../adr/0007-table-partitions-custom.md), [ADR-0022](../adr/0022-verification-integrite-ota.md), [ADR-0096](../adr/0096-empreinte-sha256-obligatoire-sur-post-update.md), [ADR-0119](../adr/0119-reponse-check-update-bufferisee-en-psram-bornee.md), [ADR-0120](../adr/0120-signature-rsa-du-manifeste-ota-verifiee-avant-refus.md)
+- [`specs/features/done/feature-118-authenticite-de-l-image-ota.md`](../../specs/features/done/feature-118-authenticite-de-l-image-ota.md), [`specs/features/doing/feature-151-signature-de-l-image-ota.md`](../../specs/features/doing/feature-151-signature-de-l-image-ota.md)

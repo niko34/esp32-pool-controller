@@ -2,6 +2,100 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [2.86.0] - 2026-10-18
+
+> 🚨 **Ce lot NE REND AUCUN envoi OTA plus difficile.** Il ajoute le mécanisme de signature à clé
+> publique qui satisfera un jour la règle de sécurité n° 6 de `CLAUDE.md` — mais il **vérifie et
+> journalise seulement**, il **ne refuse rien**. L'OTA est le seul canal de déploiement de
+> l'appareil (pas de port série) : exiger une signature avant d'avoir prouvé l'outillage de bout
+> en bout sur le terrain rendrait l'appareil irrécupérable au moindre souci de clé.
+
+### Firmware
+
+- **OTA — signature à clé publique, lot D1 (feature-151).** Le firmware embarque désormais une
+  clé publique RSA-3072 (générée hors dépôt le 2026-10-18, empreinte SHA-256 du DER :
+  `844449550704da06b085d24a8ae2b079a349730d520e61824dc2816956a57ebb`) et vérifie, sur **les deux**
+  routes qui écrivent une partition (`POST /update`, `POST /download-update`), une signature
+  RSA-3072/PKCS#1 v1.5/SHA-256 portant sur un **manifeste** d'une ligne
+  (`pool-ota/1 <firmware|filesystem> <MAJ.MIN.PATCH> sha256:<64 hex>`), jamais sur l'image
+  elle-même. ⛔ **Ce lot ne refuse rien** : le verdict (sept issues — absente, malformée,
+  vérification impossible, invalide, genre discordant, sous le plancher, valide) est calculé et
+  **journalisé seulement**, à la place définitive retenue pour le lot qui activera le refus. Le
+  plancher anti-retour en arrière existe mais reste **inerte** (figé à 0.0.0). `ota_update.sh`
+  signe désormais chaque envoi et **refuse de l'envoyer** (fail-closed) sans `openssl` ou sans
+  clé privée locale — jamais de repli silencieux « sans signature ». La page web d'upload
+  n'envoie pas encore de signature (la clé privée ne peut structurellement pas vivre dans une
+  page servie en HTTP clair sur une IP de LAN) : verdict « absente », journalisé sans
+  conséquence. `GET /check-update` relaie en plus les URL `.sig` des assets de release
+  (`firmware_sig_url` / `filesystem_sig_url`, champs additifs, non encore exploités). Voir
+  [ADR-0120](docs/adr/0120-signature-rsa-du-manifeste-ota-verifiee-avant-refus.md) pour le schéma
+  retenu, ses alternatives écartées, et — point à ne jamais diluer — ce que ce mécanisme **ne**
+  protège **pas** : le vecteur « jeton admin volé » reste ouvert (l'interrupteur de secours prévu
+  pour le lot suivant se pose par une requête authentifiée, pas par un geste physique). Le gain
+  réel est la chaîne GitHub/TLS (compte ou dépôt compromis, jeton CI fuité, CDN, autorité de
+  certification) : ces acteurs obtiennent gratuitement un `digest` SHA-256 conforme, mais aucun
+  ne peut produire la signature.
+- **Tests** : trois nouveaux modules purs testés nativement — grammaire du manifeste et
+  re-sérialisation canonique (`test/test_native_ota_manifest/`), décodeur base64 strict
+  (`test/test_native_ota_base64/`), combinateur du verdict à sept issues
+  (`test/test_native_ota_authenticity/`). Deux contrôles retirés pendant l'écriture de ce lot
+  après qu'aucune mutation ne les a fait mourir (redondants avec un contrôle déjà présent
+  ailleurs) ; une mutation reste **non concluante** (le test est resté vert par un effet de bord
+  d'un comportement indéfini, pas par la vertu du contrôle visé) — le contrôle correspondant est
+  conservé, sa nécessité ne dépendant pas de ce test précis.
+- 🔴 **OTA — liaison manifeste ↔ image, lot B1 (correction de revue de sécurité du 2026-10-18).**
+  Le verdict d'authenticité ci-dessus ne prouvait pas que l'image **reçue** était celle que le
+  manifeste signé décrivait : l'empreinte du manifeste était signée… puis **jetée** — la seule
+  empreinte réellement comparée restait celle fournie en paramètre par l'appelant (feature-118).
+  Un manifeste authentiquement signé pour l'image A, envoyé avec l'image B, obtenait donc un
+  verdict « valide ». Nouveau module pur `ota_manifest_binding_logic`
+  (`test/test_native_ota_manifest_binding/`, verdict `kSkipped`/`kBound`/`kUnbound`) comparant
+  l'empreinte **déclarée** par le manifeste à une empreinte obtenue indépendamment, à **deux**
+  points sur **chacune** des deux routes (arrivée du manifeste, puis empreinte réellement calculée
+  sur les octets écrits) — **quatre** comparaisons au total. ⛔ **Toujours aucun refus** : D1
+  journalise seulement. Deux gardes structurelles neuves (`[G5]`/`[G6]`,
+  `test/test_native_ota_order_guard/`) figent désormais la **place** des blocs de vérification
+  d'authenticité : entre D1 et D3 il y a toute la campagne terrain D2, et D1 ne refusant rien, un
+  refactor qui déplacerait ces blocs ne ferait échouer aucune suite existante — D3 greffrait alors
+  son futur refus au mauvais endroit. Diagnostic additionnel : les octets canoniques re-sérialisés
+  sont désormais journalisés sur un verdict d'authenticité rejeté (le manifeste est public, aucun
+  secret exposé) — un piège d'outillage réel (`echo` au lieu de `printf`, qui ajoute un LF final)
+  produit sinon un `kInvalid` indiscernable d'une mauvaise clé.
+- **`ota_update.sh`** : annonce désormais « 2 signatures ⇒ 2 saisies » avant la première invite de
+  phrase de passe en mode `both`. Fusionner les deux saisies en une seule a été **refusé** : cela
+  exigerait de garder la clé privée déchiffrée en mémoire entre les deux signatures, contraire à
+  la décision B (la phrase de passe ne doit jamais survivre plus longtemps que l'appel `openssl`
+  strict qui en a besoin). La version inscrite dans le manifeste est lue dans `src/version.h` de
+  l'**arbre de travail**, pas dans le binaire réellement envoyé — écart assumé, mitigé par un
+  `pio run` systématique avant envoi ; deviendra un champ de sécurité (plancher) en D5.
+- `.gitignore` : motifs `*.pem`/`*.sig` restreints à la **racine** du dépôt (`/*.pem`, `/*.sig`)
+  plutôt que globaux — un motif global aurait silencieusement masqué une future ancre TLS `.pem`
+  versionnée ailleurs dans l'arbre (ex. `docs/incidents/`).
+
+### Documentation
+
+- `docs/API.md` : nouveaux paramètres `manifest`/`signature` sur `POST /update` et
+  `POST /download-update` ; nouveaux champs `firmware_sig_url`/`filesystem_sig_url` sur
+  `GET /check-update` — tous additifs, aucun refus associé en D1.
+- `docs/subsystems/ota-manager.md` : nouvelle section dédiée (les deux gardes et leur place, le
+  manifeste et sa re-sérialisation canonique, le schéma RSA-3072, la clé embarquée et son
+  empreinte, le verdict à sept issues, le plancher inerte, l'ordre D1→D5, ce que le mécanisme
+  protège et ne protège pas, l'honnêteté de la preuve par mutation) + section **B1** (liaison
+  manifeste ↔ image, les quatre points de comparaison, les gardes `[G5]`/`[G6]`, le diagnostic du
+  piège du LF, correction du commentaire inexact sur `kValid`).
+- `docs/API.md` : paramètres `manifest`/`signature` complétés — ce que le verdict `valide` ne
+  couvre pas (liaison à l'image), et le diagnostic des octets canoniques sur verdict rejeté.
+- `specs/features/doing/feature-151-signature-de-l-image-ota.md` : les deux gardes nommées et
+  placées **dans la spec** (condition 1 du verdict `security-reviewer` P1, jusqu'ici levée
+  seulement dans `docs/API.md`) ; notes du lot B1.
+- `docs/UPDATE_GUIDE.md` : nouvelle procédure « Signature des envois OTA » — la phrase de passe
+  demandée à chaque envoi, pourquoi, et le risque assumé si elle est perdue ou stockée.
+- `docs/adr/0120-signature-rsa-du-manifeste-ota-verifiee-avant-refus.md` **[nouveau]** : schéma
+  RSA-3072, `.sig` séparé, manifeste signé plutôt que l'image, ordre D1→D5, et la limite du
+  vecteur « jeton volé ».
+
+---
+
 ## [2.85.0] - 2026-10-18
 
 > ℹ️ **Dernier obstacle à la mise à jour en ligne depuis le passage du dépôt en public** (voir
@@ -1352,7 +1446,7 @@ au **second** redémarrage.
   empreinte non conforme reste refusée comme depuis feature-026. `/update` est désormais au
   **même niveau d'obligation** que `/download-update` ; la nature de la preuve (fournie par
   l'appelant) ne change pas — toujours pas une signature, voir
-  [feature-151](specs/features/todo/feature-151-signature-de-l-image-ota.md).
+  [feature-151](specs/features/doing/feature-151-signature-de-l-image-ota.md).
 - **Message de refus à deux causes** : il cite d'abord la cause la plus fréquente en
   pratique (page web en cache, chargée avant le déploiement du filesystem — rechargez-la),
   puis la cause scriptée (ordre des champs multipart). Trouvaille d'une observation
@@ -1400,7 +1494,7 @@ au **second** redémarrage.
   n'intervenait auparavant qu'en toute fin d'upload, après effacement **et réécriture** de
   la partition. **Ce mécanisme prouve l'intégrité du transfert, pas l'authenticité
   d'origine** — la règle de sécurité n° 6 de `CLAUDE.md` reste non satisfaite ; elle le sera
-  par une signature à clé publique, spec de suivi [feature-151](specs/features/todo/feature-151-signature-de-l-image-ota.md)
+  par une signature à clé publique, spec de suivi [feature-151](specs/features/doing/feature-151-signature-de-l-image-ota.md)
   ouverte dans ce même lot.
 
 ### Documentation
@@ -1414,7 +1508,7 @@ au **second** redémarrage.
 - [ADR-0081](docs/adr/0081-recensement-du-tas-et-non-livraison-de-la-lecture-de-contenu.md) :
   relecture du 2026-10-10 — le régime R2 reste conditionné, le déclencheur de réévaluation
   se déplace vers feature-151 (signature), pas vers feature-118.
-- `specs/features/todo/feature-151-signature-de-l-image-ota.md` [nouveau] : spec de suivi,
+- `specs/features/doing/feature-151-signature-de-l-image-ota.md` [nouveau] : spec de suivi,
   signature à clé publique et plancher de version anti-retour en arrière.
 
 ---

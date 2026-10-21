@@ -128,3 +128,99 @@ fi
 
 echo "OK — $latest_elf (attaché à l'étape 6) est une copie binaire identique de"
 echo "$ELF, tous deux vérifiés SANS /debug/heap_peek."
+
+# =============================================================================
+# S2 — SIGNATURES : une release signée, ou pas de release (feature-151, M1)
+# =============================================================================
+# ⚠️ POURQUOI CE CONTRÔLE EXISTE : `/check-update` cherche des assets
+# `firmware.bin.sig` et `littlefs.bin.sig`. Si la release n'en porte pas, les
+# champs `firmware_sig_url`/`filesystem_sig_url` restent VIDES et l'appareil
+# n'a rien à vérifier — la fonctionnalité meurt EN SILENCE. C'est exactement
+# ce qui s'est produit six semaines durant avec `littlefs.bin` (bug-170) :
+# un asset manquant ne fait échouer personne, il rend seulement la chose
+# inopérante sans un mot.
+#
+# ⭐ ET SURTOUT : on ne vérifie pas que les .sig EXISTENT, on vérifie qu'ils
+# sont VALIDES **POUR LA CLÉ QUE CE FIRMWARE EMBARQUE**. Le DER est extrait
+# de `src/constants.h` — donc du binaire qu'on s'apprête à publier, pas d'un
+# fichier à côté. Signer avec une autre clé (clé de test, clé périmée,
+# mauvaise machine) est ainsi arrêté AVANT publication, et non découvert par
+# l'appareil après coup.
+# ⛔ Un contrôle qui se contenterait de `test -f` ne protégerait de rien.
+# =============================================================================
+
+sig_tmp="$(mktemp -d)"
+trap 'rm -rf "$sig_tmp"' EXIT
+
+# DER de la clé publique, extrait du code qui part en flash.
+python3 - "$sig_tmp/pub.der" <<'PYEOF'
+import re, sys, pathlib
+src = pathlib.Path("src/constants.h").read_text()
+i = src.index("kOtaSigningPublicKeyDer[kOtaSigningPublicKeyDerLen] = {")
+j = src.index("};", i)
+data = bytes(int(x, 16) for x in re.findall(r"0x([0-9A-Fa-f]{2})", src[i:j]))
+if len(data) != 422:
+    sys.exit("ERREUR : DER embarque de taille inattendue (%d o)" % len(data))
+pathlib.Path(sys.argv[1]).write_bytes(data)
+PYEOF
+if [ ! -s "$sig_tmp/pub.der" ]; then
+  echo "ERREUR S2 : clé publique introuvable dans src/constants.h." >&2
+  exit 1
+fi
+openssl pkey -pubin -inform DER -in "$sig_tmp/pub.der" -out "$sig_tmp/pub.pem" 2>/dev/null || {
+  echo "ERREUR S2 : le DER embarqué dans src/constants.h n'est pas une clé publique lisible." >&2
+  exit 1
+}
+
+build_dir="$(dirname "$ELF")"
+sig_errors=0
+for genre in firmware filesystem; do
+  case "$genre" in
+    firmware)   bin="$build_dir/firmware.bin" ;;
+    filesystem) bin="$build_dir/littlefs.bin" ;;
+  esac
+  sig="$bin.sig"
+
+  if [ ! -f "$bin" ]; then
+    echo "ERREUR S2 : $bin absent — lancer 'pio run' et './build_fs.sh'." >&2
+    sig_errors=1
+    continue
+  fi
+  if [ ! -f "$sig" ]; then
+    {
+      echo "ERREUR S2 : $sig ABSENT."
+      echo "  → Sans lui, /check-update servira une URL de signature VIDE et"
+      echo "    l'appareil n'aura rien à vérifier : la fonctionnalité meurt en silence."
+      echo "  → Produire la signature avec la clé privée (hors dépôt) avant de publier."
+    } >&2
+    sig_errors=1
+    continue
+  fi
+
+  version=$(sed -n 's/.*FIRMWARE_VERSION[[:space:]]*"\([^"]*\)".*/\1/p' src/version.h)
+  digest=$( { sha256sum "$bin" 2>/dev/null || shasum -a 256 "$bin"; } | awk '{print $1}' )
+  manifest="$sig_tmp/manifest_$genre.txt"
+  printf '%s' "pool-ota/1 $genre $version sha256:$digest" > "$manifest"
+
+  if ! openssl dgst -sha256 -verify "$sig_tmp/pub.pem" -signature "$sig" "$manifest" >/dev/null 2>&1; then
+    {
+      echo "ERREUR S2 : la signature $sig NE CORRESPOND PAS à la clé embarquée."
+      echo "  Manifeste attendu (octets exacts, SANS saut de ligne final) :"
+      echo "    pool-ota/1 $genre $version sha256:$digest"
+      echo "  Causes les plus probables, dans l'ordre :"
+      echo "    1. signature produite avec une AUTRE clé privée que celle de src/constants.h ;"
+      echo "    2. 'echo' utilisé au lieu de 'printf %s' (saut de ligne final) ;"
+      echo "    3. binaire recompilé APRÈS la signature (l'empreinte a changé) ;"
+      echo "    4. src/version.h bumpé après la signature."
+    } >&2
+    sig_errors=1
+  fi
+done
+
+if [ "$sig_errors" -ne 0 ]; then
+  echo "⛔ Release REFUSÉE : signatures manquantes ou invalides." >&2
+  exit 1
+fi
+
+echo "OK — firmware.bin.sig et littlefs.bin.sig vérifiés contre la clé"
+echo "EMBARQUÉE dans src/constants.h (celle que l'appareil utilisera)."

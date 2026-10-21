@@ -242,6 +242,51 @@ Depuis la v2.11.0, **toute image téléchargée depuis GitHub est vérifiée par
 
 ---
 
+<a id="signature-des-envois-ota"></a>
+
+## Signature des envois OTA (feature-151 D1)
+
+⛔ **Ce que ce lot NE fait PAS** : il ne bloque **aucun** envoi, qu'il soit signé ou non. Le
+firmware **calcule et journalise** un verdict d'authenticité à chaque `POST /update` et `POST
+/download-update`, mais ne **refuse** rien dessus pour l'instant — le refus est un lot
+**ultérieur**, qui n'existera qu'une fois la preuve terrain de ce mécanisme faite avec succès.
+Cette prudence est volontaire : l'OTA est le **seul** canal de déploiement de cet appareil (pas de
+port série) — exiger une signature avant d'avoir prouvé que l'outillage fonctionne de bout en
+bout rendrait l'appareil **irrécupérable** au moindre souci de clé ou d'outillage.
+
+### Ce qu'il faut savoir dès maintenant si vous utilisez `ota_update.sh`
+
+Depuis ce lot, **chaque envoi via `ota_update.sh` est signé** (RSA-3072, clé privée locale, jamais
+versionnée). Concrètement :
+
+- La clé privée vit à `~/.pool-ota/signing_key.pem` (chiffrée, `0600`) — surchargeable par la
+  variable `OTA_SIGNING_KEY`.
+- **La phrase de passe de cette clé vous est demandée à chaque envoi**, de façon interactive par
+  `openssl` lui-même. Ce n'est **jamais** un geste ponctuel par release : chaque `ota_update.sh`
+  (plusieurs fois par jour en développement actif) la redemande. C'est volontaire — le vrai secret
+  est cette phrase de passe, gardée uniquement dans votre tête ; un conteneur compromis n'offrirait
+  à l'attaquant qu'un fichier chiffré inexploitable.
+- ⛔ **Ne stockez jamais cette phrase de passe** (ni en variable d'environnement, ni dans un
+  fichier à côté de la clé) : le jour où elle est stockée, la signature ne protège plus de rien.
+- **Si `openssl` est absent, ou si la clé est introuvable à l'emplacement attendu, le script
+  refuse d'envoyer** — avant même de contacter l'appareil (fail-closed, pas de repli silencieux
+  « sans signature »).
+
+⛔ **Perdre la clé privée sans en avoir conservé de copie hors-ligne bloquera les mises à jour** à
+partir du lot qui activera le refus (D3, pas celui-ci) — conservez **deux copies hors-ligne** de
+la clé chiffrée, en plus de la phrase de passe mémorisée.
+
+### Et la page web d'upload ?
+
+La page web n'envoie **pas encore** de manifeste signé (le navigateur n'a, et n'aura jamais, accès
+à la clé privée — publier la clé privée dans `data/app.js` annulerait tout l'intérêt du
+mécanisme). Les deux champs restent donc **absents** sur ce chemin pour l'instant : c'est le cas
+normal, journalisé sans aucune conséquence. La réponse à cette impasse (fichier `.sig` séparé
+téléversé en plus du binaire, ou autre option) sera documentée ici au moment où elle sera
+tranchée.
+
+---
+
 ## Notes de migration
 
 ### Migration layout v4 → v5 (flash 8 Mo) — depuis 2026-09-05

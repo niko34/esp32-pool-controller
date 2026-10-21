@@ -12,12 +12,28 @@
 #   2. Variable d'environnement POOL_PASSWORD : POOL_PASSWORD=monmotdepasse ./ota_update.sh
 #   3. Variable d'environnement POOL_TOKEN    : POOL_TOKEN=<api_token> ./ota_update.sh
 #   4. Saisie interactive si aucun des précédents n'est défini
+#
+# Signature OTA (feature-151 D1) :
+#   Chaque envoi est signé (RSA-3072/PKCS#1 v1.5/SHA-256) avec la clé privée
+#   locale — jamais versionnée. Emplacement : $OTA_SIGNING_KEY (défaut
+#   ~/.pool-ota/signing_key.pem, 0600). ⛔ FAIL-CLOSED : ce script REFUSE
+#   d'envoyer quoi que ce soit si openssl est absent OU si la clé est
+#   introuvable (condition 11 du verdict security-reviewer P1, feature-151).
+#   ⚠️ La phrase de passe de la clé (chiffrée AES-256-CBC) est demandée par
+#   openssl lui-même, de façon INTERACTIVE — jamais en argument, jamais en
+#   variable d'environnement (historique du shell, /proc), jamais écrite sur
+#   disque. Décision utilisateur du 2026-10-18 (feature-151, "option B") :
+#   le vrai secret est cette phrase de passe, gardée dans la tête de
+#   l'utilisateur — la clé chiffrée seule, si elle fuitait, est inexploitable.
 
 set -e
 
 TYPE="${1:-both}"
 ESP32_HOST="${2:-poolcontroller.local}"
 UPDATE_URL="http://$ESP32_HOST/update"
+
+# feature-151 D1 : clé privée de signature — HORS DÉPÔT, chiffrée, 0600.
+OTA_SIGNING_KEY="${OTA_SIGNING_KEY:-$HOME/.pool-ota/signing_key.pem}"
 
 # Environnement déployé : esp32dev_core3, seul env matériel depuis v2.42.1
 # (ADR-0069 ; core 3 par défaut depuis v2.20.4, ADR-0042). Surchargeable par
@@ -36,6 +52,57 @@ GREEN='\033[0;32m'
 BLUE='\033[0;34m'
 RED='\033[0;31m'
 NC='\033[0m'
+
+# feature-151 D1, condition 11 : REFUSE d'envoyer sans clé privée ET sans
+# openssl — vérifié ICI, AVANT toute invite de mot de passe admin ou tout
+# appel réseau : inutile de faire saisir un mot de passe pour une mise à jour
+# qui ne pourra de toute façon pas être signée.
+require_signing_tooling() {
+    if ! command -v openssl >/dev/null 2>&1; then
+        echo -e "${RED}❌ openssl introuvable — impossible de signer le manifeste OTA${NC}"
+        echo -e "${RED}   Installez openssl (coreutils de la plupart des distributions / macOS) — envoi refusé (fail-closed)${NC}"
+        return 1
+    fi
+    if [ ! -f "$OTA_SIGNING_KEY" ]; then
+        echo -e "${RED}❌ Clé privée de signature introuvable : $OTA_SIGNING_KEY${NC}"
+        echo -e "${RED}   Définissez OTA_SIGNING_KEY=<chemin> ou placez la clé à cet emplacement — envoi refusé (fail-closed)${NC}"
+        return 1
+    fi
+    return 0
+}
+if ! require_signing_tooling; then
+    exit 1
+fi
+
+# feature-151 D1 : version déclarée dans le manifeste. ⚠️ (revue de sécurité,
+# 2026-10-18) LUE DANS src/version.h DE L'ARBRE DE TRAVAIL, PAS dans le binaire
+# qui va être envoyé ($FIRMWARE_PATH/$FILESYSTEM_PATH) : rien ici ne garantit
+# que ce dernier a été compilé APRÈS ce commentaire de version.h — un `pio
+# run` oublié après une édition de src/version.h, ou un FIRMWARE_PATH pointant
+# vers une archive d'un build antérieur, ferait signer une version déclarée
+# qui NE CORRESPOND PAS à l'image réellement flashée. Mitigation : toujours
+# `pio run` juste avant d'envoyer (cf. docs/BUILD.md) — ce script ne le
+# vérifie pas lui-même (horodatage de build_src vs .bin, hors périmètre D1).
+# Hissée ICI (AVANT la résolution des credentials, M5 — revue du 2026-10-18) :
+# avec require_signing_tooling, c'est l'un des DEUX contrôles qui peuvent
+# refuser l'envoi avant toute saisie — inutile de faire taper un mot de passe
+# pour une version qu'on ne pourra de toute façon pas lire.
+FIRMWARE_MANIFEST_VERSION=$(sed -n 's/.*FIRMWARE_VERSION "\(.*\)".*/\1/p' src/version.h | head -1)
+if [ -z "$FIRMWARE_MANIFEST_VERSION" ]; then
+    echo -e "${RED}❌ Impossible de lire FIRMWARE_VERSION dans src/version.h — envoi refusé (fail-closed)${NC}"
+    exit 1
+fi
+
+# feature-151 D1, M3 (revue de sécurité, 2026-10-18) : `both` envoie deux
+# fichiers ⇒ signe deux manifestes ⇒ openssl redemande la phrase de passe de
+# la clé DEUX FOIS (une par appel à `sign_manifest`, cf. ci-dessous) — aucune
+# mise en cache n'est faite ICI (la clé privée déchiffrée ne doit jamais
+# rester en mémoire plus longtemps que le strict appel à openssl). Annoncé
+# AVANT la première invite : la spec prévenait qu'« une friction pareille finit
+# par être contournée » si elle surprend sans prévenir.
+if [ "$TYPE" = "both" ]; then
+    echo -e "${BLUE}ℹ️  Envoi firmware + filesystem ⇒ 2 signatures ⇒ la phrase de passe de la clé sera demandée 2 fois${NC}"
+fi
 
 # Résoudre les credentials
 AUTH_ARGS=()
@@ -73,6 +140,37 @@ compute_sha256() {
     fi
 }
 
+# feature-151 D1 : construit le manifeste CANONIQUE (grammaire stricte,
+# src/ota_manifest_logic.h) — "pool-ota/1 <kind> <version> sha256:<hex>" — et
+# le signe (RSA-3072/PKCS#1 v1.5/SHA-256). Résultat dans $MANIFEST_RESULT et
+# $SIGNATURE_RESULT (base64 standard, 512 caractères sans padding).
+# ⚠️ `printf '%s'`, JAMAIS `echo` : le piège du LF final est CONNU (D0) —
+# l'appareil re-sérialise le manifeste depuis les champs qu'il a parsés et
+# vérifie la signature sur CES octets ; un seul octet de différence (un LF en
+# trop côté signataire) romprait la vérification malgré une clé correcte.
+# ⚠️ Phrase de passe : demandée par `openssl` LUI-MÊME (clé chiffrée),
+# jamais interceptée ni stockée par ce script.
+sign_manifest() {
+    local kind=$1       # "firmware" ou "filesystem"
+    local version=$2
+    local digest=$3     # hex SANS préfixe "sha256:" (sortie de compute_sha256)
+    local manifest="pool-ota/1 ${kind} ${version} sha256:${digest}"
+    local sig_file err_file
+    sig_file=$(mktemp) || return 1
+    err_file=$(mktemp) || { rm -f "$sig_file"; return 1; }
+    if ! printf '%s' "$manifest" | openssl dgst -sha256 -sign "$OTA_SIGNING_KEY" -out "$sig_file" 2>"$err_file"; then
+        echo -e "${RED}❌ Échec de signature (phrase de passe incorrecte, ou clé invalide) :${NC}"
+        cat "$err_file" >&2
+        rm -f "$sig_file" "$err_file"
+        return 1
+    fi
+    rm -f "$err_file"
+    SIGNATURE_RESULT=$(openssl base64 -A -in "$sig_file")
+    rm -f "$sig_file"
+    MANIFEST_RESULT="$manifest"
+    return 0
+}
+
 update_file() {
     local file=$1
     local name=$2
@@ -100,10 +198,20 @@ update_file() {
     fi
     local sha256_args=(-F "sha256=sha256:${digest}")
 
+    # feature-151 D1 : manifeste + signature — AVANT curl, donc avant toute
+    # tentative réseau. `require_signing_tooling` a déjà validé openssl/clé en
+    # tête de script ; un échec ICI (phrase de passe incorrecte) reste
+    # possible et doit encore refuser l'envoi (fail-closed).
+    if ! sign_manifest "$type" "$FIRMWARE_MANIFEST_VERSION" "$digest"; then
+        echo -e "${RED}❌ Signature du manifeste échouée — envoi de $name refusé (fail-closed)${NC}"
+        return 1
+    fi
+    local signing_args=(-F "manifest=${MANIFEST_RESULT}" -F "signature=${SIGNATURE_RESULT}")
+
     echo -e "${BLUE}📤 Envoi de $name...${NC}"
     if ! response=$(curl -s --show-error --connect-timeout 10 --max-time 120 \
             -w "\n%{http_code}" -X POST "${AUTH_ARGS[@]}" \
-            -F "update_type=$type" "${sha256_args[@]}" -F "update=@$file" "$UPDATE_URL" 2>&1); then
+            -F "update_type=$type" "${sha256_args[@]}" "${signing_args[@]}" -F "update=@$file" "$UPDATE_URL" 2>&1); then
         echo -e "${RED}❌ curl a échoué pour $name :${NC}"
         echo "$response"
         return 1

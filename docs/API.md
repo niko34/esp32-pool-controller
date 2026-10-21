@@ -3021,9 +3021,64 @@ Une tentative non authentifiée est journalisée `WARNING` **au plus 1 fois/60 s
 
 > ⚠️ **ORDRE DES PARTIES DU MULTIPART — déterminant.** Le champ `sha256` doit **précéder** la partie fichier (`update_file`) dans le formulaire. ESPAsyncWebServer ne connaît un champ non-fichier qu'une fois sa partie du corps atteinte : un `sha256` envoyé **après** le fichier n'est pas encore lu à `index==0` et se voit comme **absent**, même si le client l'a bien envoyé — refus garanti. Les deux appelants officiels respectent cet ordre : `ota_update.sh` place `-F "sha256=…"` avant `-F "update=…"` dans la commande `curl`, et la page web ajoute `sha256` au `FormData` avant `update_file`.
 
-> ⚠️ **Ce que cette empreinte prouve, et ce qu'elle ne prouve pas.** L'empreinte est **calculée par l'appelant** : elle prouve que l'image écrite est celle qu'il a envoyée, **pas qui l'a produite** — même devenue obligatoire. Pour le **firmware**, l'IDF vérifie déjà l'image à l'activation (`Update.end(true)` → `esp_ota_set_boot_partition()`) ; l'empreinte ajoute la détection du **mauvais fichier**. Pour le **filesystem**, elle est la **seule** vérification d'intégrité. **La règle de sécurité n° 6 de `CLAUDE.md` n'est TOUJOURS PAS satisfaite** ; elle le sera par une signature à clé publique, voir la spec de suivi [feature-151](../specs/features/todo/feature-151-signature-de-l-image-ota.md). Le terme à employer reste **« intégrité du transfert »** — jamais « sécurité ».
+> ⚠️ **Ce que cette empreinte prouve, et ce qu'elle ne prouve pas.** L'empreinte est **calculée par l'appelant** : elle prouve que l'image écrite est celle qu'il a envoyée, **pas qui l'a produite** — même devenue obligatoire. Pour le **firmware**, l'IDF vérifie déjà l'image à l'activation (`Update.end(true)` → `esp_ota_set_boot_partition()`) ; l'empreinte ajoute la détection du **mauvais fichier**. Pour le **filesystem**, elle est la **seule** vérification d'intégrité. **La règle de sécurité n° 6 de `CLAUDE.md` n'est TOUJOURS PAS satisfaite** — le mécanisme qui la satisfera existe désormais ([feature-151](../specs/features/doing/feature-151-signature-de-l-image-ota.md) D1, ci-dessous), mais il ne **refuse** encore rien : voir le prochain encadré. Le terme à employer reste **« intégrité du transfert »** — jamais « sécurité ».
 >
-> `POST /download-update` n'est pas mieux armé : son paramètre `digest` est, lui aussi, **fourni par l'appelant**, et `isUrlAllowed()` ne contrôle que l'**hôte** (n'importe quel dépôt GitHub passe). Les deux routes sont désormais au **même niveau de preuve ET à la même obligation**.
+> `POST /download-update` n'est pas mieux armé : son paramètre `digest` est, lui aussi, **fourni par l'appelant**, et `isUrlAllowed()` ne contrôle que l'**hôte** (n'importe quel dépôt GitHub passe). Les deux routes sont désormais au **même niveau de preuve ET à la même obligation** — et reçoivent toutes les deux les mêmes paramètres additifs `manifest`/`signature` ci-dessous.
+
+<a id="authenticite-manifest-signature-feature-151-d1"></a>
+
+#### Champs `manifest` / `signature` — authenticité (feature-151 D1, additifs, ⛔ AUCUN refus)
+
+**feature-151 D1** ajoute deux paramètres **optionnels** au même multipart, **avant** la partie
+fichier (même contrainte d'ordre que `sha256` ci-dessus : un champ envoyé après `update_file` se
+lit comme absent) :
+
+| Champ | Format |
+|---|---|
+| `manifest` | Texte brut `pool-ota/1 <firmware\|filesystem> <MAJ.MIN.PATCH> sha256:<64 hex minuscules>` — grammaire **stricte**, aucune tolérance (LF, double espace, préfixe `v`, zéro de tête, casse) |
+| `signature` | Signature RSA-3072/PKCS#1 v1.5/SHA-256 du manifeste **re-sérialisé**, en base64 standard **sans padding** (512 caractères) |
+
+```bash
+curl -u admin:monmotdepasse -X POST \
+  -F "update_type=firmware" -F "sha256=sha256:<64 hex>" \
+  -F 'manifest=pool-ota/1 firmware 2.86.0 sha256:<64 hex>' \
+  -F "signature=<512 caractères base64>" \
+  -F "update=@.pio/build/esp32dev_core3/firmware.bin" \
+  http://poolcontroller.local/update
+```
+
+⛔ **D1 vérifie et JOURNALISE SEULEMENT — il ne refuse RIEN sur ce verdict.** Le firmware calcule
+un verdict d'authenticité à **sept** issues (`absente`, `malformée`, `vérification impossible`,
+`invalide`, `genre discordant`, `sous le plancher`, `valide`) et le journalise (`WARNING` si D3
+l'aurait refusé, `INFO` sinon, préfixe `[feature-151 D1]`) — mais **aucune requête n'est bloquée**
+par ce mécanisme en D1, que son manifeste soit authentique, falsifié, ou absent. Aujourd'hui,
+**aucun appelant officiel côté page web** ne les envoie encore (absence = cas normal, verdict
+`absente`) ; `ota_update.sh` les envoie systématiquement depuis ce même lot (voir
+[`docs/UPDATE_GUIDE.md`](UPDATE_GUIDE.md#signature-des-envois-ota)).
+
+Le refus (D3, lot **ultérieur**) est conditionné à une preuve terrain D2 réussie (quatre
+combinaisons script/page × firmware/filesystem journalisées « valide », et deux essais négatifs —
+sans signature, mauvaise clé — journalisés sans aucun effet de bord). Détail du mécanisme,
+de l'ordre D1→D5 imposé et de ce que la signature protège réellement (et ce qu'elle **ne**
+protège **pas** — le vecteur « jeton admin volé » reste ouvert) :
+[`docs/subsystems/ota-manager.md`](subsystems/ota-manager.md#d1--authenticite-par-signature-journalise-seulement-feature-151-verdict-security-reviewer-p1).
+
+🔴 **Ce que le verdict `valide` ne couvre PAS, et qui est vérifié séparément (lot B1, correction de
+revue du 2026-10-18)** : `kValid` prouve que le **manifeste** a été signé par la bonne clé — jamais
+qu'il décrit **cette image précise**. Un manifeste authentiquement signé pour une image A, envoyé
+avec une image B, obtenait auparavant un verdict d'authenticité « valide » sans que rien ne le
+contredise. Le firmware compare désormais l'empreinte **déclarée** par le manifeste à une empreinte
+obtenue indépendamment, à **deux** moments sur **chacune** des deux routes (à l'arrivée du
+manifeste, contre le paramètre `sha256`/`digest` déjà fourni ; puis contre l'empreinte **réellement
+calculée** sur les octets écrits) — verdict distinct « non applicable » / « liée » / « NON liée »,
+journalisé sous le préfixe `[feature-151 D1 B1]`. ⛔ **Toujours aucun refus en D1.** Détail et les
+quatre points de comparaison :
+[`docs/subsystems/ota-manager.md`](subsystems/ota-manager.md#b1--la-signature-ne-liait-rien-a-limage-feature-151-correction-de-revue-du-2026-10-18).
+
+Sur un verdict d'authenticité **rejeté**, le journal porte désormais aussi les **octets canoniques
+re-sérialisés** par l'appareil — aucun secret exposé, le manifeste circule déjà en clair dans la
+requête. Comparer ces octets à ce qui a réellement été signé permet de distinguer un piège
+d'outillage (`echo` ajoutant un LF final, au lieu de `printf '%s'`) d'une mauvaise clé.
 
 ```bash
 curl -u admin:monmotdepasse -X POST \
@@ -3094,11 +3149,15 @@ curl -u admin:monmotdepasse http://poolcontroller.local/check-update
   "firmware_url": "https://github.com/.../firmware.bin",
   "filesystem_url": "https://github.com/.../littlefs.bin",
   "firmware_digest": "sha256:ab12…",
-  "filesystem_digest": "sha256:cd34…"
+  "filesystem_digest": "sha256:cd34…",
+  "firmware_sig_url": "https://github.com/.../firmware.bin.sig",
+  "filesystem_sig_url": "https://github.com/.../littlefs.bin.sig"
 }
 ```
 
 Champs additifs v2.11.0 : `firmware_digest` / `filesystem_digest` — empreintes SHA-256 des assets (champ `digest` de l'API GitHub, format `sha256:<64 hex>`, chaîne vide si la release ne le fournit pas). L'UI les relaie en paramètre `digest=` de `/download-update` et **désactive le bouton Installer** si l'une des deux est vide (fail-closed).
+
+Champs additifs feature-151 D1 : `firmware_sig_url` / `filesystem_sig_url` — URL de l'asset `.sig` correspondant (`firmware.bin.sig` / `littlefs.bin.sig`) parmi les assets de la release, **chaîne vide** si absent (releases publiées avant ce lot, ou release sans `.sig`). ⛔ **Non encore exploités côté page web** en D1 — `/download-update` n'applique aucun refus fondé sur ces URL pour l'instant ; ils sont relayés pour que la page ait, un jour, quelque chose à aller chercher. Champ additif : un client qui l'ignore ne casse rien.
 
 La réponse contient aussi `release_name`, `published_at` et `release_notes` (corps de la release GitHub). Depuis la v2.10.4 ([ADR-0032](adr/0032-reponses-http-bornees.md)), `release_notes` est **tronqué à 2048 caractères** (`kOtaReleaseNotesMaxChars`) avec suffixe « … » : le corps d'une release n'est pas borné côté GitHub, la troncature borne la réponse HTTP construite en RAM. Depuis la v2.16.1, la coupe respecte les **frontières UTF-8** (un accent/emoji coupé en deux produisait un JSON invalide côté navigateur).
 
@@ -3252,6 +3311,8 @@ Paramètres POST :
 |---|---|---|
 | `url` | oui | URL de l'asset (`firmware.bin` ou `littlefs.bin`, hôtes whitelistés) |
 | `digest` | **oui** (v2.11.0) | Empreinte SHA-256 attendue, format `sha256:<64 hex>` (relayée depuis `/check-update`) |
+| `manifest` | non (feature-151 D1) | Même manifeste et même grammaire que [`POST /update`](#authenticite-manifest-signature-feature-151-d1) — ⛔ **journalisé seulement, aucun refus** en D1 |
+| `signature` | non (feature-151 D1) | Même format (RSA-3072, base64 sans padding, 512 caractères) — ⛔ **journalisé seulement, aucun refus** en D1 |
 | `restart` | non | `false` pour ne pas redémarrer après une installation filesystem réussie |
 
 Erreurs d'intégrité (fail-closed) :
@@ -3279,6 +3340,12 @@ Les corps des **trois** refus sont produits par le **même helper** (`refuseIfTl
 ✅ **Audité SAIN vis-à-vis de `bug-117` — pour une raison structurelle** (v2.46.2) : cette route est enregistrée en `server->on(url, HTTP_POST, lambda)` à **trois arguments**, donc **sans aucun handler de corps ni handler d'upload**. Il n'existe pas de point d'entrée exécuté avant le lambda de requête : `REQUIRE_AUTH(req, RouteProtection::CRITICAL)` s'exécute **nécessairement** avant tout accès à `Update`. Le défaut de `POST /update` ne peut pas s'y produire. Consigné ici pour ne pas re-auditer la même route : la question ne se rouvre que si un 4ᵉ ou 5ᵉ argument (corps / upload) est ajouté à cet enregistrement.
 
 **Position de la garde** (importante) : après la validation `url` / allowlist / `digest` (une requête malformée reste un `400`/`403`) et **avant** `WiFiClientSecure`, `setOtaInProgress()`, `LittleFS.end()` et tout effacement de partition — un refus n'a donc **aucun effet de bord** : pompes non gelées, filesystem non démonté, aucune partition touchée. Le WARN de refus est identique à celui de `/check-update`, préfixé `/download-update`.
+
+⚠️ **feature-151 D1** calcule et journalise le verdict d'authenticité (`manifest`/`signature`)
+à cette **même** place — avant la garde TLS ci-dessus, donc avant toute ouverture de session
+sortante — mais ⛔ **sans y conditionner aucun refus** (voir
+[`POST /update`](#authenticite-manifest-signature-feature-151-d1)). C'est la place **définitive**
+retenue pour D3 ; seul un `if` de refus s'y ajoutera.
 
 ---
 

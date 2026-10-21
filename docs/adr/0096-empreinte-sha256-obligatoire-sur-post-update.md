@@ -3,7 +3,7 @@
 - **Statut** : Accepté
 - **Date** : 2026-10-10
 - **Décideurs** : `security-reviewer` (P1 sur les trois issues, GO sous 9 conditions ; P2 sur le diff livré), `architect` (arbitrage entre les trois issues), `embedded-developer`, `web-ui-developer`, `pool-chemistry` (impact : `setOtaInProgress`), `code-reviewer`, `doc-writer`
-- **Spec(s) liée(s)** : [`feature-118`](../../specs/features/done/feature-118-authenticite-de-l-image-ota.md) (ce lot : lot A), [`feature-151`](../../specs/features/todo/feature-151-signature-de-l-image-ota.md) (suivi : signature), [`bug-117`](../../specs/features/done/bug-117-upload-ota-sans-verification-d-authentification.md) (prérequis, authentification de l'upload)
+- **Spec(s) liée(s)** : [`feature-118`](../../specs/features/done/feature-118-authenticite-de-l-image-ota.md) (ce lot : lot A), [`feature-151`](../../specs/features/doing/feature-151-signature-de-l-image-ota.md) (suivi : signature), [`bug-117`](../../specs/features/done/bug-117-upload-ota-sans-verification-d-authentification.md) (prérequis, authentification de l'upload)
 
 ## Contexte
 
@@ -22,7 +22,7 @@ Le point dur, trouvé en revue : **la page web d'upload ne peut pas calculer l'e
 
 **Ce que ce mécanisme prouve, et ce qu'il ne prouve pas — à ne jamais diluer.** L'empreinte est **calculée par l'appelant** : elle prouve que l'image écrite est celle qu'il a envoyée, **pas qui l'a produite**. Pour le **firmware**, l'IDF vérifie déjà l'image à l'activation (`Update.end(true)` → `esp_ota_set_boot_partition()`, `ESP_ERR_OTA_VALIDATE_FAILED` sur une image invalide) ; l'empreinte ajoute la détection du **mauvais fichier**, pas d'une image corrompue. Pour le **filesystem** (`U_SPIFFS`), **rien d'autre** ne vérifie l'intégrité de l'image reçue — l'empreinte y est la **seule** protection, et c'est là qu'est le gain réel de ce lot.
 
-**La règle de sécurité n° 6 de `CLAUDE.md` (« toujours vérifier la signature/CRC avant flash ») n'est PAS satisfaite par ce lot.** Elle ne peut l'être que par une signature à clé publique — reportée à [feature-151](../../specs/features/todo/feature-151-signature-de-l-image-ota.md), dont le périmètre inclut explicitement le cas où la page web ne peut, cette fois non plus, pas signer (la clé privée n'y vit pas). Le terme à employer pour ce lot est **« intégrité du transfert »** ; le mot « sécurité » ne qualifie jamais ce mécanisme dans la documentation du projet.
+**La règle de sécurité n° 6 de `CLAUDE.md` (« toujours vérifier la signature/CRC avant flash ») n'est PAS satisfaite par ce lot.** Elle ne peut l'être que par une signature à clé publique — reportée à [feature-151](../../specs/features/doing/feature-151-signature-de-l-image-ota.md), dont le périmètre inclut explicitement le cas où la page web ne peut, cette fois non plus, pas signer (la clé privée n'y vit pas). Le terme à employer pour ce lot est **« intégrité du transfert »** ; le mot « sécurité » ne qualifie jamais ce mécanisme dans la documentation du projet.
 
 ## Alternatives considérées
 
@@ -30,7 +30,7 @@ Le point dur, trouvé en revue : **la page web d'upload ne peut pas calculer l'e
 
 - **Issue 2 — Empreinte obligatoire sauf pour la page web, qui reste dispensée** (**écartée, pour une raison plus forte que son coût affiché**). Le coût apparent (« un fail-closed avec un trou nommé, au moins honnête ») est trompeur : **le firmware ne peut structurellement PAS distinguer la page web d'un `curl` quelconque.** Tout ce que voit le handler d'upload est un corps multipart et des en-têtes — rien n'identifie l'origine « page officielle » par opposition à n'importe quel client HTTP qui imiterait ses champs. Une exemption « page web » serait donc en réalité une exemption **universellement invocable** par quiconque omet le champ `sha256` : elle ne dispenserait pas un usage légitime précis, elle désarmerait le mécanisme pour tout le monde. C'est le pivot de cet arbitrage, pas un simple détail de coût.
 
-- **Issue 3 — Signature à clé publique, empreinte devenue sans objet** (**écartée pour ce lot, reportée**). Coût le plus élevé (génération et gestion de clé, vérification avant `Update.end()`, plancher de version anti-retour en arrière) — et **seule** option qui réponde pleinement à la règle n° 6. Écartée *pour ce lot*, pas rejetée : elle devient [feature-151](../../specs/features/todo/feature-151-signature-de-l-image-ota.md), avec le même point dur que l'issue 2 à trancher explicitement (la page web ne peut pas signer non plus — il lui faudrait un fichier `.sig` à téléverser en plus du `.bin`, ou une exemption, ce qui ramène exactement au dilemme ci-dessus). `esp_secure_boot` v2 est noté comme option **distincte**, à évaluer séparément : irréversible, exige un accès USB et la consommation d'eFuses, donc incompatible en l'état avec la contrainte « OTA seul canal de déploiement ».
+- **Issue 3 — Signature à clé publique, empreinte devenue sans objet** (**écartée pour ce lot, reportée**). Coût le plus élevé (génération et gestion de clé, vérification avant `Update.end()`, plancher de version anti-retour en arrière) — et **seule** option qui réponde pleinement à la règle n° 6. Écartée *pour ce lot*, pas rejetée : elle devient [feature-151](../../specs/features/doing/feature-151-signature-de-l-image-ota.md), avec le même point dur que l'issue 2 à trancher explicitement (la page web ne peut pas signer non plus — il lui faudrait un fichier `.sig` à téléverser en plus du `.bin`, ou une exemption, ce qui ramène exactement au dilemme ci-dessus). `esp_secure_boot` v2 est noté comme option **distincte**, à évaluer séparément : irréversible, exige un accès USB et la consommation d'eFuses, donc incompatible en l'état avec la contrainte « OTA seul canal de déploiement ».
 
 ## Conséquences
 
@@ -47,7 +47,7 @@ Le point dur, trouvé en revue : **la page web d'upload ne peut pas calculer l'e
 
 ### Ce que ça verrouille
 - Toute future route qui écrit une partition depuis une entrée réseau devra, par cohérence avec cet ADR, soit exiger une preuve d'origine **vérifiable indépendamment de l'appelant**, soit documenter explicitement qu'elle ne le fait pas — ne jamais présenter une empreinte auto-fournie comme une authentification.
-- Le régime de R2 (recensement du tas, [ADR-0081](0081-recensement-du-tas-et-non-livraison-de-la-lecture-de-contenu.md)) reste conditionné à l'absence d'authenticité OTA **jusqu'à la livraison de la signature** ([feature-151](../../specs/features/todo/feature-151-signature-de-l-image-ota.md)) — pas jusqu'à celle de ce lot, qui ne change pas l'argument du plafond OTA (un porteur d'identifiants CRITICAL a déjà l'exécution de code arbitraire via `/update`).
+- Le régime de R2 (recensement du tas, [ADR-0081](0081-recensement-du-tas-et-non-livraison-de-la-lecture-de-contenu.md)) reste conditionné à l'absence d'authenticité OTA **jusqu'à la livraison de la signature** ([feature-151](../../specs/features/doing/feature-151-signature-de-l-image-ota.md)) — pas jusqu'à celle de ce lot, qui ne change pas l'argument du plafond OTA (un porteur d'identifiants CRITICAL a déjà l'exécution de code arbitraire via `/update`).
 - L'exemption par origine perçue (« c'est la page officielle, donc on lui fait confiance ») est explicitement écartée comme motif recevable dans ce projet : elle a été nommée, chiffrée, et rejetée ici — une future relecture ne doit pas la réintroduire sans relire cette section.
 
 ## Addendum — 2026-10-11 (lot B livré : refus effectif)
@@ -56,7 +56,7 @@ Le lot B (v2.67.0) transforme le verdict journalisé par le lot A en **décision
 `kAbsent` et `kNonConform` sont désormais refusés (`kMalformed` l'était déjà depuis le lot
 A). **Rien de ce qui précède ne change** : l'empreinte reste calculée par l'appelant, elle
 prouve l'intégrité du transfert, jamais l'authenticité de l'origine, et la règle de sécurité
-n° 6 de `CLAUDE.md` reste non satisfaite (voir [feature-151](../../specs/features/todo/feature-151-signature-de-l-image-ota.md)).
+n° 6 de `CLAUDE.md` reste non satisfaite (voir [feature-151](../../specs/features/doing/feature-151-signature-de-l-image-ota.md)).
 
 **Une erreur de vérification corrigée dans ce lot, consignée pour ne pas se reproduire.**
 Une version intermédiaire du lot B avait ajouté, sur les 7 routes HTML, un remplacement
@@ -83,5 +83,5 @@ déjà chargé en mémoire du navigateur. Le remède reste le **rechargement** ;
 
 - Code : [`src/web_routes_ota.cpp`](../../src/web_routes_ota.cpp) (handler d'upload), [`src/ota_integrity_logic.h`](../../src/ota_integrity_logic.h)/[`.cpp`](../../src/ota_integrity_logic.cpp) (`parseOtaSha256Param`, `otaUploadIntegrityVerdict`, `otaUploadIntegrityIsRejected`), [`data/app.js`](../../data/app.js) (`createSha256`, `sha256OfFile`), [`ota_update.sh`](../../ota_update.sh) (`compute_sha256`, fail-closed lot B), [`src/constants.h`](../../src/constants.h) (`kOtaSha256MissingMessage`), [`src/web_server.cpp`](../../src/web_server.cpp) (`.setCacheControl("no-cache")` sur `serveStatic`)
 - Tests : `test/test_native_ota_integrity/`, [`test/test_native_ota_sha256_param/`](../../test/test_native_ota_sha256_param/), [`test/test_native_ota_order_guard/`](../../test/test_native_ota_order_guard/) (gardes G1-G4), [`test/test_native_ota_update_fail_closed/`](../../test/test_native_ota_update_fail_closed/), [`test/sha256_vectors.js`](../../test/sha256_vectors.js) + [`tools/check_sha256_vectors.sh`](../../tools/check_sha256_vectors.sh)
-- Spec : [`specs/features/done/feature-118-authenticite-de-l-image-ota.md`](../../specs/features/done/feature-118-authenticite-de-l-image-ota.md) (verdicts `security-reviewer` P1/P2, lots A et B), [`specs/features/todo/feature-151-signature-de-l-image-ota.md`](../../specs/features/todo/feature-151-signature-de-l-image-ota.md)
+- Spec : [`specs/features/done/feature-118-authenticite-de-l-image-ota.md`](../../specs/features/done/feature-118-authenticite-de-l-image-ota.md) (verdicts `security-reviewer` P1/P2, lots A et B), [`specs/features/doing/feature-151-signature-de-l-image-ota.md`](../../specs/features/doing/feature-151-signature-de-l-image-ota.md)
 - Doc externe : [`docs/API.md`](../API.md#post-update--critical), [`docs/subsystems/ota-manager.md`](../subsystems/ota-manager.md#lot-b-feature-118-empreinte-obligatoire-refus-effectif), [`docs/UPDATE_GUIDE.md`](../UPDATE_GUIDE.md)
