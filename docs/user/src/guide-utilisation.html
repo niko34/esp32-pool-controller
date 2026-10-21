@@ -1462,18 +1462,27 @@ spécial).</p>
 les <strong>mises à jour</strong>&nbsp;: en ligne d'un clic
 («&nbsp;Vérifier&nbsp;» puis «&nbsp;Mettre à jour&nbsp;» — si votre modèle
 ne le permet pas, un encart l'explique et renvoie à la mise à jour
-manuelle), ou manuelle par envoi d'un fichier — le type est reconnu
-automatiquement d'après le nom du fichier, une notice le confirme sous le
-sélecteur. Avant l'envoi, la page calcule une empreinte de contrôle du
-fichier directement dans votre navigateur («&nbsp;Calcul de
-l'empreinte…&nbsp;» s'affiche un instant) — rien à faire de votre côté,
-c'est automatique. On y trouve aussi le bouton <strong>Redémarrer</strong>
-(sans danger&nbsp;: aucun réglage n'est perdu) et la réinitialisation
-d'usine.</p>
+manuelle), ou manuelle par envoi de fichier. Avant l'envoi, la page calcule
+une empreinte de contrôle du fichier directement dans votre navigateur
+(«&nbsp;Calcul de l'empreinte…&nbsp;» s'affiche un instant) — rien à faire
+de votre côté, c'est automatique. On y trouve aussi le bouton
+<strong>Redémarrer</strong> (sans danger&nbsp;: aucun réglage n'est perdu)
+et la réinitialisation d'usine.</p>
+
+<p>La carte «&nbsp;Mise à jour manuelle&nbsp;» propose deux champs&nbsp;:
+l'<strong>image</strong> (le fichier <code>.bin</code>) et, facultatif, sa
+<strong>signature</strong> (le fichier <code>.sig</code> qui l'accompagne
+dans la même release). Il n'y a plus de sélecteur «&nbsp;Type&nbsp;» à
+choisir à la main&nbsp;: le type (firmware ou système de fichiers) est
+déterminé automatiquement, d'après la signature si vous l'avez fournie,
+sinon d'après le nom du fichier. Si vous téléchargez les deux fichiers
+d'une release, prenez-les <strong>ensemble, dans la même release</strong>
+— ne mélangez jamais le <code>.bin</code> d'une version avec le
+<code>.sig</code> d'une autre.</p>
 
 <figure>
   <img class="capture" src="../../../screenshots/10_Paramètres_7_Système_2.jpg" alt="Paramètres, onglet Système (mises à jour)">
-  <figcaption class="capture-legende">Les cartes de mise à jour&nbsp;: en ligne, ou par fichier.</figcaption>
+  <figcaption class="capture-legende">Les cartes de mise à jour&nbsp;: en ligne, ou par fichier (image et signature).</figcaption>
 </figure>
 
 <div class="box-alerte">
@@ -1482,6 +1491,17 @@ d'usine.</p>
   <strong>déjà ouvert avant une mise à jour</strong> de l'appareil&nbsp;: il a
   gardé l'ancienne page en mémoire. <strong>Rechargez la page</strong>
   (Ctrl-Maj-R, ou Cmd-Maj-R sur Mac) puis relancez l'envoi.</p>
+</div>
+
+<div class="box-alerte">
+  <span class="box-title">Envoi bloqué&nbsp;: le fichier et la signature ne correspondent pas</span>
+  <p>Si vous fournissez les deux fichiers et qu'ils ne décrivent pas la même
+  image, l'envoi est <strong>refusé</strong>, sans possibilité de passer
+  outre. C'est volontaire&nbsp;: dans le cas d'une mise à jour du système de
+  fichiers, une incohérence ne serait détectée qu'après le début de
+  l'écriture, et l'interface serait alors inaccessible jusqu'au prochain
+  envoi. Vérifiez que l'image et la signature viennent bien de la
+  <strong>même</strong> release, puis recommencez.</p>
 </div>
 
 <div class="box-alerte">

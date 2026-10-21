@@ -3047,6 +3047,46 @@ curl -u admin:monmotdepasse -X POST \
   http://poolcontroller.local/update
 ```
 
+<a id="fichier-sig-feature-151-d1-bis"></a>
+
+##### Fichier `.sig` (feature-151 D1-bis) — ce que l'opérateur manipule réellement
+
+Ces deux champs POST sont ceux que **l'appareil** reçoit. L'opérateur, lui, ne les tape jamais à
+la main : il manipule un **fichier `.sig`** de deux lignes, que la page web ou `ota_update.sh`
+lisent et répartissent dans `manifest` et `signature` :
+
+```
+ligne 1 : pool-ota/1 <firmware|filesystem> <MAJ.MIN.PATCH> sha256:<64 hex minuscules>
+ligne 2 : <signature RSA-3072 en base64, exactement 512 caractères, sans padding>
+```
+
+⛔ **Aucun saut de ligne final** dans la ligne 1 telle qu'elle est signée. La ligne 2 ne porte
+jamais de `=` de remplissage (base64 sans padding, 512 caractères exactement pour une signature
+RSA-3072). Produit par `.claude/commands/release.md` (étape 2ter) pour chaque release, ou par
+`./ota_update.sh --sign-only [firmware|filesystem|both]` en développement (aucun envoi réseau,
+aucun mot de passe d'appareil). Vérifié en CI par le job `sig-parse-vectors`
+(`tools/check_sig_parse_vectors.sh`) côté format, et par le bloc S2 de
+`tools/check_release_artefacts.sh` côté release (refuse un `.sig` qui n'a pas exactement 2
+lignes, une ligne 2 hors alphabet base64/512 caractères, ou des fins de ligne Windows).
+
+##### Carte « Mise à jour manuelle » (page web) — `update_type` n'est plus saisi, il est calculé
+
+Depuis la v2.86.0, le `<select id="update_type">` **a disparu** de la carte « Mise à jour
+manuelle ». La page ne transmet plus ce champ en le demandant à l'utilisateur : le genre est lu
+dans la ligne signée du `.sig` quand il est fourni, sinon déduit du **nom** du fichier `.bin`
+(même règle qu'au paragraphe « Détection du type par nom de fichier » plus bas), sinon
+`firmware` par défaut. `update_type` reste un champ POST **valide** pour tout appelant qui le
+construit lui-même (`ota_update.sh`, `curl`) — seule la **page** ne le propose plus en saisie.
+
+🔴 **La seule garde bloquante ajoutée côté page** : si un `.bin` et un `.sig` lisible sont tous
+deux fournis, la page compare l'empreinte SHA-256 qu'elle calcule du `.bin` (feature-118) à
+celle déclarée par la ligne signée du `.sig`. En cas de divergence, l'envoi est **refusé sans
+dérogation** côté page — avant même d'atteindre cette route. ⛔ Cette comparaison ne prouve rien
+sur l'origine du fichier (n'importe qui peut calculer une empreinte) : elle établit seulement
+que **ce** `.sig` décrit bien **ce** `.bin`, jamais que l'un ou l'autre est authentique.
+L'authenticité reste vérifiée par **l'appareil** via `manifest`/`signature` ci-dessus, et en
+D1/D2 elle est **journalisée seulement** — voir l'encadré « AUCUN refus » ci-dessus.
+
 ⛔ **D1 vérifie et JOURNALISE SEULEMENT — il ne refuse RIEN sur ce verdict.** Le firmware calcule
 un verdict d'authenticité à **sept** issues (`absente`, `malformée`, `vérification impossible`,
 `invalide`, `genre discordant`, `sous le plancher`, `valide`) et le journalise (`WARNING` si D3

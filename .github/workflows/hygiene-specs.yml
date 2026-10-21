@@ -423,3 +423,24 @@ jobs:
       # ubuntu-latest, aucune installation supplémentaire nécessaire.
       - name: Contrôle du paquet de racines TLS
         run: ./tools/check_github_root_ca.sh
+
+  sig-parse-vectors:
+    name: Vecteurs du parseur de signature OTA ".sig" (feature-151 D1-bis)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # Même script en local (`./tools/check_sig_parse_vectors.sh`) et en CI.
+      # Couvre les fonctions PURES `parseSigFile(text)` et
+      # `parseOtaManifestLine(line)` de `data/app.js`, qui valident le
+      # fichier ".sig" optionnel (2 lignes : manifeste signé en clair,
+      # signature base64) de la carte "Mise à jour manuelle" AVANT tout
+      # envoi — grammaire STRICTE en miroir de `src/ota_manifest_logic.
+      # {h,cpp}`. ⛔ Aucune cryptographie exécutée côté page (la page
+      # TRANSPORTE, l'appareil VÉRIFIE) : ce contrôle couvre le parsing et
+      # son rejet propre (nominal firmware/filesystem, tolérance \r\n et LF
+      # final unique, refus de tout contenu au-delà de la ligne 2, grammaire
+      # du manifeste et de la signature).
+      - name: Contrôle des vecteurs du parseur de signature OTA
+        run: ./tools/check_sig_parse_vectors.sh

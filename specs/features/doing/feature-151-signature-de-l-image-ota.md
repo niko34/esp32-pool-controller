@@ -414,3 +414,177 @@ exige la clé **et** la phrase de passe.
 ⇒ ⛔ `ota_update.sh` ne doit **jamais** accepter la phrase de passe par **argument** ni par
 **variable d'environnement** (elle finirait dans l'historique du shell et dans `/proc`) :
 **saisie interactive uniquement**, ⛔ jamais écrite sur disque.
+
+
+---
+
+# D1-bis — l'impasse de la page web est TRANCHÉE (2026-10-21)
+
+## ⭐ Pourquoi c'est un lot D1-**bis**, et pas un supplément de D3
+⚠️ **D2 exige 4 combinaisons : (script × page) × (firmware × système de fichiers).**
+⇒ ⛔ Sans ce lot, **la page ne peut pas participer à D2**. Il vient donc **AVANT** la campagne
+terrain, ⛔ pas après.
+
+## Le blocage, en une phrase
+⛔ **La page ne peut pas CONSTRUIRE le manifeste** : il contient la **version**, et le
+descripteur d'application du binaire porte un **hash git**, ⛔ pas la version SemVer (⭐ établi
+par `security-reviewer` en P1). ⇒ Elle ne peut que **TRANSPORTER**.
+
+## Décision : option **A** — le `.sig` devient un fichier de **2 lignes**
+```
+ligne 1 : pool-ota/1 <firmware|filesystem> <MAJ.MIN.PATCH> sha256:<64 hex>
+ligne 2 : <signature base64>
+```
+⛔ **Aucun changement cryptographique** : la signature porte **toujours** sur les octets
+**canoniques re-sérialisés par l'appareil**, ⛔ jamais sur le fichier reçu. ⛔ Et la ligne signée
+reste **sans LF final**.
+
+### ⚠️ Coût MESURÉ — ⛔ pas estimé
+- **`src/` : 0 ligne.** ⭐ Le firmware reçoit déjà `manifest` et `signature` comme **champs
+  POST** ; ⛔ il ne lit **jamais** un fichier `.sig`. ⇒ **Condition 10 intacte, aucune
+  régression de D1** (commité et poussé en `ae2bf87`).
+- Touchés : `tools/check_release_artefacts.sh` (bloc S2) · `.claude/commands/release.md`
+  (étape 2ter) · `data/app.js` · `docs/UPDATE_GUIDE.md` · `docs/API.md`. ≈ **40 lignes**.
+- ⛔ **Rien de publié n'est invalidé** : la **v2.85.0 ne porte aucun `.sig`** (vérifié sur l'API)
+  — le format brut de 384 o n'a **jamais** été livré.
+
+### ⚠️ Et il n'y a qu'UNE voie pour obtenir le manifeste
+`/download-update` **le lit** lui aussi comme champ POST, ⛔ il ne le **reconstruit** pas.
+⇒ ⚠️ Le format brut aurait **forcé** une reconstruction côté appareil depuis tag + digest, soit
+un **second site de construction** — ⛔ exactement le défaut qu'on voulait éviter.
+
+## 🔴 DÉCOUVERT EN MESURANT : CORS bloque la page
+⚠️ Les assets GitHub ⛔ **ne renvoient aucun** `Access-Control-Allow-Origin` ⇒ **le navigateur ne
+peut pas lire le `.sig`**.
+⇒ ⚠️ **Conséquence pour D3** : pour la **mise à jour en ligne**, `/check-update` devra relayer
+**le CONTENU** des deux lignes (~560 o), ⛔ **pas l'URL** — donc **une requête HTTPS de plus**
+dans la session TLS déjà ouverte.
+⭐ **Personne ne l'aurait vu avant D3**, au moment où ça aurait bloqué.
+
+## Revalidation `security-reviewer` — **GO** (2026-10-21)
+- **Format validé** : le manifeste est **public par construction** (genre, version, empreinte
+  sont **déjà** exposés par `/check-update` et par l'API GitHub). ⛔ Aucune surface neuve — un
+  `.sig` édité ⛔ ne peut produire qu'un **refus**, jamais une acceptation.
+- 🔴 **Le MÉLANGE de fichiers doit avoir son PROPRE verdict.** Prendre le `.bin` d'une version et
+  le `.sig` d'une autre donne une signature **valide** sur un manifeste **cohérent** : c'est la
+  **liaison** qui échoue (`kUnbound`, lot B1).
+  ⛔ **Ne JAMAIS le rendre `kInvalid`** — ce serait confondre « clé inconnue » et « mauvais
+  fichier », et envoyer l'utilisateur soupçonner **sa clé**.
+  ⇒ Libellé dédié : **« signature authentique, mais pas pour cette image »**.
+  ⚠️ **Et l'enjeu n'est pas cosmétique** : sur `/update`, la liaison n'échoue qu'**après**
+  `Update.begin()` ⇒ en mode **système de fichiers**, la partition est **déjà effacée**
+  (C1, tranché) ⇒ **interface perdue** jusqu'à un nouvel envoi.
+  ⭐ **Remède gratuit, côté page** : afficher **genre et version lus dans le `.sig`** AVANT
+  l'envoi, et comparer l'empreinte annoncée à celle du `.bin` (⚠️ la page sait **déjà** la
+  calculer, feature-118).
+- **Relais du contenu par `/check-update` : acceptable, et c'est la bonne place.** ⚠️ La session
+  TLS est **déjà ouverte**, le GET est minuscule et passe par le **lecteur borné de bug-173**.
+  ⛔ L'alternative (un GET dans `/download-update`) vérifierait **après** la garde TLS — **trop
+  tard**.
+- **Borne du `.sig` : 1 024 o** (2 lignes ≈ 100 + 512 + LF). ⛔ Lecture bornée par le **même
+  prédicat que bug-173**, ⛔ **jamais** un tampon dimensionné sur `Content-Length`. Au-delà ⇒
+  refus explicite, ⛔ sans effet de bord.
+
+## Le geste réel de l'utilisateur
+- **Depuis une release** : télécharger `firmware.bin` **et** `firmware.bin.sig` (2 clics), les
+  sélectionner dans la page. ⚠️ Première release concernée : **la prochaine**.
+- **En développement** : `./ota_update.sh --sign-only <genre>` dans le conteneur, puis récupérer
+  les deux fichiers. ⚠️ **Honnêtement plus pénible que le script** — ⭐ la page reste la voie de
+  **secours**, ⛔ pas la voie courante.
+- ⛔ Un `.sig` ne vaut que pour **CE binaire exact** et **CETTE version**. ⛔ Ne jamais mélanger
+  deux releases.
+
+## ⚠️ Ce que ça change pour la carte « Mise à jour manuelle »
+Le **sélecteur de type** devient **redondant** : le genre est dans la ligne signée et en
+deviendra l'**autorité** en D3 (condition 2). ⇒ **Candidat à disparaître** — étude
+`ux-ui-designer` en cours.
+
+## Étude `ux-ui-designer` — RENDUE (2026-10-21), sur capture de la carte réelle
+
+⚠️ **Mandat ENTIER** (règle du 2026-10-11) : densité, hiérarchie, libellés, états vides et
+d'erreur, cibles tactiles, responsive 390 px, **et tout choix visuel que ce lot impose**.
+⭐ Capture jointe au brief (`/tmp/claude-0/ota-systeme.png`) — ⛔ l'agent n'a pas de shell,
+c'est l'agent principal qui photographie.
+
+### Ce qui DISPARAÎT
+🔴 **Le sélecteur `<select id="update_type">`.** ⛔ Il demandait à l'humain une information que
+la ligne signée **affirme** — et que D3 rendra **autoritaire** (condition 2). Le garder, c'est
+offrir de contredire la signature.
+⇒ ⭐ **Un retrait, pas un ajout** — conforme au chantier de simplification (2026-10-09).
+
+### Ce qui APPARAÎT
+1. **Deux champs fichier empilés**, ⛔ jamais côte à côte (règle responsive : à 390 px un nom
+   de fichier ne partage pas sa ligne) :
+   - « **Image (.bin)** »
+   - « **Signature (.sig)** » — ⚠️ **facultative en D1/D2**, et le dire : sans elle, l'appareil
+     **journalise** `kSkipped` et n'a **rien** à vérifier.
+2. **Le type calculé vit dans le `.field__hint` du champ Signature**, ⛔ pas dans un `.field`
+   à lui : ce n'est plus une saisie, c'est une **conséquence**.
+3. **Récapitulatif compact au-dessus du bouton** : genre · version · empreinte (12 hex) —
+   ⛔ pas les 64, illisibles à 390 px.
+
+### Comparaison d'empreinte AVANT envoi — **bloquante, sans dérogation**
+⚠️ ⛔ **C'est la seule garde de ce lot qui refuse quelque chose**, et elle est **côté page**.
+**Pourquoi elle ne peut pas être « souple »** comme le garde-fou de type (feature-118) : sur
+`/update`, la liaison manifeste ↔ image n'échoue qu'**après** `Update.begin()` ⇒ en mode
+**système de fichiers**, la partition est **déjà effacée** ⇒ **interface perdue**.
+⛔ Un « Envoyer quand même » ici coûterait l'accès à l'appareil.
+⇒ `callout callout--warn`, bouton **désactivé**, ⛔ aucun bouton de passage outre.
+
+### Le bouton passe de `.btn--ok` à `.btn`
+⭐ **Le vert est réservé aux actions que la page a elle-même vérifiées.** Tant que la page ne
+faisait que transmettre, il était décoratif. Maintenant qu'elle **peut refuser**, le vert
+dirait « tout est vérifié » alors que l'**authenticité**, elle, est vérifiée par l'**appareil**.
+⇒ Neutre.
+
+### ⚠️ Corrigé en cours de lot (2026-10-21) — la phrase ci-dessus était FAUSSE
+🔴 **« C'est la seule garde de ce lot qui refuse quelque chose » (ligne ci-dessus) est erronée,
+et ce projet garde la trace de ses erreurs plutôt que de les effacer.** Il existe en réalité
+**DEUX** conditions de blocage côté page :
+1. La comparaison d'empreinte (B4, ci-dessus) — inchangée.
+2. La **lecture du `.sig`** (fichier trop volumineux, hors grammaire, etc.) — un `.sig` choisi
+   mais illisible bloque aussi l'envoi, tant qu'il n'est pas corrigé ou retiré.
+
+**Et la mise en œuvre initiale de `web-ui-developer` avait ajouté une TROISIÈME condition, à
+tort** : la divergence nom de fichier ↔ genre déclaré par la signature (ci-dessus, § 2) bloquait
+**elle aussi** l'envoi — y compris quand la comparaison d'empreinte venait de **PROUVER**
+(`bindingState === "match"`) que le manifeste signé décrit bien **ce fichier exact**.
+
+⛔ **C'est un défaut, pas une prudence supplémentaire.** `detectUpdateType()` est une
+**heuristique sur un nom** — un nom qu'un téléchargement, un renommage ou un navigateur peut
+avoir altéré. L'empreinte, elle, est **constatée sur les octets**. Faire gagner l'heuristique
+contre le constat revient à refuser un envoi que rien ne rend suspect — exactement le principe
+produit déjà posé le 2026-10-08 : *une garde qui bloque plus qu'elle ne protège est un défaut*.
+
+#### 🔴 ⚠️ Et la première rédaction de ce paragraphe disait « une **preuve** » — c'est FAUX
+⭐ Relevé par `security-reviewer` en P2 (2026-10-21), et c'est **le travers que ce projet
+redoute le plus** : un texte qui convainc son relecteur d'une vérification **qui n'a pas eu
+lieu**.
+⛔ **Une empreinte SHA-256 ne prouve RIEN sur l'origine** : n'importe qui peut en calculer une.
+Ce qu'elle établit, c'est la **LIAISON** — *ce manifeste décrit bien ces octets-là* — ⛔ jamais
+l'**AUTHENTICITÉ** — *ce manifeste vient bien du détenteur de la clé*.
+⇒ En D1/D2, ce qui gagne contre l'heuristique de nom n'est donc **pas** une preuve : c'est un
+document **non encore vérifié**, qui décrit exactement le fichier choisi. ⭐ Défendable — les
+deux fichiers viennent du même téléchargement — ⛔ mais à ne pas appeler autrement que ce que
+c'est.
+⇒ ⚠️ **La vérification d'authenticité vit DANS L'APPAREIL**, et en D1 elle **journalise**
+seulement. ⇒ **Aucun libellé de la page ne doit laisser croire qu'elle a vérifié une
+signature.**
+
+**Correctif** : la divergence nom↔genre ne bloque plus l'envoi quand `bindingState === "match"`
+— la notice reste affichée (elle informe : « le nom suggère X, mais l'empreinte confirme que la
+signature décrit bien Y »), mais en `callout--info`, pas `callout--warn`, et le bouton reste
+actif. Dans tous les autres cas (liaison pas encore prouvée, ou divergente), le blocage reste
+entier — la correction ne retire rien qui protège réellement.
+
+Décision extraite en fonction PURE testable : `otaManualSendBlocked({hasFile, sigReadState,
+typeConflict, bindingState})` (`data/app.js`), couverte par vecteurs et validée par mutation dans
+`test/sig_parse_vectors.js` (5 mutations supplémentaires, toutes tuées, dont l'inversion exacte
+du défaut initial).
+
+### Ce que l'agent a signalé SANS qu'on le lui demande
+- **Le nom de fichier doit être affiché en ENTIER**, pas tronqué : c'est le seul moyen pour
+  l'opérateur de voir qu'il a pris le `.sig` d'**une autre release** — ⛔ et `firmware.bin.sig`
+  et `firmware.bin.sig` d'une version voisine sont **visuellement identiques** sans la version.
+  ⇒ ⭐ C'est le récapitulatif (genre · **version** · empreinte) qui le rattrape.
+- **Aucune couleur neuve** : `callout--warn` et `callout--info` existent, ⛔ ne pas en inventer.

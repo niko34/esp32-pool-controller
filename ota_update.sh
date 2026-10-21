@@ -1,6 +1,15 @@
 #!/bin/bash
 # ota_update.sh - Mise à jour rapide sans recompilation
 # Usage: ./ota_update.sh [firmware|filesystem|both] [hostname] [password]
+#        ./ota_update.sh --sign-only [firmware|filesystem|both]
+#
+# --sign-only (feature-151 D1-bis) : produit le(s) fichier(s) ".sig" à côté
+# du/des binaire(s), SANS AUCUN envoi réseau et SANS mot de passe admin —
+# c'est le geste de développement qui alimente la carte "Mise à jour
+# manuelle" (celle-ci ne peut pas CONSTRUIRE le manifeste, voir
+# specs/features/doing/feature-151-signature-de-l-image-ota.md, section
+# D1-bis). Réutilise exactement `sign_manifest()`/`compute_sha256()` —
+# même format de fichier que `.claude/commands/release.md` (étape 2ter).
 #
 # Le paramètre [hostname] accepte :
 #   - Un nom mDNS : poolcontroller.local  (nécessite que le mDNS fonctionne sur le réseau)
@@ -27,6 +36,16 @@
 #   l'utilisateur — la clé chiffrée seule, si elle fuitait, est inexploitable.
 
 set -e
+
+# feature-151 D1-bis : `--sign-only` EN PREMIER ARGUMENT bascule tout le
+# script en mode local (aucune requête réseau, aucun mot de passe admin) —
+# shift pour que le genre (firmware|filesystem|both) retombe en $1, comme
+# en mode normal.
+SIGN_ONLY=0
+if [ "${1:-}" = "--sign-only" ]; then
+    SIGN_ONLY=1
+    shift
+fi
 
 TYPE="${1:-both}"
 ESP32_HOST="${2:-poolcontroller.local}"
@@ -74,50 +93,6 @@ if ! require_signing_tooling; then
     exit 1
 fi
 
-# feature-151 D1 : version déclarée dans le manifeste. ⚠️ (revue de sécurité,
-# 2026-10-18) LUE DANS src/version.h DE L'ARBRE DE TRAVAIL, PAS dans le binaire
-# qui va être envoyé ($FIRMWARE_PATH/$FILESYSTEM_PATH) : rien ici ne garantit
-# que ce dernier a été compilé APRÈS ce commentaire de version.h — un `pio
-# run` oublié après une édition de src/version.h, ou un FIRMWARE_PATH pointant
-# vers une archive d'un build antérieur, ferait signer une version déclarée
-# qui NE CORRESPOND PAS à l'image réellement flashée. Mitigation : toujours
-# `pio run` juste avant d'envoyer (cf. docs/BUILD.md) — ce script ne le
-# vérifie pas lui-même (horodatage de build_src vs .bin, hors périmètre D1).
-# Hissée ICI (AVANT la résolution des credentials, M5 — revue du 2026-10-18) :
-# avec require_signing_tooling, c'est l'un des DEUX contrôles qui peuvent
-# refuser l'envoi avant toute saisie — inutile de faire taper un mot de passe
-# pour une version qu'on ne pourra de toute façon pas lire.
-FIRMWARE_MANIFEST_VERSION=$(sed -n 's/.*FIRMWARE_VERSION "\(.*\)".*/\1/p' src/version.h | head -1)
-if [ -z "$FIRMWARE_MANIFEST_VERSION" ]; then
-    echo -e "${RED}❌ Impossible de lire FIRMWARE_VERSION dans src/version.h — envoi refusé (fail-closed)${NC}"
-    exit 1
-fi
-
-# feature-151 D1, M3 (revue de sécurité, 2026-10-18) : `both` envoie deux
-# fichiers ⇒ signe deux manifestes ⇒ openssl redemande la phrase de passe de
-# la clé DEUX FOIS (une par appel à `sign_manifest`, cf. ci-dessous) — aucune
-# mise en cache n'est faite ICI (la clé privée déchiffrée ne doit jamais
-# rester en mémoire plus longtemps que le strict appel à openssl). Annoncé
-# AVANT la première invite : la spec prévenait qu'« une friction pareille finit
-# par être contournée » si elle surprend sans prévenir.
-if [ "$TYPE" = "both" ]; then
-    echo -e "${BLUE}ℹ️  Envoi firmware + filesystem ⇒ 2 signatures ⇒ la phrase de passe de la clé sera demandée 2 fois${NC}"
-fi
-
-# Résoudre les credentials
-AUTH_ARGS=()
-if [ -n "${3}" ]; then
-    AUTH_ARGS=(-u "admin:${3}")
-elif [ -n "${POOL_PASSWORD}" ]; then
-    AUTH_ARGS=(-u "admin:${POOL_PASSWORD}")
-elif [ -n "${POOL_TOKEN}" ]; then
-    AUTH_ARGS=(-H "X-Auth-Token: ${POOL_TOKEN}")
-else
-    read -rsp "Mot de passe admin (poolcontroller.local) : " password
-    echo
-    AUTH_ARGS=(-u "admin:${password}")
-fi
-
 # feature-118 [O1] : empreinte SHA-256 du fichier, format "sha256:<64 hex
 # minuscule>" EXIGÉ par /update depuis le lot B (empreinte obligatoire — une
 # requête sans ce champ est refusée AVANT tout flash, cf.
@@ -129,6 +104,9 @@ fi
 # Le repli « envoi sans empreinte » du lot A a disparu : un appareil en lot B
 # refuserait cet envoi de toute façon, un script qui l'enverrait quand même
 # ferait croire à une tentative alors qu'elle est vouée à l'échec.
+# ⚠️ Déplacée ICI (feature-151 D1-bis) : `sign_only_file` (mode --sign-only,
+# ci-dessous) l'utilise AVANT la section "Résoudre les credentials" — cette
+# fonction et `sign_manifest` doivent donc être DÉFINIES avant ce point.
 compute_sha256() {
     local file=$1
     if command -v sha256sum >/dev/null 2>&1; then
@@ -170,6 +148,109 @@ sign_manifest() {
     MANIFEST_RESULT="$manifest"
     return 0
 }
+
+# feature-151 D1 : version déclarée dans le manifeste. ⚠️ (revue de sécurité,
+# 2026-10-18) LUE DANS src/version.h DE L'ARBRE DE TRAVAIL, PAS dans le binaire
+# qui va être envoyé ($FIRMWARE_PATH/$FILESYSTEM_PATH) : rien ici ne garantit
+# que ce dernier a été compilé APRÈS ce commentaire de version.h — un `pio
+# run` oublié après une édition de src/version.h, ou un FIRMWARE_PATH pointant
+# vers une archive d'un build antérieur, ferait signer une version déclarée
+# qui NE CORRESPOND PAS à l'image réellement flashée. Mitigation : toujours
+# `pio run` juste avant d'envoyer (cf. docs/BUILD.md) — ce script ne le
+# vérifie pas lui-même (horodatage de build_src vs .bin, hors périmètre D1).
+# Hissée ICI (AVANT la résolution des credentials, M5 — revue du 2026-10-18) :
+# avec require_signing_tooling, c'est l'un des DEUX contrôles qui peuvent
+# refuser l'envoi avant toute saisie — inutile de faire taper un mot de passe
+# pour une version qu'on ne pourra de toute façon pas lire.
+FIRMWARE_MANIFEST_VERSION=$(sed -n 's/.*FIRMWARE_VERSION "\(.*\)".*/\1/p' src/version.h | head -1)
+if [ -z "$FIRMWARE_MANIFEST_VERSION" ]; then
+    echo -e "${RED}❌ Impossible de lire FIRMWARE_VERSION dans src/version.h — envoi refusé (fail-closed)${NC}"
+    exit 1
+fi
+
+# feature-151 D1, M3 (revue de sécurité, 2026-10-18) : `both` envoie deux
+# fichiers ⇒ signe deux manifestes ⇒ openssl redemande la phrase de passe de
+# la clé DEUX FOIS (une par appel à `sign_manifest`, cf. ci-dessous) — aucune
+# mise en cache n'est faite ICI (la clé privée déchiffrée ne doit jamais
+# rester en mémoire plus longtemps que le strict appel à openssl). Annoncé
+# AVANT la première invite : la spec prévenait qu'« une friction pareille finit
+# par être contournée » si elle surprend sans prévenir.
+if [ "$TYPE" = "both" ]; then
+    echo -e "${BLUE}ℹ️  Envoi firmware + filesystem ⇒ 2 signatures ⇒ la phrase de passe de la clé sera demandée 2 fois${NC}"
+fi
+
+# =============================================================================
+# --sign-only (feature-151 D1-bis) : produit le(s) ".sig" et S'ARRÊTE LÀ.
+# ⛔ Aucune requête réseau, ⛔ aucun mot de passe admin requis dans ce mode —
+# c'est pourquoi ce bloc est placé AVANT "Résoudre les credentials" : inutile
+# de faire saisir un mot de passe admin pour une opération qui ne contactera
+# jamais l'appareil.
+# =============================================================================
+sign_only_file() {
+    local file=$1
+    local genre=$2  # "firmware" ou "filesystem"
+
+    if [ ! -f "$file" ]; then
+        echo -e "${RED}❌ Fichier introuvable : $file${NC}"
+        return 1
+    fi
+
+    local digest
+    if ! digest=$(compute_sha256 "$file"); then
+        echo -e "${RED}❌ Ni sha256sum ni shasum disponibles — impossible de calculer l'empreinte SHA-256${NC}"
+        return 1
+    fi
+
+    if ! sign_manifest "$genre" "$FIRMWARE_MANIFEST_VERSION" "$digest"; then
+        echo -e "${RED}❌ Signature du manifeste échouée — $file.sig NON produit${NC}"
+        return 1
+    fi
+
+    # ⚠️ Format 2 lignes STRICT — BIT POUR BIT identique au bloc produit par
+    # .claude/commands/release.md (étape 2ter) : deux producteurs du même
+    # format ne doivent jamais diverger. Ligne 1 = manifeste canonique (le
+    # \n qui suit est un séparateur de FICHIER, jamais signé — le message
+    # réellement signé est sans saut de ligne final, cf. sign_manifest) ;
+    # ligne 2 = signature base64 (openssl base64 -A, jamais repliée).
+    { printf '%s\n' "$MANIFEST_RESULT"; printf '%s\n' "$SIGNATURE_RESULT"; } > "$file.sig"
+    echo -e "${GREEN}✅ Signature produite : $file.sig${NC}"
+    return 0
+}
+
+if [ "$SIGN_ONLY" = "1" ]; then
+    case "$TYPE" in
+        firmware)
+            sign_only_file "$FIRMWARE_PATH" "firmware" || exit 1
+            ;;
+        filesystem|fs)
+            sign_only_file "$FILESYSTEM_PATH" "filesystem" || exit 1
+            ;;
+        both)
+            sign_only_file "$FIRMWARE_PATH" "firmware" || exit 1
+            sign_only_file "$FILESYSTEM_PATH" "filesystem" || exit 1
+            ;;
+        *)
+            echo "Usage: $0 --sign-only [firmware|filesystem|both]"
+            exit 1
+            ;;
+    esac
+    echo -e "${GREEN}✅ Terminé (signature seule, aucun envoi réseau) !${NC}"
+    exit 0
+fi
+
+# Résoudre les credentials
+AUTH_ARGS=()
+if [ -n "${3}" ]; then
+    AUTH_ARGS=(-u "admin:${3}")
+elif [ -n "${POOL_PASSWORD}" ]; then
+    AUTH_ARGS=(-u "admin:${POOL_PASSWORD}")
+elif [ -n "${POOL_TOKEN}" ]; then
+    AUTH_ARGS=(-H "X-Auth-Token: ${POOL_TOKEN}")
+else
+    read -rsp "Mot de passe admin (poolcontroller.local) : " password
+    echo
+    AUTH_ARGS=(-u "admin:${password}")
+fi
 
 update_file() {
     local file=$1

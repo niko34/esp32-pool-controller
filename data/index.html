@@ -2676,9 +2676,13 @@ action:
                     <div class="muted small" id="github_update_status">Téléchargement...</div>
                   </div>
 
+                  <!-- feature-151 D1-bis : neutre, pas btn--ok — le vert est réservé aux
+                       actions que la page a elle-même vérifiées ; l'authenticité de l'image
+                       est vérifiée par l'APPAREIL, pas par cette page (même règle que la carte
+                       "Mise à jour manuelle" ci-dessous — deux cartes, même geste, même couleur). -->
                   <div class="row row--gap">
                     <button class="btn" type="button" id="check_update_btn">Vérifier</button>
-                    <button class="btn btn--ok" type="button" id="install_update_btn" disabled>Mettre à jour</button>
+                    <button class="btn" type="button" id="install_update_btn" disabled>Mettre à jour</button>
                   </div>
                 </div>
               </div>
@@ -2688,20 +2692,25 @@ action:
                   <h2 class="card__title">Mise à jour manuelle</h2>
                 </div>
                 <div class="card__body">
+                  <!-- feature-151 D1-bis : le sélecteur de type a disparu (ux-ui-designer,
+                       2026-10-21) — le genre est désormais LU dans la ligne signée du .sig
+                       quand il est fourni (autorité en D3, condition 2), ou déduit du nom du
+                       fichier à défaut. Le garder aurait permis de CONTREDIRE la signature. -->
                   <label class="field">
-                    <span class="field__label">Type</span>
-                    <select id="update_type">
-                      <option value="firmware">Firmware (.bin)</option>
-                      <option value="filesystem">Système de fichiers (.bin)</option>
-                    </select>
+                    <span class="field__label">Image (.bin)</span>
+                    <input type="file" id="update_file" accept=".bin" />
+                    <span class="field__hint" id="update_file_hint"></span>
                   </label>
 
                   <label class="field">
-                    <span class="field__label">Fichier</span>
-                    <input type="file" id="update_file" accept=".bin" />
+                    <span class="field__label">Signature (.sig)</span>
+                    <input type="file" id="update_sig" accept=".sig" />
+                    <span class="field__hint" id="update_sig_hint">Facultative pour l'instant : sans elle, l'appareil n'a rien à vérifier.</span>
                   </label>
 
                   <div id="update_type_notice" class="callout" role="status" aria-live="polite" style="display:none;"></div>
+
+                  <div id="update_recap" class="callout callout--info" role="status" aria-live="polite" style="display:none;"></div>
 
                   <div id="update_progress" style="display:none;">
                     <div class="progress">
@@ -2710,8 +2719,11 @@ action:
                     <div class="muted small" id="update_status" role="status">Préparation…</div>
                   </div>
 
+                  <!-- feature-151 D1-bis : neutre, pas btn--ok — le vert est réservé aux
+                       actions que la page a elle-même vérifiées ; l'authenticité de l'image
+                       est vérifiée par l'APPAREIL, pas par cette page. -->
                   <div class="row row--gap">
-                    <button class="btn btn--ok" type="button" id="update_btn" disabled>Mettre à jour</button>
+                    <button class="btn" type="button" id="update_btn" disabled>Mettre à jour</button>
                   </div>
                 </div>
               </div>

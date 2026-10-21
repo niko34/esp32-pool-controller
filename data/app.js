@@ -58,6 +58,14 @@
   }
   const DEBUG = false;
 
+  // feature-151 D1-bis : borne du fichier ".sig" déposé sur la carte "Mise à
+  // jour manuelle" — arrêtée par security-reviewer. Un manifeste tient sur
+  // ~100 octets, une signature RSA-3072 en base64 sur 512, plus les deux LF
+  // de séparation : ~100 + 512 + 2 ≈ 614 o utiles. 1024 o laisse une marge
+  // large SANS ouvrir la porte à un fichier qui contiendrait autre chose
+  // qu'un .sig (le refus intervient AVANT toute lecture du contenu).
+  const OTA_SIG_MAX_BYTES = 1024;
+
   // ---------- WebSocket ----------
   let _ws = null;
   let _wsReconnectTimer = null;
@@ -11047,7 +11055,10 @@
 
   // Manual update (/update)
 
-  // Libellés des types, alignés sur les <option> de #update_type
+  // Libellés des genres "firmware"/"filesystem" — utilisés dans les messages
+  // de la carte "Mise à jour manuelle" (le <select> qui les affichait en
+  // <option> a disparu, feature-151 D1-bis : le genre est désormais calculé,
+  // jamais saisi — voir bindManualUpdate).
   const UPDATE_TYPE_LABELS = {
     firmware: "Firmware (.bin)",
     filesystem: "Système de fichiers (.bin)",
@@ -11082,6 +11093,100 @@
       cause = httpStatus ? `erreur HTTP ${httpStatus} — voir le Journal` : "cause inconnue — voir le Journal";
     }
     return cause;
+  }
+
+  // ---------------------------------------------------------------------
+  // Parseur PUR du fichier de signature OTA ".sig" (feature-151 D1-bis).
+  // Grammaire MIROIR de src/ota_manifest_logic.{h,cpp} — les deux fichiers
+  // évoluent ENSEMBLE, toute évolution de la grammaire touche les deux côtés
+  // dans le même lot. ⛔ Aucune cryptographie ici : la page ne fait que
+  // TRANSPORTER les deux lignes du fichier vers les champs POST
+  // "manifest"/"signature" — c'est L'APPAREIL qui vérifie la signature
+  // (crypto.subtle est indisponible : HTTP clair sur IP de LAN, contexte non
+  // sécurisé, feature-118).
+  //
+  // Format attendu — EXACTEMENT 2 lignes :
+  //   ligne 1 : pool-ota/1 <firmware|filesystem> <MAJ.MIN.PATCH> sha256:<64 hex>
+  //   ligne 2 : <signature base64, RSA-3072 ⇒ exactement 512 caractères, SANS padding>
+  // Tolère un \r\n (fichier produit sous Windows) et UN SEUL \n final.
+  // Refuse tout contenu au-delà de la ligne 2 (un \n final EN PLUS redevient
+  // un contenu, donc refusé — ⚠️ pas un simple "trim").
+  //
+  // Succès : { ok:true, manifest, signature, genre, version, digest }
+  //   - `manifest` est la ligne 1 SANS son \n (c'est elle, jamais le fichier
+  //     brut, qui part dans le champ POST "manifest").
+  //   - `digest` est l'empreinte SANS le préfixe "sha256:".
+  // Échec : { ok:false, code } avec code parmi "vide" (fichier vide),
+  // "lignes" (≠ 2 lignes utiles), "manifeste" (ligne 1 hors grammaire),
+  // "signature" (ligne 2 hors base64 strict / longueur ≠ 512).
+  //
+  // Vecteurs de test (extraction, ADR-0099) : test/sig_parse_vectors.js.
+  // ---------------------------------------------------------------------
+
+  // Parse la ligne 1 (le manifeste) — grammaire STRICTE, miroir de
+  // parseOtaManifest (src/ota_manifest_logic.cpp) : EXACTEMENT 4 jetons
+  // séparés par UN SEUL 0x20 (tout espace de tête/queue ou double produit un
+  // jeton vide supplémentaire, donc tokens.length !== 4 — même effet que le
+  // "spaceCount !== 3" du firmware). Genre = l'un des DEUX littéraux exacts
+  // (casse sensible). Version MAJ.MIN.PATCH, 1 à 5 chiffres par composant,
+  // AUCUN zéro de tête (sauf "0" seul). Empreinte "sha256:" + 64 hex
+  // STRICTEMENT minuscules (jamais A-F — le firmware ne normalise pas la
+  // casse).
+  function parseOtaManifestLine(line) {
+    const tokens = line.split(" ");
+    if (tokens.length !== 4) return null;
+    const [magic, kindTok, versionTok, hexTok] = tokens;
+    if (magic !== "pool-ota/1") return null;
+    let genre;
+    if (kindTok === "firmware") genre = "firmware";
+    else if (kindTok === "filesystem") genre = "filesystem";
+    else return null;
+    const versionMatch = /^(\d{1,5})\.(\d{1,5})\.(\d{1,5})$/.exec(versionTok);
+    if (!versionMatch) return null;
+    for (let i = 1; i <= 3; i++) {
+      const comp = versionMatch[i];
+      if (comp.length > 1 && comp[0] === "0") return null;  // zéro de tête interdit
+    }
+    if (!hexTok.startsWith("sha256:")) return null;
+    const hex = hexTok.slice(7);
+    if (!/^[0-9a-f]{64}$/.test(hex)) return null;  // 64 hex STRICTEMENT minuscules
+    return { genre, version: versionTok, digest: hex };
+  }
+
+  function parseSigFile(text) {
+    if (typeof text !== "string" || text.length === 0) {
+      return { ok: false, code: "vide" };
+    }
+    // Tolère \r\n (fichier produit sous Windows).
+    let normalized = text.replace(/\r\n/g, "\n");
+    // Tolère UN SEUL \n final ; un \n final EN PLUS laisse une ligne vide
+    // supplémentaire, donc du contenu au-delà de la ligne 2 — refusé plus bas.
+    if (normalized.endsWith("\n")) {
+      normalized = normalized.slice(0, -1);
+    }
+    const lines = normalized.split("\n");
+    if (lines.length !== 2 || lines[0].length === 0 || lines[1].length === 0) {
+      return { ok: false, code: "lignes" };
+    }
+    const manifestLine = lines[0];
+    const parsed = parseOtaManifestLine(manifestLine);
+    if (!parsed) {
+      return { ok: false, code: "manifeste" };
+    }
+    const signatureLine = lines[1];
+    // RSA-3072 ⇒ 384 octets bruts ⇒ EXACTEMENT 512 caractères base64 SANS
+    // padding (384 est un multiple de 3) — alphabet standard RFC 4648.
+    if (signatureLine.length !== 512 || !/^[A-Za-z0-9+/]{512}$/.test(signatureLine)) {
+      return { ok: false, code: "signature" };
+    }
+    return {
+      ok: true,
+      manifest: manifestLine,
+      signature: signatureLine,
+      genre: parsed.genre,
+      version: parsed.version,
+      digest: parsed.digest,
+    };
   }
 
   // ---------------------------------------------------------------------
@@ -11186,89 +11291,489 @@
     return hasher.hex();
   }
 
+  // ---------------------------------------------------------------------
+  // Décision PURE de blocage de l'envoi manuel (feature-151 D1-bis, correctif
+  // de revue — "le seul refus dur de ce lot" était FAUX, voir le paragraphe
+  // dédié dans specs/features/doing/feature-151-signature-de-l-image-ota.md,
+  // section D1-bis). Extraite pour être testable par vecteurs ET par
+  // mutation (test/sig_parse_vectors.js) : aucune logique de blocage ne doit
+  // vivre uniquement à l'intérieur d'un handler DOM.
+  //
+  // ⚠️ Le point qui a changé : une divergence "nom de fichier ↔ genre déclaré
+  // par la signature" (typeConflict) est une heuristique sur un NOM — qu'un
+  // téléchargement, un renommage ou un navigateur peut avoir altéré. Quand
+  // `bindingState === "match"`, l'empreinte SHA-256 du .bin PROUVE que le
+  // manifeste signé décrit CE fichier exact : le genre qu'il annonce est
+  // donc le bon, quel que soit le nom. Faire gagner l'heuristique contre la
+  // preuve bloquerait un envoi parfaitement sûr — c'est le principe produit
+  // du projet (« une garde qui bloque plus qu'elle ne protège est un
+  // défaut ») appliqué ici. `typeConflict` ne bloque donc plus que lorsque
+  // la liaison n'est PAS encore prouvée (bindingState !== "match").
+  //
+  // @param {boolean} hasFile - un .bin est sélectionné.
+  // @param {"empty"|"ok"|"error"} sigReadState - état de lecture du .sig.
+  // @param {boolean} typeConflict - genre du .sig ≠ type déduit du nom (B3).
+  // @param {"unknown"|"checking"|"match"|"mismatch"} bindingState - verdict
+  //   de liaison manifeste↔image (B4, comparaison d'empreinte).
+  // @return {boolean} true si l'envoi doit être bloqué.
+  // ---------------------------------------------------------------------
+  function otaManualSendBlocked({ hasFile, sigReadState, typeConflict, bindingState }) {
+    if (!hasFile) return true;
+    if (sigReadState === "error") return true;
+    if (bindingState === "checking" || bindingState === "mismatch") return true;
+    if (typeConflict && bindingState !== "match") return true;  // preuve > heuristique
+    return false;
+  }
+
+  // ---------------------------------------------------------------------
+  // Décision PURE (feature-151 D1-bis, revue de code — point D « capacité
+  // perdue, à rendre visible ») : quel variant de hint par défaut afficher
+  // sous le champ "Signature (.sig)" quand AUCUN .sig n'est chargé. Sans
+  // elle, `effectiveType()` peut retomber SILENCIEUSEMENT sur "firmware"
+  // quand le nom du `.bin` est indéterminé (ex. "image.bin") — ce variant le
+  // dit à l'opérateur, sans réintroduire le sélecteur retiré (B3). Ne touche
+  // JAMAIS le DOM : le texte et l'écriture de #update_sig_hint restent dans
+  // `renderSigHintDefaultState()` (bindManualUpdate), seule à connaître la
+  // couche DOM. "skip" = un .sig est déjà lu ou en échec : handleSigChange a
+  // déjà écrit un hint approprié, celui-ci ne doit RIEN écrire par-dessus.
+  //
+  // @return {"skip"|"no-file"|"deduced"|"defaulted"}
+  // ---------------------------------------------------------------------
+  function sigHintDefaultCase({ sigReadState, hasFile, typeFromName }) {
+    if (sigReadState !== "empty") return "skip";
+    if (!hasFile) return "no-file";
+    return typeFromName ? "deduced" : "defaulted";
+  }
+
   function bindManualUpdate() {
     const file = $("#update_file");
+    const sigInput = $("#update_sig");
     const btn = $("#update_btn");
-    const type = $("#update_type");
-    const notice = $("#update_type_notice");
+    const notice = $("#update_type_notice");  // B3 : genre du .sig ≠ type déduit du nom du .bin
+    const recap = $("#update_recap");         // A.6/B4 : récapitulatif + verdict de liaison manifeste↔image
+    const sigHint = $("#update_sig_hint");    // A.3 : type calculé + état de lecture du .sig
+    const fileHint = $("#update_file_hint");  // ux-ui-designer (point 2) : nom INTÉGRAL du .bin choisi
 
-    // Type déduit du fichier courant (null = indéterminé ou aucun fichier)
-    let detectedType = null;
+    // Revue de code (feature-151 D1-bis) : `file`/`btn` sont indispensables à
+    // tout ce qui suit (y compris l'appel INCONDITIONNEL à updateButtonState()
+    // en fin d'initialisation) — `bindManualUpdate()` est au MILIEU d'une
+    // chaîne d'initialisation (bindLogs(), bindSondesOnewire(),
+    // bindSensorTrace() la suivent) : une levée ici les emporterait toutes.
+    if (!file || !btn) return;
 
-    // Rendu de la notice. display:block est posé AVANT l'écriture du texte,
-    // dans une frame séparée : la région live doit exister dans l'arbre
-    // d'accessibilité avant sa mutation, sinon rien n'est annoncé.
-    function showNotice(kind, text) {
-      if (!notice) return;
-      notice.className = kind === "warn" ? "callout callout--warn" : "callout callout--info";
-      notice.style.display = "block";
-      requestAnimationFrame(() => {
-        notice.textContent = text;
-      });
-    }
-
-    function hideNotice() {
-      if (!notice) return;
-      notice.textContent = "";
-      notice.style.display = "none";
-    }
+    // --- État -----------------------------------------------------------
+    let sigParsed = null;         // résultat {ok:true,...} de parseSigFile, ou null
+    let sigReadState = "empty";   // "empty" | "ok" | "error"
+    let typeConflict = false;     // B3
+    let bindingState = "unknown"; // "unknown" | "checking" | "match" | "mismatch"
+    let bindingOtherHex = "";     // empreinte du .bin, affichée tronquée en cas d'écart (B4)
+    let bindingEpoch = 0;         // A1/A2 (revue de code) : écarte les rendus/verdicts PÉRIMÉS
+    const binDigestCache = { file: null, hex: null };  // clé = objet File par IDENTITÉ (jamais purgée par un changement de .sig — B, revue de code)
 
     function fileName() {
       return file && file.files && file.files.length ? file.files[0].name : "";
     }
-
+    function sigFileObj() {
+      return sigInput && sigInput.files && sigInput.files.length ? sigInput.files[0] : null;
+    }
+    // Un seul point d'écriture de #update_sig_hint (revue de code, point D) —
+    // l'élément peut être absent (DOM inattendu), jamais l'appelant qui en juge.
+    function setSigHint(text) {
+      if (!sigHint) return;
+      sigHint.textContent = text;
+    }
+    // ux-ui-designer (point 2) : le nom INTÉGRAL du .bin choisi — c'est le
+    // seul moyen de s'apercevoir qu'on a pris le fichier d'une autre release.
+    // ⛔ textContent uniquement (overflow-wrap:anywhere le fait passer à la
+    // ligne, app.css) — jamais de HTML concaténé avec un nom de fichier.
+    function setFileHint(text) {
+      if (!fileHint) return;
+      fileHint.textContent = text;
+    }
     function typeLabel(value) {
       return UPDATE_TYPE_LABELS[value] || value;
     }
+    function short12(hex) {
+      return hex ? hex.slice(0, 12) : "";
+    }
 
-    // Met la notice à jour selon la cohérence courante fichier ↔ type.
-    function refreshNotice() {
-      const name = fileName();
-      if (!name || !detectedType) {
-        hideNotice();  // Indéterminé = silence total
+    // ux-ui-designer (point 3) : un digest hexadécimal en police proportionnelle
+    // confond 1/l/I et 0/O — chasse fixe via <code>, construit en DOM
+    // (jamais innerHTML : voir le commentaire de showCallout ci-dessous).
+    function codeNode(text) {
+      const el = document.createElement("code");
+      el.textContent = text;
+      return el;
+    }
+    // ux-ui-designer (point 5) : phrase courte en gras en tête d'un callout
+    // --warn — le projet interdit de s'appuyer sur la couleur seule pour
+    // distinguer deux encadrés de même teinte empilés. Construit en DOM.
+    function strongNode(text) {
+      const el = document.createElement("strong");
+      el.textContent = text;
+      return el;
+    }
+    // ux-ui-designer (point 4) : idiome "en cours" DÉJÀ existant du projet
+    // (.btn__spinner, app.css:649, suit currentColor) — repris tel quel,
+    // ⛔ aucun indicateur neuf inventé. `display:inline-block` posé ICI (en
+    // style inline, pas une classe neuve) : `.btn__spinner` n'a jamais été
+    // utilisé ailleurs que comme enfant direct d'un `.btn` en flex, où le
+    // "blockification" des enfants flex rend sa largeur/hauteur explicites
+    // effectives — un <span> seul, inséré dans le flux de texte NORMAL d'un
+    // .callout (display:block, pas flex), les ignorerait sans ce style.
+    function spinnerNode() {
+      const el = document.createElement("span");
+      el.className = "btn__spinner";
+      el.style.display = "inline-block";
+      el.style.verticalAlign = "middle";
+      return el;
+    }
+
+    // display:block AVANT l'écriture du texte, dans une frame séparée : la
+    // région live doit exister dans l'arbre d'accessibilité avant sa
+    // mutation, sinon rien n'est annoncé (même motif que l'ancienne notice).
+    // ⚠️ `content` est une chaîne OU un tableau de (chaîne | Node) — jamais
+    // de HTML concaténé (ux-ui-designer, point 3) : un digest/un nom de
+    // fichier qui transiterait par innerHTML ouvrirait une régression XSS
+    // (risque local sur un appareil mono-utilisateur, mais aucune raison de
+    // l'ouvrir). Construction de fragment en DOM pur, purge explicite via
+    // `textContent = ""` (jamais innerHTML) avant d'ajouter les nœuds.
+    function showCallout(el, kind, content) {
+      if (!el) return;
+      el.className = "callout " + (kind === "warn" ? "callout--warn" : "callout--info");
+      el.style.display = "block";
+      const parts = Array.isArray(content) ? content : [content];
+      requestAnimationFrame(() => {
+        el.textContent = "";
+        parts.forEach((part) => {
+          el.appendChild(typeof part === "string" ? document.createTextNode(part) : part);
+        });
+      });
+    }
+    function hideCallout(el) {
+      if (!el) return;
+      el.textContent = "";
+      el.style.display = "none";
+    }
+
+    // Messages d'échec de lecture du .sig (B1/B2/B6) — un code par cause,
+    // jamais "erreur" générique.
+    const SIG_ERROR_MESSAGES = {
+      taille: (size) => `Fichier de signature trop volumineux (${size} o, maximum ${OTA_SIG_MAX_BYTES} o).`,
+      vide: () => "Fichier de signature vide.",
+      lignes: () => "Le fichier ne contient pas exactement 2 lignes (manifeste + signature).",
+      manifeste: () => "La ligne 1 ne respecte pas le format attendu du manifeste signé.",
+      signature: () => "La ligne 2 n'est pas une signature valide (512 caractères base64 attendus).",
+      lecture: () => "Impossible de lire le fichier de signature.",
+    };
+
+    // --- B3 : le genre n'est plus saisi, il est CALCULÉ ------------------
+    // Ordre d'autorité : (1) genre lu dans un .sig valide, (2) à défaut, nom
+    // du .bin (detectUpdateType), (3) à défaut, "firmware" par défaut.
+    //
+    // ⚠️ Correction de revue (feature-151 D1-bis) : le TEXTE de la notice
+    // dépend désormais de `bindingState` — une divergence nom↔genre est une
+    // heuristique sur un NOM, la comparaison d'empreinte (B4) établit une
+    // LIAISON (ces octets-là, ce manifeste-là) — JAMAIS une authenticité :
+    // seul l'appareil vérifie la signature elle-même (en D1, il se contente
+    // de la journaliser). Quand `bindingState === "match"`, la liaison est
+    // établie : la notice reste affichée (elle informe) mais passe en "info"
+    // — et c'est `otaManualSendBlocked` — pas cette fonction — qui décide de
+    // ne plus bloquer dans ce cas précis. ⛔ Zéro mot ici qui suggérerait que
+    // la PAGE a vérifié une authenticité qu'elle ne vérifie pas (revue de
+    // code, point C : « un texte qui convainc son lecteur d'une vérification
+    // qui n'a pas eu lieu » est le travers que ce projet redoute le plus).
+    function computeTypeConflict() {
+      const typeFromSig = sigParsed ? sigParsed.genre : null;
+      const typeFromName = detectUpdateType(fileName());
+      return { typeFromSig, typeFromName, conflict: !!(typeFromSig && typeFromName && typeFromSig !== typeFromName) };
+    }
+    function renderTypeNotice() {
+      const { typeFromSig, typeFromName, conflict } = computeTypeConflict();
+      typeConflict = conflict;
+      if (!conflict) {
+        hideCallout(notice);
         return;
       }
-      if (detectedType === type.value) {
-        showNotice("info",
-          `Type réglé sur « ${typeLabel(type.value)} » d'après le nom du fichier (${name}). Modifiable si besoin.`);
+      if (bindingState === "match") {
+        showCallout(notice, "info",
+          `Le nom du fichier (${fileName()}) ressemble à « ${typeLabel(typeFromName)} », mais la signature lue ` +
+          `déclare « ${typeLabel(typeFromSig)} » et l'empreinte du .sig correspond à ce fichier : c'est ce genre ` +
+          `qui sera envoyé. C'est l'appareil qui vérifie la signature elle-même.`);
       } else {
-        showNotice("warn",
-          `Le type sélectionné (« ${typeLabel(type.value)} ») ne correspond pas au nom du fichier (${name}). ` +
-          `Une image envoyée avec le mauvais type échoue, ou écrit dans la mauvaise partition.`);
+        // ux-ui-designer (point 5) : phrase courte en gras en tête — deux
+        // callouts --warn (celui-ci et #update_recap en mismatch) peuvent
+        // s'afficher ENSEMBLE, la couleur seule ne les distingue pas.
+        showCallout(notice, "warn", [
+          strongNode("Fichiers incohérents."),
+          ` La signature déclare « ${typeLabel(typeFromSig)} », mais le nom du fichier (${fileName()}) ` +
+          `ressemble à « ${typeLabel(typeFromName)} ». Envoi bloqué : vérifiez que vous n'avez pas mélangé ` +
+          `deux fichiers de versions ou de genres différents.`,
+        ]);
+      }
+    }
+    function effectiveType() {
+      const typeFromSig = sigParsed ? sigParsed.genre : null;
+      return typeFromSig || detectUpdateType(fileName()) || "firmware";
+    }
+
+    // ux-ui-designer (point 2) : nom INTÉGRAL du .bin, toujours visible sous
+    // le champ — seul moyen de remarquer qu'on a pris l'image d'une autre
+    // release (un `width:100%` sur le contrôle natif tronque SON propre
+    // libellé interne).
+    function renderFileHint() {
+      const name = fileName();
+      setFileHint(name ? `Fichier sélectionné : ${name}` : "");
+    }
+
+    // Rendu DOM de la décision PURE `sigHintDefaultCase` (module, hors de
+    // cette fonction) — ⛔ ne réintroduit pas le sélecteur retiré (B3) : la
+    // direction dangereuse reste fermée côté appareil (`checkOtaFirstByte`).
+    // Ne touche QUE le hint, jamais `sigReadState`/`sigParsed`/le bouton.
+    function renderSigHintDefaultState() {
+      const hasFile = !!(file.files && file.files.length);
+      const typeFromName = detectUpdateType(fileName());
+      const variant = sigHintDefaultCase({ sigReadState, hasFile, typeFromName });
+      switch (variant) {
+        case "skip":
+          return;  // "ok"/"error" déjà rendus par handleSigChange
+        case "no-file":
+          setSigHint("Facultative pour l'instant : sans elle, l'appareil n'a rien à vérifier.");
+          return;
+        case "deduced":
+          setSigHint(
+            `Facultative pour l'instant : sans elle, l'appareil n'a rien à vérifier. ` +
+            `Type déduit du nom du fichier : « ${typeLabel(typeFromName)} ».`);
+          return;
+        case "defaulted":
+          setSigHint(
+            `Facultative pour l'instant : sans elle, l'appareil n'a rien à vérifier. ` +
+            `Type retenu par défaut : « ${typeLabel("firmware")} » (nom non reconnu) — renommez le fichier ` +
+            `(ex. littlefs.bin) ou fournissez le .sig correspondant pour lever l'ambiguïté.`);
+          return;
       }
     }
 
-    file?.addEventListener("change", () => {
-      btn.disabled = !(file.files && file.files.length);
-      detectedType = detectUpdateType(fileName());
-      if (!detectedType) {
-        hideNotice();
+    // --- B4 : récapitulatif + comparaison d'empreinte AVANT envoi --------
+    // Seul refus BLOQUANT côté page, sans dérogation : sur /update, la
+    // liaison manifeste↔image n'échoue qu'APRÈS Update.begin() — en mode
+    // système de fichiers la partition est DÉJÀ effacée, donc un mélange
+    // accepté coûterait l'accès à l'appareil.
+    //
+    // ux-ui-designer (point 3) : le genre/version en texte, l'empreinte dans
+    // un <code> (chasse fixe — 1/l/I et 0/O se confondent en police
+    // proportionnelle). Toujours la MÊME base, qu'elle se rende seule
+    // (état neutre), suivie du spinner (point 4, "checking"), ou complétée
+    // par le verdict final (match/mismatch).
+    function recapBaseParts() {
+      return [
+        `${typeLabel(sigParsed.genre)} · version ${sigParsed.version} · empreinte `,
+        codeNode(short12(sigParsed.digest) + "…"),
+      ];
+    }
+    // ux-ui-designer (point 4) : distingue "calcul en cours" de "verdict posé"
+    // — les deux étaient en callout--info, rien ne les différenciait à l'œil.
+    // `pct` est `null` tant qu'aucune tranche n'a encore été hachée.
+    function renderRecapChecking(pct) {
+      showCallout(recap, "info", [
+        ...recapBaseParts(),
+        " — ",
+        spinnerNode(),
+        pct == null
+          ? " vérification de l'empreinte du fichier sélectionné…"
+          : ` vérification de l'empreinte du fichier sélectionné… ${pct}%`,
+      ]);
+    }
+    function renderRecap() {
+      if (!sigParsed) { hideCallout(recap); return; }
+      if (bindingState === "checking") { renderRecapChecking(null); return; }
+      if (bindingState === "match") {
+        showCallout(recap, "info", [...recapBaseParts(), " — correspond au fichier sélectionné."]);
+      } else if (bindingState === "mismatch") {
+        // ux-ui-designer (point 5) : phrase courte en gras en tête — peut
+        // s'afficher EN MÊME TEMPS que #update_type_notice (--warn lui aussi).
+        showCallout(recap, "warn", [
+          strongNode("Empreinte différente."),
+          " ",
+          ...recapBaseParts(),
+          " — NE correspond PAS à l'empreinte du fichier sélectionné (",
+          codeNode(bindingOtherHex + "…"),
+          "). Envoi bloqué : cette signature décrit probablement un autre fichier ou une autre version.",
+        ]);
+      } else {
+        showCallout(recap, "info", recapBaseParts());
+      }
+    }
+
+    // Regroupe les cinq rendus dépendants de l'état courant — TOUJOURS
+    // appelés ensemble (le hint par défaut, la notice et le récapitulatif
+    // dépendent de `bindingState`/`typeConflict`/`sigReadState`, le bouton
+    // dépend de tous ; le nom du .bin ne dépend que de `fileName()`, mais le
+    // rafraîchir ici aussi est sans effet de bord et évite un second point
+    // d'appel à tenir à jour).
+    function refreshDerivedUi() {
+      renderFileHint();
+      renderSigHintDefaultState();
+      renderTypeNotice();
+      renderRecap();
+      updateButtonState();
+    }
+
+    // Revue de code (points A1/A2) : `recomputeBinding()` peut être relancée
+    // AVANT que l'exécution précédente n'ait fini de hacher (changement de
+    // fichier rapproché). `bindingEpoch` distingue l'exécution COURANTE des
+    // exécutions PÉRIMÉES : la garde `stillSelected !== selected` de l'ancien
+    // code protégeait le VERDICT final mais pas le RENDU intermédiaire (la
+    // barre de progression d'un hachage périmé pouvait écraser un verdict
+    // déjà posé, et #update_recap est aria-live="polite" ⇒ un lecteur
+    // d'écran annonçait la contradiction) — un seul compteur couvre les deux.
+    async function recomputeBinding() {
+      const epoch = ++bindingEpoch;
+      const selected = file.files && file.files.length ? file.files[0] : null;
+      if (!sigParsed || !selected) {
+        bindingState = "unknown";
+        refreshDerivedUi();
         return;
       }
-      type.value = detectedType;  // Pré-réglage, toujours modifiable
-      refreshNotice();
+      bindingState = "checking";
+      refreshDerivedUi();
+      let hex;
+      try {
+        if (binDigestCache.file === selected && binDigestCache.hex) {
+          hex = binDigestCache.hex;  // déjà calculée — jamais deux fois le même hachage
+        } else {
+          hex = await sha256OfFile(selected, (ratio) => {
+            if (epoch !== bindingEpoch || !sigParsed) return;  // rendu périmé : on se tait (A1)
+            renderRecapChecking(Math.round(ratio * 100));
+          });
+          binDigestCache.file = selected;
+          binDigestCache.hex = hex;
+        }
+      } catch (e) {
+        // A2 : si c'est le hachage PÉRIMÉ qui échoue, ne pas réinitialiser un
+        // état dont un hachage COURANT est peut-être en train de prouver la
+        // liaison — le bouton se réactiverait pendant que la preuve est
+        // encore en cours.
+        if (epoch !== bindingEpoch) return;
+        console.error('[ota-sig] hachage échoué:', e);
+        bindingState = "unknown";
+        refreshDerivedUi();
+        return;
+      }
+      // Rendu/verdict PÉRIMÉS : un calcul plus récent a déjà pris la main (A1),
+      // ou la signature a été retirée/changée pendant le hachage.
+      if (epoch !== bindingEpoch || !sigParsed) return;
+      if (hex === sigParsed.digest) {
+        bindingState = "match";
+        bindingOtherHex = "";
+      } else {
+        bindingState = "mismatch";
+        bindingOtherHex = short12(hex);
+      }
+      refreshDerivedUi();
+    }
+
+    // --- Lecture du .sig (B1/B2) ------------------------------------------
+    // Revue de code, point B : AUCUNE purge de `binDigestCache` ici — ce
+    // cache mémorise l'empreinte du `.bin`, qui ne dépend EN RIEN du `.sig`
+    // choisi. Sa clé est l'objet `File` du `.bin` comparé par IDENTITÉ : un
+    // nouveau `.bin` produit TOUJOURS un nouvel objet, le cache ne peut donc
+    // structurellement pas servir l'empreinte d'un autre fichier. Le purger
+    // ici re-hachait inutilement jusqu'à 1,3 Mo en JS pur sur le thread
+    // principal à chaque changement de `.sig`, pour rien.
+    //
+    // Revue de code, point A3 : deux changements de `.sig` rapprochés
+    // lancent deux instances de cette fonction ; `File.text()` ne résout pas
+    // forcément dans l'ordre des événements. `sf !== sigFileObj()` après le
+    // SEUL point `await` de cette fonction détecte une résolution PÉRIMÉE
+    // (un `.sig` plus récent a déjà pris la main) et abandonne avant de rien
+    // écrire — sans lui, le `.sig` précédent pourrait "gagner".
+    // ux-ui-designer (point 2) : le nom du .sig CHOISI, en texte intégral, en
+    // tête du hint existant — pas un troisième encadré. C'est le seul moyen
+    // de remarquer qu'on a pris le .sig d'une AUTRE release (deux fichiers
+    // `firmware.bin.sig` de versions voisines sont visuellement identiques
+    // sans leur nom). Appliqué à TOUT état où un .sig a RÉELLEMENT été choisi
+    // (succès ET échecs de lecture) — pas à l'état par défaut sans .sig, qui
+    // n'a aucun nom à montrer (`renderSigHintDefaultState`).
+    function setSigHintForFile(sf, message) {
+      setSigHint(`${sf.name} — ${message}`);
+    }
+
+    async function handleSigChange() {
+      const sf = sigFileObj();
+      if (!sf) {
+        sigParsed = null;
+        sigReadState = "empty";
+        await recomputeBinding();  // recalcule aussi le hint/la notice (B3) via refreshDerivedUi
+        return;
+      }
+      // B2 : refus AVANT toute lecture, borne arrêtée par security-reviewer.
+      if (sf.size > OTA_SIG_MAX_BYTES) {
+        sigParsed = null;
+        sigReadState = "error";
+        setSigHintForFile(sf, SIG_ERROR_MESSAGES.taille(sf.size));
+        await recomputeBinding();
+        return;
+      }
+      let text;
+      try {
+        text = await sf.text();
+      } catch (e) {
+        if (sf !== sigFileObj()) return;  // A3 : lecture périmée, un .sig plus récent a déjà pris la main
+        console.error('[ota-sig] lecture du .sig échouée:', e);
+        sigParsed = null;
+        sigReadState = "error";
+        setSigHintForFile(sf, SIG_ERROR_MESSAGES.lecture());
+        await recomputeBinding();
+        return;
+      }
+      if (sf !== sigFileObj()) return;  // A3 : lecture périmée, un .sig plus récent a déjà pris la main
+      const result = parseSigFile(text);
+      if (!result.ok) {
+        sigParsed = null;
+        sigReadState = "error";
+        setSigHintForFile(sf, (SIG_ERROR_MESSAGES[result.code] || SIG_ERROR_MESSAGES.lecture)());
+        await recomputeBinding();
+        return;
+      }
+      sigParsed = result;
+      sigReadState = "ok";
+      // "lue", jamais "vérifiée" (revue de code, point C) : seul l'appareil
+      // vérifie la signature — en l'état (D1), il la JOURNALISE seulement,
+      // le refus d'une signature invalide n'est pas encore activé (D3).
+      setSigHintForFile(sf,
+        `Signature lue — type « ${typeLabel(result.genre)} », version ${result.version}. ` +
+        `L'appareil journalise la signature pour l'instant (vérification avec refus : à venir).`);
+      await recomputeBinding();
+    }
+
+    // --- État global du bouton --------------------------------------------
+    // Décision déportée dans la fonction PURE otaManualSendBlocked (feature-151
+    // D1-bis, correctif de revue) : testable par vecteurs ET par mutation,
+    // hors de portée d'un handler DOM.
+    function updateButtonState() {
+      const hasFile = !!(file.files && file.files.length);
+      btn.disabled = otaManualSendBlocked({ hasFile, sigReadState, typeConflict, bindingState });
+    }
+
+    // `file`/`btn` sont garantis non nuls par le garde-fou en tête de
+    // fonction : les `?.` qui les protégeaient ici n'ont plus d'objet.
+    file.addEventListener("change", () => {
+      recomputeBinding();  // recalcule aussi le hint/la notice (B3) via refreshDerivedUi
     });
 
-    type?.addEventListener("change", refreshNotice);
+    sigInput?.addEventListener("change", () => { handleSigChange(); });
 
-    btn?.addEventListener("click", async () => {
+    renderFileHint();
+    renderSigHintDefaultState();
+    updateButtonState();
+
+    btn.addEventListener("click", async () => {
       if (!(file.files && file.files.length)) return;
-
-      // Garde-fou SOUPLE : jamais de blocage dur, un clic suffit à passer outre.
-      if (detectedType && detectedType !== type.value) {
-        const ok = await confirmDialog({
-          title: "Type de mise à jour incohérent",
-          message: `Le fichier « ${fileName()} » ressemble à une image « ${typeLabel(detectedType)} ».\n\n` +
-                   `Vous avez sélectionné le type « ${typeLabel(type.value)} ».\n\n` +
-                   `Envoyer quand même ?`,
-          confirmLabel: "Envoyer quand même",
-          cancelLabel: "Annuler",
-          danger: true,
-        });
-        if (!ok) return;  // Sortie silencieuse, aucun état modifié
-      }
+      if (btn.disabled) return;  // double sécurité (B4, refus dur sans dérogation)
 
       const selectedFile = file.files[0];
+      const finalType = effectiveType();
 
       const progressWrap = $("#update_progress");
       const bar = $("#update_progress_bar");
@@ -11284,15 +11789,19 @@
 
       btn.disabled = true;
       file.disabled = true;
-      type.disabled = true;
+      sigInput.disabled = true;
 
       // Empreinte SHA-256 calculée EN LOCAL (crypto.subtle indisponible : HTTP
       // clair sur IP de LAN, contexte non sécurisé). Elle prouve l'intégrité
       // du transfert — l'image reçue est celle envoyée — pas qui l'a produite.
-      // Pas de repli silencieux : un échec de calcul bloque l'envoi, à l'écran.
+      // Déjà calculée pour la comparaison B4 : jamais recalculée deux fois.
       let sha256Hex;
       try {
-        sha256Hex = await sha256OfFile(selectedFile);
+        if (binDigestCache.file === selectedFile && binDigestCache.hex) {
+          sha256Hex = binDigestCache.hex;
+        } else {
+          sha256Hex = await sha256OfFile(selectedFile);
+        }
       } catch (e) {
         bar.style.width = "100%";
         bar.classList.add("error");
@@ -11300,19 +11809,29 @@
         status.textContent = "✗ Impossible de calculer l'empreinte d'intégrité (" + e.message +
           "). Réessayez, ou rechargez la page.";
         status.classList.add("is-error");
-        btn.disabled = false;
+        // Revue de code, point D : réarmer via otaManualSendBlocked (pas un
+        // `false` en dur) — le bouton ne peut ainsi jamais redevenir actif
+        // sur un état qu'il aurait lui-même refusé (conflit, liaison rompue…).
+        updateButtonState();
         file.disabled = false;
-        type.disabled = false;
+        sigInput.disabled = false;
         return;
       }
 
-      // ORDRE IMPOSÉ : "sha256" avant "update_file". Le firmware lit les
-      // champs PENDANT le parsing de la partie fichier — un champ placé
-      // après le fichier se lit comme absent (security-reviewer, feature-118).
+      // ORDRE IMPOSÉ : le firmware lit les champs PENDANT le parsing de la
+      // partie fichier — un champ placé après "update_file" se lit comme
+      // absent (security-reviewer, feature-118/feature-151). "manifest" et
+      // "signature" sont OMIS (jamais envoyés vides) quand aucun .sig valide
+      // n'est chargé : le firmware journalise alors kSkipped, un état
+      // légitime en D1/D2.
       const formData = new FormData();
       formData.append("sha256", sha256Hex);
-      formData.append("update_type", type.value);
-      formData.append("update_file", selectedFile);
+      formData.append("update_type", finalType);
+      if (sigParsed) {
+        formData.append("manifest", sigParsed.manifest);
+        formData.append("signature", sigParsed.signature);
+      }
+      formData.append("update_file", selectedFile);  // TOUJOURS EN DERNIER
 
       status.textContent = "Préparation…";
 
@@ -11356,18 +11875,18 @@
           bar.setAttribute("aria-valuenow", "100");
           status.textContent = "✗ Échec : " + parseUpdateFailure(xhr.responseText, xhr.status);
           status.classList.add("is-error");
-          btn.disabled = false;
+          updateButtonState();  // revue de code, point D : jamais un `false` en dur
           file.disabled = false;
-          type.disabled = false;
+          sigInput.disabled = false;
         }
       });
 
       xhr.addEventListener("error", () => {
         status.textContent = "✗ Erreur réseau";
         status.classList.add("is-error");
-        btn.disabled = false;
+        updateButtonState();  // revue de code, point D : jamais un `false` en dur
         file.disabled = false;
-        type.disabled = false;
+        sigInput.disabled = false;
       });
 
       xhr.open("POST", "/update");

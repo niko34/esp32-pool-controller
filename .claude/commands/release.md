@@ -67,25 +67,51 @@ rien à vérifier — ⚠️ la fonctionnalité mourrait **en silence**, exactem
 ⚠️ **Construire le système de fichiers d'abord** (`./build_fs.sh`), sinon `littlefs.bin`
 n'existe pas et le contrôle échoue.
 
+#### Le format du `.sig` : **DEUX lignes**
+
+⭐ **Ligne 1 = le manifeste signé, en clair. Ligne 2 = la signature, en base64.**
+
+```
+pool-ota/1 firmware 2.86.0 sha256:3f0a…
+MIIB…==
+```
+
+⚠️ **Pourquoi en clair, et pourquoi en base64** : la page web d'envoi manuel doit pouvoir
+poster les deux champs que le firmware attend (`manifest` et `signature`) **sans faire la
+moindre cryptographie dans le navigateur**, et **sans aller chercher le fichier sur GitHub**
+(⛔ les assets de release ne portent **aucun** en-tête CORS : le navigateur ne peut pas les
+lire). ⇒ L'opérateur dépose le `.sig` à côté du `.bin`, la page lit deux lignes de texte.
+⛔ Le firmware, lui, est **inchangé** : il recevait déjà ces deux champs.
+
 Pour **chacun** des deux binaires, construire le manifeste **exactement** comme le firmware
 le re-sérialise, puis signer :
 
 ```bash
 V=$(sed -n 's/.*FIRMWARE_VERSION[[:space:]]*"\([^"]*\)".*/\1/p' src/version.h)
 B=.pio/build/esp32dev_core3
+S=$(mktemp -d)
 
 for pair in "firmware:$B/firmware.bin" "filesystem:$B/littlefs.bin"; do
   genre=${pair%%:*}; bin=${pair#*:}
   d=$(sha256sum "$bin" | awk '{print $1}')
-  printf '%s' "pool-ota/1 $genre $V sha256:$d" > /tmp/m.txt
+  m="pool-ota/1 $genre $V sha256:$d"
+  printf '%s' "$m" > "$S/m.txt"
   openssl dgst -sha256 -sign "${OTA_SIGNING_KEY:-$HOME/.pool-ota/signing_key.pem}" \
-    -out "$bin.sig" /tmp/m.txt
+    -out "$S/m.sig" "$S/m.txt"
+  { printf '%s\n' "$m"; openssl base64 -A -in "$S/m.sig"; printf '\n'; } > "$bin.sig"
 done
+rm -rf "$S"
 ```
 
-⚠️ **`printf '%s'`, JAMAIS `echo`** : `echo` ajoute un saut de ligne final, la signature ne
-correspondrait plus, et le diagnostic serait « signature invalide » — ⛔ indistinguable d'une
-mauvaise clé. C'est **le** piège identifié par l'audit.
+⚠️ **`printf '%s'` pour ce qui est SIGNÉ, JAMAIS `echo`** : `echo` ajoute un saut de ligne
+final, la signature ne correspondrait plus, et le diagnostic serait « signature invalide » —
+⛔ indistinguable d'une mauvaise clé. C'est **le** piège identifié par l'audit.
+⇒ ⚠️ **La ligne signée reste sans saut de ligne final.** Le `\n` de la première ligne du
+fichier est un **séparateur de fichier**, ⛔ il ne fait pas partie du message signé : celui
+qui vérifie relit la ligne 1 **sans** son saut de ligne.
+
+⚠️ `openssl base64 -A` (⛔ pas `base64` nu, ni `openssl base64` sans `-A`) : sans `-A`, la
+sortie est repliée tous les 64 caractères et le `.sig` ferait **sept** lignes.
 
 ⚠️ **L'utilisateur devra saisir sa phrase de passe DEUX fois** (une par binaire). ⛔ Ne jamais
 la passer en argument ni en variable d'environnement. ⛔ Ne jamais la stocker.

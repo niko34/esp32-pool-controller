@@ -71,6 +71,37 @@
 - `.gitignore` : motifs `*.pem`/`*.sig` restreints à la **racine** du dépôt (`/*.pem`, `/*.sig`)
   plutôt que globaux — un motif global aurait silencieusement masqué une future ancre TLS `.pem`
   versionnée ailleurs dans l'arbre (ex. `docs/incidents/`).
+- **OTA — l'impasse « la page web ne peut pas signer » est tranchée, lot D1-bis (feature-151,
+  2026-10-21).** La page ne peut toujours pas signer (ni, découverte nouvelle, **construire** le
+  manifeste : le descripteur d'application du binaire porte un hash git, jamais la version
+  SemVer) — elle ne fait donc que **transporter** un fichier `.sig` produit ailleurs. Format
+  retenu : **deux lignes texte**, le manifeste signé en clair puis la signature en base64 (512
+  caractères, sans padding) — ⛔ aucun changement côté `src/` (`manifest`/`signature` restent de
+  simples champs POST, condition 10 du verdict `security-reviewer` intacte). `ota_update.sh
+  --sign-only [firmware|filesystem|both]` produit ce fichier sans aucun envoi réseau ni mot de
+  passe d'appareil. Voir [ADR-0121](docs/adr/0121-fichier-sig-conteneur-de-transport-deux-lignes-jamais-reconstruit.md).
+- 🔴 **Découvert en mesurant, pas anticipé** : les assets GitHub ne renvoient aucun
+  `Access-Control-Allow-Origin` — le navigateur ne peut pas lire un `.sig` distant. Pour D3, la
+  mise à jour en ligne devra relayer le **contenu** du `.sig` via `/check-update` (session TLS déjà
+  ouverte), jamais son URL.
+
+### Fonctionnalités
+
+- **OTA — carte « Mise à jour manuelle » (feature-151 D1-bis).** 🔴 Le sélecteur de type
+  (Firmware / Système de fichiers) a **disparu** : il demandait à l'opérateur une information que
+  la signature affirme désormais (et rendra autoritaire en D3). Un second champ fichier
+  **facultatif**, « Signature (.sig) », s'ajoute à « Image (.bin) » — sans lui, l'appareil
+  journalise un verdict « absente » et n'a rien à vérifier. Quand les deux fichiers sont fournis,
+  la page compare l'empreinte du `.bin` à celle déclarée par le `.sig` : en cas de divergence,
+  l'envoi est **refusé, sans dérogation possible** (pas de « Envoyer quand même ») — en mode
+  système de fichiers, l'erreur ne serait détectée qu'après l'effacement de la partition, et
+  l'interface serait perdue jusqu'au prochain envoi. À l'inverse, une simple divergence entre le
+  **nom** du fichier et le genre déclaré par une signature **déjà prouvée cohérente** avec ce
+  fichier n'est plus bloquante : seule une notice informative s'affiche. Le bouton « Mettre à
+  jour » passe du vert au neutre, sur cette carte **et** sur celle de la mise à jour en ligne — le
+  vert est réservé à une vérification faite par la page elle-même, et l'authenticité reste
+  vérifiée par l'appareil. ⛔ **Cette page ne vérifie toujours aucune signature** : elle
+  transporte, l'appareil journalise (refus au lot D3).
 
 ### Documentation
 
@@ -93,6 +124,25 @@
 - `docs/adr/0120-signature-rsa-du-manifeste-ota-verifiee-avant-refus.md` **[nouveau]** : schéma
   RSA-3072, `.sig` séparé, manifeste signé plutôt que l'image, ordre D1→D5, et la limite du
   vecteur « jeton volé ».
+- **D1-bis (2026-10-21)** — `docs/features/page-settings.md` : carte « Mise à jour manuelle »
+  réécrite (sélecteur disparu, champ Signature, comparaison d'empreinte bloquante, divergence de
+  nom non bloquante quand la liaison est prouvée, bouton neutre). `docs/UPDATE_GUIDE.md` : section
+  « Et la page web d'upload ? » remplacée — geste réel de l'opérateur (deux fichiers de la même
+  release), format `.sig`, et ce que la comparaison d'empreinte ne prouve pas. `docs/API.md` :
+  nouvelle section sur le format `.sig` que l'opérateur manipule, et sur `update_type` calculé
+  plutôt que saisi côté page. `docs/DESIGN_SYSTEM.md` : §5.4 (`.btn--ok` réservé à un flash
+  transitoire après vérification **propre** à la page, jamais une classe statique sur une
+  vérification déportée — inventaire 9 emplois dynamiques conformes, 0 statique légitime) et
+  §5.13 (`input[type="file"]` sans règle de largeur propre, risque de débordement de grille, 3
+  occurrences mesurées). `docs/BUILD.md` : nombre de jobs d'hygiène mesuré à nouveau (22, était
+  18) et description du job neuf `sig-parse-vectors`. `docs/user/src/guide-utilisation.html` :
+  description de la carte mise à jour manuelle revue (plus de sélecteur, champ signature,
+  encadré sur l'envoi bloqué par divergence d'empreinte) — PDF non régénérés (hors release) ;
+  capture `screenshots/10_Paramètres_7_Système_2.jpg` à refaire.
+- `docs/adr/0121-fichier-sig-conteneur-de-transport-deux-lignes-jamais-reconstruit.md`
+  **[nouveau]** : format `.sig` à deux lignes, alternative écartée (reconstruction côté appareil
+  depuis tag + empreinte, un second site de construction), et pourquoi la comparaison
+  d'empreinte côté page est la seule garde sans dérogation de ce lot.
 
 ---
 

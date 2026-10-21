@@ -202,7 +202,83 @@ for genre in firmware filesystem; do
   manifest="$sig_tmp/manifest_$genre.txt"
   printf '%s' "pool-ota/1 $genre $version sha256:$digest" > "$manifest"
 
-  if ! openssl dgst -sha256 -verify "$sig_tmp/pub.pem" -signature "$sig" "$manifest" >/dev/null 2>&1; then
+  # ⚠️ FORMAT À 2 LIGNES (feature-151 D1-bis) : ligne 1 = manifeste canonique,
+  # ligne 2 = signature base64. ⭐ RAISON : la page web ne peut pas CONSTRUIRE
+  # le manifeste — il contient la version, et le descripteur d'application du
+  # binaire porte un hash git, pas la version SemVer. Elle ne peut que le
+  # TRANSPORTER. ⛔ Aucun changement cryptographique : la signature porte
+  # toujours sur les octets canoniques re-sérialisés par l'appareil.
+  # 🔴 GRAMMAIRE STRICTE — MÊME exigence que `parseSigFile()` de `data/app.js`
+  # (revue de sécurité P2, 2026-10-21, condition 1). ⚠️ Le défaut mesuré :
+  # `sed -n '1p'`/`'2p'` IGNORENT tout ce qui dépasse, donc un `.sig` de 3
+  # lignes (un éditeur qui ajoute un saut de ligne de courtoisie) PASSAIT ce
+  # contrôle et était REFUSÉ par la page, avec un message qui accuse le
+  # fichier de l'opérateur. ⛔ Un artefact publié avec le feu vert du gate ne
+  # doit pas être rejeté chez celui qui l'installe.
+  # ⇒ Le gate est délibérément AU MOINS aussi strict que le lecteur.
+  if LC_ALL=C grep -q $'\r' "$sig"; then
+    echo "ERREUR S2 : $sig contient un retour chariot (\\r) — fichier à fins de ligne Windows." >&2
+    sig_errors=1
+    continue
+  fi
+  sig_line_count=$(wc -l < "$sig" | tr -d ' ')
+  if [ "$sig_line_count" != "2" ]; then
+    {
+      echo "ERREUR S2 : $sig n'a pas EXACTEMENT 2 lignes (vu : $sig_line_count)."
+      echo "  Ligne 1 : le manifeste canonique · Ligne 2 : la signature base64."
+      echo "  ⛔ Chacune se termine par UN saut de ligne, et rien ne suit la ligne 2."
+    } >&2
+    sig_errors=1
+    continue
+  fi
+  sig_manifest="$(sed -n '1p' "$sig")"
+  sig_b64="$(sed -n '2p' "$sig")"
+  if [ -z "$sig_manifest" ] || [ -z "$sig_b64" ]; then
+    {
+      echo "ERREUR S2 : $sig a une ligne vide."
+      echo "  Ligne 1 : le manifeste canonique · Ligne 2 : la signature base64."
+    } >&2
+    sig_errors=1
+    continue
+  fi
+  # RSA-3072 ⇒ 384 octets ⇒ EXACTEMENT 512 caractères base64 SANS padding
+  # (384 est multiple de 3), alphabet standard RFC 4648. Miroir du contrôle
+  # de `parseSigFile()`.
+  if ! printf '%s' "$sig_b64" | LC_ALL=C grep -Eq '^[A-Za-z0-9+/]{512}$'; then
+    {
+      echo "ERREUR S2 : la ligne 2 de $sig n'est pas une signature RSA-3072 en base64."
+      echo "  Attendu : 512 caractères de l'alphabet [A-Za-z0-9+/], sans '=' de remplissage."
+      echo "  Vu      : ${#sig_b64} caractères."
+      echo "  → 'openssl base64' SANS '-A' replie la sortie tous les 64 caractères : utiliser '-A'."
+    } >&2
+    sig_errors=1
+    continue
+  fi
+  # ⚠️ La ligne 1 du fichier doit être EXACTEMENT le manifeste attendu : si elle
+  # diverge, la signature pourrait être valide pour un AUTRE binaire — c'est le
+  # mélange de versions, l'erreur la plus probable.
+  if [ "$sig_manifest" != "pool-ota/1 $genre $version sha256:$digest" ]; then
+    {
+      echo "ERREUR S2 : le manifeste de $sig ne décrit PAS ce binaire."
+      echo "  Dans le fichier : $sig_manifest"
+      echo "  Attendu         : pool-ota/1 $genre $version sha256:$digest"
+      echo "  → Signature d'une AUTRE version ou d'un AUTRE binaire."
+    } >&2
+    sig_errors=1
+    continue
+  fi
+  if ! printf '%s' "$sig_b64" | openssl base64 -d -A > "$sig_tmp/sig_$genre.bin" 2>/dev/null \
+     || [ ! -s "$sig_tmp/sig_$genre.bin" ]; then
+    # ⚠️ Message DISTINCT du refus de clé ci-dessous : confondre « je n'ai pas
+    # su décoder » et « la clé ne correspond pas » enverrait le signataire
+    # soupçonner sa clé pour un défaut de transport.
+    echo "ERREUR S2 : la ligne 2 de $sig n'a pas pu être DÉCODÉE (base64 invalide) — ce n'est pas un problème de clé." >&2
+    sig_errors=1
+    continue
+  fi
+
+  if ! openssl dgst -sha256 -verify "$sig_tmp/pub.pem" \
+        -signature "$sig_tmp/sig_$genre.bin" "$manifest" >/dev/null 2>&1; then
     {
       echo "ERREUR S2 : la signature $sig NE CORRESPOND PAS à la clé embarquée."
       echo "  Manifeste attendu (octets exacts, SANS saut de ligne final) :"

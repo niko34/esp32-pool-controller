@@ -1187,6 +1187,19 @@ canvas:hover {
   position: relative;
 }
 
+/* ux-ui-designer (feature-151 D1-bis) : débordement horizontal à 390 px —
+   inventaire mesuré, 3 <input type="file"> dans data/ (#update_file,
+   #update_sig, #history_import_file), AUCUN n'avait de règle de largeur. Un
+   nom de fichier long et insécable fait grossir la piste implicite de la
+   grille au-delà du conteneur. Règle GÉNÉRIQUE, les TROIS emplois ensemble —
+   composant partagé, application partielle interdite. ⚠️ Scope DIFFÉRENT de
+   `.product-card .field > .form-control` (ligne ~3338, Produits) : ne pas
+   réemployer ce motif-là tel quel, celui-ci est générique à tout .field. */
+.field > input[type="file"] {
+  width: 100%;
+  min-width: 0;
+}
+
 @keyframes fadeIn {
   from {
     opacity: 0;
@@ -1596,6 +1609,15 @@ input.is-computed:disabled {
 }
 
 #update_type_notice {
+  overflow-wrap: anywhere;
+}
+
+/* ux-ui-designer (feature-151 D1-bis) : même motif que #update_type_notice
+   ci-dessus — #update_file_hint et #update_sig_hint affichent désormais le
+   nom INTÉGRAL du fichier choisi (voir data/app.js), qui peut être long et
+   insécable (nom de release). */
+#update_file_hint,
+#update_sig_hint {
   overflow-wrap: anywhere;
 }
 

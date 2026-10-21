@@ -23,6 +23,23 @@
 #
 # ⚠️ Les données recopiées contiennent le SSID Wi-Fi et l'identifiant MQTT.
 #    Elles vont dans un dossier TEMPORAIRE, jamais dans le dépôt.
+#
+# ⚠️ PIÈGE MESURÉ LE 2026-10-21 — `window.innerWidth` MENT sous 500 px.
+#    Dans ce conteneur, Chromium plafonne la fenêtre à 500 px : en dessous,
+#    `window.innerWidth` et `document.documentElement.clientWidth` rendent
+#    tous deux **500**, quelle que soit la valeur de -w.
+#    ⛔ N'EN CONCLUEZ PAS que la capture est fausse — elle ne l'est pas.
+#    Vérifié par sonde (marqueur à x=400 + requête média à 420 px) :
+#      -w 390  →  la requête média `max-width: 420px` est ACTIVE,
+#                 un élément posé à x=400 est bien HORS de l'image.
+#    ⇒ Le viewport de MISE EN PAGE, les requêtes média et le cadrage de
+#      l'image suivent bien -w. Seules les lectures JS au niveau du DOCUMENT
+#      sont plafonnées.
+#    ⇒ Conséquence pratique : une page dont le JS brancherait sur
+#      `window.innerWidth` se comporterait comme à 500 px dans une capture
+#      à 390. `data/app.js` ne le fait PAS (vérifié : ses seuls clientWidth
+#      portent sur des ÉLÉMENTS, correctement mis en page) — mais si cela
+#      change un jour, cette capture cesserait d'être fidèle.
 set -euo pipefail
 
 WIDTH=390

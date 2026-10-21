@@ -276,14 +276,55 @@ versionnée). Concrètement :
 partir du lot qui activera le refus (D3, pas celui-ci) — conservez **deux copies hors-ligne** de
 la clé chiffrée, en plus de la phrase de passe mémorisée.
 
-### Et la page web d'upload ?
+### Et la page web d'upload ? (tranché en v2.86.0, feature-151 D1-bis)
 
-La page web n'envoie **pas encore** de manifeste signé (le navigateur n'a, et n'aura jamais, accès
-à la clé privée — publier la clé privée dans `data/app.js` annulerait tout l'intérêt du
-mécanisme). Les deux champs restent donc **absents** sur ce chemin pour l'instant : c'est le cas
-normal, journalisé sans aucune conséquence. La réponse à cette impasse (fichier `.sig` séparé
-téléversé en plus du binaire, ou autre option) sera documentée ici au moment où elle sera
-tranchée.
+La page web ne peut **toujours pas signer** (le navigateur n'a, et n'aura jamais, accès à la clé
+privée — publier la clé privée dans `data/app.js` annulerait tout l'intérêt du mécanisme), mais
+elle peut désormais **transporter** une signature produite ailleurs. La carte « Mise à jour
+manuelle » (onglet Système des Réglages) porte un **second champ fichier, facultatif** : « Signature
+(.sig) », en plus de « Image (.bin) ».
+
+**Le geste réel de l'opérateur** :
+
+- **Depuis une release GitHub** : télécharger **les deux fichiers** de la même release —
+  `firmware.bin` **et** `firmware.bin.sig` (ou `littlefs.bin`/`littlefs.bin.sig`) — et les
+  sélectionner tous les deux dans la page. ⛔ **Ne jamais mélanger les fichiers de deux releases
+  différentes** : un `.sig` ne vaut que pour le binaire exact et la version exacte qu'il décrit.
+- **En développement** : `./ota_update.sh --sign-only <firmware|filesystem>` (voir ci-dessous)
+  produit le `.sig` sans envoyer quoi que ce soit, pour récupérer ensuite les deux fichiers à la
+  main. Plus pénible que d'envoyer directement par le script — la page reste la voie de
+  **secours**, pas la voie courante.
+
+**Format du fichier `.sig`** — deux lignes texte :
+
+```
+pool-ota/1 <firmware|filesystem> <MAJ.MIN.PATCH> sha256:<64 hex minuscules>
+<signature RSA-3072 en base64, exactement 512 caractères, sans padding>
+```
+
+La ligne 1 est le **même manifeste** que celui signé par `ota_update.sh` (voir ci-dessus),
+⛔ **sans saut de ligne final** dans ce qui est signé. La signature de la ligne 2 porte toujours
+sur les octets **canoniques re-sérialisés par l'appareil**, jamais sur le fichier reçu tel quel.
+
+**🔴 Le sélecteur de type a disparu.** Le genre (firmware / système de fichiers) n'est plus choisi
+à la main : il est lu dans la ligne signée du `.sig` quand il est fourni, sinon déduit du **nom**
+du fichier `.bin` (`littlefs.bin`, `spiffs.bin`, …), sinon `firmware` par défaut. ⚠️ Un `.bin` au
+nom non reconnu, envoyé **sans** `.sig`, part donc toujours en firmware — renommez-le, ou
+fournissez son `.sig`.
+
+**La signature reste facultative à ce stade (D1/D2)** : sans elle, l'appareil journalise un
+verdict d'authenticité `absente` et **n'a rien à vérifier** — aucune conséquence sur l'envoi. La
+seule garde **bloquante** côté page est la comparaison d'empreinte entre le `.bin` et
+l'empreinte déclarée par le `.sig`, quand les deux sont fournis : en cas de divergence, l'envoi
+est **refusé sans dérogation** (pas de « Envoyer quand même »), parce que sur `/update` l'erreur
+ne serait détectée qu'**après** `Update.begin()` — en mode système de fichiers la partition
+serait déjà effacée, l'interface perdue jusqu'à un nouvel envoi.
+
+⛔ **Cette comparaison ne prouve pas l'authenticité de l'image** — une empreinte SHA-256 ne
+prouve rien sur l'origine, seulement que ce manifeste décrit bien ces octets. La page
+**transporte** ; c'est l'**appareil** qui vérifie l'authenticité, et en D1/D2 il se contente de la
+**journaliser**. Voir [API.md](API.md#authenticite-manifest-signature-feature-151-d1) et
+[`docs/subsystems/ota-manager.md`](subsystems/ota-manager.md#d1--authenticite-par-signature-journalise-seulement-feature-151-verdict-security-reviewer-p1).
 
 ---
 

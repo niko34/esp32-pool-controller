@@ -184,6 +184,20 @@ ou action secondaire), `.btn--primary` (accent plein, action principale **ou** o
 sélectionnée d'un `.mode-select`), `.btn--ok` (vert, confirmation), `.btn--danger` (rouge,
 action destructive — ne jamais le coller à l'action principale). Toutes ≥44px de haut.
 
+⚠️ **Règle sur `.btn--ok` (feature-151 D1-bis, 2026-10-21)** : il est réservé à un **flash
+transitoire**, posé **après** que la page a reçu la confirmation du succès de **sa propre**
+requête (motif des boutons « Sauvegarder » : `classList.add('btn--ok')` puis retour à
+`.btn--primary`). ⛔ **Jamais une classe statique dans le HTML** sur un bouton qui déclenche
+une action dont la vérification est **déportée** (l'appareil, un service tiers) — le vert
+affirmerait « tout est vérifié » alors que la page, elle, n'a vérifié rien de tel.
+**Inventaire mesuré** : **9 emplois dynamiques conformes** (boutons « Sauvegarder »), **0 emploi
+statique légitime**. Le seul qui existait (`#install_update_btn`, carte « Mise à jour
+manuelle ») était une **violation** de cette règle — il est corrigé dans le même lot (le bouton
+devient neutre `.btn`, voir [`docs/features/page-settings.md`](features/page-settings.md) et
+[`docs/UPDATE_GUIDE.md`](UPDATE_GUIDE.md)) : la carte ne fait que **transmettre** un fichier et
+**comparer** une empreinte, jamais vérifier une signature — l'authenticité reste du ressort de
+l'appareil.
+
 ### 5.5 `.card__option`
 **Rôle** : option mineure secondaire à l'intérieur d'une carte de statut (ex. Boost).
 **Contexte** : carte d'accueil uniquement. Fond `--panel2`, liseré `--stroke`, titre 14px
@@ -270,6 +284,15 @@ d'écran n'est jamais informé qu'un champ est en erreur — seule la couleur du
 nommé pour un champ.
 ⛔ **Composant mort constaté** : `.field__label-icon` (et ses variantes) — **0 usage** dans
 `index.html`. Candidat à suppression, à confirmer (vérifier qu'aucun JS ne l'injecte).
+
+⚠️ **MANQUE constaté (feature-151 D1-bis, 2026-10-21)** : `input[type="file"]` dans `.field`
+n'a **aucune règle de largeur propre** — il hérite de la largeur naturelle du contrôle natif du
+navigateur, qui ne respecte pas la grille de la carte. Risque de **débordement de grille** avec
+un nom de fichier long et insécable (ex. `v2.86.0.firmware.bin.sig`). **Contexte d'emploi mesuré :
+3 occurrences, toutes dans `data/index.html`** — `#update_file` et `#update_sig` (onglet
+Système, carte « Mise à jour manuelle »), `#history_import_file` (onglet Avancé) ; ⛔ **aucune**
+dans `wizard.html` / `wifi.html` / `login.html`. À corriger la prochaine fois qu'un de ces trois
+champs est retouché visuellement — pas un oubli de ce lot, un manque déjà présent qu'il expose.
 
 #### ⚠️ Une UNITÉ ne se met JAMAIS en majuscules
 `.field__label` applique `text-transform: uppercase`. ⇒ « (mV) » s'affichait « **(MV)** », c'est-à-dire
