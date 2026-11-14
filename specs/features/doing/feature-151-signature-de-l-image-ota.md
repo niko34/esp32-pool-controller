@@ -944,9 +944,63 @@ l'incident tombe.
    justifier : la partition `spiffs` ne contient aucun code exécuté.
 2. **Un mode de secours borné** (fenêtre de N minutes après un démarrage sur échec de montage),
    pendant laquelle un envoi non signé reste accepté. ⚠️ Surface d'attaque à faire valider.
-3. **Rien** — et alors **l'écrire** : la phrase de passe devient un prérequis opérationnel de
-   toute réparation, et ça se documente dans `UPDATE_GUIDE.md`.
-⛔ Ne pas trancher ça « en passant » pendant D3 : c'est `security-reviewer` qui doit statuer.
+3. ⛔ ~~**Rien** — la phrase de passe devient un prérequis de toute réparation.~~
+   🔴 **ÉCARTÉE — décision utilisateur du 2026-11-14 :**
+   > *« Si la phrase secrète devient nécessaire, ça n'est pas une solution. Je ne peux pas
+   > donner la phrase à un client qui aurait son appareil bloqué. »*
+
+## 🔴 LA CONTRAINTE QUI CADRE D3 — et elle change le périmètre du projet
+⚠️ **Il y a des CLIENTS.** ⛔ Ce n'est plus un appareil unique sur un bureau.
+⇒ **Le chemin de récupération doit être utilisable par quelqu'un qui n'a NI la clé privée, NI sa
+phrase de passe, NI un terminal.** ⛔ La clé est celle du **signataire**, pas celle du
+propriétaire de l'appareil — la transmettre détruirait la seule chose que la signature protège.
+
+⚠️ **Et ça disqualifie aussi `curl`** : c'est ainsi que j'ai réparé le 2026-11-14, mais un client
+ne tapera pas de ligne de commande. ⇒ **Une récupération qui exige un terminal n'en est pas une.**
+
+### 🔴 Piste 4 — AJOUTÉE : une page de secours EMBARQUÉE DANS LE FIRMWARE
+⭐ **Elle sort du dilemme au lieu de l'arbitrer.** La partition `spiffs` peut être détruite ; la
+partition **programme**, elle, est **signée** et intacte (prouvé par N3).
+⇒ Servir, **quand LittleFS ne se monte pas**, une page **minimale compilée dans le firmware** —
+un champ fichier et un bouton — suffisante pour renvoyer un système de fichiers.
+- ⭐ **Rien d'externe n'est à faire confiance** : la page vient du binaire signé lui-même.
+- ⭐ Le client répare **seul, au navigateur**, sans clé, sans phrase, sans terminal.
+- Coût : quelques Ko de flash (occupation actuelle **51 %**, la marge existe).
+- ⚠️ À combiner avec la piste 1 (signature exigée pour le **firmware** seulement) ou la piste 2.
+
+### 🔴 PISTE 1 — MORTE. Décision utilisateur du 2026-11-14
+> *« Le système de fichiers doit aussi être contrôlé. Il n'exécute pas de code sur l'ESP32, mais
+> il s'affichera dans le navigateur du client et ça pourra exécuter du code JavaScript. »*
+
+⭐ **Exact, et c'est plus grave que l'« asymétrie défendable » écrite plus haut** (rédigée par
+moi-même une heure plus tôt — trop indulgente, ⛔ à ne pas réutiliser).
+Un `littlefs.bin` hostile **s'exécute**, dans un autre moteur : le **navigateur**. Et sur
+**l'origine de l'appareil**, ce qui lui donne :
+- l'accès en **même origine** à **tous** les endpoints (`/save-config`, `/pumpN/duty`, `/update`…) ;
+- le **jeton de session admin** (`sessionStorage`) ;
+⇒ piloter les pompes, lire la configuration, **exfiltrer le SSID Wi-Fi et les identifiants
+MQTT**, hameçonner le mot de passe sur une fausse page de connexion, et tout renvoyer ailleurs.
+⚠️ Le firmware pilote les pompes **directement** ; le système de fichiers les pilote **par la
+main du client**. ⛔ La seconde voie n'est pas moins grave, elle est juste indirecte.
+
+⇒ 🔴 **La signature est OBLIGATOIRE pour LES DEUX images.** ⛔ Aucune exemption de genre.
+
+## ⭐ Et la contrainte « pas de phrase de passe » tombe d'elle-même
+⚠️ **Le client n'a JAMAIS à signer quoi que ce soit.** La signature est produite **une fois**,
+par le signataire, à la publication — et le `.sig` est **public**, joint à la release (le gate
+`check_release_artefacts.sh` l'impose déjà, et refuse une release sans lui).
+⇒ **Récupération d'un appareil dont l'interface est détruite :**
+1. l'appareil, ne montant pas son système de fichiers, sert la **page de secours embarquée**
+   (piste 4, dans le binaire **signé**) ;
+2. le client télécharge `littlefs.bin` **et** `littlefs.bin.sig` depuis la release ;
+3. il dépose les deux. ⛔ Aucune clé, aucune phrase, aucun terminal.
+
+⚠️ **Angle mort restant, à nommer** : un client **sans accès à la release** (pas d'internet sur
+le poste) reste bloqué. ⇒ Piste à instruire : embarquer dans la page de secours de quoi
+retrouver les fichiers, ou accepter ce cas comme hors périmètre — ⛔ mais l'écrire.
+
+⛔ Ne pas trancher ça « en passant » pendant D3 : c'est `security-reviewer` qui doit statuer,
+**avec cette contrainte client comme donnée d'entrée.**
 
 ## ⭐ Au passage : les six protections de la chaîne OTA, VÉRIFIÉES dans le code ce soir
 1. Envoi **sans empreinte** ⇒ refusé **dès index==0**, avant toute écriture (feature-118 lot B).
