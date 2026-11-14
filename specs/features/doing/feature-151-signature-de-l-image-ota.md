@@ -878,11 +878,88 @@ provoque un (constaté le 2026-11-14 : watchdog connectivité + MQTT en échec, 
 avec les tests). **Guetter l'apparition d'un verdict NEUF**, c'est le seul signal fiable.
 
 ## Reste à faire
-- [ ] ⚠️ **L'essai DESTRUCTIF** : image **firmware** écrite dans la partition du **système de
-      fichiers** (genre `filesystem` cohérent, octet magique seulement *averti* dans ce sens).
-      En D1 rien ne refuse ⇒ partition écrasée, **interface perdue** jusqu'à un renvoi.
-      ⛔ Exige un feu vert explicite et un `littlefs.bin` prêt.
+- [x] ✅ **L'essai DESTRUCTIF — FAIT le 2026-11-14**, voir la section « N3 » en fin de spec.
+      ⭐ Seul chemin où la garde de liaison est atteinte. Dégâts bien moindres qu'annoncé, et
+      🔴 **une conséquence pour D3 en est sortie** (chemin de récupération).
 - [ ] Cosmétique relevé pendant T3/T4 : le libellé **« Firmware (.bin) »** / **« Système de
       fichiers (.bin) »** garde un `(.bin)` hérité de l'ancien menu déroulant, où il distinguait
       deux options. ⛔ Les deux types sont des `.bin` : il n'apprend plus rien. À raccourcir.
 - [ ] Corriger dans la procédure : le premier envoi est un **amorçage**, pas « T1 ».
+
+---
+
+# N3 — l'essai DESTRUCTIF, fait (2026-11-14, accord explicite de l'utilisateur)
+
+**Couple envoyé** : image **firmware** (1,9 Mo) déclarée `update_type=filesystem`, avec le
+manifeste de `littlefs.bin` (genre cohérent ⇒ authenticité jugeable, empreinte divergente ⇒
+liaison jugeable).
+⭐ **C'est le SEUL chemin où la garde de liaison est ATTEINTE** : dans ce sens le pré-contrôle de
+l'octet magique ⛔ ne refuse pas, il **avertit** — une image LittleFS peut commencer par `0xE9`
+par coïncidence, et refuser produirait des faux positifs (`src/ota_type_logic.h`). N1 ne pouvait
+donc pas le montrer.
+
+```
+22:58:39 INFO [feature-151 D1]    authenticité OTA : valide
+22:58:39 WARN [feature-151 D1 B1] liaison manifeste/image : NON liée — D3 refuserait : oui
+HTTP 500 — 1,9 Mo n'entre pas dans une partition de 512 Ko
+```
+
+## Dégâts RÉELS, mesurés — ⛔ bien moindres qu'annoncé
+| | |
+|---|---|
+| Pages web (`spiffs`) | ❌ **détruites** |
+| Programme (`app0`/`app1`) | ✅ intact, 2.86.0, appareil vivant |
+| Boucle de démarrage | ✅ **aucune** |
+| **Configuration, calibrations, compteurs (NVS)** | ✅ **intacts** — relus : correction pH `1.2`, volume `medium` |
+| Historique + journal (`history`) | ✅ intacts |
+
+⚠️ **J'avais annoncé un risque de boucle de démarrage irrécupérable sans port série. C'était
+FAUX**, et ça a failli faire renoncer à l'essai. La cause de l'erreur : un raisonnement par
+analogie avec l'incident de corruption de la partition `history` (07/2026), ⛔ sans lire le
+chemin de montage. Le code dit l'inverse : `LittleFS.begin(**false**)` — ⛔ **pas de formatage**
+en cas d'échec — journalise un CRITICAL et **poursuit**.
+⇒ ⭐ **`/update` est du CODE, pas un fichier** : la route reste joignable sans aucune page web.
+
+## 🔴 CE QUI A RATÉ, et c'est le vrai enseignement
+**La réparation automatique a été REFUSÉE** : `littlefs.bin` avait été **reconstruit à 21:50**
+(passe sur les libellés) alors que sa signature datait de **21:09**. ⇒ Empreintes différentes
+⇒ `--use-sig` a refusé d'envoyer, **fail-closed, correctement**.
+⚠️ **C'est exactement le piège écrit dans cette spec quelques heures plus tôt** — *« ne
+recompilez rien entre la signature et les tests »* — et il s'est quand même produit.
+⇒ **Une signature ne vaut QUE pour un fichier exact.** Toute reconstruction, même d'un seul
+libellé, la périme.
+
+**Réparé par un envoi SANS signature** (accepté, journalisé « absente »), suivi d'une
+vérification sur le fichier RÉELLEMENT servi par l'appareil.
+
+## 🔴 CONSÉQUENCE POUR D3 — à traiter AVANT d'activer le refus
+⛔ **Cette porte de sortie n'existe que parce que D1 ne refuse rien.**
+⚠️ Une fois D3 en vigueur, un envoi **sans signature valide** sera **rejeté** ⇒ dans la situation
+exacte de ce soir — interface détruite, signature périmée par une reconstruction — ⛔ **la
+réparation aurait été impossible sans la phrase de passe de l'utilisateur**, à l'heure où
+l'incident tombe.
+
+⇒ **D3 doit livrer un chemin de récupération**, et le choisir explicitement. Pistes, à arbitrer :
+1. **Le refus ne porte que sur le FIRMWARE**, pas sur le système de fichiers. ⚠️ Asymétrie à
+   justifier : la partition `spiffs` ne contient aucun code exécuté.
+2. **Un mode de secours borné** (fenêtre de N minutes après un démarrage sur échec de montage),
+   pendant laquelle un envoi non signé reste accepté. ⚠️ Surface d'attaque à faire valider.
+3. **Rien** — et alors **l'écrire** : la phrase de passe devient un prérequis opérationnel de
+   toute réparation, et ça se documente dans `UPDATE_GUIDE.md`.
+⛔ Ne pas trancher ça « en passant » pendant D3 : c'est `security-reviewer` qui doit statuer.
+
+## ⭐ Au passage : les six protections de la chaîne OTA, VÉRIFIÉES dans le code ce soir
+1. Envoi **sans empreinte** ⇒ refusé **dès index==0**, avant toute écriture (feature-118 lot B).
+2. Empreinte comparée **AVANT `Update.end(true)`** ⇒ ⛔ une image abîmée en transit **n'est
+   jamais rendue démarrable** (`web_routes_ota.cpp`, commentaire explicite).
+3. Octet magique `0xE9` ⇒ un non-firmware déclaré « firmware » refusé **avant effet de bord**.
+4. **Deux emplacements programme** : l'OTA écrit dans l'**inactif**, l'actif n'est jamais touché.
+5. **Retour arrière automatique** : `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y` ⚠️ **vérifié sur
+   le sdkconfig de l'ESP32 CLASSIQUE** (⛔ pas celui d'une autre puce — première lecture
+   erronée). Le cœur Arduino arme le mécanisme (`esp32-hal-misc.c`) : une image
+   `PENDING_VERIFY` qui ne se confirme pas ⇒ `esp_ota_mark_app_invalid_rollback_and_reboot()`.
+   ⚠️ Le projet ne surcharge pas `verifyRollbackLater()` ⇒ le bloc est **actif**.
+6. *Bootloader* et table des partitions ⛔ **non modifiables par OTA**.
+
+⚠️ **Ce qu'aucune de ces six ne couvre** : un firmware **correctement transmis mais bogué**, qui
+démarre et se confirme. ⇒ C'est une question de **tests avant publication**, ⛔ pas de transfert.
