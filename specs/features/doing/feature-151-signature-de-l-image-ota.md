@@ -588,3 +588,301 @@ du défaut initial).
   et `firmware.bin.sig` d'une version voisine sont **visuellement identiques** sans la version.
   ⇒ ⭐ C'est le récapitulatif (genre · **version** · empreinte) qui le rattrape.
 - **Aucune couleur neuve** : `callout--warn` et `callout--info` existent, ⛔ ne pas en inventer.
+
+---
+
+# D2 — PROCÉDURE DE PREUVE TERRAIN (rédigée le 2026-10-21, pas encore exécutée)
+
+⚠️ **Rien de D1 ni de D1-bis n'a tourné sur l'appareil.** Ce qui suit est la procédure, pas un
+compte rendu. ⛔ Ne pas cocher une case sans l'avoir relevée dans le journal de l'appareil.
+
+## ⭐ Le fait qui rend cette campagne possible — VÉRIFIÉ dans le code
+
+Les verdicts sont journalisés en **INFO** (nominal) ou **WARNING** (ce que D3 refuserait), et le
+journal ne se persiste que **toutes les 10 minutes** (`Logger::kFlushIntervalMs = 600000`).
+⚠️ Or **un OTA réussi redémarre l'appareil 3 s après la réponse** (`kRestartAfterOtaDelayMs`)
+⇒ on pourrait craindre de **perdre le verdict** avant de l'avoir lu.
+
+⭐ **Ce n'est pas le cas, et c'est prouvé par le code** : juste avant de redémarrer,
+`web_server.cpp` journalise `"Redémarrage après mise à jour OTA"` en **CRITICAL** — et un
+CRITICAL déclenche un `flushToDisk()` **synchrone** (`logger.cpp`, « Flush immédiat sur
+ERROR/CRITICAL pour survivre aux crashes imminents »). ⇒ **Les verdicts sont persistés par ce
+flush**, et relus au démarrage suivant.
+⇒ ⛔ **Pas besoin de courir** pour lire le journal dans les 3 secondes.
+
+## Vocabulaire du journal — à reconnaître, ⛔ pas à interpréter
+
+Deux lignes par envoi, toutes deux préfixées `[feature-151 D1]` / `[feature-151 D1 B1]` :
+
+| Ligne | Valeurs possibles |
+|---|---|
+| `authenticité OTA : …` | `absente` · `malformée` · `vérification impossible` · `invalide` · `genre discordant` · `sous le plancher` · **`valide`** |
+| `liaison manifeste/image (…) : …` | `non applicable` · **`liée`** · `NON liée` |
+
+⚠️ La liaison est journalisée **DEUX fois** par envoi, à deux étapes **différentes** :
+`paramètre sha256 (index==0)` puis `empreinte calculée (final)`.
+⭐ **La seconde est la seule qui porte sur les octets RÉELLEMENT ÉCRITS** — la première ne
+compare qu'au paramètre *déclaré* par l'appelant. ⇒ **Les deux doivent dire `liée`.**
+
+⚠️ Chaque ligne se termine par `D3 refuserait : oui|non — AUCUN refus appliqué (D1, vérification
+seule)`. ⛔ **Un WARNING ne signifie PAS qu'un flash a été bloqué** — en D1 **rien** n'est refusé.
+
+ℹ️ `sous le plancher` est **inatteignable aujourd'hui** : le plancher anti-retour-arrière vaut
+`0.0.0` (`kOtaVersionFloorDefault*`). ⛔ Ne pas chercher à le déclencher.
+
+## Préparation — ⛔ l'ordre n'est pas négociable
+
+```bash
+cd /root/esp32-pool-controller
+pio run            # puis, SEULEMENT APRÈS qu'il a fini :
+./build_fs.sh      # ⛔ jamais les deux en même temps (ressource exclusive)
+./ota_update.sh --sign-only both    # phrase de passe demandée DEUX fois (une par binaire)
+```
+
+🔴 **SIGNER APRÈS AVOIR CONSTRUIT, jamais avant.** Toute recompilation change l'empreinte ⇒ le
+`.sig` ne décrit plus le binaire ⇒ verdict `NON liée`, et on perd une demi-journée à chercher
+une faute de clé qui n'existe pas.
+⚠️ La phrase de passe est demandée par `openssl` lui-même. ⛔ Jamais en argument, jamais en
+variable d'environnement, jamais dans un fichier.
+
+Contrôle **avant** de toucher à l'appareil :
+```bash
+./tools/check_release_artefacts.sh     # doit sortir 0 — vérifie les .sig contre la clé EMBARQUÉE
+head -c 80 .pio/build/esp32dev_core3/firmware.bin.sig ; echo
+wc -l .pio/build/esp32dev_core3/*.sig   # 2 lignes chacun, exactement
+```
+
+### Lire le journal de l'appareil
+```bash
+set -a; . /root/.pool-credentials; set +a      # ⛔ ne jamais afficher $POOL_PASSWORD
+TOKEN=$(curl -s -X POST http://192.168.1.48/auth/login \
+  -H 'Content-Type: application/json' \
+  --data-binary "{\"username\":\"admin\",\"password\":\"$POOL_PASSWORD\"}" \
+  | python3 -c 'import sys,json;print(json.load(sys.stdin)["token"])')
+curl -s "http://192.168.1.48/get-logs" -H "X-Auth-Token: $TOKEN" \
+  | python3 -m json.tool | grep -i "feature-151"
+```
+
+## ⛔ L'ordre des tests est imposé par une dépendance
+
+T3 et T4 se font **depuis la page**, or **la page neuve n'arrive sur l'appareil qu'en T2**.
+⇒ **T1 → T2 → T3 → T4 → N1 → N2.** ⛔ Ne pas commencer par la page.
+
+---
+
+## T1 — script × firmware
+
+```bash
+./ota_update.sh firmware 192.168.1.48
+```
+**Attendu** : `authenticité OTA : valide` · `liaison … (paramètre sha256 (index==0)) : liée` ·
+`liaison … (empreinte calculée (final)) : liée` · les trois en **INFO**, `D3 refuserait : non`.
+Puis redémarrage, et **`Firmware 2.86.0`** dans Réglages ▸ Système.
+
+- [ ] Les **trois** lignes relevées, verbatim, dans la section « Relevés » ci-dessous.
+
+## T2 — script × système de fichiers
+
+```bash
+./ota_update.sh filesystem 192.168.1.48
+```
+⚠️ **Un envoi de système de fichiers redémarre aussi l'appareil** — ⛔ ce n'est pas une mise à
+jour « sans interruption ».
+**Attendu** : identique à T1, avec le genre `filesystem` dans le manifeste.
+⇒ À l'issue de T2, **la page neuve est en place** : deux champs, pas de sélecteur de type.
+
+- [ ] Les trois lignes relevées · [ ] la carte « Mise à jour manuelle » montre bien **2 champs**
+
+## T3 — page × firmware
+
+1. Récupérer sur le poste `firmware.bin` **et** `firmware.bin.sig` (les mêmes qu'en T1).
+2. Réglages ▸ Système ▸ Mise à jour manuelle : poser les deux fichiers.
+3. **Avant de cliquer**, relever ce que la page affiche :
+   - le récapitulatif : genre · version · empreinte (12 hex, en police à chasse fixe) ;
+   - le hint sous Signature : le **nom complet du fichier**, puis « Signature lue… » ;
+   - ⛔ **aucune mention d'une signature « vérifiée »** — la page ne vérifie rien.
+4. Envoyer.
+
+**Attendu** : mêmes trois lignes qu'en T1.
+⚠️ **Et un contrôle qui n'existe que par la page** : le calcul de l'empreinte du `.bin` prend
+plusieurs secondes — un **indicateur animé** doit s'afficher, puis céder la place au verdict.
+
+- [ ] Les trois lignes · [ ] récapitulatif conforme · [ ] indicateur d'attente vu
+
+## T4 — page × système de fichiers
+
+Identique à T3 avec `littlefs.bin` + `littlefs.bin.sig`.
+⚠️ **Le type est déduit de la ligne signée**, ⛔ plus d'un sélecteur : vérifier que le hint
+annonce bien « Système de fichiers » **sans aucune action de l'opérateur**.
+
+- [ ] Les trois lignes · [ ] type annoncé correctement, sans saisie
+
+---
+
+## N1 — mélange de fichiers : le `.sig` d'un genre avec l'image de l'autre
+
+⭐ **C'est le scénario que `security-reviewer` a mis en tête** : la signature est **authentique**
+et le manifeste **cohérent** — c'est la **liaison** qui échoue.
+
+### N1-a — côté PAGE : ⛔ l'envoi ne doit même pas partir
+Poser `littlefs.bin` avec `firmware.bin.sig`.
+**Attendu** : callout ambre commençant par **« Empreinte différente. »**, bouton **désactivé**,
+⛔ **aucun** moyen de passer outre. ⛔ **Rien n'est envoyé** ⇒ aucune ligne neuve au journal.
+- [ ] Bouton désactivé · [ ] aucune ligne `feature-151` nouvelle au journal
+
+### N1-b — côté SCRIPT : l'envoi part, et l'appareil le DIT
+```bash
+cp .pio/build/esp32dev_core3/firmware.bin.sig /tmp/mix.sig   # .sig du firmware…
+# …envoyé avec l'image du système de fichiers (à faire à la main, cf. ota_update.sh)
+```
+**Attendu** : `authenticité OTA : valide` (la signature **est** bonne) **mais**
+`liaison … : NON liée`, en **WARNING**, `D3 refuserait : oui`.
+⚠️ **Et l'appareil refuse quand même le flash**, pour une raison **différente** : le
+pré-contrôle de l'octet magique (une image de système de fichiers déclarée « firmware » n'a pas
+`0xE9` en tête) ⇒ refus **avant tout effet de bord**. ⛔ **Ne pas confondre les deux refus** :
+l'un vient de D1 (qui ne refuse rien), l'autre de la garde 2.20.1.
+
+- [ ] `valide` + `NON liée` relevés · [ ] le flash n'a **pas** eu lieu · [ ] version inchangée
+
+## N2 — signature altérée
+
+```bash
+cp .pio/build/esp32dev_core3/firmware.bin.sig /tmp/bad.sig
+# Modifier UN caractère de la LIGNE 2, en restant dans [A-Za-z0-9+/] et à 512 caractères.
+# ⛔ NE JAMAIS toucher au .bin : seul le .sig est altéré, l'appareil reste sain.
+```
+**Attendu côté appareil** : `authenticité OTA : invalide`, en **WARNING**.
+⭐ **Et le filet M2 doit se déclencher** : une seconde ligne WARNING affiche les **octets
+canoniques re-sérialisés par l'appareil**, entre guillemets.
+⚠️ **C'est le point le plus utile de toute la campagne** : il existe pour qu'un `invalide` dû à
+un **saut de ligne en trop** chez le signataire cesse d'être **indistinguable** d'une mauvaise
+clé. ⇒ **Relever ces octets verbatim** et les comparer à ce que `sign_manifest()` a signé.
+
+**Attendu côté page**, si l'altération casse la grammaire (longueur ≠ 512, caractère hors
+alphabet) : la page **refuse de lire le fichier** et le dit (« 512 caractères base64 attendus »)
+⇒ ⛔ rien n'est envoyé. **Les deux comportements sont à relever** — ce sont deux niveaux
+différents.
+
+- [ ] `invalide` relevé · [ ] octets canoniques relevés **verbatim** · [ ] message de la page relevé
+
+---
+
+## Relevés — ⛔ à remplir pendant la campagne, pas après
+
+| Test | Authenticité | Liaison (index==0) | Liaison (final) | Niveau | Conforme ? |
+|---|---|---|---|---|---|
+| T1 | | | | | |
+| T2 | | | | | |
+| T3 | | | | | |
+| T4 | | | | | |
+| N1-b | | | | | |
+| N2 | | | | | |
+
+## Critère de clôture de D2
+⛔ **D3 ne commence pas** tant que les six lignes ci-dessus ne sont pas remplies **avec des
+relevés réels**. ⚠️ Un « ça a marché » sans le texte du journal ⛔ ne vaut rien : c'est
+exactement l'erreur de diagnostic qui a masqué bug-170 pendant six semaines.
+
+---
+
+# D2 — RELEVÉS RÉELS (campagne du 2026-11-14, appareil 192.168.1.48)
+
+⭐ **La chaîne complète est prouvée sur le matériel** : clé privée de l'utilisateur → `openssl`
+→ fichier `.sig` à 2 lignes → transport → vérification **dans l'appareil**.
+
+| Test | Authenticité | Liaison (index==0) | Liaison (final) | Niveau | Conforme ? |
+|---|---|---|---|---|---|
+| **T1** script × firmware | `valide` | `liée` | `liée` | INFO | ✅ |
+| **T2** script × système de fichiers | `valide` | `liée` | `liée` | INFO | ✅ |
+| **N1** mélange genre/image | `valide` | ⛔ **jamais atteinte** | ⛔ **jamais atteinte** | INFO + ERROR | ⚠️ voir ci-dessous |
+| **N2a** signature altérée | `invalide` | `liée` | `liée` | WARN | ✅ |
+| **N2b** empreinte altérée | `invalide` | `NON liée` | `NON liée` | WARN | ✅ |
+| **T3** page × firmware | `valide` | `liée` | `liée` | INFO | ✅ |
+| **T4** page × système de fichiers | `valide` | `liée` | `liée` | INFO | ✅ |
+
+⭐ **Les QUATRE combinaisons exigées par D2 sont vertes, et les deux chemins — script shell et
+navigateur — produisent le MÊME verdict sur l'appareil.** C'était la question que ce lot posait :
+⛔ aucun des deux ne fait de cryptographie, tous deux se contentent de **transporter** les deux
+lignes, et c'est l'appareil qui tranche.
+
+## 🔴 Trois enseignements que la procédure écrite n'avait PAS prévus
+
+### 1. Le premier envoi ne peut pas être un test — c'est un AMORÇAGE
+⛔ L'appareil tournait en **2.85.0**, firmware qui **ignore** feature-151. Le premier envoi n'a
+donc produit **aucun verdict** : seule la ligne `[feature-118 lot B] Empreinte upload OTA :
+conforme` apparaît. ⚠️ Évident après coup, invisible avant.
+⇒ **La procédure doit nommer cet envoi « amorçage »**, pas « T1 ». Les tests ne commencent
+qu'une fois le firmware **porteur de la garde** en place.
+
+### 2. `--sign-only` n'est PAS un préalable au chemin SCRIPT
+⛔ Le mode d'envoi **re-signait** le manifeste à chaque fois, donc réclamait la phrase de passe,
+alors que le `.sig` validé était déjà à côté du binaire. ⇒ La campagne était **impraticable sans
+un humain à chaque envoi**.
+✅ **Corrigé** : `--use-sig` relit le `.sig` au lieu de re-signer (fail-closed si l'empreinte ne
+décrit pas le binaire), et `--use-sig-raw <fichier>` **saute** ce contrôle — ⚠️ réservé aux
+essais négatifs, seul moyen de faire parler la garde de l'appareil.
+⭐ C'est exactement ce que fait la page web : elle **transporte**, elle ne signe pas (ADR-0121).
+
+### 3. ⛔ La liaison est INATTEIGNABLE pour le mélange genre/image
+**Mesuré** : image du système de fichiers envoyée avec la signature **du firmware**.
+```
+22:20:36 INFO  authenticité OTA : valide
+22:20:36 ERROR octet magique 0x03 au lieu de 0xE9 → refusé
+version : 2.86.0 (INCHANGÉE)
+```
+⚠️ Le **pré-contrôle de l'octet magique** (garde 2.20.1) sort de la fonction **AVANT** le point
+où la liaison est journalisée. ⇒ Pour ce mélange, `NON liée` **ne peut pas** apparaître.
+⛔ **Ce n'est pas un défaut** : l'image est refusée **sans aucun effet de bord**, ce qui est le
+bon résultat. Mais le test ne prouve pas ce qu'il prétendait prouver.
+⇒ La liaison a été prouvée **autrement**, par **N2b** (empreinte altérée dans la ligne signée),
+qui la fait casser **aux deux étapes**.
+
+⚠️ **Le mélange réellement dangereux reste NON TESTÉ** : une image **firmware** écrite dans la
+partition du **système de fichiers** (genre `filesystem` cohérent avec `update_type`, octet
+magique seulement *averti* dans ce sens). En D1 **rien ne refuse** ⇒ la partition serait
+**écrasée** et l'interface **perdue** jusqu'à un nouvel envoi. ⛔ Essai **destructif** : il exige
+un feu vert explicite, et un `littlefs.bin` prêt à renvoyer.
+
+## Le filet M2 est en place, et il fonctionne
+```
+22:21:21 WARN octets canoniques re-sérialisés par l'appareil
+              (comparer avec ce qui a été signé) :
+              "pool-ota/1 firmware 2.86.0 sha256:9e0580fc…f951e"
+```
+⭐ Sans cette ligne, un `invalide` dû à un **saut de ligne en trop** chez le signataire serait
+⛔ **indistinguable** d'une mauvaise clé. En N2b elle affiche `ee0580fc…`, l'empreinte altérée :
+⇒ **l'appareil re-sérialise depuis ce qu'il a PARSÉ**, il ne fait jamais confiance aux octets
+reçus tels quels.
+
+## État de l'appareil à la fin de la campagne
+`2.86.0` · page d'accueil HTTP 200 · **`update_sig` présent**, **`update_type` absent** ⇒ la page
+à deux champs est bien en service, le sélecteur de type a disparu. ⇒ **T3 et T4 sont possibles.**
+
+## 🔴 Quatrième enseignement — ⛔ « pas besoin de courir » était FAUX
+
+⚠️ Plus haut, cette spec affirmait qu'un verdict **survit au redémarrage** grâce au `flushToDisk()`
+synchrone du CRITICAL « Redémarrage après mise à jour OTA ». **C'est exact, et insuffisant.**
+
+⛔ **`/system.log` est plafonné à 8 Ko** (`Logger::kMaxLogFileBytes`, ADR-0033) et ne garde que
+les **6 derniers Ko** à la rotation. Or un envoi OTA écrit **une ligne de progression par pour
+cent**, et le démarrage qui suit en ajoute une cinquantaine.
+⇒ **Mesuré le 2026-11-14** : les verdicts de T4 ont bien été écrits — le fichier récupéré
+commence à `22:39:26`, soit **juste après** eux — puis la rotation les a chassés **avant** la
+lecture. ⛔ Le test n'avait pas échoué : **la preuve avait disparu.**
+
+⇒ **La fenêtre utile est d'environ UNE MINUTE.** Les cinq premiers relevés n'ont tenu que parce
+que la lecture suivait l'envoi immédiatement.
+⇒ ⛔ **Ne jamais attendre une « fin de campagne » pour relever.** Lire après **chaque** envoi.
+⚠️ Et ⛔ **ne pas guetter un redémarrage** pour déclencher la lecture : un incident réseau en
+provoque un (constaté le 2026-11-14 : watchdog connectivité + MQTT en échec, sans aucun rapport
+avec les tests). **Guetter l'apparition d'un verdict NEUF**, c'est le seul signal fiable.
+
+## Reste à faire
+- [ ] ⚠️ **L'essai DESTRUCTIF** : image **firmware** écrite dans la partition du **système de
+      fichiers** (genre `filesystem` cohérent, octet magique seulement *averti* dans ce sens).
+      En D1 rien ne refuse ⇒ partition écrasée, **interface perdue** jusqu'à un renvoi.
+      ⛔ Exige un feu vert explicite et un `littlefs.bin` prêt.
+- [ ] Cosmétique relevé pendant T3/T4 : le libellé **« Firmware (.bin) »** / **« Système de
+      fichiers (.bin) »** garde un `(.bin)` hérité de l'ancien menu déroulant, où il distinguait
+      deux options. ⛔ Les deux types sont des `.bin` : il n'apprend plus rien. À raccourcir.
+- [ ] Corriger dans la procédure : le premier envoi est un **amorçage**, pas « T1 ».

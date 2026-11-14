@@ -47,6 +47,37 @@ if [ "${1:-}" = "--sign-only" ]; then
     shift
 fi
 
+# feature-151 D2 : `--use-sig` RELIT le fichier `.sig` déjà produit au lieu de
+# re-signer. ⭐ RAISON MESURÉE le 2026-11-14 : le mode d'envoi re-signait le
+# manifeste à chaque fois, donc réclamait la phrase de passe — alors que le
+# `.sig` validé était déjà là, à côté du binaire. La campagne de preuve
+# terrain (D2) en devenait impraticable sans un humain à chaque envoi.
+# ⛔ C'est exactement ce que fait la PAGE WEB : elle transporte les deux
+# lignes, elle ne signe jamais (ADR-0121).
+#
+#   --use-sig              → lit <binaire>.sig, et REFUSE si son empreinte ne
+#                            décrit pas le binaire envoyé (fail-closed).
+#   --use-sig-raw <fichier> → lit CE fichier SANS contrôle d'empreinte.
+#                            ⚠️ Réservé aux ESSAIS NÉGATIFS de D2 (mélange de
+#                            fichiers, signature altérée) : c'est le seul
+#                            moyen de faire parler la garde de l'appareil.
+USE_SIG=0
+SIG_PATH=""
+SIG_UNCHECKED=0
+if [ "${1:-}" = "--use-sig" ]; then
+    USE_SIG=1
+    shift
+elif [ "${1:-}" = "--use-sig-raw" ]; then
+    USE_SIG=1
+    SIG_UNCHECKED=1
+    SIG_PATH="${2:-}"
+    if [ -z "$SIG_PATH" ]; then
+        echo "--use-sig-raw exige un chemin de fichier .sig" >&2
+        exit 1
+    fi
+    shift 2
+fi
+
 TYPE="${1:-both}"
 ESP32_HOST="${2:-poolcontroller.local}"
 UPDATE_URL="http://$ESP32_HOST/update"
@@ -89,7 +120,11 @@ require_signing_tooling() {
     fi
     return 0
 }
-if ! require_signing_tooling; then
+# ⚠️ En mode `--use-sig`, la clé PRIVÉE n'est pas nécessaire : on ne signe
+# rien, on relit une signature déjà produite. Exiger la clé ici refuserait un
+# envoi parfaitement légitime depuis une machine qui ne la détient pas — et
+# c'est précisément la situation d'un poste de test.
+if [ "$USE_SIG" = "0" ] && ! require_signing_tooling; then
     exit 1
 fi
 
@@ -175,7 +210,7 @@ fi
 # rester en mémoire plus longtemps que le strict appel à openssl). Annoncé
 # AVANT la première invite : la spec prévenait qu'« une friction pareille finit
 # par être contournée » si elle surprend sans prévenir.
-if [ "$TYPE" = "both" ]; then
+if [ "$TYPE" = "both" ] && [ "$USE_SIG" = "0" ]; then
     echo -e "${BLUE}ℹ️  Envoi firmware + filesystem ⇒ 2 signatures ⇒ la phrase de passe de la clé sera demandée 2 fois${NC}"
 fi
 
@@ -252,6 +287,53 @@ else
     AUTH_ARGS=(-u "admin:${password}")
 fi
 
+# feature-151 D2 : relit un `.sig` à DEUX LIGNES (ADR-0121) et le valide avec
+# la MÊME grammaire que `parseSigFile()` de `data/app.js` — exactement 2
+# lignes, pas de \r, ligne 2 = 512 caractères base64 sans remplissage.
+# ⛔ Un gate plus permissif que le lecteur produirait un artefact accepté ici
+# et refusé chez l'opérateur : c'est le défaut déjà corrigé dans
+# tools/check_release_artefacts.sh.
+# Résultat dans $MANIFEST_RESULT / $SIGNATURE_RESULT, comme sign_manifest().
+read_sig_file() {
+    local sig=$1 kind=$2 digest=$3
+    if [ ! -f "$sig" ]; then
+        echo -e "${RED}❌ Fichier de signature introuvable : $sig${NC}"
+        echo -e "${RED}   Produisez-le avec « ./ota_update.sh --sign-only $kind » — envoi refusé (fail-closed)${NC}"
+        return 1
+    fi
+    if LC_ALL=C grep -q $'\r' "$sig"; then
+        echo -e "${RED}❌ $sig contient un retour chariot (fins de ligne Windows) — envoi refusé${NC}"
+        return 1
+    fi
+    local n
+    n=$(wc -l < "$sig" | tr -d ' ')
+    if [ "$n" != "2" ]; then
+        echo -e "${RED}❌ $sig n'a pas EXACTEMENT 2 lignes (vu : $n) — envoi refusé${NC}"
+        return 1
+    fi
+    local m b
+    m="$(sed -n '1p' "$sig")"
+    b="$(sed -n '2p' "$sig")"
+    if ! printf '%s' "$b" | LC_ALL=C grep -Eq '^[A-Za-z0-9+/]{512}$'; then
+        echo -e "${RED}❌ La ligne 2 de $sig n'est pas une signature RSA-3072 base64 (512 caractères) — envoi refusé${NC}"
+        return 1
+    fi
+    if [ "$SIG_UNCHECKED" = "1" ]; then
+        # ⚠️ Volontairement NON vérifié : c'est l'objet de l'essai.
+        echo -e "${RED}⚠️  --use-sig-raw : empreinte NON vérifiée, envoi d'un couple délibérément incohérent${NC}"
+        echo -e "${RED}    manifeste : $m${NC}"
+    elif [ "$m" != "pool-ota/1 $kind $FIRMWARE_MANIFEST_VERSION sha256:$digest" ]; then
+        echo -e "${RED}❌ Le manifeste de $sig ne décrit PAS ce binaire — envoi refusé (fail-closed)${NC}"
+        echo -e "${RED}   Dans le fichier : $m${NC}"
+        echo -e "${RED}   Attendu         : pool-ota/1 $kind $FIRMWARE_MANIFEST_VERSION sha256:$digest${NC}"
+        echo -e "${RED}   → signature d'une AUTRE version, d'un AUTRE binaire, ou binaire recompilé depuis.${NC}"
+        return 1
+    fi
+    MANIFEST_RESULT="$m"
+    SIGNATURE_RESULT="$b"
+    return 0
+}
+
 update_file() {
     local file=$1
     local name=$2
@@ -283,7 +365,14 @@ update_file() {
     # tentative réseau. `require_signing_tooling` a déjà validé openssl/clé en
     # tête de script ; un échec ICI (phrase de passe incorrecte) reste
     # possible et doit encore refuser l'envoi (fail-closed).
-    if ! sign_manifest "$type" "$FIRMWARE_MANIFEST_VERSION" "$digest"; then
+    if [ "$USE_SIG" = "1" ]; then
+        local sig_file="${SIG_PATH:-$file.sig}"
+        if ! read_sig_file "$sig_file" "$type" "$digest"; then
+            echo -e "${RED}❌ Signature inutilisable — envoi de $name refusé (fail-closed)${NC}"
+            return 1
+        fi
+        echo -e "${BLUE}🔏 Signature relue depuis $sig_file (aucune re-signature)${NC}"
+    elif ! sign_manifest "$type" "$FIRMWARE_MANIFEST_VERSION" "$digest"; then
         echo -e "${RED}❌ Signature du manifeste échouée — envoi de $name refusé (fail-closed)${NC}"
         return 1
     fi
@@ -353,7 +442,8 @@ case "$TYPE" in
         update_file "$FILESYSTEM_PATH" "Filesystem" "filesystem" || exit 1
         ;;
     *)
-        echo "Usage: $0 [firmware|filesystem|both] [hostname] [password]"
+        echo "Usage: $0 [--use-sig|--use-sig-raw <f.sig>] [firmware|filesystem|both] [hostname] [password]"
+        echo "       $0 --sign-only [firmware|filesystem|both]"
         exit 1
         ;;
 esac
