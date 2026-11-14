@@ -11060,8 +11060,8 @@
   // <option> a disparu, feature-151 D1-bis : le genre est désormais calculé,
   // jamais saisi — voir bindManualUpdate).
   const UPDATE_TYPE_LABELS = {
-    firmware: "Firmware (.bin)",
-    filesystem: "Système de fichiers (.bin)",
+    firmware: "Firmware",
+    filesystem: "Système de fichiers",
   };
 
   // Déduit le type d'image du NOM du fichier. Retourne "firmware",
@@ -11497,9 +11497,8 @@
       }
       if (bindingState === "match") {
         showCallout(notice, "info",
-          `Le nom du fichier (${fileName()}) ressemble à « ${typeLabel(typeFromName)} », mais la signature lue ` +
-          `déclare « ${typeLabel(typeFromSig)} » et l'empreinte du .sig correspond à ce fichier : c'est ce genre ` +
-          `qui sera envoyé. C'est l'appareil qui vérifie la signature elle-même.`);
+          `Le nom du fichier suggère « ${typeLabel(typeFromName)} », mais la signature déclare ` +
+          `« ${typeLabel(typeFromSig)} » et correspond à ce fichier : c'est ce genre qui sera envoyé.`);
       } else {
         // ux-ui-designer (point 5) : phrase courte en gras en tête — deux
         // callouts --warn (celui-ci et #update_recap en mismatch) peuvent
@@ -11543,13 +11542,13 @@
         case "deduced":
           setSigHint(
             `Facultative pour l'instant : sans elle, l'appareil n'a rien à vérifier. ` +
-            `Type déduit du nom du fichier : « ${typeLabel(typeFromName)} ».`);
+            `Type déduit du nom : « ${typeLabel(typeFromName)} ».`);
           return;
         case "defaulted":
           setSigHint(
             `Facultative pour l'instant : sans elle, l'appareil n'a rien à vérifier. ` +
-            `Type retenu par défaut : « ${typeLabel("firmware")} » (nom non reconnu) — renommez le fichier ` +
-            `(ex. littlefs.bin) ou fournissez le .sig correspondant pour lever l'ambiguïté.`);
+            `Type retenu par défaut : « ${typeLabel("firmware")} » (nom non reconnu). Renommez le fichier ` +
+            `(ex. littlefs.bin) ou fournissez le .sig.`);
           return;
       }
     }
@@ -11742,8 +11741,7 @@
       // vérifie la signature — en l'état (D1), il la JOURNALISE seulement,
       // le refus d'une signature invalide n'est pas encore activé (D3).
       setSigHintForFile(sf,
-        `Signature lue — type « ${typeLabel(result.genre)} », version ${result.version}. ` +
-        `L'appareil journalise la signature pour l'instant (vérification avec refus : à venir).`);
+        `Signature lue. L'appareil la journalise seulement : aucun refus pour l'instant.`);
       await recomputeBinding();
     }
 
