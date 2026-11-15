@@ -2,6 +2,16 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [2.87.1] - 2026-11-15
+
+> ⭐ **Première release SIGNÉE du projet.** Elle porte `firmware.bin.sig` et `littlefs.bin.sig`,
+> publics et joints aux assets. ⛔ Aucun client n'a jamais à signer quoi que ce soit.
+
+- **Code identique à 2.87.0.** Le correctif est bumpé pour une seule raison : l'appareil ne propose
+  une installation que si la release **diffère** de la version qu'il exécute. 2.87.0 étant déployé
+  sur l'appareil pour l'amorçage, c'est 2.87.1 qui est installée **depuis la page** — le seul
+  chemin que D3-a avait besoin d'exercer, et qui n'avait jamais transporté de manifeste.
+
 ## [2.87.0] - 2026-11-15
 
 > 🚨 **Ce lot NE REFUSE aucun envoi OTA.** La vérification **journalise seulement** ; une release **sans** signature s'installe exactement comme avant.
