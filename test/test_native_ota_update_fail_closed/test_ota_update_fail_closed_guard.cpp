@@ -136,23 +136,44 @@ void test_sha256_failure_check_precedes_curl_call(void) {
   char* src = readProjectFile("ota_update.sh", &len);
   TEST_ASSERT_NOT_NULL_MESSAGE(src, "ota_update.sh introuvable — la garde structurelle est aveugle");
 
+  const char* digestCall = "digest=$(compute_sha256 \"$file\")";
   const char* digestCheck = "if ! digest=$(compute_sha256 \"$file\"); then";
   const char* curlCall = "curl -s --show-error --connect-timeout 10 --max-time 120";
+  const char* updateFn = "update_file() {";
 
+  // ⚠️ CORRIGÉ le 2026-11-15 (feature-151 D3-a). Cette garde exigeait le
+  // controle "EXACTEMENT une fois". Le mode --sign-only de D2 a ajoute un
+  // SECOND site d'appel LEGITIME (sign_only_file(), qui ne touche pas au
+  // reseau) : la garde est devenue fausse, et la suite native est restee
+  // ROUGE du 2026-11-14 (44cc478) au 2026-11-15 — trois commits pousses
+  // par-dessus sans que personne ne regarde la CI.
+  //
+  // Ce qui doit rester vrai n'est PAS le NOMBRE d'appels — il augmentera
+  // encore — mais deux proprietes qui, elles, ne vieillissent pas :
+  //   1. AUCUN appel a compute_sha256 n'est NON GARDE ;
+  //   2. update_file() en porte un AVANT l'appel curl reel.
   TEST_ASSERT_EQUAL_INT_MESSAGE(
-      1, countIn(src, digestCheck),
-      "le controle d'echec de compute_sha256 doit apparaitre EXACTEMENT une fois");
+      countIn(src, digestCall), countIn(src, digestCheck),
+      "tout appel a compute_sha256 doit etre garde par `if ! ...; then` — un appel "
+      "non garde laisserait passer un envoi SANS empreinte");
+  TEST_ASSERT_TRUE_MESSAGE(
+      countIn(src, digestCheck) >= 1,
+      "ota_update.sh doit contenir au moins un controle d'echec de compute_sha256");
   TEST_ASSERT_EQUAL_INT_MESSAGE(
       1, countIn(src, curlCall),
       "l'appel curl reel doit apparaitre EXACTEMENT une fois dans ota_update.sh");
 
-  const long digestIdx = indexOf(src, digestCheck);
+  const long updateIdx = indexOf(src, updateFn);
   const long curlIdx = indexOf(src, curlCall);
-  TEST_ASSERT_TRUE_MESSAGE(digestIdx >= 0 && curlIdx >= 0, "marqueurs introuvables dans ota_update.sh");
+  TEST_ASSERT_TRUE_MESSAGE(updateIdx >= 0 && curlIdx >= 0,
+                           "marqueurs introuvables dans ota_update.sh");
+  const long digestRel = indexOf(src + updateIdx, digestCheck);
   TEST_ASSERT_TRUE_MESSAGE(
-      digestIdx < curlIdx,
+      digestRel >= 0, "update_file() ne contient AUCUN controle d'echec de compute_sha256");
+  TEST_ASSERT_TRUE_MESSAGE(
+      updateIdx + digestRel < curlIdx,
       "REGRESSION feature-118 lot B : le controle d'echec de compute_sha256 doit "
-      "precede l'appel curl reel — sinon un envoi SANS empreinte atteindrait le "
+      "preceder l'appel curl reel — sinon un envoi SANS empreinte atteindrait le "
       "reseau avant le refus fail-closed");
 
   free(src);

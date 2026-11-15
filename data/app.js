@@ -10774,6 +10774,13 @@
     onlineUpdateBlocked = blocked;
   }
 
+  // feature-151 D3-a : manifeste + signature relayés tels quels à l'appareil (qui vérifiera).
+  // Omis si vides : une release non signée s'installe comme avant. Jamais affichés.
+  function sigParams(manifest, signature) {
+    if (!manifest || !signature) return "";
+    return "&manifest=" + encodeURIComponent(manifest) + "&signature=" + encodeURIComponent(signature);
+  }
+
   function bindGithubUpdate() {
     const checkBtn = $("#check_update_btn");
     const installBtn = $("#install_update_btn");
@@ -10784,9 +10791,21 @@
     const status = $("#github_update_status");
     const barWrap = bar ? bar.parentElement : null;
 
+    const checkStatus = $("#check_update_status");
     checkBtn?.addEventListener("click", async () => {
-      checkBtn.disabled = true;
-      checkBtn.textContent = "Vérification…";
+      if (checkBtn.getAttribute("aria-busy") === "true") return; // appel déjà en cours
+      // Pas de `disabled` : le bouton reste lisible et garde le focus clavier.
+      checkBtn.setAttribute("aria-busy", "true");
+      checkBtn.setAttribute("aria-disabled", "true");
+      const spin = document.createElement("span");
+      spin.className = "btn__spinner";
+      const lbl = document.createElement("span");
+      lbl.textContent = "Vérification…";
+      checkBtn.replaceChildren(spin, lbl);
+      if (checkStatus) {
+        checkStatus.textContent = "Interrogation de GitHub, quelques secondes…";
+        checkStatus.hidden = false;
+      }
       if (info) info.style.display = "none";
       if (installBtn) installBtn.disabled = true;
       if (progress) progress.style.display = "none";
@@ -10807,8 +10826,13 @@
         data = await res.json();
         latestRelease = data;
 
-        $("#current_version").textContent = data.current_version;
-        $("#latest_version").textContent = data.latest_version;
+        // Date fusionnée sur la ligne « Dernière version » (textContent uniquement).
+        let latestTxt = String(data.latest_version || "-");
+        if (!data.no_release && data.published_at) {
+          const d = new Date(data.published_at);
+          if (!isNaN(d.getTime())) latestTxt += " · " + d.toLocaleDateString("fr-FR");
+        }
+        $("#latest_version").textContent = latestTxt;
         if (info) info.style.display = "block";
 
         if (data.no_release) {
@@ -10821,8 +10845,12 @@
           $("#update_available_msg").style.display = "block";
           $("#no_update_msg").style.display = "none";
           $("#release_info").style.display = "block";
-          $("#release_name").textContent = data.release_name || "-";
-          $("#release_date").textContent = data.published_at ? new Date(data.published_at).toLocaleString("fr-FR") : "-";
+          // Nom de release : affiché seulement s'il diffère de la version.
+          const norm = (s) => String(s || "").trim().replace(/^v/i, "").toLowerCase();
+          const showName = !!data.release_name && norm(data.release_name) !== norm(data.latest_version);
+          $("#release_name").textContent = showName ? data.release_name : "-";
+          const nameRow = $("#release_name_row");
+          if (nameRow) nameRow.style.display = showName ? "" : "none";
           $("#release_notes").textContent = data.release_notes || "Aucune note";
           // Fail-closed (feature-026) : sans empreinte d'intégrité, installation refusée
           if (!data.firmware_digest || !data.filesystem_digest) {
@@ -10863,6 +10891,9 @@
         }
       } finally {
         checkBtn.textContent = "Vérifier";
+        checkBtn.removeAttribute("aria-busy");
+        checkBtn.removeAttribute("aria-disabled");
+        if (checkStatus) checkStatus.hidden = true;
         // Reste désactivé si le matériel ne permet pas la mise à jour en ligne.
         checkBtn.disabled = onlineUpdateBlocked;
       }
@@ -10912,6 +10943,7 @@
           body:
             "url=" + encodeURIComponent(latestRelease.filesystem_url) +
             "&digest=" + encodeURIComponent(latestRelease.filesystem_digest) +
+            sigParams(latestRelease.filesystem_manifest, latestRelease.filesystem_signature) +
             "&restart=false",
         });
 
@@ -10964,6 +10996,7 @@
             body:
               "url=" + encodeURIComponent(latestRelease.firmware_url) +
               "&digest=" + encodeURIComponent(latestRelease.firmware_digest) +
+              sigParams(latestRelease.firmware_manifest, latestRelease.firmware_signature) +
               "&restart=true",
           });
 

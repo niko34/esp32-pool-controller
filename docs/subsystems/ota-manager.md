@@ -509,6 +509,16 @@ durcir à ce moment-là, pas avant.
 `firmware.bin.sig` / `littlefs.bin.sig` de la release GitHub, pour que `/download-update` ait un
 jour quelque chose à vérifier. **Champs additifs**, non encore exploités côté page web en D1.
 
+### D3-a (v2.87.0) — genre signé, source unique d'empreinte, relais du `.sig`
+
+⛔ **Rien n'est refusé** : tout est journalisé. Décision complète : [ADR-0122](../adr/0122-socle-decision-ota-genre-empreinte-relais-sig.md).
+
+- **Autorité du genre signé** (`src/ota_kind_authority_logic.*`) : si le verdict est `kValid`, le genre du manifeste choisit la partition. ⚠️ **No-op aujourd'hui** : `combineOtaAuthenticityVerdict` rend `kKindMismatch` si le genre signé diffère de celui de l'appelant, donc le genre effectif ne change jamais. Le **drapeau de désaccord** est journalisé même hors `kValid`.
+- **Source unique d'empreinte** (`src/ota_digest_source_logic.h`) : avec une signature valide, l'empreinte attendue vient du **manifeste**. Un bloc « `TOLÉRANCE D3-a` » (4 occurrences dans `web_routes_ota.cpp`, 0 attendu en D3-c) absorbe la divergence manifeste ↔ `digest` en `CRITICAL`.
+- **Relais du `.sig`** (`src/ota_sig_relay_logic.*`) : `/check-update` lit `firmware.bin.sig` / `littlefs.bin.sig` après `heap_caps_free(rawBuffer)`, dans une **session TLS séparée** par fichier, **non bloquante** (7 cas d'échec ⇒ champs vides + `200`). Corps borné à `kOtaSigFetchMaxBytes` = **1024 o** ; seul le contenu **canonique** est relayé. Précédé du prédicat `otaTlsGateClosed()` (le 503 de `refuseIfTlsGateClosed` est inchangé ; le relais, lui, se saute).
+- **Délais TLS** (`constants.h`) : `kOtaTlsConnectTimeoutMs` = 3000, `kOtaTlsHandshakeTimeoutSec` = **5** (secondes, pas ms), `kOtaTlsSocketTimeoutMs` = 3000, posés sur les **trois** sessions (les deux `.sig` et le GET API). `esp_task_wdt_reset()` avant chaque GET. Borne qui compte : la plus longue attente **sans acquitter** le watchdog = `.sig` via redirection (2 connexions) = `2×(3+5)+3` = **19 s** < 30 s, verrouillée par `static_assert`. DNS non bornable.
+- `kOtaCheckJsonBudgetBytes` est **inchangé** (il borne le parse de la réponse GitHub, qui ne grossit pas).
+
 ### Honnêteté de la preuve par mutation
 
 Deux faits à consigner, plutôt que les lisser :
@@ -751,5 +761,5 @@ L'historique est **préservé** pendant une OTA filesystem car il vit sur une pa
 - [`src/github_root_ca.h`](../../src/github_root_ca.h) — **5 racines auto-signées** (3 depuis v2.16.2, +2 Sectigo E46/R46 depuis bug-165, 2026-10-14) : USERTrust RSA + USERTrust ECC (github.com / api.github.com, exp. 2038), ISRG Root X1 (objects.githubusercontent.com, exp. 2035), Sectigo Public Server Authentication Root E46 (ECC, exp. 2046) + Root R46 (RSA, exp. 2046) — chaîne ECC/RSA actuelle d'api.github.com — empreintes SHA-256 vérifiées, sources consignées dans le header, conformité imposée en CI par [`tools/check_github_root_ca.sh`](../../tools/check_github_root_ca.sh) (voir [règle dédiée](#règle--une-ancre-de-confiance-est-toujours-la-variante-auto-signée-bug-checkupdate-tls-core3-bug-165-adr-0111) ci-dessus)
 - [`partitions.csv`](../../partitions.csv)
 - [docs/UPDATE_GUIDE.md](../UPDATE_GUIDE.md)
-- [ADR-0007](../adr/0007-table-partitions-custom.md), [ADR-0022](../adr/0022-verification-integrite-ota.md), [ADR-0096](../adr/0096-empreinte-sha256-obligatoire-sur-post-update.md), [ADR-0119](../adr/0119-reponse-check-update-bufferisee-en-psram-bornee.md), [ADR-0120](../adr/0120-signature-rsa-du-manifeste-ota-verifiee-avant-refus.md), [ADR-0121](../adr/0121-fichier-sig-conteneur-de-transport-deux-lignes-jamais-reconstruit.md) (feature-151 D1-bis — le fichier `.sig` à deux lignes que la page web transporte, sans jamais le reconstruire)
+- [ADR-0007](../adr/0007-table-partitions-custom.md), [ADR-0022](../adr/0022-verification-integrite-ota.md), [ADR-0096](../adr/0096-empreinte-sha256-obligatoire-sur-post-update.md), [ADR-0119](../adr/0119-reponse-check-update-bufferisee-en-psram-bornee.md), [ADR-0120](../adr/0120-signature-rsa-du-manifeste-ota-verifiee-avant-refus.md), [ADR-0121](../adr/0121-fichier-sig-conteneur-de-transport-deux-lignes-jamais-reconstruit.md) (feature-151 D1-bis — le fichier `.sig` à deux lignes que la page web transporte, sans jamais le reconstruire), [ADR-0122](../adr/0122-socle-decision-ota-genre-empreinte-relais-sig.md) (feature-151 D3-a — genre, empreinte, relais du `.sig`)
 - [`specs/features/done/feature-118-authenticite-de-l-image-ota.md`](../../specs/features/done/feature-118-authenticite-de-l-image-ota.md), [`specs/features/doing/feature-151-signature-de-l-image-ota.md`](../../specs/features/doing/feature-151-signature-de-l-image-ota.md)

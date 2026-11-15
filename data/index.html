@@ -2653,12 +2653,10 @@ action:
                   </div>
 
                   <div id="github_update_info" class="callout callout--info" style="display:none;">
-                    <div><strong>Version actuelle :</strong> <span id="current_version">-</span></div>
                     <div><strong>Dernière version :</strong> <span id="latest_version">-</span></div>
 
                     <div id="release_info" style="display:none; margin-top:10px;">
-                      <div><strong>Release :</strong> <span id="release_name">-</span></div>
-                      <div><strong>Date :</strong> <span id="release_date">-</span></div>
+                      <div id="release_name_row" style="display:none;"><strong>Release :</strong> <span id="release_name">-</span></div>
                       <div style="margin-top:8px;">
                         <strong>Notes :</strong>
                         <pre id="release_notes" class="pre">-</pre>
@@ -2684,6 +2682,7 @@ action:
                     <button class="btn" type="button" id="check_update_btn">Vérifier</button>
                     <button class="btn" type="button" id="install_update_btn" disabled>Mettre à jour</button>
                   </div>
+                  <div id="check_update_status" class="muted small" role="status" aria-live="polite" hidden></div>
                 </div>
               </div>
 

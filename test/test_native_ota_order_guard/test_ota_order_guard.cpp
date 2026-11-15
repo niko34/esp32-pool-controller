@@ -478,6 +478,152 @@ void test_download_authenticity_call_precedes_tls_gate(void) {
   free(src);
 }
 
+// =============================================================================
+// [G7] web_routes_ota.cpp, feature-151 D3-a : dans /update, la RÉSOLUTION DU
+// GENRE (resolveOtaEffectiveKind + réaffectation de `cmd`) précède l'octet
+// magique, g_uploadIsFilesystem, LittleFS.end() et Update.begin(). Sinon le
+// genre signé n'aurait aucun effet sur le choix de partition/contrôle magique
+// — ou pire, s'appliquerait APRÈS que la partition a été choisie/démontée.
+// =============================================================================
+void test_kind_resolution_precedes_magic_and_partition_effects(void) {
+  long len = 0;
+  char* src = readProjectFile("src/web_routes_ota.cpp", &len);
+  TEST_ASSERT_NOT_NULL_MESSAGE(
+      src, "src/web_routes_ota.cpp introuvable — la garde structurelle est aveugle");
+
+  const char* resolveCall = "resolveOtaEffectiveKind(";
+  const char* cmdAssign = "cmd = (kindResolution.effectiveKind == OtaManifestKind::kFilesystem)";
+  const char* magic = "checkOtaFirstByte(";
+  const char* isFsAssign = "g_uploadIsFilesystem = (cmd == U_SPIFFS);";
+  const char* fsEnd = "LittleFS.end();";
+  const char* updBegin = "Update.begin(UPDATE_SIZE_UNKNOWN, cmd)";
+
+  // Deux sites de résolution exactement : /update et /download-update.
+  TEST_ASSERT_EQUAL_INT_MESSAGE(2, countIn(src, resolveCall),
+      "resolveOtaEffectiveKind( doit apparaitre EXACTEMENT 2 fois (/update et /download-update)");
+  TEST_ASSERT_EQUAL_INT_MESSAGE(1, countIn(src, cmdAssign),
+      "la reaffectation de cmd par le genre effectif doit apparaitre EXACTEMENT une fois");
+  TEST_ASSERT_EQUAL_INT_MESSAGE(1, countIn(src, magic), "checkOtaFirstByte( doit etre unique");
+  TEST_ASSERT_EQUAL_INT_MESSAGE(1, countIn(src, isFsAssign), "g_uploadIsFilesystem = (cmd == U_SPIFFS); doit etre unique");
+  TEST_ASSERT_EQUAL_INT_MESSAGE(1, countIn(src, updBegin), "Update.begin(UPDATE_SIZE_UNKNOWN, cmd) doit etre unique");
+
+  // Le 1er site (ordre du fichier) est celui de /update.
+  const long resolveIdx = indexOf(src, resolveCall);
+  const long cmdIdx = indexOf(src, cmdAssign);
+  const long magicIdx = indexOf(src, magic);
+  const long isFsIdx = indexOf(src, isFsAssign);
+  const long updIdx = indexOf(src, updBegin);
+  const long endIdx = indexOf(src, fsEnd);  // 1re occurrence = chemin /update
+  TEST_ASSERT_TRUE_MESSAGE(resolveIdx >= 0 && cmdIdx >= 0 && magicIdx >= 0 && isFsIdx >= 0 &&
+                               updIdx >= 0 && endIdx >= 0,
+                           "marqueurs introuvables dans web_routes_ota.cpp");
+
+  TEST_ASSERT_TRUE_MESSAGE(resolveIdx < cmdIdx,
+      "REGRESSION feature-151 D3-a : la resolution doit preceder la reaffectation de cmd");
+  TEST_ASSERT_TRUE_MESSAGE(cmdIdx < magicIdx,
+      "REGRESSION feature-151 D3-a : le genre effectif (cmd) doit etre resolu AVANT "
+      "checkOtaFirstByte( — sinon l'octet magique est controle contre le mauvais genre");
+  TEST_ASSERT_TRUE_MESSAGE(cmdIdx < isFsIdx,
+      "REGRESSION feature-151 D3-a : le genre doit etre resolu AVANT g_uploadIsFilesystem");
+  TEST_ASSERT_TRUE_MESSAGE(cmdIdx < endIdx,
+      "REGRESSION feature-151 D3-a : le genre doit etre resolu AVANT LittleFS.end()");
+  TEST_ASSERT_TRUE_MESSAGE(cmdIdx < updIdx,
+      "REGRESSION feature-151 D3-a : le genre doit etre resolu AVANT Update.begin()");
+
+  free(src);
+}
+
+// =============================================================================
+// [G8] web_routes_ota.cpp, feature-151 D3-a : dans /download-update, le genre
+// EFFECTIF (isFilesystem réaffecté) précède le CHOIX DE PARTITION
+// (`if (isFilesystem) {`, première occurrence = branche de sélection).
+// =============================================================================
+void test_download_kind_resolution_precedes_partition_choice(void) {
+  long len = 0;
+  char* src = readProjectFile("src/web_routes_ota.cpp", &len);
+  TEST_ASSERT_NOT_NULL_MESSAGE(
+      src, "src/web_routes_ota.cpp introuvable — la garde structurelle est aveugle");
+
+  const char* effective = "isFilesystem = (kindResolution.effectiveKind == OtaManifestKind::kFilesystem);";
+  const char* choice = "if (isFilesystem) {";
+  const char* tlsGate = "refuseIfTlsGateClosed(request, \"/download-update\"";
+
+  TEST_ASSERT_EQUAL_INT_MESSAGE(1, countIn(src, effective),
+      "la reaffectation de isFilesystem par le genre effectif doit apparaitre EXACTEMENT une fois");
+  TEST_ASSERT_TRUE_MESSAGE(countIn(src, choice) >= 1,
+      "le choix de partition `if (isFilesystem) {` est introuvable");
+
+  const long effIdx = indexOf(src, effective);
+  const long choiceIdx = indexOf(src, choice);
+  const long gateIdx = indexOf(src, tlsGate);
+  TEST_ASSERT_TRUE_MESSAGE(effIdx >= 0 && choiceIdx >= 0 && gateIdx >= 0, "marqueurs introuvables");
+  TEST_ASSERT_TRUE_MESSAGE(effIdx < choiceIdx,
+      "REGRESSION feature-151 D3-a : le genre effectif doit preceder le CHOIX DE PARTITION "
+      "dans /download-update");
+  TEST_ASSERT_TRUE_MESSAGE(effIdx < gateIdx,
+      "REGRESSION feature-151 D3-a : le genre effectif doit preceder la garde TLS");
+
+  free(src);
+}
+
+// =============================================================================
+// [G9] data/app.js, feature-151 D3-a : `manifest` ET `signature` figurent dans
+// les DEUX corps /download-update (filesystem puis firmware), via sigParams(),
+// et sigParams() émet bien les deux champs. Un seul oublié désarme en silence
+// la vérification d'authenticité sur l'une des deux étapes de la mise à jour.
+// =============================================================================
+void test_download_bodies_carry_manifest_and_signature(void) {
+  long len = 0;
+  char* src = readProjectFile("data/app.js", &len);
+  TEST_ASSERT_NOT_NULL_MESSAGE(src, "data/app.js introuvable — la garde structurelle est aveugle");
+
+  const char* callOpen = "authFetch(\"/download-update\", {";
+  TEST_ASSERT_EQUAL_INT_MESSAGE(2, countIn(src, callOpen),
+      "authFetch(\"/download-update\", { doit apparaitre EXACTEMENT 2 fois (filesystem + firmware)");
+
+  const char* wanted[2][3] = {
+      {"sigParams(", "_manifest", "_signature"},
+      {"sigParams(", "_manifest", "_signature"},
+  };
+  const char* from = src;
+  for (int k = 0; k < 2; ++k) {
+    const char* hit = strstr(from, callOpen);
+    TEST_ASSERT_NOT_NULL(hit);
+    const long openIdx = (long)(hit - src) + (long)strlen(callOpen) - 1;
+    const long closeIdx = findMatchingBrace(src, openIdx);
+    TEST_ASSERT_TRUE_MESSAGE(closeIdx > openIdx, "corps authFetch(/download-update) non referme");
+    char* body = (char*)malloc((size_t)(closeIdx - openIdx) + 2);
+    TEST_ASSERT_NOT_NULL(body);
+    memcpy(body, src + openIdx, (size_t)(closeIdx - openIdx) + 1);
+    body[closeIdx - openIdx + 1] = '\0';
+    for (int j = 0; j < 3; ++j) {
+      TEST_ASSERT_TRUE_MESSAGE(strstr(body, wanted[k][j]) != NULL,
+          "REGRESSION feature-151 D3-a : un corps /download-update ne porte plus "
+          "sigParams(<..>_manifest, <..>_signature)");
+    }
+    free(body);
+    from = hit + strlen(callOpen);
+  }
+
+  // sigParams() lui-même émet les deux champs.
+  const char* sigDef = "function sigParams(manifest, signature) {";
+  TEST_ASSERT_EQUAL_INT_MESSAGE(1, countIn(src, sigDef), "function sigParams doit etre unique");
+  const long defIdx = indexOf(src, sigDef);
+  const long defClose = findMatchingBrace(src, defIdx + (long)strlen(sigDef) - 1);
+  TEST_ASSERT_TRUE(defClose > defIdx);
+  char* def = (char*)malloc((size_t)(defClose - defIdx) + 2);
+  TEST_ASSERT_NOT_NULL(def);
+  memcpy(def, src + defIdx, (size_t)(defClose - defIdx) + 1);
+  def[defClose - defIdx + 1] = '\0';
+  TEST_ASSERT_TRUE_MESSAGE(strstr(def, "&manifest=") != NULL,
+      "sigParams() n'emet plus le champ manifest");
+  TEST_ASSERT_TRUE_MESSAGE(strstr(def, "&signature=") != NULL,
+      "sigParams() n'emet plus le champ signature");
+  free(def);
+
+  free(src);
+}
+
 // -----------------------------------------------------------------------------
 // Runner
 // -----------------------------------------------------------------------------
@@ -491,5 +637,8 @@ int main(int argc, char** argv) {
   RUN_TEST(test_formdata_sha256_precedes_update_file);
   RUN_TEST(test_update_authenticity_call_precedes_owner_and_magic_check);
   RUN_TEST(test_download_authenticity_call_precedes_tls_gate);
+  RUN_TEST(test_kind_resolution_precedes_magic_and_partition_effects);
+  RUN_TEST(test_download_kind_resolution_precedes_partition_choice);
+  RUN_TEST(test_download_bodies_carry_manifest_and_signature);
   return UNITY_END();
 }

@@ -2,6 +2,27 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [2.87.0] - 2026-11-15
+
+> 🚨 **Ce lot NE REFUSE aucun envoi OTA.** La vérification **journalise seulement** ; une release **sans** signature s'installe exactement comme avant.
+
+### Firmware
+
+- **OTA — feature-151 D3-a.** `/check-update` relaie, par genre, le manifeste et la signature lus dans les `.sig` de la release : 4 champs additifs `firmware_manifest`, `firmware_signature`, `filesystem_manifest`, `filesystem_signature` (chaîne vide si absent/illisible). `/download-update` accepte 2 paramètres POST optionnels `manifest` et `signature`. Avec une signature valide, le genre signé choisit la partition (no-op tant que le verdict porte le genre) et l'empreinte attendue vient du manifeste. ⚠️ Une image conforme au manifeste signé mais pas au paramètre `digest`, refusée avant, est **installée** maintenant (voir ADR-0122).
+- **OTA — délais TLS bornés.** Trois sessions sortantes (GET API, deux `.sig`) bornées : `kOtaTlsConnectTimeoutMs` 3000, `kOtaTlsHandshakeTimeoutSec` 5 s, `kOtaTlsSocketTimeoutMs` 3000, `esp_task_wdt_reset()` avant chaque GET. Corrige un risque de redémarrage par watchdog sur réseau dégradé (handshake TLS de 120 s par défaut), préexistant sur le GET de l'API.
+
+### Fonctionnalités
+
+- **« Vérifier » est plus lent de quelques secondes**, avec un indicateur d'attente (spinner, « Interrogation de GitHub, quelques secondes… »). Pas encore observé sur l'appareil.
+- **Carte « Mise à jour en ligne (GitHub) » allégée** : « Version actuelle » retirée, « Date » fusionnée, « Release » masquée si identique à la version.
+
+### Documentation
+
+- `docs/API.md`, `docs/subsystems/ota-manager.md`, `docs/features/page-settings.md`, `docs/UPDATE_GUIDE.md`.
+- **ADR-0122** (genre, empreinte, relais du `.sig`) ; amendement daté d'ADR-0121.
+
+---
+
 ## [2.86.0] - 2026-10-18
 
 > 🚨 **Ce lot NE REND AUCUN envoi OTA plus difficile.** Il ajoute le mécanisme de signature à clé

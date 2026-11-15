@@ -1402,6 +1402,42 @@ constexpr size_t kOtaCheckResponseMaxBytes = 131072;  // 128 Ko - x8 la taille m
 // connexion simplement lente plutôt que coupée.
 constexpr unsigned long kOtaCheckResponseReadTimeoutMs = 15000;  // 15 s - marge large pour 16,7 à 128 Ko sur TLS
 
+// feature-151 D3-a (2026-11-15) : relais des deux fichiers `.sig` par /check-update
+// (page web : CORS interdit de les lire elle-même). Un `.sig` fait 2 lignes :
+// manifeste (<= 160 o) + signature base64 (512 o) + 2 sauts de ligne CRLF = < 680 o.
+// 1 Ko = marge x1,5 ; au-delà le corps est REFUSÉ sans être tokenisé (entrée TIERCE).
+// Le static_assert de cohérence vit dans ota_sig_relay_logic.h (kOtaManifestMaxLen
+// n'est pas visible d'ici : constants.h reste sans dépendance).
+// ⚠️ Réévaluation DATÉE 2026-11-15 (ADR-0098) : ces 4 champs de relais sont HORS
+// BUDGET DE PARSE. kOtaCheckJsonBudgetBytes plafonne le document de parse de la
+// réponse GitHub, qui ne grossit pas : il reste INCHANGÉ à dessein — le bouger
+// déplacerait mécaniquement kOtaTlsMinPsramLargestBlockBytes et
+// kCheckUpdateMinFreeHeapBytes (static_assert ci-dessous) et durcirait la garde
+// TLS sur le chemin de bug-165/bug-173.
+constexpr size_t kOtaSigFetchMaxBytes = 1024;                   // 1 Ko - borne dure du corps d'un .sig
+constexpr unsigned long kOtaSigFetchReadTimeoutMs = 5000;       // 5 s - délai borné de lecture du corps d'un .sig
+
+// Bornes des sessions TLS sortantes de /check-update (API GitHub + 2 relais .sig),
+// feature-151 D3-a. Sans elles, le handshake Arduino attend 120 s par défaut alors
+// que la tâche async_tcp est sous TWDT kWatchdogTimeoutSec = 30 s : réseau dégradé
+// => redémarrage de l'appareil.
+// CALCUL (réévalué le 2026-11-15, ADR-0098) — ce qui compte est la plus longue
+// attente SANS nourrir le watchdog : esp_task_wdt_reset() est appelé AVANT chaque
+// GET et dans chaque boucle de lecture, donc le total cumulé des 3 sessions n'est
+// PAS la borne (il peut dépasser 30 s : ~11 s + 15 s de corps pour l'API, ~19 s + 5 s
+// par .sig). Le pire GET() bloquant est celui d'un .sig, qui suit UNE redirection
+// (github.com -> objects.githubusercontent.com) = 2 connexions :
+//   2 x (connexion 3 s + handshake 5 s) + en-têtes/lecture socket 3 s = 19 s < 30 s
+// (marge 11 s). L'API (1 connexion) : 3 + 5 + 3 = 11 s avant le corps (corps nourri).
+// ⚠️ Non bornable ici : la résolution DNS (lwIP) précède la connexion.
+constexpr int32_t kOtaTlsConnectTimeoutMs = 3000;      // 3 s - connexion TCP
+constexpr unsigned long kOtaTlsHandshakeTimeoutSec = 5;  // 5 s - handshake TLS (UNITÉ : secondes, API setHandshakeTimeout)
+constexpr uint16_t kOtaTlsSocketTimeoutMs = 3000;      // 3 s - attente d'octets (en-têtes, lecture)
+static_assert(2UL * (kOtaTlsConnectTimeoutMs + kOtaTlsHandshakeTimeoutSec * 1000UL) +
+                      kOtaTlsSocketTimeoutMs <
+                  kWatchdogTimeoutSec * 1000UL,
+              "pire GET bloquant d'un .sig (2 sessions via redirection) doit rester sous le TWDT");
+
 // ============================================================================
 // SENSOR CONSTANTS - Paramètres capteurs
 // ============================================================================

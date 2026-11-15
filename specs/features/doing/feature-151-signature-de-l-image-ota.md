@@ -295,7 +295,9 @@ seul le `if` de refus change.
 | **D0** | Paire générée **hors dépôt**, clé publique dans `constants.h`. ⛔ Aucun déploiement. | — | Clé privée sauvegardée en **2 exemplaires hors-ligne** |
 | **D1** | Vérifie et **JOURNALISE SEULEMENT**, ⛔ jamais de refus. Outillage **complet** dans le **MÊME** lot. | firmware actuel ⇒ ⛔ **risque nul** | — |
 | **D2** | **Preuve terrain** : 4 combinaisons (script × page) × (firmware × FS) + **2 essais négatifs**. | D1 | ⛔ Tant que ce n'est pas vert, **D3 n'est pas écrit** |
-| **D3** | Refus **activé**. Plancher **inerte à 0.0.0**. Interrupteur de secours. | D1 ⇒ ⛔ ne peut pas échouer sur la signature | — |
+| **D3-a** | ⛔ **Aucun refus.** Le **genre signé** devient l'autorité (cond. 2, 3, 9) + relais CORS du `.sig`. | D1 | ⛔ **Arrêt terrain obligatoire** : `/download-update` n'a JAMAIS vu de manifeste |
+| **D3-b** | ⛔ **Aucun refus.** **La porte de sortie** : mode dégradé du serveur web + page de secours embarquée (cond. 6, 7, 8). | D3-a | ⭐ Récupération prouvée **en conditions réelles**, `spiffs` détruite |
+| **D3-c** | ✅ **Le refus.** Les `if`, les verdicts HTTP distincts, plancher **inerte à 0.0.0**, interrupteur. | D3-b | ⛔ Ne commence pas tant que D3-b n'est pas prouvé |
 | **D4** | Bump sans effet, firmware + FS, script **et** page. ⭐ **Premier déploiement réellement filtré.** | D3 | 4 déploiements acceptés |
 | **D5** | Relèvement du plancher (geste explicite). | — | D4 vert |
 
@@ -918,7 +920,10 @@ FAUX**, et ça a failli faire renoncer à l'essai. La cause de l'erreur : un rai
 analogie avec l'incident de corruption de la partition `history` (07/2026), ⛔ sans lire le
 chemin de montage. Le code dit l'inverse : `LittleFS.begin(**false**)` — ⛔ **pas de formatage**
 en cas d'échec — journalise un CRITICAL et **poursuit**.
-⇒ ⭐ **`/update` est du CODE, pas un fichier** : la route reste joignable sans aucune page web.
+⇒ ⭐ **`/update` est du CODE, pas un fichier** : la route reste joignable sans aucune page web
+— 🔴 **MAIS SEULEMENT TANT QUE L'APPAREIL NE REDÉMARRE PAS.** ⛔ Cette phrase, écrite le
+2026-11-14, est **FAUSSE après un redémarrage** : voir la section finale « un redémarrage sans
+système de fichiers = appareil INJOIGNABLE ». C'est le fait qui éclate D3 en trois lots.
 
 ## 🔴 CE QUI A RATÉ, et c'est le vrai enseignement
 **La réparation automatique a été REFUSÉE** : `littlefs.bin` avait été **reconstruit à 21:50**
@@ -942,8 +947,13 @@ l'incident tombe.
 ⇒ **D3 doit livrer un chemin de récupération**, et le choisir explicitement. Pistes, à arbitrer :
 1. **Le refus ne porte que sur le FIRMWARE**, pas sur le système de fichiers. ⚠️ Asymétrie à
    justifier : la partition `spiffs` ne contient aucun code exécuté.
-2. **Un mode de secours borné** (fenêtre de N minutes après un démarrage sur échec de montage),
-   pendant laquelle un envoi non signé reste accepté. ⚠️ Surface d'attaque à faire valider.
+2. ⛔ ~~**Un mode de secours borné** (fenêtre de N minutes après un démarrage sur échec de
+   montage), pendant laquelle un envoi non signé reste accepté.~~
+   🔴 **MORTE — `security-reviewer` P1-bis (2026-11-15), condition B3.** ⚠️ *Un interrupteur qui
+   s'arme sur un état que l'attaquant sait provoquer n'est pas borné* : le porteur du jeton admin
+   peut **détruire la partition à volonté** (conflit C1), puis redémarrer (`/reboot`, ou la
+   commande MQTT). ⇒ La fenêtre s'ouvrirait **à la demande**. Et une coupure de courant pendant
+   un envoi FS légitime l'armerait toute seule.
 3. ⛔ ~~**Rien** — la phrase de passe devient un prérequis de toute réparation.~~
    🔴 **ÉCARTÉE — décision utilisateur du 2026-11-14 :**
    > *« Si la phrase secrète devient nécessaire, ça n'est pas une solution. Je ne peux pas
@@ -1017,3 +1027,612 @@ retrouver les fichiers, ou accepter ce cas comme hors périmètre — ⛔ mais l
 
 ⚠️ **Ce qu'aucune de ces six ne couvre** : un firmware **correctement transmis mais bogué**, qui
 démarre et se confirme. ⇒ C'est une question de **tests avant publication**, ⛔ pas de transfert.
+
+---
+
+# 🔴 LE FAIT QUI ÉCLATE D3 — un redémarrage sans système de fichiers = appareil INJOIGNABLE
+
+**Vérifié dans le code le 2026-11-15**, `src/web_server.cpp:50-54` :
+
+```cpp
+void WebServerManager::begin(AsyncWebServer* webServer, DNSServer* dnsServer) {
+  // Vérifier que LittleFS est monté
+  if (!LittleFS.begin()) {
+    systemLogger.critical("LittleFS non disponible pour le serveur Web");
+    return;                    // ⛔ setupRoutes() n'est JAMAIS appelé
+  }
+  setupRoutes();               // ← c'est ICI que /update et /download-update sont enregistrées
+  server->begin();             // ⛔ le serveur n'est même pas DÉMARRÉ
+}
+```
+
+Chaîne de démarrage mesurée : `main.cpp:380` monte en `LittleFS.begin(false)` — ⛔ **pas de
+formatage** — journalise un CRITICAL et **poursuit** ; puis `main.cpp:528` appelle
+`webServer.begin()`, qui **sort immédiatement**.
+
+⇒ 🔴 **Aucune route HTTP n'existe. Ni `/update`, ni `/download-update`, ni la page de secours de
+la piste 4.** L'appareil tourne, rejoint le Wi-Fi, publie en MQTT — ⛔ et n'accepte plus **aucune**
+mise à jour. ⚠️ **Et ce conteneur n'a pas de port série** : il faudrait ouvrir le boîtier et
+brancher un câble USB.
+
+## ⛔ Pourquoi N3 ne l'a pas montré
+L'appareil **n'a jamais redémarré** avec la partition détruite : l'envoi s'est arrêté en HTTP 500
+(1,9 Mo pour 512 Ko) — ⛔ **un échec d'écriture n'est pas un redémarrage** — et les routes étaient
+déjà enregistrées depuis le démarrage précédent. La réparation a tenu dans la fenêtre.
+⚠️ **Pendant ces deux minutes, une coupure de courant aurait immobilisé l'appareil.**
+⇒ 🔴 **La phrase « la route reste joignable sans aucune page web » (section N3) est FAUSSE après
+un redémarrage**, et elle avait été donnée à l'utilisateur comme une assurance. Corrigée sur place.
+
+## ⇒ La piste 4 est INOPÉRANTE en l'état
+Une page de secours **compilée dans le firmware signé** ne vaut rien si **le serveur qui la sert
+ne démarre pas**. ⛔ Elle n'est pas une fonctionnalité d'affichage : elle exige d'abord un
+**mode dégradé** du serveur web — démarrer **sans** système de fichiers, avec le strict minimum.
+
+# 🔴 D3 ÉCLATÉ EN TROIS LOTS — l'ordre n'est pas négociable
+
+⚠️ **Première raison du découpage** : D3 tel qu'écrit rend la **condition 10** (*« le diff D1→D3
+ne touche QUE le prédicat de décision »*) ⛔ **invérifiable** — elle serait noyée dans un lot qui
+ajoute une autorité de genre, un relais CORS, un mode dégradé, une page embarquée et un
+interrupteur. ⇒ Isoler le refus dans un lot **minuscule** rend la condition 10 **vraie à
+nouveau**, et vérifiable d'un coup d'œil sur le diff.
+
+| Lot | Contenu | Refus ? | ⛔ Ce qui doit être vrai avant le lot suivant |
+|---|---|---|---|
+| **D3-a** « le socle » | Cond. **2** (le genre signé choisit la partition), **3** (une seule source d'empreinte), **9** (verdicts distincts, dont « vérification impossible ») + **relais du `.sig` par `/check-update`** (le CORS bloque la page, mesuré). | ⛔ **non** | ⭐ **Arrêt terrain** : prouver qu'un manifeste traverse `/download-update` |
+| **D3-b** « la porte de sortie » | **Mode dégradé** du serveur web + **page de secours embarquée** + cond. **6** (absence de clé ⇒ signature exigée), **7** (interrupteur borné), **8** (gardes d'auth en tête). | ⛔ **non** | ⭐ Récupération prouvée **sur l'appareil, `spiffs` réellement détruite, après REDÉMARRAGE** |
+| **D3-c** « le refus » | Les `if` de refus, les codes HTTP distincts, le plancher **inerte à 0.0.0**. ⭐ Diff **minuscule**, condition 10 redevenue vérifiable. | ✅ **oui** | D4 |
+
+⛔ **On ne met pas en service un refus avant que la porte de sortie existe ET soit prouvée.**
+C'est la leçon directe de N3 : la seule réparation qui a fonctionné le 2026-11-14 était un envoi
+**sans signature**, et D3-c ferme cette porte.
+
+## 🔴 L'ARRÊT TERRAIN DE D3-a — `/download-update` n'a JAMAIS vu de manifeste
+**Mesuré** : `data/app.js:10909` et `:10961` envoient `url` + `digest` + `restart` — ⛔ **aucun
+champ de signature**. La mise à jour **en ligne** (depuis une release GitHub) n'a donc **jamais**
+été exercée avec un manifeste, à aucun moment de D1 ni de D2.
+⇒ ⛔ **À D3-c, ce chemin serait refusé à coup sûr** — et c'est le chemin **normal** du client.
+⇒ **D3-a se termine par un envoi réel par ce chemin**, verdict relevé au journal, ⛔ pas par une
+lecture de code.
+
+## 🔴 Ce que `security-reviewer` doit trancher en P1-bis — AVANT toute ligne de code
+Le périmètre a changé depuis le P1 du 2026-10-18 : il y a des **clients**, la signature est
+**obligatoire pour les deux genres**, et la récupération passe par un **mode dégradé**.
+1. **Le mode dégradé est une surface d'attaque neuve** : un serveur qui démarre **sans** système
+   de fichiers, dans un état où la configuration et l'authentification ⛔ ne sont peut-être pas
+   chargées. ⚠️ Quelles routes y vivent, et **l'authentification y est-elle encore possible** ?
+2. **La page de secours accepte un téléversement** — donc un chemin d'écriture en flash dans
+   l'état le plus dégradé de l'appareil. ⚠️ Exige-t-elle la signature ? ⛔ Si oui, un client sans
+   accès à la release reste bloqué ; si non, elle **annule** D3-c.
+3. **L'angle mort nommé** : client sans accès internet. ⇒ Trancher : embarquer de quoi retrouver
+   les fichiers, ou **écrire** que c'est hors périmètre.
+4. **L'interrupteur borné (cond. 7)** et le mode dégradé se recouvrent-ils ? ⛔ Deux mécanismes de
+   secours qui s'ignorent, c'est deux surfaces au lieu d'une.
+
+---
+
+# 🔒 Verdict `security-reviewer` **P1-bis** (2026-11-15) — la conception de RÉCUPÉRATION
+
+**GO SOUS CONDITIONS — 14 conditions (B1 à B14)**, plus une **réserve de fond qui renverse la
+conception** : ⛔ **le « mode dégradé » ne doit PAS être un mode.**
+⚠️ Ce verdict porte sur la **conception**. ⛔ Il ne vaut pas GO en P2, et les **11 conditions du
+P1 restent dues**.
+
+## 🔴 Trois faits que ce verdict corrige — vérifiés dans le code
+
+### 1. L'authentification NE DÉPEND PAS du système de fichiers
+⭐ **C'était la question qui me gênait le plus, et la réponse est bonne.** Mot de passe admin et
+jeton d'API vivent en **NVS** (`config.cpp:395-396`, relus en `:858-863`) et sont injectés dans
+`authManager` en `main.cpp:402-405`. ⇒ **Un serveur démarré sans LittleFS s'authentifie
+normalement.** ⛔ **Un dépôt de fichier anonyme n'a donc AUCUNE justification.**
+⚠️ Au passage : ⛔ **il n'y a pas de sel** — mot de passe et jeton sont stockés **en clair**.
+(Connu, inchangé par ce lot, à porter dans l'ADR.)
+
+### 2. « Interface détruite » ⛔ ne se réduit PAS à « montage en échec »
+Une écriture FS **interrompue** laisse un début d'image neuve et une fin d'ancienne : le montage
+peut **réussir** sur un contenu incohérent — le code le prévoit déjà
+(`web_routes_ota.cpp:271-275`, *« contenu potentiellement incohérent »*). ⇒ Dans cet état les
+routes existent, l'interface est cassée, et ⛔ **aucune page de secours n'apparaîtrait** si le
+déclencheur était le seul échec de montage. ⇒ **Condition B7.**
+
+### 3. L'algorithme est **RSA-3072 PKCS#1 v1.5 / SHA-256**, ⛔ pas Ed25519
+Déjà tranché dans cette spec (Q1, ligne 305 : *« Ed25519 ABSENT de mbedtls »*) et confirmé dans
+le code (`constants.h:3956`, `web_routes_ota.cpp:480-481` : **exactement 384 octets**).
+⚠️ L'erreur venait de **mon brief**, pas de la spec. ⛔ Aucun lot ne doit partir sur une
+dépendance Ed25519.
+
+## 🔴 LA RÉSERVE DE FOND — « le mode dégradé ne doit pas être un mode »
+
+⛔ **Pas de table de routes réduite. Pas de drapeau `degraded`.** La récupération se fait par une
+route de secours **toujours enregistrée**, qui poste sur le **`/update` existant**.
+
+**Trois raisons, toutes mesurées :**
+1. **Les routes d'API ne lisent pas `spiffs`** — configuration et produits sont en NVS. Les
+   **seuls** lecteurs sont les pages statiques (404 si le fichier manque) et `/get-system-info`
+   (renvoie 0). ⇒ Retirer le retour anticipé de `begin()` suffit : la surface neuve est **un seul
+   GET public, statique, compilé dans le firmware**.
+2. ⚠️ **Un drapeau consultable est une invitation** à écrire un jour `if (degraded)` dans un
+   prédicat d'authentification ou de signature ; un second handler d'upload serait un **second
+   site de garde** — ⛔ exactement le défaut de **bug-117**.
+3. ⛔ **Un état qui n'existe qu'après une panne n'est jamais exercé** : il sera faux le jour où on
+   en a besoin.
+
+⭐ **Bénéfice opérationnel non demandé** : aujourd'hui, dans cet état, l'appareil **dose sans
+aucune prise HTTP**. Avec la table complète, l'arrêt des pompes et la configuration redeviennent
+pilotables.
+
+## 🔴 Pourquoi la page de secours EXIGE la signature, sans exception
+L'état « FS détruit » est **provocable par le porteur du jeton admin** : l'authenticité est jugée
+à `index==0` **avant l'effacement** (`web_routes_ota.cpp:643-671`), la liaison seulement au
+fragment final **après `LittleFS.end()`** (`:864-866`) ⇒ un `.sig` **public et authentique** avec
+une image quelconque détruit la partition (conflit **C1**). `/reboot` répond au même jeton
+(`web_routes_config.cpp:2624`), et une commande MQTT de redémarrage existe
+(`mqtt_manager.cpp:549`).
+⇒ ⛔ **Si l'état dégradé acceptait du non-signé, la chaîne « détruire → redémarrer → déposer un
+`littlefs.bin` hostile » rendrait au porteur du jeton exactement ce que D3-c lui retire.**
+⇒ **Coût réel pour le client : deux fichiers publics à télécharger au lieu d'un.** ⭐ Et la page
+reste minuscule, parce qu'après la condition 3 du P1 (livrée en D3-a) elle ⛔ n'a **plus à
+calculer de SHA-256** : elle envoie `manifest`, `signature`, puis le fichier.
+
+## Les deux mécanismes de secours — ⛔ ils ne se composent JAMAIS
+| | Page de secours | Interrupteur (cond. 7 du P1) |
+|---|---|---|
+| Panne couverte | FS détruit, **vérification saine** | **Vérification impossible** (clé perdue, défaut du vérificateur) |
+| Utilisateur | le **client** | le **signataire** seul |
+| Signature | **exigée** | **suspendue**, bornée |
+
+⇒ Les deux survivent, sous **B3** et **B11**.
+
+## ⛔ L'angle mort « pas d'internet » — tranché en trois cas
+1. **Le poste a internet à un moment** (téléphone en 4G) : **couvert**. ⚠️ À documenter pour le
+   mode point d'accès : **télécharger AVANT de s'y connecter**.
+2. **L'appareil a internet, le poste non** : **couvert à surface nulle** par un bouton
+   « réparer en ligne » (`/check-update` puis `/download-update`). ⭐ Possible **seulement après
+   le relais du `.sig` de D3-a**. Recommandé, ⛔ non bloquant.
+3. **Internet nulle part** : **hors périmètre assumé** ⇒ **B13**, à écrire dans la spec **et**
+   dans `docs/UPDATE_GUIDE.md`. ⛔ **Ne jamais le résoudre par une acceptation non signée.**
+
+## 🔴 Le seul risque que D3-a introduit alors qu'il ne refuse rien
+Aujourd'hui `cmd` est fixé par `update_type`/nom de fichier (`web_routes_ota.cpp:613-633`), et
+**tout ce qui suit en dépend** : `expectedKind` (`:644`), l'octet magique (`:680`),
+`g_uploadIsFilesystem` (`:846`), `LittleFS.end()` (`:864`), `Update.begin()` (`:871`).
+⇒ ⛔ **Si le genre signé corrige `cmd` APRÈS l'une de ces gardes, elle aura jugé l'ancien genre**
+— un firmware partirait **sans contrôle `0xE9`**, ou une partition serait démontée pour rien.
+⇒ **B8** : le genre est résolu **une seule fois, avant toute garde qui en dépend**.
+
+## ⚠️ Et la preuve terrain de D3-b est l'étape la plus dangereuse du chantier
+« `spiffs` détruite **puis redémarrage** » sur un appareil **sans port série** : si le code neuf
+a un défaut, l'appareil est **injoignable** — et il **continue de doser**, avec MQTT pour seul
+canal. ⇒ **B12**, preuve en **trois marches**.
+
+---
+
+## Conditions à lever (B1 à B14)
+
+### Récupération — D3-b
+- **B1.** La page de secours poste sur le **`/update` existant**. ⛔ Aucune seconde route
+  d'upload, aucun second handler : `grep -c handleOtaUpdate src/web_routes_ota.cpp` ⛔ ne gagne
+  **aucun** site d'enregistrement.
+- **B2.** **Signature exigée à l'identique en secours, pour les deux genres.** ⛔ Le prédicat de
+  refus ne prend en entrée **ni l'état de montage, ni l'origine de la requête**.
+- **B3.** ⛔ **Aucune fenêtre d'acceptation non signée ne s'arme sur un état de l'appareil**
+  (montage, redémarrage, absence de fichier). ⇒ **La piste 2 est retirée de la spec** (faite).
+- **B4.** `setupRoutes()` et `server->begin()` s'exécutent **sans condition de montage**. La table
+  de routes est **la même** dans les deux états, enregistrée par les mêmes fonctions `setup*Routes`.
+- **B5.** ⛔ **Aucune variable d'état « dégradé »** n'est lue par `auth.cpp`,
+  `otaUploadAuthorized`, `REQUIRE_AUTH` ni le prédicat de signature. **Vérifiable par grep.**
+- **B6.** La page de secours est une **constante compilée**, servie par un **GET public à adresse
+  fixe**, **toujours** enregistré, ⭐ **AVANT la garde 503** (`web_server.cpp:118-125` : *« toute
+  route `HTTP_GET` ajoutée après ce point sera couverte par la garde »*). ⛔ Ni donnée
+  d'exécution, ni ressource externe ; la version affichée est une **constante de compilation**.
+- **B7.** `/` et `/index.html` servent la page de secours **quand l'interface est absente**.
+  ⛔ Le déclencheur **n'est pas** le seul échec de montage : il couvre aussi **« fichier d'index
+  absent »** et **« mise à jour FS commencée et non terminée »** (marqueur persistant posé avant
+  `LittleFS.end()`, levé après succès). ⛔ **Aucun `LittleFS.begin(true)` nulle part.**
+- **B10.** La page de secours fonctionne à l'état de **premier démarrage** (NVS vide **et** FS
+  détruit) **par les routes existantes** — `/auth/login` répond 403
+  (`web_routes_auth.cpp:46-49`), `/auth/change-password` est public dans cet état et rend le
+  jeton (`:84-141`). ⛔ **Aucune exemption neuve** dans `checkAuth` ni `otaUploadAuthorized`.
+  **Essai dédié.**
+- **B11.** Interrupteur : **une fonction unique** de décision, lue par `/update` **et**
+  `/download-update` · ⛔ **jamais armé automatiquement**, **absent** de la page de secours ·
+  ⛔ **non armable sans heure valide** · en D3-b il **journalise** *« D3 refuserait : non —
+  interrupteur actif, expire dans N min »*, ⭐ pour que l'armement et l'expiration soient
+  **prouvés avant** D3-c.
+- **B12.** Clôture de D3-b en **trois marches**, chacune lue **sur les lignes de verdict**
+  (`authenticité : valide`, `liaison : liée`), **au navigateur**, ⛔ jamais en `curl` ni sur un
+  code HTTP :
+  1. appareil **sain**, parcours complet par la page de secours ;
+  2. FS détruit **SANS** redémarrage, même parcours ;
+  3. FS détruit **PUIS** redémarrage. ⛔ Exige un **feu vert explicite de l'utilisateur**, un
+     **accès physique USB prêt**, et un couple `littlefs.bin` + `.sig` vérifié **juste avant** et
+     ⛔ **non reconstruit** depuis.
+- **B13.** La spec **et** `docs/UPDATE_GUIDE.md` écrivent le cas **« internet nulle part »** comme
+  hors périmètre, et la procédure du mode point d'accès.
+
+### Socle — D3-a
+- **B8.** Le genre est résolu **UNE SEULE FOIS**, avant toute garde qui en dépend (octet magique,
+  `g_uploadIsFilesystem`, `LittleFS.end()`, `Update.begin()`, choix de partition de
+  `/download-update`). · Le genre signé ne fait autorité **que si le verdict est « valide »** ;
+  sinon comportement actuel conservé. · Tout **désaccord** entre genre signé et genre de
+  l'appelant est **journalisé** avec un libellé propre. · `test_native_ota_order_guard` est
+  **étendu** pour figer cet ordre.
+- **B9.** Relais du `.sig` par `/check-update` : **lecture bornée (1 Ko au plus)** · ⛔ l'appareil
+  ne relaie **que ce qu'il a parsé et re-sérialisé**, plus une signature validée sur l'alphabet
+  base64 et sa longueur — ⛔ **jamais les octets bruts** · la page insère ces valeurs en
+  **`textContent`**, ⛔ jamais en HTML.
+  ⚠️ **Raison** : le contenu relayé vient de la chaîne GitHub — **l'adversaire que la feature
+  vise**.
+- **B14.** L'arrêt terrain de D3-a (manifeste à travers `/download-update`) se clôt sur un
+  **verdict relevé au journal dans la minute**, **pour les deux genres**.
+
+⚠️ **Piège de preuve en D3-a et D3-b** : tant que **rien ne refuse**, ⛔ *« l'envoi a été
+accepté »* **ne prouve rien**. La clôture se lit **dans les verdicts du journal**.
+
+## ⚠️ Acceptable pour un réseau domestique privé — ⛔ mais à ÉCRIRE dans l'ADR
+- **Premier démarrage ouvert** : tant que l'assistant n'est pas terminé, le mot de passe vaut
+  `admin` (`auth.cpp:57-61`). `/auth/login` est bloqué, mais `checkBasicAuth` ⛔ **ne regarde pas
+  l'état de premier démarrage** (`auth.cpp:107-113`, accepté par `otaUploadAuthorized` en
+  `web_routes_ota.cpp:344`) ⇒ `/update` **semble** joignable en Basic `admin:admin` dans cette
+  fenêtre. ⚠️ **Lu, NON essayé.** Aujourd'hui = firmware arbitraire ; après D3-c = **image signée
+  seulement**.
+- **`auth_enabled=false`** ouvre tout (`auth.cpp:200-202`) — choix de l'utilisateur, **borné par
+  la signature après D3-c**.
+- **HTTP en clair** : la page de secours fait circuler le mot de passe comme la page de connexion
+  ⇒ **aucun coût neuf**.
+- **Appareil volé** : mot de passe et jeton **en clair** en NVS. Connu, inchangé par ce lot.
+
+## Cosmétique relevé
+- La comparaison du **mot de passe** à la connexion ⛔ n'est **pas à temps constant**
+  (`web_routes_auth.cpp:39`), alors que celle du **jeton** l'est.
+- La page de secours hérite de la **CSP globale** (`web_server.cpp:86-87`) : le script **en
+  ligne** y est permis, ⛔ **aucune ressource externe** ne doit y figurer.
+
+## Specs de durcissement à ouvrir (ordre revu par ce verdict)
+1. 🔴 **Mise en attente de l'image FS en PSRAM** — ⭐ **passe EN TÊTE** : avec des clients, **C1
+   est la porte d'entrée** dans l'état « FS détruit », par erreur **ou** par malveillance du
+   porteur du jeton.
+2. **bug-112** (journal purgeable sans authentification) — ⚠️ il **conditionne la valeur** de
+   toutes les preuves par journal : **B11, B12, B14**.
+3. **Premier démarrage** : aligner `checkBasicAuth` sur le blocage de `/auth/login`, ou **assumer
+   l'ouverture par écrit** dans l'ADR.
+4. **Interrupteur par bouton PHYSIQUE** pour les appareils clients — ⭐ *le client a le bouton
+   sous la main et n'a pas forcément MQTT pour témoin* ⇒ c'est la **forme naturelle** de
+   l'interrupteur côté client. ⛔ Après D5.
+5. **Bouton « réparer en ligne »** dans la page de secours, s'il est écarté de D3-b.
+6. 🔴 **À soumettre à `pool-chemistry`** (hors mandat de `security-reviewer`) : **l'appareil
+   doit-il continuer à DOSER quand son interface est détruite ?** ⚠️ C'est le cas **aujourd'hui**,
+   et ce lot ⛔ **ne le change pas**.
+
+## 🔴 DÉCISION UTILISATEUR (2026-11-15) — l'appareil CONTINUE de doser interface détruite
+
+Question renvoyée par `security-reviewer` (point 6 de ses durcissements, hors de son mandat).
+Réponse de l'utilisateur : *« oui, idéalement, l'appareil doit continuer à doser. »*
+
+⇒ **C'est le comportement ACTUEL** : la régulation vit en RAM/NVS, ⛔ elle ne lit rien dans
+`spiffs`. **Aucun code à écrire** — la décision **verrouille** ce comportement au lieu de le
+changer. ⛔ `pool-chemistry` n'a donc pas de modification à valider : aucun chemin neuf vers
+`pump_controller`.
+
+⭐ **Et cette décision RENFORCE la condition B4** (table de routes complète sans système de
+fichiers). Les deux se tiennent :
+- un appareil qui dose **doit rester pilotable** — arrêt des pompes, consignes, mode manuel ;
+- ⛔ aujourd'hui, interface détruite **après un redémarrage**, il dose **sans aucune prise HTTP**,
+  avec MQTT pour seul canal. ⇒ **C'est l'état à supprimer**, et B4 le supprime.
+
+⚠️ **Conséquence directe sur la marche 3 de B12** (FS détruite **puis** redémarrage) : pendant
+l'essai, l'appareil **régule un bassin réel**. ⇒ ⛔ Ne pas lancer cette marche sans :
+- la **filtration dans un état connu** et les plafonds journaliers/horaires **relus avant** ;
+- MQTT **vérifié vivant** juste avant (seul témoin si le code neuf a un défaut) ;
+- l'**accès physique USB prêt** (déjà exigé par B12).
+
+---
+
+# 🔴 D3-a — CONCEPTION RENDUE, et un constat qui RÉDUIT le lot (2026-11-15)
+
+## ⭐ LE CONSTAT : « le genre signé fait autorité » est un **no-op**, et la condition 2 n'est PAS levée par D3-a
+
+**Vérifié dans `src/ota_authenticity_logic.cpp`** (fonction `combineOtaAuthenticityVerdict`) :
+
+```cpp
+// Signature authentique : reste à vérifier la cohérence genre + plancher.
+if (parsedKind != expectedKind) {
+  return OtaAuthenticityVerdict::kKindMismatch;
+}
+```
+
+⇒ **`kValid` IMPLIQUE DÉJÀ « genre signé == genre de l'appelant ».** Et comme l'autorité n'est
+accordée **que** si le verdict est `kValid` (B8), **le genre effectif est toujours égal au genre
+de l'appelant** : la réaffectation de `cmd` / `isFilesystem` est un **no-op prouvable**.
+
+⛔ **Trois conséquences, à ne pas rater au moment de planifier D3-c :**
+1. ⭐ **Le risque G4 du P1-bis est NUL en D3-a** (« une garde aurait jugé l'ancien genre ») : le
+   genre ⛔ **ne change jamais**. L'invariant « D3-a ne refuse rien » est tenu **par
+   construction**, ⛔ pas par vigilance.
+2. 🔴 **La condition 2 du P1 est en réalité implémentée par le REFUS `kKindMismatch` de D3-c**,
+   ⛔ pas par l'autorité de genre. ⚠️ **À écrire tel quel** — sinon D3-c sera planifié comme s'il
+   restait quelque chose à faire sur le genre, alors que **tout y reste à faire**.
+3. Ce que A1 apporte **malgré tout**, et qui justifie de l'écrire quand même : le **drapeau de
+   désaccord** est calculé et journalisé **même hors `kValid`** (⭐ seul libellé neuf réellement
+   observable en D3-a), et il existe **un seul site** de résolution le jour où le verdict cessera
+   de porter le genre.
+
+## ⇒ Ce qui reste de VRAI CONTENU dans D3-a
+| Item | Contenu réel |
+|---|---|
+| **Condition 2** (autorité du genre) | ⚠️ **no-op** — un drapeau de désaccord journalisé, rien de plus |
+| **Condition 9** (verdicts distincts) | ⚠️ **déjà en place** : `otaAuthenticityVerdictLabel` rend **7 libellés distincts**, dont « vérification impossible ». Reste à **étendre aux libellés neufs** |
+| **Condition 3** (source unique d'empreinte) | ⭐ **vrai travail** — avec la tolérance ci-dessous |
+| **B9** (relais du `.sig`) | ⭐ **vrai travail** — c'est le gros du lot |
+| **C1-C3** (`app.js` transporte le manifeste) | ⭐ **vrai travail**, 3 lignes mais c'est l'arrêt terrain |
+
+## Arbitrage (a) — condition 3 contre l'invariant : **tolérance NOMMÉE et DATÉE**
+⚠️ Basculer la source d'empreinte vers le manifeste peut faire **apparaître un refus
+d'intégrité** quand manifeste ≠ paramètre — ⛔ interdit par l'invariant n°1. En exploitation
+normale l'écart est **impossible** (les deux valent le SHA-256 du même fichier) ; il n'apparaît
+que sur **défaut d'outillage** (⚠️ un `.sig` d'une autre version joint à la release — **déjà vu
+sur ce projet**) ou sur attaque.
+⇒ **Retenu** : la source **bascule réellement** (⭐ sinon l'arrêt terrain B14 ne prouverait rien
+et D3-c exercerait en production un chemin jamais parcouru), et **un bloc unique par route**
+absorbe le seul refus neuf possible, en journalisant en **CRITICAL** *« divergence manifeste ↔
+paramètre — TOLÉRÉ EN D3-a, D3-c refusera »*.
+⭐ **Critère de clôture mécanique** : `grep -c "TOLÉRANCE D3-a" src/web_routes_ota.cpp` doit
+rendre **4** à la fin de D3-a et **0** à la fin de D3-c. ⇒ Diff de suppression attendu : **≈ 16
+lignes**, rien d'autre.
+
+## Arbitrage (b) — où résoudre le genre
+**Dernière instruction du bloc d'authenticité déjà figé** par les gardes structurelles [G5]
+(`:644-671`) et [G6] (`:1656-1690`). ⛔ Le bloc n'est **pas déplacé** — on lui ajoute une sortie.
+Les **cinq** dépendants sont en aval (+9, +175, +193, +200 lignes, et +30/+95 pour le choix de
+partition), et le point unique reste **en amont** de `g_uploadOwner`, `setOtaInProgress(true)` et
+de tout `esp_partition_erase_range()`.
+
+## Arbitrage (c) — le relais du `.sig` : **session séparée, après le parse, NON BLOQUANT**
+⛔ **Pas « dans la session TLS déjà ouverte »** : les `.sig` sont sur
+`objects.githubusercontent.com`, **hôte différent** d'`api.github.com` ⇒ handshake neuf
+obligatoire. Position : **après `heap_caps_free(rawBuffer)`** — ⭐ le **creux mémoire** de la
+requête, pas son pic.
+⚠️ **Coût mesuré, visible utilisateur** : `/check-update` passe de **~4 s à ~10 s pire cas**
+(2 handshakes + 2 × 5 s de délai borné). TWDT 30 s tenu, `esp_task_wdt_reset()` dans la boucle.
+⛔ La page n'a **aucun `AbortController`** sur cet appel (`app.js:10795`) — vérifié.
+**Les 7 cas d'échec** (URL absente, hôte non autorisé, HTTP ≠ 200, corps > 1 Ko, délai, parse
+hors grammaire, garde TLS fermée) ⇒ **champs vides + 200**, et les deux genres sont
+**indépendants**.
+⭐ **`kOtaCheckJsonBudgetBytes` reste INCHANGÉ** — et c'est le résultat important : il plafonne le
+document de **parse de la réponse GitHub**, qui ne grossit pas. Le bouger déplacerait
+**mécaniquement** `kOtaTlsMinPsramLargestBlockBytes` et `kCheckUpdateMinFreeHeapBytes` via les
+`static_assert` de `constants.h:1371-1376` ⇒ ⛔ **durcir la garde TLS de 1,3 Ko sur le chemin
+exact de bug-165/bug-173**, pour une croissance qui ne les concerne pas.
+
+## ⚠️ Écart à déclarer (hors condition 10, mais à dire)
+`refuseIfTlsGateClosed` (`:1084`) **envoie** un 503. Le relais ouvre une session sortante neuve
+et doit donc être précédé de la garde — ⛔ **mais sans refuser**. ⇒ Extraire le **prédicat** en
+`static bool otaTlsGateClosed(...)` ; `refuseIfTlsGateClosed` l'appelle et **conserve son 503 à
+l'identique** ; le relais appelle le prédicat seul et **se saute** si la garde est fermée.
+⛔ `ota_signature.*`, `ota_manifest_logic.*` et `combineOtaAuthenticityVerdict` restent **octet
+pour octet identiques** — condition 10 tenue.
+
+## ⚠️ TROISIÈME copie de la grammaire du `.sig` — le défaut le plus probable de ce lot
+Elle existera en **shell** (`tools/check_release_artefacts.sh:211-246`), en **JS**
+(`data/app.js:11156`) et désormais en **C++**. ⇒ La suite native **doit reprendre la matrice de
+vecteurs** de `test/sig_parse_vectors.js` (ADR-0099) et le **dire en commentaire**. ⛔ Une
+divergence silencieuse entre les trois est le risque n°1.
+
+## ADR
+**ADR-0122 neuf** — « Le socle de la décision OTA : genre, empreinte et relais du `.sig` ».
+⛔ Pas une extension : ADR-0120 tranche le **schéma cryptographique**, ADR-0121 le **format de
+transport** ; ici c'est la **conception d'exécution** (où l'on décide, à partir de quoi, qui va
+chercher quoi). Il doit porter **le no-op du genre**, la **tolérance datée** et son critère de
+suppression, le **CORS** comme cause du relais, et les rappels du P1 (vecteur « jeton admin
+volé » **ouvert**, mot de passe et jeton **en clair en NVS, sans sel**).
+
+🔴 **Correction à porter dans ADR-0121** (`docs/adr/0121-…md`, section Contexte, dernier
+paragraphe) : il annonce le relais *« au sein de la session TLS déjà ouverte »* — ⛔ **impossible**
+(hôte différent, session close avant le parse). **Une ligne d'amendement datée** renvoyant à
+ADR-0122 ; ⛔ ne pas réécrire la décision.
+
+## 🔴 DÉCISION UTILISATEUR (2026-11-15) — indicateur de progression sur « Vérifier »
+Le relais du `.sig` fait passer `/check-update` de **~4 s à ~10 s pire cas**. L'utilisateur :
+*« pour les 10 secondes, j'aimerais un indicateur de progression. »*
+⇒ ⚠️ **C'est une surface UI** ⇒ `ux-ui-designer` passe **AVANT** `web-ui-developer` (règle non
+négociable), **sur la carte entière** « Mise à jour en ligne (GitHub) » (`index.html:2645`),
+⛔ pas sur le seul indicateur — et **avec les captures jointes**, à 390 px **et** 1024 px.
+⚠️ Son mandat inclut l'**état d'attente** (que dit la carte pendant ces 10 s ?), l'**état
+« release non signée »** et l'**état « relais indisponible »**.
+
+## 🎨 Étude `ux-ui-designer` — RENDUE (2026-11-15), sur capture de la carte réelle
+
+**Retenu : spinner DANS le bouton, et le bouton n'est PAS désactivé.**
+- `.btn__spinner` 16 px + libellé **« Vérification… »** (13 caractères). ⛔ Pas de `disabled` : le
+  bouton reçoit `aria-busy="true"` / `aria-disabled="true"` et un garde-fou JS ignore les clics.
+  ⭐ **Trois raisons** : il garde l'**opacité pleine** (donc **lisible**), il garde le **focus
+  clavier** (un `disabled` le ferait perdre au lecteur d'écran), et ⛔ il n'oblige à toucher
+  **aucun composant partagé**.
+- Ligne d'état neuve `#check_update_status` (`.muted small`, `role="status"`, `aria-live`)
+  **SOUS** la rangée de boutons : *« Interrogation de GitHub, jusqu'à 10 s… »* (38 caractères,
+  tient à 390 px). ⚠️ **Placée au-dessus, elle pousserait les boutons de 25 px sous le doigt.**
+- ⛔ **Pas de barre de progression** : `.progress` porte un **pourcentage** (`width:%`, libellé
+  « 0% ») — une barre indéterminée afficherait un **faux 0 %**. ⛔ Pas de bandeau non plus
+  (+48 px de hauteur pour 10 s, sur un écran déjà trop haut).
+- ⚠️ **Point de rendu signalé, non vérifié à l'image** : `.btn--loading` met
+  `color: transparent`, donc son `::after` (`border-top-color: currentColor`) est
+  **probablement invisible**. ⇒ C'est pourquoi `.btn__spinner` est retenu (sa couleur suit le
+  texte). **À confirmer sur capture** après implémentation.
+
+### ⛔ Ce qui ne s'affiche PAS — et c'est un choix argumenté
+**Rien** sur « signée / non signée », l'empreinte ou le manifeste. ⭐ *Afficher « signée »
+laisserait croire à une protection active alors que **rien n'est refusé**.* Les deux états neufs
+(**release non signée**, **relais indisponible**) ⇒ **silence** côté page, journal côté appareil.
+⇒ **À réévaluer en D3-b**, quand un refus existera : le **message de refus** sera alors le seul
+élément visible.
+
+### Ce qui DOIT disparaître de la carte — 3 lignes sur 5
+- **« Version actuelle »** : répète « Firmware 2.86.0 » de la carte **juste au-dessus**.
+- **« Release : »** : presque toujours égal à « Dernière version » ⇒ à garder **seulement s'il
+  diffère**.
+- **« Date »** : à **fusionner** sur la ligne « Dernière version : v2.87.0 · 18/10/2026 ».
+- ⚠️ Hors lot, pour **feature-169** : replier dans un `<details>` les lignes d'infos système de
+  faible usage (Build, CPU, Chip, Flash, MAC, PSRAM).
+- ⚠️ Le texte d'aide de « Mise à jour manuelle » (*« Facultative pour l'instant… »*) **sera
+  périmé en D3-b**.
+
+### `.btn:disabled` — ⛔ PAS touché dans ce lot, et c'est la bonne décision
+L'agent a **refusé de le faire évoluer** faute d'inventaire exhaustif garantissable — ⭐ c'est
+exactement la discipline imposée (⛔ l'application partielle est interdite). Ce qu'il a **mesuré**
+et qui part dans **feature-169** :
+- **141** lignes `.btn` dans `index.html`, **4** dans `wizard.html`, **3** dans `wifi.html` ;
+  **26** règles `:disabled`/`[disabled]` dans `app.css`.
+- 🔴 **`.btn:disabled` est défini DEUX FOIS** (`app.css:539` et `:3579`) — la seconde copie n'a ni
+  `transform` ni `box-shadow`. ⇒ Fusionner **avant** toute règle de lisibilité.
+- S'y ajoutent les recolorations de feature-164 (DESIGN_SYSTEM §430-444) et le verrouillage
+  croisé de calibration (§349).
+
+### ⚠️ Une alerte de l'agent CORRIGÉE après vérification
+Il signale `data/app.js:10817` et `:10840` comme une injection `innerHTML` de `data.message`
+*« qui peut venir de la chaîne GitHub »*. **Vérifié : c'est FAUX aujourd'hui** — `message` est un
+**littéral du firmware** (`web_routes_ota.cpp:1257` : *« Aucune release disponible sur GitHub »*,
+et `:1596` dans un 422 construit en C). ⛔ **Ce n'est pas une faille vivante**, et ⛔ ce lot ne la
+traite pas. ⚠️ **Mais le motif reste à durcir le jour où un champ relayé atteindra le DOM** — en
+D3-b, quand un message de refus s'affichera.
+
+### Design system
+Le motif d'attente **existe** (§103 + `.btn__spinner`, employé à **7 endroits** de `app.js`) ⇒
+⭐ **réemploi, rien de neuf**. À ajouter en **§5.4** : ce motif s'emploie **sans `disabled`**, avec
+`aria-busy`, sur une carte de réglage.
+⇒ **Capture à refaire** après implémentation : la carte **pendant l'attente**.
+
+---
+
+# 🔒 D3-a — VERDICTS DE REVUE (2026-11-15)
+
+`security-reviewer` **P2 : GO SOUS CONDITIONS** (4) · `code-reviewer` : **Request changes** (2)
+⭐ **Les deux convergent sur le même défaut matériel**, trouvé indépendamment : les sessions TLS
+sortantes **ne sont pas bornées**.
+
+## 🔴 C1 — le relais peut faire REDÉMARRER l'appareil (grave, confirmé dans le code)
+⛔ **Vérifié** : `grep` ne trouve **aucun** `setTimeout` / `setHandshakeTimeout` /
+`setConnectTimeout` dans `src/web_routes_ota.cpp`.
+- la tâche `async_tcp` est sous watchdog **30 s** (`kWatchdogTimeoutSec`) ;
+- le délai de **poignée de main TLS** par défaut est de **120 s** et **rien ne le borne**.
+⇒ 🔴 Sur réseau dégradé, **« Vérifier » redémarre l'appareil** — ⚠️ et c'est le **chemin de
+réparation du client**.
+⚠️ **Le défaut PRÉEXISTE** sur le GET de l'API ; D3-a **triple l'exposition** en ajoutant deux
+sessions. ⛔ Le commentaire « TWDT 30 s tenu » de `constants.h` **n'est donc pas garanti** — à
+corriger aussi.
+⇒ **Correctif demandé** : borner connexion + handshake + lecture des **trois** sessions, nourrir
+le watchdog **avant chaque** GET, et **écrire le calcul du pire cas** en commentaire.
+
+## 🔴 LE POINT LE PLUS FIN DE LA REVUE — D3-a introduit une **ACCEPTATION** neuve, non déclarée
+⚠️ L'invariant était écrit *« ⛔ aucun REFUS neuf »* — et il est resté **muet sur l'acceptation**.
+**Mesuré** (`web_routes_ota.cpp:842-867` et `:1948-1968`) : si le verdict est `kValid` et que
+l'image calculée égale l'empreinte **du manifeste** mais **pas** le paramètre `sha256`/`digest`,
+⇒ elle était **REFUSÉE avant**, elle est **FLASHÉE maintenant**.
+⭐ **C'est voulu** (arbitrage (a) : « la source bascule réellement »), et c'est **borné** par une
+signature RSA-3072 vérifiée **plus** le plancher de version.
+⛔ **MAIS le plancher est INERTE à 0.0.0 en D3-a** ⇒ la borne haute est réelle, la borne basse ne
+l'est pas.
+🔴 **Vecteur à nommer** : un **asset remplacé** fait installer une **autre image signée** que
+celle demandée — un retour à une version antérieure **légitimement signée**, par exemple.
+⇒ ⚠️ **À traiter en D3-b** : lier l'image au **genre ET à la version demandés**, pas seulement à
+un manifeste authentique. ⇒ **À écrire dans ADR-0122 maintenant**, pas au moment où ça servira.
+
+## Conditions de l'audit P2 — ⛔ à lever
+1. 🔴 **Borner** connexion, handshake et lecture de **chaque** GET, nourrir le watchdog avant
+   chacun, pire cas cumulé **sous 30 s** avec marge. *(en cours)*
+2. **Avant D3-c** : `/check-update` doit distinguer **« release non signée »** de **« relais
+   échoué »**, et la trace de saut doit porter **le motif et les valeurs mémoire**.
+3. **Déclarer l'écart de périmètre** : les retraits de lignes de la carte appartiennent au
+   **chantier de simplification**, pas au socle — ⇒ déclaré ici, ⛔ pas masqué. Idem pour la
+   correction de la garde `ota_update.sh`.
+4. 🔴 **B14 — ce que la séquence terrain doit prouver**, pour **les deux genres** :
+   - relais **« validé »** au journal ;
+   - authenticité **« valide »** sur `/download-update` ;
+   - **liaison conforme aux DEUX stades** ;
+   - ⛔ **aucun** « désaccord de genre » ;
+   - ⛔ **aucun** CRITICAL « TOLÉRÉ EN D3-a » ;
+   - version **et** système de fichiers constatés **après redémarrage**.
+   - ⭐ **Contre-épreuve** : une release **non signée** s'installe toujours (verdict « absente »).
+   ⛔ *« L'envoi a été accepté » ne prouve RIEN* : D3-a accepte à l'identique une signature
+   **absente**, **invalide**, ou un **relais sauté**.
+
+## Écarts soumis à la revue — verdicts rendus
+| Écart | Verdict |
+|---|---|
+| `static_assert` dans le module, pas dans `constants.h` | ✅ **correct** — `constants.h` doit rester sans dépendance |
+| 4 `String` dans `/check-update` | ✅ **acceptable** — ≤ 512 o, au **creux mémoire**, sans effet sur `max_alloc_8bit` (~21 Ko). ⭐ Gratuit si souhaité : déclarer `response` **avant** les relais et y affecter `g_sigRelayPayload.canonical` (ArduinoJson copie) |
+| Tolérance en **lambda** | ✅ **mieux** que deux blocs copiés — et le `grep` rend bien **4** |
+| `sigParams()` tout-ou-rien | ✅ **correct** — un manifeste sans signature est inexploitable |
+| Extraction `otaTlsGateClosed` | ✅ **acceptable** — décision et 503 **identiques** |
+
+## Points vérifiés et tenus
+Genre résolu **une seule fois** avant les cinq dépendants · autorité limitée à `kValid` (no-op
+**prouvé** par `kKindMismatch`) · ⭐ **la tolérance ne masque aucun refus légitime** (elle exige
+`calculée == paramètre appelant`, donc une image corrompue **reste refusée**) · **condition 10
+tenue** · relais borné à 1 Ko, **canonique seul**, 7 échecs ⇒ 200 + champs vides · ⛔ aucun
+statique pendant, **aucune fuite entre genres** · authentification **toujours première
+instruction** · `textContent` partout, `finally` restaure **sur erreur comme sur succès**.
+
+## Mineurs à ne pas perdre
+- ⚠️ **Le « jusqu'à 10 s » de la page est sous-estimé** : pire cas réel ~20 s avec deux relais.
+  ⇒ **À recalculer une fois les délais bornés** (C1), et à corriger dans le libellé.
+- 🔴 La matrice `.sig` C++ est **RECOPIÉE** de `test/sig_parse_vectors.js`, ⛔ pas extraite
+  (ADR-0099). Tolérable tant que rien ne refuse ⇒ **à mécaniser AVANT D3-c**.
+- `#no_update_msg` reste en `innerHTML` (`app.js:10841`) — littéral du firmware **aujourd'hui**,
+  ⇒ à durcir **en D3-b**, quand un message relayé s'affichera.
+
+## 🔴 La CI était ROUGE depuis le 2026-11-14 — et trois commits ont été poussés par-dessus
+`test_native_ota_update_fail_closed` **[F1]** exigeait le contrôle d'échec de `compute_sha256`
+*« EXACTEMENT une fois »*. ⛔ Le mode `--sign-only` de D2 (`44cc478`) a ajouté un **second site
+d'appel LÉGITIME** (`sign_only_file()`, **hors réseau**) ⇒ la garde **comptait**, et le compte a
+changé. ⚠️ **Elle n'a détecté aucun défaut : elle a vieilli.**
+⇒ **Corrigé** : la garde ne compte plus. Elle vérifie **deux propriétés qui ne vieillissent pas** —
+(1) ⛔ **aucun** appel à `compute_sha256` n'est **non gardé** ; (2) `update_file()` en porte un
+**AVANT** l'appel `curl` réel.
+⇒ **Validé par MUTATION** : un appel rendu non gardé dans `update_file()` **tue** le test
+(`Expected 2 Was 1`), et `ota_update.sh` est restauré (diff vide).
+
+## Mesures de clôture des tests — ⛔ MESURÉES, pas recopiées
+**80 suites · 2 402 cas · 2 402 réussis, 0 échec.** `pio run` SUCCESS, 0 warning, Flash **51,2 %**,
+RAM 29,7 %. `build_fs.sh` SUCCESS. `check_sig_parse_vectors`, `check_memory_discipline`,
+`check_fopen_guard` : verts.
+**Les 10 mutations imposées sont TUÉES.** ⚠️ Deux nuances honnêtes relevées par `test-engineer` :
+la mutation 9 n'est tuée que si **les trois gardes** (longueur, alphabet, décodage à 384 o) sont
+retirées **ensemble** — ⛔ ce sont des **mutants équivalents**, de la défense en profondeur, **pas
+un trou** ; et la mutation 7 a dû muter vers une copie **brute avec CRLF**, le brut étant déjà
+canonique pour une entrée strictement valide.
+
+## ✅ C1 LEVÉE (2026-11-15) — les trois sessions sortantes sont bornées
+Nouvelles constantes (`constants.h`, zone `kOta*`) : `kOtaTlsConnectTimeoutMs` **3000**,
+`kOtaTlsHandshakeTimeoutSec` **5** (⚠️ cette API prend des **secondes**, pas des millisecondes),
+`kOtaTlsSocketTimeoutMs` **3000**. Posées sur **les trois** sessions — les deux `.sig` **et le GET
+de l'API préexistant**. `esp_task_wdt_reset()` **avant chaque** GET.
+
+🔴 **Le développeur a corrigé MON cadrage, et il a raison.** J'avais demandé que le **cumul des
+trois sessions** reste sous 30 s : ⛔ **c'est la mauvaise borne**, et elle est intenable
+(~49 s). Le watchdog mesure le temps **depuis le dernier `reset()` sur la tâche**, pas le temps
+total d'une requête. ⇒ **Ce qui compte est la plus longue attente SANS le nourrir.**
+- Pire GET bloquant = un `.sig`, qui suit une **redirection** (`github.com` →
+  `objects.githubusercontent.com`) donc **2 connexions** : `2 × (3 + 5) + 3 = ` **19 s**
+  ⇒ **11 s de marge** sous le TWDT.
+- GET de l'API (1 connexion) : `3 + 5 + 3 = ` **11 s** avant le corps, dont la lecture est nourrie.
+- ⭐ **Un `static_assert` verrouille l'inégalité** (`constants.h:1436`) : elle ne peut plus être
+  cassée en silence par un réglage de constante.
+
+⚠️ **Non bornable, et écrit en commentaire** : la **résolution DNS** précède la connexion et
+cette API ne permet pas de la borner.
+
+## ⚠️ Le libellé « jusqu'à 10 s » était FAUX — corrigé
+Avec deux relais bornés, le pire cas de « Vérifier » n'est plus 10 s. ⛔ Annoncer « jusqu'à 50 s »
+serait alarmant et presque toujours faux ; annoncer « 10 s » est **mensonger dans le cas qui
+compte**. ⇒ Le nombre est **retiré** : *« Interrogation de GitHub, quelques secondes… »*
+(43 caractères, tient à 390 px).
+
+## ⛔ CE QUI N'EST TOUJOURS PAS VÉRIFIÉ — l'indicateur n'a été VU par personne
+Une capture a été tentée avec clic sur `#check_update_btn` : ⛔ **sans effet**. En capture sans
+navigateur connecté, la page est en état **« Déconnecté »** et **tous les boutons sont
+désactivés** ⇒ le clic ne part pas. ⚠️ **Cette capture ne prouve donc RIEN** sur l'état d'attente.
+⇒ **L'observation se fera sur l'appareil**, après déploiement : appuyer sur « Vérifier » et
+regarder. ⛔ Ne pas clore le lot en affirmant que l'indicateur fonctionne.
+
+## Mesures après C1
+`pio run` SUCCESS (Flash **51,2 %** ; seuls warnings : bibliothèque OneWire, **préexistants**) ·
+`./build_fs.sh` SUCCESS · **80 suites, 2 402 cas, 2 402 réussis** · `grep -c "TOLÉRANCE D3-a"` = **4**.

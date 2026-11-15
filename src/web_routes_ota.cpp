@@ -43,6 +43,11 @@
 // indépendamment (paramètre déjà fourni, ou empreinte réellement calculée).
 // JOURNALISE SEULEMENT, comme le reste de D1.
 #include "ota_manifest_binding_logic.h"
+// feature-151 D3-a : socle de la décision OTA (genre effectif, source de
+// l'empreinte attendue, parse borné du `.sig` relayé). ⛔ Aucun refus neuf.
+#include "ota_kind_authority_logic.h"
+#include "ota_digest_source_logic.h"
+#include "ota_sig_relay_logic.h"
 // feature-063 : include EXPLICITE de WiFiClient.h — il n'arrive plus
 // transitivement via HTTPClient.h depuis le core Arduino 3 (où WiFiClient est
 // un alias de NetworkClient).
@@ -151,6 +156,15 @@ static bool g_uploadHasExpected = false;        // Param sha256 fourni ET valide
 // pas la fusionner avec g_uploadExpected ni la renommer sans en tenir compte.
 static char g_uploadManifestSha256Hex[65];
 static bool g_uploadManifestDigestValid = false;
+// feature-151 D3-a : état de la décision « source de l'empreinte » de /update.
+// g_uploadAuthenticityValid : verdict == kValid (posé à index==0 dans le bloc
+// d'authenticité). g_uploadCallerDigest : copie du paramètre `sha256` de
+// l'appelant (g_uploadExpected devient l'empreinte EFFECTIVE, éventuellement
+// celle du manifeste). Servent uniquement à la tolérance D3-a de `final`.
+static bool g_uploadAuthenticityValid = false;
+static uint8_t g_uploadCallerDigest[32];
+static bool g_uploadDigestFromManifest = false;
+static bool g_uploadDigestDivergent = false;
 // g_uploadDigestInvalid a été retiré (feature-118 lot A) : le refus
 // « empreinte malformée » est désormais tranché et appliqué à index==0,
 // AVANT `g_uploadOwner = request` (voir parseOtaSha256Param) — il n'atteint
@@ -668,6 +682,25 @@ static void handleOtaUpdate(AsyncWebServerRequest* request, const String& filena
         memcpy(g_uploadManifestSha256Hex, authenticity.fields.sha256Hex,
                sizeof(g_uploadManifestSha256Hex));
       }
+
+      // ---- feature-151 D3-a : genre EFFECTIF — DERNIÈRE instruction du bloc ----
+      // ⛔ Le bloc n'est pas déplacé (garde [G5]) : il gagne une sortie. Aucun
+      // refus. Le genre signé ne fait autorité qu'en kValid, où il égale déjà
+      // le genre de l'appelant (combineOtaAuthenticityVerdict rend sinon
+      // kKindMismatch) : la réaffectation est un no-op prouvable. Le DÉSACCORD
+      // est journalisé même hors kValid.
+      g_uploadAuthenticityValid = (authenticity.verdict == OtaAuthenticityVerdict::kValid);
+      const OtaKindResolution kindResolution = resolveOtaEffectiveKind(
+          expectedKind, authenticity.fields.kind, authenticity.fieldsValid,
+          g_uploadAuthenticityValid);
+      cmd = (kindResolution.effectiveKind == OtaManifestKind::kFilesystem) ? U_SPIFFS : U_FLASH;
+      if (kindResolution.disagreement) {
+        systemLogger.warning(String("[feature-151 D3-a] /update — désaccord de genre : le "
+                                    "manifeste déclare « ") +
+                             otaManifestKindLiteral(authenticity.fields.kind) +
+                             "», la requête attend « " + otaManifestKindLiteral(expectedKind) +
+                             "» — aucun refus appliqué (D3-a)");
+      }
     }
 
     // ---- Pré-contrôle de l'octet magique (2.20.1) --------------------------
@@ -800,6 +833,39 @@ static void handleOtaUpdate(AsyncWebServerRequest* request, const String& filena
         "/update", "paramètre sha256 (index==0)",
         otaManifestBindingVerdict(g_uploadManifestDigestValid, g_uploadManifestSha256Hex,
                                   /*comparedDigestValid=*/true, g_uploadExpected));
+
+    // ---- feature-151 D3-a (condition 3) : SOURCE UNIQUE de l'empreinte attendue --
+    // g_uploadExpected devient l'empreinte EFFECTIVE : celle du manifeste si
+    // l'authenticité est valide (kValid), sinon celle de l'appelant. ⛔ Lecture
+    // seule de la paire g_uploadManifest* ; le paramètre de l'appelant est
+    // conservé à part pour la tolérance de `final`. ⛔ Aucun refus ici.
+    memcpy(g_uploadCallerDigest, g_uploadExpected, sizeof(g_uploadCallerDigest));
+    g_uploadDigestFromManifest = false;
+    g_uploadDigestDivergent = false;
+    {
+      char callerHex[kOtaSha256HexLen + 1];
+      sha256ToHex(g_uploadCallerDigest, callerHex, sizeof(callerHex));
+      const OtaDigestSourceDecision digestDecision = chooseOtaExpectedDigestSource(
+          g_uploadAuthenticityValid, g_uploadManifestDigestValid, g_uploadManifestSha256Hex,
+          /*callerDigestValid=*/true, callerHex);
+      g_uploadDigestDivergent = digestDecision.divergent;
+      if (digestDecision.source == OtaExpectedDigestSource::kManifest) {
+        // Décodage via parseSha256Digest (préfixe "sha256:" requis) — et NON
+        // parseOtaSha256Param, dont la garde [G1] impose un site d'appel unique.
+        char prefixed[8 + kOtaSha256HexLen];
+        snprintf(prefixed, sizeof(prefixed), "sha256:%s", g_uploadManifestSha256Hex);
+        uint8_t manifestDigest[32];
+        if (parseSha256Digest(prefixed, manifestDigest)) {
+          memcpy(g_uploadExpected, manifestDigest, sizeof(g_uploadExpected));
+          g_uploadDigestFromManifest = true;
+        }
+      }
+      if (digestDecision.divergent) {
+        systemLogger.warning(String("[feature-151 D3-a] /update — empreinte du manifeste ≠ "
+                                    "paramètre sha256 (source retenue : ") +
+                             (g_uploadDigestFromManifest ? "manifeste" : "paramètre") + ")");
+      }
+    }
 
     g_uploadOwner = request;
 
@@ -960,9 +1026,25 @@ static void handleOtaUpdate(AsyncWebServerRequest* request, const String& filena
           otaUploadIntegrityVerdict(paramVerdictAtFinal, g_uploadExpected, computed));
     }
 
+    // ⛔ TOLÉRANCE D3-a — SUPPRIMER EN D3-c (feature-151)
+    // La source de l'empreinte a basculé vers le manifeste : si manifeste ≠
+    // paramètre ET que l'image calculée égale le paramètre de l'appelant, le
+    // refus d'intégrité serait NEUF (interdit en D3-a). On le journalise en
+    // CRITICAL et on poursuit ; tout autre écart reste refusé, inchangé.
+    bool digestDivergenceTolerated = false;
+    if (g_uploadHasExpected && !sha256Equal(computed, g_uploadExpected) &&
+        g_uploadDigestFromManifest && g_uploadDigestDivergent &&
+        sha256Equal(computed, g_uploadCallerDigest)) {
+      systemLogger.critical("/update : divergence manifeste ↔ paramètre — TOLÉRÉ EN D3-a, "
+                            "D3-c refusera");
+      digestDivergenceTolerated = true;
+    }
+    // ⛔ FIN TOLÉRANCE D3-a
+
     // Empreinte attendue (désormais TOUJOURS fournie, lot B) → comparaison
     // AVANT Update.end() : en cas de mismatch l'image n'est jamais activée.
-    if (g_uploadHasExpected && !sha256Equal(computed, g_uploadExpected)) {
+    if (g_uploadHasExpected && !sha256Equal(computed, g_uploadExpected) &&
+        !digestDivergenceTolerated) {
       char expectedHex[kOtaSha256HexLen + 1];
       sha256ToHex(g_uploadExpected, expectedHex, sizeof(expectedHex));
       Update.abort();
@@ -1081,14 +1163,27 @@ class BudgetJsonAllocator : public ArduinoJson::Allocator {
 //    c'est très exactement le défaut de bug-108 : une garde qui AUTORISAIT un
 //    handshake voué à l'échec, prouvé le 15/10/2026 : ESP.getFreeHeap()=82796
 //    (autorisé) pendant que maxAlloc8 réel valait 3316 o).
-static bool refuseIfTlsGateClosed(AsyncWebServerRequest* request, const char* routeName,
-                                  const String& clientIp, uint32_t psramLargestBlockBytes,
-                                  uint32_t freeHeapBytes, uint32_t maxAllocBytes) {
+// feature-151 D3-a : PRÉDICAT de la garde, extrait sans changer sa décision
+// (mêmes seuils, même prédicat pur). Le relais du `.sig` l'appelle SEUL (il se
+// saute si la garde est fermée, sans jamais refuser) ; refuseIfTlsGateClosed
+// l'appelle puis répond 503 à l'identique.
+static bool otaTlsGateClosed(uint32_t psramLargestBlockBytes, uint32_t freeHeapBytes,
+                             uint32_t maxAllocBytes, uint8_t* reasonOut = nullptr) {
   const uint8_t reason = oomTlsGateReason(psramLargestBlockBytes, freeHeapBytes, maxAllocBytes,
                                           kOtaTlsMinPsramLargestBlockBytes,
                                           kCheckUpdateMinFreeHeapBytes,
                                           kCheckUpdateMinMaxAllocBytes);
-  if (reason == kOomTlsGateOk) {
+  if (reasonOut != nullptr) {
+    *reasonOut = reason;
+  }
+  return reason != kOomTlsGateOk;
+}
+
+static bool refuseIfTlsGateClosed(AsyncWebServerRequest* request, const char* routeName,
+                                  const String& clientIp, uint32_t psramLargestBlockBytes,
+                                  uint32_t freeHeapBytes, uint32_t maxAllocBytes) {
+  uint8_t reason = kOomTlsGateOk;
+  if (!otaTlsGateClosed(psramLargestBlockBytes, freeHeapBytes, maxAllocBytes, &reason)) {
     return false;
   }
 
@@ -1169,6 +1264,123 @@ static void logTlsHeapWindow(const char* routeName, const char* whenLabel) {
   }
 }
 
+// =============================================================================
+// feature-151 D3-a : RELAIS d'un fichier `.sig` par /check-update.
+// =============================================================================
+// Pourquoi : la page web ne peut PAS lire elle-même un asset de release (CORS),
+// et le manifeste + la signature doivent voyager dans /update et
+// /download-update. L'appareil les récupère donc, les VALIDE (parseOtaSigFile)
+// et ne relaie que le manifeste RE-SÉRIALISÉ + la ligne 2 validée — ⛔ jamais
+// les octets bruts reçus de GitHub.
+// Session TLS NEUVE : les `.sig` sont sur un hôte différent de l'API.
+// ⛔ NON BLOQUANT : tout échec rend false (champs vides côté réponse), journalisé
+// sous un nom ; aucun refus, aucune réponse HTTP d'erreur.
+// Mémoire : tampons STATIQUES de fichier (~1,8 Ko de .bss), réutilisés pour les
+// deux genres — ni pile (async_tcp = 8 Ko), ni malloc sur le chemin que
+// bug-165 tend déjà (ADR-0082). Aucun mutex : tous les handlers tournent sur la
+// seule tâche async_tcp, le relais est séquentiel par construction.
+static uint8_t g_sigFetchBuf[kOtaSigFetchMaxBytes + 1];
+static OtaSigRelayPayload g_sigRelayPayload;
+
+static bool relayOtaSigFile(const char* kindLabel, const String& sigUrl) {
+  if (sigUrl.length() == 0) {
+    systemLogger.info(String("/check-update : relais .sig ") + kindLabel +
+                      " — aucune URL (release non signée ?) — champs vides");
+    return false;
+  }
+  // Allowlist d'hôtes D'ABORD (avant toute connexion sortante).
+  if (!isUrlAllowed(sigUrl)) {
+    systemLogger.warning(String("/check-update : relais .sig ") + kindLabel +
+                         " — hôte non autorisé — champs vides");
+    return false;
+  }
+  // Garde TLS : PRÉDICAT seul (jamais le 503) — on se saute si elle est fermée.
+  if (otaTlsGateClosed(heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM), heapFree8Bit(),
+                       heapLargestFreeBlock8Bit())) {
+    systemLogger.warning(String("/check-update : relais .sig ") + kindLabel +
+                         " — garde TLS fermée (mémoire) — relais sauté, champs vides");
+    return false;
+  }
+
+  WiFiClientSecure sigClient;
+  sigClient.setCACert(GITHUB_ROOT_CA);
+  sigClient.setHandshakeTimeout(kOtaTlsHandshakeTimeoutSec);  // défaut 120 s > TWDT 30 s
+  HTTPClient sigHttp;
+  sigHttp.setConnectTimeout(kOtaTlsConnectTimeoutMs);
+  sigHttp.setTimeout(kOtaTlsSocketTimeoutMs);
+  sigHttp.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+  sigHttp.useHTTP10(true);  // pas de Transfer-Encoding chunked : getStream() = corps brut
+  if (!sigHttp.begin(sigClient, sigUrl)) {
+    systemLogger.warning(String("/check-update : relais .sig ") + kindLabel +
+                         " — begin() impossible — champs vides");
+    return false;
+  }
+  sigHttp.addHeader("User-Agent", "ESP32-Pool-Controller");
+  esp_task_wdt_reset();  // AVANT le GET bloquant (calcul des bornes : constants.h)
+  const int code = sigHttp.GET();
+  if (code != HTTP_CODE_OK) {
+    systemLogger.warning(String("/check-update : relais .sig ") + kindLabel + " — HTTP " +
+                         String(code) + " — champs vides");
+    sigHttp.end();
+    return false;
+  }
+
+  // Lecture BORNÉE : au plus kOtaSigFetchMaxBytes + 1 octets (le +1 détecte le
+  // dépassement), délai kOtaSigFetchReadTimeoutMs, watchdog nourri.
+  const int declared = sigHttp.getSize();
+  WiFiClient& stream = sigHttp.getStream();
+  size_t bytesRead = 0;
+  bool tooLong = (declared > 0 && static_cast<size_t>(declared) > kOtaSigFetchMaxBytes);
+  bool timedOut = false;
+  const unsigned long startMs = millis();
+  while (!tooLong) {
+    esp_task_wdt_reset();
+    const int availableNow = stream.available();
+    if (availableNow > 0) {
+      const size_t room = (kOtaSigFetchMaxBytes + 1) - bytesRead;
+      const size_t toRead = min(static_cast<size_t>(availableNow), room);
+      const int n = stream.readBytes(reinterpret_cast<char*>(g_sigFetchBuf + bytesRead), toRead);
+      if (n > 0) bytesRead += static_cast<size_t>(n);
+      if (bytesRead > kOtaSigFetchMaxBytes) {
+        tooLong = true;
+        break;
+      }
+      if (declared > 0 && bytesRead >= static_cast<size_t>(declared)) break;
+    } else if (!sigHttp.connected()) {
+      break;  // fin de corps (pair fermé, plus rien à lire)
+    } else {
+      vTaskDelay(pdMS_TO_TICKS(10));
+    }
+    if ((millis() - startMs) >= kOtaSigFetchReadTimeoutMs) {
+      timedOut = true;
+      break;
+    }
+  }
+  sigHttp.end();
+
+  if (tooLong) {
+    systemLogger.warning(String("/check-update : relais .sig ") + kindLabel +
+                         " — corps > " + String(kOtaSigFetchMaxBytes) + " o — champs vides");
+    return false;
+  }
+  if (timedOut) {
+    systemLogger.warning(String("/check-update : relais .sig ") + kindLabel + " — délai de " +
+                         String(kOtaSigFetchReadTimeoutMs) + " ms dépassé — champs vides");
+    return false;
+  }
+  const OtaSigParseVerdict parse = parseOtaSigFile(reinterpret_cast<const char*>(g_sigFetchBuf),
+                                                   bytesRead, &g_sigRelayPayload);
+  if (parse != OtaSigParseVerdict::kOk) {
+    systemLogger.warning(String("/check-update : relais .sig ") + kindLabel +
+                         " — fichier hors grammaire (" + otaSigParseVerdictLabel(parse) +
+                         ") — champs vides");
+    return false;
+  }
+  systemLogger.info(String("/check-update : relais .sig ") + kindLabel + " — validé (" +
+                    String(bytesRead) + " o)");
+  return true;
+}
+
 static void handleCheckUpdate(AsyncWebServerRequest* request) {
   // bug-oom-accept-http-durcissement : IP client dans les logs (le crash du
   // 11/08 avait un profil TLS compatible mais l'appelant était invérifiable).
@@ -1207,8 +1419,11 @@ static void handleCheckUpdate(AsyncWebServerRequest* request) {
     return;
   }
   client.setCACert(GITHUB_ROOT_CA);
+  client.setHandshakeTimeout(kOtaTlsHandshakeTimeoutSec);  // défaut 120 s > TWDT 30 s
 
   HTTPClient https;
+  https.setConnectTimeout(kOtaTlsConnectTimeoutMs);
+  https.setTimeout(kOtaTlsSocketTimeoutMs);
 
   // Utiliser l'API GitHub pour récupérer la dernière release
   const char* apiUrl = "https://api.github.com/repos/niko34/esp32-pool-controller/releases/latest";
@@ -1225,6 +1440,7 @@ static void handleCheckUpdate(AsyncWebServerRequest* request) {
   // parsable en flux sans le stocker entier.
   https.useHTTP10(true);
 
+  esp_task_wdt_reset();  // AVANT le GET bloquant (calcul des bornes : constants.h)
   int httpCode = https.GET();
   // Condition C4 : repère APRÈS le handshake (succès ou échec) — le point le
   // plus proche de « pendant » qu'un appel HTTPClient bloquant permette de
@@ -1550,6 +1766,24 @@ static void handleCheckUpdate(AsyncWebServerRequest* request) {
     }
   }
 
+  // ---- feature-151 D3-a : relais des deux `.sig` (NON BLOQUANT) ---------------
+  // Position : APRÈS le parse et la libération du tampon brut (creux mémoire de
+  // la requête), AVANT la construction de la réponse. Les deux genres sont
+  // INDÉPENDANTS ; les chaînes sont copiées en String car le tampon statique
+  // est réutilisé d'un genre à l'autre. ⛔ Aucun return, aucune erreur HTTP.
+  String firmwareManifestRelay;
+  String firmwareSignatureRelay;
+  String filesystemManifestRelay;
+  String filesystemSignatureRelay;
+  if (relayOtaSigFile("firmware", firmwareSigUrl)) {
+    firmwareManifestRelay = g_sigRelayPayload.canonical;
+    firmwareSignatureRelay = g_sigRelayPayload.signatureBase64;
+  }
+  if (relayOtaSigFile("filesystem", filesystemSigUrl)) {
+    filesystemManifestRelay = g_sigRelayPayload.canonical;
+    filesystemSignatureRelay = g_sigRelayPayload.signatureBase64;
+  }
+
   // Construire la réponse
   JsonDocument response;
   response["current_version"] = currentVersion;
@@ -1564,6 +1798,13 @@ static void handleCheckUpdate(AsyncWebServerRequest* request) {
   // release n'en contient pas (releases publiées avant ce lot).
   response["firmware_sig_url"] = firmwareSigUrl;
   response["filesystem_sig_url"] = filesystemSigUrl;
+  // Champs additifs (feature-151 D3-a) : manifeste canonique re-sérialisé par
+  // l'appareil + signature base64 validée ; vides si relais impossible. Ils
+  // TRANSITENT vers /download-update — ⛔ pas faits pour être affichés (DOM).
+  response["firmware_manifest"] = firmwareManifestRelay;
+  response["firmware_signature"] = firmwareSignatureRelay;
+  response["filesystem_manifest"] = filesystemManifestRelay;
+  response["filesystem_signature"] = filesystemSignatureRelay;
   response["release_name"] = doc["name"];
   response["published_at"] = doc["published_at"];
   // bug-crash-getlogs-badalloc (audit) : le corps de release GitHub n'est pas
@@ -1651,6 +1892,12 @@ static void handleDownloadUpdate(AsyncWebServerRequest* request) {
   // téléchargé et son empreinte RÉELLEMENT calculée).
   char manifestSha256Hex[65];
   bool manifestDigestValid = false;
+  // feature-151 D3-a : empreinte du paramètre `digest` de l'appelant (copie
+  // avant la bascule de `expectedHash` vers le manifeste) + état de la décision.
+  uint8_t callerHash[32];
+  memcpy(callerHash, expectedHash, sizeof(callerHash));
+  bool digestFromManifest = false;
+  bool digestDivergent = false;
 
   // ---- feature-151 D1 : vérification d'AUTHENTICITÉ — JOURNALISE SEULEMENT --
   // AVANT refuseIfTlsGateClosed (Q0/condition 1 du verdict security-reviewer
@@ -1688,7 +1935,62 @@ static void handleDownloadUpdate(AsyncWebServerRequest* request) {
         "/download-update", "paramètre digest (avant téléchargement)",
         otaManifestBindingVerdict(manifestDigestValid, manifestSha256Hex,
                                   /*comparedDigestValid=*/true, expectedHash));
+
+    // ---- feature-151 D3-a : genre EFFECTIF + SOURCE de l'empreinte — fin de bloc --
+    // ⛔ Le bloc n'est pas déplacé (garde [G6]) : il gagne une sortie, toujours
+    // AVANT refuseIfTlsGateClosed et le choix de partition. Aucun refus.
+    // Genre : no-op prouvable en kValid (voir /update) ; désaccord journalisé
+    // même hors kValid.
+    const bool authenticityValid = (authenticity.verdict == OtaAuthenticityVerdict::kValid);
+    const OtaKindResolution kindResolution = resolveOtaEffectiveKind(
+        expectedKind, authenticity.fields.kind, authenticity.fieldsValid, authenticityValid);
+    isFilesystem = (kindResolution.effectiveKind == OtaManifestKind::kFilesystem);
+    if (kindResolution.disagreement) {
+      systemLogger.warning(String("[feature-151 D3-a] /download-update — désaccord de genre : "
+                                  "le manifeste déclare « ") +
+                           otaManifestKindLiteral(authenticity.fields.kind) +
+                           "», la requête attend « " + otaManifestKindLiteral(expectedKind) +
+                           "» — aucun refus appliqué (D3-a)");
+    }
+    // Empreinte attendue : celle du manifeste si kValid, sinon le paramètre
+    // `digest` (inchangé). `expectedHash` devient l'empreinte EFFECTIVE.
+    {
+      char callerHex[kOtaSha256HexLen + 1];
+      sha256ToHex(callerHash, callerHex, sizeof(callerHex));
+      const OtaDigestSourceDecision digestDecision = chooseOtaExpectedDigestSource(
+          authenticityValid, manifestDigestValid, manifestSha256Hex,
+          /*callerDigestValid=*/true, callerHex);
+      digestDivergent = digestDecision.divergent;
+      if (digestDecision.source == OtaExpectedDigestSource::kManifest) {
+        char prefixed[8 + kOtaSha256HexLen];
+        snprintf(prefixed, sizeof(prefixed), "sha256:%s", manifestSha256Hex);
+        uint8_t manifestDigest[32];
+        if (parseSha256Digest(prefixed, manifestDigest)) {
+          memcpy(expectedHash, manifestDigest, sizeof(expectedHash));
+          digestFromManifest = true;
+        }
+      }
+      if (digestDivergent) {
+        systemLogger.warning(String("[feature-151 D3-a] /download-update — empreinte du "
+                                    "manifeste ≠ paramètre digest (source retenue : ") +
+                             (digestFromManifest ? "manifeste" : "paramètre") + ")");
+      }
+    }
   }
+
+  // ⛔ TOLÉRANCE D3-a — SUPPRIMER EN D3-c (feature-151)
+  // Si manifeste ≠ paramètre ET que l'image calculée égale le paramètre de
+  // l'appelant, le refus d'intégrité serait NEUF (interdit en D3-a) : CRITICAL
+  // puis on poursuit. Utilisé aux DEUX comparaisons finales (filesystem, firmware).
+  auto digestDivergenceTolerated = [&](const uint8_t computedDigest[32]) -> bool {
+    if (digestFromManifest && digestDivergent && sha256Equal(computedDigest, callerHash)) {
+      systemLogger.critical("/download-update : divergence manifeste ↔ paramètre — TOLÉRÉ EN "
+                            "D3-a, D3-c refusera");
+      return true;
+    }
+    return false;
+  };
+  // ⛔ FIN TOLÉRANCE D3-a
 
   // Garde PSRAM + heap 8 bits avant la session TLS sortante
   // (bug-garde-tls-trop-permissive-sans-psram, bug-165/bug-108) : MÊME garde
@@ -1871,7 +2173,7 @@ static void handleDownloadUpdate(AsyncWebServerRequest* request) {
         otaManifestBindingVerdict(manifestDigestValid, manifestSha256Hex,
                                   /*comparedDigestValid=*/true, computedFs));
 
-    if (!sha256Equal(computedFs, expectedHash)) {
+    if (!sha256Equal(computedFs, expectedHash) && !digestDivergenceTolerated(computedFs)) {
       char expectedHex[kOtaSha256HexLen + 1];
       char computedHex[kOtaSha256HexLen + 1];
       sha256ToHex(expectedHash, expectedHex, sizeof(expectedHex));
@@ -1991,7 +2293,7 @@ static void handleDownloadUpdate(AsyncWebServerRequest* request) {
         otaManifestBindingVerdict(manifestDigestValid, manifestSha256Hex,
                                   /*comparedDigestValid=*/true, computedFw));
 
-    if (!sha256Equal(computedFw, expectedHash)) {
+    if (!sha256Equal(computedFw, expectedHash) && !digestDivergenceTolerated(computedFw)) {
       char expectedHex[kOtaSha256HexLen + 1];
       char computedHex[kOtaSha256HexLen + 1];
       sha256ToHex(expectedHash, expectedHex, sizeof(expectedHex));

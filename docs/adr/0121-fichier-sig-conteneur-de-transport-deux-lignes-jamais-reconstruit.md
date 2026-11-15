@@ -35,6 +35,8 @@ ne renvoient aucun en-tête `Access-Control-Allow-Origin` — le navigateur ne p
 des deux lignes, jamais l'URL, dans une requête HTTPS supplémentaire au sein de la session TLS
 déjà ouverte.
 
+> **Amendement du 2026-11-15** : le relais au sein de la session TLS déjà ouverte s'est révélé **impossible** — l'hôte des assets (`objects.githubusercontent.com`) diffère de celui de l'API et la session est close avant le parse. Le relais se fait dans des sessions **séparées**, voir [ADR-0122](0122-socle-decision-ota-genre-empreinte-relais-sig.md). La décision ci-dessous n'est pas modifiée.
+
 ## Décision
 
 ### Format `.sig` : deux lignes texte, aucun changement cryptographique

@@ -181,6 +181,60 @@ void test_labels_are_distinct_and_nonnull(void) {
 }
 
 // -----------------------------------------------------------------------------
+// feature-151 D3-a (D5) : les SEPT issues restent atteignables ET distinctes,
+// leurs libellés deux à deux différents, et « vérification impossible » est
+// atteignable sans être confondue avec « invalide ».
+// -----------------------------------------------------------------------------
+static OtaAuthenticityVerdict reach(int which) {
+  switch (which) {
+    case 0: return combineOk(false);                                           // absente
+    case 1: return combineOk(true, true, OtaManifestParseVerdict::kMalformed);  // malformée
+    case 2: return combineOk(true, true, OtaManifestParseVerdict::kOk, true,
+                             OtaCryptoVerdict::kImpossible);                    // impossible
+    case 3: return combineOk(true, true, OtaManifestParseVerdict::kOk, true,
+                             OtaCryptoVerdict::kInvalid);                       // invalide
+    case 4: return combineOk(true, true, OtaManifestParseVerdict::kOk, true,
+                             OtaCryptoVerdict::kValid, OtaManifestKind::kFilesystem,
+                             OtaManifestKind::kFirmware);                       // genre
+    case 5: return combineOk(true, true, OtaManifestParseVerdict::kOk, true,
+                             OtaCryptoVerdict::kValid, OtaManifestKind::kFirmware,
+                             OtaManifestKind::kFirmware, 1, 0, 0, 2, 0, 0);     // plancher
+    default: return combineOk();                                                // valide
+  }
+}
+
+void test_seven_outcomes_reachable_and_pairwise_distinct(void) {
+  const OtaAuthenticityVerdict expected[7] = {
+      OtaAuthenticityVerdict::kAbsent,          OtaAuthenticityVerdict::kMalformed,
+      OtaAuthenticityVerdict::kVerificationImpossible, OtaAuthenticityVerdict::kInvalid,
+      OtaAuthenticityVerdict::kKindMismatch,    OtaAuthenticityVerdict::kBelowFloor,
+      OtaAuthenticityVerdict::kValid};
+  for (int i = 0; i < 7; ++i) {
+    TEST_ASSERT_EQUAL((int)expected[i], (int)reach(i));
+    for (int j = i + 1; j < 7; ++j) {
+      TEST_ASSERT_TRUE((int)reach(i) != (int)reach(j));
+      TEST_ASSERT_TRUE(strcmp(otaAuthenticityVerdictLabel(reach(i)),
+                              otaAuthenticityVerdictLabel(reach(j))) != 0);
+    }
+  }
+}
+
+void test_verification_impossible_reachable_and_not_invalid(void) {
+  const OtaAuthenticityVerdict v = combineOk(true, true, OtaManifestParseVerdict::kOk, true,
+                                             OtaCryptoVerdict::kImpossible);
+  TEST_ASSERT_EQUAL((int)OtaAuthenticityVerdict::kVerificationImpossible, (int)v);
+  TEST_ASSERT_TRUE((int)v != (int)OtaAuthenticityVerdict::kInvalid);
+  TEST_ASSERT_EQUAL_STRING("vérification impossible", otaAuthenticityVerdictLabel(v));
+  TEST_ASSERT_TRUE(otaAuthenticityIsRejected(v));
+  // Prioritaire sur genre discordant et plancher : l'outillage défaillant
+  // ne doit jamais se déguiser en autre chose.
+  TEST_ASSERT_EQUAL((int)OtaAuthenticityVerdict::kVerificationImpossible,
+                    (int)combineOk(true, true, OtaManifestParseVerdict::kOk, true,
+                                   OtaCryptoVerdict::kImpossible, OtaManifestKind::kFilesystem,
+                                   OtaManifestKind::kFirmware, 1, 0, 0, 2, 0, 0));
+}
+
+// -----------------------------------------------------------------------------
 // Runner
 // -----------------------------------------------------------------------------
 int main(int argc, char** argv) {
@@ -213,6 +267,8 @@ int main(int argc, char** argv) {
   RUN_TEST(test_is_rejected_true_for_all_but_valid);
   RUN_TEST(test_is_rejected_false_for_valid);
   RUN_TEST(test_labels_are_distinct_and_nonnull);
+  RUN_TEST(test_seven_outcomes_reachable_and_pairwise_distinct);
+  RUN_TEST(test_verification_impossible_reachable_and_not_invalid);
 
   return UNITY_END();
 }

@@ -169,6 +169,8 @@ L'interface web peut vérifier et télécharger automatiquement la dernière ver
 
 > Le contrôleur se connecte directement à GitHub en HTTPS. Aucun USB, aucune manipulation de fichiers.
 
+> **Depuis la v2.87.0** : « Vérifier les mises à jour » prend **quelques secondes de plus** (un indicateur d'attente s'affiche). Le contrôleur lit en plus les fichiers de signature `.sig` de la release et les transmet avec la demande d'installation, qui **vérifie et journalise seulement** : ⛔ **rien n'est refusé**, une release **sans** signature s'installe exactement comme avant. Voir [Signature des envois OTA](#signature-des-envois-ota-feature-151-d1).
+
 > ⚠️ **Module avec PSRAM requis — sans PSRAM, la méthode est ACTIVEMENT REFUSÉE
 > (depuis la v2.18.6)** : la session TLS vers GitHub réclame plusieurs blocs de
 > mémoire contigus d'environ 16 Ko. Sur un module **sans PSRAM** (WROOM-32), la RAM

@@ -3191,13 +3191,23 @@ curl -u admin:monmotdepasse http://poolcontroller.local/check-update
   "firmware_digest": "sha256:ab12…",
   "filesystem_digest": "sha256:cd34…",
   "firmware_sig_url": "https://github.com/.../firmware.bin.sig",
-  "filesystem_sig_url": "https://github.com/.../littlefs.bin.sig"
+  "filesystem_sig_url": "https://github.com/.../littlefs.bin.sig",
+  "firmware_manifest": "pool-ota/1 firmware 1.0.4 sha256:ab12…",
+  "firmware_signature": "<512 caractères base64>",
+  "filesystem_manifest": "pool-ota/1 filesystem 1.0.4 sha256:cd34…",
+  "filesystem_signature": "<512 caractères base64>"
 }
 ```
 
 Champs additifs v2.11.0 : `firmware_digest` / `filesystem_digest` — empreintes SHA-256 des assets (champ `digest` de l'API GitHub, format `sha256:<64 hex>`, chaîne vide si la release ne le fournit pas). L'UI les relaie en paramètre `digest=` de `/download-update` et **désactive le bouton Installer** si l'une des deux est vide (fail-closed).
 
 Champs additifs feature-151 D1 : `firmware_sig_url` / `filesystem_sig_url` — URL de l'asset `.sig` correspondant (`firmware.bin.sig` / `littlefs.bin.sig`) parmi les assets de la release, **chaîne vide** si absent (releases publiées avant ce lot, ou release sans `.sig`). ⛔ **Non encore exploités côté page web** en D1 — `/download-update` n'applique aucun refus fondé sur ces URL pour l'instant ; ils sont relayés pour que la page ait, un jour, quelque chose à aller chercher. Champ additif : un client qui l'ignore ne casse rien.
+
+Champs additifs feature-151 D3-a (v2.87.0) : `firmware_manifest` / `firmware_signature` / `filesystem_manifest` / `filesystem_signature`. Pour chaque genre, l'appareil **va lire lui-même** le fichier `.sig` de la release (voir `*_sig_url`) et en **relaie le contenu** : le **manifeste** (`pool-ota/1 <genre> <version> sha256:<64 hex>`) et la **signature** (base64, 512 caractères). **Chaîne vide** pour l'un comme pour l'autre si le `.sig` est absent, illisible, hors grammaire, de plus de 1 Ko, ou si la garde TLS est fermée — dans **tous** ces cas la réponse reste un `200` et les deux genres sont indépendants. Raison du relais côté appareil : les assets GitHub n'émettent pas d'`Access-Control-Allow-Origin`, la page ne peut pas les lire elle-même ([ADR-0121](adr/0121-fichier-sig-conteneur-de-transport-deux-lignes-jamais-reconstruit.md), [ADR-0122](adr/0122-socle-decision-ota-genre-empreinte-relais-sig.md)).
+
+⚠️ **« Vérifier » est plus lent depuis la v2.87.0** : le relais ouvre une session TLS **par `.sig`** (hôte `objects.githubusercontent.com`, distinct de `api.github.com`), après la lecture de la réponse GitHub. Compter **quelques secondes de plus** qu'avant. Les trois sessions sont **bornées** (`kOtaTlsConnectTimeoutMs`, `kOtaTlsHandshakeTimeoutSec`, `kOtaTlsSocketTimeoutMs`, voir [ota-manager](subsystems/ota-manager.md)).
+
+⛔ **Ces champs ne servent à refuser rien** : ils sont relayés pour être renvoyés tels quels à `/download-update`, qui **journalise** seulement. Une release **sans** signature s'installe exactement comme avant. Champs additifs : un client qui les ignore ne casse rien.
 
 La réponse contient aussi `release_name`, `published_at` et `release_notes` (corps de la release GitHub). Depuis la v2.10.4 ([ADR-0032](adr/0032-reponses-http-bornees.md)), `release_notes` est **tronqué à 2048 caractères** (`kOtaReleaseNotesMaxChars`) avec suffixe « … » : le corps d'une release n'est pas borné côté GitHub, la troncature borne la réponse HTTP construite en RAM. Depuis la v2.16.1, la coupe respecte les **frontières UTF-8** (un accent/emoji coupé en deux produisait un JSON invalide côté navigateur).
 
@@ -3351,8 +3361,8 @@ Paramètres POST :
 |---|---|---|
 | `url` | oui | URL de l'asset (`firmware.bin` ou `littlefs.bin`, hôtes whitelistés) |
 | `digest` | **oui** (v2.11.0) | Empreinte SHA-256 attendue, format `sha256:<64 hex>` (relayée depuis `/check-update`) |
-| `manifest` | non (feature-151 D1) | Même manifeste et même grammaire que [`POST /update`](#authenticite-manifest-signature-feature-151-d1) — ⛔ **journalisé seulement, aucun refus** en D1 |
-| `signature` | non (feature-151 D1) | Même format (RSA-3072, base64 sans padding, 512 caractères) — ⛔ **journalisé seulement, aucun refus** en D1 |
+| `manifest` | non (feature-151 D1, relayé par la page depuis D3-a) | Même manifeste et même grammaire que [`POST /update`](#authenticite-manifest-signature-feature-151-d1) — ⛔ **journalisé seulement, aucun refus**. Valeur de `firmware_manifest` / `filesystem_manifest` de `/check-update` |
+| `signature` | non (feature-151 D1, relayé par la page depuis D3-a) | Même format (RSA-3072, base64 sans padding, 512 caractères) — ⛔ **journalisé seulement, aucun refus**. Tout-ou-rien : un `manifest` sans `signature` (ou l'inverse) est ignoré |
 | `restart` | non | `false` pour ne pas redémarrer après une installation filesystem réussie |
 
 Erreurs d'intégrité (fail-closed) :
@@ -3364,6 +3374,20 @@ Erreurs d'intégrité (fail-closed) :
 | `422` | `integrity_mismatch` | Empreinte calculée du flux ≠ empreinte attendue (image corrompue ou tronquée, coupure WiFi incluse). Corps : `{"error","expected","computed","message"}`. **Firmware** : `Update.abort()` avant activation — version courante conservée. **Filesystem** : pas de redémarrage, partition FS à réinstaller (firmware intact). |
 
 Chaque refus émet un log `CRITICAL` avec empreintes attendue/calculée.
+
+**Depuis la v2.87.0 (feature-151 D3-a)** : quand `manifest` et `signature` sont fournis et que la signature est **valide**, le **genre signé** choisit la partition et l'**empreinte attendue** vient du **manifeste** (source unique), non plus du seul paramètre `digest`. Exemple complet :
+
+```bash
+curl -u admin:monmotdepasse -X POST \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  --data-urlencode "url=https://github.com/.../firmware.bin" \
+  --data-urlencode "digest=sha256:<64 hex>" \
+  --data-urlencode "manifest=pool-ota/1 firmware 1.0.4 sha256:<64 hex>" \
+  --data-urlencode "signature=<512 caractères base64>" \
+  http://poolcontroller.local/download-update
+```
+
+⚠️ **Acceptation neuve, non refusée** : une image dont l'empreinte correspond au **manifeste signé** mais **pas** au paramètre `digest` était **refusée** (`422`) avant la v2.87.0 ; elle est **installée** maintenant. Une divergence manifeste ↔ `digest` est tolérée et journalisée en `CRITICAL` (« TOLÉRÉ EN D3-a »). Détail, borne (RSA-3072) et vecteur ouvert : [ADR-0122](adr/0122-socle-decision-ota-genre-empreinte-relais-sig.md). Une image corrompue (ni le manifeste ni `digest` ne correspondent) **reste refusée**.
 
 **Garde TLS sortante (v2.18.6)** — cette route ouvre la **même** session TLS que `/check-update` et n'avait, jusqu'à la v2.18.5, **aucune garde mémoire** : un `POST` direct contournait celle de `/check-update`, avec un flash à la clé. Elle applique désormais le **même prédicat** `oomTlsGateReason()` ([détail des critères et des corps de réponse](#garde-tls-sortante-psram-libre--heap-v2186), [ADR-0036](adr/0036-psram-requise-mise-a-jour-en-ligne.md)) :
 
