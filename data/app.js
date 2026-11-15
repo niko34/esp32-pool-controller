@@ -10895,6 +10895,8 @@
       if (barWrap) barWrap.style.display = "";
 
       try {
+        const nm = $("#no_update_msg");
+        if (nm) { nm.replaceChildren(); nm.style.display = "none"; }
         const res = await authFetch("/check-update");
         let data = null;
         if (!res.ok) {
@@ -10918,13 +10920,39 @@
         $("#latest_version").textContent = latestTxt;
         if (info) info.style.display = "block";
 
-        if (data.no_release) {
+        // Contrat bug-178 : `update_state` (absent d'un firmware ancien => repli sur les booléens).
+        const st = data.update_state ||
+          (data.no_release ? "no_release" : data.update_available ? "update_available" : "up_to_date");
+        // Construction DOM (jamais innerHTML : latest_version vient de GitHub).
+        const showNoUpdate = (glyph, text, hint, warn) => {
+          const box = $("#no_update_msg");
+          box.replaceChildren();
+          const strong = document.createElement("strong");
+          strong.textContent = glyph + " " + text;
+          if (warn) strong.style.color = "var(--warn)";
+          box.appendChild(strong);
+          if (hint) {
+            const h = document.createElement("span");
+            h.className = "field__hint";
+            h.textContent = hint;
+            box.appendChild(document.createTextNode(" "));
+            box.appendChild(h);
+          }
+          box.style.display = "block";
           $("#update_available_msg").style.display = "none";
-          $("#no_update_msg").style.display = "block";
-          $("#no_update_msg").innerHTML = "<strong>ℹ️ " + (data.message || "Aucune release") + "</strong>";
           $("#release_info").style.display = "none";
           installBtn.disabled = true;
-        } else if (data.update_available) {
+        };
+
+        if (st === "no_release") {
+          showNoUpdate("ℹ", data.message || "Aucune release");
+        } else if (st === "device_ahead") {
+          showNoUpdate("ℹ", "Installée : plus récente que la release",
+            "Aucune mise à jour proposée. Pour revenir en arrière : « Mise à jour manuelle », ci-dessous.");
+        } else if (st === "unknown_version") {
+          showNoUpdate("⚠", "Version de la release illisible",
+            "Le numéro publié n'a pas le format attendu. Aucune mise à jour proposée.", true);
+        } else if (st === "update_available") {
           $("#update_available_msg").style.display = "block";
           $("#no_update_msg").style.display = "none";
           $("#release_info").style.display = "block";
@@ -10947,11 +10975,7 @@
             renderSigNote(data);
           }
         } else {
-          $("#update_available_msg").style.display = "none";
-          $("#no_update_msg").style.display = "block";
-          $("#no_update_msg").innerHTML = "<strong>✓ Vous avez la dernière version</strong>";
-          $("#release_info").style.display = "none";
-          installBtn.disabled = true;
+          showNoUpdate("✓", "Vous avez la dernière version");
         }
       } catch (e) {
         const msg = String(e?.message || "");
@@ -10984,6 +11008,7 @@
     });
 
     installBtn?.addEventListener("click", async () => {
+      if (latestRelease && latestRelease.update_state && latestRelease.update_state !== "update_available") return;
       if (!latestRelease || !latestRelease.firmware_url || !latestRelease.filesystem_url) {
         showToast("Aucune mise à jour disponible.", "info");
         return;

@@ -2,6 +2,21 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [2.88.1] - 2026-11-15
+
+### Fonctionnalités
+- **Mise à jour en ligne** : l'appareil ne propose plus d'installer une version **plus ancienne** que celle qu'il exécute. Auparavant, une release différente de la version installée était annoncée « mise à jour disponible », même plus ancienne (appareil en 2.88.0, release 2.87.1) : l'accepter aurait réinstallé un défaut déjà corrigé.
+- **Mise à jour en ligne** : quand la version installée est plus récente que la dernière release, la carte l'indique (« Installée : plus récente que la release ») et renvoie vers « Mise à jour manuelle » pour un retour en arrière délibéré. Si le numéro de la release est illisible, la carte le signale et ne propose rien. Le bouton d'installation reste grisé dans ces cas.
+
+### Firmware
+- **OTA `/check-update`** : comparaison numérique des versions (`2.10.0` > `2.9.0`) et nouveau champ additif `update_state` (`update_available`, `up_to_date`, `device_ahead`, `unknown_version`, `no_release`). `update_available` ne vaut `true` que pour une release strictement plus récente.
+- ⚠️ Limites : aucune pré-version (tag suffixé `-rc1`) n'est proposable ; une release remplacée sous le même tag reste invisible (sera couvert par D3-c de feature-151).
+
+### Documentation
+- `docs/API.md`, `docs/subsystems/ota-manager.md`, `docs/UPDATE_GUIDE.md`, `docs/features/page-settings.md`, `docs/DESIGN_SYSTEM.md`, `docs/user/src/guide-utilisation.html`. Aucun ADR (voir la spec bug-178).
+
+---
+
 ## [2.88.0] - 2026-11-15
 
 ### Fonctionnalités

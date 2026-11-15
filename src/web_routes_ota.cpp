@@ -1600,6 +1600,9 @@ static void handleCheckUpdate(AsyncWebServerRequest* request) {
       response["latest_version"] = FIRMWARE_VERSION;
       response["update_available"] = false;
       response["no_release"] = true;
+      // Pas d'état dans OtaUpdateState (aucune version à comparer) : littéral
+      // assumé ici pour que `update_state` reste TOTAL côté client (bug-178).
+      response["update_state"] = "no_release";
       response["message"] = "Aucune release disponible sur GitHub";
 
       String json;
@@ -1858,12 +1861,22 @@ static void handleCheckUpdate(AsyncWebServerRequest* request) {
   const String releaseTag = latestVersion;  // tag brut (bug-176) : mémorisé avec les URL `.sig`
   String currentVersion = FIRMWARE_VERSION;
 
-  // Retirer le 'v' si présent au début de la version GitHub
+  // Retirer le 'v' initial — ⚠️ USAGE COSMÉTIQUE SEULEMENT : `latestVersion` sert à
+  // l'AFFICHAGE (champ `latest_version`) et au journal. ⛔ Ne PAS s'en servir pour
+  // décider : la sémantique des versions appartient à otaUpdateStateFor() seule.
   if (latestVersion.startsWith("v") || latestVersion.startsWith("V")) {
     latestVersion = latestVersion.substring(1);
   }
 
-  bool updateAvailable = (latestVersion != currentVersion);
+  // bug-178 : comparaison numérique, jamais une inégalité de chaînes.
+  // ⚠️ On passe le tag BRUT (`releaseTag`), pas `latestVersion` : otaUpdateStateFor()
+  // retire elle-même UN seul préfixe `v`/`V`. Lui donner une chaîne déjà épluchée
+  // ferait retirer DEUX préfixes au total, et un tag malformé `vv2.0.0` deviendrait
+  // lisible en production alors que la fonction pure le refuse — le test
+  // test_version_double_v_prefix_unreadable affirmerait une propriété que le système
+  // n'a pas. ⛔ Une seule autorité sur la règle du préfixe (revue de code bug-178).
+  const OtaUpdateState st = otaUpdateStateFor(currentVersion.c_str(), releaseTag.c_str());
+  bool updateAvailable = (st == OtaUpdateState::kUpdateAvailable);
 
   // Chercher les assets (firmware.bin et littlefs.bin)
   String firmwareUrl = "";
@@ -1911,6 +1924,7 @@ static void handleCheckUpdate(AsyncWebServerRequest* request) {
   response["current_version"] = currentVersion;
   response["latest_version"] = latestVersion;
   response["update_available"] = updateAvailable;
+  response["update_state"] = otaUpdateStateCode(st);  // additif (bug-178)
   response["firmware_url"] = firmwareUrl;
   response["filesystem_url"] = filesystemUrl;
   // Champs additifs (feature-026) : relayés par l'UI vers /download-update
@@ -1953,7 +1967,17 @@ static void handleCheckUpdate(AsyncWebServerRequest* request) {
   String json;
   serializeJson(response, json);
 
-  systemLogger.info("Version actuelle: " + currentVersion + ", Dernière version: " + latestVersion);
+  // ⚠️ `latestVersion` vient de `tag_name`, donc de GITHUB — chaîne NON MAÎTRISÉE.
+  // Le journal est rendu par innerHTML côté page (data/app.js) sous une CSP qui
+  // autorise l'inline : un tag porteur de balisage s'exécuterait dans la session
+  // admin à l'ouverture du journal. ⛔ On ne journalise donc la version QUE si
+  // l'analyseur l'a acceptée — auquel cas elle ne contient que des chiffres et des
+  // points, inertes en HTML. Sinon, libellé FIXE. (Condition de la revue de
+  // sécurité bug-178 ; le durcissement de renderLogs fait l'objet d'une spec à part.)
+  const String versionPourJournal =
+      (st == OtaUpdateState::kUnknownVersion) ? String("(non analysable)") : latestVersion;
+  systemLogger.info("Version actuelle: " + currentVersion + ", Dernière version: " +
+                    versionPourJournal + " -> état: " + otaUpdateStateCode(st));
   request->send(200, "application/json", json);
 }
 

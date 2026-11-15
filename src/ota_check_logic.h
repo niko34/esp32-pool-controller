@@ -25,6 +25,8 @@
 // =============================================================================
 
 #include <stddef.h>
+#include <stdint.h>
+#include <string.h>
 
 // Plafond NET d'allocations. Invariant : used <= cap.
 struct AllocBudget {
@@ -87,6 +89,80 @@ inline OtaCheckFailureStep classifyOtaCheckFailure(int httpCode, int tlsErrorCod
     return OtaCheckFailureStep::kConnection;
   }
   return OtaCheckFailureStep::kHttpOther;
+}
+
+// -----------------------------------------------------------------------------
+// Comparaison de versions (bug-178) : « une mise à jour n'est proposée que si
+// la release est STRICTEMENT plus récente ». Avant, une simple inégalité de
+// chaînes proposait un retour en arrière (2.88.0 installé, release 2.87.1).
+// -----------------------------------------------------------------------------
+static const size_t kOtaVersionMaxParts = 3;   // MAJEUR.MINEUR.CORRECTIF
+static const size_t kOtaVersionMaxDigits = 9;  // 999999999 < 2^32-1 : pas de débordement
+
+enum class OtaUpdateState : uint8_t {
+  kUnknownVersion = 0,  // fail-safe : au moins une chaîne illisible
+  kUpToDate,            // versions égales
+  kUpdateAvailable,     // release STRICTEMENT plus récente
+  kDeviceAhead,         // appareil STRICTEMENT plus récent
+};
+
+// Analyse « X[.Y[.Z]] » (un seul 'v'/'V' initial toléré). Composants manquants
+// = 0. Tout le reste (suffixe, composant vide, > 3 composants, > 9 chiffres)
+// est illisible → false. Le refus des trop longs composants se fait AVANT
+// l'accumulation : aucun débordement possible. Pure, sans allocation.
+inline bool parseOtaVersion(const char* s, uint32_t out[kOtaVersionMaxParts]) {
+  for (size_t i = 0; i < kOtaVersionMaxParts; ++i) out[i] = 0;
+  if (s == nullptr) return false;
+  if (*s == 'v' || *s == 'V') ++s;
+  size_t part = 0;
+  for (;;) {
+    size_t digits = 0;
+    uint32_t value = 0;
+    while (*s >= '0' && *s <= '9') {
+      if (digits >= kOtaVersionMaxDigits) return false;
+      value = value * 10u + static_cast<uint32_t>(*s - '0');
+      ++digits;
+      ++s;
+    }
+    if (digits == 0) return false;  // composant vide : "", ".", "2..0", "2.88."
+    out[part++] = value;
+    if (*s == '\0') return true;
+    if (*s != '.') return false;    // suffixe : "-rc1", "+b3", "b"...
+    ++s;
+    if (part >= kOtaVersionMaxParts) return false;  // 4e composant
+  }
+}
+
+// ⛔ Invariant : kUpdateAvailable UNIQUEMENT si les DEUX versions sont lisibles
+// ET latest > current (comparaison numérique composant par composant).
+inline OtaUpdateState otaUpdateStateFor(const char* current, const char* latest) {
+  if (current == nullptr || latest == nullptr) return OtaUpdateState::kUnknownVersion;
+  const char* c = (*current == 'v' || *current == 'V') ? current + 1 : current;
+  const char* l = (*latest == 'v' || *latest == 'V') ? latest + 1 : latest;
+  // Chaînes identiques : jamais un retour en arrière, même si illisibles.
+  if (strcmp(c, l) == 0) return OtaUpdateState::kUpToDate;
+  uint32_t cv[kOtaVersionMaxParts];
+  uint32_t lv[kOtaVersionMaxParts];
+  if (!parseOtaVersion(current, cv) || !parseOtaVersion(latest, lv)) {
+    return OtaUpdateState::kUnknownVersion;
+  }
+  for (size_t i = 0; i < kOtaVersionMaxParts; ++i) {
+    if (lv[i] > cv[i]) return OtaUpdateState::kUpdateAvailable;
+    if (lv[i] < cv[i]) return OtaUpdateState::kDeviceAhead;
+  }
+  return OtaUpdateState::kUpToDate;
+}
+
+// Code de contrat publié dans `update_state` (/check-update). Seule source de
+// ces littéraux.
+inline const char* otaUpdateStateCode(OtaUpdateState s) {
+  switch (s) {
+    case OtaUpdateState::kUpToDate:        return "up_to_date";
+    case OtaUpdateState::kUpdateAvailable: return "update_available";
+    case OtaUpdateState::kDeviceAhead:     return "device_ahead";
+    case OtaUpdateState::kUnknownVersion:  break;
+  }
+  return "unknown_version";
 }
 
 #endif  // OTA_CHECK_LOGIC_H

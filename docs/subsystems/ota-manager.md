@@ -536,6 +536,22 @@ jour quelque chose à vérifier. **Champs additifs**, non encore exploités côt
 - ⚠️ **Marge honnête** : facteur 1,6 seulement au débit du terrain — la garde et le WARN sont conservés. Et `/download-update` garde une fenêtre de blocage bien plus large (le téléchargement), **non traitée**.
 - 🔴 **Contrainte d'ordre pour D3-c** : ne pas livrer le refus dans le même firmware que ce lot (voir [feature-151](../../specs/features/doing/feature-151-signature-de-l-image-ota.md)).
 
+### bug-178 (v2.88.1) — comparaison sémantique des versions, cinq états
+
+`/check-update` ne décide plus par inégalité de chaînes. `src/ota_check_logic.h` (header pur, testé en natif) fournit `parseOtaVersion()`, `otaUpdateStateFor(current, latest)` et `otaUpdateStateCode()`. Format accepté : `X[.Y[.Z]]` avec un seul `v`/`V` initial ; composants manquants = 0 ; au plus 3 composants de 9 chiffres (`kOtaVersionMaxParts`, `kOtaVersionMaxDigits`, pas de débordement `uint32_t`). Tout le reste (suffixe `-rc1`/`+b3`, composant vide, 4e composant) est illisible.
+
+Le handler passe le **tag brut** (`releaseTag`) à la fonction pure : elle retire elle-même un seul préfixe, `vv2.0.0` reste donc illisible en production. `latestVersion` (épluché) ne sert qu'à l'affichage et au journal.
+
+Cinq états publiés dans `update_state` : `update_available`, `up_to_date`, `device_ahead`, `unknown_version` (enum `OtaUpdateState`) et `no_release` (littéral de la branche 404, hors enum). ⛔ Invariant : `update_available` n'est vrai que si les deux versions sont lisibles **et** `latest > current`. Deux chaînes identiques valent `up_to_date` même illisibles. Contrat détaillé : [API.md](../API.md#get-check-update--write).
+
+Journal : la version de la release (qui vient de GitHub, donc non maîtrisée) n'est journalisée que si elle a été jugée lisible ; sinon le libellé fixe `(non analysable)` (le journal est rendu en `innerHTML` côté page).
+
+**Deux limites assumées**
+- ⛔ Une release **remplacée sous le même tag** est **invisible** à toute comparaison de versions (versions égales). Ce cas sera couvert **quand D3-c de [feature-151](../../specs/features/doing/feature-151-signature-de-l-image-ota.md) sera livré, pas avant** : l'empreinte vient de la même réponse GitHub que l'image (elle prouve le transport, pas l'authenticité) et la signature ne refuse encore rien.
+- Le lot garantit que rien n'est **proposé**, **pas** que le retour arrière est **bloqué** : `POST /update` et `POST /download-update` restent volontairement permissifs, pour qu'un retour arrière **délibéré** reste possible (carte « Mise à jour manuelle »).
+
+Aucune pré-version n'est proposable (tag suffixé = `unknown_version`) ; voir [API.md](../API.md#get-check-update--write).
+
 ### Honnêteté de la preuve par mutation
 
 Deux faits à consigner, plutôt que les lisser :

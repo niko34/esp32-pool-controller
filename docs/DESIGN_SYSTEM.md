@@ -264,6 +264,11 @@ Piloté par l'attribut `hidden`, `role="status"`, texte seulement pour l'état a
 brut du firmware va dans `title`. Aucune évolution du composant : CSS inchangé, donc aucun
 impact sur les 20 emplois de `index.html` ni sur l'emploi de `app.js`.
 
+**Contexte d'emploi ajouté (bug-178)** : *complément d'un constat, non d'un contrôle* —
+`<span class="field__hint">` dans `#no_update_msg` (même carte), après la ligne en gras
+(`ℹ` / `⚠` en glyphes texte, pas emoji). Construit en DOM (`textContent`). Aucune évolution du
+composant : CSS inchangé, aucun inventaire d'emplois dû.
+
 ### 5.12 `.regul-alert` (+ `--inline`)
 Bandeau d'exception de régulation (escalade de sécurité pH, étalonnage en cours). Rouge
 clignotant (`__dot`) réservé aux alertes qui exigent un acquittement **sur la page

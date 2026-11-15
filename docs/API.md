@@ -3186,6 +3186,7 @@ curl -u admin:monmotdepasse http://poolcontroller.local/check-update
   "current_version": "1.0.3",
   "latest_version": "1.0.4",
   "update_available": true,
+  "update_state": "update_available",
   "firmware_url": "https://github.com/.../firmware.bin",
   "filesystem_url": "https://github.com/.../littlefs.bin",
   "firmware_digest": "sha256:ab12…",
@@ -3202,6 +3203,22 @@ curl -u admin:monmotdepasse http://poolcontroller.local/check-update
   "filesystem_sig_reason": ""
 }
 ```
+
+Champ additif bug-178 (v2.88.1) : **`update_state`**, TOTAL (présent aussi dans la réponse **404** « aucune release », où `update_available` vaut `false` et `no_release` `true`). Un client peut brancher sur ce champ seul.
+
+| `update_state` | `update_available` | Sens |
+|---|---|---|
+| `update_available` | `true` | release **strictement plus récente** que la version installée |
+| `up_to_date` | `false` | versions égales (`2.88` et `2.88.0` sont **égales** : composant manquant = 0) |
+| `device_ahead` | `false` | version installée **strictement plus récente** que la release (déploiement local, release retirée) |
+| `unknown_version` | `false` | au moins une des deux versions est illisible : fail-safe, rien n'est proposé |
+| `no_release` | `false` | aucune release sur GitHub (404) |
+
+La comparaison est **numérique**, composant par composant (`2.10.0` est postérieure à `2.9.0`), avec un seul `v`/`V` initial toléré. Avant ce lot, une simple inégalité de chaînes annonçait « mise à jour disponible » même pour une version plus **ancienne** (appareil en 2.88.0, release 2.87.1 : retour en arrière présenté comme une mise à jour). `update_available` **subsiste** et se **restreint** : il ne vaut `true` que pour l'état `update_available`, donc un client ancien continue de fonctionner et ne peut plus être induit en erreur. Deux chaînes identiques (après retrait du `v`) valent `up_to_date` même illisibles.
+
+⚠️ **Limite assumée : aucune pré-version n'est proposable.** Un tag **suffixé** (`v2.89.0-rc1`, `+b3`), vide, non numérique, à plus de 3 composants ou à composant de plus de 9 chiffres est jugé illisible, donc `unknown_version`. `releases/latest` exclut déjà brouillons et pré-versions ; mais publier un jour un tag de pré-version comme release normale ferait afficher « version illisible » à tout le parc. Si le projet distribue un jour des pré-versions, **ce refus des suffixes** est la décision qui méritera un ADR (aucun ADR n'a été jugé nécessaire pour ce lot : contrat additif, rien de verrouillé par ailleurs).
+
+⛔ Ce lot garantit que rien n'est **proposé**, pas que le retour arrière est **bloqué** : `POST /update` et `POST /download-update` ne comparent aucune version.
 
 Champs additifs v2.11.0 : `firmware_digest` / `filesystem_digest` — empreintes SHA-256 des assets (champ `digest` de l'API GitHub, format `sha256:<64 hex>`, chaîne vide si la release ne le fournit pas). L'UI les relaie en paramètre `digest=` de `/download-update` et **désactive le bouton Installer** si l'une des deux est vide (fail-closed).
 

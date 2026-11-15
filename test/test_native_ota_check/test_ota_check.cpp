@@ -23,6 +23,7 @@
 #include <unity.h>
 #include <stddef.h>
 #include <string.h>
+#include <stdio.h>
 #include "ota_check_logic.h"
 
 void setUp(void) {}
@@ -216,6 +217,157 @@ void test_classify_positive_code_is_http_other(void) {
                      static_cast<int>(classifyOtaCheckFailure(500, 0)));
 }
 
+// ---------------------------------------------------------------------------
+// 3. Comparaison de versions (bug-178) — « proposer seulement si STRICTEMENT
+//    plus récent ». Comparaison NUMÉRIQUE : "2.10.0" > "2.9.0".
+// ---------------------------------------------------------------------------
+
+static OtaUpdateState st(const char* cur, const char* lat) {
+  return otaUpdateStateFor(cur, lat);
+}
+#define ASSERT_STATE(exp, cur, lat) \
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(exp), static_cast<int>(st(cur, lat)))
+
+void test_version_numeric_not_lexicographic_both_ways(void) {
+  ASSERT_STATE(OtaUpdateState::kUpdateAvailable, "2.9.0", "2.10.0");
+  ASSERT_STATE(OtaUpdateState::kDeviceAhead, "2.10.0", "2.9.0");
+}
+
+void test_version_field_case_device_ahead(void) {
+  // Situation réelle du 2026-11-15 : installé 2.88.0, release 2.87.1.
+  ASSERT_STATE(OtaUpdateState::kDeviceAhead, "2.88.0", "2.87.1");
+}
+
+void test_version_patch_level_decides(void) {
+  ASSERT_STATE(OtaUpdateState::kUpdateAvailable, "2.87.0", "2.87.1");
+  ASSERT_STATE(OtaUpdateState::kDeviceAhead, "2.87.1", "2.87.0");
+}
+
+void test_version_major_dominates(void) {
+  ASSERT_STATE(OtaUpdateState::kUpdateAvailable, "2.99.99", "3.0.0");
+  ASSERT_STATE(OtaUpdateState::kDeviceAhead, "3.0.0", "2.99.99");
+}
+
+void test_version_equal(void) {
+  ASSERT_STATE(OtaUpdateState::kUpToDate, "2.88.0", "2.88.0");
+}
+
+void test_version_missing_components_are_zero(void) {
+  ASSERT_STATE(OtaUpdateState::kUpToDate, "2.88", "2.88.0");
+  ASSERT_STATE(OtaUpdateState::kUpToDate, "2.88.0", "2.88");
+  ASSERT_STATE(OtaUpdateState::kUpToDate, "2", "2.0.0");
+  ASSERT_STATE(OtaUpdateState::kUpdateAvailable, "2.88", "2.88.1");
+}
+
+void test_version_v_prefix_stripped(void) {
+  ASSERT_STATE(OtaUpdateState::kUpToDate, "v2.88.0", "2.88.0");
+  ASSERT_STATE(OtaUpdateState::kUpToDate, "V2.88.0", "2.88.0");
+  ASSERT_STATE(OtaUpdateState::kUpdateAvailable, "2.88.0", "v2.88.1");
+  ASSERT_STATE(OtaUpdateState::kDeviceAhead, "V2.88.1", "v2.88.0");
+}
+
+void test_version_double_v_prefix_unreadable(void) {
+  ASSERT_STATE(OtaUpdateState::kUnknownVersion, "2.0.0", "vv2.0.0");
+  ASSERT_STATE(OtaUpdateState::kUnknownVersion, "vv2.0.0", "2.0.0");
+}
+
+void test_version_suffixes_unreadable(void) {
+  ASSERT_STATE(OtaUpdateState::kUnknownVersion, "2.87.0", "2.88.0-rc1");
+  ASSERT_STATE(OtaUpdateState::kUnknownVersion, "2.87.0", "2.88.0+b3");
+  ASSERT_STATE(OtaUpdateState::kUnknownVersion, "2.87.0", "2.88.0b");
+  ASSERT_STATE(OtaUpdateState::kUnknownVersion, "2.88.0-rc1", "2.87.0");
+}
+
+void test_version_unreadable_strings(void) {
+  const char* bad[] = {"", ".", "2..0", "2.88.", "abc", "2.88.0.1", "v", ".2.0", " 2.0.0"};
+  for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); ++i) {
+    ASSERT_STATE(OtaUpdateState::kUnknownVersion, "2.88.0", bad[i]);
+    ASSERT_STATE(OtaUpdateState::kUnknownVersion, bad[i], "2.88.0");
+  }
+}
+
+void test_version_nullptr_unknown(void) {
+  ASSERT_STATE(OtaUpdateState::kUnknownVersion, nullptr, "2.88.0");
+  ASSERT_STATE(OtaUpdateState::kUnknownVersion, "2.88.0", nullptr);
+  ASSERT_STATE(OtaUpdateState::kUnknownVersion, nullptr, nullptr);
+  uint32_t v[kOtaVersionMaxParts];
+  TEST_ASSERT_FALSE(parseOtaVersion(nullptr, v));
+}
+
+void test_version_component_digit_limit(void) {
+  uint32_t v[kOtaVersionMaxParts];
+  // 9 chiffres : valide, valeur exacte (pas de débordement)
+  TEST_ASSERT_TRUE(parseOtaVersion("999999999.0.0", v));
+  TEST_ASSERT_EQUAL_UINT32(999999999u, v[0]);
+  TEST_ASSERT_TRUE(parseOtaVersion("1.999999999.999999999", v));
+  TEST_ASSERT_EQUAL_UINT32(999999999u, v[2]);
+  // 10 chiffres : refusé
+  TEST_ASSERT_FALSE(parseOtaVersion("1000000000.0.0", v));
+  TEST_ASSERT_FALSE(parseOtaVersion("1.0000000000.0", v));
+  // 10 chiffres dont la valeur déborderait 2^32 : refusé, jamais « petit »
+  TEST_ASSERT_FALSE(parseOtaVersion("4294967297.0.0", v));
+  ASSERT_STATE(OtaUpdateState::kUnknownVersion, "2.0.0", "4294967297.0.0");
+  ASSERT_STATE(OtaUpdateState::kUnknownVersion, "4294967297.0.0", "2.0.0");
+  // zéros de tête : comptent comme chiffres
+  TEST_ASSERT_FALSE(parseOtaVersion("0000000001.0.0", v));
+  ASSERT_STATE(OtaUpdateState::kUpdateAvailable, "999999998.0.0", "999999999.0.0");
+}
+
+void test_version_identical_strings_up_to_date_even_unreadable(void) {
+  ASSERT_STATE(OtaUpdateState::kUpToDate, "abc", "abc");
+  ASSERT_STATE(OtaUpdateState::kUpToDate, "2.88.0-rc1", "2.88.0-rc1");
+  ASSERT_STATE(OtaUpdateState::kUpToDate, "", "");
+  ASSERT_STATE(OtaUpdateState::kUpToDate, "vabc", "abc");  // après retrait du v
+  // mais pas pour des chaînes différentes illisibles
+  ASSERT_STATE(OtaUpdateState::kUnknownVersion, "abc", "abd");
+}
+
+// ⛔ Invariant central : kUpdateAvailable <=> les deux lisibles ET latest > current.
+// Balayage d'un corpus mêlant lisibles et illisibles, avec un oracle INDÉPENDANT
+// (entiers 64 bits, composants fournis à part).
+void test_invariant_update_available_only_if_both_readable_and_strictly_newer(void) {
+  struct Case { const char* s; bool readable; unsigned long long key; };
+  const unsigned long long B = 1000000000ULL;
+  #define K(a,b,c) ((unsigned long long)(a) * B * B + (unsigned long long)(b) * B + (c))
+  const Case corpus[] = {
+    {"2.9.0", true, K(2,9,0)},   {"2.10.0", true, K(2,10,0)},
+    {"2.88.0", true, K(2,88,0)}, {"2.87.1", true, K(2,87,1)},
+    {"v2.88.1", true, K(2,88,1)},{"2.88", true, K(2,88,0)},
+    {"3", true, K(3,0,0)},       {"0.0.0", true, K(0,0,0)},
+    {"999999999.0.0", true, K(999999999,0,0)},
+    {"", false, 0},              {"abc", false, 0},
+    {"2.88.0-rc1", false, 0},    {"2.88.0.1", false, 0},
+    {"vv2.0.0", false, 0},       {"1000000000.0.0", false, 0},
+    {"2..0", false, 0},          {nullptr, false, 0},
+  };
+  #undef K
+  const size_t n = sizeof(corpus) / sizeof(corpus[0]);
+  for (size_t i = 0; i < n; ++i) {
+    for (size_t j = 0; j < n; ++j) {
+      const Case& c = corpus[i];
+      const Case& l = corpus[j];
+      OtaUpdateState got = otaUpdateStateFor(c.s, l.s);
+      bool expectAvail = c.readable && l.readable && l.key > c.key;
+      char msg[96];
+      snprintf(msg, sizeof(msg), "cur=%s latest=%s", c.s ? c.s : "(null)", l.s ? l.s : "(null)");
+      TEST_ASSERT_EQUAL_MESSAGE(expectAvail, got == OtaUpdateState::kUpdateAvailable, msg);
+      if (c.readable && l.readable) {
+        OtaUpdateState exp = l.key > c.key ? OtaUpdateState::kUpdateAvailable
+                           : l.key < c.key ? OtaUpdateState::kDeviceAhead
+                                           : OtaUpdateState::kUpToDate;
+        TEST_ASSERT_EQUAL_MESSAGE(static_cast<int>(exp), static_cast<int>(got), msg);
+      }
+    }
+  }
+}
+
+void test_state_codes_contract(void) {
+  TEST_ASSERT_EQUAL_STRING("unknown_version", otaUpdateStateCode(OtaUpdateState::kUnknownVersion));
+  TEST_ASSERT_EQUAL_STRING("up_to_date", otaUpdateStateCode(OtaUpdateState::kUpToDate));
+  TEST_ASSERT_EQUAL_STRING("update_available", otaUpdateStateCode(OtaUpdateState::kUpdateAvailable));
+  TEST_ASSERT_EQUAL_STRING("device_ahead", otaUpdateStateCode(OtaUpdateState::kDeviceAhead));
+}
+
 int main(int argc, char** argv) {
   (void)argc;
   (void)argv;
@@ -240,5 +392,20 @@ int main(int argc, char** argv) {
   RUN_TEST(test_classify_zero_is_http_other);
   RUN_TEST(test_classify_404_is_never_connection_failure);
   RUN_TEST(test_classify_positive_code_is_http_other);
+  RUN_TEST(test_version_numeric_not_lexicographic_both_ways);
+  RUN_TEST(test_version_field_case_device_ahead);
+  RUN_TEST(test_version_patch_level_decides);
+  RUN_TEST(test_version_major_dominates);
+  RUN_TEST(test_version_equal);
+  RUN_TEST(test_version_missing_components_are_zero);
+  RUN_TEST(test_version_v_prefix_stripped);
+  RUN_TEST(test_version_double_v_prefix_unreadable);
+  RUN_TEST(test_version_suffixes_unreadable);
+  RUN_TEST(test_version_unreadable_strings);
+  RUN_TEST(test_version_nullptr_unknown);
+  RUN_TEST(test_version_component_digit_limit);
+  RUN_TEST(test_version_identical_strings_up_to_date_even_unreadable);
+  RUN_TEST(test_invariant_update_available_only_if_both_readable_and_strictly_newer);
+  RUN_TEST(test_state_codes_contract);
   return UNITY_END();
 }

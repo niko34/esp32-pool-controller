@@ -184,6 +184,17 @@ L'interface web peut vérifier et télécharger automatiquement la dernière ver
 >
 > ⚠️ **Ordre de déploiement à venir (lot D3-c)** : le refus des images sans signature ne sortira **pas** dans le même firmware que celui-ci. Avec une page ancienne, une installation du système de fichiers serait refusée — y compris celle qui la met à jour. Il attendra une release dont le système de fichiers porte la page neuve, avec une voie de réparation indépendante de la page. Voir [ADR-0123](adr/0123-une-seule-session-tls-sortante-par-requete-http.md).
 
+> **Depuis la v2.88.1** : l'appareil compare les numéros de version (il ne se contente plus de constater qu'ils diffèrent) et **ne propose plus jamais une version plus ancienne**. Dans les cas où rien n'est proposé, le bouton d'installation reste grisé :
+>
+> | Ce que vous lisez | Sens | Que faire |
+> |---|---|---|
+> | « ✓ Vous avez la dernière version » | versions égales | rien |
+> | « ℹ Installée : plus récente que la release » + « Aucune mise à jour proposée. Pour revenir en arrière : « Mise à jour manuelle », ci-dessous. » | votre version est **plus récente** que la dernière release (déploiement local, release retirée) : normal, pas une erreur | rien ; pour un retour en arrière délibéré, carte « Mise à jour manuelle » |
+> | « ⚠ Version de la release illisible » + « Le numéro publié n'a pas le format attendu. Aucune mise à jour proposée. » | le numéro de la release n'est pas de la forme `X.Y.Z` (ex. suffixe `-rc1`) | signaler le problème ; installer au besoin via la mise à jour manuelle |
+> | « ℹ Aucune release disponible sur GitHub » | aucune release publiée | rien |
+>
+> ⚠️ Les pré-versions (tag `-rc1`…) ne sont jamais proposées. Une release republiée **sous le même numéro** n'est pas détectée.
+
 > ⚠️ **Module avec PSRAM requis — sans PSRAM, la méthode est ACTIVEMENT REFUSÉE
 > (depuis la v2.18.6)** : la session TLS vers GitHub réclame plusieurs blocs de
 > mémoire contigus d'environ 16 Ko. Sur un module **sans PSRAM** (WROOM-32), la RAM
