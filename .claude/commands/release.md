@@ -247,11 +247,17 @@ flash relevée à l'étape 2.
 
 ## Rappels
 
-- Le dépôt est **privé** : les assets ne sont téléchargeables que par toi.
-  ⚠️ **Et c'est pourquoi la mise à jour EN LIGNE depuis l'appareil ne marche pas** :
-  l'API GitHub répond **404** sur un dépôt privé sans authentification, et
-  l'appareil n'envoie aucun jeton. Il affiche alors « Aucune release disponible ».
-  ⛔ Ce n'est **pas** un défaut de la release — voir bug-169.
+- ⚠️ **CORRIGÉ le 2026-11-15 — ce rappel était PÉRIMÉ et il faisait renoncer.**
+  Il affirmait : *« le dépôt est privé ⇒ la mise à jour EN LIGNE depuis l'appareil ne
+  marche pas, l'API répond 404 sans authentification »* (bug-169). ⛔ **Le dépôt est
+  PUBLIC.** Mesuré ce jour, sans aucun jeton, exactement comme l'appareil :
+  `curl https://api.github.com/repos/niko34/esp32-pool-controller/releases/latest`
+  ⇒ **HTTP 200**, avec les assets, `.sig` compris.
+  ⇒ ⛔ **Ne pas conclure d'un rappel en prose qu'une fonction est morte** : une ligne de
+  `curl` tranche en trois secondes, et celle-ci allait faire abandonner l'essai terrain
+  de feature-151 D3-a.
+  ⚠️ Les assets sont donc **publics** — c'est voulu pour les `.sig`, et c'est ce qui
+  permet à un client de réparer son appareil sans clé ni terminal.
 - N'invente jamais un numéro de version : demande-le.
 - Si une étape échoue après la création du tag, **dis-le explicitement** — un tag
   poussé sans release derrière est un état à corriger à la main
