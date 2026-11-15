@@ -110,7 +110,17 @@ Par défaut, le script contacte l'ESP32 via mDNS (`poolcontroller.local`). Si le
    notice passe en **orange** et une confirmation est demandée au moment d'envoyer — vous
    pouvez toujours passer outre en un clic, rien n'est bloqué.
 6. Cliquer sur **Mettre à jour**
-7. Attendre le redémarrage automatique
+7. Attendre le redémarrage automatique (voir ci-dessous)
+
+### Ce que vous voyez pendant le redémarrage — depuis v2.88.2
+
+Après l'installation (en ligne **ou** manuelle), la page ne se recharge plus au hasard : elle **attend réellement l'appareil**.
+
+1. « ✓ Installé. L'appareil redémarre… » (environ 8 s).
+2. « Attente du retour de l'appareil… » avec un compte en secondes : la page interroge l'appareil toutes les 2 s, pendant 90 s au plus.
+3. « ✓ Appareil de retour. Rechargement… » : la page se recharge **dès** que l'appareil est servable.
+
+**Si la page ne revient pas** (le cas typique : le nom `poolcontroller.local` n'est plus résolu par votre réseau, alors que l'appareil fonctionne) : un encadré orange « L'appareil ne répond pas encore » apparaît, avec **l'adresse IP** de l'appareil en lien. Ouvrez-la. ⚠️ Vous devrez **vous reconnecter**, car l'adresse est différente du nom. Sans IP affichée, cherchez l'appareil dans votre box. Si l'encadré dit « Appareil trop sollicité. Réessayez dans 1 minute. », l'appareil est bien là : patientez puis rechargez.
 
 > Si vous modifiez le code ET les fichiers web, faire 2 mises à jour séparées.
 

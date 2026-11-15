@@ -114,6 +114,19 @@ curl http://poolcontroller.local/auth/status
 }
 ```
 
+**Réponses possibles** : `200` (ci-dessus) ; `429` avec `Retry-After: 60` si l'IP a dépassé le quota global de 120 req/min (`kMaxRequestsPerMinute`, imposé en amont de cette route). Un `429` reçu par un sondage est une **preuve de vie** : l'appareil a répondu.
+
+#### Contrat de sondabilité
+
+Depuis la v2.88.2 (bug-177), la page web **sonde cette route** toutes les 2 s, pendant 90 s au plus, pour constater le retour de l'appareil après une mise à jour. Quatre propriétés la rendent utilisable pour cela, et **chacune est nécessaire** :
+
+1. **Publique** : ni `REQUIRE_AUTH` ni `checkAuth`. Elle doit répondre alors que la page n'a pas encore pu se ré-authentifier.
+2. **Hors quota** : ⛔ ne jamais y ajouter `checkRateLimit()`. Le sondage ne doit consommer aucune des 120 req/min, sinon il s'auto-refuse.
+3. **Sans système de fichiers** : elle ne sert que trois booléens, donc répond même si LittleFS n'a pas pu être remonté après un envoi du filesystem.
+4. **Enregistrée en premier** (`web_server.cpp`) : hors de la garde `503` de famine mémoire, un appareil sous pression répond quand même « je suis là ».
+
+⚠️ **Pourquoi ça compte** : ces quatre propriétés étaient des **accidents** jusqu'au 2026-11-15, rien ne les déclarait. Les casser ne produirait **aucune erreur**, seulement une page qui ne constate plus le retour de l'appareil, **en silence**. Le même contrat est inscrit en commentaire dans `src/web_routes_auth.cpp`. Toute modification de cette route doit le relire.
+
 ---
 
 ### POST /auth/login — public

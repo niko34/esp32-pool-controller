@@ -2640,6 +2640,19 @@ action:
                 </div>
               </div>
 
+              <!-- bug-177 : bloc de secours UNIQUE, déplacé (appendChild) dans la carte qui a
+                   lancé la mise à jour. Aucune redirection automatique : la CSP interdit de
+                   sonder l'IP depuis .local, et changer d'origine déconnecte l'utilisateur. -->
+              <div id="ota_recovery" class="callout callout--warn" role="status" hidden>
+                <strong id="ota_recovery_title">L'appareil ne répond pas encore</strong>
+                <p id="ota_recovery_info">La mise à jour est installée. L'appareil a sans doute redémarré : c'est son nom qui n'est plus trouvé sur le réseau.<span id="ota_recovery_open"> Ouvrez-le par son adresse :</span></p>
+                <p><a class="btn" id="ota_recovery_ip" href="#" hidden></a></p>
+                <p id="ota_recovery_warn" class="field__hint" hidden>Vous devrez vous reconnecter.</p>
+                <p id="ota_recovery_notready" hidden>Il redémarre ou finit de se préparer. Patientez une minute, puis rechargez la page.</p>
+                <p id="ota_recovery_noip" hidden>Cherchez l'appareil dans votre box (adresse IP).</p>
+                <p><button class="btn" type="button" id="ota_recovery_reload">Recharger la page</button></p>
+              </div>
+
               <div class="card">
                 <div class="card__head">
                   <h2 class="card__title">Mise à jour en ligne (GitHub)</h2>

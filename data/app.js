@@ -620,6 +620,228 @@
     });
   }
 
+  // ---------- bug-177 : attente du retour de l'appareil après une mise à jour ----------
+  // Trois fonctions PURES (aucun DOM, aucune horloge : tout vient des arguments —
+  // extractibles par test/js_extract.js, ancre « function otaXxx( ») puis
+  // l'orchestrateur awaitDeviceBack(), qui seul touche au réseau et au DOM.
+  const OTA_WAIT_CFG = { graceMs: 8000, intervalMs: 2000, budgetMs: 90000, probeTimeoutMs: 3000 };
+
+  // 2xx => "servable" ; toute autre réponse (429, 503, 5xx, 4xx) => "alive"
+  // (PREUVE DE VIE : l'appareil a répondu) ; aucune réponse (null) => "absent".
+  function otaProbeOutcome(res) {
+    if (!res || typeof res.status !== "number") return "absent";
+    return res.status >= 200 && res.status < 300 ? "servable" : "alive";
+  }
+
+  // Décide de la suite. `outcome` = résultat de la DERNIÈRE opération
+  // (null avant tout sondage ; "servable" => à confirmer ; "confirmed" =>
+  // la page d'accueil a été servie en 2xx ; "alive"/"absent" => on continue).
+  // GRÂCE : l'appareil répond 200 puis redémarre 3 s plus tard
+  // (kRestartAfterOtaDelayMs) — aucun sondage avant graceMs.
+  function otaRebootWaitStep(st, cfg) {
+    const elapsed = Math.max(0, st.nowMs - st.startedMs);
+    const remainingS = Math.max(0, Math.ceil((cfg.budgetMs - elapsed) / 5000) * 5);
+    const MSG_RESTART = "✓ Installé. L'appareil redémarre…";
+    const MSG_BACK = "✓ Appareil de retour. Rechargement…";
+    const msgWait = "Attente du retour de l'appareil… " + remainingS + " s";
+    // ⛔ LA GRÂCE PASSE AVANT TOUT — bug-177, défaut trouvé par les vecteurs.
+    // kRestartAfterOtaDelayMs = 3000 : l'appareil répond 200 PUIS redémarre 3 s
+    // plus tard. Une réponse obtenue pendant la grâce vient donc de l'appareil
+    // qui n'est PAS ENCORE redémarré : la croire, c'est recharger avant le
+    // reboot et faire tuer le rechargement en vol — ⚠️ le défaut que ce lot
+    // corrige, en plus reproductible.
+    // ⚠️ L'orchestrateur ne sonde pas pendant la grâce, donc le cas n'est pas
+    // atteignable aujourd'hui. ⛔ Mais l'invariant doit vivre DANS la fonction
+    // pure, pas dans la discipline de son appelant : sinon il disparaît à la
+    // première refonte, sans que rien ne le signale.
+    if (elapsed < cfg.graceMs) {
+      return { action: "wait", delayMs: cfg.graceMs - elapsed, remainingS, message: MSG_RESTART, reason: "grace" };
+    }
+    if (st.outcome === "confirmed") {
+      return { action: "reload", delayMs: 0, remainingS, message: MSG_BACK, reason: "confirmed" };
+    }
+    if (st.outcome === "servable") {
+      return { action: "confirm", delayMs: 0, remainingS, message: MSG_BACK, reason: "servable" };
+    }
+    if (elapsed >= cfg.budgetMs) {
+      return { action: "giveup", delayMs: 0, remainingS: 0, message: msgWait, reason: "timeout" };
+    }
+    return {
+      action: "probe",
+      delayMs: st.attempts > 0 ? cfg.intervalMs : 0,
+      remainingS, message: msgWait, reason: st.outcome === "alive" ? "alive" : "absent",
+    };
+  }
+
+  // Adresse de secours : null si on est déjà venu par l'IP, ou si l'IP est inconnue.
+  function otaRecoveryTarget(o) {
+    const ip = o && typeof o.ip === "string" ? o.ip.trim() : "";
+    // ⚠️ Octets bornés à 0-255 : `\d{1,3}` acceptait « 999.1.1.1 » (bug-177,
+    // défaut trouvé par les vecteurs). Proposer une adresse invalide enverrait
+    // l'utilisateur dans le vide au moment où il cherche à récupérer la main.
+    const octet = "(25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)";
+    if (!ip || !new RegExp("^" + octet + "(\\." + octet + "){3}$").test(ip)) return null;
+    // ⛔ 0.0.0.0 est syntaxiquement valide mais inutilisable comme cible : proposer
+    // ce lien enverrait l'utilisateur dans le vide au moment où il cherche à
+    // récupérer la main. Mieux vaut le repli « cherchez-le dans votre box ».
+    // (bug-177, signalé par les vecteurs de borne.)
+    if (ip === "0.0.0.0") return null;
+    if (o.currentHost === ip) return null;
+    const url = "http://" + ip + "/";
+    return { url, label: url };
+  }
+
+  let otaWaitToken = 0;      // une nouvelle attente annule la précédente
+  let otaWaitCleanup = null;
+
+  // fetch NU (jamais authFetch : un 401 transitoire redirigerait vers /login.html).
+  async function otaFetchNoStore(path, timeoutMs) {
+    const ctl = new AbortController();
+    const to = setTimeout(() => ctl.abort(), timeoutMs);
+    try {
+      return await fetch(path + "?t=" + Date.now(), { cache: "no-store", signal: ctl.signal });
+    } catch (_) {
+      return null;
+    } finally {
+      clearTimeout(to);
+    }
+  }
+
+  // opts : {statusEl, host (carte qui reçoit le bloc de secours), barEl (.progress à masquer), buttons[]}
+  function awaitDeviceBack(opts) {
+    if (otaWaitCleanup) otaWaitCleanup();
+    const token = ++otaWaitToken;
+    const cfg = OTA_WAIT_CFG;
+    const startedMs = Date.now();
+    const statusEl = opts.statusEl;
+    let attempts = 0, outcome = null, lastStatus = null, timer = null, inflight = false;
+    let phase = "", numEl = null;
+    const live = () => token === otaWaitToken;
+
+    if (opts.barEl) opts.barEl.style.display = "none"; // 100 % dirait « fini » alors qu'on attend
+    (opts.buttons || []).forEach((b) => { if (b) b.disabled = true; });
+    const box = $("#ota_recovery");
+    if (box) box.hidden = true;
+
+    const render = (step) => {
+      if (!statusEl) return;
+      const p = step.action === "wait" ? "restart"
+        : step.action === "probe" ? "waiting" : "back";
+      if (p !== phase) {
+        phase = p;
+        numEl = null;
+        if (p === "waiting") {
+          statusEl.replaceChildren(document.createTextNode("Attente du retour de l'appareil… "));
+          numEl = document.createElement("span");
+          numEl.setAttribute("aria-hidden", "true"); // jamais ré-annoncé chaque seconde
+          statusEl.appendChild(numEl);
+        } else {
+          statusEl.textContent = step.message;
+        }
+      }
+      if (numEl) numEl.textContent = step.remainingS + " s";
+    };
+
+    const cleanup = () => {
+      clearTimeout(timer);
+      document.removeEventListener("visibilitychange", onVis);
+      if (otaWaitCleanup === cleanup) otaWaitCleanup = null;
+    };
+    otaWaitCleanup = cleanup;
+
+    // bug-177 : TROIS cas, pas deux. ⛔ Ne jamais dire « ne répond pas » d'un
+    // appareil qui RÉPOND : 429 (quota) et 503 (pas encore prêt) sont des
+    // preuves de vie. ⚠️ Et sur 503, proposer l'adresse IP serait un FAUX
+    // REMÈDE — l'appareil est joignable, c'est servir la page qu'il ne peut pas.
+    const showRecovery = (lastHttpStatus) => {
+      const busy = lastHttpStatus === 429;
+      const notReady = lastHttpStatus === 503;
+      if (statusEl) statusEl.textContent = "";
+      if (!box) return;
+      const t = $("#ota_recovery_title");
+      const info = $("#ota_recovery_info");
+      const link = $("#ota_recovery_ip");
+      const warn = $("#ota_recovery_warn");
+      const noip = $("#ota_recovery_noip");
+      const target = otaRecoveryTarget({
+        currentHost: window.location.hostname,
+        ip: window._wifiData && window._wifiData.ip,
+      });
+      const notReadyEl = $("#ota_recovery_notready");
+      if (t) {
+        t.textContent = busy ? "Appareil trop sollicité. Réessayez dans 1 minute."
+          : notReady ? "L'appareil est là, mais pas prêt"
+          : "L'appareil ne répond pas encore";
+      }
+      // 429 et 503 : l'appareil RÉPOND — ne pas lui prêter une panne.
+      if (info) info.hidden = busy || notReady;
+      if (notReadyEl) notReadyEl.hidden = !notReady;
+      // ⛔ Pas de lien IP sur 429 ni sur 503 : il ne résoudrait rien.
+      const showLink = !busy && !notReady && !!target;
+      if (link) {
+        link.hidden = !showLink;
+        if (target) { link.href = target.url; link.textContent = target.label; }
+        // Masquer le <p> conteneur et non le seul <a> : sinon un paragraphe vide
+        // conserve sa marge (revue de code bug-177).
+        if (link.parentElement) link.parentElement.hidden = !showLink;
+      }
+      if (warn) warn.hidden = !showLink;
+      const openEl = $("#ota_recovery_open");
+      if (openEl) openEl.hidden = !showLink;
+      if (noip) noip.hidden = busy || notReady || showLink;
+      if (opts.host) opts.host.appendChild(box);
+      box.hidden = false;
+    };
+
+    const tick = () => {
+      if (!live()) return;
+      const step = otaRebootWaitStep({ startedMs, nowMs: Date.now(), attempts, outcome }, cfg);
+      render(step);
+      clearTimeout(timer);
+      if (step.action === "wait") timer = setTimeout(tick, step.delayMs);
+      else if (step.action === "probe") timer = setTimeout(doProbe, step.delayMs);
+      else if (step.action === "confirm") doConfirm();
+      else if (step.action === "reload") { cleanup(); window.location.reload(); }
+      else { cleanup(); showRecovery(lastStatus); }
+    };
+    const doProbe = async () => {
+      if (!live() || inflight) return;
+      inflight = true;
+      const res = await otaFetchNoStore("/auth/status", cfg.probeTimeoutMs);
+      inflight = false;
+      if (!live()) return;
+      attempts++;
+      outcome = otaProbeOutcome(res);
+      lastStatus = res ? res.status : null;
+      tick(); // chaînage APRÈS règlement : jamais de rafale
+    };
+    // UNE requête de confirmation : on ne recharge que sur une page prouvée servable.
+    const doConfirm = async () => {
+      if (!live() || inflight) return;
+      inflight = true;
+      const res = await otaFetchNoStore("/index.html", cfg.probeTimeoutMs * 2);
+      // Le corps ne sert à rien : on libère la connexion avant le rechargement
+      // plutôt que de la laisser se vider toute seule (revue de code bug-177).
+      try { res && res.body && res.body.cancel(); } catch (_) {}
+      inflight = false;
+      if (!live()) return;
+      attempts++;
+      lastStatus = res ? res.status : null;
+      const o = otaProbeOutcome(res);
+      outcome = o === "servable" ? "confirmed" : o;
+      tick();
+    };
+    // Un téléphone qui verrouille l'écran gèle les minuteurs : re-sonder au retour.
+    function onVis() {
+      if (document.visibilityState !== "visible" || !live() || inflight) return;
+      if (Date.now() - startedMs < cfg.graceMs) return;
+      clearTimeout(timer);
+      if (outcome === "servable") doConfirm(); else doProbe();
+    }
+    document.addEventListener("visibilitychange", onVis);
+    tick();
+  }
+
   function debugStart(label) {
     if (!DEBUG) return null;
     const t0 = performance.now();
@@ -10864,6 +11086,7 @@
   }
 
   function bindGithubUpdate() {
+    $("#ota_recovery_reload")?.addEventListener("click", () => window.location.reload());
     const checkBtn = $("#check_update_btn");
     const installBtn = $("#install_update_btn");
 
@@ -10906,6 +11129,7 @@
           const errMsg = data?.error || "Erreur vérification";
           const err = new Error(errMsg);
           err.code = data?.code; // ex. "psram_required" (503) — contrat machine
+          err.httpStatus = res.status;
           throw err;
         }
         data = await res.json();
@@ -10992,6 +11216,8 @@
           // inventée ici.
           showToast(msg || "Mise à jour en ligne momentanément indisponible, réessayez.", "info");
           loadSystemInfo();
+        } else if (e?.httpStatus === 429) {
+          showToast("Appareil trop sollicité. Réessayez dans 1 minute.", "info"); // l'appareil répond : pas une erreur
         } else if (msg.includes("System time not synchronized")) {
           showToast("Heure non synchronisée — active le NTP ou règle l'heure avant de vérifier les mises à jour.", "error");
         } else {
@@ -11153,18 +11379,9 @@
         if (fwSuccess) {
           bar.style.width = "100%";
           bar.textContent = "100%";
-          // Countdown before reload
-          let countdown = 15;
-          const updateCountdown = () => {
-            status.textContent = `✓ Mise à jour terminée. Rechargement dans ${countdown}s…`;
-            if (countdown <= 0) {
-              window.location.reload();
-            } else {
-              countdown--;
-              setTimeout(updateCountdown, 1000);
-            }
-          };
-          updateCountdown();
+          // bug-177 : attente ACTIVE du retour de l'appareil (plus de décompte aveugle).
+          awaitDeviceBack({ statusEl: status, host: progress.parentElement, barEl: barWrap,
+            buttons: [checkBtn, installBtn, $("#update_btn")] });
           return; // Exit to avoid finally block re-enabling buttons
         } else {
           throw new Error("Erreur installation firmware");
@@ -11188,6 +11405,9 @@
           loadSystemInfo();
         } else if (e?.integrity) {
           status.textContent = "✗ " + msg;
+        } else if (e?.httpStatus === 429) {
+          status.textContent = "Appareil trop sollicité. Réessayez dans 1 minute.";
+          showToast("Appareil trop sollicité. Réessayez dans 1 minute.", "info");
         } else if (msg.includes("System time not synchronized")) {
           showToast("Heure non synchronisée — active le NTP ou règle l'heure avant de lancer la mise à jour.", "error");
         } else {
@@ -12001,17 +12221,9 @@
           bar.style.width = "100%";
           bar.textContent = "100%";
           bar.setAttribute("aria-valuenow", "100");
-          let countdown = 30;
-          const updateCountdown = () => {
-            status.textContent = `✓ Mise à jour réussie. Rechargement dans ${countdown}s…`;
-            if (countdown <= 0) {
-              window.location.reload();
-            } else {
-              countdown--;
-              setTimeout(updateCountdown, 1000);
-            }
-          };
-          updateCountdown();
+          // bug-177 : attente ACTIVE du retour de l'appareil (plus de décompte aveugle).
+          awaitDeviceBack({ statusEl: status, host: progressWrap.parentElement, barEl: bar.parentElement,
+            buttons: [btn, $("#check_update_btn"), $("#install_update_btn")] });
         } else {
           bar.style.width = "100%";
           bar.classList.add("error");

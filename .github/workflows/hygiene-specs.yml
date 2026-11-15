@@ -444,3 +444,17 @@ jobs:
       # du manifeste et de la signature).
       - name: Contrôle des vecteurs du parseur de signature OTA
         run: ./tools/check_sig_parse_vectors.sh
+
+  ota-wait-vectors:
+    name: Vecteurs de l'attente du retour de l'appareil après mise à jour (bug-177)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # Même script en local (`./tools/check_ota_wait_vectors.sh`) et en CI.
+      # Extrait le texte réel de otaProbeOutcome / otaRebootWaitStep /
+      # otaRecoveryTarget / otaFetchNoStore de `data/app.js` (ADR-0099).
+      # Vecteur clé : jamais de rechargement pendant la grâce de 8 s.
+      - name: Contrôle des vecteurs d'attente OTA
+        run: ./tools/check_ota_wait_vectors.sh

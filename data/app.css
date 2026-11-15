@@ -4647,3 +4647,10 @@ h1, h2, h3 {
   width: 100%;
   margin: 4px 0 16px;
 }
+
+/* bug-177 : bloc de secours après mise à jour. Règles LOCALES — .callout n'est pas modifié.
+   var(--text) (#111827) sur le jaune translucide : contraste > 15:1 (vs --warn ~7). */
+#ota_recovery { overflow-wrap: anywhere; color: var(--text); }
+#ota_recovery:hover { transform: none; }
+#ota_recovery p { margin: 8px 0 0; }
+#ota_recovery a.btn { text-decoration: none; }

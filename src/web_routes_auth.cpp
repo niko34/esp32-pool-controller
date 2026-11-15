@@ -9,6 +9,25 @@
 
 void setupAuthRoutes(AsyncWebServer* server) {
   // Route: Statut d'authentification (PUBLIC - vérifier si premier démarrage)
+  //
+  // ⛔ CONTRAT DE SONDABILITÉ (bug-177) — NE PAS DURCIR CETTE ROUTE SANS LIRE CECI.
+  // La page s'en sert pour savoir si l'appareil est REVENU après un redémarrage
+  // OTA. Quatre propriétés la rendent utilisable pour ça, et chacune est
+  // nécessaire :
+  //   1. PUBLIQUE — ni REQUIRE_AUTH ni checkAuth : elle doit répondre alors que
+  //      la page n'a pas encore pu se ré-authentifier ;
+  //   2. HORS QUOTA — ⛔ ne PAS y ajouter checkRateLimit() : le sondage (une
+  //      tentative toutes les 2 s pendant 90 s au plus) ne doit consommer aucun
+  //      des kMaxRequestsPerMinute, sinon il s'auto-refuse ;
+  //   3. SANS SYSTÈME DE FICHIERS — elle ne sert que trois booléens, donc elle
+  //      répond même si LittleFS n'a pas pu être remonté après un envoi FS ;
+  //   4. ENREGISTRÉE EN PREMIER (web_server.cpp) — donc hors de la garde 503 de
+  //      famine mémoire : un appareil sous pression doit quand même dire « je suis là ».
+  // ⚠️ Ces quatre propriétés étaient des ACCIDENTS jusqu'au 2026-11-15 : rien ne les
+  // déclarait. Les casser ne produirait AUCUNE erreur — seulement une page qui
+  // n'arrive plus à constater le retour de l'appareil, en silence. C'est la famille
+  // de défauts qui a déjà coûté six semaines à ce projet (bug-169).
+  // Contrat écrit aussi dans docs/API.md.
   server->on("/auth/status", HTTP_GET, [](AsyncWebServerRequest *req) {
     JsonDocument doc;
     doc["firstBoot"] = authManager.isFirstBootDetected();

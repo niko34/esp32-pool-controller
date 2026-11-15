@@ -2,6 +2,20 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [2.88.2] - 2026-11-15
+
+### Fonctionnalités
+- **Mise à jour (en ligne et manuelle)** : après l'installation, la page **attend réellement le retour de l'appareil** au lieu de se recharger au bout de 15 s (30 s en manuel) sans vérifier. Elle l'interroge toutes les 2 s (90 s au plus), confirme que la page est servable, puis se recharge. Auparavant, un redémarrage un peu long vous laissait sur la page d'erreur du navigateur alors que l'appareil fonctionnait (marge mesurée : 4 s).
+- **Si l'appareil ne revient pas** : un encadré explique la situation et propose **l'adresse IP** de l'appareil (c'est le nom `.local` qui échoue le plus souvent). Il faudra se reconnecter. Un refus pour excès de requêtes est annoncé comme tel (« Réessayez dans 1 minute »), pas comme une panne.
+
+### Firmware
+- **`GET /auth/status`** : aucun changement de comportement ; son contrat de sondabilité (publique, hors quota, sans filesystem, enregistrée en premier) est désormais écrit en commentaire.
+
+### Documentation
+- `docs/API.md` (contrat de sondabilité), `docs/features/page-settings.md`, `docs/UPDATE_GUIDE.md`, `docs/BUILD.md` (job CI `ota-wait-vectors`), `docs/user/src/guide-utilisation.html`. Aucun ADR.
+
+---
+
 ## [2.88.1] - 2026-11-15
 
 ### Fonctionnalités
