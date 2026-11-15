@@ -157,3 +157,41 @@ puis B5a → B5b, B3, B4.
 - La barre d'onglets (choix de navigation globale) — spec séparée si l'envie vient.
 - La typographie des libellés de champ — **écartée après mesure**, voir « Contexte ».
 - Tout ce qui touche la signature OTA — c'est feature-151.
+
+---
+
+## 📥 APPORT DE L'ÉTUDE ERGONOMIE DU 2026-11-15 (versé depuis `bug-176`)
+
+L'étude `ux-ui-designer` menée pour `bug-176`, **sur captures de l'écran réel** (390 px et
+1024 px, route `#/settings/system`), a porté sur la **page entière** au titre de la règle
+d'accumulation. Ses propositions de désencombrement **n'avaient aucun rapport avec `bug-176`** et
+sont versées ici, où elles ont leur place.
+
+⚠️ **Constat de départ** : l'écran mesure **2 600 px de haut à 390 px de large** et porte cinq
+cartes (Infos système, Mise à jour en ligne, Mise à jour manuelle, Redémarrage, Réinitialisation).
+
+### Propositions (≈ 700 px gagnés)
+1. **Infos système — 12 lignes → 9** (~210 px) : fusionner `Build` dans `Firmware`
+   (« 2.87.1 · 15 nov. 2026 »), `CPU` dans `Chip` (« ESP32-D0WD-V3 · 240 MHz »), et **supprimer
+   `Flash`** (8 MB est constant et redondant avec `Firmware (flash)`). ⇒ HTML et IDs seuls.
+2. **« Mise à jour manuelle » dans un `<details>` replié** (~330 px) : usage rare. ⚠️ Ouvert
+   **automatiquement** quand `#online_update_unavailable` est visible. Cible tactile du `summary`
+   ≥ 44 px, avec `:focus-visible`.
+3. **Fusionner « Redémarrage » et « Réinitialisation » en une carte « Maintenance »** : économise
+   un en-tête et un cadre. Le texte d'aide du redémarrage devient un `.field__hint` (plus
+   d'encadré). ⛔ Les deux boutons restent **distincts** : « Redémarrer » en `btn--danger` atténué,
+   « Réinitialiser » en `btn--danger`, **≥ 16 px d'écart**.
+4. **Avertissement de réinitialisation : 9 lignes → 2** à 390 px — « Action irréversible : toutes
+   les données sont supprimées. L'appareil redémarre en point d'accès. » ⚠️ La procédure Wi-Fi
+   (`PoolControllerAP`, `192.168.4.1`) **ne disparaît pas** : elle passe dans la **confirmation
+   avant exécution**, c'est-à-dire là où l'utilisateur en a besoin.
+
+### ⚠️ À savoir avant de reprendre
+- L'étude **n'a pas lu `app.css`** : aucun comptage d'emplois de composant partagé n'a été fait.
+  ⇒ Si l'un de ces points touche un composant **partagé**, l'inventaire exhaustif de ses emplois
+  reste dû (règle du design system — ⛔ l'application partielle est interdite).
+- `bug-176` ajoute une ligne `#update_sig_note` (`.field__hint`) au-dessus des boutons de la carte
+  « Mise à jour en ligne ». ⇒ En tenir compte : cette carte ne doit **pas** récupérer les trois
+  lignes retirées en 2.87.0.
+- `bug-177` touchera la même carte (attente active après redémarrage). ⇒ **Coordonner**, ou traiter
+  les trois dans un même lot d'interface si l'ordre le permet.

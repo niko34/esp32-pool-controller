@@ -62,7 +62,7 @@ commande publierait R3 sans qu'aucun fichier du dépôt n'ait changé.
 ⛔ **Le contrôle de l'étape 2bis REFUSE désormais une release non signée** (contrôle S2) :
 sans `.sig`, `/check-update` servirait une URL de signature **vide** et l'appareil n'aurait
 rien à vérifier — ⚠️ la fonctionnalité mourrait **en silence**, exactement comme
-`littlefs.bin` pendant six semaines (bug-170).
+`littlefs.bin` pendant six semaines (bug-169).
 
 ⚠️ **Construire le système de fichiers d'abord** (`./build_fs.sh`), sinon `littlefs.bin`
 n'existe pas et le contrôle échoue.
