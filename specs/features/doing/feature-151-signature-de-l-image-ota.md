@@ -1839,3 +1839,258 @@ signature valide ne peut venir que de la clé de l'utilisateur.
 elle qui permet de sortir d'une version défectueuse, et c'est aussi elle qui doit rester utilisable
 **sans dépendre de la page** (condition déjà posée, vérifiée le 2026-11-15 :
 `/update — authenticité OTA : valide`). ⇒ Elle ne doit **jamais** être dégradée par un lot ultérieur.
+
+## 🔴 D3-b — BLOCAGE DE CONCEPTION TROUVÉ AVANT TOUT CODE (2026-11-15)
+
+### Le fait que ni P1 ni P1-bis n'avaient vu
+Le verdict P1-bis écrit que la page de secours *« n'a plus à calculer de SHA-256 : elle envoie
+`manifest`, `signature`, puis le fichier »*. ⛔ **C'est impossible en l'état**, et c'est **vérifié
+dans le code**, pas déduit :
+
+```
+web_routes_ota.cpp:807   if (shaParamVerdict == kAbsent) → 400, refus CRITICAL
+web_routes_ota.cpp:920   « Param POST sha256 OBLIGATOIRE depuis feature-118 lot B »
+data/app.js:11558-11560  SHA-256 en JS pur, car crypto.subtle exige un contexte sécurisé
+                         — HTTP clair sur IP de LAN ⇒ INDISPONIBLE, sans repli
+```
+⇒ **La page de secours décrite serait refusée par une garde préexistante.**
+
+### ⚠️ Deux requalifications, car l'arbitrage était mal posé
+- **L'option « le manifeste devient source d'empreinte » n'est PAS un affaiblissement
+  cryptographique.** Le `sha256` déclaré par l'appelant **n'est pas signé** — c'est une
+  affirmation du client. L'empreinte du **manifeste est SIGNÉE**. ⇒ On remplacerait une
+  affirmation par une **preuve**. ⚠️ Son vrai défaut est ailleurs : elle **élargit ce que
+  `/update` accepte, pour TOUS les appelants** — une **acceptation neuve**, exactement la classe
+  de défaut sur laquelle D3-a s'est fait prendre. ⇒ **Relève de D3-c**, pas de D3-b.
+- **Le risque de la duplication n'est pas la sécurité, c'est la DISPONIBILITÉ.** Une copie
+  buggée du SHA-256 produit de mauvaises empreintes ⇒ envois **refusés** ⇒ ⛔ la page de secours
+  ne marche pas **le jour où on en a besoin**. Elle échoue fermée, pas ouverte.
+
+### ✅ OPTION RETENUE — (a′) une seule source, extraite à la construction
+⭐ **La machinerie existe déjà** : `test/js_extract.js` extrait du **code vivant** de `data/app.js`
+par ancre (ADR-0099), et fait tourner les harnais de vecteurs.
+⇒ Le SHA-256 reste écrit **UNE FOIS** dans `data/app.js` ; un script de build l'extrait et
+l'injecte dans la page de secours ; un **garde-fou CI** vérifie la correspondance, sur le patron de
+`check_sig_parse_vectors.sh`.
+
+| | (a) copie manuelle | **(a′) extraction au build** | (b) manifeste suffisant |
+|---|---|---|---|
+| Implémentations | **2** | **1** | 1 |
+| Dérive | silencieuse | **détectée en CI** | — |
+| `/update` modifié | non | **non** | ⚠️ oui |
+| Acceptation élargie | non | **non** | 🔴 oui ⇒ D3-c |
+
+⛔ **Repli assumé : (a)**, si l'extraction s'avère impossible proprement.
+⚠️ **Non vérifié à ce stade** : que l'implémentation actuelle (**7 657 o** dans `app.js`) s'extraie
+**sans dépendance** au reste du fichier. ⇒ **À trancher par `architect` sur le code**, et ⛔ pas à
+affirmer ici. Si elle a des dépendances, (a′) devient coûteux et (a) redevient la voie simple.
+
+## ✅ DÉCOUPAGE DE D3-b ACCEPTÉ PAR L'UTILISATEUR (2026-11-15)
+
+| Sous-lot | Contenu | Pourquoi ici |
+|---|---|---|
+| **D3-b1 — la porte** | B4, B5, B6, B7, B10, B13 : mode dégradé + déclencheur + page de secours + garde-fou CI | ⭐ C'est **le défaut qui laisse l'appareil injoignable aujourd'hui**. ⛔ **Aucun prédicat de décision OTA** ⇒ diff lisible, revue courte. Marches **1 et 2** de B12. |
+| **D3-b2 — les gardes inertes** | B11 (interrupteur), cond. **6**, cond. **8**, liaison **genre + version** (acceptation neuve de D3-a), `#no_update_msg` | ⛔ Ce sont des **prédicats** et des **endpoints d'administration** — la famille de bug-117. Les mêler à de l'infrastructure HTTP rendrait la revue P2 **ininterprétable**. Marche **3** de B12. |
+
+⭐ **Pourquoi couper là** : b1 ne touche **aucun** prédicat d'authentification ou de signature —
+c'est exactement la réserve de fond *« le mode dégradé ne doit pas être un mode »*. b2 ne touche
+**aucune** route de service de page. ⇒ Le `grep` de B5 est **vert par construction** à la fin de b1.
+
+## 🏗️ D3-b1 — CONCEPTION ARRÊTÉE (2026-11-15)
+
+### ✅ (a′) PROUVÉE VIABLE — exécutée, pas estimée
+L'architecte a **exécuté** l'extraction : les trois morceaux du SHA-256 de `data/app.js` sortent par
+ancre **sans aucune dépendance** au reste du fichier, et le code extrait, évalué **seul**, produit
+la **même empreinte que `node:crypto`** sur 300 000 o aléatoires.
+
+| Ancre | Octets |
+|---|---|
+| `const SHA256_K = new Uint32Array([` | 782 |
+| `function createSha256() {` | 2 962 |
+| `async function sha256OfFile(file, onProgress) {` | 436 |
+| `function parseOtaManifestLine(line) {` + `function parseSigFile(text) {` | 2 212 |
+| **Total** | **6 392** |
+
+⚠️ **Correctif de chiffre** : les « 7 657 o » comptaient la région **commentaires compris**.
+
+### ⭐ Variante retenue : génération au COMMIT, pas au build
+`tools/gen_recovery_page.js` (node, via `test/js_extract.js`) produit `src/ota_recovery_page.cpp`,
+**commité**. `tools/check_recovery_page_generated.sh` re-génère et `diff` ⇒ **rouge à la dérive**.
+⇒ `pio run` **reste sans dépendance à node** (une génération au build l'aurait imposée au gate CI
+de compilation), et la page **reste lisible dans le diff** par `code-reviewer`.
+⛔ Fichier généré **versionné** = exception assumée à « on ne versionne pas les générés » ⇒ ADR-0124.
+
+### 🔴 DÉFAUT GRAVE TROUVÉ DANS LA CONCEPTION, AVANT TOUT CODE
+L'architecte avait écrit *« Vérifié : `build_fs.sh` ne gzippe pas ⇒ sonder `/index.html` »*.
+⛔ **FAUX, mesuré** : `minify.js:62-72` gzippe en zlib 9 et **n'écrit QUE la variante `.gz`**
+(feature-048). `data-build/` ne contient **aucun** `.html`/`.js`/`.css` nu.
+
+⇒ La sonde `exists("/index.html")` aurait rendu **`false` sur un appareil SAIN** ⇒ **la page de
+secours se serait armée en permanence**, masquant l'interface sur **tous** les appareils.
+⚠️ **Et les tests natifs ne l'auraient pas vu** : le module pur reçoit `indexPresent` en booléen —
+c'est **l'APPELANT** qui mentait. Logique parfaitement testée, parfaitement verte, alimentée par
+une fausseté.
+⚠️ Erreur de méthode reconnue par l'architecte : il avait grepé `build_fs.sh`, **le script
+enveloppe**, au lieu de `minify.js` qu'il appelle. ⭐ Et `docs/BUILD.md:105,112`,
+`docs/subsystems/web-server.md:244-246` et `CLAUDE.md` **disaient déjà la bonne chose** : la doc
+l'aurait démenti s'il l'avait lue.
+
+**Sonde corrigée** — `fsPathResolvableIfHeapAllows()` dans `fs_guard.*` (seul fichier autorisé à
+ouvrir, ADR-0070), **miroir exact** de `AsyncWebServerRequest::send(FS&, path)` : `path` puis
+`path + ".gz"`. ⭐ **`.gz` sondé EN PREMIER** ⇒ **un seul accès fichier** sur un appareil normal.
+Admission mémoire unique couvrant les deux.
+
+**Contamination vérifiée, limitée à la sonde** : `GET /ui` et les 7 routes de page passent par
+`req->send(LittleFS, …)`, qui résout le `.gz` **nativement** (`WebResponses.cpp:728-752`).
+
+⭐ **Garde-fou neuf `tools/check_fs_probe_paths.sh`** : lance `minify.js`, extrait les chemins
+**réellement sondés** dans le code, et **rougit si `data-build/` ne contient ni `<chemin>` ni
+`<chemin>.gz`**. ⇒ Il **lie le sondeur au producteur** — ce qu'un test natif ne peut pas faire,
+puisqu'il teste le prédicat et non son alimentation. Attrape aussi la rupture inverse.
+
+### Autres arbitrages tranchés
+- **Marqueur persistant** : NVS, **namespace neuf `pool-ota`**, clé `fsupd`. ⛔ Pas `poolctrl`
+  (passerait par `config.cpp` et son mutex, depuis `async_tcp`). ⭐ La NVS vit à `0x9000`, **hors
+  `spiffs`** : elle survit à la destruction de la partition. Posé avant les **deux**
+  `LittleFS.end()` (`:933`, `:2273`), levé après les **deux** succès (`:1064`, `:2376`).
+  ⚠️ Écriture NVS en échec ⇒ entrée **ignorée**, jamais lue comme « en cours » : ⇒ **échoue vers
+  le comportement d'aujourd'hui**, ⛔ jamais vers un faux secours.
+  ⚠️ **Faux positif collant assumé** : coupure de courant entre la pose et `LittleFS.end()` ⇒
+  marqueur posé sur un FS intact. ⇒ Réparé par l'échappatoire **`GET /ui`** (5 lignes).
+- **Adresse** : `GET /recovery`, publique, **toujours** servie, enregistrée **avant la garde 503**.
+  ⚠️ **Nuance déclarée** : `/` et `/index.html` restent **sous** la garde ⇒ en famine mémoire,
+  seul `/recovery` répond. ⛔ Les remonter changerait la politique d'exemption de toute
+  l'interface — hors périmètre.
+- **Pas de pré-gzip** de la page : ~10,1 Ko sur ~1 782 Ko libres = **0,67 % du libre**.
+  🔴 **Le point technique à ne pas rater** : servir via `send(200, "text/html", const char*)`
+  passerait par `AsyncBasicResponse`, qui **copie 10 Ko dans un `String`** — pour un `maxBloc8`
+  nominal de **~21 Ko**. ⇒ **Obligatoire** : surcharge `(const uint8_t*, size_t)` ⇒
+  `AsyncProgmemResponse`, **zéro copie en tas**.
+- **A4 — dégradation sans FS, prouvée PAR CONSTRUCTION** : `VFSImpl::exists()` et `open()`
+  (`vfs_api.cpp:24-28`, `:89-93`) **sortent immédiatement** quand `_mountpoint == nullptr`, et un
+  `begin()` raté ne le pose jamais ⇒ ⛔ aucun `fopen`, aucune allocation. ⇒ **404 par
+  construction, pas par vigilance.**
+  ⭐ `/get-history`, `/get-logs`, `/download-logs` vivent sur `historyFs`, partition **`history`
+  séparée** : intactes.
+
+## 🔒 D3-b1 — REVUE DE SÉCURITÉ P1 (2026-11-15) : **GO SOUS CONDITIONS S1-S9**
+
+Aucun constat grave. ⭐ **Mais la revue corrige DEUX affirmations de l'architecte**, et en trouve
+un défaut que la conception aurait introduit.
+
+### 🔴 Correction 1 — « 404 par construction » est FAUX (vérifié dans la bibliothèque)
+```
+WebRequest.cpp:1209   beginResponse(FS&, path, …) → NULL si ni path ni path+".gz"
+WebRequest.cpp:1036   _send() → send(501, "Handler did not handle the request")
+```
+⇒ Sans filesystem, les routes de page rendent **501**, pas 404 (404 seulement **avec**
+`If-None-Match`). ⚠️ **501 est une erreur SERVEUR** : tout script de sondage ou tout test attendant
+404 aurait été **faux**. De même, « aucune allocation » est inexact — une `String gzPath` est
+construite. Sans danger, mais à ne pas écrire.
+
+### 🔴 Correction 2 — « grep vert par construction » est FAUX
+Les **quatre sites du marqueur** (`:933`, `:1064`, `:2273`, `:2376`) vivent dans
+`web_routes_ota.cpp` — **le fichier même** qui porte `otaUploadAuthorized` et le prédicat de
+signature. ⇒ Le contrôle de B5 doit porter sur **le SYMBOLE**, ⛔ pas sur le fichier.
+
+### 🔴 Défaut que la conception aurait introduit (S3)
+Le point de levée `:1064` est **partagé** entre genres ⇒ ⛔ **un succès de mise à jour FIRMWARE
+aurait levé le marqueur du FILESYSTEM**. ⇒ Pose **et** levée conditionnées au genre FS, figé par
+un test natif tué par mutation.
+
+### Les 9 conditions
+| | Condition |
+|---|---|
+| **S1** | Corriger la spec : **501 ou 404** selon `If-None-Match` ; « aucun `fopen` » et non « aucune allocation ». ⛔ Aucun test ni script ne dépend du 404. |
+| **S2** | Le grep de B5 porte sur les **symboles** (`otaRecoveryActive`, lecture du marqueur) : **0** dans `auth.*` ; `web_routes_ota.cpp` n'a qu'une interface d'**écriture**. Nombre de lecteurs **figé par un contrôle CI**. |
+| **S3** | Pose **et** levée **conditionnées au genre FS** — un succès firmware ne lève **jamais** le marqueur. Test natif + mutation. |
+| **S4** | Déclencheur **réévalué à chaque transition** (pose, levée, remontage réussi ou raté), ⛔ pas seulement au démarrage. ⚠️ Preuve = **marche 2 de B12**, où `/` doit rendre le secours **sans redémarrage**. |
+| **S5** | **`/ui` enregistrée APRÈS la garde 503** (elle ouvre un fichier) ; `/recovery` **avant**. Le lien `/ui` **figure dans la page de secours**. |
+| **S6** | La page n'insère que par **`textContent`**. Le contrôle de génération **rougit** sur `innerHTML`, `insertAdjacentHTML`, `document.write`, `eval`, `location.search`, `location.hash`, et toute **URL absolue**. |
+| **S7** | ⛔ Aucun mot de passe constant hors le littéral `"admin"` de B10. Le nouveau mot de passe est **saisi par l'utilisateur**. |
+| **S8** | `check_recovery_page_generated.sh` **lancé par `/release`** (ou `check_release_artefacts.sh`) et **l'arrête**. Prouvé par mutation : une édition manuelle du `.cpp` le fait rougir. |
+| **S9** | Diff P2 : ⛔ aucun site neuf de `handleOtaUpdate`, ⛔ aucun `server->on(…HTTP_POST…)` neuf, ⛔ aucun `LittleFS.begin(true)`, et le refus `:807` **inchangé**. |
+
+### Réponses aux questions posées
+- **Marqueur armable ?** ⛔ **Pas sans authentification** (pose derrière `otaUploadAuthorized` à
+  chaque fragment, et derrière `REQUIRE_AUTH`). ⚠️ **Authentifié : oui, à volonté** — entamer un
+  envoi FS puis couper. ⇒ **Pas un pouvoir neuf** : ce porteur peut déjà **détruire réellement**
+  la partition. Déni de service « interface masquée », persistant mais **réparable par `/ui`**.
+- **`/ui` publique ?** ✅ Acceptable : elle sert le fichier que `/` sert **déjà** publiquement.
+  L'authentifier créerait une divergence sans gain. ⛔ Elle ne contourne rien — **le secours n'est
+  pas une garde**.
+- **`otaRecoveryActive()` est-elle « un mode » ?** ✅ Acceptable : aucune décision de sécurité n'en
+  dépend. ⚠️ Mais voir S2 — l'argument de l'architecte était faux, la vérification change de forme.
+- **B10** ⇒ pas de surface neuve : `/auth/change-password` est **déjà** public en premier démarrage
+  et joignable sans interface.
+- **`.sig` hostile** ⇒ aucun effet : `parseSigFile` ne rend que des valeurs d'**alphabet fermé**.
+  ⚠️ Tient **tant que la page n'affiche jamais le texte brut** (⇒ S6).
+- **Fichier généré édité à la main** ⇒ détecté **si le garde-fou tourne**. ⚠️ Or la CI **n'est pas
+  bloquante** ici (elle est restée rouge trois commits durant, cf. plus haut) et `/release` ne le
+  lance pas ⇒ **S8**.
+
+### ⚠️ Cosmétique à ne pas perdre
+`login.html:397,448` redirige vers `/` ⇒ **retour au secours après connexion** en cas de faux
+positif collant. ⇒ Le lien `/ui` doit être **redonné après connexion**.
+
+### Durcissements à ouvrir séparément
+Mise en attente de l'image FS en **PSRAM** (⭐ c'est elle qui rend le marqueur armable) · `bug-112` ·
+premier démarrage : `change-password` **rejouable sans secret** tant que l'assistant n'est pas
+terminé · levée du marqueur sur les chemins d'échec où **rien n'a été écrit** (`:939`).
+
+## 🎨 D3-b1 — ÉTUDE ERGONOMIE RENDUE (2026-11-15)
+
+⭐ **La lecture de la capture a CHANGÉ la conception.** L'agent avait d'abord calqué `login.html` ;
+après avoir regardé le tableau de bord rendu, il l'a **abandonné** pour le vocabulaire de
+l'application — cartes à en-tête en majuscules espacées, boutons bleus pleins, callouts.
+⚠️ Première version produite **sans** avoir lu l'image jointe ; il l'a **déclaré**, ce qui a permis
+de le rattraper.
+
+### Parcours retenu (option C′) — page unique, étapes révélées par `hidden`
+⛔ **Aucune redirection** après connexion : la page reste, donc le **lien `/ui` reste** (condition
+S5 — `login.html` redirige vers `/`, ce qui ferait **boucler** sur le secours en cas de faux
+positif). ⛔ Aucune redirection vers `wizard.html` non plus : il vit dans `data/`, **absent** par
+hypothèse.
+Options écartées : **A** calque de `login.html` (le logo est un fichier **introuvable en secours**,
+look d'une autre page, contraste insuffisant) · **B** assistant à étapes (trop de JS ; le retour
+arrière après envoi n'a pas de sens).
+
+### Libellés — quelques-uns, comptés
+`Interface à restaurer` (21) · callout **`L'interface web est absente ou endommagée.`** (42) +
+`La régulation continue : pH, ORP, pompes et filtration fonctionnent.` (69) ·
+`Ouvrir l'interface quand même` (29, le lien `/ui`) · `Vérification du fichier : 42 %` (30) ·
+`Cela peut durer quelques secondes. Ne fermez pas cette page.` (60) ·
+`PoolController • Mode secours` (30).
+⛔ **Aucun libellé sur une ligne partagée** : tout est empilé en pleine largeur.
+Erreurs **toutes préfixées « Échec : »**, textes **fixes** — ⛔ jamais le texte brut du serveur ni
+du `.sig` (condition S6), insertion par `textContent`.
+
+⭐ **Le callout rassurant est le libellé le plus important de la page** : il dit que **la régulation
+continue**. C'est vrai (décision utilisateur du 2026-11-15) et c'est ce qu'on veut lire quand
+l'écran annonce une panne.
+
+### Note d'implémentation à ne pas perdre
+⚠️ **Rendre la main au navigateur entre les tranches de `sha256OfFile`**, sinon la barre de
+progression **ne se repeint pas** sur téléphone — et le calcul dure plusieurs secondes sur 512 Ko.
+
+### Budget — déclaré au-dessus de la cible, avec l'ordre de coupe
+HTML+CSS ≈ **4,1 Ko** non minifié (~3,2 Ko espaces retirés) contre une cible de 3-4 Ko : le
+vocabulaire du tableau de bord coûte ~0,7 Ko de plus. ⇒ Ordre de retrait si nécessaire : dégradé et
+ombre · « Mode secours » · en-têtes de carte · l'aide « Les deux fichiers sont nécessaires ».
+⛔ **Ne jamais retirer** : le lien `/ui`, les préfixes « Échec : » / « Terminé : », l'état d'attente
+du calcul d'empreinte, **le callout rassurant**.
+
+### Quatre contextes d'emploi nouveaux ⇒ `docs/DESIGN_SYSTEM.md`
+Callout `--info` **en page autonome** (copie figée) · champ fichier à 44 px
+(⛔ les 3 `<input type="file">` de l'app **ne changent pas**) · `<progress>` natif
+(⚠️ vérifier d'abord qu'il n'existe pas déjà dans l'app) · **callout d'échec rouge**, variante
+**locale** — ⛔ **pas** un `.callout--danger` partagé.
+⇒ Aucun composant partagé n'évolue ⇒ **aucun impact à mesurer dans `data/`**.
+
+### 🔴 DÉFAUT PRÉEXISTANT MESURÉ AU PASSAGE ⇒ `bug-182`
+`login.html`, `wizard.html` et `wifi.html` partagent un style **sous AA** : bouton **≈ 3,9:1**,
+bordure de champ **≈ 1,2:1** (seuil 3:1), champs à **14 px** ⇒ **zoom iOS au focus**.
+⭐ L'agent a **corrigé sa propre affirmation** : il annonçait le texte d'erreur sous AA, mesure
+faite il est à **4,8:1**. ⇒ Défaut **plus étroit** qu'annoncé, et mieux cerné.
+⚠️ Ce sont les pages vues **en premier** et **quand ça va mal**. ⇒ **`bug-182` ouverte.**
+⇒ La page de secours utilisera la palette **conforme** de `app.css` (`--accent #2563eb` ⇒ **5,2:1**).
