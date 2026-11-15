@@ -1782,3 +1782,60 @@ aurait son appareil bloqué »*.
 ⚠️ **Ce que cet épisode prouve au passage** : le parcours réel ne se déduit pas du code. Trois lots
 livrés et vérifiés dans la journée, et c'est une mise à jour faite par l'utilisateur **depuis son
 téléphone** qui a révélé la faille du raisonnement.
+
+## 🔴 DÉCISION UTILISATEUR (2026-11-15) — le retour arrière MANUEL reste possible
+
+Question posée : au moment de D3-c, faut-il un **plancher de version** qui interdise la
+réinstallation d'une version antérieure (protection contre la réinstallation d'une version
+vulnérable), ou garder la **liberté de revenir en arrière** ?
+
+**Réponse de l'utilisateur, mot pour mot** :
+> *« pour D3-c, je veux pouvoir revenir en arrière **avec la mise à jour manuelle** »*
+
+### Ce que cela fige
+⛔ **`POST /update` (envoi manuel) ne reçoit AUCUN plancher de version.** Une image **plus ancienne
+et correctement signée** doit rester installable par ce chemin, **définitivement**. C'est la voie
+que l'utilisateur emprunte sciemment, avec un fichier qu'il a lui-même choisi.
+⇒ ⛔ Un futur lot qui ajouterait un plancher à `/update` **contredirait une décision produit
+explicite** : il faudrait la rouvrir, pas la contourner.
+
+⚠️ Cohérent avec ce que `bug-178` a déjà établi et **démontré en acte** le même jour : l'appareil a
+été ramené de 2.88.3 à 2.88.2 par envoi manuel signé. Le projet empêche qu'un retour arrière soit
+**PROPOSÉ**, il ne le **BLOQUE** pas.
+
+### ✅ LA QUESTION EST ENTIÈREMENT TRANCHÉE — AUCUN PLANCHER, NULLE PART
+J'avais laissé ouverte la question du chemin **en ligne**. ⭐ **L'utilisateur l'a fermée par un
+argument que je n'avais pas vu** :
+> *« les mises à jour en ligne ne font que monter puisqu'il n'y a pas de mécanisme de choix de
+> version dans l'interface web de mise à jour en ligne »*
+
+**Vérifié dans le code** :
+- `web_routes_ota.cpp:1559` — l'URL interrogée est `.../releases/**latest**`, **figée**, sans
+  paramètre de tag ;
+- `data/app.js:10949` — la page ne mémorise qu'**une seule** release ;
+- `bug-178` — appareil en avance ⇒ **rien n'est proposé**, bouton désactivé.
+
+⇒ **Le chemin en ligne ne peut que MONTER ou RESTER.** Un plancher n'y aurait jamais rien à refuser.
+
+### 🔴 CORRECTION — ce que j'avais écrit sur le plancher était FAUX
+J'ai affirmé qu'un plancher **couvrirait** le cas « release remplacée sous le même tag ».
+⛔ **C'est faux** : dans ce scénario le numéro de version **ne change pas**, et un plancher compare
+des **versions** — il ne se déclencherait **jamais**. Ce cas est couvert par **D3-c seul** : une
+release remplacée sans signature valide est **refusée**, et une release remplacée **avec** une
+signature valide ne peut venir que de la clé de l'utilisateur.
+
+⇒ **Le plancher de version n'a AUCUN objet.** ⛔ Ne pas en introduire, ni en ligne ni en manuel.
+
+### Les deux réserves qui subsistent (⛔ sans remettre la décision en cause)
+1. ⚠️ **Si l'interface gagnait un jour un sélecteur de version** — permettant d'installer une
+   release ancienne depuis la page — la question se **rouvrirait**. À rappeler dans la spec qui
+   introduirait un tel sélecteur.
+2. ⚠️ **`/download-update` accepte toujours une URL arbitraire** (`web_routes_ota.cpp:1999`) : un
+   client **authentifié** en `curl` installe ce qu'il veut sans passer par la page. ⛔ Ce n'est pas
+   l'affaire du plancher — c'est **`bug-180`** (liste blanche trop large).
+
+### Conséquence pratique à garder en tête
+⚠️ La voie de réparation manuelle devient **le filet de sécurité de tout le dispositif** : c'est
+elle qui permet de sortir d'une version défectueuse, et c'est aussi elle qui doit rester utilisable
+**sans dépendre de la page** (condition déjà posée, vérifiée le 2026-11-15 :
+`/update — authenticité OTA : valide`). ⇒ Elle ne doit **jamais** être dégradée par un lot ultérieur.
