@@ -2,7 +2,7 @@
 - **ID** : bug-176
 - **Slug** : relais-sig-filesystem-saute-sous-pression-memoire
 - **Type** : bug
-- **Statut** : doing
+- **Statut** : done
 - **Priorité** : haute
 - **Version cible** : 2.88.0
 - **Spec(s) liée(s)** : `feature-151` (signature de l'image OTA, lot D3-a livré en 2.87.0 —
@@ -653,3 +653,33 @@ réintroduirait le défaut que ce lot vient de corriger**.
 ⚠️ **Préexistant**, mais **invisible jusqu'ici** : l'appareil n'avait jamais une version plus
 récente que la dernière release. ⇒ **`specs/features/todo/bug-178-mise-a-jour-proposee-vers-une-version-anterieure.md`**.
 ⛔ **En attendant : ne pas appuyer sur « Mettre à jour » sur l'appareil.**
+
+---
+
+## ✅ CLÔTURE — essai de terrain complet (2026-11-15, soir)
+
+Mise à jour **lancée par l'utilisateur depuis son téléphone**, 2.88.1 → 2.88.2, page 2.88.2.
+
+```
+/ota-sig : relais .sig filesystem — validé (614 o)
+/ota-sig : relais .sig firmware   — validé (612 o)
+authenticité OTA : valide — D3 refuserait : non     × 2 (les DEUX genres)
+liaison manifeste/image : liée                      × 4 (2 genres × 2 étapes)
+```
+
+⭐ **Les deux genres authentifiés pour la première fois.** Ni le matin (filesystem sauté), ni
+l'après-midi (onglet périmé) n'y étaient parvenus. « D3 refuserait : **non** » sur les quatre
+lignes : le jour où le refus sera actif, cette mise à jour passera.
+
+### ✅ CONTRE-TEST « release NON SIGNÉE » — ENFIN FAIT
+Installation du filesystem de **v2.85.0** (release **sans aucun `.sig`**, vérifié par l'API) via
+`/download-update`, **sans paramètre `manifest` ni `signature`** — exactement ce que la page envoie
+pour une release non signée.
+⇒ `{"status":"success"}` · journal : `authenticité OTA : absente — D3 refuserait : oui —
+**AUCUN refus appliqué**` · partition écrite, page 2.85.0 effectivement servie.
+⚠️ **Ce contre-test n'avait jamais été fait**, alors qu'il couvre le **cas nominal de tout le parc**.
+⚠️ Mené sur le **filesystem** et non le firmware : un firmware de trois versions d'écart ferait
+tourner une ancienne logique de régulation sur un bassin réel. Le chemin de code est **identique**
+— le genre ne sélectionne que la partition.
+
+**Statut : done.** ⛔ Reste hors spec : la capture `10_Paramètres_7_Système_2.jpg`.

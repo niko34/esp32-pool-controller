@@ -2,7 +2,7 @@
 - **ID** : bug-178
 - **Slug** : mise-a-jour-proposee-vers-une-version-anterieure
 - **Type** : bug
-- **Statut** : doing
+- **Statut** : done
 - **Priorité** : haute
 - **Version cible** : 2.88.1
 - **Spec(s) liée(s)** : `bug-176` (découvert pendant son essai de terrain), `bug-169`
@@ -249,7 +249,7 @@ JS ; `ui_shot.sh` ne force que `/data` et `/get-config`). Conçu **par analogie*
 ### Libellés arrêtés, caractères comptés (gras 15 px ≈ 38 car./ligne à 390 px)
 | État | Ligne en gras | Complément `.field__hint` |
 |---|---|---|
-| `device_ahead` | `ℹ Installée : plus récente que la release` (41) | `Aucune mise à jour proposée. Pour revenir en arrière : « Mise à jour manuelle », ci-dessous.` (91, 3 lignes) |
+| `device_ahead` | `ℹ La version installée est plus récente` (41) | `Aucune mise à jour proposée. Pour revenir en arrière : « Mise à jour manuelle », ci-dessous.` (91, 3 lignes) |
 | `unknown_version` | `⚠ Version de la release illisible` (33) | `Le numéro publié n'a pas le format attendu. Aucune mise à jour proposée.` (72) |
 | `up_to_date`, `no_release` | inchangés | — |
 
@@ -360,3 +360,45 @@ Le rendu des quatre états **n'a jamais été vu sur l'appareil**. ⚠️ `ui_sh
 photographier (il force `/data` et `/get-config`, pas `/check-update`). ⇒ Vérifiable **gratuitement
 après déploiement** : l'appareil en **2.88.1** face à la release **2.88.0** produira exactement
 `device_ahead` — la situation qui a motivé cette spec.
+
+### 🔴 LIBELLÉ CORRIGÉ PAR L'UTILISATEUR (2026-11-15, après observation sur l'appareil)
+Vu en vrai sur son téléphone, l'utilisateur a tranché :
+> *« Ce serait plus parlant de dire "La version installée est plus récente. Aucune mise à jour…" »*
+
+⇒ `ℹ Installée : plus récente que la release` (41) devient
+**`ℹ La version installée est plus récente`** (39).
+
+**Pourquoi c'est mieux** : l'ancien libellé était **télégraphique** — une étiquette, pas une phrase.
+Le nouveau **s'enchaîne** avec le complément qui existe déjà (« Aucune mise à jour proposée… ») et
+se lit d'une traite, exactement comme l'utilisateur l'a formulé.
+
+⚠️ **Réserve assumée** : l'étude d'ergonomie avait rejeté ma version courte (« Version installée
+plus récente ») comme ambiguë — *plus récente que quoi ?* — et imposé de **nommer le terme de
+comparaison**. Le libellé retenu l'omet lui aussi. ⇒ Accepté parce que la carte affiche
+**« Dernière version »** juste au-dessus : le terme de comparaison est **à l'écran**, pas dans la
+phrase. ⭐ Arbitrage rendu par l'utilisateur **sur le rendu réel**, pas sur une maquette — c'est la
+seule façon de trancher ce genre de question.
+
+⛔ **Non embarqué dans la release v2.88.2** (le libellé y est encore l'ancien) : ce changement
+partira avec le prochain lot. Rien ne justifie une release pour un libellé.
+
+---
+
+## ✅ CLÔTURE — essai de terrain (2026-11-15, soir)
+
+Firmware local **2.88.3** déployé (non publié), page **2.88.2** conservée, release **2.88.2**.
+⇒ `current_version 2.88.3 · latest_version 2.88.2 · update_available **False** ·
+update_state **device_ahead**`, et le message affiché sur le téléphone de l'utilisateur.
+
+⭐ **C'est exactement la situation qui, le matin même, proposait d'installer la 2.87.1 par-dessus la
+2.88.0** — c'est-à-dire d'effacer un correctif en croyant mettre à jour.
+
+**Libellé corrigé par l'utilisateur sur le rendu réel** (voir section précédente) :
+`ℹ La version installée est plus récente` (39).
+
+### ⭐ Le retour arrière, démontré en acte
+L'appareil a été ramené de **2.88.3 à 2.88.2** par envoi manuel signé, pendant cette même séance.
+⇒ Le lot garantit que le retour arrière n'est **plus PROPOSÉ** ; il reste **parfaitement possible**.
+C'était la question de l'utilisateur, et la réponse est une démonstration, pas une affirmation.
+
+**Statut : done.**

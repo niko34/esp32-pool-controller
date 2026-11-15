@@ -1745,3 +1745,40 @@ serait **refusée** par D3-c, **y compris pour installer le filesystem qui la co
 
 ⛔ **D3-c ne doit donc pas sortir avant qu'une release dont le filesystem connaît `/ota-sig` soit
 déployée sur le parc**, et une **voie de réparation indépendante de la page** doit être documentée.
+
+## 🔴 CONDITION D3-c COMPLÉTÉE (2026-11-15) — déployer le filesystem NE SUFFIT PAS
+
+**Constaté en conditions réelles**, mise à jour 2.88.1 → 2.88.2 lancée par l'utilisateur depuis son
+téléphone : ⛔ **aucun appel à `/ota-sig`** dans le journal, et les deux genres journalisés
+`authenticité OTA : absente — D3 refuserait : oui`.
+
+**Cause établie** (ce n'est PAS un défaut du firmware — vérifié juste après : `/ota-sig` rend les
+deux signatures, 512 car., `tag=v2.88.2`) : l'onglet du téléphone exécutait encore le JavaScript
+**chargé le matin**, d'avant `bug-176`. Les déploiements de la journée étant passés par `curl` et
+non par la page, celle-ci n'avait **jamais été rechargée**. L'ancienne page lisait les signatures
+dans `/check-update`, qui ne les porte plus ⇒ champs vides.
+
+⚠️ **`Cache-Control: no-cache` n'y change rien** : l'en-tête gouverne la **revalidation au
+rechargement**, pas une page **déjà chargée** qui reste ouverte. Un onglet peut donc exécuter du
+JavaScript périmé pendant des heures, voire des jours.
+
+### Conséquence pour D3-c — la condition S6 était INCOMPLÈTE
+Elle disait : *« D3-c ne doit pas sortir avant qu'une release dont le filesystem connaît `/ota-sig`
+soit déployée »*. ⛔ **Insuffisant.** Il faut aussi que **la page ait été RECHARGÉE** chez
+l'utilisateur. Sous D3-c, l'onglet observé aujourd'hui aurait été **refusé**, sans que l'utilisateur
+puisse comprendre pourquoi — ⚠️ exactement *« la phrase qu'on ne peut pas donner à un client qui
+aurait son appareil bloqué »*.
+
+### ⇒ À traiter DANS D3-c, pas après
+1. **Que la page annonce sa propre version** au firmware (en-tête ou paramètre), et que le refus
+   distingue « signature absente » de « **page périmée, rechargez** » — ⛔ un refus muet est ici
+   le pire des cas.
+2. **Ou** que le firmware tolère explicitement l'absence de paramètres venant d'une page qu'il sait
+   ancienne, le temps d'une version de transition.
+3. ⛔ **Dans tous les cas** : la voie de réparation par **envoi manuel** (`POST /update` avec
+   manifeste et signature) doit rester utilisable **sans dépendre de la page** — elle a été vérifiée
+   le 2026-11-15 (`/update — authenticité OTA : valide`).
+
+⚠️ **Ce que cet épisode prouve au passage** : le parcours réel ne se déduit pas du code. Trois lots
+livrés et vérifiés dans la journée, et c'est une mise à jour faite par l'utilisateur **depuis son
+téléphone** qui a révélé la faille du raisonnement.

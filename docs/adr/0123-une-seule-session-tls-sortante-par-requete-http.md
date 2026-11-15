@@ -3,7 +3,7 @@
 - **Statut** : Accepté
 - **Date** : 2026-11-15
 - **Décideurs** : `architect` (arbitrage chiffré), `security-reviewer` (P1 + P1-bis, GO sous 7 conditions S1–S7), `ux-ui-designer` (principe « seul l'état anormal parle »), utilisateur (refus du second clic)
-- **Spec(s) liée(s)** : [`bug-176`](../../specs/features/doing/bug-176-relais-sig-filesystem-saute-sous-pression-memoire.md), [`feature-151`](../../specs/features/doing/feature-151-signature-de-l-image-ota.md) (lot D3-a livré en 2.87.0, D3-c bloqué par cette décision)
+- **Spec(s) liée(s)** : [`bug-176`](../../specs/features/done/bug-176-relais-sig-filesystem-saute-sous-pression-memoire.md), [`feature-151`](../../specs/features/doing/feature-151-signature-de-l-image-ota.md) (lot D3-a livré en 2.87.0, D3-c bloqué par cette décision)
 
 ## Contexte
 
@@ -74,6 +74,6 @@ Fenêtre de blocage et déficit estimés au débit mesuré sur le terrain (2 045
 ## Références
 
 - Code : `src/web_routes_ota.cpp` (`handleOtaSig`, `storeSigSource`, `relayOtaSigFile`), `src/ota_sig_relay_logic.{h,cpp}`, `src/constants.h` (`kOtaMaxTlsSessionsPerRequest`, `kOtaMaxRedirectsPerGet`, `kOtaSigMinIntervalMs`), `data/app.js` (`fetchSigParams`, `renderSigNote`)
-- Spec : [`bug-176`](../../specs/features/doing/bug-176-relais-sig-filesystem-saute-sous-pression-memoire.md), [`feature-151`](../../specs/features/doing/feature-151-signature-de-l-image-ota.md)
+- Spec : [`bug-176`](../../specs/features/done/bug-176-relais-sig-filesystem-saute-sous-pression-memoire.md), [`feature-151`](../../specs/features/doing/feature-151-signature-de-l-image-ota.md)
 - ADR liés : [ADR-0058](0058-gardes-heap-metrique-8-bits.md), [ADR-0098](0098-toute-constante-de-mesure-declare-sa-source.md), [ADR-0121](0121-fichier-sig-conteneur-de-transport-deux-lignes-jamais-reconstruit.md), [ADR-0122](0122-socle-decision-ota-genre-empreinte-relais-sig.md)
 - Autres specs : bug-108, bug-165 (gardes TLS) ; bug-170 (cité par bug-176 comme « même motif » — la voie `littlefs.bin` meurt en silence)

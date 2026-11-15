@@ -2,7 +2,7 @@
 - **ID** : bug-177
 - **Slug** : rechargement-aveugle-apres-redemarrage-ota
 - **Type** : bug
-- **Statut** : doing
+- **Statut** : done
 - **Priorité** : haute
 - **Version cible** : 2.88.0
 - **Spec(s) liée(s)** : `feature-151` (§6 de l'essai de terrain du 2026-11-15, où le défaut a été
@@ -285,3 +285,28 @@ la requête de confirmation est libéré avant le rechargement.
 Le parcours réel (mise à jour, 429 ou 503 pendant le redémarrage, rechargement) et le rendu des
 trois cas du bloc **n'ont pas été vus sur l'appareil**. ⚠️ `ui_shot.sh` ne sait pas forcer ces
 états. ⇒ Vérifiable au prochain déploiement.
+
+---
+
+## ✅ CLÔTURE — essai de terrain (2026-11-15, soir)
+
+Mise à jour réelle 2.88.1 → 2.88.2 **depuis le téléphone de l'utilisateur**, page 2.88.2.
+
+**Verdict de l'utilisateur** : *« la vérification est ok. La mise à jour s'est installée
+correctement. […] La page a été rechargée correctement après 5 à 10 s. »*
+
+⭐ **AUCUNE page d'erreur du navigateur.** C'était le seul critère qui comptait : le matin même, le
+même appareil et le même téléphone y aboutissaient, avec 4 s de marge.
+
+Séquence observée : barre masquée → « ✓ Installé. L'appareil redémarre… » → décompte d'attente →
+rechargement automatique en **5 à 10 s** (8 s de grâce + un sondage : l'appareil était déjà revenu).
+
+### ⚠️ Écart de communication, pas de code
+L'utilisateur a noté que le décompte **démarrait à 85 s et non 45**. ⛔ **Le code est juste** : le
+budget est de 90 s, l'affichage démarre donc vers 85-90. **« 45 s » était une valeur d'EXEMPLE**
+dans la maquette du libellé, que j'ai répétée comme si c'était la valeur attendue.
+⇒ Leçon : ⛔ ne pas citer une valeur d'exemple dans une consigne d'observation — l'observateur la
+prend pour un critère, et croit voir un défaut.
+
+**Statut : done.** ⛔ Non observés : le bloc de secours (les trois cas) et le re-sondage sur
+`visibilitychange`, qui exigeraient de provoquer un échec réel.

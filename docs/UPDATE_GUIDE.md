@@ -199,7 +199,7 @@ L'interface web peut vérifier et télécharger automatiquement la dernière ver
 > | Ce que vous lisez | Sens | Que faire |
 > |---|---|---|
 > | « ✓ Vous avez la dernière version » | versions égales | rien |
-> | « ℹ Installée : plus récente que la release » + « Aucune mise à jour proposée. Pour revenir en arrière : « Mise à jour manuelle », ci-dessous. » | votre version est **plus récente** que la dernière release (déploiement local, release retirée) : normal, pas une erreur | rien ; pour un retour en arrière délibéré, carte « Mise à jour manuelle » |
+> | « ℹ La version installée est plus récente » + « Aucune mise à jour proposée. Pour revenir en arrière : « Mise à jour manuelle », ci-dessous. » | votre version est **plus récente** que la dernière release (déploiement local, release retirée) : normal, pas une erreur | rien ; pour un retour en arrière délibéré, carte « Mise à jour manuelle » |
 > | « ⚠ Version de la release illisible » + « Le numéro publié n'a pas le format attendu. Aucune mise à jour proposée. » | le numéro de la release n'est pas de la forme `X.Y.Z` (ex. suffixe `-rc1`) | signaler le problème ; installer au besoin via la mise à jour manuelle |
 > | « ℹ Aucune release disponible sur GitHub » | aucune release publiée | rien |
 >

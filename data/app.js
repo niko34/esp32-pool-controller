@@ -11171,7 +11171,7 @@
         if (st === "no_release") {
           showNoUpdate("ℹ", data.message || "Aucune release");
         } else if (st === "device_ahead") {
-          showNoUpdate("ℹ", "Installée : plus récente que la release",
+          showNoUpdate("ℹ", "La version installée est plus récente",
             "Aucune mise à jour proposée. Pour revenir en arrière : « Mise à jour manuelle », ci-dessous.");
         } else if (st === "unknown_version") {
           showNoUpdate("⚠", "Version de la release illisible",
