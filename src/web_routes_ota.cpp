@@ -1,5 +1,6 @@
 #include "web_routes_ota.h"
 #include "web_helpers.h"
+#include "ota_recovery_marker.h"  // feature-151 D3-b1 : pose/levée du marqueur FS (écriture seule)
 #include "constants.h"
 #include "auth.h"
 #include "logger.h"
@@ -284,7 +285,9 @@ static void remountUploadFsIfNeeded(bool afterFailure = true) {
   // Drapeau remis à false quel que soit le résultat : une seule tentative de
   // remontage par session, pas de boucle de montage sur image corrompue.
   g_uploadFsUnmounted = false;
-  if (LittleFS.begin(false)) {
+  const bool remounted = LittleFS.begin(false);
+  otaRecoveryNoteTransition();  // D3-b1 (S4) : remontage réussi OU raté ⇒ réévaluer le secours
+  if (remounted) {
     if (afterFailure) {
       systemLogger.critical("Filesystem remonté après une mise à jour FS interrompue : "
                             "contenu potentiellement incohérent, relancer la mise à jour");
@@ -930,6 +933,9 @@ static void handleOtaUpdate(AsyncWebServerRequest* request, const String& filena
 
     // Démonter LittleFS avant la mise à jour du filesystem
     if (cmd == U_SPIFFS) {
+      // D3-b1 (B2/S3) : marqueur NVS posé AVANT la destruction de la partition ;
+      // il survit à une coupure ou à un échec. Genre FS seul (décision pure).
+      otaRecoveryOnUpdatePhase(g_uploadIsFilesystem, OtaRecoveryUpdatePhase::kBeforeUnmount);
       LittleFS.end();
       g_uploadFsUnmounted = true;  // Doit être remonté sur tout chemin terminal
       systemLogger.info("LittleFS démonté pour mise à jour manuelle");
@@ -1062,6 +1068,10 @@ static void handleOtaUpdate(AsyncWebServerRequest* request, const String& filena
     }
 
     if (Update.end(true)) {
+      // D3-b1 (B2/S3) : levée du marqueur. ⚠️ Ce point est PARTAGÉ entre les deux
+      // genres : le genre est passé, et un succès FIRMWARE ne lève JAMAIS le
+      // marqueur du filesystem (decideOtaRecoveryMarkerAction → kNone).
+      otaRecoveryOnUpdatePhase(g_uploadIsFilesystem, OtaRecoveryUpdatePhase::kSucceeded);
       systemLogger.info("Mise à jour OTA réussie. Redémarrage...");
       // Aucun verdict mémorisé sur le chemin nominal : le lambda de réponse
       // sert "OK" (corps INCHANGÉ, data/app.js en dépend) et planifie le reboot.
@@ -2269,7 +2279,8 @@ static void handleDownloadUpdate(AsyncWebServerRequest* request) {
 
     PumpController.setOtaInProgress(true);
 
-    // Démonter LittleFS avant l'écriture
+    // Démonter LittleFS avant l'écriture — D3-b1 (B2) : marqueur NVS posé avant.
+    otaRecoveryOnUpdatePhase(isFilesystem, OtaRecoveryUpdatePhase::kBeforeUnmount);
     LittleFS.end();
     systemLogger.info("LittleFS démonté pour mise à jour");
 
@@ -2363,7 +2374,9 @@ static void handleDownloadUpdate(AsyncWebServerRequest* request) {
       // Remontage best-effort : la partition contient une image corrompue,
       // LittleFS échouera probablement (l'UI restera servie depuis le cache
       // navigateur jusqu'à un nouvel OTA FS réussi).
-      if (!LittleFS.begin(false)) {
+      const bool remountedAfterMismatch = LittleFS.begin(false);
+      otaRecoveryNoteTransition();  // D3-b1 (S4)
+      if (!remountedAfterMismatch) {
         systemLogger.warning("Impossible de remonter LittleFS après échec d'intégrité");
       }
       sendIntegrityMismatch(request, expectedHex, computedHex,
@@ -2371,6 +2384,8 @@ static void handleDownloadUpdate(AsyncWebServerRequest* request) {
       return;  // PAS de restart demandé
     }
 
+    // D3-b1 (B2) : image écrite ET validée jusqu'au bout ⇒ levée du marqueur.
+    otaRecoveryOnUpdatePhase(isFilesystem, OtaRecoveryUpdatePhase::kSucceeded);
     systemLogger.info("Mise à jour filesystem réussie (" + String(written) + " octets)");
     bool restartPlanned = shouldRestart && g_restartRequested != nullptr && g_restartRequestedTime != nullptr;
     if (!restartPlanned) {
@@ -2378,7 +2393,9 @@ static void handleDownloadUpdate(AsyncWebServerRequest* request) {
     }
 
     // Remonter LittleFS
-    if (!LittleFS.begin(false)) {
+    const bool remountedAfterUpdate = LittleFS.begin(false);
+    otaRecoveryNoteTransition();  // D3-b1 (S4)
+    if (!remountedAfterUpdate) {
       systemLogger.warning("Impossible de remonter LittleFS (normal après mise à jour, redémarrage requis)");
     }
 

@@ -34,6 +34,12 @@ set -uo pipefail
 cd "$(dirname "$0")/.."
 
 EXEMPT="src/fs_guard.cpp"
+# feature-151 D3-b1 : src/ota_recovery_page.cpp est une page HTML/JS GÉNÉRÉE dans un
+# littéral de chaîne (`xhr.open("POST", …)` est du JavaScript du navigateur, pas
+# un fopen). Exemption NOMMÉE et limitée à ce seul fichier, qui ne contient
+# aucun code C++ exécutable — tools/check_recovery_page_generated.sh garantit
+# qu'il n'est pas édité à la main.
+GENERATED_PAGE="src/ota_recovery_page.cpp"
 
 # Ce que l'on cherche :
 #   - `.open(` / `->open(` .............. l'ouverture explicite ;
@@ -52,6 +58,7 @@ EXEMPT="src/fs_guard.cpp"
 found=$(find src -type f \( -name '*.cpp' -o -name '*.h' \) -print0 \
         | xargs -0 grep -HnE '(->|\.)[[:space:]]*(open|openNextFile|exists)[[:space:]]*\(' \
         | grep -v "^${EXEMPT}:" \
+        | grep -v "^${GENERATED_PAGE}:" \
         | grep -vE '^[^:]+:[0-9]+:[[:space:]]*(//|\*)' \
         || true)
 

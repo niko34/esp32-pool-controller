@@ -1961,7 +1961,10 @@ puisqu'il teste le prédicat et non son alimentation. Attrape aussi la rupture i
   ⚠️ **Nuance déclarée** : `/` et `/index.html` restent **sous** la garde ⇒ en famine mémoire,
   seul `/recovery` répond. ⛔ Les remonter changerait la politique d'exemption de toute
   l'interface — hors périmètre.
-- **Pas de pré-gzip** de la page : ~10,1 Ko sur ~1 782 Ko libres = **0,67 % du libre**.
+- **Pas de pré-gzip** de la page : ⚠️ **mesure finale ~16 Ko** (le fichier généré pèse 16 468 o),
+  et non les ~10,1 Ko estimés — l'estimation portait sur le gabarit, pas sur le JS injecté.
+  Coût réel du lot : **+19 120 o de flash**, soit **51,3 % → 51,8 %**. ⇒ Conclusion inchangée :
+  le flash n'est pas l'argument.
   🔴 **Le point technique à ne pas rater** : servir via `send(200, "text/html", const char*)`
   passerait par `AsyncBasicResponse`, qui **copie 10 Ko dans un `String`** — pour un `maxBloc8`
   nominal de **~21 Ko**. ⇒ **Obligatoire** : surcharge `(const uint8_t*, size_t)` ⇒
@@ -2094,3 +2097,21 @@ bordure de champ **≈ 1,2:1** (seuil 3:1), champs à **14 px** ⇒ **zoom iOS a
 faite il est à **4,8:1**. ⇒ Défaut **plus étroit** qu'annoncé, et mieux cerné.
 ⚠️ Ce sont les pages vues **en premier** et **quand ça va mal**. ⇒ **`bug-182` ouverte.**
 ⇒ La page de secours utilisera la palette **conforme** de `app.css` (`--accent #2563eb` ⇒ **5,2:1**).
+
+## ✅ D3-b1 « la porte » — NOTES D'IMPLÉMENTATION (2026-11-15)
+
+**Statut** : livré côté code — compilation propre, tests natifs verts, revue de sécurité **GO sans condition**. ⛔ **D3-b2 et la marche 3 de B12 restent OUVERTS** ; la spec **n'est pas déplacée** vers `done/` ; aucun des critères d'acceptation ci-dessus n'est coché (ils portent sur le refus de D3-c).
+
+**Mesures** (à relire, pas à recopier ailleurs) : `pio run` SUCCESS après `clean`, **0 warning neuf**, Flash **51,8 %** (1 935 273 o, **+19 120 o**), RAM 29,8 %. Tests natifs : **82 suites, 2 445 cas, 0 échec**. **5 mutations tuées**, dont **3 garde-fous** prouvés par mutation (S3 genre filesystem, priorité du déclencheur, règles de repli).
+
+**Livré** : B4 (retour anticipé retiré, table de routes unique), B5 (aucun drapeau — outillé **sur les symboles**, `tools/check_degraded_mode_absent.sh`), B6 (page = constante compilée, `GET /recovery`), B7 (`/` et `/index.html`), B10 (premier démarrage), B13 (documenté dans `docs/UPDATE_GUIDE.md`). Fichiers : `src/web_server.cpp`, `src/web_routes_recovery.*`, `src/ota_recovery_logic.*`, `src/ota_recovery_marker.*`, `src/ota_recovery_page.*` (+ `.html.in`, généré), `src/fs_guard.*` (`fsPathResolvableIfHeapAllows`), `src/web_routes_ota.cpp` (pose/levée du marqueur, conditionnées au genre FS), `src/constants.h`, `platformio.ini`, `tools/gen_recovery_page.js`, `tools/check_degraded_mode_absent.sh`, `tools/check_recovery_page_generated.sh`, `tools/check_fs_probe_paths.sh`, `tools/check_fopen_guard.sh` (exemption nommée), `tools/check_release_artefacts.sh` (S8), `.github/workflows/hygiene-specs.yml` (3 jobs), `test/test_native_ota_recovery/`.
+
+**Conditions de la revue P1** : S1 (501/404 corrigé), S2 (symboles, 1 lecteur), S3 (genre FS), S4 (réévaluation à chaque transition), S5 (`/ui` après la garde, `/recovery` avant, lien présent), S6 (`textContent`, contrôle de génération), S7 (aucun mot de passe constant hors `"admin"`), S8 (`/release` lance le contrôle de fraîcheur), S9 (diff sans site `handleOtaUpdate` neuf, sans `POST` neuf, sans `LittleFS.begin(true)`, refus `:807` inchangé).
+
+**Décision** : [ADR-0124](../../../docs/adr/0124-le-mode-degrade-n-est-pas-un-mode-la-porte-de-sortie-du-serveur-web.md). Documentation : `docs/API.md`, `docs/subsystems/web-server.md`, `docs/subsystems/ota-manager.md`, `docs/DESIGN_SYSTEM.md` §5.21, `docs/BUILD.md`, `docs/UPDATE_GUIDE.md`, `CHANGELOG.md` (section `[Unreleased]`), `docs/user/src/guide-utilisation.html`.
+
+**⛔ Reste ouvert**
+- **D3-b2** : B11 (interrupteur), conditions 6 et 8, liaison genre + version, `#no_update_msg`. **Marche 3 de B12** (essai terrain destructif, exige l'accord explicite de l'utilisateur et un accès USB prêt).
+- Les marches **1 et 2** de B12 (preuve sur appareil : `/` rend le secours **sans redémarrage**, S4) ne sont **pas** consignées ici comme faites : à relever sur les lignes de verdict avant de les cocher.
+- Durcissements à ouvrir séparément (revue P1) : image FS en PSRAM, `bug-112`, `change-password` rejouable au premier démarrage, levée du marqueur sur les chemins d'échec où rien n'a été écrit (`:939`). `bug-182` (contraste de `login/wizard/wifi.html`) reste ouvert.
+- 🔴 **Rappel** : « jeton admin volé » reste **ouvert** — cette feature ne le ferme pas (ADR-0120, ADR-0124).

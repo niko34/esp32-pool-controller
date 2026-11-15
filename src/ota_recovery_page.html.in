@@ -1,0 +1,273 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>PoolController • Mode secours</title>
+<style>
+:root{--bg:#e8ecf4;--panel:#fff;--text:#111827;--muted:#4b5563;--accent:#2563eb;--danger:#b91c1c;--ok:#15803d;--line:#6b7280}
+*{box-sizing:border-box}
+body{margin:0;font:16px/1.45 system-ui,sans-serif;background:linear-gradient(135deg,#e8ecf4,#dfe5f0);color:var(--text)}
+header{padding:12px 16px;font-weight:600;color:var(--muted)}
+main{max-width:560px;margin:0 auto;padding:0 16px 32px}
+h1{font-size:22px;margin:8px 0 12px}
+h2{font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin:0 0 12px}
+.card{background:var(--panel);border:1px solid rgba(0,0,0,.1);border-radius:16px;padding:16px;margin:12px 0;box-shadow:0 1px 3px rgba(0,0,0,.08)}
+.callout{padding:12px;border-radius:14px;border:1px solid rgba(37,99,235,.3);background:rgba(37,99,235,.08)}
+.callout p{margin:0}.callout p+p{margin-top:6px}
+a{color:var(--accent);font-weight:600}
+label{display:block;font-weight:600;margin:12px 0 4px}
+input{display:block;width:100%;min-height:44px;font:inherit;padding:8px 10px;border:1px solid var(--line);border-radius:10px;background:#fff;color:var(--text)}
+button{display:block;width:100%;min-height:44px;margin-top:16px;font:inherit;font-weight:600;border:0;border-radius:10px;background:var(--accent);color:#fff}
+button:disabled{opacity:.5}
+progress{width:100%;height:12px;margin-top:12px}
+.hint{color:var(--muted);font-size:14px;margin:4px 0 0}
+#msg{margin-top:12px;font-weight:600}
+#msg.err{color:var(--danger);border:1px solid var(--danger);border-radius:10px;padding:10px}
+#msg.ok{color:var(--ok)}
+[hidden]{display:none!important}
+</style>
+</head>
+<body>
+<header>PoolController • Mode secours</header>
+<main>
+<h1>Interface à restaurer</h1>
+<div class="callout">
+<p><b>L'interface web est absente ou endommagée.</b></p>
+<p>La régulation continue : pH, ORP, pompes et filtration fonctionnent.</p>
+</div>
+<p><a href="/ui">Ouvrir l'interface quand même</a></p>
+
+<section class="card" id="s-wait"><h2>Connexion</h2><p id="t-wait">Vérification de l'appareil…</p></section>
+
+<section class="card" id="s-login" hidden>
+<h2>Connexion</h2>
+<label for="pw">Mot de passe administrateur</label>
+<input id="pw" type="password" autocomplete="current-password">
+<button id="b-login" type="button">Se connecter</button>
+</section>
+
+<section class="card" id="s-first" hidden>
+<h2>Premier démarrage</h2>
+<p class="hint">Choisissez un mot de passe administrateur (8 caractères minimum).</p>
+<label for="pw1">Nouveau mot de passe</label>
+<input id="pw1" type="password" autocomplete="new-password">
+<label for="pw2">Confirmation</label>
+<input id="pw2" type="password" autocomplete="new-password">
+<button id="b-first" type="button">Enregistrer et continuer</button>
+</section>
+
+<section class="card" id="s-up" hidden>
+<h2>Restauration</h2>
+<p class="hint">Les deux fichiers sont nécessaires : l'image (.bin) et sa signature (.sig).</p>
+<label for="f-bin">Image (.bin)</label>
+<input id="f-bin" type="file" accept=".bin">
+<label for="f-sig">Signature (.sig)</label>
+<input id="f-sig" type="file" accept=".sig">
+<button id="b-send" type="button" disabled>Vérifier et envoyer</button>
+<progress id="pg" max="100" value="0" hidden></progress>
+<p id="t-pg" class="hint" hidden></p>
+</section>
+
+<p id="msg" role="status" aria-live="polite" hidden></p>
+<p id="home" hidden><a href="/">Ouvrir l'interface</a></p>
+</main>
+<script>
+"use strict";
+/*@@SHA256_K@@*/
+/*@@CREATE_SHA256@@*/
+/*@@SHA256_OF_FILE@@*/
+/*@@PARSE_MANIFEST@@*/
+/*@@PARSE_SIG@@*/
+
+const $ = (id) => document.getElementById(id);
+const show = (id, on) => { $(id).hidden = !on; };
+const TOKEN_KEY = "authToken";
+
+// Message : textContent UNIQUEMENT, texte fixe, jamais le texte du serveur ni du .sig.
+function say(kind, text) {
+  const m = $("msg");
+  m.hidden = !text;
+  m.className = kind;
+  m.textContent = text || "";
+}
+const fail = (cause) => say("err", "Échec : " + cause);
+
+// Rend la main au navigateur entre deux tranches : sans cela la barre ne se
+// repaint pas sur téléphone pendant le calcul de l'empreinte.
+function yielding(file) {
+  return {
+    size: file.size,
+    slice: (a, b) => {
+      const s = file.slice(a, b);
+      return { arrayBuffer: () => new Promise((r) => setTimeout(r, 20)).then(() => s.arrayBuffer()) };
+    },
+  };
+}
+
+function readText(file) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(String(r.result));
+    r.onerror = () => reject(new Error("lecture"));
+    r.readAsText(file);
+  });
+}
+
+async function postJson(path, body) {
+  const res = await fetch(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  let data = null;
+  try { data = await res.json(); } catch (e) { data = null; }
+  return { ok: res.ok, status: res.status, data };
+}
+
+// Jeton périmé ou refusé : on l'OUBLIE et on remet l'utilisateur devant le
+// formulaire. Un simple message bouclerait : le rechargement relirait le même jeton.
+function backToLogin() {
+  sessionStorage.removeItem(TOKEN_KEY);
+  show("s-up", false); show("s-first", false); show("s-wait", false);
+  show("s-login", true);
+}
+
+function openUpload() {
+  show("s-wait", false); show("s-login", false); show("s-first", false);
+  show("s-up", true);
+  say("", "");
+}
+
+function gotToken(data) {
+  if (!data || typeof data.token !== "string") { fail("réponse inattendue de l'appareil."); return; }
+  sessionStorage.setItem(TOKEN_KEY, data.token);
+  openUpload();
+}
+
+async function start() {
+  try {
+    const res = await fetch("/auth/status");
+    const st = await res.json();
+    show("s-wait", false);
+    if (st.firstBoot) { show("s-first", true); return; }
+    if (st.authEnabled === false || sessionStorage.getItem(TOKEN_KEY)) { openUpload(); return; }
+    show("s-login", true);
+  } catch (e) {
+    show("s-wait", false);
+    show("s-login", true);
+    fail("appareil injoignable.");
+  }
+}
+
+$("b-login").addEventListener("click", async () => {
+  say("", "");
+  try {
+    const r = await postJson("/auth/login", { username: "admin", password: $("pw").value });
+    if (r.ok) gotToken(r.data);
+    else fail(r.status === 401 ? "mot de passe incorrect." : "connexion refusée (HTTP " + r.status + ").");
+  } catch (e) { fail("appareil injoignable."); }
+});
+
+$("b-first").addEventListener("click", async () => {
+  say("", "");
+  const a = $("pw1").value;
+  if (a.length < 8) { fail("8 caractères minimum."); return; }
+  if (a !== $("pw2").value) { fail("les deux mots de passe diffèrent."); return; }
+  try {
+    // "admin" : mot de passe d'usine du premier démarrage, seul littéral admis.
+    const r = await postJson("/auth/change-password", { currentPassword: "admin", newPassword: a });
+    if (r.ok) gotToken(r.data);
+    else fail("enregistrement refusé (HTTP " + r.status + ").");
+  } catch (e) { fail("appareil injoignable."); }
+});
+
+function refreshSend() {
+  $("b-send").disabled = !($("f-bin").files.length && $("f-sig").files.length);
+}
+$("f-bin").addEventListener("change", refreshSend);
+$("f-sig").addEventListener("change", refreshSend);
+
+function progress(label, pct) {
+  show("pg", true); show("t-pg", true);
+  $("pg").value = pct;
+  $("t-pg").textContent = label + " : " + pct + " %";
+}
+
+function waitForDevice() {
+  say("ok", "Envoi terminé. L'appareil redémarre, patientez…");
+  let tries = 0;
+  const tick = async () => {
+    tries++;
+    try {
+      const res = await fetch("/auth/status", { cache: "no-store" });
+      if (res.ok) {
+        say("ok", "Terminé : l'appareil est de retour.");
+        show("home", true);
+        return;
+      }
+    } catch (e) { /* appareil encore en redémarrage */ }
+    if (tries > 45) { fail("l'appareil ne répond pas, rechargez la page."); return; }
+    setTimeout(tick, 2000);
+  };
+  setTimeout(tick, 8000);
+}
+
+$("b-send").addEventListener("click", async () => {
+  const bin = $("f-bin").files[0];
+  const sigFile = $("f-sig").files[0];
+  if (!bin || !sigFile) return;
+  say("", "");
+  $("b-send").disabled = true; $("f-bin").disabled = true; $("f-sig").disabled = true;
+  const rearm = () => { $("f-bin").disabled = false; $("f-sig").disabled = false; refreshSend(); };
+  try {
+    let sig;
+    try { sig = parseSigFile(await readText(sigFile)); } catch (e) { sig = { ok: false }; }
+    if (!sig.ok) { fail("fichier de signature invalide."); rearm(); return; }
+
+    progress("Vérification du fichier", 0);
+    say("", "Cela peut durer quelques secondes. Ne fermez pas cette page.");
+    const hex = await sha256OfFile(yielding(bin), (ratio) => {
+      progress("Vérification du fichier", Math.round(ratio * 100));
+    });
+    if (hex !== sig.digest) { fail("le fichier ne correspond pas à la signature."); rearm(); return; }
+    say("", "");
+
+    // ORDRE IMPOSÉ : l'appareil lit les champs PENDANT l'analyse de la partie
+    // fichier — un champ placé après update_file se lit comme absent.
+    const fd = new FormData();
+    fd.append("sha256", hex);
+    fd.append("update_type", sig.genre);
+    fd.append("manifest", sig.manifest);
+    fd.append("signature", sig.signature);
+    fd.append("update_file", bin);
+
+    const xhr = new XMLHttpRequest();
+    xhr.upload.addEventListener("progress", (e) => {
+      if (e.lengthComputable) progress("Envoi", Math.round((e.loaded / e.total) * 100));
+    });
+    xhr.addEventListener("load", () => {
+      if (xhr.status === 200 && xhr.responseText.trim() === "OK") { waitForDevice(); return; }
+      if (xhr.status === 401) {
+        backToLogin();
+        fail("connexion expirée, reconnectez-vous.");
+      } else {
+        fail("refus de l'appareil (HTTP " + xhr.status + "), voir le journal.");
+      }
+      rearm();
+    });
+    xhr.addEventListener("error", () => { fail("erreur réseau."); rearm(); });
+    xhr.open("POST", "/update");
+    const t = sessionStorage.getItem(TOKEN_KEY);
+    if (t) xhr.setRequestHeader("X-Auth-Token", t);
+    xhr.send(fd);
+  } catch (e) {
+    fail("calcul de l'empreinte impossible.");
+    rearm();
+  }
+});
+
+start();
+</script>
+</body>
+</html>

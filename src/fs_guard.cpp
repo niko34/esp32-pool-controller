@@ -125,6 +125,25 @@ bool existsIfHeapAllows(fs::FS* fs, const char* path, uint32_t minAllocBytes) {
   return true;
 }
 
+bool fsPathResolvableIfHeapAllows(fs::FS* fs, const char* path, uint32_t minAllocBytes,
+                                  bool* probed) {
+  *probed = false;
+  if (!fs || !path) return false;
+  // Tampon de PILE : aucune String, ce chemin peut tourner sur `async_tcp`.
+  char gzPath[48];
+  const int n = snprintf(gzPath, sizeof(gzPath), "%s.gz", path);
+  if (n <= 0 || (size_t)n >= sizeof(gzPath)) return false;  // chemin trop long : pas sondé
+  // UNE admission pour les deux ouvertures (kFsGuardAlreadyAdmitted ensuite).
+  if (!fsGuardAdmit(minAllocBytes)) return false;
+  *probed = true;
+  // .gz EN PREMIER : minify.js n'écrit que cette variante (cf. l'entête).
+  fs::File f = openIfHeapAllows(fs, gzPath, "r", kFsGuardAlreadyAdmitted);
+  if (!f) f = openIfHeapAllows(fs, path, "r", kFsGuardAlreadyAdmitted);
+  if (!f) return false;
+  f.close();
+  return true;
+}
+
 uint32_t fsGuardDeferralCount() {
   return sFopenDeferrals.load(std::memory_order_relaxed);
 }

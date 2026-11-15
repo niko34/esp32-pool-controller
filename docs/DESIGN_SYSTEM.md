@@ -51,6 +51,7 @@ contexte d'origine.
 | Visualiser une mesure sur une échelle | `.gauge` (§5.8) | Carte d'accueil |
 | Expliquer pourquoi une mesure n'est pas représentative | `.sensor-badge` (§5.9) | Carte d'accueil |
 | Alerter sur une condition bloquante ou un risque | `.callout` (§5.10) | Les deux |
+| Réinstaller le filesystem quand l'interface est absente (page autonome, sans `app.css`) | copies **locales** : callout `--info`, champ fichier 44 px, `<progress>`, callout d'échec rouge (§5.21) | **Page de secours embarquée uniquement** — ⛔ jamais un composant partagé |
 | Distinguer deux niveaux de gravité dans un même `.callout`, sans empiler deux encadrés, et séparer l'essentiel du détail | `.callout__eyebrow` + `.callout__lead` + `.callout__more` (§5.10bis) | Page de réglage (pH) — généralisable |
 | Commenter un contrôle sans en faire une alerte | `.field__hint` (§5.11) | Les deux, **jamais seul porteur d'une info de sécurité** |
 | Signaler une anomalie de régulation nécessitant un acquittement | `.regul-alert` (§5.12) | Carte d'accueil et page de réglage |
@@ -508,6 +509,21 @@ le rend pertinent. ⛔ Jamais affiché en lecture seule à côté.
 aucune raison de reprendre ce défaut.
 **Pourquoi pas une classe dédiée** : la composition existante couvre le besoin sans dupliquer
 `.field` ni `.detail-actions`. Une classe enveloppe ajouterait une variante sans mieux réutiliser.
+
+### 5.21 Page de secours OTA — quatre contextes d'emploi, **hors `data/`** (feature-151 D3-b1)
+
+**Contexte d'emploi déclaré : la page de secours embarquée dans le firmware** ([`src/ota_recovery_page.html.in`](../src/ota_recovery_page.html.in), servie par `GET /recovery`). Elle vit dans la flash, **sans** `app.css` : le filesystem est précisément ce qui peut manquer. Elle ne charge aucune feuille ni aucun fichier (pas même le logo). Elle reprend le **vocabulaire** du tableau de bord et la palette **conforme** de `app.css` (`--accent #2563eb`, 5,2:1), pas le style sous AA de `login.html`/`wizard.html`/`wifi.html` (voir `bug-182`).
+
+⚠️ **Aucun composant partagé n'évolue** : ce sont des **copies figées et locales** à la page. Aucun inventaire d'emplois dans `data/` n'est dû, et un changement de `app.css` ne les met pas à jour.
+
+| Élément | Nature | Détail |
+|---|---|---|
+| Callout `--info` **en page autonome** | copie figée de `.callout--info` | message « L'interface web est absente ou endommagée. » + « La régulation continue : pH, ORP, pompes et filtration fonctionnent. » — la phrase rassurante est le libellé le plus important de la page, **jamais retirée** |
+| Champ fichier à **44 px** | style local | ⛔ les **3** `<input type="file">` de l'application (`data/index.html`) **ne changent pas** |
+| `<progress>` natif | premier emploi | aucun `<progress>` n'existait dans `data/` (0 occurrence mesurée dans `index.html`, `app.js`, `login/wizard/wifi.html`) ; barre pleine largeur de 12 px, libellé « Vérification du fichier : 42 % » en texte à côté, **jamais seule porteuse** du statut |
+| Callout d'**échec rouge** | variante **locale** (`#msg.err`) | ⛔ **pas** un `.callout--danger` partagé. Toujours préfixé « Échec : » (le mot porte le sens, la couleur l'appuie — §7), texte fixe inséré par `textContent` |
+
+Parcours : page **unique**, étapes révélées par `hidden`, **aucune redirection** (le lien « Ouvrir l'interface quand même » vers `/ui` doit rester visible). Tout est empilé en pleine largeur : **aucun libellé sur une ligne partagée** (390 px d'abord, §6).
 
 ## 6. Responsive — 390 px d'abord
 

@@ -458,3 +458,47 @@ jobs:
       # Vecteur clé : jamais de rechargement pendant la grâce de 8 s.
       - name: Contrôle des vecteurs d'attente OTA
         run: ./tools/check_ota_wait_vectors.sh
+
+  degraded-mode-absent:
+    name: Le secours OTA n'est pas un mode (feature-151 D3-b1)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # Même script en local (`./tools/check_degraded_mode_absent.sh`) et en CI.
+      # Porte sur les SYMBOLES (condition S2), pas sur les fichiers : le nombre de
+      # lecteurs de l'état de secours est figé à 1, auth.* n'en lit aucun, le
+      # serveur démarre sans filesystem (A1) avec la même table de routes (A2).
+      - name: Contrôle du mode dégradé absent
+        run: ./tools/check_degraded_mode_absent.sh
+
+  recovery-page-generated:
+    name: Page de secours OTA à jour avec sa source (feature-151 D3-b1, S8)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # Même script en local (`./tools/check_recovery_page_generated.sh`) et en
+      # CI, ET lancé par tools/check_release_artefacts.sh (donc par /release,
+      # qu'il arrête). Re-génère src/ota_recovery_page.cpp et le compare.
+      # ubuntu-latest : aucun actions/setup-node nécessaire.
+      - name: Contrôle de la page de secours générée
+        run: ./tools/check_recovery_page_generated.sh
+
+  fs-probe-paths:
+    name: Chemins sondés par le firmware = fichiers produits par minify.js (feature-151 D3-b1)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # minify.js dépend de html-minifier-terser, terser et clean-css.
+      - name: Dépendances Node
+        run: npm ci
+
+      # Même script en local (`./tools/check_fs_probe_paths.sh`) et en CI. Lie le
+      # sondeur d'index au producteur du filesystem (minify.js n'écrit que .gz).
+      - name: Contrôle des chemins sondés
+        run: ./tools/check_fs_probe_paths.sh

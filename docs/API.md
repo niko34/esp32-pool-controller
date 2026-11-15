@@ -90,9 +90,36 @@ Ce n'est pas une dégradation de confort : ouvrir un fichier demande à la libc 
 | Temps réel | **WebSocket [`/ws`](#ws-ws--write)** et **MQTT** — inchangés |
 | Actions | **toutes les routes `POST`**, dont le contrôle des pompes, de la filtration et de l'éclairage |
 
+⚠️ **Exception — `GET /recovery`** (page de secours, voir [ci-dessous](#get-recovery--public-page-de-secours)) est enregistrée **avant** la garde et répond donc même en famine.
+
 ⚠️ **Conséquences à connaître** : en famine, `/wifi.html` et `/` étant refusés, le **portail AP de secours** et la **page OTA** ne sont plus atteignables **par le navigateur**. Les chemins de secours réels restent ouverts : `POST /update`, `./deploy.sh ota-firmware`, et les routes de diagnostic ci-dessus.
 
 **Côté intégrateur** : traiter `503` sur ces routes comme **temporaire** et respecter `Retry-After` (5 s). Ne pas relancer en boucle serrée — c'est précisément le martèlement que l'en-tête existe pour éviter pendant que la mémoire se résorbe.
+
+---
+
+## Page de secours OTA (feature-151 D3-b1, [ADR-0124](adr/0124-le-mode-degrade-n-est-pas-un-mode-la-porte-de-sortie-du-serveur-web.md))
+
+Depuis ce lot, le serveur HTTP **démarre toujours**, même si LittleFS n'a pas pu être monté (l'ancien retour anticipé rendait l'appareil injoignable). La table de routes est **identique** dans les deux états ; sans filesystem, les routes qui servent un fichier rendent **`501`** (ou `404` si la requête porte `If-None-Match`) — ⛔ ne jamais écrire un client qui attend `404`.
+
+### GET /recovery — public (page de secours)
+
+Page HTML autonome (embarquée dans le firmware, ~16 Ko) qui permet de réinstaller le filesystem : connexion, sélection de l'image `.bin` et de sa `.sig`, envoi vers [`POST /update`](#post-update--critical). Aucune authentification pour **afficher** la page ; l'envoi, lui, passe par les gardes habituelles de `/update`.
+
+- **Toujours servie**, enregistrée **avant** la garde 503 : répond même en famine mémoire.
+- Servie sans copie en tas (`Cache-Control: no-store`).
+
+**Réponse 200** : `text/html`.
+
+### GET /ui — public (échappatoire)
+
+Sert `/index.html` **sans condition**, y compris quand le secours est armé. Sert à sortir d'un faux positif (voir ci-dessous). Enregistrée **après** la garde 503 (elle ouvre un fichier) : peut répondre `503`, et `501`/`404` sans filesystem. ⛔ Elle ne contourne aucune garde : le secours n'est pas une garde.
+
+### Comportement de `/` et `/index.html`
+
+Quand le secours est **armé**, ces deux routes rendent la page de secours (200) au lieu de l'interface. Il s'arme dans trois cas, par ordre de priorité : (1) un marqueur NVS indique qu'une mise à jour du filesystem n'a pas abouti ; (2) LittleFS n'est pas monté ; (3) ni `index.html.gz` ni `index.html` n'existe. Il s'arme et se lève **sans redémarrage** (réévalué après chaque mise à jour du filesystem). Une famine mémoire ou une NVS illisible **n'arment jamais** le secours.
+
+⚠️ `/` et `/index.html` restent **sous** la garde 503 : en famine mémoire, seul `/recovery` répond.
 
 ---
 

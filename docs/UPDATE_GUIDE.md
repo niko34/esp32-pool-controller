@@ -364,6 +364,36 @@ prouve rien sur l'origine, seulement que ce manifeste décrit bien ces octets. L
 
 ---
 
+## Secours : l'interface web est absente ou endommagée — depuis la prochaine version (feature-151 D3-b1)
+
+**Symptôme** : en ouvrant l'adresse de l'appareil, vous ne voyez plus le tableau de bord mais la page **« Interface à restaurer »** (« L'interface web est absente ou endommagée »). Cela arrive après une mise à jour du système de fichiers interrompue (coupure de courant, WiFi perdu) ou si la partition d'interface est corrompue.
+
+✅ **La régulation continue** : pH, ORP, pompes et filtration fonctionnent normalement pendant ce temps. Seule l'interface est absente. Avant cette version, l'appareil devenait en plus **injoignable par le réseau** (aucune page, pas même `/update`) et seul un câble USB permettait de le réparer.
+
+**Procédure** :
+
+1. **Télécharger les deux fichiers de la même release GitHub** sur votre téléphone ou ordinateur : `littlefs.bin` **et** `littlefs.bin.sig`. ⛔ Ne jamais mélanger deux releases : un `.sig` ne vaut que pour l'image exacte qu'il décrit.
+2. Ouvrir l'adresse de l'appareil (`http://poolcontroller.local`, ou son adresse IP si le nom `.local` ne répond pas) : la page de secours s'affiche. Vous pouvez aussi l'ouvrir directement sur `/recovery`.
+3. Saisir le **mot de passe administrateur** (au premier démarrage, avant la fin de l'assistant, la page vous demande d'en choisir un).
+4. Sélectionner l'image (`.bin`) et la signature (`.sig`), puis **Vérifier et envoyer**. Le calcul de l'empreinte du fichier prend quelques secondes ; **ne fermez pas la page**.
+5. Attendre « Terminé : l'appareil est de retour », puis **Ouvrir l'interface**.
+
+**Si le secours s'affiche alors que l'interface est intacte** (faux positif, rare) : le lien **« Ouvrir l'interface quand même »** (`/ui`) affiche l'interface normale. Cela peut arriver si le courant a été coupé juste au début d'une mise à jour du système de fichiers. Une mise à jour réussie du système de fichiers fait disparaître le secours.
+
+### Appareil en mode point d'accès (pas de WiFi domestique)
+
+⚠️ **Téléchargez les fichiers AVANT** de vous connecter au point d'accès de l'appareil : une fois connecté à ce réseau, votre téléphone ou ordinateur n'a généralement plus d'accès à internet, et vous ne pourrez plus récupérer la release. Séquence : (1) télécharger `littlefs.bin` + `littlefs.bin.sig` ; (2) se connecter au WiFi `PoolControllerAP` ; (3) ouvrir `http://192.168.4.1/recovery` ; (4) suivre la procédure ci-dessus.
+
+### ⛔ Hors périmètre assumé : « internet nulle part »
+
+Si ni l'appareil **ni** votre poste n'ont accès à internet, il n'existe pas de procédure de secours par le navigateur : les fichiers ne peuvent pas être téléchargés. Il faut obtenir les fichiers autrement (autre connexion, par exemple le partage de connexion d'un téléphone) ou passer par le câble USB (`./deploy.sh fs`). Ce cas n'est **jamais** résolu en acceptant une image non signée.
+
+### Ce que cela ne change pas — risques résiduels
+
+La page de secours n'est **pas une protection** : elle ne durcit rien. Elle repose sur l'authentification existante, dont les limites restent : mot de passe et jeton stockés **en clair** dans la mémoire de l'appareil (sans sel), **premier démarrage ouvert** (mot de passe d'usine `admin` tant que l'assistant n'est pas terminé), échanges en **HTTP clair** sur le réseau local. Celui qui détient un jeton administrateur valide pouvait déjà détruire l'interface ; il peut désormais aussi la **masquer** (réparable par `/ui`). **Acceptable pour un réseau domestique privé.** ⛔ Cette fonction ne ferme pas le risque « jeton administrateur volé ». Détails : [ADR-0124](adr/0124-le-mode-degrade-n-est-pas-un-mode-la-porte-de-sortie-du-serveur-web.md).
+
+---
+
 ## Notes de migration
 
 ### Migration layout v4 → v5 (flash 8 Mo) — depuis 2026-09-05
@@ -948,7 +978,7 @@ Aucune action requise. Le firmware effectue la migration à la première lecture
 | « Échec de la vérification d'intégrité » | Image tronquée/corrompue refusée par sécurité — relancer l'installation (si c'était le filesystem, le réinstaller) |
 | Bouton Installer grisé « pas d'empreinte d'intégrité » | Release GitHub sans champ `digest` — installer via upload manuel ou `deploy.sh` |
 | ESP32 ne redémarre pas | Utiliser le bouton RESET ou débrancher |
-| Interface inaccessible | `./deploy.sh fs` (USB) |
+| Interface inaccessible, ou page « Interface à restaurer » | Procédure de [secours](#secours--linterface-web-est-absente-ou-endommagée--depuis-la-prochaine-version-feature-151-d3-b1) (WiFi, sans câble) ; à défaut `./deploy.sh fs` (USB) |
 | Authentification refusée | Vérifier le mot de passe ou utiliser `POOL_PASSWORD=...` |
 | `poolcontroller.local` inaccessible | mDNS non supporté par le réseau — utiliser l'IP directe : `./ota_update.sh both 192.168.1.x motdepasse` |
 | « Aucun port série USB détecté » | Module non branché ou nom de port inattendu — le script liste les `/dev/cu.*` trouvés, relancer avec `PORT=/dev/cu.usbserial-XX ./deploy.sh all` |

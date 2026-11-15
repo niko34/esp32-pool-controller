@@ -2,6 +2,28 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [Unreleased] - 2026-11-15
+
+> Version à attribuer au moment de la release (`src/version.h` est encore à 2.88.2).
+
+### Fonctionnalités
+- **Secours de l'interface web** : si l'interface est absente ou endommagée (mise à jour du système de fichiers interrompue, partition corrompue), l'appareil affiche désormais une **page « Interface à restaurer »** à son adresse habituelle. Elle permet de réinstaller le système de fichiers **depuis le navigateur**, avec les deux fichiers `littlefs.bin` et `littlefs.bin.sig` d'une release, sans câble USB. Elle rappelle que **la régulation continue** (pH, ORP, pompes, filtration) pendant ce temps.
+- **Échappatoire** : le lien « Ouvrir l'interface quand même » (`/ui`) affiche l'interface normale si le secours s'est affiché à tort (par exemple coupure de courant au tout début d'une mise à jour).
+- ⚠️ **Avant ce correctif**, un redémarrage avec l'interface détruite rendait l'appareil **injoignable par le réseau** (aucune page, pas même l'envoi de mise à jour) **tout en continuant de doser** ; seul un câble USB permettait de réparer.
+
+### Firmware
+- **Serveur web** : `begin()` ne s'interrompt plus quand LittleFS ne se monte pas ; le serveur démarre toujours avec la **même table de routes** (aucun mode dégradé, aucun drapeau). Sans filesystem, les routes de page répondent `501` (ou `404` avec `If-None-Match`). Le log `CRITICAL` « LittleFS non disponible » est conservé.
+- **Nouveaux endpoints** : `GET /recovery` (publique, avant la garde 503, servie depuis la flash sans copie en tas) et `GET /ui` (après la garde). `/` et `/index.html` rendent la page de secours quand elle est armée.
+- **OTA** : marqueur persistant en NVS (`pool-ota`/`fsupd`) posé avant le démontage du filesystem et levé après un succès **filesystem** uniquement ; déclencheur à trois entrées (marqueur, montage, index) réévalué sans redémarrage. Une NVS illisible ou une famine mémoire **n'arment jamais** le secours.
+- **Mémoire flash** : +19 120 o (51,8 % utilisés).
+- ⚠️ **Risques inchangés** (acceptables pour un réseau domestique privé) : secrets en clair en NVS, premier démarrage ouvert, HTTP en clair. Cette fonction **ne ferme pas** le vecteur « jeton admin volé ».
+
+### Documentation
+- **[ADR-0124](docs/adr/0124-le-mode-degrade-n-est-pas-un-mode-la-porte-de-sortie-du-serveur-web.md)** : le mode dégradé n'est pas un mode — la porte de sortie du serveur web.
+- `docs/API.md`, `docs/subsystems/web-server.md`, `docs/subsystems/ota-manager.md`, `docs/DESIGN_SYSTEM.md` (§5.21), `docs/BUILD.md` (trois contrôles CI neufs : `degraded-mode-absent`, `recovery-page-generated`, `fs-probe-paths`), `docs/UPDATE_GUIDE.md` (procédure de secours, mode point d'accès, cas « internet nulle part » hors périmètre), `docs/user/src/guide-utilisation.html`.
+
+---
+
 ## [2.88.2] - 2026-11-15
 
 ### Fonctionnalités

@@ -39,8 +39,31 @@ Les routes sont réparties par domaine fonctionnel dans des fichiers séparés :
 | [`web_routes_calibration.cpp`](../../src/web_routes_calibration.cpp) | Calibration pH | `/calibrate_ph_neutral`, `/calibrate_ph_acid`, `/clear_ph_calibration` |
 | [`web_routes_ota.cpp`](../../src/web_routes_ota.cpp) | OTA | `/update`, `/check-update`, `/download-update` |
 | [`web_routes_auth.cpp`](../../src/) | Authentification | `/auth/login`, `/auth/token`, `/auth/change-password`, etc. |
+| [`web_routes_recovery.cpp`](../../src/web_routes_recovery.cpp) | Page de secours OTA (D3-b1) | `/recovery`, `/ui` |
 
 Toutes les routes sont enregistrées dans `setupRoutes()` via des fonctions `register_*_routes(AsyncWebServer*)` déclarées dans les headers `web_routes_*.h`.
+
+## Démarrage sans filesystem et page de secours OTA (feature-151 D3-b1, [ADR-0124](../adr/0124-le-mode-degrade-n-est-pas-un-mode-la-porte-de-sortie-du-serveur-web.md))
+
+`begin()` ne retourne **plus** quand `LittleFS.begin()` échoue : le `CRITICAL` « LittleFS non disponible pour le serveur Web » est conservé, puis `otaRecoveryInit()` (lecture du marqueur NVS), `setupRoutes()`, une première `otaRecoveryDrain()` et `server->begin()` s'exécutent **toujours**. `update()` rappelle `otaRecoveryDrain()` à chaque tour : le déclencheur est réévalué après toute transition (pose/levée du marqueur, remontage réussi ou raté), donc le secours s'arme et se lève **sans redémarrage**. Avant ce lot, un redémarrage avec `spiffs` détruite laissait l'appareil sans aucune route — injoignable alors que la régulation continuait de doser.
+
+### ⛔ Invariant : table de routes identique dans les deux états, aucun drapeau
+
+Il n'existe **pas** de « mode dégradé » : pas de variable `degraded`, aucune route enregistrée conditionnellement, aucune décision d'authentification qui dépende de l'état du montage. Sans filesystem, les routes de page rendent **501** (404 avec `If-None-Match`) car `VFSImpl::exists()`/`open()` sortent avant tout `fopen` quand le point de montage est nul. ⛔ Aucun code ni test ne doit attendre un `404`.
+
+**Outillé** par [`tools/check_degraded_mode_absent.sh`](../../tools/check_degraded_mode_absent.sh) (CI : job `degraded-mode-absent`) — il porte sur les **symboles**, pas sur les fichiers : les sites d'écriture du marqueur vivent *dans* `web_routes_ota.cpp`, le fichier même du prédicat de signature, donc « aucune mention de ce fichier » serait faux d'emblée. Il vérifie : `otaRecoveryActive` absent de `auth.*` ; `web_routes_ota.cpp` n'utilise que l'interface d'**écriture** ; exactement **un** lecteur de l'état (`web_routes_recovery.cpp`) ; aucun `return` entre le montage et `setupRoutes()` ; un seul `if` sur LittleFS dans `web_server.cpp` ; aucun identifiant `degraded*` ; aucun `LittleFS.begin(true…)`. ⚠️ `grep` est ligne à ligne : un lecteur passant par un autre symbole (relecture directe de la NVS) lui échapperait — la revue reste le dernier rempart.
+
+### Position par rapport à la garde 503
+
+| Route | Position | Raison |
+|---|---|---|
+| `GET /recovery` | **avant** la garde (`setupRecoveryRoutes`) | servie depuis la flash, doit répondre même en famine |
+| `GET /ui` | **après** la garde (`setupRecoveryUiRoute`) | ouvre un fichier ; sert `/index.html` sans condition (échappatoire en cas de faux positif) |
+| `/`, `/index.html` | **après** la garde | rendent la page de secours si `otaRecoveryActive()`, sinon `/index.html` |
+
+⚠️ En famine mémoire, `/` reste refusé (503) : seul `/recovery` répond. Les remonter changerait la politique d'exemption de toute l'interface — hors périmètre.
+
+`/recovery` est servie par la surcharge `(const uint8_t*, size_t)` ⇒ `AsyncProgmemResponse`, **zéro copie en tas** (🔴 jamais la surcharge `const char*`, qui copie ~16 Ko dans une `String` pour un `maxBloc8` nominal d'environ 21 Ko). La page est **générée** (`tools/gen_recovery_page.js` → `src/ota_recovery_page.cpp`, versionné) ; voir [ota-manager.md](ota-manager.md#page-de-secours-et-marqueur-persistant-feature-151-d3-b1-adr-0124).
 
 ## Garde 503 « fichiers statiques » (v2.41.0, bug-080 lot B-3, [ADR-0067](../adr/0067-garde-503-avant-fopen-handler-prioritaire.md))
 
@@ -296,4 +319,5 @@ En mode AP (premier démarrage ou factory reset), un `DNSServer` est associé po
 - [`src/web_routes_*.cpp`](../../src/) — implémentations par domaine
 - [`src/ws_manager.cpp`](../../src/ws_manager.cpp) — le WebSocket est également attaché à ce serveur
 - [docs/API.md](../API.md) — matrice des endpoints et niveaux d'auth
+- [`src/web_routes_recovery.cpp`](../../src/web_routes_recovery.cpp), [`src/ota_recovery_marker.h`](../../src/ota_recovery_marker.h) — page de secours et marqueur ([ADR-0124](../adr/0124-le-mode-degrade-n-est-pas-un-mode-la-porte-de-sortie-du-serveur-web.md))
 - [auth.md](auth.md)

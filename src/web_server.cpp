@@ -9,6 +9,8 @@
 #include "web_routes_sensor_id.h"
 #include "web_routes_debug.h"
 #include "web_routes_heap.h"
+#include "web_routes_recovery.h"   // feature-151 D3-b1 : page de secours OTA
+#include "ota_recovery_marker.h"
 #include "auth.h"
 #include "config.h"
 #include "constants.h"
@@ -47,13 +49,26 @@ void WebServerManager::begin(AsyncWebServer* webServer, DNSServer* dnsServer) {
   server = webServer;
   dns = dnsServer;
 
-  // Vérifier que LittleFS est monté
+  // Vérifier que LittleFS est monté — MAIS NE PAS S'ARRÊTER SI NON.
+  // feature-151 D3-b1 (A1) : l'ancien `return` laissait l'appareil INJOIGNABLE
+  // (aucune route, serveur jamais démarré) — exactement quand la page de secours
+  // OTA est le seul moyen de réparer sans câble. Le CRITICAL est CONSERVÉ ; il ne
+  // retourne plus. Table de routes IDENTIQUE dans les deux états (A2) : aucun
+  // enregistrement conditionnel, et aucune variable « dégradé » (A3) — sans
+  // filesystem les routes de page rendent 501 (404 avec If-None-Match), les
+  // routes JSON et l'authentification marchent comme d'habitude.
+  // ⛔ Jamais LittleFS.begin(true) (A7) : un formatage détruirait les données.
   if (!LittleFS.begin()) {
     systemLogger.critical("LittleFS non disponible pour le serveur Web");
-    return;
   }
 
+  otaRecoveryInit();  // lit le marqueur NVS « mise à jour du filesystem en cours »
+
   setupRoutes();
+
+  // Première évaluation du déclencheur, AVANT d'accepter la moindre requête
+  // (contexte setup : sonde d'index et journal autorisés).
+  otaRecoveryDrain();
 
   // Démarrer le serveur web
   server->begin();
@@ -102,6 +117,7 @@ void WebServerManager::setupRoutes() {
   setupCoredumpRoutes(server);
   setupSensorIdRoutes(server);  // feature-020 : identification 2 sondes DS18B20
   setupDebugRoutes(server);     // ph_slope_refresh + sensor_filter_reset/state (levier sécurité feature-025)
+  setupRecoveryRoutes(server);  // feature-151 D3-b1 : GET /recovery — AVANT la garde 503 (C2) : servie depuis la flash, même en famine
   setupHeapRoutes(server);      // feature-128 : recensement du tas (R2) + lecture de contenu (R3, S7/I9 : AVANT la garde 503 ci-dessous)
 
   // WebSocket (push temps réel : capteurs toutes les 5s, config après save, logs en direct)
@@ -193,6 +209,9 @@ void WebServerManager::setupRoutes() {
     return true;
   });
 
+  // feature-151 D3-b1 (S5) : GET /ui APRÈS la garde — elle ouvre un fichier.
+  setupRecoveryUiRoute(server);
+
   // Page de login (PUBLIC - doit être accessible sans auth)
   server->on("/login.html", HTTP_GET, [](AsyncWebServerRequest *req) {
     req->send(LittleFS, "/login.html", "text/html");
@@ -206,6 +225,7 @@ void WebServerManager::setupRoutes() {
   // Les pages HTML ne peuvent pas vérifier le token car les navigateurs n'envoient pas
   // de headers personnalisés lors des navigations (redirections, liens directs, etc.)
   server->on("/", HTTP_GET, [](AsyncWebServerRequest *req) {
+    if (serveRecoveryPageIfActive(req)) return;  // feature-151 D3-b1 (C3)
     req->send(LittleFS, "/index.html", "text/html");
   });
 
@@ -214,6 +234,7 @@ void WebServerManager::setupRoutes() {
   });
 
   server->on("/index.html", HTTP_GET, [](AsyncWebServerRequest *req) {
+    if (serveRecoveryPageIfActive(req)) return;  // feature-151 D3-b1 (C3)
     req->send(LittleFS, "/index.html", "text/html");
   });
 
@@ -308,6 +329,7 @@ void WebServerManager::drainLowHeapGuard() {
 void WebServerManager::update() {
   wsManager.update();
   drainLowHeapGuard();  // bug-080 B-3 : bornage du journal de la garde 503
+  otaRecoveryDrain();   // feature-151 D3-b1 (S4) : réévalue le secours après toute transition
 
   // Gérer le redémarrage après OTA (attendre que la réponse HTTP soit envoyée)
   if (restartRequested && (millis() - restartRequestedTime >= kRestartAfterOtaDelayMs)) {

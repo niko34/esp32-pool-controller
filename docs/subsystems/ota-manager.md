@@ -748,6 +748,29 @@ L'alternative (ne rien remonter, exiger un redémarrage) reste réversible en tr
 - `kOtaSha256HexLen = 64`, `kOtaSha256Prefix = "sha256:"` ([`constants.h`](../../src/constants.h)).
 - Tout refus d'intégrité émet un log **`CRITICAL`** avec empreintes attendue/calculée en hexadécimal ; l'empreinte de chaque upload manuel est loggée en `info`.
 
+## Page de secours et marqueur persistant (feature-151 D3-b1, [ADR-0124](../adr/0124-le-mode-degrade-n-est-pas-un-mode-la-porte-de-sortie-du-serveur-web.md))
+
+Quand l'interface web ne peut plus être servie, `/` et `/index.html` rendent une page de secours embarquée qui réinstalle le filesystem via `POST /update` (voir [web-server.md](web-server.md#démarrage-sans-filesystem-et-page-de-secours-ota-feature-151-d3-b1-adr-0124) pour les routes et leur place par rapport à la garde 503). **Aucun prédicat de décision OTA n'est modifié** : le refus du `sha256` absent (`web_routes_ota.cpp:807`) reste intact, aucun site `handleOtaUpdate` ni route `POST` neufs.
+
+### Marqueur persistant
+
+- NVS, namespace **`pool-ota`**, clé **`fsupd`** (`kOtaRecoveryNvsNamespace`, `kOtaRecoveryNvsKey`, `constants.h`). Hors de `spiffs` (NVS à `0x9000`) : il survit à la destruction de la partition. ⛔ Pas `poolctrl` (mutex de `config.cpp`, interdit depuis `async_tcp`).
+- **Posé** avant chacun des deux `LittleFS.end()` (`/update` et `/download-update`), **levé** après chacun des deux succès. **Pose et levée sont conditionnées au genre filesystem** (`decideOtaRecoveryMarkerAction`, S3) : le point de succès est partagé entre genres, un succès firmware ne lève jamais le marqueur du filesystem.
+- API ([`ota_recovery_marker.h`](../../src/ota_recovery_marker.h)) : `otaRecoveryInit()` (setup), `otaRecoveryOnUpdatePhase(isFs, phase)` et `otaRecoveryNoteTransition()` (écriture, appelables depuis `async_tcp`), `otaRecoveryDrain()` (loop uniquement), `otaRecoveryActive()` / `otaRecoveryReason()` (lecture O(1), sans E/S). `otaRecoveryActive()` n'a qu'**un seul lecteur**.
+- ⚠️ **Faux positif collant assumé** : coupure entre la pose et `LittleFS.end()` ⇒ marqueur posé sur un filesystem intact. Réparé par `GET /ui` ; un envoi filesystem réussi lève le marqueur.
+
+### Déclencheur à 3 entrées — `decideOtaRecoveryReason()` ([`ota_recovery_logic.h`](../../src/ota_recovery_logic.h))
+
+Fonction pure, testée en natif. **Priorité** : marqueur (`kFsUpdateInterrupted`) → montage (`kMountFailed`) → index (`kIndexMissing`). Le marqueur prime : c'est le seul signal d'un montage **réussi** sur un contenu incohérent.
+
+⛔ **Règles de repli — échouer vers le comportement d'avant, jamais vers un faux secours** : `indexProbed == false` (admission mémoire refusée, resondage toutes les `kOtaRecoveryReprobeMs` = 2 s) et `markerReadable == false` (NVS illisible) **n'arment JAMAIS** le secours ; une écriture NVS en échec laisse l'état RAM inchangé.
+
+La sonde d'index est `fsPathResolvableIfHeapAllows()` (`fs_guard.*`) : **`.gz` d'abord**, car `minify.js` n'écrit que des variantes `.gz`. La fonction pure ne vaut que ce que valent ses entrées — c'est [`tools/check_fs_probe_paths.sh`](../../tools/check_fs_probe_paths.sh) qui lie le sondeur au producteur.
+
+### Page générée
+
+[`src/ota_recovery_page.cpp`](../../src/ota_recovery_page.cpp) est **généré et versionné** (`node tools/gen_recovery_page.js`, source `ota_recovery_page.html.in` + extraits de `data/app.js` : SHA-256 et parseur de `.sig`, une seule implémentation). `tools/check_recovery_page_generated.sh` rougit à la dérive ; `check_release_artefacts.sh` le lance et arrête `/release`. Toute modification du SHA-256 ou de `parseSigFile` dans `data/app.js` impose de régénérer. Tests natifs : `test/test_native_ota_recovery/`.
+
 ## Interaction avec `pump_controller`
 
 **Sécurité critique** : dès qu'une OTA démarre, `PumpController.setOtaInProgress(true)` est appelé → `stopAll()` coupe les pompes doseuses. L'interruption d'une OTA firmware pendant une injection laisserait la pompe à un état indéterminé.
@@ -792,6 +815,7 @@ L'historique est **préservé** pendant une OTA filesystem car il vit sur une pa
 - [`src/ota_check_logic.h`](../../src/ota_check_logic.h) — logique pure `/check-update` (`AllocBudget`, `utf8SafeCutLen`, `classifyOtaCheckFailure` depuis bug-165 — 20 tests natifs `test/test_native_ota_check/`, à mesurer plutôt qu'à recopier, ADR-0073)
 - [`src/ota_response_buffer_logic.h`](../../src/ota_response_buffer_logic.h) — logique pure de la lecture bornée du corps de `/check-update` dans un tampon PSRAM (`otaBufferedReadNextAction`, `otaBufferedReadLengthMismatch`, `otaBufferedReadResultFor` — bug-173, [ADR-0119](../adr/0119-reponse-check-update-bufferisee-en-psram-bornee.md), tests natifs `test/test_native_ota_response_buffer/`, à mesurer plutôt qu'à recopier, ADR-0073)
 - [`src/github_root_ca.h`](../../src/github_root_ca.h) — **5 racines auto-signées** (3 depuis v2.16.2, +2 Sectigo E46/R46 depuis bug-165, 2026-10-14) : USERTrust RSA + USERTrust ECC (github.com / api.github.com, exp. 2038), ISRG Root X1 (objects.githubusercontent.com, exp. 2035), Sectigo Public Server Authentication Root E46 (ECC, exp. 2046) + Root R46 (RSA, exp. 2046) — chaîne ECC/RSA actuelle d'api.github.com — empreintes SHA-256 vérifiées, sources consignées dans le header, conformité imposée en CI par [`tools/check_github_root_ca.sh`](../../tools/check_github_root_ca.sh) (voir [règle dédiée](#règle--une-ancre-de-confiance-est-toujours-la-variante-auto-signée-bug-checkupdate-tls-core3-bug-165-adr-0111) ci-dessus)
+- [`src/ota_recovery_logic.h`](../../src/ota_recovery_logic.h)/`.cpp`, [`src/ota_recovery_marker.h`](../../src/ota_recovery_marker.h)/`.cpp`, [`src/ota_recovery_page.cpp`](../../src/ota_recovery_page.cpp) (généré), [`src/web_routes_recovery.cpp`](../../src/web_routes_recovery.cpp) — page de secours (D3-b1, [ADR-0124](../adr/0124-le-mode-degrade-n-est-pas-un-mode-la-porte-de-sortie-du-serveur-web.md), `test/test_native_ota_recovery/`)
 - [`partitions.csv`](../../partitions.csv)
 - [docs/UPDATE_GUIDE.md](../UPDATE_GUIDE.md)
 - [ADR-0007](../adr/0007-table-partitions-custom.md), [ADR-0022](../adr/0022-verification-integrite-ota.md), [ADR-0096](../adr/0096-empreinte-sha256-obligatoire-sur-post-update.md), [ADR-0119](../adr/0119-reponse-check-update-bufferisee-en-psram-bornee.md), [ADR-0120](../adr/0120-signature-rsa-du-manifeste-ota-verifiee-avant-refus.md), [ADR-0121](../adr/0121-fichier-sig-conteneur-de-transport-deux-lignes-jamais-reconstruit.md) (feature-151 D1-bis — le fichier `.sig` à deux lignes que la page web transporte, sans jamais le reconstruire), [ADR-0122](../adr/0122-socle-decision-ota-genre-empreinte-relais-sig.md) (feature-151 D3-a — genre, empreinte, relais du `.sig`), [ADR-0123](../adr/0123-une-seule-session-tls-sortante-par-requete-http.md) (bug-176 — une seule session TLS par requête, relais à la demande)

@@ -180,6 +180,12 @@ constexpr unsigned long kPhOrpSensorIntervalMs = 5000;    // 5s - Lecture pH/ORP
 constexpr unsigned long kRestartAfterOtaDelayMs = 3000;   // 3s - Attente avant restart après OTA
 constexpr unsigned long kRestartApModeDelayMs = 1000;     // 1s - Attente avant restart en mode AP
 
+// feature-151 D3-b1 — page de secours OTA
+constexpr unsigned long kOtaRecoveryReprobeMs = 2000;          // 2s - délai entre deux sondes d'index quand l'admission mémoire a été refusée
+constexpr const char* kOtaRecoveryNvsNamespace = "pool-ota";   // namespace NVS DÉDIÉ (jamais poolctrl : config.cpp + mutex, interdit depuis async_tcp)
+constexpr const char* kOtaRecoveryNvsKey = "fsupd";            // clé du marqueur « mise à jour du filesystem en cours »
+constexpr const char* kOtaRecoveryProbePath = "/index.html";   // sondé en .gz D'abord (minify.js n'écrit que les .gz) — lié par tools/check_fs_probe_paths.sh
+
 // Timeouts mutex
 constexpr unsigned long kI2cMutexTimeoutMs = 2000;        // 2s - Timeout acquisition mutex I2C
 constexpr unsigned long kConfigMutexTimeoutMs = 1000;     // 1s - Timeout acquisition mutex config

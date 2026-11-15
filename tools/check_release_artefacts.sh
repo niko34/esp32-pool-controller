@@ -60,6 +60,19 @@ if [ ! -f "$BIN" ] || [ ! -f "$ELF" ]; then
   exit 1
 fi
 
+# ---------------------------------------------------------------------------
+# feature-151 D3-b1 (S8) — la page de secours embarquée est À JOUR
+# ---------------------------------------------------------------------------
+# src/ota_recovery_page.cpp est GÉNÉRÉ puis versionné. La CI n'étant pas
+# bloquante pour une release, ce contrôle est lancé ICI, et il ARRÊTE : une
+# page de secours périmée (SHA-256 ou parseur de .sig divergent de l'interface)
+# échouerait fermée — le jour même où l'on en a besoin.
+if ! ./tools/check_recovery_page_generated.sh; then
+  echo "ERREUR S8 : la page de secours OTA embarquée est périmée ou éditée à la main." >&2
+  echo "Régénérer (node tools/gen_recovery_page.js), recompiler, puis relancer." >&2
+  exit 1
+fi
+
 bin_count=$(grep -a -c '/debug/heap_peek' "$BIN" || true)
 elf_count=$(grep -a -c '/debug/heap_peek' "$ELF" || true)
 bin_count=${bin_count:-0}

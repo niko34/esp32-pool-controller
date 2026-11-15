@@ -106,6 +106,26 @@ fs::File openIfHeapAllows(fs::FS* fs, const char* path, const char* mode,
 bool existsIfHeapAllows(fs::FS* fs, const char* path, uint32_t minAllocBytes);
 
 /**
+ * @brief Un chemin SERVI par `req->send(FS&, path)` se résoudrait-il ? (feature-151 D3-b1)
+ *
+ * MIROIR EXACT de la résolution d'AsyncWebServerRequest::send(FS&, path) :
+ * `path + ".gz"` d'abord, puis `path` nu. ⚠️ L'ORDRE EST LE POINT : `minify.js`
+ * (appelé par build_fs.sh) n'écrit QUE les variantes `.gz` — `data-build/` ne
+ * contient aucun `.html` nu. Sonder `path` seul rendrait « absent » sur un
+ * appareil SAIN. Le `.gz` est sondé EN PREMIER ⇒ un seul accès fichier sur un
+ * appareil normal. Admission mémoire UNIQUE couvrant les deux ouvertures.
+ *
+ * Sans log, sans String (appelable depuis `async_tcp`).
+ *
+ * @param probed sortie : false si l'admission a été REFUSÉE (famine) — dans ce
+ *               cas la valeur de retour (false) ne veut RIEN dire et l'appelant
+ *               ne doit pas la lire comme « absent ». Jamais nullptr.
+ * @return true si `path.gz` ou `path` s'ouvre ; valide seulement si *probed.
+ */
+bool fsPathResolvableIfHeapAllows(fs::FS* fs, const char* path, uint32_t minAllocBytes,
+                                  bool* probed);
+
+/**
  * @brief Drain de l'épisode de famine — exécuté depuis la LOOP uniquement.
  *
  * Quelques lignes par épisode, jamais une par refus : un journal persistant de
