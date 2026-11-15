@@ -99,10 +99,12 @@ static bool ensureTimeForTls(AsyncWebServerRequest* request) {
 }
 
 // SÉCURITÉ: Valider que l'URL provient d'un hôte autorisé
-static bool isUrlAllowed(const String& url) {
+// `logRefusal=false` : variante MUETTE (bug-176 S7) — /ota-sig ne journalise
+// JAMAIS l'URL (bug-112), y compris en cas de refus.
+static bool isUrlAllowed(const String& url, bool logRefusal = true) {
   // L'URL doit commencer par https://
   if (!url.startsWith("https://")) {
-    systemLogger.error("URL refusée (non HTTPS): " + url);
+    if (logRefusal) systemLogger.error("URL refusée (non HTTPS): " + url);
     return false;
   }
 
@@ -122,7 +124,7 @@ static bool isUrlAllowed(const String& url) {
     }
   }
 
-  systemLogger.error("Hôte refusé (non whitelisté): " + host);
+  if (logRefusal) systemLogger.error("Hôte refusé (non whitelisté): " + host);
   return false;
 }
 
@@ -1265,41 +1267,99 @@ static void logTlsHeapWindow(const char* routeName, const char* whenLabel) {
 }
 
 // =============================================================================
-// feature-151 D3-a : RELAIS d'un fichier `.sig` par /check-update.
+// feature-151 D3-a : RELAIS d'un fichier `.sig` — à la demande (bug-176, ADR-0123).
 // =============================================================================
 // Pourquoi : la page web ne peut PAS lire elle-même un asset de release (CORS),
 // et le manifeste + la signature doivent voyager dans /update et
 // /download-update. L'appareil les récupère donc, les VALIDE (parseOtaSigFile)
 // et ne relaie que le manifeste RE-SÉRIALISÉ + la ligne 2 validée — ⛔ jamais
-// les octets bruts reçus de GitHub.
+// les octets bruts reçus de GitHub (ADR-0121).
+// ⭐ ADR-0123 : /check-update ne relaie plus. Il MÉMORISE l'URL de chaque `.sig`
+// (g_sigSource) ; la page appelle GET /ota-sig?kind=… juste avant usage. Une
+// requête = UNE session TLS sortante (kOtaMaxTlsSessionsPerRequest).
 // Session TLS NEUVE : les `.sig` sont sur un hôte différent de l'API.
-// ⛔ NON BLOQUANT : tout échec rend false (champs vides côté réponse), journalisé
-// sous un nom ; aucun refus, aucune réponse HTTP d'erreur.
-// Mémoire : tampons STATIQUES de fichier (~1,8 Ko de .bss), réutilisés pour les
-// deux genres — ni pile (async_tcp = 8 Ko), ni malloc sur le chemin que
-// bug-165 tend déjà (ADR-0082). Aucun mutex : tous les handlers tournent sur la
-// seule tâche async_tcp, le relais est séquentiel par construction.
+// Mémoire : tampons STATIQUES de fichier (~1,8 Ko de .bss), réutilisés — ni
+// pile (async_tcp = 8 Ko), ni malloc sur le chemin que bug-165 tend déjà
+// (ADR-0082).
+// 🔒 CONCURRENCE : aucun mutex, aucune tâche. AsyncTCP n'instancie qu'UNE tâche
+// `async_tcp` et tous les handlers y sont sérialisés : g_sigFetchBuf,
+// g_sigRelayPayload et g_sigSource ne sont jamais touchés en parallèle.
 static uint8_t g_sigFetchBuf[kOtaSigFetchMaxBytes + 1];
 static OtaSigRelayPayload g_sigRelayPayload;
 
-static bool relayOtaSigFile(const char* kindLabel, const String& sigUrl) {
-  if (sigUrl.length() == 0) {
-    systemLogger.info(String("/check-update : relais .sig ") + kindLabel +
-                      " — aucune URL (release non signée ?) — champs vides");
-    return false;
+// Emplacement mémorisé par /check-update pour un genre (0 = firmware, 1 = filesystem).
+// Écrit UNIQUEMENT par handleCheckUpdate (effacé à l'entrée, rempli sur succès,
+// S3) ; lu par /ota-sig. L'URL ne vient JAMAIS du client.
+struct OtaSigSourceSlot {
+  OtaSigSourceState state;
+  char url[kOtaSigUrlMaxLen + 1];
+  char tag[kOtaSigTagMaxLen + 1];
+};
+static OtaSigSourceSlot g_sigSource[2];
+// Dernière tentative de session TLS par genre (S4, anti-déni).
+static bool g_sigHasAttempt[2] = {false, false};
+static uint32_t g_sigLastAttemptMs[2] = {0, 0};
+
+static void clearSigSourceSlots() {
+  for (auto& slot : g_sigSource) {
+    slot.state = OtaSigSourceState::kNeverChecked;
+    slot.url[0] = '\0';
+    slot.tag[0] = '\0';
   }
-  // Allowlist d'hôtes D'ABORD (avant toute connexion sortante).
+}
+
+// Mémorise (ou classe) l'asset `.sig` d'un genre. S7 : longueur vérifiée AVANT
+// isUrlAllowed. Appelé seulement après un parse GitHub réussi.
+static void storeSigSource(OtaSigSourceSlot& slot, const String& sigUrl, const String& tag) {
+  slot.url[0] = '\0';
+  slot.tag[0] = '\0';
+  if (sigUrl.length() == 0) {
+    slot.state = OtaSigSourceState::kCheckedNoAsset;  // réponse analysée, pas d'asset (S2)
+    return;
+  }
+  if (sigUrl.length() > kOtaSigUrlMaxLen || tag.length() > kOtaSigTagMaxLen) {
+    slot.state = OtaSigSourceState::kTooLong;
+    return;
+  }
   if (!isUrlAllowed(sigUrl)) {
-    systemLogger.warning(String("/check-update : relais .sig ") + kindLabel +
-                         " — hôte non autorisé — champs vides");
-    return false;
+    slot.state = OtaSigSourceState::kHostRefused;
+    return;
+  }
+  memcpy(slot.url, sigUrl.c_str(), sigUrl.length() + 1);
+  memcpy(slot.tag, tag.c_str(), tag.length() + 1);
+  slot.state = OtaSigSourceState::kPresent;
+}
+
+// Relaie UN `.sig` (une session TLS). `out` est EFFACÉ à l'entrée : l'appelant
+// ne le lit que si le statut rendu est kRelayed. `routeName` ne sert qu'aux
+// logs, qui ne contiennent JAMAIS l'URL (S7).
+static OtaSigRelayDecision relayOtaSigFile(const char* routeName, const char* kindLabel,
+                                           const String& sigUrl, OtaSigRelayPayload* out) {
+  memset(out, 0, sizeof(*out));
+  // Allowlist d'hôtes D'ABORD (avant toute connexion sortante) — défense en
+  // profondeur : déjà vérifiée à la mémorisation. Variante muette (S7).
+  if (!isUrlAllowed(sigUrl, false)) {
+    systemLogger.warning(String(routeName) + " : relais .sig " + kindLabel +
+                         " — hôte non autorisé");
+    return otaSigRelayDecide(OtaSigFetchOutcome::kHostRefused);
   }
   // Garde TLS : PRÉDICAT seul (jamais le 503) — on se saute si elle est fermée.
-  if (otaTlsGateClosed(heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM), heapFree8Bit(),
-                       heapLargestFreeBlock8Bit())) {
-    systemLogger.warning(String("/check-update : relais .sig ") + kindLabel +
-                         " — garde TLS fermée (mémoire) — relais sauté, champs vides");
-    return false;
+  // ⚠️ Les trois mesures sont prises en LOCALES AVANT de formater : le WARN les
+  // rend avec leurs seuils (même modèle que refuseIfTlsGateClosed), faute de quoi
+  // un saut est indiagnosticable à distance (bug-176).
+  const uint32_t psramLargest = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM);
+  const uint32_t freeHeap = heapFree8Bit();
+  const uint32_t maxAlloc = heapLargestFreeBlock8Bit();
+  if (otaTlsGateClosed(psramLargest, freeHeap, maxAlloc)) {
+    systemLogger.warning(String(routeName) + " : relais .sig " + kindLabel +
+                         " — garde TLS fermée (mémoire) : plus gros bloc PSRAM=" +
+                         String(psramLargest) + " o (min " +
+                         String(kOtaTlsMinPsramLargestBlockBytes) +
+                         "), heap interne 8 bits libre=" + String(freeHeap) + " o (min " +
+                         String(kCheckUpdateMinFreeHeapBytes) +
+                         "), plus gros bloc interne 8 bits=" + String(maxAlloc) + " o (min " +
+                         String(kCheckUpdateMinMaxAllocBytes) + ") — relais sauté");
+    return otaSigRelayDecide(OtaSigFetchOutcome::kGateClosed);
   }
 
   WiFiClientSecure sigClient;
@@ -1309,20 +1369,23 @@ static bool relayOtaSigFile(const char* kindLabel, const String& sigUrl) {
   sigHttp.setConnectTimeout(kOtaTlsConnectTimeoutMs);
   sigHttp.setTimeout(kOtaTlsSocketTimeoutMs);
   sigHttp.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+  // bug-176 G1 / S1 : défaut de la bibliothèque = 10 redirections DANS un seul
+  // GET(), sans nourrir le watchdog (~90 s contre 30 s de TWDT). Borne : constants.h.
+  sigHttp.setRedirectLimit(kOtaMaxRedirectsPerGet);
   sigHttp.useHTTP10(true);  // pas de Transfer-Encoding chunked : getStream() = corps brut
   if (!sigHttp.begin(sigClient, sigUrl)) {
-    systemLogger.warning(String("/check-update : relais .sig ") + kindLabel +
-                         " — begin() impossible — champs vides");
-    return false;
+    systemLogger.warning(String(routeName) + " : relais .sig " + kindLabel +
+                         " — begin() impossible");
+    return otaSigRelayDecide(OtaSigFetchOutcome::kBeginFailed);
   }
   sigHttp.addHeader("User-Agent", "ESP32-Pool-Controller");
   esp_task_wdt_reset();  // AVANT le GET bloquant (calcul des bornes : constants.h)
   const int code = sigHttp.GET();
   if (code != HTTP_CODE_OK) {
-    systemLogger.warning(String("/check-update : relais .sig ") + kindLabel + " — HTTP " +
-                         String(code) + " — champs vides");
+    systemLogger.warning(String(routeName) + " : relais .sig " + kindLabel + " — HTTP " +
+                         String(code));
     sigHttp.end();
-    return false;
+    return otaSigRelayDecide(OtaSigFetchOutcome::kHttpError);
   }
 
   // Lecture BORNÉE : au plus kOtaSigFetchMaxBytes + 1 octets (le +1 détecte le
@@ -1359,29 +1422,96 @@ static bool relayOtaSigFile(const char* kindLabel, const String& sigUrl) {
   sigHttp.end();
 
   if (tooLong) {
-    systemLogger.warning(String("/check-update : relais .sig ") + kindLabel +
-                         " — corps > " + String(kOtaSigFetchMaxBytes) + " o — champs vides");
-    return false;
+    systemLogger.warning(String(routeName) + " : relais .sig " + kindLabel +
+                         " — corps > " + String(kOtaSigFetchMaxBytes) + " o");
+    return otaSigRelayDecide(OtaSigFetchOutcome::kBodyTooLong);
   }
   if (timedOut) {
-    systemLogger.warning(String("/check-update : relais .sig ") + kindLabel + " — délai de " +
-                         String(kOtaSigFetchReadTimeoutMs) + " ms dépassé — champs vides");
-    return false;
+    systemLogger.warning(String(routeName) + " : relais .sig " + kindLabel + " — délai de " +
+                         String(kOtaSigFetchReadTimeoutMs) + " ms dépassé");
+    return otaSigRelayDecide(OtaSigFetchOutcome::kTimedOut);
   }
   const OtaSigParseVerdict parse = parseOtaSigFile(reinterpret_cast<const char*>(g_sigFetchBuf),
-                                                   bytesRead, &g_sigRelayPayload);
+                                                   bytesRead, out);
   if (parse != OtaSigParseVerdict::kOk) {
-    systemLogger.warning(String("/check-update : relais .sig ") + kindLabel +
-                         " — fichier hors grammaire (" + otaSigParseVerdictLabel(parse) +
-                         ") — champs vides");
-    return false;
+    systemLogger.warning(String(routeName) + " : relais .sig " + kindLabel +
+                         " — fichier hors grammaire (" + otaSigParseVerdictLabel(parse) + ")");
+    memset(out, 0, sizeof(*out));  // jamais de reste partiel lisible
+    return otaSigRelayDecide(OtaSigFetchOutcome::kBadGrammar);
   }
-  systemLogger.info(String("/check-update : relais .sig ") + kindLabel + " — validé (" +
+  systemLogger.info(String(routeName) + " : relais .sig " + kindLabel + " — validé (" +
                     String(bytesRead) + " o)");
-  return true;
+  return otaSigRelayDecide(OtaSigFetchOutcome::kValidated);
+}
+
+// GET /ota-sig?kind=firmware|filesystem — relais À LA DEMANDE (bug-176, ADR-0123).
+// ⛔ Jamais 503 : garde TLS fermée et horloge non synchronisée sont rendues en 200
+// `unavailable` + motif (S5). 400 bad_kind seulement si `kind` est mal formé.
+// L'URL sort de g_sigSource, JAMAIS du client ; elle n'est jamais journalisée (S7).
+static void sendOtaSigReply(AsyncWebServerRequest* request, const char* kindLabel,
+                            const char* tag, OtaSigRelayDecision d,
+                            const OtaSigRelayPayload* payload) {
+  JsonDocument doc;
+  doc["kind"] = kindLabel;
+  doc["tag"] = String(tag);
+  doc["status"] = otaSigRelayStatusCode(d.status);
+  doc["reason"] = otaSigRelayReasonCode(d.reason);
+  // Copie EXPLICITE en String : jamais un const char* vers la statique partagée.
+  // `payload` n'est non nul que pour kRelayed.
+  doc["manifest"] = (payload != nullptr) ? String(payload->canonical) : String();
+  doc["signature"] = (payload != nullptr) ? String(payload->signatureBase64) : String();
+  String json;
+  serializeJson(doc, json);
+  request->send(200, "application/json", json);
+}
+
+static void handleOtaSig(AsyncWebServerRequest* request) {
+  uint8_t kindIdx = 0;
+  const AsyncWebParameter* kindParam = request->hasParam("kind") ? request->getParam("kind") : nullptr;
+  if (kindParam == nullptr ||
+      !otaSigKindFromParam(kindParam->value().c_str(), kindParam->value().length(), &kindIdx)) {
+    request->send(400, "application/json", "{\"code\":\"bad_kind\"}");
+    return;
+  }
+  const char* kindLabel = (kindIdx == 0) ? "firmware" : "filesystem";
+  OtaSigSourceSlot& slot = g_sigSource[kindIdx];
+
+  // 1) Décision AVANT toute connexion : « absent » seulement si analysé (S2).
+  const OtaSigSourceDecision src = otaSigSourceDecide(slot.state);
+  if (!src.proceed) {
+    sendOtaSigReply(request, kindLabel, slot.tag, src.decision, nullptr);
+    return;
+  }
+  // 2) Horloge (validation TLS) : 200 unavailable/time, pas 503 (S5).
+  if (!isTimeSynchronized()) {
+    sendOtaSigReply(request, kindLabel, slot.tag,
+                    {OtaSigRelayStatus::kUnavailable, OtaSigRelayReason::kTime}, nullptr);
+    return;
+  }
+  // 3) Anti-déni (S4) : AVANT toute connexion TLS, APRÈS l'authentification.
+  const uint32_t nowMs = millis();
+  if (otaSigThrottled(g_sigHasAttempt[kindIdx], g_sigLastAttemptMs[kindIdx], nowMs,
+                      kOtaSigMinIntervalMs)) {
+    sendOtaSigReply(request, kindLabel, slot.tag,
+                    {OtaSigRelayStatus::kUnavailable, OtaSigRelayReason::kThrottled}, nullptr);
+    return;
+  }
+  g_sigHasAttempt[kindIdx] = true;
+  g_sigLastAttemptMs[kindIdx] = nowMs;
+
+  // 4) UNE session TLS. Copie locale de l'URL (String) : isUrlAllowed est
+  // re-appelée dans le relais.
+  const String url(slot.url);
+  const OtaSigRelayDecision d = relayOtaSigFile("/ota-sig", kindLabel, url, &g_sigRelayPayload);
+  sendOtaSigReply(request, kindLabel, slot.tag, d,
+                  d.status == OtaSigRelayStatus::kRelayed ? &g_sigRelayPayload : nullptr);
 }
 
 static void handleCheckUpdate(AsyncWebServerRequest* request) {
+  // bug-176 S3 : emplacements `.sig` EFFACÉS à l'entrée, écrits seulement sur
+  // succès du parse GitHub. Un échec laisse « jamais vérifié » (=> no_check),
+  // jamais l'URL d'une vérification précédente.
+  clearSigSourceSlots();
   // bug-oom-accept-http-durcissement : IP client dans les logs (le crash du
   // 11/08 avait un profil TLS compatible mais l'appelant était invérifiable).
   String clientIp = request->client()->remoteIP().toString();
@@ -1725,6 +1855,7 @@ static void handleCheckUpdate(AsyncWebServerRequest* request) {
   }
 
   String latestVersion = doc["tag_name"].as<String>();
+  const String releaseTag = latestVersion;  // tag brut (bug-176) : mémorisé avec les URL `.sig`
   String currentVersion = FIRMWARE_VERSION;
 
   // Retirer le 'v' si présent au début de la version GitHub
@@ -1766,23 +1897,14 @@ static void handleCheckUpdate(AsyncWebServerRequest* request) {
     }
   }
 
-  // ---- feature-151 D3-a : relais des deux `.sig` (NON BLOQUANT) ---------------
-  // Position : APRÈS le parse et la libération du tampon brut (creux mémoire de
-  // la requête), AVANT la construction de la réponse. Les deux genres sont
-  // INDÉPENDANTS ; les chaînes sont copiées en String car le tampon statique
-  // est réutilisé d'un genre à l'autre. ⛔ Aucun return, aucune erreur HTTP.
-  String firmwareManifestRelay;
-  String firmwareSignatureRelay;
-  String filesystemManifestRelay;
-  String filesystemSignatureRelay;
-  if (relayOtaSigFile("firmware", firmwareSigUrl)) {
-    firmwareManifestRelay = g_sigRelayPayload.canonical;
-    firmwareSignatureRelay = g_sigRelayPayload.signatureBase64;
-  }
-  if (relayOtaSigFile("filesystem", filesystemSigUrl)) {
-    filesystemManifestRelay = g_sigRelayPayload.canonical;
-    filesystemSignatureRelay = g_sigRelayPayload.signatureBase64;
-  }
+  // ---- bug-176 (ADR-0123) : MÉMORISATION des URL `.sig`, aucun relais ici ------
+  // Un handler = au plus UNE session TLS (celle de l'API GitHub, déjà fermée).
+  // La page demande chaque signature via GET /ota-sig. La réponse a été analysée
+  // avec succès : c'est seulement ici qu'une absence d'asset vaut « absent » (S2).
+  storeSigSource(g_sigSource[0], firmwareSigUrl, releaseTag);
+  storeSigSource(g_sigSource[1], filesystemSigUrl, releaseTag);
+  const OtaSigRelayDecision fwSig = otaSigSourceDecide(g_sigSource[0].state).decision;
+  const OtaSigRelayDecision fsSig = otaSigSourceDecide(g_sigSource[1].state).decision;
 
   // Construire la réponse
   JsonDocument response;
@@ -1801,10 +1923,18 @@ static void handleCheckUpdate(AsyncWebServerRequest* request) {
   // Champs additifs (feature-151 D3-a) : manifeste canonique re-sérialisé par
   // l'appareil + signature base64 validée ; vides si relais impossible. Ils
   // TRANSITENT vers /download-update — ⛔ pas faits pour être affichés (DOM).
-  response["firmware_manifest"] = firmwareManifestRelay;
-  response["firmware_signature"] = firmwareSignatureRelay;
-  response["filesystem_manifest"] = filesystemManifestRelay;
-  response["filesystem_signature"] = filesystemSignatureRelay;
+  // bug-176 : ces 4 champs SUBSISTENT (contrat additif) mais sont TOUJOURS vides —
+  // la signature se demande désormais via GET /ota-sig.
+  response["firmware_manifest"] = "";
+  response["firmware_signature"] = "";
+  response["filesystem_manifest"] = "";
+  response["filesystem_signature"] = "";
+  // Statut par genre (bug-176) : ici « absent » (analysé, pas d'asset) |
+  // « deferred » (URL mémorisée) ; « unavailable » + motif si mémorisation impossible.
+  response["firmware_sig_status"] = otaSigRelayStatusCode(fwSig.status);
+  response["firmware_sig_reason"] = otaSigRelayReasonCode(fwSig.reason);
+  response["filesystem_sig_status"] = otaSigRelayStatusCode(fsSig.status);
+  response["filesystem_sig_reason"] = otaSigRelayReasonCode(fsSig.reason);
   response["release_name"] = doc["name"];
   response["published_at"] = doc["published_at"];
   // bug-crash-getlogs-badalloc (audit) : le corps de release GitHub n'est pas
@@ -2034,9 +2164,19 @@ static void handleDownloadUpdate(AsyncWebServerRequest* request) {
   // Validation TLS complète avec certificats couvrant github.com ET objects.githubusercontent.com
   // Le fichier github_root_ca.h contient les chaînes RSA et ECC pour tous les domaines GitHub
   client.setCACert(GITHUB_ROOT_CA);
-
+  // bug-176 : QUATRIÈME session TLS sortante du projet, jamais couverte par le
+  // correctif C1 de feature-151 (qui ne visait que les TROIS sessions de
+  // « Vérifier »). Sans ces deux bornes, le handshake garde le défaut de la
+  // bibliothèque — 120 s — contre kWatchdogTimeoutSec = 30 s : un redémarrage
+  // par watchdog PENDANT un téléchargement de firmware, sur un appareil qui dose.
+  // ⛔ Le délai de lecture du socket n'est volontairement PAS posé ici : sur une
+  // image de ~1,9 Mo, une échéance mal dimensionnée couperait une liaison lente.
+  // C'est l'objet de bug-174 (échéance d'INACTIVITÉ), pas de ce lot.
+  client.setHandshakeTimeout(kOtaTlsHandshakeTimeoutSec);
   HTTPClient http;
+  http.setConnectTimeout(kOtaTlsConnectTimeoutMs);
   http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+  http.setRedirectLimit(kOtaMaxRedirectsPerGet);  // bug-176 G1 : défaut 10 sauts sans nourrir le TWDT
 
   if (!http.begin(client, url)) {
     systemLogger.error("Impossible de se connecter à GitHub pour téléchargement");
@@ -2336,6 +2476,12 @@ void setupOtaRoutes(AsyncWebServer* server) {
   server->on("/check-update", HTTP_GET, [](AsyncWebServerRequest *req) {
     REQUIRE_AUTH(req, RouteProtection::WRITE); // Protection + rate limiting
     handleCheckUpdate(req);
+  });
+
+  // bug-176 (ADR-0123) : relais à la demande d'un `.sig` — UNE session TLS par requête.
+  server->on("/ota-sig", HTTP_GET, [](AsyncWebServerRequest *req) {
+    REQUIRE_AUTH(req, RouteProtection::WRITE);
+    handleOtaSig(req);
   });
 
   server->on("/download-update", HTTP_POST, [](AsyncWebServerRequest *req) {

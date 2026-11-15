@@ -2,6 +2,25 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [2.88.0] - 2026-11-15
+
+### Fonctionnalités
+- **Mise à jour en ligne** : « Vérifier » est **plus rapide** (environ 4,5 s de blocage de l'appareil au lieu de 11 s). La signature de la release n'est plus récupérée pendant la vérification, mais **au moment d'installer**.
+- **Mise à jour en ligne** : si la signature n'a pas pu être récupérée, une ligne discrète au-dessus des boutons le dit (« Signature non récupérée. Cliquez sur Vérifier pour réessayer. ») et le bouton devient « Mettre à jour sans vérification ». Un seul clic installe, sans seconde confirmation. ⛔ **Rien ne s'affiche quand la release n'est simplement pas signée** (cas normal des versions antérieures).
+
+### Firmware
+- **OTA** : nouvelle route `GET /ota-sig?kind=firmware|filesystem` — une seule session TLS par requête ([ADR-0123](docs/adr/0123-une-seule-session-tls-sortante-par-requete-http.md)). Corrige le saut du relais de la signature du système de fichiers, constaté 9 fois sur 9 quand une page était ouverte (les trames reçues pendant le blocage de la tâche réseau saturaient la mémoire interne).
+- **OTA `/check-update`** : ajout de `firmware_sig_status` / `firmware_sig_reason` / `filesystem_sig_status` / `filesystem_sig_reason` (distinguent « release non signée » de « signature non récupérée »). ⚠️ Les quatre champs `*_manifest` / `*_signature` subsistent mais sont désormais **toujours vides** : un client existant qui les lisait doit appeler `/ota-sig`.
+- **OTA** : le journal d'un relais sauté indique désormais les trois mesures mémoire et leurs trois seuils (jamais l'URL).
+- **OTA** : intervalle minimal de 10 s par genre entre deux demandes de signature (`kOtaSigMinIntervalMs`), sans ouvrir de connexion si trop rapproché.
+- **OTA — correction d'un risque de redémarrage** : le nombre de redirections suivies par chaque connexion vers GitHub est limité à 1 (`setRedirectLimit`, il était de 10 par défaut, sans que le chien de garde soit nourri), et le téléchargement d'une image (`/download-update`) gagne ses délais de connexion et de négociation TLS (30 s de chien de garde contre 120 s de négociation par défaut) : un redémarrage par watchdog pendant un téléchargement n'est plus possible par ce chemin.
+
+### Documentation
+- `docs/adr/0123-une-seule-session-tls-sortante-par-requete-http.md` : décision, arbitrage chiffré des 5 variantes, contrainte d'ordre pour le lot D3-c.
+- `docs/API.md` (`/ota-sig`, champs de `/check-update`), `docs/subsystems/ota-manager.md`, `docs/UPDATE_GUIDE.md`, `docs/features/page-settings.md`, `docs/user/src/guide-utilisation.html`.
+
+---
+
 ## [2.87.1] - 2026-11-15
 
 > ⭐ **Première release SIGNÉE du projet.** Elle porte `firmware.bin.sig` et `littlefs.bin.sig`,

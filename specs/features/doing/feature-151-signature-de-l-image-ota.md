@@ -297,7 +297,7 @@ seul le `if` de refus change.
 | **D2** | **Preuve terrain** : 4 combinaisons (script × page) × (firmware × FS) + **2 essais négatifs**. | D1 | ⛔ Tant que ce n'est pas vert, **D3 n'est pas écrit** |
 | **D3-a** | ⛔ **Aucun refus.** Le **genre signé** devient l'autorité (cond. 2, 3, 9) + relais CORS du `.sig`. | D1 | ⛔ **Arrêt terrain obligatoire** : `/download-update` n'a JAMAIS vu de manifeste |
 | **D3-b** | ⛔ **Aucun refus.** **La porte de sortie** : mode dégradé du serveur web + page de secours embarquée (cond. 6, 7, 8). | D3-a | ⭐ Récupération prouvée **en conditions réelles**, `spiffs` détruite |
-| **D3-c** | ✅ **Le refus.** Les `if`, les verdicts HTTP distincts, plancher **inerte à 0.0.0**, interrupteur. | D3-b | ⛔ Ne commence pas tant que D3-b n'est pas prouvé |
+| **D3-c** | ✅ **Le refus.** Les `if`, les verdicts HTTP distincts, plancher **inerte à 0.0.0**, interrupteur. | D3-b | ⛔ Ne commence pas tant que D3-b n'est pas prouvé. 🔴 **ET ne sort PAS dans le même firmware que bug-176 (2.88.0)** — voir « CONTRAINTE D'ORDRE » en fin de spec |
 | **D4** | Bump sans effet, firmware + FS, script **et** page. ⭐ **Premier déploiement réellement filtré.** | D3 | 4 déploiements acceptés |
 | **D5** | Relèvement du plancher (geste explicite). | — | D4 vert |
 
@@ -1636,3 +1636,90 @@ regarder. ⛔ Ne pas clore le lot en affirmant que l'indicateur fonctionne.
 ## Mesures après C1
 `pio run` SUCCESS (Flash **51,2 %** ; seuls warnings : bibliothèque OneWire, **préexistants**) ·
 `./build_fs.sh` SUCCESS · **80 suites, 2 402 cas, 2 402 réussis** · `grep -c "TOLÉRANCE D3-a"` = **4**.
+
+## ✅ ESSAI DE TERRAIN (2026-11-15) — D3-a VALIDÉ en production, et **deux défauts trouvés**
+
+**L'appareil est passé de 2.87.0 à 2.87.1 par la page, en ligne, de bout en bout.** C'est le
+premier parcours réel complet de la chaîne signée.
+
+### 1. L'indicateur de progression a été VU — la réserve ci-dessus est levée
+Mots de l'utilisateur : *« j'ai vue l'animation du spinner avec un message qui dis que ça
+vérifie sur Github, quelques secondes »*. ⇒ Le libellé et l'attente tiennent sur téléphone.
+
+### 2. Le relais fonctionne — mesure
+`GET /check-update` : **HTTP 200 en 11,4 s**, `update_available` vrai, et les deux relais
+peuplés lors d'un essai en `curl` :
+`pool-ota/1 firmware 2.87.1 sha256:c39b2947…4dd6` et
+`pool-ota/1 filesystem 2.87.1 sha256:77fc24ae…4cfa`, signatures de 512 caractères.
+⇒ Les 11,4 s **confirment le calcul de C1** et rendent le libellé « quelques secondes » honnête.
+
+### 3. 🔴 DÉFAUT — le relais du filesystem a été SAUTÉ lors de l'essai depuis le téléphone
+```
+12:19:37 INFO /check-update : relais .sig firmware   — validé (612 o)
+12:19:37 WARN /check-update : relais .sig filesystem — garde TLS fermée (mémoire)
+```
+Conséquence à l'installation, journal persistant :
+```
+12:32:16 WARN /download-update — authenticité OTA : ABSENTE — D3 refuserait : OUI   (filesystem)
+12:32:25 INFO /download-update — authenticité OTA : valide  — D3 refuserait : non   (firmware)
+12:32:55 INFO /download-update — liaison manifeste/image : LIÉE                      (firmware)
+```
+⇒ **Le firmware a été authentifié, le filesystem non.** En D3-c, ce filesystem aurait été refusé.
+
+**Mesure de la cause** : heap interne 8 bits **libre = 31 024 o** contre un seuil de
+**32 768 o** — ⚠️ **il a manqué 1 744 o**, soit 5 %. Les deux autres critères étaient tenus
+(plus gros bloc interne 28 660 o ≥ 24 576 ; PSRAM 4 128 756 o ≥ 40 960). Cause structurelle :
+**trois sessions TLS successives dans une seule requête** ; le heap ne remonte pas entre elles
+(47 388 o à l'entrée, 31 024 o au troisième appel). ⚠️ **Intermittent** — le même appel en
+`curl` quelques minutes plus tôt avait ramené les deux signatures.
+
+⇒ ⛔ **BLOQUANT POUR D3-c** : livré tel quel, le refus frapperait **au hasard** les mises à
+jour du filesystem. ⇒ Spec ouverte : **`bug-176`**.
+
+### 4. ✅ La condition C2 n'est plus théorique — elle est DÉMONTRÉE
+« Release non signée » (`web_routes_ota.cpp:1286`) et « relais sauté » (`:1296`) produisent
+tous deux **des champs vides** : la page ne peut pas les distinguer. C'est très exactement la
+situation que C2 annonçait. ⇒ Traitée dans `bug-176`, à lever avant D3-c.
+
+### 5. 🔴 Angle mort d'observabilité
+Le WARN de saut (`web_routes_ota.cpp:1296-1298`) **ne journalise aucune mesure** — ni heap, ni
+seuil. Le diagnostic n'a été possible que parce que la sonde « Chute maxBloc8 » s'est
+déclenchée à la même seconde, **par coïncidence**. ⇒ Sans elle, le défaut était
+**indiagnosticable à distance**. Traité dans `bug-176` (livrable A3).
+
+### 6. 🔴 DÉFAUT CONNEXE — la page abandonne l'utilisateur au redémarrage
+`data/app.js` attend **quinze secondes en aveugle** puis recharge **une seule fois**, sans
+jamais vérifier que l'appareil est revenu. Relevé : redémarrage journalisé à 12:33:00, mDNS
+réannoncé à **12:33:11** ⇒ **quatre secondes de marge**. L'utilisateur est tombé sur la page
+d'erreur de son navigateur, sans explication et sans recours, **alors que l'appareil allait
+parfaitement bien** (vérifié : il répond en mDNS, `poolcontroller.local → 192.168.1.48`,
+TTL 120 s). Mots de l'utilisateur : *« ce n'est pas un comportement normal. Un utilisateur
+serait perdu »*. ⇒ **Hors périmètre de feature-151**, spec à ouvrir après `bug-176`.
+
+### 7. Contre-test encore à faire
+Une release **non signée** doit toujours s'installer, dans les deux genres. ⛔ Non vérifié à ce
+jour — à couvrir par `bug-176` (plan de test, scénario 4).
+
+## ✅ CONDITION C2 LEVÉE (2026-11-15, bug-176 / ADR-0123, v2.88.0)
+
+**C2 = distinguer « release non signée » de « relais indisponible ».** Levée par ce mécanisme :
+
+- `/check-update` mémorise les URL des `.sig` et rend `firmware_sig_status` / `filesystem_sig_status` (+ `*_sig_reason`). `absent` (`no_asset`) n'est émis **que** si la réponse GitHub a été analysée **avec succès** et ne contient pas d'asset de ce nom (état `kCheckedNoAsset`). Tout autre doute — jamais vérifié, URL trop longue, hôte refusé, mémoire, horloge, HTTP, délai, grammaire, anti-déni, **y compris une valeur d'état hors énumération** — est `unavailable` + motif d'une énumération fermée.
+- `GET /ota-sig?kind=` porte le même couple `status`/`reason` au moment de la demande de signature.
+- La page traite tout statut inconnu comme `unavailable`, ne dit rien pour `absent`, et affiche une ligne dédiée pour `unavailable`.
+- ⇒ En D3-c, le refus pourra dire **pourquoi** : « non signée » (`absent`) n'est plus confondu avec « non récupérée » (`unavailable`). Voir [ADR-0123](../../../docs/adr/0123-une-seule-session-tls-sortante-par-requete-http.md) et [`bug-176`](bug-176-relais-sig-filesystem-saute-sous-pression-memoire.md).
+
+⚠️ Reste à D3-c : décider **quel statut refuse** (`unavailable` ⇒ refus ? `deferred` jamais résolu ?) — une décision de lot, pas de C2.
+
+## 🔴 CONTRAINTE D'ORDRE POUR D3-c — à ne pas rater (2026-11-15, ADR-0123)
+
+**Le lot D3-c (le refus) ne doit PAS sortir dans le même firmware que bug-176 (2.88.0), ni dans une release dont le `littlefs.bin` n'a pas encore été installé partout.**
+
+Pourquoi : depuis 2.88.0 la signature n'est plus dans `/check-update` mais dans `GET /ota-sig`, appelé par la **page**. Une page **ancienne** (filesystem pas encore mis à jour) lit les anciens champs `*_manifest` / `*_signature`, **désormais toujours vides**, et envoie donc des paramètres vides à `/download-update`. Avec le refus de D3-c, elle serait **refusée — y compris pour installer le filesystem qui la corrigerait** : impasse pour le client.
+
+Conditions pour lancer D3-c :
+1. une release publiée dont le **filesystem porte la page neuve** (celle de 2.88.0), et installée sur l'appareil ;
+2. une **voie de réparation indépendante de la page** documentée et prouvée (script `ota_update.sh` signant, ou page de secours de D3-b) ;
+3. `grep` de la page déployée : `/ota-sig` présent dans `app.js` avant d'écrire les `if` de refus.
+
+⛔ Mécanisme de verrouillage : la case « D3-c » du plan de lots reste décochée tant que 1 et 2 ne sont pas consignés ici avec leur date.

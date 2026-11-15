@@ -258,6 +258,12 @@ plus ») : dans ce cas, la positionner **immédiatement adjacente** au badge/ban
 annonce la cause (`.sensor-badge`, `.regul-alert`), pas après le contrôle qui a produit l'état.
 Ce point est le cœur du défaut « message presque invisible » du 14/10.
 
+**Contexte d'emploi ajouté (bug-176)** : *pied de carte de réglage, près d'un contrôle* —
+`#update_sig_note` (carte « Mise à jour en ligne », avant les boutons Vérifier / Mettre à jour).
+Piloté par l'attribut `hidden`, `role="status"`, texte seulement pour l'état anormal ; le code
+brut du firmware va dans `title`. Aucune évolution du composant : CSS inchangé, donc aucun
+impact sur les 20 emplois de `index.html` ni sur l'emploi de `app.js`.
+
 ### 5.12 `.regul-alert` (+ `--inline`)
 Bandeau d'exception de régulation (escalade de sécurité pH, étalonnage en cours). Rouge
 clignotant (`__dot`) réservé aux alertes qui exigent un acquittement **sur la page

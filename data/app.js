@@ -10776,9 +10776,91 @@
 
   // feature-151 D3-a : manifeste + signature relayés tels quels à l'appareil (qui vérifiera).
   // Omis si vides : une release non signée s'installe comme avant. Jamais affichés.
+  // Tout-ou-rien : les deux paramètres ou aucun.
   function sigParams(manifest, signature) {
     if (!manifest || !signature) return "";
     return "&manifest=" + encodeURIComponent(manifest) + "&signature=" + encodeURIComponent(signature);
+  }
+
+  // Ligne d'information #update_sig_note : seul l'état anormal parle (l'absence d'avertissement
+  // est le message rassurant). Gravité par statut : 3 définitif (host, url_too_long, grammar),
+  // 2 passager (memory, time, timeout, http, no_check et TOUT statut inconnu), 1 throttled,
+  // 0 absent/deferred (muet). Le code brut va dans title et console, jamais dans le texte.
+  const INSTALL_LABEL_DEFAULT = "Mettre à jour";
+  const INSTALL_LABEL_UNVERIFIED = "Mettre à jour sans vérification";
+  function sigGravity(st, rs) {
+    if (st === "absent" || st === "deferred") return 0;
+    if (st === "unavailable" && rs === "throttled") return 1;
+    if (st === "unavailable" && (rs === "host" || rs === "url_too_long" || rs === "grammar")) return 3;
+    return 2;
+  }
+  const SIG_NOTE_TEXTS = [
+    "",
+    "Appareil trop sollicité. Réessayez dans 1 minute.",
+    "Signature non récupérée. Cliquez sur Vérifier pour réessayer.",
+    "Signature non récupérable pour cette version : rien ne sera vérifié.",
+  ];
+  let sigShownRank = 0; // gravité déjà affichée dans la séquence en cours (jamais dégradée)
+  function writeSigNote(rank, rawReason, reset) {
+    if (reset) sigShownRank = 0;
+    if (rank < sigShownRank) return;
+    sigShownRank = rank;
+    const note = $("#update_sig_note");
+    const text = SIG_NOTE_TEXTS[rank] || "";
+    if (note) {
+      note.textContent = text;
+      note.title = text && rawReason ? rawReason : "";
+      note.hidden = !text;
+    }
+    const b = $("#install_update_btn");
+    if (b) b.textContent = rank >= 1 ? INSTALL_LABEL_UNVERIFIED : INSTALL_LABEL_DEFAULT;
+  }
+  // /check-update : le pire des DEUX genres (les deux images s'installent). null = remise à zéro.
+  function renderSigNote(data) {
+    if (!data) { writeSigNote(0, "", true); return; }
+    let worst = { r: 0, rs: "" };
+    for (const k of ["firmware", "filesystem"]) {
+      const st = String(data[k + "_sig_status"] || "");
+      const rs = String(data[k + "_sig_reason"] || "");
+      const r = sigGravity(st, rs);
+      if (r > worst.r) worst = { r, rs };
+      if (r >= 1) console.warn("[ota-sig]", k, st, rs);
+    }
+    writeSigNote(worst.r, worst.rs, true);
+  }
+
+  // bug-176 : la signature se demande à l'appareil JUSTE AVANT chaque installation
+  // (GET /ota-sig). Appels SÉQUENTIELS uniquement (jamais Promise.all : handlers sérialisés
+  // côté firmware). Un échec n'est jamais silencieux : la ligne et le bouton le disent, puis
+  // l'installation CONTINUE (un seul clic) sans paramètres. Une divergence de tag est un
+  // unavailable passager (S3 : « non récupérée », jamais « non signée »).
+  async function fetchSigParams(kind, latestVersion) {
+    let st = "unavailable";
+    let rs = "http";
+    try {
+      const res = await authFetch("/ota-sig?kind=" + encodeURIComponent(kind));
+      if (res.ok) {
+        const d = await res.json();
+        st = String(d?.status || "");
+        rs = String(d?.reason || "");
+        if (st === "relayed") {
+          const norm = (v) => String(v || "").trim().replace(/^v/i, "").toLowerCase();
+          if (!d.tag || norm(d.tag) !== norm(latestVersion)) {
+            console.warn("[ota-sig]", kind, "tag divergent", d.tag, latestVersion);
+            writeSigNote(2, "tag");
+            return ""; // sans paramètres
+          }
+          return sigParams(d.manifest, d.signature);
+        }
+      }
+    } catch (_) {
+      st = "unavailable";
+      rs = "http";
+    }
+    const r = sigGravity(st, rs);
+    console.warn("[ota-sig]", kind, st, rs);
+    if (r >= 1) writeSigNote(r, rs);
+    return "";
   }
 
   function bindGithubUpdate() {
@@ -10808,6 +10890,7 @@
       }
       if (info) info.style.display = "none";
       if (installBtn) installBtn.disabled = true;
+      renderSigNote(null); // B6 : jamais les deux lignes ensemble, l'erreur du check prime
       if (progress) progress.style.display = "none";
       if (barWrap) barWrap.style.display = "";
 
@@ -10861,6 +10944,7 @@
               "Cette release ne fournit pas d'empreinte d'intégrité — installation refusée (sécurité).";
           } else {
             installBtn.disabled = !data.firmware_url;
+            renderSigNote(data);
           }
         } else {
           $("#update_available_msg").style.display = "none";
@@ -10919,6 +11003,7 @@
 
       checkBtn.disabled = true;
       installBtn.disabled = true;
+      sigShownRank = 0; // nouvelle séquence : une ancienne alerte ne survit pas
 
       progress.style.display = "block";
       if (barWrap) barWrap.style.display = "";
@@ -10937,13 +11022,14 @@
           }
         }, 800);
 
+        const fsSig = await fetchSigParams("filesystem", latestRelease.latest_version);
         const fsRes = await authFetch("/download-update", {
           method: "POST",
           headers: { "Content-Type": "application/x-www-form-urlencoded" },
           body:
             "url=" + encodeURIComponent(latestRelease.filesystem_url) +
             "&digest=" + encodeURIComponent(latestRelease.filesystem_digest) +
-            sigParams(latestRelease.filesystem_manifest, latestRelease.filesystem_signature) +
+            fsSig +
             "&restart=false",
         });
 
@@ -10990,13 +11076,14 @@
 
         let fwSuccess = false;
         try {
+          const fwSig = await fetchSigParams("firmware", latestRelease.latest_version);
           const fwRes = await authFetch("/download-update", {
             method: "POST",
             headers: { "Content-Type": "application/x-www-form-urlencoded" },
             body:
               "url=" + encodeURIComponent(latestRelease.firmware_url) +
               "&digest=" + encodeURIComponent(latestRelease.firmware_digest) +
-              sigParams(latestRelease.firmware_manifest, latestRelease.firmware_signature) +
+              fwSig +
               "&restart=true",
           });
 

@@ -47,6 +47,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <ctype.h>
 
 void setUp(void) {}
 void tearDown(void) {}
@@ -567,11 +568,54 @@ void test_download_kind_resolution_precedes_partition_choice(void) {
 }
 
 // =============================================================================
-// [G9] data/app.js, feature-151 D3-a : `manifest` ET `signature` figurent dans
-// les DEUX corps /download-update (filesystem puis firmware), via sigParams(),
-// et sigParams() émet bien les deux champs. Un seul oublié désarme en silence
-// la vérification d'authenticité sur l'une des deux étapes de la mise à jour.
+// [G9] data/app.js, bug-176 (ex feature-151 D3-a) : INTENTION INCHANGEE — chaque
+// corps /download-update porte manifeste ET signature. Les parametres viennent
+// desormais de `await fetchSigParams(<genre>, ...)` (GET /ota-sig?kind=), appele
+// JUSTE AVANT chaque POST, SEQUENTIELLEMENT. Proprietes figees :
+//   1. chaque corps porte la variable de signature ;
+//   2. cette variable vient d'un await fetchSigParams AVANT le POST ;
+//   3. fetchSigParams retourne sigParams(), qui reste tout-ou-rien ;
+//   4. LE GENRE CONCORDE : corps filesystem <- signature filesystem, firmware <- firmware ;
+//   5. aucun Promise.all sur /ota-sig (handlers serialises cote firmware).
 // =============================================================================
+static char* sliceCopy(const char* src, long from, long to) {
+  char* out = (char*)malloc((size_t)(to - from) + 2);
+  if (!out) return NULL;
+  memcpy(out, src + from, (size_t)(to - from) + 1);
+  out[to - from + 1] = '\0';
+  return out;
+}
+
+// Extrait l'identifiant `X` de `const X = await fetchSigParams("<kind>"`.
+static bool sigVarForKind(const char* src, const char* kind, char* name, size_t cap, long* atIdx) {
+  char needle[96];
+  snprintf(needle, sizeof(needle), " = await fetchSigParams(\"%s\"", kind);
+  if (countIn(src, needle) != 1) return false;
+  const long idx = indexOf(src, needle);
+  long b = idx;
+  while (b > 0 && (isalnum((unsigned char)src[b - 1]) || src[b - 1] == '_')) --b;
+  const size_t n = (size_t)(idx - b);
+  if (n == 0 || n + 1 > cap) return false;
+  memcpy(name, src + b, n);
+  name[n] = '\0';
+  *atIdx = idx;
+  return true;
+}
+
+// Le corps contient-il `+ <name> +` (variable passee comme terme de concatenation) ?
+static bool bodyUsesVar(const char* body, const char* name) {
+  char pat[96];
+  snprintf(pat, sizeof(pat), "+ %s +", name);
+  if (strstr(body, pat) != NULL) return true;
+  snprintf(pat, sizeof(pat), "%s +", name);
+  const char* p = strstr(body, pat);
+  while (p) {
+    if (p == body || !(isalnum((unsigned char)p[-1]) || p[-1] == '_')) return true;
+    p = strstr(p + 1, pat);
+  }
+  return false;
+}
+
 void test_download_bodies_carry_manifest_and_signature(void) {
   long len = 0;
   char* src = readProjectFile("data/app.js", &len);
@@ -581,45 +625,92 @@ void test_download_bodies_carry_manifest_and_signature(void) {
   TEST_ASSERT_EQUAL_INT_MESSAGE(2, countIn(src, callOpen),
       "authFetch(\"/download-update\", { doit apparaitre EXACTEMENT 2 fois (filesystem + firmware)");
 
-  const char* wanted[2][3] = {
-      {"sigParams(", "_manifest", "_signature"},
-      {"sigParams(", "_manifest", "_signature"},
-  };
+  // (2) + (4) : une variable de signature par genre, issue du bon genre.
+  char fsVar[48], fwVar[48];
+  long fsAt = -1, fwAt = -1;
+  TEST_ASSERT_TRUE_MESSAGE(sigVarForKind(src, "filesystem", fsVar, sizeof(fsVar), &fsAt),
+      "REGRESSION bug-176 : `X = await fetchSigParams(\"filesystem\"` doit apparaitre EXACTEMENT une fois");
+  TEST_ASSERT_TRUE_MESSAGE(sigVarForKind(src, "firmware", fwVar, sizeof(fwVar), &fwAt),
+      "REGRESSION bug-176 : `X = await fetchSigParams(\"firmware\"` doit apparaitre EXACTEMENT une fois");
+  TEST_ASSERT_TRUE_MESSAGE(strcmp(fsVar, fwVar) != 0,
+      "REGRESSION bug-176 : les deux genres partagent la meme variable de signature");
+
   const char* from = src;
   for (int k = 0; k < 2; ++k) {
     const char* hit = strstr(from, callOpen);
     TEST_ASSERT_NOT_NULL(hit);
-    const long openIdx = (long)(hit - src) + (long)strlen(callOpen) - 1;
+    const long callIdx = (long)(hit - src);
+    const long openIdx = callIdx + (long)strlen(callOpen) - 1;
     const long closeIdx = findMatchingBrace(src, openIdx);
     TEST_ASSERT_TRUE_MESSAGE(closeIdx > openIdx, "corps authFetch(/download-update) non referme");
-    char* body = (char*)malloc((size_t)(closeIdx - openIdx) + 2);
+    char* body = sliceCopy(src, openIdx, closeIdx);
     TEST_ASSERT_NOT_NULL(body);
-    memcpy(body, src + openIdx, (size_t)(closeIdx - openIdx) + 1);
-    body[closeIdx - openIdx + 1] = '\0';
-    for (int j = 0; j < 3; ++j) {
-      TEST_ASSERT_TRUE_MESSAGE(strstr(body, wanted[k][j]) != NULL,
-          "REGRESSION feature-151 D3-a : un corps /download-update ne porte plus "
-          "sigParams(<..>_manifest, <..>_signature)");
-    }
+
+    const bool isFsBody = (k == 0);
+    const char* mine = isFsBody ? fsVar : fwVar;
+    const char* other = isFsBody ? fwVar : fsVar;
+    const long mineAt = isFsBody ? fsAt : fwAt;
+    // le corps est bien celui du genre attendu (URL du bon artefact)
+    TEST_ASSERT_TRUE_MESSAGE(strstr(body, isFsBody ? "filesystem_url" : "firmware_url") != NULL,
+        "REGRESSION bug-176 : l'ordre des POST n'est plus filesystem puis firmware");
+    TEST_ASSERT_TRUE_MESSAGE(bodyUsesVar(body, mine),
+        "REGRESSION bug-176 : un corps /download-update ne porte plus la signature de SON genre "
+        "(manifeste + signature issus de fetchSigParams)");
+    TEST_ASSERT_FALSE_MESSAGE(bodyUsesVar(body, other),
+        "REGRESSION bug-176 : un corps /download-update porte la signature de l'AUTRE genre "
+        "(inversion filesystem/firmware : la verification d'authenticite echouerait ou serait faussee)");
+    TEST_ASSERT_TRUE_MESSAGE(mineAt < callIdx,
+        "REGRESSION bug-176 : la signature doit etre demandee (await fetchSigParams) AVANT le POST");
     free(body);
     from = hit + strlen(callOpen);
   }
+  // le firmware est demande apres le POST filesystem (sequence, pas de parallelisme)
+  TEST_ASSERT_TRUE_MESSAGE(fsAt < fwAt, "REGRESSION bug-176 : fetchSigParams filesystem doit preceder firmware");
 
-  // sigParams() lui-même émet les deux champs.
+  // (3) fetchSigParams : tout-ou-rien via sigParams(), genre transmis a /ota-sig.
+  const char* fetchDef = "async function fetchSigParams(kind, latestVersion) {";
+  TEST_ASSERT_EQUAL_INT_MESSAGE(1, countIn(src, fetchDef), "async function fetchSigParams doit etre unique");
+  const long fIdx = indexOf(src, fetchDef);
+  const long fClose = findMatchingBrace(src, fIdx + (long)strlen(fetchDef) - 1);
+  TEST_ASSERT_TRUE(fClose > fIdx);
+  char* fdef = sliceCopy(src, fIdx, fClose);
+  TEST_ASSERT_NOT_NULL(fdef);
+  TEST_ASSERT_TRUE_MESSAGE(strstr(fdef, "return sigParams(d.manifest, d.signature);") != NULL,
+      "REGRESSION bug-176 : fetchSigParams doit construire son retour avec sigParams(d.manifest, d.signature)");
+  TEST_ASSERT_TRUE_MESSAGE(strstr(fdef, "\"/ota-sig?kind=\" + encodeURIComponent(kind)") != NULL,
+      "REGRESSION bug-176 : fetchSigParams doit interroger /ota-sig avec SON parametre kind");
+  TEST_ASSERT_TRUE_MESSAGE(strstr(fdef, "&manifest=") == NULL && strstr(fdef, "&signature=") == NULL,
+      "REGRESSION bug-176 : fetchSigParams ne doit pas fabriquer lui-meme les champs (tout-ou-rien = sigParams)");
+  free(fdef);
+
   const char* sigDef = "function sigParams(manifest, signature) {";
   TEST_ASSERT_EQUAL_INT_MESSAGE(1, countIn(src, sigDef), "function sigParams doit etre unique");
   const long defIdx = indexOf(src, sigDef);
   const long defClose = findMatchingBrace(src, defIdx + (long)strlen(sigDef) - 1);
   TEST_ASSERT_TRUE(defClose > defIdx);
-  char* def = (char*)malloc((size_t)(defClose - defIdx) + 2);
+  char* def = sliceCopy(src, defIdx, defClose);
   TEST_ASSERT_NOT_NULL(def);
-  memcpy(def, src + defIdx, (size_t)(defClose - defIdx) + 1);
-  def[defClose - defIdx + 1] = '\0';
-  TEST_ASSERT_TRUE_MESSAGE(strstr(def, "&manifest=") != NULL,
-      "sigParams() n'emet plus le champ manifest");
-  TEST_ASSERT_TRUE_MESSAGE(strstr(def, "&signature=") != NULL,
-      "sigParams() n'emet plus le champ signature");
+  TEST_ASSERT_TRUE_MESSAGE(strstr(def, "&manifest=") != NULL, "sigParams() n'emet plus le champ manifest");
+  TEST_ASSERT_TRUE_MESSAGE(strstr(def, "&signature=") != NULL, "sigParams() n'emet plus le champ signature");
   free(def);
+
+  // (5) aucun Promise.all (hors commentaire) dont l'argument touche /ota-sig.
+  const char* p = strstr(src, "Promise.all");
+  while (p) {
+    const char* ls = p;
+    while (ls > src && ls[-1] != '\n') --ls;
+    bool inComment = false;
+    for (const char* q = ls; q + 1 < p; ++q) if (q[0] == '/' && q[1] == '/') { inComment = true; break; }
+    if (!inComment) {
+      char win[601];
+      strncpy(win, p, 600);
+      win[600] = '\0';
+      TEST_ASSERT_TRUE_MESSAGE(strstr(win, "fetchSigParams") == NULL && strstr(win, "ota-sig") == NULL,
+          "REGRESSION bug-176 : Promise.all sur /ota-sig — les handlers firmware sont serialises sur une "
+          "tache unique, deux connexions simultanees reconstruisent le defaut corrige (relais saute)");
+    }
+    p = strstr(p + 1, "Promise.all");
+  }
 
   free(src);
 }

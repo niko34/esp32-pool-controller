@@ -171,6 +171,19 @@ L'interface web peut vérifier et télécharger automatiquement la dernière ver
 
 > **Depuis la v2.87.0** : « Vérifier les mises à jour » prend **quelques secondes de plus** (un indicateur d'attente s'affiche). Le contrôleur lit en plus les fichiers de signature `.sig` de la release et les transmet avec la demande d'installation, qui **vérifie et journalise seulement** : ⛔ **rien n'est refusé**, une release **sans** signature s'installe exactement comme avant. Voir [Signature des envois OTA](#signature-des-envois-ota-feature-151-d1).
 
+> **Depuis la v2.88.0** : « Vérifier » est **plus rapide** et la signature n'est plus lue pendant la vérification : elle est demandée à l'appareil **juste avant l'installation**. Ce que vous voyez, au-dessus des deux boutons :
+>
+> | Message | Sens | Que faire |
+> |---|---|---|
+> | *(rien)* | la release **n'est pas signée** (versions antérieures à 2.87.1) — **cas normal**, aucune alarme | installer comme d'habitude |
+> | « Signature non récupérée. Cliquez sur Vérifier pour réessayer. » | **anormal** : la release est signée mais l'appareil n'a pas pu lire la signature (mémoire, réseau, délai) | recliquer sur « Vérifier » ; si le message persiste, attendre quelques minutes (fermer les autres pages ouvertes sur l'appareil aide) |
+> | « Appareil trop sollicité. Réessayez dans 1 minute. » | une demande de signature a eu lieu il y a moins de 10 s | patienter |
+> | « Signature non récupérable pour cette version : rien ne sera vérifié. » | l'adresse de la signature est hors règles (anormal et durable) | signaler le problème |
+>
+> ⭐ **La distinction qui compte** : *« release non signée »* est **normal** et silencieux ; *« signature non récupérée »* est **anormal** et affiché. Dans les cas anormaux, le bouton devient **« Mettre à jour sans vérification »** : **un seul clic** installe, sans seconde confirmation — aujourd'hui rien n'est refusé faute de signature (le refus est un lot ultérieur). 
+>
+> ⚠️ **Ordre de déploiement à venir (lot D3-c)** : le refus des images sans signature ne sortira **pas** dans le même firmware que celui-ci. Avec une page ancienne, une installation du système de fichiers serait refusée — y compris celle qui la met à jour. Il attendra une release dont le système de fichiers porte la page neuve, avec une voie de réparation indépendante de la page. Voir [ADR-0123](adr/0123-une-seule-session-tls-sortante-par-requete-http.md).
+
 > ⚠️ **Module avec PSRAM requis — sans PSRAM, la méthode est ACTIVEMENT REFUSÉE
 > (depuis la v2.18.6)** : la session TLS vers GitHub réclame plusieurs blocs de
 > mémoire contigus d'environ 16 Ko. Sur un module **sans PSRAM** (WROOM-32), la RAM

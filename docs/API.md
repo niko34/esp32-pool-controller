@@ -3192,10 +3192,14 @@ curl -u admin:monmotdepasse http://poolcontroller.local/check-update
   "filesystem_digest": "sha256:cd34…",
   "firmware_sig_url": "https://github.com/.../firmware.bin.sig",
   "filesystem_sig_url": "https://github.com/.../littlefs.bin.sig",
-  "firmware_manifest": "pool-ota/1 firmware 1.0.4 sha256:ab12…",
-  "firmware_signature": "<512 caractères base64>",
-  "filesystem_manifest": "pool-ota/1 filesystem 1.0.4 sha256:cd34…",
-  "filesystem_signature": "<512 caractères base64>"
+  "firmware_manifest": "",
+  "firmware_signature": "",
+  "filesystem_manifest": "",
+  "filesystem_signature": "",
+  "firmware_sig_status": "deferred",
+  "firmware_sig_reason": "",
+  "filesystem_sig_status": "deferred",
+  "filesystem_sig_reason": ""
 }
 ```
 
@@ -3203,11 +3207,21 @@ Champs additifs v2.11.0 : `firmware_digest` / `filesystem_digest` — empreintes
 
 Champs additifs feature-151 D1 : `firmware_sig_url` / `filesystem_sig_url` — URL de l'asset `.sig` correspondant (`firmware.bin.sig` / `littlefs.bin.sig`) parmi les assets de la release, **chaîne vide** si absent (releases publiées avant ce lot, ou release sans `.sig`). ⛔ **Non encore exploités côté page web** en D1 — `/download-update` n'applique aucun refus fondé sur ces URL pour l'instant ; ils sont relayés pour que la page ait, un jour, quelque chose à aller chercher. Champ additif : un client qui l'ignore ne casse rien.
 
-Champs additifs feature-151 D3-a (v2.87.0) : `firmware_manifest` / `firmware_signature` / `filesystem_manifest` / `filesystem_signature`. Pour chaque genre, l'appareil **va lire lui-même** le fichier `.sig` de la release (voir `*_sig_url`) et en **relaie le contenu** : le **manifeste** (`pool-ota/1 <genre> <version> sha256:<64 hex>`) et la **signature** (base64, 512 caractères). **Chaîne vide** pour l'un comme pour l'autre si le `.sig` est absent, illisible, hors grammaire, de plus de 1 Ko, ou si la garde TLS est fermée — dans **tous** ces cas la réponse reste un `200` et les deux genres sont indépendants. Raison du relais côté appareil : les assets GitHub n'émettent pas d'`Access-Control-Allow-Origin`, la page ne peut pas les lire elle-même ([ADR-0121](adr/0121-fichier-sig-conteneur-de-transport-deux-lignes-jamais-reconstruit.md), [ADR-0122](adr/0122-socle-decision-ota-genre-empreinte-relais-sig.md)).
+Champs `firmware_manifest` / `firmware_signature` / `filesystem_manifest` / `filesystem_signature` (feature-151 D3-a, v2.87.0) — ⚠️ **depuis la v2.88.0 (`bug-176`, [ADR-0123](adr/0123-une-seule-session-tls-sortante-par-requete-http.md)) ces quatre champs subsistent mais sont TOUJOURS VIDES.** `/check-update` ne relaie plus les fichiers `.sig` : il en **mémorise l'URL** côté appareil, et la signature se demande à part via [`GET /ota-sig`](#get-ota-sig--write). **Changement de comportement pour tout client existant** qui lisait ces champs : il doit désormais appeler `/ota-sig` (le contrat reste additif, un client qui les ignorait ne casse rien). Raison : trois sessions TLS enchaînées dans une seule requête affamaient la mémoire interne (relais du filesystem sauté 9 fois sur 9 sous trafic concurrent) ; une seule session par requête tient.
 
-⚠️ **« Vérifier » est plus lent depuis la v2.87.0** : le relais ouvre une session TLS **par `.sig`** (hôte `objects.githubusercontent.com`, distinct de `api.github.com`), après la lecture de la réponse GitHub. Compter **quelques secondes de plus** qu'avant. Les trois sessions sont **bornées** (`kOtaTlsConnectTimeoutMs`, `kOtaTlsHandshakeTimeoutSec`, `kOtaTlsSocketTimeoutMs`, voir [ota-manager](subsystems/ota-manager.md)).
+Champs additifs bug-176 (v2.88.0) : `firmware_sig_status` / `firmware_sig_reason` / `filesystem_sig_status` / `filesystem_sig_reason`, un couple par genre. Valeurs possibles **dans cette réponse** :
 
-⛔ **Ces champs ne servent à refuser rien** : ils sont relayés pour être renvoyés tels quels à `/download-update`, qui **journalise** seulement. Une release **sans** signature s'installe exactement comme avant. Champs additifs : un client qui les ignore ne casse rien.
+| `*_sig_status` | `*_sig_reason` | Sens |
+|---|---|---|
+| `absent` | `no_asset` | la réponse GitHub a été analysée **avec succès** et la release ne porte pas de `.sig` de ce nom (release non signée — cas **nominal** du parc existant) |
+| `deferred` | `""` | URL mémorisée, signature à demander via `/ota-sig` |
+| `unavailable` | `url_too_long` \| `host` | asset présent mais URL/tag trop long pour l'emplacement mémorisé, ou hôte hors liste blanche |
+
+⛔ `absent` n'est émis que si la réponse GitHub a été analysée avec succès : tout doute est `unavailable`, jamais `absent` (sinon le refus futur de D3-c frapperait au hasard). Un client **doit traiter tout statut inconnu comme `unavailable`**. Les `*_sig_url` restent renseignés comme avant.
+
+⚠️ **« Vérifier » est plus rapide depuis la v2.88.0** (≈ 4,5 s de blocage de la tâche réseau, contre ≈ 11 s en v2.87.x). `/check-update` n'ouvre plus qu'**une** session TLS (api.github.com), bornée (`kOtaTlsConnectTimeoutMs`, `kOtaTlsHandshakeTimeoutSec`, `kOtaTlsSocketTimeoutMs`, voir [ota-manager](subsystems/ota-manager.md)).
+
+⛔ **Ces champs ne servent à refuser rien** : `/download-update` **journalise** seulement. Une release **sans** signature s'installe exactement comme avant.
 
 La réponse contient aussi `release_name`, `published_at` et `release_notes` (corps de la release GitHub). Depuis la v2.10.4 ([ADR-0032](adr/0032-reponses-http-bornees.md)), `release_notes` est **tronqué à 2048 caractères** (`kOtaReleaseNotesMaxChars`) avec suffixe « … » : le corps d'une release n'est pas borné côté GitHub, la troncature borne la réponse HTTP construite en RAM. Depuis la v2.16.1, la coupe respecte les **frontières UTF-8** (un accent/emoji coupé en deux produisait un JSON invalide côté navigateur).
 
@@ -3342,6 +3356,57 @@ Absent d'un firmware ≤ 2.80.x → traiter l'absence comme « information indis
 
 ---
 
+### GET /ota-sig — WRITE
+
+Relaie **à la demande** le fichier `.sig` d'un genre de la release analysée par le dernier [`/check-update`](#get-check-update--write) (bug-176, v2.88.0, [ADR-0123](adr/0123-une-seule-session-tls-sortante-par-requete-http.md)). Une requête = **une seule** session TLS sortante (≈ 4,5 s). La page l'appelle juste avant d'installer, **séquentiellement** (firmware puis filesystem, jamais en parallèle).
+
+```bash
+curl -u admin:monmotdepasse "http://poolcontroller.local/ota-sig?kind=firmware"
+```
+
+**Authentification** : niveau `WRITE` (comme `/check-update`).
+
+**Paramètre** : `kind` = `firmware` ou `filesystem` (égalité exacte, sensible à la casse). L'URL du `.sig` n'est **jamais** fournie par le client : elle sort de la mémoire de `/check-update` et n'est jamais journalisée.
+
+**Réponse 200** — dans **tous** les cas bien formés, même en échec :
+
+```json
+{
+  "kind": "firmware",
+  "tag": "v2.88.0",
+  "status": "relayed",
+  "reason": "",
+  "manifest": "pool-ota/1 firmware 2.88.0 sha256:ab12…",
+  "signature": "<512 caractères base64>"
+}
+```
+
+`manifest` (ligne canonique **re-sérialisée** par l'appareil) et `signature` ne sont non vides que si `status` = `relayed`. `tag` est le `tag_name` brut de la release (avec son « v »).
+
+| `status` | `reason` | Sens |
+|---|---|---|
+| `relayed` | `""` | signature récupérée et validée (grammaire stricte, corps ≤ 1 Ko) |
+| `absent` | `no_asset` | release analysée, aucun `.sig` de ce nom (non signée — normal) |
+| `unavailable` | `no_check` | `/check-update` jamais exécuté, échoué, ou emplacement vidé |
+| `unavailable` | `url_too_long` | URL ou tag trop long pour l'emplacement mémorisé |
+| `unavailable` | `host` | hôte hors liste blanche |
+| `unavailable` | `memory` | garde TLS fermée (PSRAM, heap interne 8 bits ou plus gros bloc) |
+| `unavailable` | `time` | horloge non synchronisée (validation du certificat impossible) |
+| `unavailable` | `http` | ouverture/GET en échec ou code HTTP ≠ 200 |
+| `unavailable` | `timeout` | lecture du corps hors délai (`kOtaSigFetchReadTimeoutMs`) |
+| `unavailable` | `grammar` | corps trop long ou hors grammaire |
+| `unavailable` | `throttled` | moins de 10 s (`kOtaSigMinIntervalMs`) depuis la dernière session du **même genre** — aucune connexion ouverte |
+
+L'énumération `reason` est **fermée** : jamais de texte libre. Garde TLS fermée et horloge non synchronisée sont rendues en `200 unavailable`, **jamais** en 503.
+
+**Erreurs**
+- `400` `{"code":"bad_kind"}` : `kind` absent ou différent de `firmware` / `filesystem`
+- `401` : authentification manquante ou invalide
+
+⚠️ Une session TLS bloque la tâche réseau unique ; c'est pourquoi l'anti-déni limite chaque genre à une session toutes les 10 s.
+
+---
+
 ### POST /download-update — CRITICAL
 
 Télécharge et installe une mise à jour depuis une URL GitHub, avec vérification d'intégrité SHA-256 **obligatoire** (v2.11.0, [ADR-0022](adr/0022-verification-integrite-ota.md)).
@@ -3361,7 +3426,7 @@ Paramètres POST :
 |---|---|---|
 | `url` | oui | URL de l'asset (`firmware.bin` ou `littlefs.bin`, hôtes whitelistés) |
 | `digest` | **oui** (v2.11.0) | Empreinte SHA-256 attendue, format `sha256:<64 hex>` (relayée depuis `/check-update`) |
-| `manifest` | non (feature-151 D1, relayé par la page depuis D3-a) | Même manifeste et même grammaire que [`POST /update`](#authenticite-manifest-signature-feature-151-d1) — ⛔ **journalisé seulement, aucun refus**. Valeur de `firmware_manifest` / `filesystem_manifest` de `/check-update` |
+| `manifest` | non (feature-151 D1, relayé par la page depuis D3-a) | Même manifeste et même grammaire que [`POST /update`](#authenticite-manifest-signature-feature-151-d1) — ⛔ **journalisé seulement, aucun refus**. Depuis la v2.88.0, valeur du champ `manifest` de [`GET /ota-sig`](#get-ota-sig--write) (les champs `*_manifest` de `/check-update` sont désormais vides) |
 | `signature` | non (feature-151 D1, relayé par la page depuis D3-a) | Même format (RSA-3072, base64 sans padding, 512 caractères) — ⛔ **journalisé seulement, aucun refus**. Tout-ou-rien : un `manifest` sans `signature` (ou l'inverse) est ignoré |
 | `restart` | non | `false` pour ne pas redémarrer après une installation filesystem réussie |
 

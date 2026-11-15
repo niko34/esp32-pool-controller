@@ -1333,13 +1333,16 @@ static_assert(kCheckUpdateMinMaxAllocBytes > kOomRearmMinMaxAllocBytes,
 // produit : dérivé arithmétiquement, pas mesuré isolément (ADR-0098) —
 // vérifié par static_assert après la déclaration de kOtaCheckJsonBudgetBytes.
 constexpr uint32_t kCheckUpdateMinFreeHeapBytes = 32768;   // heap libre INTERNE 8 bits minimal
-// ⚠️ DÉRIVATION RECTIFIÉE (revue de sécurité P2, 2026-10-15) : le commentaire
-// précédent rattachait les 8 192 o de marge à kOtaCheckJsonBudgetBytes. C'est
-// VRAI côté PSRAM (le JsonDocument y part, > 1024 o) mais FAUX côté INTERNE :
-// sous la politique d'allocation du projet, le parse JSON ne consomme PAS
-// l'interne. La marge reste la même et reste acceptable — c'est sa
-// JUSTIFICATION qui était erronée. Elle couvre ici les allocations internes
-// concurrentes (pile des tâches, tampons < 1024 o) pendant la session.
+// ⚠️ DÉRIVATION : ne PAS ré-expliquer la physique ici — ce commentaire a déjà été
+// « rectifié » deux fois pour redevenir faux (P2 le 2026-10-15, puis bug-176 le
+// 2026-11-15). Faits seuls : le parse JSON de /check-update n'est PAS exempt de
+// RAM interne (BudgetJsonAllocator::allocate appelle malloc() nu, et
+// kPsramExtmemThresholdBytes place en interne tout bloc <= 1 024 o — or
+// ArduinoJson 7 alloue ses nœuds de chaînes en blocs petits et nombreux). La
+// valeur 8 192 o est la bonne ; sa justification, elle, est portée par le
+// static_assert `kCheckUpdateMinFreeHeapBytes == kCheckUpdateMinMaxAllocBytes +
+// kOtaCheckJsonBudgetBytes` plus bas (après kOtaCheckJsonBudgetBytes) : c'est LUI
+// qui fait foi, pas cette prose.
 
 // Condition C4 du design bug-165/bug-108 (v2.81.0) : seuil de WARN
 // d'OBSERVATION (pas une garde, aucun refus associé) signalant qu'une
@@ -1417,26 +1420,58 @@ constexpr unsigned long kOtaCheckResponseReadTimeoutMs = 15000;  // 15 s - marge
 constexpr size_t kOtaSigFetchMaxBytes = 1024;                   // 1 Ko - borne dure du corps d'un .sig
 constexpr unsigned long kOtaSigFetchReadTimeoutMs = 5000;       // 5 s - délai borné de lecture du corps d'un .sig
 
-// Bornes des sessions TLS sortantes de /check-update (API GitHub + 2 relais .sig),
-// feature-151 D3-a. Sans elles, le handshake Arduino attend 120 s par défaut alors
-// que la tâche async_tcp est sous TWDT kWatchdogTimeoutSec = 30 s : réseau dégradé
-// => redémarrage de l'appareil.
-// CALCUL (réévalué le 2026-11-15, ADR-0098) — ce qui compte est la plus longue
-// attente SANS nourrir le watchdog : esp_task_wdt_reset() est appelé AVANT chaque
-// GET et dans chaque boucle de lecture, donc le total cumulé des 3 sessions n'est
-// PAS la borne (il peut dépasser 30 s : ~11 s + 15 s de corps pour l'API, ~19 s + 5 s
-// par .sig). Le pire GET() bloquant est celui d'un .sig, qui suit UNE redirection
-// (github.com -> objects.githubusercontent.com) = 2 connexions :
+// Bornes des sessions TLS sortantes (feature-151 D3-a, révisé bug-176 / ADR-0123).
+// Sans elles, le handshake Arduino attend 120 s par défaut alors que la tâche
+// async_tcp est sous TWDT kWatchdogTimeoutSec = 30 s : réseau dégradé =>
+// redémarrage de l'appareil.
+//
+// ⭐ PRINCIPE (ADR-0123) : un handler HTTP ouvre AU PLUS UNE session TLS
+// sortante. /check-update (API GitHub) ne relaie plus les `.sig` ; la page les
+// demande un par un via GET /ota-sig. Les handlers étant sérialisés sur l'unique
+// tâche async_tcp, la fenêtre de blocage de la tâche est celle d'UNE session.
+constexpr uint32_t kOtaMaxTlsSessionsPerRequest = 1;  // ADR-0123 - sessions TLS sortantes par requête HTTP
+
+// CALCUL — ce qui compte est la plus longue attente SANS nourrir le watchdog :
+// esp_task_wdt_reset() est appelé AVANT chaque GET et dans chaque boucle de
+// lecture. Un GET() bloquant suit AU PLUS kOtaMaxRedirectsPerGet redirections
+// (github.com -> objects.githubusercontent.com = 1 redirection = 2 connexions) :
 //   2 x (connexion 3 s + handshake 5 s) + en-têtes/lecture socket 3 s = 19 s < 30 s
-// (marge 11 s). L'API (1 connexion) : 3 + 5 + 3 = 11 s avant le corps (corps nourri).
+// ⛔ Cette borne n'était PAS prouvée jusqu'à bug-176 : HTTPClient suit par défaut
+// 10 redirections (_redirectLimit = 10) À L'INTÉRIEUR d'un seul GET(), donc sans
+// nourrir le watchdog (pire cas ~90 s). setRedirectLimit(kOtaMaxRedirectsPerGet)
+// est désormais posé sur CHAQUE client sortant (relais .sig ET /download-update).
 // ⚠️ Non bornable ici : la résolution DNS (lwIP) précède la connexion.
 constexpr int32_t kOtaTlsConnectTimeoutMs = 3000;      // 3 s - connexion TCP
 constexpr unsigned long kOtaTlsHandshakeTimeoutSec = 5;  // 5 s - handshake TLS (UNITÉ : secondes, API setHandshakeTimeout)
 constexpr uint16_t kOtaTlsSocketTimeoutMs = 3000;      // 3 s - attente d'octets (en-têtes, lecture)
-static_assert(2UL * (kOtaTlsConnectTimeoutMs + kOtaTlsHandshakeTimeoutSec * 1000UL) +
+constexpr uint16_t kOtaMaxRedirectsPerGet = 1;         // setRedirectLimit(1) - redirections suivies par GET()
+static_assert((kOtaMaxRedirectsPerGet + 1UL) * (kOtaTlsConnectTimeoutMs + kOtaTlsHandshakeTimeoutSec * 1000UL) +
                       kOtaTlsSocketTimeoutMs <
                   kWatchdogTimeoutSec * 1000UL,
-              "pire GET bloquant d'un .sig (2 sessions via redirection) doit rester sous le TWDT");
+              "pire GET() bloquant (1 redirection = 2 connexions) doit rester sous le TWDT");
+// Invariant ADR-0123 : même SANS nourrir le watchdog, la requête entière (UNE
+// session : pire GET avec 1 redirection, + lecture bornée du corps) tient sous
+// le TWDT : 2 x (3000 + 5000) + 3000 + 5000 = 24 000 ms < 30 000 ms.
+static_assert(kOtaMaxTlsSessionsPerRequest == 1,
+              "ADR-0123 : un handler HTTP ouvre AU PLUS UNE session TLS sortante");
+static_assert(kOtaMaxTlsSessionsPerRequest *
+                      ((kOtaMaxRedirectsPerGet + 1UL) *
+                           (kOtaTlsConnectTimeoutMs + kOtaTlsHandshakeTimeoutSec * 1000UL) +
+                       kOtaTlsSocketTimeoutMs + kOtaSigFetchReadTimeoutMs) <
+                  kWatchdogTimeoutSec * 1000UL,
+              "ADR-0123 : setRedirectLimit(1) => 2x(3000+5000)+3000+5000 = 24 000 ms < TWDT 30 000 ms");
+
+// bug-176 (ADR-0123) : emplacements mémorisés par /check-update pour GET /ota-sig.
+// Longueurs en CARACTÈRES (hors NUL). URL d'asset GitHub observée ~100-130 car. ;
+// tag ~ "v2.88.0". Au-delà : état kTooLong => unavailable/url_too_long (S2, jamais « absent »).
+constexpr size_t kOtaSigUrlMaxLen = 192;  // car. max d'une URL d'asset .sig mémorisée
+constexpr size_t kOtaSigTagMaxLen = 24;   // car. max du tag de release mémorisé
+
+// bug-176 S4 (anti-déni) : intervalle minimal PAR GENRE entre deux sessions TLS
+// sortantes de /ota-sig. Les handlers étant sérialisés, sans cela ~13 appels/min
+// occuperaient async_tcp en continu (le quota de 120 req/min n'est jamais la
+// borne). Une session dure ~4,5 s ; 10 s => au plus ~45 % d'occupation par genre.
+constexpr uint32_t kOtaSigMinIntervalMs = 10000;  // 10 s - entre deux sessions .sig du même genre
 
 // ============================================================================
 // SENSOR CONSTANTS - Paramètres capteurs
