@@ -1723,3 +1723,25 @@ Conditions pour lancer D3-c :
 3. `grep` de la page déployée : `/ota-sig` présent dans `app.js` avant d'écrire les `if` de refus.
 
 ⛔ Mécanisme de verrouillage : la case « D3-c » du plan de lots reste décochée tant que 1 et 2 ne sont pas consignés ici avec leur date.
+
+## ⚠️ AJOUT POUR D3-c (2026-11-15) — le plancher de version est figé à `0.0.0`
+
+Relevé par la revue de sécurité de `bug-178` : `ota_manifest_logic.h:87-95` fige le plancher de
+version à **`0.0.0`**. ⇒ Même une fois D3-c livré, **une image ANCIENNE correctement signée reste
+installable** : la signature prouve l'origine, pas la fraîcheur.
+
+⚠️ **Conséquence directe sur la portée annoncée de D3-c** : le cas « release remplacée sous le même
+tag » ne sera **réellement** couvert que si D3-c apporte **deux** choses — le refus effectif **ET**
+un plancher de version non nul. ⛔ Le refus seul ne suffit pas.
+
+⇒ À traiter **dans D3-c**, pas après : un plancher ajouté plus tard devrait affronter un parc déjà
+figé sur l'ancienne règle.
+
+## ⚠️ CONTRAINTE D'ORDRE RAPPELÉE — D3-c et bug-176
+
+`bug-176` (livré en 2.88.0) a retiré les signatures de la réponse `/check-update` : elles se
+récupèrent désormais par `GET /ota-sig`. ⇒ **Une page ANCIENNE enverrait des paramètres vides** et
+serait **refusée** par D3-c, **y compris pour installer le filesystem qui la corrigerait**.
+
+⛔ **D3-c ne doit donc pas sortir avant qu'une release dont le filesystem connaît `/ota-sig` soit
+déployée sur le parc**, et une **voie de réparation indépendante de la page** doit être documentée.

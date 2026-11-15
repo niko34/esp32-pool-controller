@@ -195,3 +195,17 @@ cartes (Infos système, Mise à jour en ligne, Mise à jour manuelle, Redémarra
   lignes retirées en 2.87.0.
 - `bug-177` touchera la même carte (attente active après redémarrage). ⇒ **Coordonner**, ou traiter
   les trois dans un même lot d'interface si l'ordre le permet.
+
+### 🔗 CONTRAINTE AJOUTÉE PAR `bug-178` (2026-11-15)
+`bug-178` fait dire à la page, quand l'appareil est plus récent que la release :
+> *Aucune mise à jour proposée. Pour revenir en arrière : « **Mise à jour manuelle** », ci-dessous.*
+
+⚠️ **Ce renvoi doit rester VRAI.** ⇒ Si la proposition n°2 ci-dessus (replier « Mise à jour
+manuelle » dans un `<details>`) est retenue :
+- le **titre du résumé doit rester visible** sans qu'il faille déplier pour trouver la carte ;
+- la carte doit **conserver son nom exact**, « Mise à jour manuelle ».
+
+⚠️ De même, si la carte « Maintenance » unifiée (proposition n°3) **déplace ou renomme** la mise à
+jour manuelle, les libellés de `bug-178` sont à reprendre **dans le même geste**. ⛔ Sinon la page
+renverra l'utilisateur vers une carte qui n'existe plus sous ce nom — au moment précis où il
+cherche à réparer son appareil.
