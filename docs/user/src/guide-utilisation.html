@@ -1330,8 +1330,11 @@ normalement. Seul l'affichage est concerné.</p>
 <p>Pour la restaurer sans câble&nbsp;: téléchargez d'abord, depuis la page de la
 dernière version sur GitHub, les deux fichiers <strong>littlefs.bin</strong> et
 <strong>littlefs.bin.sig</strong> (de la <strong>même</strong> version). Sur la
-page de secours, saisissez le mot de passe administrateur, choisissez les deux
-fichiers puis touchez «&nbsp;Vérifier et envoyer&nbsp;». Le calcul prend
+page de secours, la <strong>version du firmware</strong> installée est rappelée en
+haut de la carte d'envoi. Saisissez le mot de passe administrateur, touchez les
+deux zones «&nbsp;Image (.bin)&nbsp;» et «&nbsp;Signature (.sig)&nbsp;» pour
+choisir les fichiers (le nom choisi s'affiche), puis touchez
+«&nbsp;Vérifier et envoyer&nbsp;». Le calcul prend
 quelques secondes&nbsp;: <strong>ne fermez pas la page</strong>. À la fin,
 «&nbsp;Terminé&nbsp;» s'affiche&nbsp;: ouvrez l'interface.</p>
 
@@ -1562,6 +1565,44 @@ d'une release, prenez-les <strong>ensemble, dans la même release</strong>
   jour, sur son propre réseau Wi-Fi, et l'assistant de mise en service
   reprend du début. Une double confirmation est demandée — un refus à
   n'importe quelle étape annule tout.</p>
+</div>
+
+<div class="box">
+  <span class="box-title">Si l'interface ne s'affiche plus après une mise à jour</span>
+  <p>Une mise à jour du système de fichiers interrompue — coupure de courant,
+  Wi-Fi perdu, mauvais fichier — peut laisser l'appareil <strong>sans
+  interface web</strong>. Il n'est pas perdu pour autant, et surtout&nbsp;:
+  <strong>la régulation continue</strong>. pH, ORP, pompes doseuses et
+  filtration fonctionnent exactement comme avant. Seules les pages web
+  manquent.</p>
+  <p>Dans ce cas, l'appareil sert automatiquement une <strong>page de
+  secours</strong> à son adresse habituelle. Vous n'avez rien à activer&nbsp;:
+  ouvrez <code>http://&lt;adresse-de-l-appareil&gt;/</code> comme
+  d'habitude.</p>
+</div>
+
+<figure>
+  <img class="capture capture-etroite" src="../../../screenshots/11_Page_de_secours.jpg" alt="Page de secours : version du firmware, sélecteurs d'image et de signature">
+  <figcaption class="capture-legende">La page de secours&nbsp;: elle ne sait faire qu'une chose — recevoir une image et sa signature pour restaurer l'interface.</figcaption>
+</figure>
+
+<p>Elle demande le <strong>mot de passe administrateur</strong>, puis les deux
+mêmes fichiers que l'envoi manuel&nbsp;: l'image
+<code>littlefs.bin</code> et sa signature <code>littlefs.bin.sig</code>, pris
+dans la <strong>même</strong> release. La version du firmware en cours y est
+rappelée, pour vous éviter de chercher laquelle télécharger.</p>
+
+<p>La réparation se fait <strong>sur place</strong>&nbsp;: inutile de
+débrancher l'appareil, d'ouvrir le boîtier ou de brancher un câble. Une fois
+l'envoi accepté, l'appareil redémarre et l'interface revient telle
+qu'elle était.</p>
+
+<div class="box-alerte">
+  <span class="box-title">Le lien «&nbsp;Ouvrir l'interface quand même&nbsp;»</span>
+  <p>Il est là pour le cas où la page de secours s'affiche alors que
+  l'interface, elle, fonctionne encore. Si l'interface est réellement
+  endommagée, ce lien ne donnera rien&nbsp;: revenez à la page de secours et
+  envoyez les deux fichiers.</p>
 </div>
 
 <h3>8 — Avancé</h3>

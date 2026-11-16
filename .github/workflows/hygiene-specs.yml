@@ -487,6 +487,31 @@ jobs:
       - name: Contrôle de la page de secours générée
         run: ./tools/check_recovery_page_generated.sh
 
+  update-card-no-html:
+    name: Carte de mise à jour sans écriture HTML (feature-151 D3-b2, B7)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # Même script en local. Protège l'acquis (textContent / createElement) :
+      # D3-c y affichera un message relayé depuis GitHub.
+      - name: Contrôle de la carte de mise à jour
+        run: ./tools/check_update_card_no_html.sh
+
+  ota-signature-switch:
+    name: Interrupteur de signature OTA - appelant, routes exactes, surface (feature-151 D3-b2, C2/C5/C6/C12)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # Même script en local. Aucun `= true` littéral sur nvsReadable/entryPresent, Peek réservé à
+      # MQTT, un seul Arm, miroir fermé par défaut, routes en AsyncURIMatcher::exact, fichier de
+      # routes sans surface d'acceptation d'image.
+      - name: Contrôle de l'interrupteur de signature
+        run: ./tools/check_ota_signature_switch.sh
+
   fs-probe-paths:
     name: Chemins sondés par le firmware = fichiers produits par minify.js (feature-151 D3-b1)
     runs-on: ubuntu-latest

@@ -2,12 +2,14 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
-## [Unreleased] - 2026-11-15
-
-> Version à attribuer au moment de la release (`src/version.h` est encore à 2.88.2).
+## [2.89.0] - 2026-11-16
 
 ### Fonctionnalités
 - **Secours de l'interface web** : si l'interface est absente ou endommagée (mise à jour du système de fichiers interrompue, partition corrompue), l'appareil affiche désormais une **page « Interface à restaurer »** à son adresse habituelle. Elle permet de réinstaller le système de fichiers **depuis le navigateur**, avec les deux fichiers `littlefs.bin` et `littlefs.bin.sig` d'une release, sans câble USB. Elle rappelle que **la régulation continue** (pH, ORP, pompes, filtration) pendant ce temps.
+- **Mise à jour en ligne** : le message affiché quand l'appareil exécute une version plus récente que la dernière release dit désormais « La version installée est plus récente. Aucune mise à jour… » (auparavant « Installée : plus récente que la release »).
+- **Page de secours** : elle affiche désormais le **numéro de version du firmware** installé (« Version du firmware : 2.89.0 »), pour choisir le bon `littlefs.bin`. Les sélecteurs de fichiers sont **en français** (« Image (.bin) », « Signature (.sig) », « Appuyer pour choisir un fichier ») ; le nom choisi s'affiche et le cadre passe de pointillé à plein. Page allégée (dégradé, ombre, en-tête et titres de carte retirés).
+- **Home Assistant** : nouvelle entité **« Piscine Signature OTA Levée »** (`binary_sensor`, diagnostic, **visible**). Elle passe à `on` si l'interrupteur de signature est armé. ⚠️ Ce témoin n'est **pas une preuve** (courtier sans persistance, appareil hors ligne) : seul l'historique de Home Assistant garde la trace d'un passage à `on`.
+- **Journal** : deux messages **faux depuis D3-b1** sont corrigés. « Impossible de remonter le filesystem… redémarrage requis » dit maintenant que la page de secours répare **sur place, sans redémarrage** ; « Filesystem non remonté après la mise à jour (attendu) » (envoi en ligne) dit que le redémarrage est **déjà planifié**.
 - **Échappatoire** : le lien « Ouvrir l'interface quand même » (`/ui`) affiche l'interface normale si le secours s'est affiché à tort (par exemple coupure de courant au tout début d'une mise à jour).
 - ⚠️ **Avant ce correctif**, un redémarrage avec l'interface détruite rendait l'appareil **injoignable par le réseau** (aucune page, pas même l'envoi de mise à jour) **tout en continuant de doser** ; seul un câble USB permettait de réparer.
 
@@ -15,11 +17,16 @@
 - **Serveur web** : `begin()` ne s'interrompt plus quand LittleFS ne se monte pas ; le serveur démarre toujours avec la **même table de routes** (aucun mode dégradé, aucun drapeau). Sans filesystem, les routes de page répondent `501` (ou `404` avec `If-None-Match`). Le log `CRITICAL` « LittleFS non disponible » est conservé.
 - **Nouveaux endpoints** : `GET /recovery` (publique, avant la garde 503, servie depuis la flash sans copie en tas) et `GET /ui` (après la garde). `/` et `/index.html` rendent la page de secours quand elle est armée.
 - **OTA** : marqueur persistant en NVS (`pool-ota`/`fsupd`) posé avant le démontage du filesystem et levé après un succès **filesystem** uniquement ; déclencheur à trois entrées (marqueur, montage, index) réévalué sans redémarrage. Une NVS illisible ou une famine mémoire **n'arment jamais** le secours.
+- **Interrupteur de signature OTA (D3-b2, INERTE)** : il **journalise, ne refuse ni n'accepte rien** — l'appareil reste en mode D1 (« AUCUN refus appliqué »). Trois routes `CRITICAL` : `POST /ota-signature-switch/arm` (60 min ; `403` si authentification coupée ou premier démarrage, `409` sans heure valide, `500` si l'écriture NVS échoue), `GET` et `POST /ota-signature-switch` (état, désarmement ; champs `rearms_on_reboot` et `nvs_residual_until`, `null` = inconnu). Échéance mesurée sur un **horodatage NVS**, jamais `millis()` ; consommée au premier flash réussi ; jamais armée automatiquement ; absente de la page de secours ; fail-closed (pas de clé, NVS illisible, pas d'heure, expiré, hors fenêtre).
+- **MQTT** : 2 topics `retain` `{base}/ota_signature_switch` (`ON`/`OFF`) et `{base}/ota_signature_switch_until` (epoch), publiés depuis `mqttTask` seule.
+- **OTA** : observation « **désaccord de version** » (manifeste signé ↔ release demandée), **journalisée seulement** ; paramètre **facultatif** `expected_version` de `/download-update`. Le niveau WARNING et les octets canoniques du verdict sont conservés quand l'interrupteur est armé.
+- ⚠️ **Ce que cela ne ferme PAS** : le vecteur « jeton administrateur volé » reste **ouvert**, et l'interrupteur le **rouvre en deux requêtes au lieu d'une**.
 - **Mémoire flash** : +19 120 o (51,8 % utilisés).
 - ⚠️ **Risques inchangés** (acceptables pour un réseau domestique privé) : secrets en clair en NVS, premier démarrage ouvert, HTTP en clair. Cette fonction **ne ferme pas** le vecteur « jeton admin volé ».
 
 ### Documentation
 - **[ADR-0124](docs/adr/0124-le-mode-degrade-n-est-pas-un-mode-la-porte-de-sortie-du-serveur-web.md)** : le mode dégradé n'est pas un mode — la porte de sortie du serveur web.
+- **D3-b2** : [ADR-0125](docs/adr/0125-l-expiration-de-l-interrupteur-de-signature-se-mesure-sur-un-horodatage-nvs.md) (échéance sur horodatage NVS ; le vecteur « jeton volé » reste ouvert) et [ADR-0126](docs/adr/0126-la-version-demandee-ne-vient-jamais-d-une-sous-chaine-d-url.md) (la version demandée ne vient jamais d'une sous-chaîne d'URL). Mise à jour : `docs/API.md`, `docs/MQTT.md`, `docs/subsystems/ota-manager.md`, `mqtt-manager.md`, `web-server.md`, `docs/DESIGN_SYSTEM.md` (§5.21 : `.pick`, `.ver`), `docs/UPDATE_GUIDE.md`, `docs/user/src/guide-utilisation.html`.
 - `docs/API.md`, `docs/subsystems/web-server.md`, `docs/subsystems/ota-manager.md`, `docs/DESIGN_SYSTEM.md` (§5.21), `docs/BUILD.md` (trois contrôles CI neufs : `degraded-mode-absent`, `recovery-page-generated`, `fs-probe-paths`), `docs/UPDATE_GUIDE.md` (procédure de secours, mode point d'accès, cas « internet nulle part » hors périmètre), `docs/user/src/guide-utilisation.html`.
 
 ---

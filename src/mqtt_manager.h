@@ -88,6 +88,8 @@ struct MqttTopics {
   // bande morte — la compensation et le planning restent INCHANGÉS. Le topic ne
   // s'allume donc pas pour couper quoi que ce soit, il rend l'état LISIBLE.
   String tempSensorFrozenState;
+  String otaSignatureSwitchState;       // feature-151 D3-b2 : ON/OFF (retain) — TÉMOIN seulement, jamais une commande
+  String otaSignatureSwitchUntilState;  // feature-151 D3-b2 : échéance epoch UTC, 0 si OFF (retain)
   String phMixingDelayActiveState;  // ON/OFF pause mélange pH
   String orpMixingDelayActiveState; // ON/OFF pause mélange ORP
   // feature-050 : cumuls journaliers injectés + commandes volume quotidien + reboot
@@ -311,6 +313,11 @@ private:
   // Vérifie l'état de calibration et stale, publie/clear les alertes au besoin.
   // Appelé depuis mqttTask (publishAllStatesInternal + connectInTask).
   void publishCalibrationStatusInternal();
+  // feature-151 D3-b2 : témoin de l'interrupteur de signature OTA. mqttTask UNIQUEMENT (miroir
+  // atomique via otaSignatureSwitchPeek, aucune E/S) ; jamais depuis async_tcp.
+  void publishOtaSignatureSwitchInternal();
+  int8_t _lastOtaSwitchPub = -1;                 // -1 = jamais publié (force la 1ʳᵉ publication), 0 OFF, 1 ON
+  uint32_t _lastOtaSwitchUntilPub = 0xFFFFFFFFu; // sentinelle « jamais publié »
 
   // Internes — exécutées UNIQUEMENT depuis mqttTask
   static void mqttTaskFunction(void* pvParameters);

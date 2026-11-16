@@ -1051,6 +1051,39 @@ Même facture que les topics du terme intégral et du feedforward : **une grande
 
 ---
 
+## Topics et entité ajoutés en feature-151 D3-b2 (interrupteur de signature OTA)
+
+Témoin de l'[interrupteur de signature OTA](subsystems/ota-manager.md#interrupteur-de-signature-feature-151-d3-b2). ⛔ **Lot inerte** : l'interrupteur ne refuse ni n'accepte rien ; ces topics ne font que **rendre son état visible**.
+
+### `{base}/ota_signature_switch`
+
+**Direction** : ESP32 → broker (`retain=true`). **Payload** : `ON` / `OFF`. `ON` tant que l'interrupteur est **armé**, ou qu'un désarmement a **échoué** avec une échéance subsistant en NVS (ou d'état inconnu). Publié sur transition seulement, et **republié à chaque (re)connexion** (le courtier a pu perdre le `retain`). Journal : `MQTT ota_signature_switch → ON` (WARNING) / `→ OFF` (INFO).
+
+### `{base}/ota_signature_switch_until`
+
+**Direction** : ESP32 → broker (`retain=true`). **Payload** : échéance en epoch UTC (secondes), `0` si `OFF` ou si l'échéance résiduelle est inconnue.
+
+Publiés depuis `mqttTask` **uniquement**, à partir du miroir atomique (aucune E/S NVS).
+
+### Auto-discovery HA
+
+| Entité | Type | État | `unique_id` | Attributs |
+|---|---|---|---|---|
+| Piscine Signature OTA Levée | `binary_sensor` | `{base}/ota_signature_switch` | `poolcontroller_ota_signature_switch` | `device_class: safety` (ON = « dangereux » : signature non exigée), `entity_category: diagnostic`, `payload_on: ON`, `payload_off: OFF`, `icon: mdi:shield-off` |
+
+Entité **nouvelle** (`unique_id` inédit) : l'appariement des entités existantes ne bouge pas. **Visible** dans Home Assistant (catégorie diagnostic de l'appareil). ⛔ **Jamais un `switch` HA** : ce serait une surface d'**armement** hors jeton administrateur ; ces topics sont un témoin, jamais une commande.
+
+### 🔴 Ce témoin n'est PAS fiable comme preuve
+
+Ne pas conclure « l'interrupteur n'a pas été armé » de la valeur `OFF` :
+
+- un firmware hostile **lit les identifiants MQTT en NVS** et peut **republier `OFF`** ;
+- un courtier **sans persistance** perd le `retain` ;
+- **hors ligne**, la dernière valeur reste **périmée** ;
+- **MQTT désactivé**, le témoin n'existe pas (la réponse de `POST /ota-signature-switch/arm` et son journal disent si MQTT était connecté).
+
+⇒ **Seule la TRANSITION historisée par un tiers survit** : c'est pourquoi l'entité Home Assistant existe — l'historique du `recorder` de HA garde la date de passage à `on`, hors de portée de l'appareil. Le topic seul ne prouve rien.
+
 ## Exclusions volontaires (politique MQTT/HA)
 
 Cette section documente ce qui **n'est délibérément PAS exposé** en MQTT / Home Assistant. C'est une **politique assumée**, pas un backlog : l'audit de couverture (feature-050) a tranché chaque cas ci-dessous. Une ré-exposition future doit être justifiée par un besoin constaté, pas par principe de complétude.

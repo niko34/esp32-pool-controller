@@ -40,6 +40,7 @@ Les routes sont réparties par domaine fonctionnel dans des fichiers séparés :
 | [`web_routes_ota.cpp`](../../src/web_routes_ota.cpp) | OTA | `/update`, `/check-update`, `/download-update` |
 | [`web_routes_auth.cpp`](../../src/) | Authentification | `/auth/login`, `/auth/token`, `/auth/change-password`, etc. |
 | [`web_routes_recovery.cpp`](../../src/web_routes_recovery.cpp) | Page de secours OTA (D3-b1) | `/recovery`, `/ui` |
+| [`web_routes_ota_switch.cpp`](../../src/web_routes_ota_switch.cpp) | Interrupteur de signature OTA (D3-b2, inerte) | `POST /ota-signature-switch/arm`, `GET`/`POST /ota-signature-switch` — voir [API.md](../API.md#interrupteur-de-signature-ota-feature-151-d3-b2-adr-0125) |
 
 Toutes les routes sont enregistrées dans `setupRoutes()` via des fonctions `register_*_routes(AsyncWebServer*)` déclarées dans les headers `web_routes_*.h`.
 
@@ -63,7 +64,7 @@ Il n'existe **pas** de « mode dégradé » : pas de variable `degraded`, aucune
 
 ⚠️ En famine mémoire, `/` reste refusé (503) : seul `/recovery` répond. Les remonter changerait la politique d'exemption de toute l'interface — hors périmètre.
 
-`/recovery` est servie par la surcharge `(const uint8_t*, size_t)` ⇒ `AsyncProgmemResponse`, **zéro copie en tas** (🔴 jamais la surcharge `const char*`, qui copie ~16 Ko dans une `String` pour un `maxBloc8` nominal d'environ 21 Ko). La page est **générée** (`tools/gen_recovery_page.js` → `src/ota_recovery_page.cpp`, versionné) ; voir [ota-manager.md](ota-manager.md#page-de-secours-et-marqueur-persistant-feature-151-d3-b1-adr-0124).
+`/recovery` est servie par la surcharge `(const uint8_t*, size_t)` ⇒ `AsyncProgmemResponse`, **zéro copie en tas** (🔴 jamais la surcharge `const char*`, qui copie ~16 Ko dans une `String` pour un `maxBloc8` nominal d'environ 21 Ko). La page affiche le **numéro de version du firmware** (D3-b2) : c'est une **constante de compilation** (`FIRMWARE_VERSION` de `version.h`, concaténée en littéraux au compilateur) — `sizeof` exact, zéro copie conservé, aucune `String` assemblée ni réponse chunked. Les routes de l'interrupteur de signature OTA (`web_routes_ota_switch.cpp`, 3 routes `exact`, enregistrées par `setupOtaSignatureSwitchRoutes()` après `setupOtaRoutes()`) sont **absentes** de la page de secours. La page est **générée** (`tools/gen_recovery_page.js` → `src/ota_recovery_page.cpp`, versionné) ; voir [ota-manager.md](ota-manager.md#page-de-secours-et-marqueur-persistant-feature-151-d3-b1-adr-0124).
 
 ## Garde 503 « fichiers statiques » (v2.41.0, bug-080 lot B-3, [ADR-0067](../adr/0067-garde-503-avant-fopen-handler-prioritaire.md))
 

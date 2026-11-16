@@ -32,7 +32,7 @@ bool writeMarker(bool value) {
   esp_task_wdt_reset();
   Preferences prefs;
   bool ok = false;
-  if (prefs.begin(kOtaRecoveryNvsNamespace, false)) {
+  if (prefs.begin(kOtaNvsNamespace, false)) {
     ok = (prefs.putBool(kOtaRecoveryNvsKey, value) == sizeof(uint8_t));
     prefs.end();
   }
@@ -47,7 +47,7 @@ void otaRecoveryInit() {
   // begin en lecture/écriture : en lecture seule, un namespace encore inexistant
   // (cas NOMINAL d'un appareil jamais mis à jour) ferait échouer begin() et
   // serait pris pour une NVS illisible.
-  if (prefs.begin(kOtaRecoveryNvsNamespace, false)) {
+  if (prefs.begin(kOtaNvsNamespace, false)) {
     sMarkerValue.store(prefs.getBool(kOtaRecoveryNvsKey, false), std::memory_order_relaxed);
     sMarkerReadable.store(true, std::memory_order_relaxed);
     prefs.end();

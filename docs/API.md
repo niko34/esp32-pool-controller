@@ -121,6 +121,49 @@ Quand le secours est **armé**, ces deux routes rendent la page de secours (200)
 
 ⚠️ `/` et `/index.html` restent **sous** la garde 503 : en famine mémoire, seul `/recovery` répond.
 
+### Interrupteur de signature OTA (feature-151 D3-b2, [ADR-0125](adr/0125-l-expiration-de-l-interrupteur-de-signature-se-mesure-sur-un-horodatage-nvs.md))
+
+⛔ **Lot INERTE : l'interrupteur n'impose ni ne lève rien.** L'appareil reste en mode D1 (« D3 refuserait : oui/non — AUCUN refus appliqué »). Armé, il change seulement une **mention du journal**. Les trois routes ci-dessous sont enregistrées dans [`web_routes_ota_switch.cpp`](../src/web_routes_ota_switch.cpp), un fichier **sans** `Update`, `LittleFS`, `onBody`, `onUpload` ni lecture de paramètre.
+
+Toutes : niveau **`CRITICAL`** (`REQUIRE_AUTH` en première instruction), enregistrées en `AsyncURIMatcher::exact(...)` — le mode par défaut de `server->on(const char*)` équivaut à `^{uri}(/.*)?$` et ferait capter `/ota-signature-switch/arm` par `/ota-signature-switch`. Aucune n'a de paramètre : la fenêtre (60 min) est une constante compilée. Réponse d'auth refusée : `401`.
+
+⚠️ `CRITICAL` n'est **pas** distingué de `WRITE` par `checkAuth()`, et `checkAuth()` rend `true` quand l'authentification est coupée : d'où le `403` explicite de l'armement.
+
+#### `POST /ota-signature-switch/arm` — CRITICAL
+
+Arme l'interrupteur pour **3600 s** (échéance = heure courante + 3600, écrite en NVS **puis relue** avant de répondre).
+
+| Code | Corps | Cas |
+|---|---|---|
+| `200` | `{"armed":true,"until":<epoch>,"window_s":3600,"mqtt_connected":<bool>}` | Armé. `mqtt_connected` dit si le témoin MQTT existe : **MQTT n'est pas un témoin garanti** (voir [MQTT.md](MQTT.md#topics-et-entité-ajoutés-en-feature-151-d3-b2-interrupteur-de-signature-ota)) ; le journal porte la même mention |
+| `403` | `{"error":"auth_required"}` | Authentification **coupée**, ou **premier démarrage** (mot de passe d'usine) : l'armement serait ouvert à tout le LAN. Le désarmement, lui, reste permis |
+| `409` | `{"error":"no_clock"}` | Heure non valide : impossible de dater l'échéance |
+| `500` | `{"error":"nvs_write_failed"}` | Écriture ou relecture NVS en échec ⇒ **NON armé** |
+
+#### `GET /ota-signature-switch` — CRITICAL
+
+État **faisant autorité** (relit la NVS). `200 {"armed":<bool>,"reason":"<code>","remaining_s":<n>}`. `reason` ∈ `armed`, `no_entry`, `nvs_unreadable`, `no_clock`, `expired`, `invalid_expiry` (échéance 0 ou au-delà de la fenêtre), `locked` (désarmement en cours ou raté).
+
+En état **`locked`** seulement, deux champs s'ajoutent (ils précèdent `armed`) :
+
+| Champ | Valeurs | Sens |
+|---|---|---|
+| `rearms_on_reboot` | `true` · `false` · `"unknown"` | Un redémarrage **ré-armerait-il** l'interrupteur ? Le verrou est en RAM, l'échéance NVS survit. `"unknown"` (NVS inaccessible) **ne se lit jamais « non »** |
+| `nvs_residual_until` | `0` · epoch d'échéance · `null` | Échéance restant en NVS après un désarmement raté. `0` = aucune (constaté) ; **`null` = INCONNU** (NVS inaccessible), jamais « rien » |
+
+#### `POST /ota-signature-switch` — CRITICAL
+
+Désarme (verrou RAM posé **avant** l'écriture NVS, repli à `0` si l'effacement échoue), puis rend l'état réel.
+
+| Code | Corps | Cas |
+|---|---|---|
+| `200` | même corps que le `GET` | Désarmé (`armed:false`) |
+| `500` | `{"error":"nvs_clear_failed","rearms_on_reboot":…,"nvs_residual_until":…,"armed":false,"reason":"locked","remaining_s":0}` | NVS non effacée : fermé pour toute décision **jusqu'au prochain armement**, mais une échéance (≤ 60 min) peut **ré-armer au redémarrage**. Journal `CRITICAL` |
+
+L'interrupteur est **consommé** au premier flash réussi (`/update`, les deux genres, ou `/download-update`), et **n'est jamais armé automatiquement**. ⛔ Il n'apparaît **pas** dans la page de secours. Détail : [ota-manager.md](subsystems/ota-manager.md#interrupteur-de-signature-feature-151-d3-b2).
+
+🔴 **Ce que cela ne ferme PAS** : le vecteur « jeton administrateur volé » reste **ouvert**, et l'interrupteur le **rouvre en deux requêtes au lieu d'une** (armer, puis envoyer). Voir [ADR-0125](adr/0125-l-expiration-de-l-interrupteur-de-signature-se-mesure-sur-un-horodatage-nvs.md).
+
 ---
 
 ## Authentification et Wizard
@@ -3486,6 +3529,7 @@ Paramètres POST :
 | `manifest` | non (feature-151 D1, relayé par la page depuis D3-a) | Même manifeste et même grammaire que [`POST /update`](#authenticite-manifest-signature-feature-151-d1) — ⛔ **journalisé seulement, aucun refus**. Depuis la v2.88.0, valeur du champ `manifest` de [`GET /ota-sig`](#get-ota-sig--write) (les champs `*_manifest` de `/check-update` sont désormais vides) |
 | `signature` | non (feature-151 D1, relayé par la page depuis D3-a) | Même format (RSA-3072, base64 sans padding, 512 caractères) — ⛔ **journalisé seulement, aucun refus**. Tout-ou-rien : un `manifest` sans `signature` (ou l'inverse) est ignoré |
 | `restart` | non | `false` pour ne pas redémarrer après une installation filesystem réussie |
+| `expected_version` | non (feature-151 D3-b2) | Version que la requête est censée porter (`v2.89.0` ou `2.89.0`). ⛔ **Journalisée seulement** (observation « désaccord de version »), jamais une condition d'acceptation, jamais prioritaire sur le tag mémorisé par `/check-update`. Re-sérialisée depuis les entiers parsés, jamais recopiée brute dans le journal. **Facultative exprès** : un onglet resté ouvert qui exécute un JS périmé (celui d'avant la mise à jour, qui ne la connaît pas) doit continuer à fonctionner — la rendre obligatoire casserait l'envoi pour ce client, comme l'épisode du 2026-11-15 l'a montré. Voir [ADR-0126](adr/0126-la-version-demandee-ne-vient-jamais-d-une-sous-chaine-d-url.md) |
 
 Erreurs d'intégrité (fail-closed) :
 

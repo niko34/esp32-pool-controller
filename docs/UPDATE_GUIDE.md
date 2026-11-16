@@ -374,9 +374,10 @@ prouve rien sur l'origine, seulement que ce manifeste décrit bien ces octets. L
 
 1. **Télécharger les deux fichiers de la même release GitHub** sur votre téléphone ou ordinateur : `littlefs.bin` **et** `littlefs.bin.sig`. ⛔ Ne jamais mélanger deux releases : un `.sig` ne vaut que pour l'image exacte qu'il décrit.
 2. Ouvrir l'adresse de l'appareil (`http://poolcontroller.local`, ou son adresse IP si le nom `.local` ne répond pas) : la page de secours s'affiche. Vous pouvez aussi l'ouvrir directement sur `/recovery`.
-3. Saisir le **mot de passe administrateur** (au premier démarrage, avant la fin de l'assistant, la page vous demande d'en choisir un).
-4. Sélectionner l'image (`.bin`) et la signature (`.sig`), puis **Vérifier et envoyer**. Le calcul de l'empreinte du fichier prend quelques secondes ; **ne fermez pas la page**.
-5. Attendre « Terminé : l'appareil est de retour », puis **Ouvrir l'interface**.
+3. Relever la **version du firmware** affichée en haut de la carte d'envoi (« Version du firmware : X.Y.Z ») : c'est la version **installée** ; choisissez le `littlefs.bin` de la release correspondante. (Elle n'apparaît pas à l'écran de connexion.)
+4. Saisir le **mot de passe administrateur** (au premier démarrage, avant la fin de l'assistant, la page vous demande d'en choisir un).
+5. Toucher les deux zones « **Image (.bin)** » et « **Signature (.sig)** » pour choisir les fichiers (le nom choisi s'affiche, le cadre passe de pointillé à plein), puis **Vérifier et envoyer**. Le calcul de l'empreinte du fichier prend quelques secondes ; **ne fermez pas la page**.
+6. Attendre « Terminé : l'appareil est de retour », puis **Ouvrir l'interface**.
 
 **Si le secours s'affiche alors que l'interface est intacte** (faux positif, rare) : le lien **« Ouvrir l'interface quand même »** (`/ui`) affiche l'interface normale. Cela peut arriver si le courant a été coupé juste au début d'une mise à jour du système de fichiers. Une mise à jour réussie du système de fichiers fait disparaître le secours.
 
@@ -387,6 +388,23 @@ prouve rien sur l'origine, seulement que ce manifeste décrit bien ces octets. L
 ### ⛔ Hors périmètre assumé : « internet nulle part »
 
 Si ni l'appareil **ni** votre poste n'ont accès à internet, il n'existe pas de procédure de secours par le navigateur : les fichiers ne peuvent pas être téléchargés. Il faut obtenir les fichiers autrement (autre connexion, par exemple le partage de connexion d'un téléphone) ou passer par le câble USB (`./deploy.sh fs`). Ce cas n'est **jamais** résolu en acceptant une image non signée.
+
+### Interrupteur de signature (feature-151 D3-b2, **inerte**)
+
+L'appareil expose un **interrupteur de signature** destiné à D3-c. Dans cette version il **n'impose et ne lève rien** : il change seulement une mention du journal (« D3 refuserait : … interrupteur armé »). Il s'administre **par l'API**, jamais par l'interface ni par la page de secours :
+
+```bash
+curl -X POST -H "X-Auth-Token: <jeton>" http://poolcontroller.local/ota-signature-switch/arm   # arme 60 min
+curl -H "X-Auth-Token: <jeton>" http://poolcontroller.local/ota-signature-switch               # état
+curl -X POST -H "X-Auth-Token: <jeton>" http://poolcontroller.local/ota-signature-switch       # désarme
+```
+
+- **Jamais armé automatiquement** ; **expire seul au bout de 60 min** (mesuré sur une échéance en mémoire non volatile, pas sur le temps écoulé depuis le démarrage) ; **consommé au premier flash réussi** ; la clé absente, la mémoire illisible ou l'heure non valide valent **« signature exigée »**.
+- L'armement répond `403` si l'authentification est coupée ou au premier démarrage, et `409` si l'heure n'est pas valide.
+- Si le désarmement échoue (`500`), la réponse indique `rearms_on_reboot` : un redémarrage **peut ré-armer** l'interrupteur (≤ 60 min). `"unknown"` ne signifie **pas** « non ».
+- Une entité Home Assistant **« Piscine Signature OTA Levée »** (diagnostic) en donne un témoin. ⚠️ Ce témoin **n'est pas une preuve** (voir [MQTT.md](MQTT.md#topics-et-entité-ajoutés-en-feature-151-d3-b2-interrupteur-de-signature-ota)) ; seul l'historique de Home Assistant garde la trace d'un passage à `on`.
+
+🔴 **Ce que l'interrupteur NE protège PAS** : le vecteur **« jeton administrateur volé » reste ouvert**, et l'interrupteur le **rouvre en deux requêtes au lieu d'une** (armer, puis envoyer l'image). Le jeton est statique et en clair en NVS ; quiconque le détient peut armer. Ne pas lire cette fonction comme une défense : c'est une **fenêtre bornée et observable**. Voir [ADR-0125](adr/0125-l-expiration-de-l-interrupteur-de-signature-se-mesure-sur-un-horodatage-nvs.md).
 
 ### Ce que cela ne change pas — risques résiduels
 

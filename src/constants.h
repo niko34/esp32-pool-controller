@@ -182,9 +182,17 @@ constexpr unsigned long kRestartApModeDelayMs = 1000;     // 1s - Attente avant 
 
 // feature-151 D3-b1 — page de secours OTA
 constexpr unsigned long kOtaRecoveryReprobeMs = 2000;          // 2s - délai entre deux sondes d'index quand l'admission mémoire a été refusée
-constexpr const char* kOtaRecoveryNvsNamespace = "pool-ota";   // namespace NVS DÉDIÉ (jamais poolctrl : config.cpp + mutex, interdit depuis async_tcp)
+constexpr const char* kOtaNvsNamespace = "pool-ota";   // namespace NVS DÉDIÉ (jamais poolctrl : config.cpp + mutex, interdit depuis async_tcp)
 constexpr const char* kOtaRecoveryNvsKey = "fsupd";            // clé du marqueur « mise à jour du filesystem en cours »
 constexpr const char* kOtaRecoveryProbePath = "/index.html";   // sondé en .gz D'abord (minify.js n'écrit que les .gz) — lié par tools/check_fs_probe_paths.sh
+
+// feature-151 D3-b2 — interrupteur de signature (gardes INERTES : journalise, ne refuse rien)
+constexpr const char* kOtaSignatureSwitchNvsKey = "sigsw";                    // clé NVS (U32) : échéance d'armement, epoch UTC en secondes — namespace kOtaNvsNamespace
+constexpr uint32_t kOtaSignatureSwitchWindowSec = 3600;                       // 60 min - durée de l'armement ; AUSSI borne HAUTE de l'échéance acceptée (C1)
+constexpr const char* kOtaSignatureSwitchRoutePath = "/ota-signature-switch";          // GET état / POST désarme
+constexpr const char* kOtaSignatureSwitchArmRoutePath = "/ota-signature-switch/arm";   // POST arme (403 si auth coupée)
+constexpr const char* kOtaSignatureSwitchTopicSuffix = "/ota_signature_switch";            // ON/OFF, retain
+constexpr const char* kOtaSignatureSwitchUntilTopicSuffix = "/ota_signature_switch_until"; // epoch d'échéance (0 si OFF), retain
 
 // Timeouts mutex
 constexpr unsigned long kI2cMutexTimeoutMs = 2000;        // 2s - Timeout acquisition mutex I2C

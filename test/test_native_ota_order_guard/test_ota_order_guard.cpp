@@ -412,7 +412,7 @@ void test_update_authenticity_call_precedes_owner_and_magic_check(void) {
   TEST_ASSERT_NOT_NULL_MESSAGE(
       src, "src/web_routes_ota.cpp introuvable — la garde structurelle est aveugle");
 
-  const char* authCall = "logOtaAuthenticityVerdict(\"/update\", authenticity);";
+  const char* authCall = "logOtaAuthenticityVerdict(\"/update\", authenticity, switchDecision);";
   const char* ownerAssign = "g_uploadOwner = request;";
   const char* magicCheck = "checkOtaFirstByte(";
 
@@ -455,7 +455,7 @@ void test_download_authenticity_call_precedes_tls_gate(void) {
   TEST_ASSERT_NOT_NULL_MESSAGE(
       src, "src/web_routes_ota.cpp introuvable — la garde structurelle est aveugle");
 
-  const char* authCall = "logOtaAuthenticityVerdict(\"/download-update\", authenticity);";
+  const char* authCall = "logOtaAuthenticityVerdict(\"/download-update\", authenticity, switchDecision);";
   const char* tlsGateCall = "refuseIfTlsGateClosed(request, \"/download-update\"";
 
   TEST_ASSERT_EQUAL_INT_MESSAGE(
@@ -715,6 +715,264 @@ void test_download_bodies_carry_manifest_and_signature(void) {
   free(src);
 }
 
+
+// =============================================================================
+// [G7] feature-151 D3-b2 (C8) + INVARIANT DU LOT : « les gardes sont INERTES ».
+// Le lot ne doit ni refuser ni accepter quoi que ce soit de neuf. Propriétés figées :
+//   1. exactement 2 LECTURES (otaSignatureSwitchRead) dans web_routes_ota.cpp, chacune AVANT le
+//      premier Update.begin() de sa fonction ;
+//   2. exactement 3 CONSOMMATIONS, chacune APRÈS le point de succès de sa fonction
+//      (Update.end(true) ; pour le FS de /download-update : après le contrôle d'empreinte et
+//      la levée du marqueur) — le 3ᵉ site est celui qu'on oublie ;
+//   3. la décision n'est JAMAIS une CONDITION : aucune ligne qui mentionne switchDecision /
+//      switchWaived / g_uploadSwitchWaived ne contient if / return / while / && / || / ? ;
+//   4. la décision capturée n'est écrite qu'UNE fois par site (à index==0 / à l'entrée) et
+//      jamais relue pour accorder (C8) ;
+//   5. le verdict d'authenticité reste déterminé par otaAuthenticityIsRejected seul (C4) ;
+//   6. aucune mention de otaSignatureSwitch dans auth.* ni ota_signature.* (C8/C11) ;
+//   7. les routes de l'interrupteur sont enregistrées en AsyncURIMatcher::exact (C2).
+// =============================================================================
+static long nthIndexOf(const char* hay, const char* needle, int n) {
+  const char* p = hay;
+  for (int i = 0; i < n; ++i) {
+    p = strstr(p, needle);
+    if (p == NULL) return -1;
+    if (i < n - 1) p += strlen(needle);
+  }
+  return (long)(p - hay);
+}
+
+// Corps (offset ouvrant/fermant) de la fonction dont la signature commence par `sig`.
+static bool functionBody(const char* src, const char* sig, long* open, long* close) {
+  const long at = indexOf(src, sig);
+  if (at < 0) return false;
+  const char* b = strchr(src + at, '{');
+  if (b == NULL) return false;
+  *open = (long)(b - src);
+  *close = findMatchingBrace(src, *open);
+  return *close > *open;
+}
+
+void test_d3b2_lectures_et_consommations_comptees_et_ordonnees(void) {
+  long len = 0;
+  char* src = readProjectFile("src/web_routes_ota.cpp", &len);
+  TEST_ASSERT_NOT_NULL_MESSAGE(src, "src/web_routes_ota.cpp introuvable — garde aveugle");
+
+  TEST_ASSERT_EQUAL_INT_MESSAGE(2, countIn(src, "otaSignatureSwitchRead("),
+      "D3-b2 : EXACTEMENT 2 lectures de l'interrupteur (/update et /download-update)");
+  TEST_ASSERT_EQUAL_INT_MESSAGE(3, countIn(src, "otaSignatureSwitchConsume("),
+      "D3-b2 (C8) : EXACTEMENT 3 sites de consommation (upload, FS, firmware de /download-update) — "
+      "le 3e est celui qu'on oublie");
+  TEST_ASSERT_EQUAL_INT_MESSAGE(0, countIn(src, "otaSignatureSwitchArm("),
+      "D3-b2 (C6) : l'armement n'est PAS appelable depuis un chemin d'envoi d'image");
+  TEST_ASSERT_EQUAL_INT_MESSAGE(0, countIn(src, "otaSignatureSwitchPeek("),
+      "D3-b2 (C6) : Peek est réservé à mqtt_manager.cpp");
+  TEST_ASSERT_EQUAL_INT_MESSAGE(0, countIn(src, "otaSignatureSwitchClear("),
+      "D3-b2 : seule la consommation désarme depuis un envoi d'image");
+
+  long uo = 0, uc = 0, do_ = 0, dc = 0;
+  TEST_ASSERT_TRUE(functionBody(src, "static void handleOtaUpdate(AsyncWebServerRequest* request, const String& filename", &uo, &uc));
+  TEST_ASSERT_TRUE(functionBody(src, "static void handleDownloadUpdate(AsyncWebServerRequest* request) {", &do_, &dc));
+
+  // --- /update (handleOtaUpdate) : 1 lecture, 1 consommation
+  char* up = sliceCopy(src, uo, uc);
+  TEST_ASSERT_EQUAL_INT(1, countIn(up, "otaSignatureSwitchRead("));
+  TEST_ASSERT_EQUAL_INT(1, countIn(up, "otaSignatureSwitchConsume("));
+  const long uRead = indexOf(up, "otaSignatureSwitchRead(");
+  const long uBegin = indexOf(up, "Update.begin(");
+  const long uEnd = indexOf(up, "if (Update.end(true))");
+  const long uCons = indexOf(up, "otaSignatureSwitchConsume(");
+  TEST_ASSERT_TRUE_MESSAGE(uRead >= 0 && uBegin >= 0 && uEnd >= 0 && uCons >= 0, "marqueurs /update");
+  TEST_ASSERT_TRUE_MESSAGE(uRead < uBegin, "REGRESSION D3-b2 : la lecture doit PRECEDER Update.begin (/update)");
+  TEST_ASSERT_TRUE_MESSAGE(uEnd < uCons, "REGRESSION D3-b2 : la consommation doit SUIVRE Update.end(true) (/update)");
+  // La consommation est dans la branche de SUCCES : entre `if (Update.end(true)) {` et son `else`.
+  const long succOpen = uEnd + (long)strlen("if (Update.end(true))") ;
+  const char* br = strchr(up + succOpen, '{');
+  TEST_ASSERT_NOT_NULL(br);
+  const long brOpen = (long)(br - up);
+  const long brClose = findMatchingBrace(up, brOpen);
+  TEST_ASSERT_TRUE_MESSAGE(uCons > brOpen && uCons < brClose,
+      "REGRESSION D3-b2 : la consommation (/update) doit etre DANS la branche de succes de Update.end(true)");
+  free(up);
+
+  // --- /download-update : 1 lecture, 2 consommations
+  char* dl = sliceCopy(src, do_, dc);
+  TEST_ASSERT_EQUAL_INT(1, countIn(dl, "otaSignatureSwitchRead("));
+  TEST_ASSERT_EQUAL_INT_MESSAGE(2, countIn(dl, "otaSignatureSwitchConsume("),
+      "/download-update : 2 consommations (filesystem ET firmware)");
+  const long dRead = indexOf(dl, "otaSignatureSwitchRead(");
+  const long dBegin = indexOf(dl, "Update.begin(");
+  const long c1 = nthIndexOf(dl, "otaSignatureSwitchConsume(", 1);
+  const long c2 = nthIndexOf(dl, "otaSignatureSwitchConsume(", 2);
+  const long dEnd = indexOf(dl, "if (Update.end(true))");
+  const long fsMismatch = indexOf(dl, "image filesystem corrompue ou tronquée");
+  const long fsMarker = indexOf(dl, "OtaRecoveryUpdatePhase::kSucceeded");
+  TEST_ASSERT_TRUE_MESSAGE(dRead >= 0 && dBegin >= 0 && c1 >= 0 && c2 >= 0 && dEnd >= 0 && fsMismatch >= 0 && fsMarker >= 0,
+      "marqueurs /download-update");
+  TEST_ASSERT_TRUE_MESSAGE(dRead < dBegin, "REGRESSION D3-b2 : la lecture doit PRECEDER Update.begin (/download-update)");
+  TEST_ASSERT_TRUE_MESSAGE(dRead < fsMismatch, "REGRESSION D3-b2 : la lecture doit preceder le chemin filesystem");
+  // Site FS : après le contrôle d'empreinte (qui peut `return`) ET la levée du marqueur.
+  TEST_ASSERT_TRUE_MESSAGE(c1 > fsMismatch && c1 > fsMarker,
+      "REGRESSION D3-b2 : consommation FS apres le controle d'empreinte et la levee du marqueur");
+  // Site firmware : le 3e. DANS la branche de succès de Update.end(true).
+  TEST_ASSERT_TRUE_MESSAGE(c2 > dEnd, "REGRESSION D3-b2 : consommation firmware apres Update.end(true) (3e site)");
+  const char* fb = strchr(dl + dEnd, '{');
+  const long fbOpen = (long)(fb - dl);
+  const long fbClose = findMatchingBrace(dl, fbOpen);
+  TEST_ASSERT_TRUE_MESSAGE(c2 > fbOpen && c2 < fbClose,
+      "REGRESSION D3-b2 : le 3e site doit etre DANS la branche de succes de Update.end(true)");
+  free(dl);
+  free(src);
+}
+
+// Une ligne qui mentionne la décision ne doit JAMAIS la tester : c'est l'invariant « inerte ».
+void test_d3b2_la_decision_n_est_jamais_une_condition(void) {
+  long len = 0;
+  char* src = readProjectFile("src/web_routes_ota.cpp", &len);
+  TEST_ASSERT_NOT_NULL(src);
+  const char* names[] = {"switchDecision", "switchWaived", "g_uploadSwitchWaived"};
+  int mentions = 0;
+  const char* line = src;
+  while (*line) {
+    const char* nl = strchr(line, '\n');
+    const size_t n = nl ? (size_t)(nl - line) : strlen(line);
+    char buf[512];
+    const size_t m = n < sizeof(buf) - 1 ? n : sizeof(buf) - 1;
+    memcpy(buf, line, m);
+    buf[m] = '\0';
+    bool mentioned = false;
+    for (const char* nm : names) if (strstr(buf, nm)) mentioned = true;
+    if (mentioned) {
+      mentions++;
+      const char* forbidden[] = {"if (", "if(", "return", "while", "&&", "||", " ? ", "refuse", "failOtaUpload", "send("};
+      for (const char* f : forbidden) {
+        // Seule exception : l'affectation `g_uploadSwitchWaived = (switchDecision.requirement == ...)`
+        // et `switchWaived = (...)` — elles portent == mais aucun des mots interdits.
+        char msg[160];
+        snprintf(msg, sizeof(msg), "REGRESSION D3-b2 (inerte) : la decision de l'interrupteur est testee (« %s ») : %.100s", f, buf);
+        TEST_ASSERT_TRUE_MESSAGE(strstr(buf, f) == NULL, msg);
+      }
+    }
+    if (!nl) break;
+    line = nl + 1;
+  }
+  // 2 decl/affectations + 2 logs + 3 consommations... : on exige au moins les 3 consommations + 2 captures.
+  TEST_ASSERT_TRUE_MESSAGE(mentions >= 5, "garde aveugle : la decision n'est plus mentionnee comme attendu");
+
+  // Captures : une seule ecriture par site, jamais ailleurs.
+  TEST_ASSERT_EQUAL_INT(1, countIn(src, "g_uploadSwitchWaived = (")); // l'affectation ; la declaration est `= false;`
+  TEST_ASSERT_EQUAL_INT(1, countIn(src, "otaSignatureSwitchConsume(g_uploadSwitchWaived)"));
+  TEST_ASSERT_EQUAL_INT(1, countIn(src, "static bool g_uploadSwitchWaived = false;"));
+  TEST_ASSERT_EQUAL_INT(1, countIn(src, "g_uploadSwitchWaived = (switchDecision.requirement == OtaSignatureRequirement::kWaived)"));
+  TEST_ASSERT_EQUAL_INT(1, countIn(src, "switchWaived = (switchDecision.requirement == OtaSignatureRequirement::kWaived)"));  // /download-update (la forme g_upload... ne contient pas « switchWaived » en minuscule)
+  TEST_ASSERT_EQUAL_INT(2, countIn(src, "otaSignatureSwitchConsume(switchWaived)"));
+  free(src);
+}
+
+// [C4] le verdict reste distinct de la levée : wouldReject ne dépend que du verdict.
+void test_d3b2_verdict_et_levee_distincts(void) {
+  long len = 0;
+  char* src = readProjectFile("src/web_routes_ota.cpp", &len);
+  TEST_ASSERT_NOT_NULL(src);
+  long o = 0, c = 0;
+  TEST_ASSERT_TRUE(functionBody(src, "static void logOtaAuthenticityVerdict(const char* routeName,", &o, &c));
+  char* body = sliceCopy(src, o, c);
+  TEST_ASSERT_EQUAL_INT_MESSAGE(1, countIn(body, "const bool wouldReject = otaAuthenticityIsRejected(computation.verdict);"),
+      "C4 : wouldReject ne doit venir QUE du verdict");
+  TEST_ASSERT_EQUAL_INT_MESSAGE(1, countIn(body, "if (wouldReject)"), "C4 : un seul pilote de niveau");
+  const long wr = indexOf(body, "if (wouldReject)");
+  const long lev = indexOf(body, "const bool armed");
+  TEST_ASSERT_TRUE(wr > lev && lev >= 0);
+  // `armed` / `sw` ne pilotent PAS le niveau : le bloc `if (wouldReject) {...} else {...}` n'en mentionne aucun.
+  const char* ob = strchr(body + wr, '{');
+  const long wOpen = (long)(ob - body);
+  const long wClose = findMatchingBrace(body, wOpen);
+  const char* eb = strstr(body + wClose, "else");
+  TEST_ASSERT_NOT_NULL(eb);
+  const long eOpen = (long)(strchr(eb, '{') - body);
+  const long eClose = findMatchingBrace(body, eOpen);
+  char* gate = sliceCopy(body, wOpen, eClose);
+  TEST_ASSERT_EQUAL_INT_MESSAGE(0, countIn(gate, "armed") + countIn(gate, "sw.") + countIn(gate, "levee"),
+      "C4 : la levee ne pilote ni le niveau ni les octets canoniques");
+  TEST_ASSERT_EQUAL_INT_MESSAGE(1, countIn(gate, "canonicalLen > 0"), "C4 : octets canoniques conserves sous wouldReject");
+  free(gate);
+  TEST_ASSERT_EQUAL_INT(0, countIn(body, "return"));
+  TEST_ASSERT_EQUAL_INT_MESSAGE(1, countIn(body, "D3 refuserait : %s%s") + countIn(body, "wouldReject ? \"oui\" : \"non\", levee);") - 1,
+      "C4 : la mention de levee s'AJOUTE au verdict, elle ne le remplace pas");
+  free(body);
+  free(src);
+}
+
+
+// [C9 + INVARIANT] logOtaVersionAgreement ne fait que LIRE et JOURNALISER : aucun refus, aucune
+// écriture d'état d'envoi, `expected_version` jamais brut dans un journal ni stocké.
+void test_d3b2_liaison_version_est_purement_journalistique(void) {
+  long len = 0;
+  char* src = readProjectFile("src/web_routes_ota.cpp", &len);
+  TEST_ASSERT_NOT_NULL(src);
+  // Définition (la 2e occurrence de la signature : la 1re est la déclaration anticipée).
+  const long def = nthIndexOf(src, "static void logOtaVersionAgreement(const char* routeName, bool kindIsFilesystem,", 2);
+  TEST_ASSERT_TRUE_MESSAGE(def > 0, "definition de logOtaVersionAgreement introuvable");
+  const char* b = strchr(src + def, '{');
+  const long open = (long)(b - src);
+  const long close = findMatchingBrace(src, open);
+  TEST_ASSERT_TRUE(close > open);
+  char* body = sliceCopy(src, open, close);
+  const char* forbidden[] = {"Update.", "failOtaUpload", "send(", "g_upload", "storeSigSource", "abort",
+                             "setOtaInProgress", "g_restartRequested", "systemLogger.critical",
+                             "LittleFS", "otaSignatureSwitchArm", "otaSignatureSwitchClear"};
+  for (const char* f : forbidden) {
+    char msg[120];
+    snprintf(msg, sizeof(msg), "REGRESSION D3-b2 (inerte) : logOtaVersionAgreement contient « %s »", f);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(0, countIn(body, f), msg);
+  }
+  // Seul `return;` (sortie silencieuse, void) est permis : aucun return avec valeur.
+  TEST_ASSERT_EQUAL_INT(1, countIn(body, "return"));
+  TEST_ASSERT_EQUAL_INT(1, countIn(body, "return;"));
+  // La chaine brute du parametre n'est jamais concatenee au journal : on ne la lit que via param.c_str()
+  // pour la SELECTION ; le journal est re-serialise depuis `declared` / `requested`.
+  TEST_ASSERT_EQUAL_INT_MESSAGE(0, countIn(body, "+ param") + countIn(body, "param +") + countIn(body, "String(param"),
+      "C9 : expected_version ne doit jamais etre journalise brut");
+  TEST_ASSERT_EQUAL_INT(1, countIn(body, "param.c_str()"));
+  free(body);
+  TEST_ASSERT_EQUAL_INT(2, countIn(src, "\"expected_version\""));  // hasParam + getParam, dans cette seule fonction
+  TEST_ASSERT_EQUAL_INT_MESSAGE(0, countIn(src, "storeSigSource(g_sigSource[0], param"), "C9");
+  free(src);
+}
+
+// [C8/C11] aucune mention de l'interrupteur dans l'authentification ni la vérification de signature.
+void test_d3b2_aucune_mention_dans_auth_et_ota_signature(void) {
+  const char* files[] = {"src/auth.cpp", "src/auth.h", "src/ota_signature.cpp", "src/ota_signature.h",
+                         "src/ota_manifest_logic.cpp", "src/ota_sig_relay_logic.cpp", "src/ota_authenticity_logic.cpp"};
+  for (const char* f : files) {
+    long len = 0;
+    char* src = readProjectFile(f, &len);
+    char msg[120];
+    snprintf(msg, sizeof(msg), "%s introuvable — garde aveugle", f);
+    TEST_ASSERT_NOT_NULL_MESSAGE(src, msg);
+    snprintf(msg, sizeof(msg), "REGRESSION D3-b2 (C8) : otaSignatureSwitch mentionne dans %s", f);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(0, countIn(src, "otaSignatureSwitch"), msg);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(0, countIn(src, "kOtaSignatureSwitch"), msg);
+    free(src);
+  }
+}
+
+// [C2] routes EXACTES : le mode par défaut de server->on(const char*) capte les sous-chemins.
+void test_d3b2_routes_de_l_interrupteur_en_matcher_exact(void) {
+  long len = 0;
+  char* src = readProjectFile("src/web_routes_ota_switch.cpp", &len);
+  TEST_ASSERT_NOT_NULL(src);
+  TEST_ASSERT_EQUAL_INT_MESSAGE(3, countIn(src, "server->on("), "3 routes : arm, etat, desarmement");
+  TEST_ASSERT_EQUAL_INT_MESSAGE(3, countIn(src, "server->on(AsyncURIMatcher::exact("),
+      "C2 : CHAQUE route en AsyncURIMatcher::exact — sinon /ota-signature-switch capte /ota-signature-switch/arm");
+  TEST_ASSERT_EQUAL_INT(1, countIn(src, "AsyncURIMatcher::exact(kOtaSignatureSwitchArmRoutePath), HTTP_POST"));
+  TEST_ASSERT_EQUAL_INT(1, countIn(src, "AsyncURIMatcher::exact(kOtaSignatureSwitchRoutePath), HTTP_GET"));
+  TEST_ASSERT_EQUAL_INT(1, countIn(src, "AsyncURIMatcher::exact(kOtaSignatureSwitchRoutePath), HTTP_POST"));
+  // C3 : 403 sur auth coupee / premier demarrage, dans la route d'armement.
+  TEST_ASSERT_EQUAL_INT(1, countIn(src, "!authManager.isEnabled() || authManager.isFirstBootDetected()"));
+  free(src);
+}
+
 // -----------------------------------------------------------------------------
 // Runner
 // -----------------------------------------------------------------------------
@@ -731,5 +989,11 @@ int main(int argc, char** argv) {
   RUN_TEST(test_kind_resolution_precedes_magic_and_partition_effects);
   RUN_TEST(test_download_kind_resolution_precedes_partition_choice);
   RUN_TEST(test_download_bodies_carry_manifest_and_signature);
+  RUN_TEST(test_d3b2_lectures_et_consommations_comptees_et_ordonnees);
+  RUN_TEST(test_d3b2_la_decision_n_est_jamais_une_condition);
+  RUN_TEST(test_d3b2_verdict_et_levee_distincts);
+  RUN_TEST(test_d3b2_aucune_mention_dans_auth_et_ota_signature);
+  RUN_TEST(test_d3b2_routes_de_l_interrupteur_en_matcher_exact);
+  RUN_TEST(test_d3b2_liaison_version_est_purement_journalistique);
   return UNITY_END();
 }

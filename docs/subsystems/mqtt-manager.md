@@ -765,6 +765,14 @@ Miroir du handler heures de filtration, appliqué à l'éclairage. Trois cases d
 
 Le booléen `scheduleEnabled` est **conservé** (pas de stringification, cf. feature-028) : depuis v2.17.2 l'entité HA est un `select` « Mode Éclairage » dont les templates traduisent Programmation/Désactivé ↔ ON/OFF (le handler reçoit toujours ON/OFF, inchangé — voir la section « Select Mode Éclairage » ci-dessus). `lighting.update()` est appelé hors mutex depuis `loopTask` (aucune double-entrée). Aucun chemin de dosage touché. Le broadcast WS config propage le changement à l'UI web (voir section bug-sync ci-dessus).
 
+## Témoin de l'interrupteur de signature OTA (feature-151 D3-b2)
+
+- `publishOtaSignatureSwitchInternal()` (appelée par `publishAllStatesInternal()`, donc **depuis `mqttTask` uniquement**, via `safePublish`) publie `{base}/ota_signature_switch` (`ON`/`OFF`) et `{base}/ota_signature_switch_until` (epoch, `0` si OFF), `retain=true`, **sur transition** (`_lastOtaSwitchPub`, `_lastOtaSwitchUntilPub`).
+- La valeur vient de `otaSignatureSwitchPeek()` — miroir atomique, **aucune E/S NVS** ; ce manager en est le **seul** appelant (outillé par `tools/check_ota_signature_switch.sh`). Aucun `mqtt.publish()` depuis `async_tcp`.
+- `ON` si armé, ou si état `locked` avec résidu NVS non nul / inconnu (C7). Un `locked` sans résidu (désarmement normal en cours) **n'est pas** `ON` : pas d'ON fugace.
+- `connectInTask()` remet les deux mémos de dernière publication à leur sentinelle : **chaque nouvelle session republie** (le courtier a pu perdre le `retain`).
+- Auto-discovery : un seul `binary_sensor` (`device_class: safety`, `entity_category: diagnostic`), **jamais** un `switch`. Détail et mise en garde (le témoin n'est **pas** une preuve) : [MQTT.md](../MQTT.md#topics-et-entité-ajoutés-en-feature-151-d3-b2-interrupteur-de-signature-ota).
+
 ## Timeouts `configMutex` bornés (feature-027, v2.11.1)
 
 Les **9 prises de `configMutex`** de `mqtt_manager.cpp` (historiquement en `portMAX_DELAY`) sont bornées par `kConfigMutexTimeoutMs = 1000 ms` (`xSemaphoreTakeRecursive`, [`constants.h`](../../src/constants.h)). Chaque timeout émet un `WARN` `[MQTT] <site>: timeout mutex config — opération sautée` **throttlé à 1/min/site** (`kMutexTimeoutWarnThrottleMs`).

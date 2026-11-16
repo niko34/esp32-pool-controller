@@ -11,6 +11,8 @@
 #include "web_routes_heap.h"
 #include "web_routes_recovery.h"   // feature-151 D3-b1 : page de secours OTA
 #include "ota_recovery_marker.h"
+#include "ota_signature_switch.h"       // feature-151 D3-b2
+#include "web_routes_ota_switch.h"     // feature-151 D3-b2
 #include "auth.h"
 #include "config.h"
 #include "constants.h"
@@ -63,6 +65,7 @@ void WebServerManager::begin(AsyncWebServer* webServer, DNSServer* dnsServer) {
   }
 
   otaRecoveryInit();  // lit le marqueur NVS « mise à jour du filesystem en cours »
+  otaSignatureSwitchInit();  // feature-151 D3-b2 : miroir de l'interrupteur, FERMÉ par défaut (avant server->begin())
 
   setupRoutes();
 
@@ -114,6 +117,7 @@ void WebServerManager::setupRoutes() {
   setupCalibrationRoutes(server);
   setupControlRoutes(server);
   setupOtaRoutes(server);
+  setupOtaSignatureSwitchRoutes(server);  // feature-151 D3-b2 : routes EXACTES (C2), fichier isolé de l'upload
   setupCoredumpRoutes(server);
   setupSensorIdRoutes(server);  // feature-020 : identification 2 sondes DS18B20
   setupDebugRoutes(server);     // ph_slope_refresh + sensor_filter_reset/state (levier sécurité feature-025)

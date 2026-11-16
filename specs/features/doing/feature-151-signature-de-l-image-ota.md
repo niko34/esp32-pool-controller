@@ -352,8 +352,15 @@ la lui **rend**, en deux requêtes au lieu d'une.
 5. **ADR : écrire que le vecteur « jeton volé » reste ouvert.**
 6. **Absence de clé NVS = signature EXIGÉE** ⇒ `/factory-reset` et le bouton **ré-arment**.
 7. **Interrupteur BORNÉ** : expire au premier flash réussi **ou** 60 min (horodatage NVS,
-   ⛔ pas `millis()`), relu à **chaque** `index==0`, publié **MQTT** (⭐ le seul témoin qui
-   survit à un firmware hostile qui purge le journal).
+   ⛔ pas `millis()`), relu à **chaque** `index==0`, publié **MQTT**.
+   ⚠️ **CORRIGÉ le 2026-11-16 (revue P1 de D3-b2, condition C10)** : ~~le seul témoin qui
+   survit à un firmware hostile qui purge le journal~~ — **c'est faux**. Un firmware hostile
+   lit les identifiants MQTT en NVS et peut **republier `OFF`** ; un courtier sans persistance
+   perd le `retain` ; hors ligne, la valeur reste périmée ; MQTT désactivé, le témoin n'existe
+   pas. ⇒ **Seule la TRANSITION historisée par un tiers survit** (d'où l'entité Home Assistant,
+   historisée par le `recorder`). La borne haute de la fenêtre doit aussi être vérifiée :
+   une horloge fausse **vers le futur** à l'armement ferait survivre l'échéance aux
+   redémarrages (défaut G1 de la revue P1).
 8. Les deux endpoints d'administration : ⛔ **sans** `onBody`/`onUpload`, `REQUIRE_AUTH(CRITICAL)`
    **en tête** (⚠️ motif d'échec documenté des trois défauts du 07/09).
 9. **Verdicts distincts**, dont ⭐ **« vérification impossible »** — ⛔ sinon D2/D4 ne sauront pas
@@ -1576,8 +1583,12 @@ instruction** · `textContent` partout, `finally` restaure **sur erreur comme su
   ⇒ **À recalculer une fois les délais bornés** (C1), et à corriger dans le libellé.
 - 🔴 La matrice `.sig` C++ est **RECOPIÉE** de `test/sig_parse_vectors.js`, ⛔ pas extraite
   (ADR-0099). Tolérable tant que rien ne refuse ⇒ **à mécaniser AVANT D3-c**.
-- `#no_update_msg` reste en `innerHTML` (`app.js:10841`) — littéral du firmware **aujourd'hui**,
-  ⇒ à durcir **en D3-b**, quand un message relayé s'affichera.
+- ~~`#no_update_msg` reste en `innerHTML` (`app.js:10841`)~~ — ⚠️ **PÉRIMÉ, corrigé le
+  2026-11-16** : bug-178 a réécrit ce bloc en `replaceChildren()` + `createElement` +
+  `textContent` (`data/app.js:11121-11181`), avec le commentaire *« Construction DOM (jamais
+  innerHTML : latest_version vient de GitHub) »*. ⇒ L'item ne disparaît pas, il **change de
+  nature** : il reste à poser une **garde mécanique anti-régression** (D3-c y affichera un
+  message **relayé**) et à auditer les autres insertions de la carte.
 
 ## 🔴 La CI était ROUGE depuis le 2026-11-14 — et trois commits ont été poussés par-dessus
 `test_native_ota_update_fail_closed` **[F1]** exigeait le contrôle d'échec de `compute_sha256`
@@ -2108,10 +2119,300 @@ faite il est à **4,8:1**. ⇒ Défaut **plus étroit** qu'annoncé, et mieux ce
 
 **Conditions de la revue P1** : S1 (501/404 corrigé), S2 (symboles, 1 lecteur), S3 (genre FS), S4 (réévaluation à chaque transition), S5 (`/ui` après la garde, `/recovery` avant, lien présent), S6 (`textContent`, contrôle de génération), S7 (aucun mot de passe constant hors `"admin"`), S8 (`/release` lance le contrôle de fraîcheur), S9 (diff sans site `handleOtaUpdate` neuf, sans `POST` neuf, sans `LittleFS.begin(true)`, refus `:807` inchangé).
 
-**Décision** : [ADR-0124](../../../docs/adr/0124-le-mode-degrade-n-est-pas-un-mode-la-porte-de-sortie-du-serveur-web.md). Documentation : `docs/API.md`, `docs/subsystems/web-server.md`, `docs/subsystems/ota-manager.md`, `docs/DESIGN_SYSTEM.md` §5.21, `docs/BUILD.md`, `docs/UPDATE_GUIDE.md`, `CHANGELOG.md` (section `[Unreleased]`), `docs/user/src/guide-utilisation.html`.
+**Décision** : [ADR-0124](../../../docs/adr/0124-le-mode-degrade-n-est-pas-un-mode-la-porte-de-sortie-du-serveur-web.md). Documentation : `docs/API.md`, `docs/subsystems/web-server.md`, `docs/subsystems/ota-manager.md`, `docs/DESIGN_SYSTEM.md` §5.21, `docs/BUILD.md`, `docs/UPDATE_GUIDE.md`, `CHANGELOG.md` (section `[2.89.0]`), `docs/user/src/guide-utilisation.html`.
+
+### ✅ B12 marche 1 — relevée le 2026-11-16 sur l'appareil (2.89.0)
+
+**Parcours complet par la page de secours, appareil SAIN**, conduit **au navigateur** par
+l'utilisateur : `http://192.168.1.48/recovery` → connexion → `littlefs.bin` + `littlefs.bin.sig`
+→ « Vérifier et envoyer ». ⭐ L'essai **installe réellement** le système de fichiers 2.89.0 — il
+ne le simule pas.
+
+**Lignes de verdict** (journal persistant, `/download-logs`) :
+
+```
+07:34:29 Type de mise à jour: Filesystem (paramètre formulaire)
+07:34:29 [feature-151 D1]    /update — authenticité OTA : valide — D3 refuserait : non
+07:34:29 [feature-151 D1 B1] /update — liaison (paramètre sha256 (index==0))  : liée
+07:34:29 LittleFS démonté pour mise à jour manuelle
+07:34:29 Page de secours OTA ACTIVE : mise à jour du filesystem interrompue
+07:34:32 [feature-151 D1 B1] /update — liaison (empreinte calculée (final))   : liée
+07:34:33 Page de secours OTA ACTIVE : montage du filesystem échoué
+07:34:40 LittleFS monté avec succès
+```
+
+⭐ **Deux acquis non prévus par cette marche** :
+1. **S4 est observé dans le journal** — le secours s'arme à `07:34:29`, **pendant** la mise à
+   jour, ⛔ sans redémarrage, par le **marqueur** (première entrée du déclencheur), puis une
+   **seconde fois** à `07:34:33` par l'échec de montage (seconde entrée). Les deux entrées
+   indépendantes sont donc exercées. ⚠️ Ce qui **manque encore**, et qui EST la marche 2 :
+   personne n'a demandé `/` pendant cette fenêtre — le journal prouve l'**armement**, pas le
+   **rendu**.
+2. **La levée du marqueur fonctionne** : après redémarrage, `/` et `/index.html` rendent
+   l'interface normale (21 954 o, `<title>PoolController`), ⛔ pas le secours. Le défaut
+   « marqueur jamais levé ⇒ secours permanent » est écarté **sur l'appareil**.
+
+**Firmware acheminé de la même façon** (`ota_update.sh --use-sig firmware`) : `authenticité
+OTA : valide`, `liaison : liée` sur les deux points de contrôle. Mémoire après redémarrage :
+`free8` 56 812, `maxalloc8` 55 284.
+
+**⚠️ Écart relevé sur la page elle-même** : elle n'affiche **aucun numéro de version**. B6 écrit
+« la version affichée est une constante de compilation » — il n'y en a pas. ⇒ Un opérateur
+devant cette page ne sait pas quel `littlefs.bin` choisir. ⛔ Non corrigé ici (coût : génération
++ compilation + signature + redéploiement) ; à trancher avec D3-b2, qui touchera de toute façon
+la liaison **genre + version**.
+
+### ✅ B12 marche 2 — relevée le 2026-11-16 sur l'appareil (2.89.0)
+
+**Système de fichiers DÉTRUIT, SANS redémarrage.** Mise en condition depuis le LXC : envoi
+`/update` genre `filesystem` **coupé à 59 %** (327 197 o de 524 288), ⛔ avec un contenu
+**aléatoire** — pas l'image en place. Chemin exercé : `onDisconnect` → `Update.abort()` →
+`remountUploadFsIfNeeded()` **échoue** (`web_routes_ota.cpp:880`).
+
+**État constaté, appareil NON redémarré** (uptime 330 s, continu) :
+
+```
+/            200  15 850 o   « PoolController • Mode secours »
+/index.html  200  15 850 o
+/recovery    200  15 850 o
+/ui          501       34 o
+/app.js      404
+```
+
+⇒ **S4 est prouvé au RENDU**, pas seulement à l'armement : `/` sert le secours sans qu'aucun
+redémarrage n'ait eu lieu, et `/ui` répond **501** — l'interface est réellement absente, ⛔ ce
+n'est pas un marqueur posé sur un filesystem intact.
+
+**Réparation par la page de secours, au navigateur**, par l'utilisateur, `littlefs.bin` +
+`littlefs.bin.sig` :
+
+```
+07:41:20 [feature-151 D1]    /update — authenticité OTA : valide — D3 refuserait : non
+07:41:20 [feature-151 D1 B1] /update — liaison (paramètre sha256 (index==0))  : liée
+07:41:23 [feature-151 D1 B1] /update — liaison (empreinte calculée (final))   : liée
+07:41:23 Mise à jour OTA réussie. Redémarrage...
+07:41:31 LittleFS monté avec succès
+```
+
+Après redémarrage : `/`, `/index.html` et `/ui` rendent l'interface (21 954 o), `/app.js` 200
+(88 706 o), `/recovery` toujours servie. **Marqueur levé.**
+
+⭐ **Contre-épreuve obtenue sans la chercher.** L'image qui a détruit l'interface était **non
+signée**, et l'appareil l'a journalisé :
+
+```
+07:39:56 WARN authenticité OTA : absente — D3 refuserait : OUI — AUCUN refus appliqué
+```
+
+⇒ **D3-c aurait refusé exactement l'image qui a cassé l'interface.** C'est la justification de
+D3-c **mesurée sur l'appareil**, plus un argument.
+
+**⚠️ Premier essai de marche 2 : NUL, et consigné comme tel.** La première coupure renvoyait
+`littlefs.bin` **identique à celui en place** : les 327 Ko écrits étaient octet pour octet ceux
+déjà présents. `/` rendait bien le secours (marqueur posé), mais `/ui` servait **encore**
+l'interface entière — ⛔ **rien n'était détruit**. Le piège : « l'envoi a été coupé » ne vaut pas
+« la partition est corrompue ». ⇒ Refait avec un contenu aléatoire.
+
+### ⚠️ Deux défauts relevés pendant les marches 1 et 2 — NON corrigés
+
+1. **Le journal dit l'inverse de la feature.** `web_routes_ota.cpp` journalise *« Impossible de
+   remonter le filesystem après la mise à jour — **redémarrage requis** »*. ⛔ **Faux depuis
+   D3-b1** : aucun redémarrage n'est requis, la page de secours répare sur place. Ce message
+   pousse l'opérateur vers le seul geste que D3-b1 a rendu inutile.
+2. **La page de secours n'affiche aucun numéro de version** (voir marche 1). Un opérateur ne
+   sait pas quel `littlefs.bin` choisir.
+
+⇒ Les deux touchent `web_routes_ota.cpp` et la page générée — **à traiter dans le lot D3-b2**,
+qui ouvre déjà ces deux fichiers pour la liaison genre + version.
 
 **⛔ Reste ouvert**
-- **D3-b2** : B11 (interrupteur), conditions 6 et 8, liaison genre + version, `#no_update_msg`. **Marche 3 de B12** (essai terrain destructif, exige l'accord explicite de l'utilisateur et un accès USB prêt).
-- Les marches **1 et 2** de B12 (preuve sur appareil : `/` rend le secours **sans redémarrage**, S4) ne sont **pas** consignées ici comme faites : à relever sur les lignes de verdict avant de les cocher.
+- ~~**D3-b2** : B11 (interrupteur), conditions 6 et 8, liaison genre + version, `#no_update_msg`.~~ ✅ **livré le 2026-11-16** (voir « D3-b2 — notes d'implémentation » en fin de fichier). **Marche 3 de B12** (essai terrain destructif, exige l'accord explicite de l'utilisateur et un accès USB prêt).
+- ✅ Les marches **1 et 2** de B12 sont **faites et consignées** (2026-11-16, appareil en 2.89.0) : voir les deux sections ci-dessus. ⛔ Seule la marche **3** (FS détruit **puis** redémarrage) reste ouverte.
 - Durcissements à ouvrir séparément (revue P1) : image FS en PSRAM, `bug-112`, `change-password` rejouable au premier démarrage, levée du marqueur sur les chemins d'échec où rien n'a été écrit (`:939`). `bug-182` (contraste de `login/wizard/wifi.html`) reste ouvert.
 - 🔴 **Rappel** : « jeton admin volé » reste **ouvert** — cette feature ne le ferme pas (ADR-0120, ADR-0124).
+
+---
+
+## ✅ D3-b2 « les gardes inertes » — NOTES D'IMPLÉMENTATION (2026-11-16)
+
+⛔ **Lot INERTE** : l'appareil reste en mode D1 (« D3 refuserait : oui/non — AUCUN refus appliqué »). Aucun `return`/`send(4xx)` neuf dans `web_routes_ota.cpp`, aucune acceptation neuve. **Revues** : security-reviewer P1 (design) **GO SOUS CONDITIONS C1-C12** ; P2 (diff) **GO SOUS CONDITIONS** (C10 = documentation) ; code-reviewer **Request changes** (issue 2 = documentation), corrigé.
+
+**Mesures** (relevées le 2026-11-16, ⛔ à relire et non à recopier ailleurs — ADR-0073) : `pio run`
+SUCCESS, **0 warning neuf** (il reste 2 `#undef` préexistants dans la lib OneWire), Flash **52,1 %**
+(1 944 433 o, **+9 160 o** depuis 2.89.0 à 51,8 %), RAM **29,9 %** (97 856 o). Tests natifs :
+**85 suites, 2 519 cas, 0 échec** (base avant le lot : 82 suites, 2 445 cas). Page de secours :
+**15 850 → 16 475 o**, soit **+625 o** — ⚠️ l'ergonome estimait les coupes compensatoires, elles ne
+le sont **pas** ; l'aide « Les deux fichiers sont nécessaires » a été **gardée** malgré tout (elle
+explique pourquoi le bouton est grisé, et 625 o ne se discutent pas face à 3,7 Mo de flash).
+
+**⚠️ Ce que le REJEU des mutations a trouvé, et qui n'aurait pas été vu autrement.** Après les
+corrections R1-R8, une mutation qui tuait **ne tuait plus** : le retrait de `expiry >= kWordLocked`
+survivait, parce qu'**aucun test n'observait la RAISON de la décision** — seulement son résultat.
+⇒ Un test de sentinelles la tue désormais. ⭐ C'est l'argument du rejeu : **une correction peut
+désarmer un test sans faire rougir quoi que ce soit.**
+
+**⛔ Deux comportements neufs ne sont couverts que par des gardes DE FORME, pas d'exécution** —
+dit ici pour ne pas le découvrir plus tard : (1) R8, l'état `locked` publié en MQTT ; (2) R2, le
+`null` du champ `nvs_residual_until` dans le JSON. Aucun harnais natif n'exécute `mqtt_manager.cpp`
+ni `web_routes_ota_switch.cpp` ; trois assertions **de source** dans
+`tools/check_ota_signature_switch.sh` rougissent si ces formes disparaissent. ⚠️ **Ce n'est pas la
+même garantie.**
+
+**Régression de test attrapée au passage** : `test_d3b2_verdict_et_levee_distincts` cherchait
+l'ancienne concaténation `String`, cassée par **R6** (passage à `snprintf`). Réaligné, même
+comportement vérifié.
+
+**Observation sans conséquence** : `otaSignatureSwitchInit()` ne remet pas `sResidualEpoch` à zéro
+— inoffensif au démarrage (statique initialisée à 0), mais la valeur fuit d'un test à l'autre.
+
+**Décisions consignées** : [ADR-0125](../../../docs/adr/0125-l-expiration-de-l-interrupteur-de-signature-se-mesure-sur-un-horodatage-nvs.md) (horodatage NVS, `millis()` exclu ; amendement ADR-0124 : le générateur n'émet que le **jeton** de version) et [ADR-0126](../../../docs/adr/0126-la-version-demandee-ne-vient-jamais-d-une-sous-chaine-d-url.md) (la version demandée ne vient jamais d'une sous-chaîne d'URL).
+
+🔴 **Rappel** : cette feature **ne ferme PAS** « jeton admin volé » ; l'interrupteur le **rouvre en deux requêtes au lieu d'une** (armer, puis envoyer).
+
+### Fichiers
+
+- **Neufs** : `src/ota_signature_switch_logic.{h,cpp}` (décision PURE), `src/ota_signature_switch.{h,cpp}` (NVS + miroir atomique), `src/ota_version_request_logic.{h,cpp}` (liaison de version, PURE), `src/web_routes_ota_switch.{h,cpp}` (3 routes) ; `test/test_native_ota_signature_switch/`, `…_nvs/`, `test/test_native_ota_version_request/`, `test/native_shim/Preferences.h`, `esp_task_wdt.h` ; `tools/check_ota_signature_switch.sh`, `tools/check_update_card_no_html.sh`.
+- **Modifiés** : `src/web_routes_ota.cpp` (2 lectures, 3 consommations, libellés, désaccord de version, 2 messages), `src/constants.h`, `src/mqtt_manager.{h,cpp}`, `src/web_server.cpp` (1 init + 1 enregistrement), `src/ota_recovery_page.html.in` + `tools/gen_recovery_page.js` + `src/ota_recovery_page.cpp` (régénéré), `src/ota_recovery_marker.cpp`, `tools/check_degraded_mode_absent.sh`, `test/test_native_ota_order_guard/` (`[G7]`), `.github/workflows/hygiene-specs.yml` (2 jobs : `update-card-no-html`, `ota-signature-switch`).
+- **Absents du diff (C11)** : `ota_signature.*`, `ota_manifest_logic.*`, `ota_sig_relay_logic.*`, bloc de la clé publique de `constants.h`.
+
+### Défauts trouvés dans la CONCEPTION par la revue P1 (G1-G4) — corrigés avant code
+
+| | Défaut | Correction |
+|---|---|---|
+| **G1** | Fenêtre non bornée par le **haut** : horloge fausse vers le futur à l'armement ⇒ armé jusqu'à consommation | **C1** : `remaining > kOtaSignatureSwitchWindowSec` ou `expiryEpoch == 0` ⇒ `kRequired` (`invalid_expiry`) |
+| **G2** | `server->on(const char*)` ≡ `^{uri}(/.*)?$` : `/ota-signature-switch` capte `/arm` | **C2** : `AsyncURIMatcher::exact` ×3 |
+| **G3** | Auth coupée ⇒ `checkAuth` rend `true`, `CRITICAL` ≡ `WRITE` ⇒ armement ouvert au LAN | **C3** : `403` si `!isEnabled()` ou `isFirstBootDetected()` |
+| **G4** | Le libellé « D3 refuserait : non (interrupteur armé) » masquait le WARNING et les octets canoniques | **C4** : verdict et levée distincts ; `wouldReject` ne dépend que du verdict |
+
+### Conditions C1-C12 — levées une par une
+
+- **C1** ✅ borne haute et échéance nulle ⇒ `kRequired` (`ota_signature_switch_logic.cpp`) ; cas dédiés dans `test_native_ota_signature_switch`.
+- **C2** ✅ `AsyncURIMatcher::exact(...)` sur les 3 routes ; `check_ota_signature_switch.sh`.
+- **C3** ✅ `403 {"error":"auth_required"}` (`web_routes_ota_switch.cpp`) ; le désarmement reste permis.
+- **C4** ✅ `logOtaAuthenticityVerdict` reçoit la décision de l'interrupteur et n'ajoute qu'une mention ; `combineOtaAuthenticityVerdict` et `otaAuthenticityIsRejected` **non modifiés**.
+- **C5** ✅ lecture **positive** (`isKey` + `PT_U32`) seule source de `entryPresent` ; suite `…_nvs` compile le **vrai** `ota_signature_switch.cpp` contre un faux `Preferences` (`begin` en échec, clé absente, mauvais type ⇒ `kRequired`) ; script CI : aucun `= true` littéral.
+- **C6** ✅ `Peek` appelé seulement par `mqtt_manager.cpp` ; `Arm` un seul appelant ; miroir fermé par défaut (script CI). Le miroir est **un seul** `std::atomic<uint32_t>` (le design en prévoyait trois : P1 l'a refusé).
+- **C7** ✅ verrou RAM posé **avant** `remove()`, honoré par `Read()`, repli `putUInt(0)`, 500 avec l'état réel, CRITICAL ; idem pour la consommation. Les champs `rearms_on_reboot` / `nvs_residual_until` (`null` = inconnu) viennent de la revue de code.
+- **C8** ✅ décision capturée à `index==0` (`g_uploadSwitchWaived`) / à l'entrée de `/download-update`, jamais relue pour accorder ; `[G7]` : lecture avant `Update.begin`, consommation après `Update.end(true)`, **exactement 3 sites**.
+- **C9** ✅ `expected_version` re-sérialisé depuis les entiers parsés, jamais passé à `storeSigSource`, jamais prioritaire sur le tag (`otaSelectVersionReference`).
+- **C10** ✅ **documentation** : ~~« seul témoin qui survit »~~ corrigé (condition 7 ci-dessus) ; écrit dans `docs/MQTT.md`, ADR-0125, `docs/UPDATE_GUIDE.md` ; la réponse d'armement et son journal disent si MQTT était **connecté** (`mqtt_connected`).
+- **C11** ✅ aucun hunk dans le bloc clé de `constants.h` ; fichiers de la liste ci-dessus absents du diff.
+- **C12** ✅ `check_ota_signature_switch.sh` : pas de `Update.`/`LittleFS`/`onBody`/`onUpload`/`hasParam` dans `web_routes_ota_switch.cpp`, `REQUIRE_AUTH` en première instruction, `server->on` à 3 arguments, `<!--@@VERSION@@-->` exactement une fois.
+
+### Items de la spec marqués LEVÉS
+
+- ✅ **B11** (interrupteur, fonction unique) · ✅ **condition 6** (absence de clé = exigée ; `/factory-reset` ré-arme sans code) · ✅ **condition 8** (endpoints d'administration `CRITICAL`, sans `onBody`/`onUpload`) · ✅ **liaison genre + version** (journalisée, aucun refus ; ⚠️ référence issue de GitHub, périmée après un envoi direct) · ✅ **`#no_update_msg`** : garde mécanique anti-régression `tools/check_update_card_no_html.sh` (job CI `update-card-no-html`) — l'item « reste à poser une garde » est levé ; l'audit des autres insertions de la carte reste la revue de D3-c.
+
+### ✅ Les deux défauts relevés sur l'appareil le 2026-11-16 — CORRIGÉS
+
+1. Message « redémarrage requis » **faux depuis D3-b1** ⇒ réécrit aux deux sites.
+2. **Numéro de version absent de la page de secours** ⇒ affiché (jeton `FIRMWARE_VERSION`, constante de compilation). Au passage : sélecteurs de fichiers **en français** (décision utilisateur : étude d'ergonomie appliquée en entier ; dégradé, ombre, en-tête et `<h2>` de carte supprimés).
+
+### ⚠️ Deux fautes attrapées dans NOTRE propre travail par les revues
+
+- **(a) Un message faux, fabriqué par notre correction.** En corrigeant le message de `web_routes_ota.cpp:2479` (« redémarrage requis ») pour dire « aucun redémarrage requis », on l'avait rendu **faux** : ce site est le **succès** de `/download-update` filesystem, où le **redémarrage est planifié six lignes plus bas**. Corrigé : « la page de secours est servie jusqu'au redémarrage planifié, qui remontera le filesystem (aucune action requise) ». Les deux sites n'ont **pas** le même message, car ils n'ont pas la même vérité. Leçon : un message de journal se vérifie **à son site d'appel**, pas à son libellé.
+- **(b) Une liste blanche qu'on ajoutait pour se faire taire.** Pour que `ota_signature_switch.cpp` passe `tools/check_degraded_mode_absent.sh`, on l'avait **ajouté à la liste blanche** des fichiers autorisés à citer les symboles du secours (`kOtaRecoveryNvsNamespace`). La revue a vu que c'était élargir une garde pour qu'elle laisse passer. Remplacé par le **renommage** `kOtaRecoveryNvsNamespace` → `kOtaNvsNamespace` (le namespace est partagé, son nom ne doit pas dire « secours ») : le fichier n'est plus dans la liste blanche et le contrôle 4 le couvre.
+
+### ✅ F0 — PREUVE DE TERRAIN de l'interrupteur (2026-11-16, 19:11–19:14, non destructive)
+
+Firmware **2.89.0 signé** déployé par OTA ; signature vérifiée **contre la clé publique extraite
+de `src/constants.h`** (celle que l'appareil embarque) avant envoi : `Verified OK`.
+Relevé au **journal persistant de l'appareil** (`/download-logs`), horaires appareil :
+
+| Heure | Ligne relevée |
+|---|---|
+| 19:11:50 | `Interrupteur de signature OTA ARMÉ pour 60 min (échéance 1794856310) — MQTT connecté` |
+| 19:11:54 | `MQTT ota_signature_switch → ON` (publication **réussie** : la ligne n'est écrite que si `safePublish` rend `true`) |
+| 19:12:56 | `[feature-151 D1] /download-update — authenticité OTA : absente — D3 refuserait : **oui** — **levé par l'interrupteur** (reste 59 min)` — niveau **WARNING** |
+| 19:13:48 | `[feature-151 D1] /update — authenticité OTA : valide — D3 refuserait : **non** — **interrupteur armé** (reste 59 min)` — niveau **INFO** |
+| 19:14:07 | `Interrupteur de signature OTA consommé (premier flash réussi)` |
+| 19:14:22 | `MQTT ota_signature_switch → OFF` (3 s après le redémarrage) |
+
+**Ce que la paire de lignes prouve — c'est l'objet de la condition C4.** Les deux routes ont lu
+la **même** décision, et pourtant elles n'écrivent pas la même chose : un verdict qui refuserait
+reste **WARNING** et dit « levé par », un verdict valide reste **INFO** et dit « armé ». L'interrupteur
+n'a **pas** déguisé le verdict — exactement ce que la mutation de P1 cherchait à empêcher.
+
+**État par la route de lecture** : `{"armed":false,"reason":"no_entry"}` avant armement →
+`{"armed":true,"reason":"armed","remaining_s":3600}` → `3482` 118 s plus tard (décompte réel) →
+`{"armed":false,"reason":"no_entry"}` après le flash. **Aucune écriture flash** sur
+`/download-update` : l'URL pointait une release inexistante, refus `Download failed` **après** la
+ligne de journal — ce qui confirme au passage que la lecture a bien lieu **avant** toute écriture.
+
+⚠️ **NON observé : l'expiration naturelle au bout de 60 min.** Le décompte a été vu décroître, et
+l'expiration est couverte par les suites natives, mais **aucune échéance n'a expiré sur l'appareil**.
+À relever lors d'un prochain armement laissé sans suite.
+
+### ⚠️ La marche 3 ne requiert PAS d'accès USB — vérification du 2026-11-16
+
+L'exigence « accès USB prêt » inscrite plus haut reposait sur une crainte **non fondée**, levée par
+lecture du code :
+
+1. **L'armement au démarrage ne dépend pas du marqueur NVS.** `web_server.cpp:74` appelle
+   `otaRecoveryDrain()` dès l'initialisation, et la décision lit `in.fsMounted =
+   (LittleFS.mountpoint() != nullptr)` — **un état, pas une transition**. Filesystem non monté ⇒
+   secours armé, marqueur ou pas. Même fonction de décision que les marches 1 et 2.
+2. **Le montage échoue proprement sur ces octets-là, c'est déjà constaté.** `main.cpp:380` monte en
+   `LittleFS.begin(false)` (⛔ jamais de formatage) ; `web_routes_ota.cpp:295` appelle **le même**
+   `LittleFS.begin(false)` sur **la même partition** — c'est lui qui a tourné pendant la marche 2 sur
+   300 Ko d'octets aléatoires **sans planter**.
+3. **Rien d'autre ne lit `spiffs` au démarrage** : configuration en NVS, historique et journal sur la
+   partition `history`.
+
+⚠️ **La boot-loop de juillet n'est pas ce cas.** C'était un filesystem **à moitié valide** (en-tête
+correct, entrailles corrompues) que LittleFS explorait avant de diviser par zéro. Des octets
+aléatoires n'ont pas d'en-tête valide : ils sont rejetés à la première lecture. Le disjoncteur
+d'effacement automatique (feature-059, `main.cpp:500`) ne couvre d'ailleurs **que** `history`.
+
+⇒ Risque résiduel **faible mais non nul** : le montage du démarrage a lieu plus tôt, dans un autre
+contexte mémoire. ⛔ Et le filet n'existe pas ici — **aucun `/dev/ttyUSB*` dans le conteneur**, aucun
+`upload_port` dans `platformio.ini` : une boot-loop exigerait une autre machine avec `esptool`.
+
+### ✅ B12 — MARCHE 3 : filesystem détruit **PUIS redémarrage** (2026-11-16, 19:23–19:30)
+
+⭐ **La marche que les marches 1 et 2 n'avaient jamais franchie.** Elles s'arrêtaient avant le
+redémarrage ; c'est pourtant la séquence réelle d'une coupure de courant pendant une mise à jour
+du filesystem chez un client.
+
+**Protocole.** Trousse de réparation construite et signée **AVANT** toute destruction
+(`littlefs.bin` sha256 `030d1cd5…`, `.sig` vérifié `Verified OK` contre la clé publique extraite de
+`src/constants.h`), copiée hors du répertoire de build en lecture seule, et remise à l'utilisateur
+sur sa machine. ⛔ Aucune reconstruction du FS entre la signature et la réparation
+(cf. l'incident du 14/11 : `build_fs.sh` relancé entre les deux ⇒ réparation refusée).
+Image hostile : **300 Ko d'octets aléatoires** (`/dev/urandom`), envoyée **NON SIGNÉE** sur `/update`
+avec un `sha256` **conforme**.
+
+| Heure | Ligne relevée au journal de l'appareil |
+|---|---|
+| 19:23:27 | `/update — authenticité OTA : **absente** — D3 refuserait : **oui**` |
+| 19:23:29 | `Mise à jour OTA réussie. Redémarrage...` |
+| 19:23:32 | `Redémarrage après mise à jour OTA` |
+| 19:23:36 | `=== Démarrage ESP32 Pool Controller v2.89.0 ===` |
+| 19:23:36 | `Échec montage LittleFS !` ⇒ **échec propre, aucune boucle de démarrage** |
+| 19:23:42 | `Page de secours OTA ACTIVE : montage du filesystem échoué` |
+
+**Constaté par le réseau, appareil en panne** : `GET /` → **200**, 16 475 o,
+`<title>PoolController • Mode secours</title>`, **« Version 2.89.0 » affichée** (le défaut relevé le
+matin même est corrigé) ; `GET /ui` → **501** ; `GET /app.js` → **404**.
+**La régulation a survécu** : pH brut 5,623 · ORP brut 594 mV · 14,3 °C, sondes EZO réinitialisées.
+
+**Réparation par l'utilisateur, à son navigateur, sur la page de secours** — verdicts :
+`19:30:20 /update — authenticité OTA : **valide** — D3 refuserait : non` ·
+`liaison manifeste/image (paramètre sha256 (index==0)) : **liée**` ·
+`19:30:23 liaison (empreinte calculée (final)) : **liée**`. Redémarrage 19:30:35, puis
+`GET /` → 21 954 o, `/app.js` → 88 706 o, `/ui` → 200. **Interface intégralement rétablie.**
+
+⭐ **Ce que le contre-test établit, et qui justifie D3-c.** L'image destructrice portait une
+empreinte SHA-256 **conforme** — `[feature-118 lot B] Empreinte upload OTA : conforme` n'aurait rien
+refusé. ⛔ **L'intégrité ne protège de rien ici** : elle atteste que les octets sont arrivés intacts,
+pas qu'ils viennent de nous. Seule la ligne d'**authenticité** a vu le défaut. D3-c refusera
+exactement cette image.
+
+⇒ **B12 est CLOS** (marches 1, 2 et 3).
+
+### ⛔ Reste ouvert (la spec RESTE dans `doing/`)
+
+- **D3-c** (refus), **D4**, **D5**. ✅ ~~marche 3 de B12~~ **passée le 2026-11-16** (voir ci-dessus) : **B12 est clos**.
+- Hors lot, à ouvrir (revue P1/P2) : **`bug-112` avant D3-c** ; `RouteProtection::CRITICAL` réellement distinct de `WRITE` ; **référence de version indépendante de GitHub** avant toute promotion du « désaccord » en refus ; bouton physique (après D5).
+- 🔴 « Jeton admin volé » : **ouvert, rouvert plus facilement** par l'interrupteur.
+- **Essai terrain du lot non fait** : déploiement, armement/désarmement réels, témoin HA, affichage de la version sur l'appareil.

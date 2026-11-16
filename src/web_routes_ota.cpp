@@ -1,6 +1,8 @@
 #include "web_routes_ota.h"
 #include "web_helpers.h"
 #include "ota_recovery_marker.h"  // feature-151 D3-b1 : pose/levée du marqueur FS (écriture seule)
+#include "ota_signature_switch.h"   // feature-151 D3-b2 : interrupteur de signature (INERTE : journal + consommation)
+#include "ota_version_request_logic.h"  // feature-151 D3-b2 : liaison version (journal seulement)
 #include "constants.h"
 #include "auth.h"
 #include "logger.h"
@@ -165,6 +167,11 @@ static bool g_uploadManifestDigestValid = false;
 // l'appelant (g_uploadExpected devient l'empreinte EFFECTIVE, éventuellement
 // celle du manifeste). Servent uniquement à la tolérance D3-a de `final`.
 static bool g_uploadAuthenticityValid = false;
+// feature-151 D3-b2 (C8) : décision de l'interrupteur de signature CAPTURÉE à index==0.
+// ⛔ Jamais relue pour ACCORDER quoi que ce soit : elle ne sert qu'à la journalisation
+// (levée constatée, expiration/désarmement en cours de transfert, via Consume). Une session
+// commencée « exigée » ne devient JAMAIS « levée ».
+static bool g_uploadSwitchWaived = false;
 static uint8_t g_uploadCallerDigest[32];
 static bool g_uploadDigestFromManifest = false;
 static bool g_uploadDigestDivergent = false;
@@ -296,7 +303,8 @@ static void remountUploadFsIfNeeded(bool afterFailure = true) {
     }
   } else {
     systemLogger.warning("Impossible de remonter le filesystem après la mise à jour "
-                         "— redémarrage requis");
+                         "— l'interface est indisponible ; la page de secours est servie sur / "
+                         "et répare SUR PLACE (aucun redémarrage requis).");
   }
 }
 
@@ -546,24 +554,51 @@ static OtaAuthenticityComputation computeOtaAuthenticityVerdict(bool manifestPre
 // dans la requête HTTP, ce n'est PAS un secret — les exposer permet à
 // l'opérateur de les comparer en quelques secondes à ce que son `printf` a
 // réellement signé.
+// feature-151 D3-b2 (C4) : le VERDICT et la LEVÉE restent DISTINCTS. `wouldReject` ne dépend
+// que du verdict ; il pilote seul le niveau (WARNING) et la ligne des octets canoniques. Un
+// interrupteur armé n'ajoute qu'une MENTION — sinon un flash à signature invalide passerait de
+// WARNING à INFO et perdrait sa trace. Aucun refus n'est appliqué dans aucun cas (lot inerte).
 static void logOtaAuthenticityVerdict(const char* routeName,
-                                      const OtaAuthenticityComputation& computation) {
+                                      const OtaAuthenticityComputation& computation,
+                                      const OtaSignatureSwitchDecision& sw) {
   const bool wouldReject = otaAuthenticityIsRejected(computation.verdict);
-  const String msg = String("[feature-151 D1] ") + routeName + " — authenticité OTA : " +
-                     otaAuthenticityVerdictLabel(computation.verdict) +
-                     " — D3 refuserait : " + (wouldReject ? "oui" : "non") +
-                     " — AUCUN refus appliqué (D1, vérification seule)";
+  const bool armed = (sw.requirement == OtaSignatureRequirement::kWaived);
+  // R6 (D3-b2) : tampons de pile + snprintf (pas de String sur un chemin OTA, comme le reste
+  // du module). Tout est borné : canonical <= kOtaManifestMaxLen ; une troncature ne perd que
+  // la fin d'une ligne de journal, jamais la décision.
+  char levee[80];
+  levee[0] = '\0';
+  if (armed) {
+    snprintf(levee, sizeof(levee), "%s (reste %lu min)",
+             wouldReject ? " — levé par l'interrupteur" : " — interrupteur armé",
+             static_cast<unsigned long>((sw.remainingSec + 59) / 60));
+  }
+  char msg[400];
+  snprintf(msg, sizeof(msg),
+           "[feature-151 D1] %s — authenticité OTA : %s — D3 refuserait : %s%s"
+           " — AUCUN refus appliqué (D1, vérification seule)",
+           routeName, otaAuthenticityVerdictLabel(computation.verdict),
+           wouldReject ? "oui" : "non", levee);
   if (wouldReject) {
     systemLogger.warning(msg);
     if (computation.canonicalLen > 0) {
-      systemLogger.warning(String("[feature-151 D1] ") + routeName +
-                           " — octets canoniques re-sérialisés par l'appareil (comparer avec "
-                           "ce qui a été signé) : \"" + computation.canonical + "\"");
+      char canon[kOtaManifestMaxLen + 200];
+      snprintf(canon, sizeof(canon),
+               "[feature-151 D1] %s — octets canoniques re-sérialisés par l'appareil (comparer "
+               "avec ce qui a été signé) : \"%s\"",
+               routeName, computation.canonical);
+      systemLogger.warning(canon);
     }
   } else {
     systemLogger.info(msg);
   }
 }
+
+// feature-151 D3-b2 : liaison genre + version — JOURNALISE SEULEMENT (définie plus bas, après
+// g_sigSource dont elle lit le tag mémorisé).
+static void logOtaVersionAgreement(const char* routeName, bool kindIsFilesystem,
+                                   AsyncWebServerRequest* request,
+                                   const OtaAuthenticityComputation& computation);
 
 // =============================================================================
 // feature-151 D1, lot B1 : liaison manifeste ↔ image — JOURNALISE SEULEMENT.
@@ -671,7 +706,13 @@ static void handleOtaUpdate(AsyncWebServerRequest* request, const String& filena
       const OtaAuthenticityComputation authenticity = computeOtaAuthenticityVerdict(
           manifestPresent, signaturePresent, manifestRaw.c_str(), signatureRaw.c_str(),
           expectedKind);
-      logOtaAuthenticityVerdict("/update", authenticity);
+      // D3-b2 : LECTURE de l'interrupteur (1/2), AVANT Update.begin. Décision capturée pour
+      // la session (C8) ; ne change AUCUNE issue : le verdict est journalisé, pas appliqué.
+      const OtaSignatureSwitchDecision switchDecision = otaSignatureSwitchRead();
+      g_uploadSwitchWaived = (switchDecision.requirement == OtaSignatureRequirement::kWaived);
+      logOtaAuthenticityVerdict("/update", authenticity, switchDecision);
+      logOtaVersionAgreement("/update", expectedKind == OtaManifestKind::kFilesystem, request,
+                             authenticity);
 
       // ---- lot B1 : liaison manifeste ↔ image (revue de sécurité, 2026-10-18) --
       // Mémorise le hex DÉCLARÉ (PAS pré-décodé : voir le commentaire de
@@ -1072,6 +1113,7 @@ static void handleOtaUpdate(AsyncWebServerRequest* request, const String& filena
       // genres : le genre est passé, et un succès FIRMWARE ne lève JAMAIS le
       // marqueur du filesystem (decideOtaRecoveryMarkerAction → kNone).
       otaRecoveryOnUpdatePhase(g_uploadIsFilesystem, OtaRecoveryUpdatePhase::kSucceeded);
+      otaSignatureSwitchConsume(g_uploadSwitchWaived);  // D3-b2 : consommation (1/3), APRÈS Update.end(true)
       systemLogger.info("Mise à jour OTA réussie. Redémarrage...");
       // Aucun verdict mémorisé sur le chemin nominal : le lambda de réponse
       // sert "OK" (corps INCHANGÉ, data/app.js en dépend) et planifie le reboot.
@@ -1338,6 +1380,51 @@ static void storeSigSource(OtaSigSourceSlot& slot, const String& sigUrl, const S
   memcpy(slot.url, sigUrl.c_str(), sigUrl.length() + 1);
   memcpy(slot.tag, tag.c_str(), tag.length() + 1);
   slot.state = OtaSigSourceState::kPresent;
+}
+
+// feature-151 D3-b2 : liaison genre + version — JOURNALISE SEULEMENT, aucun refus.
+// Référence : le tag mémorisé par /check-update (donc issu de GITHUB : ce n'est PAS un contrôle
+// d'authenticité, et il est périmé après un envoi direct — un « désaccord » peut être un faux
+// positif). Le paramètre facultatif `expected_version` ne sert que sans tag mémorisé (C9).
+// ⛔ `expected_version` n'est ni passé à storeSigSource, ni journalisé brut : on re-sérialise
+// les ENTIERS parsés. Silencieux sans référence et en cas d'accord (journal de 8 Ko).
+static void logOtaVersionAgreement(const char* routeName, bool kindIsFilesystem,
+                                   AsyncWebServerRequest* request,
+                                   const OtaAuthenticityComputation& computation) {
+  if (!computation.fieldsValid) return;
+  const OtaSigSourceSlot& slot = g_sigSource[kindIsFilesystem ? 1 : 0];
+  const char* stored = (slot.state == OtaSigSourceState::kPresent) ? slot.tag : nullptr;
+  String param;
+  if (request->hasParam("expected_version", true)) {
+    param = request->getParam("expected_version", true)->value();
+  }
+  bool fromParam = false;
+  const char* ref = otaSelectVersionReference(stored, param.c_str(), &fromParam);
+  OtaParsedVersion refVersion{};
+  const OtaVersionAgreement agreement = otaCompareRequestedVersion(
+      ref != nullptr, ref, true, computation.fields.major, computation.fields.minor,
+      computation.fields.patch, &refVersion);
+  const char* origin = fromParam ? "paramètre expected_version" : "release vérifiée";
+  if (agreement == OtaVersionAgreement::kReferenceUnparsable) {
+    char ligne[200];
+    snprintf(ligne, sizeof(ligne),
+             "[feature-151 D3-b2] %s — référence de version illisible (%s)"
+             " — aucun refus appliqué (D3-b2)", routeName, origin);
+    systemLogger.warning(ligne);
+  } else if (agreement == OtaVersionAgreement::kDisagree) {
+    char declared[24];
+    char requested[24];
+    otaFormatVersion(declared, sizeof(declared), computation.fields.major,
+                     computation.fields.minor, computation.fields.patch);
+    otaFormatVersion(requested, sizeof(requested), refVersion.major, refVersion.minor,
+                     refVersion.patch);
+    char ligne[260];
+    snprintf(ligne, sizeof(ligne),
+             "[feature-151 D3-b2] %s — désaccord de version : le manifeste déclare « %s »,"
+             " la release demandée est « %s » (%s) — aucun refus appliqué (D3-b2)",
+             routeName, declared, requested, origin);
+    systemLogger.warning(ligne);
+  }
 }
 
 // Relaie UN `.sig` (une session TLS). `out` est EFFACÉ à l'entrée : l'appelant
@@ -2062,6 +2149,7 @@ static void handleDownloadUpdate(AsyncWebServerRequest* request) {
   memcpy(callerHash, expectedHash, sizeof(callerHash));
   bool digestFromManifest = false;
   bool digestDivergent = false;
+  bool switchWaived = false;  // D3-b2 (C8) : décision de l'interrupteur capturée à l'entrée
 
   // ---- feature-151 D1 : vérification d'AUTHENTICITÉ — JOURNALISE SEULEMENT --
   // AVANT refuseIfTlsGateClosed (Q0/condition 1 du verdict security-reviewer
@@ -2085,7 +2173,13 @@ static void handleDownloadUpdate(AsyncWebServerRequest* request) {
     const OtaAuthenticityComputation authenticity = computeOtaAuthenticityVerdict(
         manifestPresent, signaturePresent, manifestRaw.c_str(), signatureRaw.c_str(),
         expectedKind);
-    logOtaAuthenticityVerdict("/download-update", authenticity);
+    // D3-b2 : LECTURE de l'interrupteur (2/2), AVANT toute écriture flash. Capturée dans
+    // `switchWaived` (C8) : ne sert qu'à la journalisation, jamais à accorder.
+    const OtaSignatureSwitchDecision switchDecision = otaSignatureSwitchRead();
+    switchWaived = (switchDecision.requirement == OtaSignatureRequirement::kWaived);
+    logOtaAuthenticityVerdict("/download-update", authenticity, switchDecision);
+    logOtaVersionAgreement("/download-update", expectedKind == OtaManifestKind::kFilesystem,
+                           request, authenticity);
 
     // ---- lot B1 : liaison manifeste ↔ image — comparaison 1/2 ---------------
     // Au paramètre `digest` DÉJÀ décodé ci-dessus (`expectedHash`) : contrairement
@@ -2386,6 +2480,7 @@ static void handleDownloadUpdate(AsyncWebServerRequest* request) {
 
     // D3-b1 (B2) : image écrite ET validée jusqu'au bout ⇒ levée du marqueur.
     otaRecoveryOnUpdatePhase(isFilesystem, OtaRecoveryUpdatePhase::kSucceeded);
+    otaSignatureSwitchConsume(switchWaived);  // D3-b2 : consommation (2/3), image validée jusqu'au bout
     systemLogger.info("Mise à jour filesystem réussie (" + String(written) + " octets)");
     bool restartPlanned = shouldRestart && g_restartRequested != nullptr && g_restartRequestedTime != nullptr;
     if (!restartPlanned) {
@@ -2396,7 +2491,9 @@ static void handleDownloadUpdate(AsyncWebServerRequest* request) {
     const bool remountedAfterUpdate = LittleFS.begin(false);
     otaRecoveryNoteTransition();  // D3-b1 (S4)
     if (!remountedAfterUpdate) {
-      systemLogger.warning("Impossible de remonter LittleFS (normal après mise à jour, redémarrage requis)");
+      systemLogger.warning("Filesystem non remonté après la mise à jour (attendu) — la page de secours "
+                           "est servie jusqu'au redémarrage planifié, qui remontera le filesystem "
+                           "(aucune action requise).");
     }
 
     if (shouldRestart && g_restartRequested != nullptr && g_restartRequestedTime != nullptr) {
@@ -2491,6 +2588,7 @@ static void handleDownloadUpdate(AsyncWebServerRequest* request) {
 
     // Finaliser la mise à jour
     if (Update.end(true)) {
+      otaSignatureSwitchConsume(switchWaived);  // D3-b2 : consommation (3/3), APRÈS Update.end(true)
       if (shouldRestart && g_restartRequested != nullptr && g_restartRequestedTime != nullptr) {
         systemLogger.info("Mise à jour firmware réussie! Redémarrage...");
         request->send(200, "application/json", "{\"status\":\"success\"}");

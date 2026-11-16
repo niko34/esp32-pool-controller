@@ -754,7 +754,7 @@ Quand l'interface web ne peut plus être servie, `/` et `/index.html` rendent un
 
 ### Marqueur persistant
 
-- NVS, namespace **`pool-ota`**, clé **`fsupd`** (`kOtaRecoveryNvsNamespace`, `kOtaRecoveryNvsKey`, `constants.h`). Hors de `spiffs` (NVS à `0x9000`) : il survit à la destruction de la partition. ⛔ Pas `poolctrl` (mutex de `config.cpp`, interdit depuis `async_tcp`).
+- NVS, namespace **`pool-ota`**, clé **`fsupd`** (`kOtaNvsNamespace` — renommé en D3-b2, partagé avec l'interrupteur de signature —, `kOtaRecoveryNvsKey`, `constants.h`). Hors de `spiffs` (NVS à `0x9000`) : il survit à la destruction de la partition. ⛔ Pas `poolctrl` (mutex de `config.cpp`, interdit depuis `async_tcp`).
 - **Posé** avant chacun des deux `LittleFS.end()` (`/update` et `/download-update`), **levé** après chacun des deux succès. **Pose et levée sont conditionnées au genre filesystem** (`decideOtaRecoveryMarkerAction`, S3) : le point de succès est partagé entre genres, un succès firmware ne lève jamais le marqueur du filesystem.
 - API ([`ota_recovery_marker.h`](../../src/ota_recovery_marker.h)) : `otaRecoveryInit()` (setup), `otaRecoveryOnUpdatePhase(isFs, phase)` et `otaRecoveryNoteTransition()` (écriture, appelables depuis `async_tcp`), `otaRecoveryDrain()` (loop uniquement), `otaRecoveryActive()` / `otaRecoveryReason()` (lecture O(1), sans E/S). `otaRecoveryActive()` n'a qu'**un seul lecteur**.
 - ⚠️ **Faux positif collant assumé** : coupure entre la pose et `LittleFS.end()` ⇒ marqueur posé sur un filesystem intact. Réparé par `GET /ui` ; un envoi filesystem réussi lève le marqueur.
@@ -769,7 +769,54 @@ La sonde d'index est `fsPathResolvableIfHeapAllows()` (`fs_guard.*`) : **`.gz` d
 
 ### Page générée
 
+**Numéro de version (D3-b2)** : la page affiche « Version du firmware : X.Y.Z » dans la carte d'envoi (pour choisir le bon `littlefs.bin`). Le gabarit porte le marqueur `<!--@@VERSION@@-->` (exactement **une** fois), que le générateur remplace par le **jeton** `FIRMWARE_VERSION` dans une concaténation de littéraux : la version se résout **au compilateur**, `kOtaRecoveryPageHtmlLen = sizeof(...) - 1` reste exact, la réponse reste zéro copie, et le `.cpp` généré **ne contient jamais le nombre** (le contrôle de génération reste vert à chaque bump de `version.h`). Le générateur refuse toute version hors `^[0-9]+\.[0-9]+\.[0-9]+$`. Voir l'amendement à [ADR-0124](../adr/0124-le-mode-degrade-n-est-pas-un-mode-la-porte-de-sortie-du-serveur-web.md) consigné dans [ADR-0125](../adr/0125-l-expiration-de-l-interrupteur-de-signature-se-mesure-sur-un-horodatage-nvs.md).
+
 [`src/ota_recovery_page.cpp`](../../src/ota_recovery_page.cpp) est **généré et versionné** (`node tools/gen_recovery_page.js`, source `ota_recovery_page.html.in` + extraits de `data/app.js` : SHA-256 et parseur de `.sig`, une seule implémentation). `tools/check_recovery_page_generated.sh` rougit à la dérive ; `check_release_artefacts.sh` le lance et arrête `/release`. Toute modification du SHA-256 ou de `parseSigFile` dans `data/app.js` impose de régénérer. Tests natifs : `test/test_native_ota_recovery/`.
+
+## Interrupteur de signature (feature-151 D3-b2, [ADR-0125](../adr/0125-l-expiration-de-l-interrupteur-de-signature-se-mesure-sur-un-horodatage-nvs.md))
+
+⛔ **Lot INERTE.** L'interrupteur **journalise, il ne refuse ni n'accepte rien** : l'ensemble des envois acceptés est celui de 2.89.0, l'appareil reste en mode D1 (« D3 refuserait : oui/non — AUCUN refus appliqué »). Il prépare D3-c, où il pourra lever l'exigence de signature pendant une fenêtre bornée. Routes : [API.md](../API.md#interrupteur-de-signature-ota-feature-151-d3-b2-adr-0125).
+
+### Stockage et décision
+
+- **Une clé NVS** `sigsw` (`kOtaSignatureSwitchNvsKey`, U32) dans le namespace `pool-ota` : l'**échéance** en epoch UTC. L'armement est **dérivé** (clé présente ET heure valide ET `now < échéance` ET `échéance − now ≤ kOtaSignatureSwitchWindowSec` = **3600 s**), jamais stocké comme booléen (un couple `armed` + date admettrait un état incohérent).
+- ⛔ **L'expiration se mesure sur l'horodatage NVS, jamais sur `millis()`** : un redémarrage remet `millis()` à zéro et prolongerait la fenêtre ; voir ADR-0125.
+- **Décision unique** ([`ota_signature_switch_logic.h`](../../src/ota_signature_switch_logic.h), PURE, ADR-0017) : `decideOtaSignatureSwitch(inputs, windowSec)`. Tout est en entrée ; aucune lecture cachée. **Fail-closed** — « exigée » (`kRequired`) sauf si l'échéance est **positivement** lue :
+
+| Branche (`reason`) | Cas |
+|---|---|
+| `no_entry` | pas de clé (état nominal ; `/factory-reset` y ramène) |
+| `nvs_unreadable` | NVS illisible |
+| `no_clock` | heure non valide |
+| `expired` | `now ≥ échéance` |
+| `invalid_expiry` | échéance `0` (repli d'un désarmement) **ou** au-delà de la fenêtre : borne **haute** (C1) — une horloge fausse vers le futur à l'armement ne produit pas d'armement durable |
+| `locked` | verrou RAM posé (désarmement en cours ou raté) |
+| `armed` | **seul** cas `kWaived` |
+
+- **L'appelant est audité, pas la logique** : `nvsReadable`/`entryPresent` sont des booléens fournis par [`ota_signature_switch.cpp`](../../src/ota_signature_switch.cpp), seul à pouvoir les produire, et seulement par **lecture positive** (`isKey` + type `PT_U32`). Suite native contre un faux `Preferences` (`test/test_native_ota_signature_switch_nvs/`) ; `tools/check_ota_signature_switch.sh` (CI : job `ota-signature-switch`) interdit tout `= true` littéral hors de cette fonction.
+- **Miroir RAM** : un **seul** `std::atomic<uint32_t>` (codage : `0` fermé, `0xFFFFFFFF` illisible, `0xFFFFFFFE` verrou, sinon échéance) — trois atomiques séparés recréeraient l'incohérence écartée côté NVS. **Fermé par défaut.** `Peek()` (O(1), sans E/S) n'a qu'**un** appelant, `mqtt_manager.cpp` ; il ne décide jamais d'un flash.
+- NVS ouverte/fermée localement à chaque appel avec `esp_task_wdt_reset()` de part et d'autre ; ⛔ jamais via `config.cpp` ni son mutex (appelable depuis `async_tcp`).
+
+### API ([`ota_signature_switch.h`](../../src/ota_signature_switch.h))
+
+`otaSignatureSwitchInit()` (setup, avant `server->begin()`) · `Read()` (relit la NVS, honore le verrou) · `Peek()` · `Arm(&until)` (`kArmed` / `kNoClock` / `kWriteFailed`, **un seul appelant** : la route d'armement) · `Clear()` · `Consume(sessionWasWaived)` · `ResidualEpoch()` · `RearmsOnReboot()`.
+
+- **Jamais armé automatiquement** ; **absent de la page de secours** (motif interdit dans `gen_recovery_page.js`).
+- **Désarmement (C7)** : verrou RAM « fermé » posé **avant** le `remove()`, honoré par `Read()` ; si l'effacement échoue, repli `putUInt(..., 0)` ; si tout échoue, journal **CRITICAL**, le 500 rend l'état réel. Résiduel assumé : une échéance qui subsiste en NVS ré-armerait au redémarrage (≤ 60 min).
+- **Consommation** : `Consume()` à **exactement 3 sites** de `web_routes_ota.cpp`, **après** `Update.end(true)` (ou validation complète côté filesystem de `/download-update`) : `/update` (deux genres), `/download-update` filesystem, `/download-update` firmware. Lecture à `index==0` de `/update` et à l'entrée de `/download-update`, **avant** toute écriture flash.
+- **Ordre des gardes (C8)** : la décision est **capturée** au début de session (`g_uploadSwitchWaived`) et **jamais relue pour accorder**. Une session commencée « exigée » ne devient jamais « levée » ; une expiration ou un désarmement en cours de transfert ne révoquent pas, mais un WARNING le journalise. Figé par `[G7]` dans `test_native_ota_order_guard`.
+- Horloge : `time(nullptr) ≥ kMinValidEpoch`, **pas** `RTCManager::isTimeValid()` (qui prendrait le mutex I2C depuis `async_tcp`).
+
+### Liaison genre + version
+
+[`ota_version_request_logic.h`](../../src/ota_version_request_logic.h) (PURE, fichier distinct : `ota_manifest_logic.cpp` reste intact). Compare la version **déclarée par le manifeste** à la version **demandée**. Résultat : `kNoReference` (silencieux), `kReferenceUnparsable`, `kAgree` (silencieux), `kDisagree`. **Aucun refus.** La « version demandée » est le **tag mémorisé par `/check-update`** ; le paramètre **facultatif** `expected_version` ne sert que sans tag mémorisé. ⛔ Elle ne vient **jamais** d'une sous-chaîne d'URL ([ADR-0126](../adr/0126-la-version-demandee-ne-vient-jamais-d-une-sous-chaine-d-url.md)). ⚠️ Ce n'est **pas** un contrôle d'authenticité : le tag vient de GitHub, la chaîne dont la feature se défie, et il est **périmé** après un envoi direct (`ota_update.sh`) — un « désaccord » peut être un faux positif.
+
+### Libellés de journal (nouveaux ou modifiés)
+
+- Verdict : `… — D3 refuserait : oui|non` suivi, **interrupteur armé**, de ` — levé par l'interrupteur (reste N min)` (si D3 refuserait) ou ` — interrupteur armé (reste N min)`. ⛔ **Verdict et levée restent distincts (C4)** : `wouldReject` ne dépend que du verdict ; il pilote seul le niveau **WARNING** et la ligne des **octets canoniques** (sinon une signature invalide armée passerait en INFO et perdrait sa trace). Désarmé : ligne **inchangée**.
+- `[feature-151 D3-b2] /download-update — désaccord de version : le manifeste déclare « 2.88.0 », la release demandée est « 2.89.0 » (release vérifiée | paramètre expected_version) — aucun refus appliqué (D3-b2)` (WARNING) ; `… référence de version illisible (…)`.
+- Interrupteur : `ARMÉ pour 60 min (échéance …) — MQTT connecté | NON connecté (témoin absent)` (WARNING) ; `désarmé` (INFO) ; `consommé (premier flash réussi)` (INFO) ; `plus armé à la fin du transfert (expiré ou désarmé en cours)` (WARNING) ; `DÉSARMEMENT NVS ÉCHOUÉ` (CRITICAL).
+- **Deux messages corrigés** (faux depuis D3-b1) : `Impossible de remonter le filesystem après la mise à jour…` dit désormais que la page de secours est servie et répare **sur place, sans redémarrage** ; `Filesystem non remonté après la mise à jour (attendu)…` (site de succès de `/download-update`) dit que la page de secours est servie **jusqu'au redémarrage planifié**, qui remontera le filesystem — car sur ce site le redémarrage **est** planifié.
 
 ## Interaction avec `pump_controller`
 
@@ -816,6 +863,7 @@ L'historique est **préservé** pendant une OTA filesystem car il vit sur une pa
 - [`src/ota_response_buffer_logic.h`](../../src/ota_response_buffer_logic.h) — logique pure de la lecture bornée du corps de `/check-update` dans un tampon PSRAM (`otaBufferedReadNextAction`, `otaBufferedReadLengthMismatch`, `otaBufferedReadResultFor` — bug-173, [ADR-0119](../adr/0119-reponse-check-update-bufferisee-en-psram-bornee.md), tests natifs `test/test_native_ota_response_buffer/`, à mesurer plutôt qu'à recopier, ADR-0073)
 - [`src/github_root_ca.h`](../../src/github_root_ca.h) — **5 racines auto-signées** (3 depuis v2.16.2, +2 Sectigo E46/R46 depuis bug-165, 2026-10-14) : USERTrust RSA + USERTrust ECC (github.com / api.github.com, exp. 2038), ISRG Root X1 (objects.githubusercontent.com, exp. 2035), Sectigo Public Server Authentication Root E46 (ECC, exp. 2046) + Root R46 (RSA, exp. 2046) — chaîne ECC/RSA actuelle d'api.github.com — empreintes SHA-256 vérifiées, sources consignées dans le header, conformité imposée en CI par [`tools/check_github_root_ca.sh`](../../tools/check_github_root_ca.sh) (voir [règle dédiée](#règle--une-ancre-de-confiance-est-toujours-la-variante-auto-signée-bug-checkupdate-tls-core3-bug-165-adr-0111) ci-dessus)
 - [`src/ota_recovery_logic.h`](../../src/ota_recovery_logic.h)/`.cpp`, [`src/ota_recovery_marker.h`](../../src/ota_recovery_marker.h)/`.cpp`, [`src/ota_recovery_page.cpp`](../../src/ota_recovery_page.cpp) (généré), [`src/web_routes_recovery.cpp`](../../src/web_routes_recovery.cpp) — page de secours (D3-b1, [ADR-0124](../adr/0124-le-mode-degrade-n-est-pas-un-mode-la-porte-de-sortie-du-serveur-web.md), `test/test_native_ota_recovery/`)
+- [`src/ota_signature_switch.h`](../../src/ota_signature_switch.h)/`.cpp`, [`src/ota_signature_switch_logic.h`](../../src/ota_signature_switch_logic.h)/`.cpp`, [`src/ota_version_request_logic.h`](../../src/ota_version_request_logic.h)/`.cpp`, [`src/web_routes_ota_switch.cpp`](../../src/web_routes_ota_switch.cpp) — interrupteur de signature et liaison de version (D3-b2, [ADR-0125](../adr/0125-l-expiration-de-l-interrupteur-de-signature-se-mesure-sur-un-horodatage-nvs.md), [ADR-0126](../adr/0126-la-version-demandee-ne-vient-jamais-d-une-sous-chaine-d-url.md) ; `test/test_native_ota_signature_switch/`, `…_nvs/`, `test/test_native_ota_version_request/`)
 - [`partitions.csv`](../../partitions.csv)
 - [docs/UPDATE_GUIDE.md](../UPDATE_GUIDE.md)
 - [ADR-0007](../adr/0007-table-partitions-custom.md), [ADR-0022](../adr/0022-verification-integrite-ota.md), [ADR-0096](../adr/0096-empreinte-sha256-obligatoire-sur-post-update.md), [ADR-0119](../adr/0119-reponse-check-update-bufferisee-en-psram-bornee.md), [ADR-0120](../adr/0120-signature-rsa-du-manifeste-ota-verifiee-avant-refus.md), [ADR-0121](../adr/0121-fichier-sig-conteneur-de-transport-deux-lignes-jamais-reconstruit.md) (feature-151 D1-bis — le fichier `.sig` à deux lignes que la page web transporte, sans jamais le reconstruire), [ADR-0122](../adr/0122-socle-decision-ota-genre-empreinte-relais-sig.md) (feature-151 D3-a — genre, empreinte, relais du `.sig`), [ADR-0123](../adr/0123-une-seule-session-tls-sortante-par-requete-http.md) (bug-176 — une seule session TLS par requête, relais à la demande)

@@ -78,6 +78,18 @@ others=$(find src -type f \( -name '*.cpp' -o -name '*.h' \) -print0 \
          | grep -vxE 'src/ota_recovery_(logic|marker)\.(cpp|h)|src/web_routes_recovery\.(cpp|h)|src/web_routes_ota\.cpp|src/web_server\.cpp|src/constants\.h|src/ota_recovery_page\.(cpp|h)' || true)
 [ -z "$others" ] || fail "symboles du secours mentionnés hors de la liste blanche : $(echo $others)"
 
+# 4b ------------------------------------------------------------------------
+# feature-151 D3-b2 : ota_signature_switch.cpp n'est PLUS dans la liste blanche (R3) et ne cite
+# aucun symbole du secours (le namespace partagé s'appelle kOtaNvsNamespace). Le contrôle 4 le
+# couvre. Ici : dans ce fichier, tout appel prefs.* ne cite QUE kOtaSignatureSwitchNvsKey
+# (ou kOtaNvsNamespace pour begin) — aucune clé littérale ("fsupd"...) dans l'espace partagé.
+lit=$(code_of src/ota_signature_switch.cpp | grep -E 'prefs\.' \
+      | grep -vE 'prefs\.(end|begin)\(' | grep -E 'prefs\.[A-Za-z]+\(' \
+      | grep -vE 'prefs\.[A-Za-z]+\(kOtaSignatureSwitchNvsKey[,)]' || true)
+[ -z "$lit" ] || fail "ota_signature_switch.cpp : appel prefs.* qui ne cite pas kOtaSignatureSwitchNvsKey : $(echo $lit)"
+beg=$(code_of src/ota_signature_switch.cpp | grep -E 'prefs\.begin\(' | grep -vE 'prefs\.begin\(kOtaNvsNamespace,' || true)
+[ -z "$beg" ] || fail "ota_signature_switch.cpp : prefs.begin() hors kOtaNvsNamespace : $(echo $beg)"
+
 # 5 -------------------------------------------------------------------------
 between=$(awk '/if \(!LittleFS\.begin\(\)\)/{f=1} f{print} /setupRoutes\(\);/{if(f)exit}' src/web_server.cpp \
           | grep -vE '^[[:space:]]*//' || true)

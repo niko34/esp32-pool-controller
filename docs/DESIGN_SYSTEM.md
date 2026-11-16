@@ -51,7 +51,7 @@ contexte d'origine.
 | Visualiser une mesure sur une échelle | `.gauge` (§5.8) | Carte d'accueil |
 | Expliquer pourquoi une mesure n'est pas représentative | `.sensor-badge` (§5.9) | Carte d'accueil |
 | Alerter sur une condition bloquante ou un risque | `.callout` (§5.10) | Les deux |
-| Réinstaller le filesystem quand l'interface est absente (page autonome, sans `app.css`) | copies **locales** : callout `--info`, champ fichier 44 px, `<progress>`, callout d'échec rouge (§5.21) | **Page de secours embarquée uniquement** — ⛔ jamais un composant partagé |
+| Réinstaller le filesystem quand l'interface est absente (page autonome, sans `app.css`) | copies **locales** : callout `--info`, sélecteur `.pick`, ligne de version `.ver`, `<progress>`, callout d'échec rouge (§5.21) | **Page de secours embarquée uniquement** — ⛔ jamais un composant partagé |
 | Distinguer deux niveaux de gravité dans un même `.callout`, sans empiler deux encadrés, et séparer l'essentiel du détail | `.callout__eyebrow` + `.callout__lead` + `.callout__more` (§5.10bis) | Page de réglage (pH) — généralisable |
 | Commenter un contrôle sans en faire une alerte | `.field__hint` (§5.11) | Les deux, **jamais seul porteur d'une info de sécurité** |
 | Signaler une anomalie de régulation nécessitant un acquittement | `.regul-alert` (§5.12) | Carte d'accueil et page de réglage |
@@ -519,9 +519,12 @@ aucune raison de reprendre ce défaut.
 | Élément | Nature | Détail |
 |---|---|---|
 | Callout `--info` **en page autonome** | copie figée de `.callout--info` | message « L'interface web est absente ou endommagée. » + « La régulation continue : pH, ORP, pompes et filtration fonctionnent. » — la phrase rassurante est le libellé le plus important de la page, **jamais retirée** |
-| Champ fichier à **44 px** | style local | ⛔ les **3** `<input type="file">` de l'application (`data/index.html`) **ne changent pas** |
+| Sélecteur de fichier à libellé propre (`.pick`) | copie **locale** (D3-b2) | Remplace le « champ fichier à 44 px » (le sélecteur natif affichait « Choose file / No file chosen » en anglais). `<input type=file class="vh">` reste dans le DOM (**pas** `display:none` : focus clavier et accessibilité) **immédiatement avant** son `<label class="pick" for>` (sélecteur `+` du focus). **Une seule** étiquette porte le nom du champ et l'état : **vide** = cadre **pointillé** + « Appuyer pour choisir un fichier » ; **rempli** = cadre **plein** + nom du fichier inséré par `textContent`. Le sens ne repose **jamais** sur la couleur seule (forme du cadre + texte). Boîte ≥ 56 px, noms longs à la ligne (`overflow-wrap:anywhere`). La règle `input{…}` devient `input:not(.vh)`. 🔴 **Impact sur les 3 `<input type="file">` de `data/index.html` : NUL** — le composant n'est **pas** partagé, aucun sélecteur de `app.css` n'est touché (inventaire réel : 3 emplois dans `data/index.html`, 0 modifié) |
+| Ligne de version (`.ver`) | copie **locale** (D3-b2) | « Version du firmware : <b>2.89.0</b> » en tête de la carte d'envoi (28 caractères, une ligne à 390 px) ; numéro en `<b>` (`--text`), préfixe en `--muted`. **Constante de compilation**, pas un titre : poids inférieur au bandeau rassurant. Absente de l'écran de connexion |
 | `<progress>` natif | premier emploi | aucun `<progress>` n'existait dans `data/` (0 occurrence mesurée dans `index.html`, `app.js`, `login/wizard/wifi.html`) ; barre pleine largeur de 12 px, libellé « Vérification du fichier : 42 % » en texte à côté, **jamais seule porteuse** du statut |
 | Callout d'**échec rouge** | variante **locale** (`#msg.err`) | ⛔ **pas** un `.callout--danger` partagé. Toujours préfixé « Échec : » (le mot porte le sens, la couleur l'appuie — §7), texte fixe inséré par `textContent` |
+
+**Supprimés en D3-b2** (octets et sobriété) : le **dégradé** de fond (`body` en `background:var(--bg)`), l'**ombre** des cartes (la bordure reste), l'**en-tête de page** « Mode secours » (le `<title>` le garde ; le `h1` porte l'état) et les **`<h2>` de carte** (« Connexion », « Restauration », « Premier démarrage »), redondants avec le bouton ou l'aide. L'aide « Les deux fichiers sont nécessaires » est **gardée** : elle explique pourquoi le bouton est grisé. **Pas de mode sombre ajouté.**
 
 Parcours : page **unique**, étapes révélées par `hidden`, **aucune redirection** (le lien « Ouvrir l'interface quand même » vers `/ui` doit rester visible). Tout est empilé en pleine largeur : **aucun libellé sur une ligne partagée** (390 px d'abord, §6).
 

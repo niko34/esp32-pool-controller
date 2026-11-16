@@ -10,6 +10,9 @@
 // La libc++ (<cmath>, <cstdint>) n'est pas disponible sur l'hôte de CI/dev
 // (Command Line Tools sans libc++ utilisable) → on reste en C pur, ce qui suffit
 // largement pour SensorFilter et garde le test compilable partout.
+// NB (D3-b2) : cette contrainte vaut pour les SHIMS eux-mêmes. src/ota_signature_switch.cpp,
+// compilé en natif, inclut <atomic> (libc++/libstdc++) : sans objet sur g++/Linux (hôte
+// actuel), mais un hôte sans bibliothèque C++ ne le compilerait pas.
 // =============================================================================
 
 #include <math.h>

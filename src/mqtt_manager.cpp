@@ -1,4 +1,5 @@
 #include "mqtt_manager.h"
+#include "ota_signature_switch.h"  // feature-151 D3-b2 : Peek (témoin MQTT, mqttTask uniquement)
 #include "config.h"
 #include "constants.h"
 #include "logger.h"
@@ -296,6 +297,8 @@ void MqttManager::refreshTopics() {
   topics.orpRejectedCountState      = base + "/orp_rejected_count";
   // feature-068 (A5) : sonde de température d'eau figée (retain, ON/OFF).
   topics.tempSensorFrozenState      = base + "/temp_sensor_frozen";
+  topics.otaSignatureSwitchState      = base + kOtaSignatureSwitchTopicSuffix;       // feature-151 D3-b2
+  topics.otaSignatureSwitchUntilState = base + kOtaSignatureSwitchUntilTopicSuffix;  // feature-151 D3-b2
   topics.phMixingDelayActiveState   = base + "/ph_mixing_delay_active";
   topics.orpMixingDelayActiveState  = base + "/orp_mixing_delay_active";
   // feature-050 : cumuls journaliers injectés + commandes volume quotidien + reboot.
@@ -535,6 +538,9 @@ void MqttManager::connectInTask() {
 
     // Status online : direct (on est dans la tâche) — court-circuite outQueue
     safePublish(topics.statusTopic.c_str(), "online", true);
+    // D3-b2 : nouvelle session ⇒ le témoin de l'interrupteur est republié (le courtier a pu perdre le retain).
+    _lastOtaSwitchPub = -1;
+    _lastOtaSwitchUntilPub = 0xFFFFFFFFu;
 
     mqtt.subscribe(topics.filtrationModeCommand.c_str());
     mqtt.subscribe(topics.filtrationCommand.c_str());
@@ -1099,6 +1105,9 @@ void MqttManager::publishAllStatesInternal() {
   // feature-021 : statut calibration EZO + alertes (cf. cond #4 pool-chemistry).
   publishCalibrationStatusInternal();
 
+  // feature-151 D3-b2 : témoin de l'interrupteur de signature OTA (ON/OFF + échéance).
+  publishOtaSignatureSwitchInternal();
+
   // feature-152 : chaîne de mesure pH/ORP (raw/median/rejected — diagnostic).
   publishFilterStatesInternal();
 }
@@ -1198,6 +1207,43 @@ void MqttManager::publishFilterStatesInternal() {
 //   - À chaque publishAllStatesInternal() (cadencé par publishStatesRequested,
 //     posé toutes les kMqttPublishIntervalMs depuis loopTask).
 //   - Lors d'une (re)connexion MQTT (connectInTask) — état initial après reboot.
+// feature-151 D3-b2 — témoin MQTT de l'interrupteur de signature OTA.
+// mqttTask uniquement, via safePublish (aucun mqtt.publish() depuis async_tcp). Lit le MIROIR
+// atomique (otaSignatureSwitchPeek : aucune E/S) — seul appelant de Peek (C6). Edge-triggered.
+// ⚠️ Ce témoin n'est PAS un journal fiable (C10) : un courtier absent, sans persistance ou un
+// firmware hostile le rend faux. Seule la transition historisée par un tiers survit.
+// ON tant que l'interrupteur est armé OU qu'un désarmement a échoué avec résidu NVS (C7).
+// R8 : « locked » SANS résidu constaté (désarmement normal en cours, ou NVS vide) n'est PAS ON :
+// pas d'ON fugace ni de fausse ligne WARNING. Résidu inconnu (NVS inaccessible) ⇒ ON.
+void MqttManager::publishOtaSignatureSwitchInternal() {
+  const OtaSignatureSwitchDecision d = otaSignatureSwitchPeek();
+  const bool armed = (d.requirement == OtaSignatureRequirement::kWaived);
+  const bool locked = (d.reason == OtaSwitchReason::kLocked);
+  const uint32_t residual = locked ? otaSignatureSwitchResidualEpoch() : 0u;
+  const bool on = armed || (locked && residual != 0);
+  const uint32_t until = armed ? d.untilEpoch
+                               : (residual == kOtaSwitchResidualUnknown ? 0u : residual);
+
+  const int8_t onNow = on ? 1 : 0;
+  if (onNow != _lastOtaSwitchPub) {
+    if (safePublish(topics.otaSignatureSwitchState.c_str(), on ? "ON" : "OFF", true)) {
+      if (on) {
+        systemLogger.warning("MQTT ota_signature_switch → ON");
+      } else {
+        systemLogger.info("MQTT ota_signature_switch → OFF");
+      }
+      _lastOtaSwitchPub = onNow;
+    }
+  }
+  if (until != _lastOtaSwitchUntilPub) {
+    char buf[12];
+    snprintf(buf, sizeof(buf), "%lu", static_cast<unsigned long>(until));
+    if (safePublish(topics.otaSignatureSwitchUntilState.c_str(), buf, true)) {
+      _lastOtaSwitchUntilPub = until;
+    }
+  }
+}
+
 void MqttManager::publishCalibrationStatusInternal() {
   if (!mqtt.connected()) return;
 
@@ -3093,6 +3139,21 @@ void MqttManager::publishDiscovery(DiscoveryReason reason) {
   doc["payload_off"] = "OFF";
   doc["device_class"] = "problem";
   doc["icon"] = "mdi:thermometer-off";
+  makeDevice(doc["device"].to<JsonObject>());
+  publishConfig(topic);
+
+  // feature-151 D3-b2 : interrupteur de signature OTA — binary_sensor de DIAGNOSTIC, rien d'autre.
+  // ⛔ JAMAIS un `switch` HA : ce serait une surface d'ARMEMENT hors jeton admin. Entité NOUVELLE
+  // (`unique_id` inédit). `safety` : ON = « dangereux » (signature non exigée).
+  topic = discoveryBase + "binary_sensor/" + HA_DEVICE_ID + "_ota_signature_switch/config";
+  doc["name"] = "Piscine Signature OTA Levée";
+  doc["unique_id"] = String(HA_DEVICE_ID) + "_ota_signature_switch";
+  doc["state_topic"] = topics.otaSignatureSwitchState;
+  doc["payload_on"] = "ON";
+  doc["payload_off"] = "OFF";
+  doc["device_class"] = "safety";
+  doc["entity_category"] = "diagnostic";
+  doc["icon"] = "mdi:shield-off";
   makeDevice(doc["device"].to<JsonObject>());
   publishConfig(topic);
 

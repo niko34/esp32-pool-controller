@@ -83,6 +83,8 @@ const forbidden = [
   [/\bhttps?:\/\//, "URL absolue http(s)"],
   [/\bwss?:\/\//, "URL absolue ws(s)"],
   [/["'(=]\/\/[A-Za-z0-9]/, "URL relative au protocole"],
+  // Condition B11 (D3-b2) : l'interrupteur de signature n'existe JAMAIS dans la page de secours.
+  [/ota-signature-switch/, "ota-signature-switch (B11)"],
 ];
 for (const [re, label] of forbidden) {
   if (re.test(html)) die(`motif interdit (condition S6) dans la page : ${label}`);
@@ -92,6 +94,22 @@ for (const [re, label] of forbidden) {
 const delim = "RECOVERYPAGE";
 if (html.includes(`)${delim}"`)) die("le délimiteur du littéral brut apparaît dans la page");
 
+// --- Version (D3-b2 B1/B3/B4bis) : APRÈS les contrôles ci-dessus ---------------
+// Le marqueur est remplacé par le JETON FIRMWARE_VERSION, résolu par le
+// compilateur (concaténation de littéraux) : le .cpp ne contient jamais le
+// numéro, donc le contrôle de génération reste vert à chaque bump de version.h.
+// On valide pourtant le format lu dans src/version.h (garde-fou anti-injection).
+const kVersionMarker = "<!--@@VERSION@@-->";
+const vFirst = html.indexOf(kVersionMarker);
+if (vFirst === -1) die(`marqueur ${kVersionMarker} absent du gabarit`);
+if (html.indexOf(kVersionMarker, vFirst + 1) !== -1) die(`marqueur ${kVersionMarker} présent plus d'une fois`);
+const vMatch = /#define\s+FIRMWARE_VERSION\s+"([^"]*)"/.exec(fs.readFileSync(path.join(root, "src/version.h"), "utf8"));
+if (!vMatch) die("FIRMWARE_VERSION introuvable dans src/version.h");
+if (!/^[0-9]+\.[0-9]+\.[0-9]+$/.test(vMatch[1])) die(`version « ${vMatch[1]} » invalide (attendu X.Y.Z)`);
+const htmlBefore = html.slice(0, vFirst);
+const htmlAfter = html.slice(vFirst + kVersionMarker.length);
+const literal = `R"${delim}(${htmlBefore})${delim}" FIRMWARE_VERSION R"${delim}(${htmlAfter})${delim}"`;
+
 const cpp =
 `// =============================================================================
 // FICHIER GÉNÉRÉ — NE PAS ÉDITER À LA MAIN (feature-151 D3-b1, ADR-0124)
@@ -100,9 +118,10 @@ const cpp =
 // Contrôle  : tools/check_recovery_page_generated.sh (rouge à la moindre dérive)
 // =============================================================================
 #include "ota_recovery_page.h"
+#include "version.h"
 
-const char kOtaRecoveryPageHtml[] = R"${delim}(${html})${delim}";
+const char kOtaRecoveryPageHtml[] = ${literal};
 const size_t kOtaRecoveryPageHtmlLen = sizeof(kOtaRecoveryPageHtml) - 1;
 `;
 fs.writeFileSync(outPath, cpp);
-console.log(`OK — ${outPath} (${html.length} octets de page)`);
+console.log(`OK — ${outPath} (${html.length - kVersionMarker.length + vMatch[1].length} octets de page)`);
