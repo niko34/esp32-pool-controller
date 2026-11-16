@@ -2410,9 +2410,34 @@ exactement cette image.
 
 ⇒ **B12 est CLOS** (marches 1, 2 et 3).
 
+### 🗣️ À FAIRE AVEC D3-c — renommer « interrupteur » en « autorisation temporaire »
+
+**Demande utilisateur du 2026-11-16** : *« tu parles avec ton jargon : interrupteur, opérateur.
+Explique avec des termes que je peux comprendre »*, puis *« oui, utilise le terme "autorisation
+temporaire" »*.
+
+⚠️ **Ce n'est pas qu'une affaire de conversation** : le mot « interrupteur » **fuit dans
+l'interface** — il s'affiche dans le journal que l'utilisateur lit depuis l'onglet Avancé
+(« Interrupteur de signature OTA ARMÉ pour 60 min… », « levé par l'interrupteur »). Un terme
+interne visible par l'utilisateur est un défaut d'ergonomie, pas une fatalité.
+
+**Périmètre du renommage** (textes seulement, aucune logique) :
+- les messages de journal de `ota_signature_switch.cpp`, `web_routes_ota_switch.cpp` et la mention
+  ajoutée par `logOtaAuthenticityVerdict` dans `web_routes_ota.cpp` ;
+- le nom d'entité lisible côté Home Assistant ;
+- `docs/UPDATE_GUIDE.md`, `docs/MQTT.md`, `docs/user/src/guide-utilisation.html`.
+
+⛔ **Ne PAS renommer** : le topic MQTT (`…/ota_signature_switch`) ni les chemins de route — ce
+sont des interfaces publiques, un appareil en service et Home Assistant les connaissent déjà.
+⛔ **Ne PAS toucher aux ADR 0125/0126** : ce sont des décisions datées, immuables.
+⚠️ **Attention aux gardes** : `tools/check_ota_signature_switch.sh` et plusieurs suites natives
+affirment sur la **forme des messages**. Le renommage les fera rougir — c'est voulu, elles sont
+à mettre à jour dans le même lot.
+
 ### ⛔ Reste ouvert (la spec RESTE dans `doing/`)
 
 - **D3-c** (refus), **D4**, **D5**. ✅ ~~marche 3 de B12~~ **passée le 2026-11-16** (voir ci-dessus) : **B12 est clos**.
-- Hors lot, à ouvrir (revue P1/P2) : **`bug-112` avant D3-c** ; `RouteProtection::CRITICAL` réellement distinct de `WRITE` ; **référence de version indépendante de GitHub** avant toute promotion du « désaccord » en refus ; bouton physique (après D5).
+- Hors lot, à ouvrir (revue P1/P2) : **`bug-112` avant D3-c** ; `RouteProtection::CRITICAL` réellement distinct de `WRITE` ; **référence de version indépendante de GitHub** avant toute promotion du « désaccord » en refus.
+- ✅ **Bouton physique : fiche ouverte** — [`feature-171`](../todo/feature-171-bouton-physique-autorisation-temporaire.md) (2026-11-16). ⚠️ Elle **renverse l'exigence centrale d'ADR-0125** : l'autorisation ne survivrait plus à un redémarrage — ce qui supprime à la fois l'impasse « sans heure valide, aucune autorisation possible » et toute la dette du résidu NVS. ⛔ Inerte tant que D3-c n'est pas livré.
 - 🔴 « Jeton admin volé » : **ouvert, rouvert plus facilement** par l'interrupteur.
 - **Essai terrain du lot non fait** : déploiement, armement/désarmement réels, témoin HA, affichage de la version sur l'appareil.
