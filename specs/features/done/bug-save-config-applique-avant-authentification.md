@@ -186,7 +186,7 @@ rotation (`kRotateKeepBytes`, fichier de 8 192 o) sont purgés en **~27 requête
 ([`auth.cpp:231`](../../../src/auth.cpp:231)) émet un WARN **sans throttle** sur toute
 route protégée. Ce cycle le **multipliait par ~2,7** sur trois routes ; il ne l'a pas
 créé, et le throttle n'annule que sa propre contribution. Spec dédiée **ouverte** :
-[`bug-112`](../todo/bug-112-journal-non-borne-sur-route-protegee.md) (périmètre non arrêté ici). Le commentaire de `kCalibrationAuthWarnThrottleMs` chiffre
+[`bug-112`](../done/bug-112-journal-non-borne-sur-route-protegee.md) (périmètre non arrêté ici). Le commentaire de `kCalibrationAuthWarnThrottleMs` chiffre
 le journal à 24 Ko/32 Ko — tailles **historiques**, antérieures à l'ADR-0033 : chiffre à
 reprendre, conclusion inchangée (elle est même plus sévère).
 
@@ -211,7 +211,7 @@ déploiement de la 2.46.1, et **seulement** après.
    `bug-080`. → [`bug-113`](../todo/bug-113-tamponnage-json-non-authentifie.md), ouverte.
 3. **Double-`send` préexistant** — requête **authentifiée** mais **au-dessus du quota** :
    le handler de corps répond `200`, puis le handler de requête répond `429`. Consigné en « hors
-   périmètre » de [`bug-112`](../todo/bug-112-journal-non-borne-sur-route-protegee.md), sans spec propre.
+   périmètre » de [`bug-112`](../done/bug-112-journal-non-borne-sur-route-protegee.md), sans spec propre.
 
 ### Critères d'acceptation — état final
 

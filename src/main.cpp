@@ -49,6 +49,8 @@ extern "C" bool esp_psram_check_ptr_addr(const void* p);
 #include "net_health_logic.h"
 #include "heap_drop_logic.h"  // détecteur PUR de chute de contiguïté (feature-144, ADR-0017)
 #include "heap_ring.h"
+#include "web_routes_ota.h"          // bug-112 : drainOtaUnauthWarnLogs
+#include "web_routes_calibration.h"  // bug-112 : drainCalibrationUnauthWarnLogs
 #include "fs_guard.h"     // bug-100 : drain de l'épisode de famine fichiers (ADR-0070)
 #include "heap_metrics.h"  // mesure 8 bits (mémoire réellement allouable) — trace de calibrage v2.19.0
 #include "mbedtls_psram_alloc.h"  // bug-165/bug-108 : mbedtls obéit à la politique PSRAM (v2.81.0)
@@ -543,6 +545,10 @@ void loop() {
 
   // Mise à jour des gestionnaires
   webServer.update();
+  authManager.drainUnauthWarnLogs();  // bug-112 : annonce des refus occultés (loop seulement)
+  drainCalibrationUnauthWarnLogs();   // bug-112 : idem, sites calibration
+  drainOtaUnauthWarnLogs();           // bug-112 : idem, site upload OTA
+  drainConfigUnauthWarnLogs();        // bug-112 : idem, /save-config et /tune-ph-offset
   mqttManager.update();              // No-op depuis ADR-0011 (mqttTask gère tout)
   mqttManager.drainCommandQueue();   // Applique les commandes HA reçues sous configMutex
   measureValidity.update();          // feature-061 : validité pH/ORP — AVANT history (le point 5 min lit le cache)

@@ -251,12 +251,47 @@ constexpr unsigned long kRateLimitWindowMs = 60000;       // Fenêtre de rate li
 // tailles HISTORIQUES, jamais celles de ce binaire. Corrigé le 2026-09-07 : la
 // conclusion en est renforcée, pas affaiblie (13 s au lieu de 70). Toute reprise de
 // ce calcul doit lire logger.h, jamais un commentaire.
-// L'émetteur générique non borné (sendAuthRequired, toute route protégée) PRÉEXISTE
-// et reste ouvert : voir bug-112.
-// 1 WARN/min/route maximum, via une statique locale par site ; les tentatives
-// occultées sont comptées et annoncées quand le site redevient bavard.
-// Aligné sur kMutexTimeoutWarnThrottleMs (même convention).
-constexpr unsigned long kCalibrationAuthWarnThrottleMs = 60000;  // 60s - 1 warn/min/route
+// bug-112 (v2.89.1) : le throttle est généralisé à TOUT refus d'authentification
+// atteignable sans identifiants : NEUF états INDÉPENDANTS, jamais fusionnés — 401
+// (sendAuthRequired), 429 (checkRateLimit), trois routes de calibration, upload OTA,
+// /save-config, /tune-ph-offset et le jeton WebSocket rejeté. Un dixième émetteur
+// anonyme, POST /debug/sensor_trace_clear, n'est pas borné mais SUPPRIMÉ du chemin
+// non authentifié (REQUIRE_AUTH posé). Renommé depuis kCalibrationAuthWarnThrottleMs
+// (valeur inchangée). Le 401 est UN SEUL état pour les 86 routes (clé globale,
+// écrasée à chaque ligne : décision assumée, ADR-0127). Seul le journal est borné,
+// jamais la réponse HTTP. Garde mécanique : tools/check_unauth_log_guard.sh.
+// Borner en requêtes ne suffit pas : une requête / 60 s purgeait le journal en une
+// heure. RECUL EXPONENTIEL : fenêtre = base << shift, shift +1 par ligne émise
+// (plafond kUnauthWarnMaxShift), -1 par kUnauthWarnDecayMs sans tentative.
+// Le DRAIN (annonce des occultés après kUnauthWarnDrainQuietMs de silence) est borné
+// par le MÊME recul et compte comme une ligne (il relève le shift) : sans cela il
+// serait un émetteur neuf.
+// Chiffrage — PIRES MESURÉS, aucun majorant établi, rien ici n'est une garantie :
+//  - par site : 38 lignes / 24 h (émissions + drains) au pire TROUVÉ ; un 39 reste
+//    possible, aucune recherche exacte n'a été faite. Des tentatives simples ne
+//    donnent que 28 (t = 0, 1, 3, 7, 15, 31, 63 min puis une / 64 min).
+//  - neuf sites cumulés : 342 lignes / 24 h (9 x 38). SOMME de maxima mesurés : les
+//    états sont indépendants donc elle est atteignable, mais aucun scénario joint
+//    n'a été mesuré. À ~230 o la ligne : ~79 Ko / 24 h, pour un journal de 8 Ko
+//    (6 144 o conservés).
+//  - MÉCANISME du 38 : groupes de 5 tentatives espacées de 60 s, répétés toutes les
+//    3 841 s. Le drain n'est PAS une tentative : il ne remet pas à zéro la date de
+//    dernière tentative, donc la décroissance de -1 par kUnauthWarnDecayMs continue
+//    de courir pendant qu'il émet. Le surplus vient de la montée du recul depuis
+//    l'état vierge ; en régime établi au plafond, le débit retombe à ~1 ligne par
+//    3 840 s (22-23 / jour).
+//  - Espace exploré (simulateur à la ms sur les vrais en-têtes) : groupes de 1 à 6
+//    tentatives (écarts 1-600 s, périodes 20-20 000 s), paires (écarts 1-8 000 s),
+//    groupes de 2 à 12 à deux écarts, ~9 millions de tirages aléatoires guidés par
+//    l'état réel, escalade aléatoire en ms.
+// CONSÉQUENCE ASSUMÉE : le journal reste purgeable, à vitesse lente (plus en ~13 s
+// par une seule source). Jugé acceptable pour clore bug-112 ; la vraie réponse est
+// une RÉTENTION SÉPARÉE des traces de sécurité, hors d'atteinte des alertes non
+// authentifiées — spec de suivi.
+constexpr unsigned long kUnauthWarnThrottleMs = 60000;    // 60s - fenêtre de base
+constexpr uint8_t kUnauthWarnMaxShift = 6;                // plafond du recul : 64 min
+constexpr unsigned long kUnauthWarnDrainQuietMs = 120000; // 2 min de silence avant d'annoncer les occultés
+constexpr unsigned long kUnauthWarnDecayMs = 3600000;     // 1h sans tentative = recul -1
 
 // ============================================================================
 // MEMORY & BUFFER CONSTANTS - Limites mémoire et buffers

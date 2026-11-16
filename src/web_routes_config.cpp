@@ -3,6 +3,7 @@
 #include "config.h"
 #include "constants.h"
 #include "auth.h"
+#include "auth_log_throttle_site.h"  // bug-112 : recul exponentiel du WARN de refus
 #include "ws_manager.h"
 #include "sensors.h"
 #include "filtration.h"
@@ -501,6 +502,46 @@ static String clientIpOf(AsyncWebServerRequest* request) {
 //   - pas de sendAuthRequired() → c'est la complétion qui émet le 401 (une réponse
 //     posée ici serait de toute façon remplacée par la sienne).
 // L'exemption « premier démarrage » (wizard) est conservée à l'identique.
+// bug-112 : journal BORNÉ des refus des handlers de CORPS de ce fichier. Un état par
+// route, nombre fixé à la compilation, statiques PRIVÉES à l'unité (seul
+// drainConfigUnauthWarnLogs() est exporté). Le handler de corps tourne AVANT
+// checkRateLimit() : sans borne, un WARN par requête purgeait le journal.
+namespace {
+AuthLogThrottleSite gConfigSaveSite;      // /save-config
+AuthLogThrottleSite gConfigTuneSite;      // /tune-ph-offset
+}  // namespace
+
+// Journalise (borné) un corps refusé. MUET => aucune allocation, sortie en premier.
+static void logUnauthorizedConfigBody(AuthLogThrottleSite& site, const char* label, const char* suffix,
+                                      AsyncWebServerRequest* request) {
+  const bool hasClient = (request != nullptr && request->client() != nullptr);
+  const uint32_t ip = hasClient ? static_cast<uint32_t>(request->client()->remoteIP()) : 0;
+  const AuthLogSiteReport r = authLogSiteAttempt(site, millis(), authLogThrottleHash(label), ip,
+                                                 kUnauthWarnThrottleMs, kUnauthWarnMaxShift, kUnauthWarnDecayMs);
+  if (!r.emit) return;  // MUET : zéro allocation
+  String msg = String(label) + " NON AUTHENTIFIÉ depuis " + clientIpOf(request) + suffix;
+  if (r.occulted > 0) {
+    msg += String(" ; et ") + String(r.occulted) + " " +
+           authLogThrottlePlural(r.occulted, "tentative non journalisée", "tentatives non journalisées");
+  }
+  systemLogger.warning(msg);
+}
+
+// Drain (loop uniquement), borné par le même recul que l'émission.
+void drainConfigUnauthWarnLogs() {
+  const uint32_t now = millis();
+  AuthLogThrottleSite* const sites[2] = {&gConfigSaveSite, &gConfigTuneSite};
+  const char* const labels[2] = {"[Config] /save-config", "[pH] /tune-ph-offset"};
+  for (int i = 0; i < 2; i++) {
+    const AuthLogSiteReport r = authLogSiteDrain(*sites[i], now, kUnauthWarnThrottleMs, kUnauthWarnMaxShift,
+                                                 kUnauthWarnDrainQuietMs);
+    if (!r.emit) continue;
+    systemLogger.warning(String(labels[i]) + " : " + String(r.occulted) + " " +
+                         authLogThrottlePlural(r.occulted, "tentative non authentifiée non journalisée",
+                                               "tentatives non authentifiées non journalisées"));
+  }
+}
+
 static bool saveConfigBodyAuthorized(AsyncWebServerRequest* request) {
   if (!authManager.isEnabled()) return true;            // authentification désactivée
   if (authManager.isFirstBootDetected()) return true;   // wizard de premier démarrage
@@ -509,6 +550,7 @@ static bool saveConfigBodyAuthorized(AsyncWebServerRequest* request) {
 
 static void handleSaveConfig(AsyncWebServerRequest* request, uint8_t* data, size_t len, size_t index, size_t total) {
   if (g_configBuffers == nullptr || g_configErrors == nullptr) {
+    // AUTH-LOG-EXEMPT(bug-112) : défaut de câblage au démarrage, pas déclenchable par un client
     systemLogger.error("Config context non initialisé!");
     return;
   }
@@ -520,8 +562,8 @@ static void handleSaveConfig(AsyncWebServerRequest* request, uint8_t* data, size
   // bornée, atteignable sans authentification. Le 401 est émis par la complétion.
   if (!saveConfigBodyAuthorized(request)) {
     if (index == 0) {
-      systemLogger.warning("[Config] /save-config NON AUTHENTIFIÉ depuis " +
-                           clientIpOf(request) + " — corps ignoré (aucune modification)");
+      logUnauthorizedConfigBody(gConfigSaveSite, "[Config] /save-config",
+                                " — corps ignoré (aucune modification)", request);
     }
     return;
   }
@@ -1736,8 +1778,8 @@ static void handleTunePhOffset(AsyncWebServerRequest* req, uint8_t* data, size_t
   // après ce handler de corps.
   if (!saveConfigBodyAuthorized(req)) {
     if (index == 0) {
-      systemLogger.warning("[pH] /tune-ph-offset NON AUTHENTIFIÉ depuis " +
-                           clientIpOf(req) + " — corps ignoré (aucun offset modifié)");
+      logUnauthorizedConfigBody(gConfigTuneSite, "[pH] /tune-ph-offset",
+                                " — corps ignoré (aucun offset modifié)", req);
     }
     return;
   }

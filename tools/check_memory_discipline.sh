@@ -91,7 +91,7 @@ M3A='^[[:space:]]*(static[[:space:]]+|inline[[:space:]]+|virtual[[:space:]]+)*St
 M3B='(\bnew\b[[:space:]]|\b(malloc|calloc|realloc|strdup)[[:space:]]*\(|std::vector|std::string|JsonDocument)'
 NOCOM='^[^:]+:[0-9]+:[[:space:]]*(//|\*|/\*)'
 
-LOG_PATH_FILES="src/logger.h src/logger.cpp src/log_arena_logic.h src/log_arena_logic.cpp"
+LOG_PATH_FILES="src/logger.h src/logger.cpp src/log_arena_logic.h src/log_arena_logic.cpp src/auth_log_throttle_logic.h src/auth_log_throttle_site.h"
 
 # --- Collecte des occurrences BRUTES (avant filtrage des exemptions) -------
 

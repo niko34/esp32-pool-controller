@@ -2,6 +2,68 @@
 #include "logger.h"
 #include "config.h"
 #include <esp_random.h>
+#include "auth_log_throttle_site.h"
+
+// ---------------------------------------------------------------------------
+// Bornage du journal des refus d'authentification (bug-112)
+// ---------------------------------------------------------------------------
+// DEUX sites DISTINCTS, jamais fusionnés : 401 (sendAuthRequired) et 429
+// (checkRateLimit). Le throttle ne borne QUE le journal : le 401, le 429 et le
+// `return false` partent toujours, ce helper est `void` et ne décide de rien.
+// La coquille atomique (auth_log_throttle_site.h) porte les champs partagés avec
+// la loop (drain) ; le module pur ne voit que des valeurs.
+namespace {
+AuthLogThrottleSite gUnauthSite;  // 401 : UNE clé GLOBALE pour les 86 routes (ADR-0127)
+AuthLogThrottleSite gRateSite;    // 429
+
+// Complément « et N refus non journalisés (autres routes/IP) », accord français géré.
+void appendOcculted(String& msg, const AuthLogSiteReport& r) {
+  msg += String(" ; et ") + String(r.occulted) + " " +
+         authLogThrottlePlural(r.occulted, "refus non journalisé", "refus non journalisés");
+  if (r.otherRoutes) msg += " (autres routes)";
+  if (r.otherIps) msg += " (autres IP)";
+}
+
+// kind 0 : « Accès non autorisé » (401) ; kind 1 : « Rate limit dépassé » (429).
+// INVARIANT (ADR-0082) : la sortie muette est la PREMIÈRE décision, avant toute
+// String (IP, URL). Le hachage lit url().c_str() (référence, pas de copie) et
+// l'IPv4 est lue brute.
+void logUnauthWarn(AuthLogThrottleSite& site, AsyncWebServerRequest* req, uint8_t kind, uint16_t reqCount) {
+  const bool hasClient = (req != nullptr && req->client() != nullptr);
+  const uint32_t ip = hasClient ? static_cast<uint32_t>(req->client()->remoteIP()) : 0;
+  const uint32_t urlHash = (req != nullptr) ? authLogThrottleHash(req->url().c_str()) : 0;
+
+  const AuthLogSiteReport r = authLogSiteAttempt(site, millis(), urlHash, ip, kUnauthWarnThrottleMs,
+                                                 kUnauthWarnMaxShift, kUnauthWarnDecayMs);
+  if (!r.emit) return;  // MUET : zéro allocation
+
+  String msg;
+  const String clientIp = hasClient ? req->client()->remoteIP().toString() : String("IP inconnue");
+  if (kind == 0) {
+    msg = "Accès non autorisé depuis " + clientIp + " vers " + (req != nullptr ? req->url() : String("?"));
+  } else {
+    msg = "Rate limit dépassé pour " + clientIp + " (" + String(reqCount) + " req/min)";
+  }
+  if (r.occulted > 0) appendOcculted(msg, r);
+  systemLogger.warning(msg);
+}
+
+// Drain d'un site (loop) : borné par le MÊME recul que l'émission (coquille).
+void drainUnauthSite(AuthLogThrottleSite& site, const char* label, uint32_t now) {
+  const AuthLogSiteReport r = authLogSiteDrain(site, now, kUnauthWarnThrottleMs, kUnauthWarnMaxShift,
+                                               kUnauthWarnDrainQuietMs);
+  if (!r.emit) return;
+  String msg = String(label) + " :";
+  appendOcculted(msg, r);
+  systemLogger.warning(msg);  // WARNING seulement : ERROR/CRITICAL flushent en synchrone
+}
+}  // namespace
+
+void AuthManager::drainUnauthWarnLogs() {
+  const uint32_t now = millis();
+  drainUnauthSite(gUnauthSite, "Accès non autorisé", now);
+  drainUnauthSite(gRateSite, "Rate limit dépassé", now);
+}
 
 AuthManager authManager;
 
@@ -126,9 +188,9 @@ bool AuthManager::checkTokenAuth(AsyncWebServerRequest* req) {
     if (constantTimeEquals(header->value(), apiToken)) {
       return true;
     }
-  } else {
-    systemLogger.debug("Aucun header X-Auth-Token trouvé");
   }
+  // (bug-112) debug « aucun header » supprimé : une entrée par requête dans
+  // l'anneau évincerait des WARN non persistés ; le 401 qui suit l'implique.
 
   return false;
 }
@@ -142,6 +204,10 @@ bool AuthManager::checkRateLimit(AsyncWebServerRequest* req) {
   }
 
   // Obtenir l'IP du client
+  // Garde contre un client nul (préexistant : absente ici avant bug-112)
+  if (req->client() == nullptr) {
+    return true;
+  }
   String clientIP = req->client()->remoteIP().toString();
   unsigned long now = millis();
 
@@ -168,7 +234,7 @@ bool AuthManager::checkRateLimit(AsyncWebServerRequest* req) {
 
   // Vérifier la limite
   if (entry.requestCount > MAX_REQUESTS_PER_MINUTE) {
-    systemLogger.warning("Rate limit dépassé pour " + clientIP + " (" + String(entry.requestCount) + " req/min)");
+    logUnauthWarn(gRateSite, req, 1, entry.requestCount);  // journal borné ; le refus, lui, part toujours
     return false;
   }
 
@@ -230,9 +296,9 @@ bool AuthManager::checkAuth(AsyncWebServerRequest* req, RouteProtection level) {
 }
 
 void AuthManager::sendAuthRequired(AsyncWebServerRequest* req) {
-  // Enregistrer la tentative
-  String clientIP = req->client()->remoteIP().toString();
-  systemLogger.warning("Accès non autorisé depuis " + clientIP + " vers " + req->url());
+  // Enregistrer la tentative (journal BORNÉ, bug-112 — la réponse 401 ci-dessous
+  // part TOUJOURS, quel que soit le verdict du throttle)
+  logUnauthWarn(gUnauthSite, req, 0, 0);
 
   // Envoyer la réponse 401 sans challenge Basic Auth (évite la pop-up navigateur)
   AsyncWebServerResponse* response = req->beginResponse(401, "application/json", "{\"error\":\"Authentication required\"}");
@@ -240,9 +306,8 @@ void AuthManager::sendAuthRequired(AsyncWebServerRequest* req) {
 }
 
 void AuthManager::sendRateLimitExceeded(AsyncWebServerRequest* req) {
-  String clientIP = req->client()->remoteIP().toString();
-  systemLogger.warning("Rate limit dépassé pour " + clientIP);
-
+  // Pas de WARN ici (bug-112) : doublon strict de celui de checkRateLimit(), déjà
+  // appelé et faux chez tous les appelants.
   AsyncWebServerResponse* response = req->beginResponse(429, "application/json", "{\"error\":\"Too many requests\"}");
   response->addHeader("Retry-After", "60");
   req->send(response);

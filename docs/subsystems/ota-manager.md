@@ -628,7 +628,7 @@ Relevé **en revue**, pas à la conception. `PumpController::setOtaInProgress(tr
 
 ### WARN throttlé — et la LIMITE de ce throttle
 
-Une tentative non authentifiée est journalisée `WARNING` **au plus 1 fois/60 s** pour ce site (statique locale, seuil `kCalibrationAuthWarnThrottleMs` **réutilisé tel quel** : même valeur, même motif et même chiffrage que pour les routes de calibration — une constante jumelle n'aurait dupliqué que la démonstration ; le nom mériterait d'être généralisé en `kBodyAuthWarnThrottleMs` le jour où `constants.h` sera rouvert). **Une seule fois par upload**, au premier fragment :
+Une tentative non authentifiée est journalisée `WARNING` **à recul exponentiel** (base `kUnauthWarnThrottleMs` = 60 s, plafond 64 min ; état propre à ce site, voir [ADR-0127](../adr/0127-le-bornage-du-journal-d-authentification-est-global-par-emetteur.md)), avec drain `[OTA] POST /update :` après 120 s de silence. **Une seule fois par upload**, au premier fragment :
 
 ```
 [OTA] POST /update NON AUTHENTIFIÉ depuis 192.168.1.50 — upload ignoré (aucun Update.begin(), aucune écriture de partition) ; et 12 tentatives non journalisées
@@ -637,7 +637,7 @@ Une tentative non authentifiée est journalisée `WARNING` **au plus 1 fois/60 s
 - **Le quota `kMaxRequestsPerMinute` ne borne pas cet émetteur** : `checkRateLimit()` est appelé par `checkAuth()` dans le handler de **requête**, donc après l'upload. Le handler d'upload tourne pour **chaque** requête reçue, quota dépassé ou non.
 - **Invariant : le chemin muet n'alloue rien** — sortie avant toute concaténation. Ce chemin est atteignable sans authentification et s'exécute en RAM interne pendant une famine mémoire active (`bug-080`).
 - L'IP est lue sans jamais déréférencer un client nul : le client peut avoir disparu entre l'arrivée du fragment et la journalisation.
-- ⚠️ **LIMITE — motif initialement surévalué, corrigé après revue.** Ce throttle **réduit la pression, il ne ferme pas le vecteur**. `AuthManager::sendAuthRequired()` ([`auth.cpp:234`](../../src/auth.cpp:234)) émet déjà, dans le lambda de réponse, **un `WARNING` NON throttlé par requête** sur cette même route. La fenêtre forensique reste donc **purgeable sans authentification**, et ce throttle-ci n'y change rien à lui seul. Ne pas conclure de sa présence que le vecteur est fermé — l'émetteur générique est traité par [`bug-112`](../../specs/features/todo/bug-112-journal-non-borne-sur-route-protegee.md). L'avertissement est porté dans le commentaire du code.
+- ✅ **Limite levée en v2.89.1 (`bug-112`)** : le WARN non throttlé de `sendAuthRequired()` est désormais borné lui aussi (état global du 401, [auth.md](auth.md#bornage-du-journal-des-refus-bug-112-v2891)). Le journal reste purgeable **à vitesse lente** (pire cas mesuré 38 lignes/24 h par site, aucun majorant établi).
 
 ### `/download-update` : audité SAIN, pour une raison structurelle
 

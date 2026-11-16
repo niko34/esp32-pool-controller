@@ -80,7 +80,13 @@ public:
 
   // Helper pour envoyer une réponse d'erreur d'auth
   void sendAuthRequired(AsyncWebServerRequest* req);
+  // CONTRAT : l'appelant a DÉJÀ journalisé (checkRateLimit() faux) ; cette
+  // fonction n'émet aucun log et envoie toujours le 429 (bug-112).
   void sendRateLimitExceeded(AsyncWebServerRequest* req);
+
+  // Annonce les refus occultés par le throttle après kUnauthWarnDrainQuietMs de
+  // silence. À appeler depuis la loop() UNIQUEMENT (jamais async_tcp) : WARNING.
+  void drainUnauthWarnLogs();
 };
 
 // Instance globale

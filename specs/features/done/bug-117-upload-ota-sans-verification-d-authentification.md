@@ -8,7 +8,7 @@
 | Priorité | **CRITIQUE** — à traiter avant tout autre bug de cette file |
 | Version livrée | **2.46.2** (`src/version.h`) |
 | Relevé par | `doc-writer`, 2026-09-07, en refusant de reprendre le verdict « sain » de l'audit ; confirmé par lecture directe |
-| Specs liées | `bug-save-config-applique-avant-authentification` (**même topologie**, corrigée en v2.46.1), `feature-026` (intégrité OTA), [`feature-118`](../doing/feature-118-authenticite-de-l-image-ota.md) (**suite** : authenticité de l'image), [`bug-112`](../todo/bug-112-journal-non-borne-sur-route-protegee.md) (journal non borné) |
+| Specs liées | `bug-save-config-applique-avant-authentification` (**même topologie**, corrigée en v2.46.1), `feature-026` (intégrité OTA), [`feature-118`](../doing/feature-118-authenticite-de-l-image-ota.md) (**suite** : authenticité de l'image), [`bug-112`](../done/bug-112-journal-non-borne-sur-route-protegee.md) (journal non borné) |
 
 ## Domaines touchés
 - [x] OTA (`src/web_routes_ota.cpp`, `handleOtaUpdate()`)
@@ -183,7 +183,7 @@ plus longtemps qu'un bug — elle est réutilisée.
    throttlé par requête** sur cette route. Le throttle **réduit la pression, il ne
    ferme pas le vecteur** : la fenêtre forensique reste purgeable sans
    authentification. Le sujet est l'émetteur **générique** →
-   [`bug-112`](../todo/bug-112-journal-non-borne-sur-route-protegee.md). Le
+   [`bug-112`](../done/bug-112-journal-non-borne-sur-route-protegee.md). Le
    commentaire du code porte désormais l'avertissement de ne pas conclure le contraire.
 2. **La justification de l'ordre des prédicats était inversée.**
    `authenticate()` court-circuite déjà sur `_authorization` vide : le chemin

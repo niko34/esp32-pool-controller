@@ -209,7 +209,7 @@ Verdict `pool-chemistry` (**GO**, gravité **haute**) : l'effet de bord n'est pa
 
 ### WARN throttlé — et pourquoi il l'est
 
-Une tentative non authentifiée est journalisée `WARNING` **au plus 1 fois par 60 s et par route** (`kCalibrationAuthWarnThrottleMs`, statique locale **par site**), avec annonce du nombre de tentatives occultées quand le site redevient bavard :
+Une tentative non authentifiée est journalisée `WARNING` **à recul exponentiel** (fenêtre `kUnauthWarnThrottleMs` = 60 s de base, doublée à chaque ligne émise jusqu'à 64 min ; état propre à chaque route de calibration), avec annonce des tentatives occultées reversée dans la ligne suivante et, après 120 s de silence, par une ligne de drain `[Calibration] /calibrate_x :` ([ADR-0127](../adr/0127-le-bornage-du-journal-d-authentification-est-global-par-emetteur.md)) :
 
 ```
 [Calibration] /calibrate_ph NON AUTHENTIFIÉ depuis 192.168.1.50 — corps ignoré (aucune commande EZO mise en file) ; et 12 tentatives non journalisées
@@ -783,7 +783,7 @@ Ajoutée **sans changer aucun comportement** ([ADR-0074](../adr/0074-temperature
 | `kEzoOrpAddress` | `0x62` | Adresse I²C EZO ORP (défaut Atlas) |
 | `kEzoReadDelayMs` | `900` ms | Délai après commande `R` (lecture) |
 | `kEzoCalDelayMs` | `900` ms | Délai après commande `Cal,*` |
-| `kCalibrationAuthWarnThrottleMs` | `60000` ms | 1 WARN/min/route maximum sur les tentatives de calibration non authentifiées (v2.46.1) |
+| `kUnauthWarnThrottleMs` | `60000` ms | Fenêtre de BASE du recul exponentiel des WARN de refus d'authentification (v2.89.1 ; ex-`kCalibrationAuthWarnThrottleMs`, v2.46.1) |
 | `kEzoRtDelayMs` | `600` ms | Délai après commande `RT,<temp>` |
 | `kTempCalOffsetMin` / `kTempCalOffsetMax` | `-5.0` / `+5.0` °C | Bornes de `tempCalibrationOffset` (bug-114) — un DS18B20 dérive de **dixièmes** de degré |
 | `kEzoCompTempMinC` / `kEzoCompTempMaxC` | `0.0` / `40.0` °C | Fenêtre de plausibilité de la température envoyée dans `RT`. ⚠️ Borne haute **non confirmée par la datasheet Atlas** |
@@ -1076,7 +1076,7 @@ Si une sonde est remplacée physiquement (adresse ROM différente), le scan au b
 - [`src/atlas_ezo.h`](../../src/atlas_ezo.h), [`src/atlas_ezo.cpp`](../../src/atlas_ezo.cpp)
 - [`src/web_routes_calibration.cpp`](../../src/web_routes_calibration.cpp) — routes refondues `/calibrate_ph`, `/calibrate_orp`, `/calibrate_clear`
 - [bug-save-config-applique-avant-authentification](../../specs/features/done/bug-save-config-applique-avant-authentification.md) — audit des handlers de corps, garde d'authentification des trois routes de calibration (v2.46.1)
-- [`src/web_routes_debug.cpp`](../../src/web_routes_debug.cpp) — routes `/debug/sensor_trace` (GET, paginée v2.10.1) + `/debug/sensor_trace_clear` (POST) (feature-057)
+- [`src/web_routes_debug.cpp`](../../src/web_routes_debug.cpp) — routes `/debug/sensor_trace` (GET, paginée v2.10.1) + `/debug/sensor_trace_clear` (POST) (feature-057) — ⚠️ cette dernière exige `RouteProtection::WRITE` depuis v2.89.1 (`bug-112`, [ADR-0127](../adr/0127-le-bornage-du-journal-d-authentification-est-global-par-emetteur.md)) : sans auth, elle journalisait un INFO persisté par requête
 - [`src/sensor_trace_page.h`](../../src/sensor_trace_page.h) — clamp pur header-only `computeTracePage()` (pagination v2.10.1, testé en natif `test/test_native_trace_page/`)
 - [`src/web_routes_sensor_id.cpp`](../../src/web_routes_sensor_id.cpp) — routes feature-020 inchangées
 - [`src/constants.h`](../../src/constants.h) — toutes les constantes EZO + DS18B20

@@ -5,6 +5,7 @@
 #include <memory>  // std::make_shared (bug-081 : UN shared buffer par push, pas un par client)
 #include <vector>
 #include "ws_manager.h"
+#include "auth_log_throttle_site.h"  // bug-112 : recul exponentiel du WARN de refus
 #include "web_helpers.h"
 #include "heap_metrics.h"  // heapLargestFreeBlock8Bit — sans log ni alloc (bug-080)
 #include "config.h"  // feature-168 : phOffsetStaleNow()/phOffsetStaleCause()
@@ -68,8 +69,41 @@ void WsManager::begin(AsyncWebServer* server) {
   systemLogger.info("WebSocket démarré sur /ws (push capteurs toutes les 5s)");
 }
 
+// bug-112 : journal BORNÉ des jetons WS rejetés. Un message `auth` au mauvais jeton
+// n'est borné par AUCUN quota (il ne passe pas par checkRateLimit()) : sans throttle,
+// un WARN persisté par message purgeait le journal. Statique PRIVÉE à l'unité, drain
+// appelé depuis update() (loopTask). Exécuté dans async_tcp : sortie muette en premier.
+namespace {
+AuthLogThrottleSite gWsTokenSite;
+}  // namespace
+
+static void logWsTokenRejected(AsyncWebSocketClient* client) {
+  const uint32_t ip = (client != nullptr) ? static_cast<uint32_t>(client->remoteIP()) : 0;
+  const AuthLogSiteReport r = authLogSiteAttempt(gWsTokenSite, millis(), 0, ip, kUnauthWarnThrottleMs,
+                                                 kUnauthWarnMaxShift, kUnauthWarnDecayMs);
+  if (!r.emit) return;  // MUET : zéro allocation
+  String msg = "[WS] Jeton rejeté";
+  if (r.occulted > 0) {
+    msg += String(" ; et ") + String(r.occulted) + " " +
+           authLogThrottlePlural(r.occulted, "rejet non journalisé", "rejets non journalisés");
+    if (r.otherIps) msg += " (autres IP)";
+  }
+  systemLogger.warning(msg);
+}
+
+// Drain (loop uniquement), borné par le même recul que l'émission.
+static void drainWsTokenWarnLogs() {
+  const AuthLogSiteReport r = authLogSiteDrain(gWsTokenSite, millis(), kUnauthWarnThrottleMs,
+                                               kUnauthWarnMaxShift, kUnauthWarnDrainQuietMs);
+  if (!r.emit) return;
+  systemLogger.warning(String("[WS] Jeton rejeté : ") + String(r.occulted) + " " +
+                       authLogThrottlePlural(r.occulted, "rejet non journalisé", "rejets non journalisés") +
+                       (r.otherIps ? " (autres IP)" : ""));
+}
+
 void WsManager::update() {
   if (!_ws) return;
+  drainWsTokenWarnLogs();  // bug-112
 
   // bug-081, condition bloquante #3 : révocation immédiate demandée depuis un
   // handler HTTP (auth_enabled faux→vrai, rotation de token). Le registre a
@@ -291,7 +325,7 @@ void WsManager::_onData(AsyncWebSocketClient* client, uint8_t* data, size_t len)
   String token = doc["token"] | "";
   // feature-028 : comparaison à temps constant (même exigence que l'auth HTTP)
   if (authCfg.enabled && !authManager.secureTokenEquals(token)) {
-    systemLogger.warning("[WS] Token rejeté");
+    logWsTokenRejected(client);
     client->close();
     return;
   }

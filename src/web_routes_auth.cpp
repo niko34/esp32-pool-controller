@@ -210,6 +210,7 @@ void setupAuthRoutes(AsyncWebServer* server) {
   server->on("/auth/complete-wizard", HTTP_POST, [](AsyncWebServerRequest *req) {
     if (authManager.isFirstBootDetected()) {
       authManager.clearFirstBootFlag();
+      // AUTH-LOG-EXEMPT(borné par nature : n'écrit qu'une fois, gardé par isFirstBootDetected() que clearFirstBootFlag() rend faux)
       systemLogger.info("Premier démarrage finalisé - Configuration wizard complétée");
     }
 

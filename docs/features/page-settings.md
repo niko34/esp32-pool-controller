@@ -482,7 +482,7 @@ Toggles complémentaires :
 | Effacer logs (firmware) | `DELETE /logs` | WRITE |
 | Télécharger logs | `GET /download-logs` | WRITE |
 | Recharger la trace signaux capteurs | `GET /debug/sensor_trace` | pas d'auth (`/debug/*`) |
-| Vider la trace signaux capteurs | `POST /debug/sensor_trace_clear` | pas d'auth (`/debug/*`) |
+| Vider la trace signaux capteurs | `POST /debug/sensor_trace_clear` | WRITE (v2.89.1, `bug-112` ; était sans auth) |
 
 Auth = le niveau minimum requis, voir [`docs/API.md`](../API.md).
 

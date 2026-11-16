@@ -372,7 +372,7 @@ Activable via `setPersistenceFs(LittleFS*)` après montage de la partition `hist
 > pourrisse plus. Vérification faite : **ce document ne portait pas la même
 > erreur** (8 KB / 6 derniers KB, historique « 32 → 16 KB antérieurement »
 > correct). L'écart de chiffrage restant est celui de
-> `kCalibrationAuthWarnThrottleMs`, signalé
+> `kCalibrationAuthWarnThrottleMs` (renommé `kUnauthWarnThrottleMs` en v2.89.1), signalé
 > [plus bas](#émetteur-non-authentifié--le-motif-du-throttle-de-calibration-v2461).
 
 ### Reprise d'une rotation interrompue au démarrage (`bug-099`, v2.48.1)
@@ -611,6 +611,7 @@ Cadences des émetteurs périodiques qui écrivent dans `/system.log` :
 |---|---|---|---|
 | `WARN Alloc heap échouée …` | throttle **fixe** 30 s (≈ 120 lignes/h) | **backoff** immédiat → 30 s → 5 min → 30 min, retour au palier initial après 1 h sans échec | [oom-guard.md](oom-guard.md#backoff-du-warn-déchec--restaurer-la-fenêtre-forensique-v2202) |
 | `INFO Heap 8bits: …` | 5 min, ligne longue (partie `interne:` incluse) | **30 min**, ligne raccourcie (`interne:` **retiré** — valeur figée, sans information) | [system-health.md](system-health.md#trace-de-calibrage-des-seuils-mémoire-v2190) |
+| `WARN Accès non autorisé …` / `Rate limit dépassé …` et refus des routes de corps (calibration, OTA, `/save-config`, `/tune-ph-offset`, `/ws`) | non borné (jusqu'à 3 lignes/requête) | **recul exponentiel** 60 s → 64 min, drain après 120 s de silence ; pire cas mesuré **38 lignes/24 h par site**, **342 pour les neuf sites** (aucun majorant établi) | [auth.md](auth.md#bornage-du-journal-des-refus-bug-112-v2891), [ADR-0127](../adr/0127-le-bornage-du-journal-d-authentification-est-global-par-emetteur.md) |
 
 **Deux émetteurs périodiques ajoutés en v2.49.0** (`feature-122`, lot C-1a de `bug-080`) — `INFO Heap masq boot: …` et `INFO Heap masq fen: …`, à la **même cadence de 30 min** que `Heap 8bits:` (`kHeap8LogIntervalMs`), lignes de **142** et **136** caractères au pire cas à l'origine (tampons de pile `char[160]`). **Depuis la v2.51.0** (lot B2, champ `b804=`), `ligne3` porte un tampon `char[176]` et son pire cas mesuré passe à **163** caractères — `ligne2` est inchangée :
 
@@ -728,19 +729,15 @@ Débit total **divisé par 5,4** ; fenêtre forensique estimée à **≈ 2 h 30*
 
 > ⚠️ **93 % du débit résiduel vient désormais des AUTRES sources** (157 o/min sur 168). Elles étaient minoritaires, elles sont devenues **dominantes** : la spec de suivi annoncée en « Hors périmètre » de `feature-109` n'est **plus optionnelle**. Tout gain supplémentaire sur la rétention passe par elles, et par elles seules.
 
-#### Émetteur non authentifié : le motif du throttle de calibration (v2.46.1)
+#### Émetteur non authentifié : le motif du bornage (v2.46.1, généralisé en v2.89.1 — `bug-112`)
 
-La garde d'authentification du corps des routes `/calibrate_*` ([sensors.md](sensors.md#authentification-du-corps-des-routes-de-calibration-v2461)) journalise les tentatives refusées. Ce WARN est throttlé à **1 par 60 s et par route** (`kCalibrationAuthWarnThrottleMs`), et le throttle **fait partie du correctif**, pas de son confort — pour une raison qui est celle de toute cette page :
+Le bornage est né sur les routes `/calibrate_*` (v2.46.1), puis a été **généralisé à tout refus d'authentification** atteignable sans identifiants en v2.89.1 : **neuf sites indépendants** (401, 429, trois calibrations, upload OTA, `/save-config`, `/tune-ph-offset`, `/ws`) ; le dixième émetteur, `POST /debug/sensor_trace_clear`, est **authentifié** (`WRITE`) et non borné. Mécanisme, clé et limites : [auth.md](auth.md#bornage-du-journal-des-refus-bug-112-v2891) et [ADR-0127](../adr/0127-le-bornage-du-journal-d-authentification-est-global-par-emetteur.md).
 
-- **Le quota HTTP ne borne pas cet émetteur.** `checkRateLimit()` est appelé par `checkAuth()` dans le handler de **requête**, donc **après** le handler de corps. Le corps s'exécute pour **chaque** requête reçue, quota dépassé ou non : un émetteur qui journalise depuis un handler de corps est, par construction, **non borné**.
-- **Chiffrage.** Une ligne persistée de ce type pèse **~230 o**. Aux valeurs en vigueur — fichier `kMaxLogFileBytes` = **8 192 o**, `kRotateKeepBytes` = **6 144 o** conservés à la rotation — un émetteur non throttlé purge le journal en **~27 requêtes**, soit **~13 s** au seul quota autorisé de 120 req/min. La fenêtre forensique de **≈ 2 h 30** gagnée par `feature-109`, et dont `bug-080` dépend pour tracer un redémarrage, serait **effaçable à volonté** par un client anonyme sur le réseau local.
-- **Coût résiduel avec throttle** : ≤ 1 ligne/min/route, et le **chemin muet n'alloue rien** (sortie avant toute concaténation `String`) — condition non négociable puisque ce chemin est atteignable sans authentification pendant une famine mémoire active.
-
-> ⚠️ **L'émetteur non borné PRÉEXISTE à ce cycle.** `AuthManager::sendAuthRequired()` ([`auth.cpp:231`](../../src/auth.cpp:231)) émet un `WARNING "Accès non autorisé depuis <ip> vers <url>"` **sans throttle**, sur **toute** route protégée, depuis toujours. Le cycle 2.46.1 ne l'a **pas créé** : sans throttle, sa ligne de ~230 o serait venue s'ajouter à ce WARN existant sur trois routes, **multipliant par ~2,7** le coût journal d'une requête non authentifiée. Le throttle annule cet ajout ; il ne borne pas l'émetteur préexistant, qui reste le vrai poste. Le traitement de cet émetteur préexistant fait l'objet d'une **spec dédiée ouverte**, [`bug-112`](../../specs/features/todo/bug-112-journal-non-borne-sur-route-protegee.md) — son périmètre n'est pas arrêté ici.
-
-> ℹ️ **Troisième site du même throttle (v2.46.2).** La garde d'authentification du handler d'**upload** de `POST /update` ([ota-manager.md](ota-manager.md#authentification-du-handler-dupload-v2462), `bug-117`) réutilise **la même constante**, avec sa propre statique locale : ≤ 1 `WARNING`/60 s, et **une seule fois par upload** (au premier fragment, jamais aux ~1 000 suivants). Le raisonnement ci-dessus s'applique tel quel — **y compris sa limite** : sur cette route aussi, `sendAuthRequired()` émet un WARN non throttlé par requête, donc la fenêtre forensique reste purgeable sans authentification. Le throttle réduit la pression, il ne ferme pas le vecteur ; c'est `bug-112` qui traite l'émetteur générique.
-
-> 📋 **Écart de chiffrage à corriger dans le code.** Le commentaire de `kCalibrationAuthWarnThrottleMs` ([`constants.h:153`](../../src/constants.h:153)) raisonne sur « 24 Ko conservés » et « ~105 requêtes » : ce sont les tailles **historiques** du journal (32 Ko de fichier, antérieures à l'[ADR-0033](../adr/0033-budget-espace-partition-history.md)). Aux valeurs réelles (8 192 / 6 144 o), la purge est **~4 fois plus rapide** que ce que dit le commentaire. La conclusion n'est pas affaiblie, elle est renforcée — seul le chiffre du commentaire est à reprendre.
+- **Le quota HTTP ne borne pas ces émetteurs.** `checkRateLimit()` est appelé dans le handler de **requête**, donc **après** les handlers de corps : un émetteur qui journalise depuis un handler de corps est non borné par construction.
+- **Chiffrage du défaut initial.** Une ligne persistée pèse **~230 o**. Avec `kMaxLogFileBytes` = **8 192 o** et `kRotateKeepBytes` = **6 144 o** conservés, un émetteur non borné purge le journal en **~27 requêtes, ~13 s**. La fenêtre de **≈ 2 h 30** de `feature-109` (dont `bug-080` dépend) était effaçable à volonté par un client anonyme.
+- **Avec le bornage** : recul exponentiel (fenêtre 60 s << shift, plafond 64 min), chemin muet **sans allocation**. Pire cas **mesuré** : **38 lignes / 24 h par site**, **342 lignes / 24 h (9 × 38)** pour les neuf sites (somme de maxima mesurés, aucun scénario joint mesuré) ; ⛔ **aucun majorant n'est établi**. À ~230 o la ligne : **~79 Ko / 24 h** contre un journal de 8 Ko ⇒ **le journal reste purgeable à vitesse lente. C'est assumé** ; la vraie réponse (rétention séparée des traces de sécurité) est une spec de suivi.
+- **Supprimés** : le WARN doublon de `sendRateLimitExceeded` et le debug par requête d'`auth.cpp` (il évinçait des WARN non encore persistés).
+- **Garde CI** : `tools/check_unauth_log_guard.sh` (job `unauth-log-guard`) applique **cinq règles** (détail et limite : [auth.md](auth.md#bornage-du-journal-des-refus-bug-112-v2891)) — notamment, dans tout lambda handler de `src/web_routes_*.cpp`, aucun `systemLogger` avant l'authentification. ⚠️ Un lambda sans garde appelant une fonction nommée qui journalise n'est pas vu. Exemption unique : `AUTH-LOG-EXEMPT(raison)` sur `/auth/complete-wizard`.
 
 #### Coût RÉSIDUEL d'un détail passé en DEBUG (feature-109)
 

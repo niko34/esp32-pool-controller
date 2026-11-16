@@ -142,7 +142,7 @@ Le WebSocket exige un token valide. Architecture :
 3. `_authRegistry` (`WsClientRegistry<kWsRegistrySlots>`, [`ws_client_registry_logic.h`](../../src/ws_client_registry_logic.h)) garde les client IDs validés.
 4. Les messages des clients non authentifiés sont ignorés.
 
-⚠️ La vérification du token dans `_onData()` passe par `authManager.secureTokenEquals()` — **comparaison à temps constant**, même exigence que l'auth HTTP (v2.11.2, feature-028 ; jamais de `==` / `!=` direct sur le token, voir [auth.md](auth.md#comparaison-de-token-à-temps-constant-v2112-feature-028)). Token rejeté → log `[WS] Token rejeté` + fermeture de la connexion.
+⚠️ La vérification du token dans `_onData()` passe par `authManager.secureTokenEquals()` — **comparaison à temps constant**, même exigence que l'auth HTTP (v2.11.2, feature-028 ; jamais de `==` / `!=` direct sur le token, voir [auth.md](auth.md#comparaison-de-token-à-temps-constant-v2112-feature-028)). Jeton rejeté → fermeture de la connexion + WARN `[WS] Jeton rejeté` **borné** (`bug-112`, v2.89.1) : site de throttle dédié `logWsTokenRejected` (`AuthLogThrottleSite`, recul exponentiel, chemin muet sans allocation), drain `drainWsTokenWarnLogs()` appelé depuis `WsManager::update()` (préfixe `[WS] Jeton rejeté :` + nombre de rejets non journalisés). Un WARN par refus purgeait sinon le journal sans identifiants. Voir [auth.md](auth.md#bornage-du-journal-des-refus-bug-112-v2891).
 
 ⚠️ **Avant bug-081 (v2.57.0), `_authenticatedClients` (`std::set<uint32_t>`) ne servait
 qu'à décider « au moins un client authentifié existe-t-il ? » (garde de non-vacuité avant

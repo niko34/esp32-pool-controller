@@ -3,6 +3,7 @@
 #include "config.h"
 #include "constants.h"
 #include "auth.h"
+#include "auth_log_throttle_site.h"  // bug-112 : recul exponentiel du WARN de refus
 #include "sensors.h"
 #include "json_compat.h"
 #include "logger.h"
@@ -60,35 +61,49 @@ static String clientIpOf(AsyncWebServerRequest* request) {
   return request->client()->remoteIP().toString();
 }
 
-// Journalisation THROTTLÉE des tentatives non authentifiées (1/min/route).
+// Journalisation THROTTLÉE des tentatives non authentifiées (recul exponentiel par route, bug-112).
 // Le quota kMaxRequestsPerMinute ne borne pas cet émetteur : checkRateLimit() est
 // appelé par checkAuth() dans le handler de REQUÊTE, donc APRÈS le corps — le corps
 // tourne pour chaque requête reçue, quota dépassé ou non. Cf. le motif détaillé de
-// kCalibrationAuthWarnThrottleMs (constants.h).
+// kUnauthWarnThrottleMs (constants.h).
 // INVARIANT : quand le site est muet, AUCUNE String n'est construite — sortie avant
 // toute concaténation. Ce chemin est atteignable sans authentification et s'exécute
 // en RAM interne pendant une famine mémoire active : y allouer serait le vrai coût.
-static void logUnauthorizedCalibrationBody(const char* route,
-                                           AsyncWebServerRequest* request,
-                                           unsigned long& lastWarnMs,
-                                           uint16_t& suppressedCount) {
-  const unsigned long now = millis();
-  // lastWarnMs == 0 == « jamais journalisé » : sans ce cas, la première tentative
-  // des 60 premières secondes de vie de l'appareil serait avalée. La comparaison
-  // par soustraction non signée reste immunisée au repliement de millis() (49,7 j).
-  if (lastWarnMs != 0 && (now - lastWarnMs) < kCalibrationAuthWarnThrottleMs) {
-    if (suppressedCount < UINT16_MAX) suppressedCount++;
-    return;  // MUET : zéro allocation
-  }
+// Un état PAR ROUTE, nombre fixé à la compilation (aucune structure qui croît).
+// Statiques PRIVÉES à cette unité : seul drainCalibrationUnauthWarnLogs() est exporté.
+namespace {
+AuthLogThrottleSite gCalSites[3];
+const char* const kCalRoutes[3] = {"/calibrate_ph", "/calibrate_orp", "/calibrate_clear"};
+}  // namespace
 
-  String msg = String("[Calibration] ") + route + " NON AUTHENTIFIÉ depuis " +
+static void logUnauthorizedCalibrationBody(int idx, AsyncWebServerRequest* request) {
+  const bool hasClient = (request != nullptr && request->client() != nullptr);
+  const uint32_t ip = hasClient ? static_cast<uint32_t>(request->client()->remoteIP()) : 0;
+  // bug-112 : recul exponentiel (module pur). Un état par route.
+  const AuthLogSiteReport r = authLogSiteAttempt(gCalSites[idx], millis(), authLogThrottleHash(kCalRoutes[idx]), ip,
+                                                 kUnauthWarnThrottleMs, kUnauthWarnMaxShift, kUnauthWarnDecayMs);
+  if (!r.emit) return;  // MUET : zéro allocation
+
+  String msg = String("[Calibration] ") + kCalRoutes[idx] + " NON AUTHENTIFIÉ depuis " +
                clientIpOf(request) + " — corps ignoré (aucune commande EZO mise en file)";
-  if (suppressedCount > 0) {
-    msg += " ; et " + String(suppressedCount) + " tentatives non journalisées";
-    suppressedCount = 0;
+  if (r.occulted > 0) {
+    msg += String(" ; et ") + String(r.occulted) + " " +
+           authLogThrottlePlural(r.occulted, "tentative non journalisée", "tentatives non journalisées");
   }
   systemLogger.warning(msg);
-  lastWarnMs = now;
+}
+
+// Drain (loop uniquement), borné par le même recul que l'émission.
+void drainCalibrationUnauthWarnLogs() {
+  const uint32_t now = millis();
+  for (int i = 0; i < 3; i++) {
+    const AuthLogSiteReport r = authLogSiteDrain(gCalSites[i], now, kUnauthWarnThrottleMs, kUnauthWarnMaxShift,
+                                                 kUnauthWarnDrainQuietMs);
+    if (!r.emit) continue;
+    systemLogger.warning(String("[Calibration] ") + kCalRoutes[i] + " : " + String(r.occulted) + " " +
+                         authLogThrottlePlural(r.occulted, "tentative non authentifiée non journalisée",
+                                               "tentatives non authentifiées non journalisées"));
+  }
 }
 
 void setupCalibrationRoutes(AsyncWebServer* server) {
@@ -114,11 +129,8 @@ void setupCalibrationRoutes(AsyncWebServer* server) {
         // REQUIRE_AUTH visible juste au-dessus s'exécute APRÈS ce handler, la
         // commande EZO serait déjà en file quand le 401 part.
         if (!calibrationBodyAuthorized(req)) {
-          // Statiques locales AU SITE : un throttle par route (cf. constants.h).
-          static unsigned long lastWarnMs = 0;
-          static uint16_t suppressedCount = 0;
           if (index == 0) {
-            logUnauthorizedCalibrationBody("/calibrate_ph", req, lastWarnMs, suppressedCount);
+            logUnauthorizedCalibrationBody(0, req);
           }
           return;
         }
@@ -176,11 +188,8 @@ void setupCalibrationRoutes(AsyncWebServer* server) {
         // REQUIRE_AUTH visible juste au-dessus s'exécute APRÈS ce handler, la
         // commande EZO serait déjà en file quand le 401 part.
         if (!calibrationBodyAuthorized(req)) {
-          // Statiques locales AU SITE : un throttle par route (cf. constants.h).
-          static unsigned long lastWarnMs = 0;
-          static uint16_t suppressedCount = 0;
           if (index == 0) {
-            logUnauthorizedCalibrationBody("/calibrate_orp", req, lastWarnMs, suppressedCount);
+            logUnauthorizedCalibrationBody(1, req);
           }
           return;
         }
@@ -232,11 +241,8 @@ void setupCalibrationRoutes(AsyncWebServer* server) {
         // REQUIRE_AUTH visible juste au-dessus s'exécute APRÈS ce handler, la
         // commande EZO serait déjà en file quand le 401 part.
         if (!calibrationBodyAuthorized(req)) {
-          // Statiques locales AU SITE : un throttle par route (cf. constants.h).
-          static unsigned long lastWarnMs = 0;
-          static uint16_t suppressedCount = 0;
           if (index == 0) {
-            logUnauthorizedCalibrationBody("/calibrate_clear", req, lastWarnMs, suppressedCount);
+            logUnauthorizedCalibrationBody(2, req);
           }
           return;
         }

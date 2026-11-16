@@ -2,6 +2,19 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [2.89.1] - 2026-11-16
+
+### Firmware
+- **Sécurité / journal** (`bug-112`) : un client **non authentifié** du réseau local pouvait purger le journal persistant de l'appareil en **~27 requêtes (~13 s)**, effaçant la trace utile aux diagnostics et aux autorisations temporaires de signature OTA. Les refus d'authentification sont désormais **bornés** : **neuf sites** (401, 429, trois calibrations, envoi OTA, `/save-config`, `/tune-ph-offset`, `/ws` « Token rejeté »), recul exponentiel de 1 à 64 min, annonce des refus occultés après 2 min de silence. Une tentative isolée reste journalisée ; les réponses HTTP ne changent pas.
+- ⚠️ **Changement de comportement** : `POST /debug/sensor_trace_clear` **exige désormais une authentification** (`WRITE`) ; elle était ouverte et journalisait un INFO persisté par requête. Elle est **authentifiée et non bornée** (ce n'est pas un refus d'authentification, et l'action efface une fenêtre de diagnostic observée). L'interface l'appelait déjà avec jeton ; seul un `curl` sans jeton est impacté.
+- **Journal** : nouveaux préfixes de synthèse (`Accès non autorisé :`, `Rate limit dépassé :`, `[OTA] POST /update :`, `[Calibration] /calibrate_x :`, `[Config] /save-config :`, `[pH] /tune-ph-offset :`, `[WS] Jeton rejeté :`) ; le doublon de WARN du rate limit et le debug par requête sont supprimés. Constante renommée `kUnauthWarnThrottleMs` (valeur 60 s inchangée).
+- ⚠️ **Limite assumée** : pire cas **mesuré** 38 lignes / 24 h par émetteur, 342 (9 × 38) pour les neuf (somme de maxima mesurés, aucun scénario joint mesuré) ; **aucun majorant n'est établi**. Le journal reste purgeable **à vitesse lente** (~79 Ko/24 h contre 8 Ko de journal). Une rétention séparée des traces de sécurité reste à faire.
+
+### Documentation
+- [ADR-0127](docs/adr/0127-le-bornage-du-journal-d-authentification-est-global-par-emetteur.md) ; `docs/subsystems/auth.md`, `logger.md`, `sensors.md`, `ota-manager.md`. Nouveau contrôle CI `unauth-log-guard` (`tools/check_unauth_log_guard.sh`, cinq règles validées par mutation ; limite : les fonctions nommées hors lambda ne sont pas jugées) ; `docs/API.md`, `docs/features/page-settings.md`, `docs/subsystems/ws-manager.md`, `docs/BUILD.md` mis à jour.
+
+---
+
 ## [2.89.0] - 2026-11-16
 
 ### Fonctionnalités

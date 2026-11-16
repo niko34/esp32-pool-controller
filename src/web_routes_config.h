@@ -17,4 +17,7 @@ void setupConfigRoutes(AsyncWebServer* server, bool* restartApRequested, unsigne
 // Fonction pour traiter les reconnexions WiFi asynchrones (à appeler dans loop())
 void processWifiReconnectIfNeeded();
 
+// bug-112 : annonce les refus de corps occultés (loop() uniquement, WARNING).
+void drainConfigUnauthWarnLogs();
+
 #endif // WEB_ROUTES_CONFIG_H

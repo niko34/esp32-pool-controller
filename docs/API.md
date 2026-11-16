@@ -3762,7 +3762,7 @@ L'UI page `/ph` (chip d'état sonde) utilise cet endpoint via le bouton « Rafra
 
 ### `POST /debug/sensor_filter_reset?sensor=ph|orp` — CRITICAL (⚠️ **changement en v2.20.3**)
 
-> ⚠️ **Cette route n'est plus ouverte.** Jusqu'en v2.20.2 elle était accessible **sans authentification**, comme les autres `/debug/*`. Elle effectue exactement la même action destructrice que [`POST /reset-sensor-filter`](#post-reset-sensor-filter--critical) (effacement de la détection de sonde figée) et contournait donc toutes les gardes posées sur celle-ci : elle exige désormais `RouteProtection::CRITICAL`. Les routes `/debug/*` voisines (`ph_slope_refresh`, `sensor_filter_state`, `sensor_trace`, `sensor_trace_clear`) restent **sans auth**.
+> ⚠️ **Cette route n'est plus ouverte.** Jusqu'en v2.20.2 elle était accessible **sans authentification**, comme les autres `/debug/*`. Elle effectue exactement la même action destructrice que [`POST /reset-sensor-filter`](#post-reset-sensor-filter--critical) (effacement de la détection de sonde figée) et contournait donc toutes les gardes posées sur celle-ci : elle exige désormais `RouteProtection::CRITICAL`. Les routes `/debug/*` voisines `ph_slope_refresh`, `sensor_filter_state` et `sensor_trace` restent **sans auth** ; `sensor_trace_clear` exige désormais `WRITE` (v2.89.1, `bug-112`, voir ci-dessous).
 >
 > ⚠️ **État depuis la refonte de la chaîne de mesure (feature-152, v2.68.0)** : même situation que `POST /reset-sensor-filter` — la route reste fonctionnelle mais n'a plus de raison d'être qui la justifierait seule (plus de verrou collant à casser), elle reste un usage de diagnostic. Voir [`docs/subsystems/sensors.md`](subsystems/sensors.md#chaîne-de-mesure-à-5-étages-feature-152).
 
@@ -3894,13 +3894,17 @@ curl "http://poolcontroller.local/debug/sensor_trace?offset=0&count=50"
 
 Usage : diagnostiquer le **bruit** ou une **oscillation** de la chaîne de mesure en comparant brut, médiane et lissé sur une fenêtre continue, depuis l'onglet **Avancé** — l'UI agrège les pages de façon transparente (voir [`docs/features/page-settings.md`](features/page-settings.md#card-signaux-capteurs-feature-153-v2690)).
 
-### `POST /debug/sensor_trace_clear` — pas d'auth (cohérent avec autres `/debug/*`)
+### `POST /debug/sensor_trace_clear` — WRITE (⚠️ **changement en v2.89.1**)
 
 Vide le ring buffer (démarre une fenêtre d'observation propre).
 
+> ⚠️ **Cette route n'est plus ouverte** (`bug-112`). Elle était sans authentification et journalisait un INFO persisté par requête : un client anonyme purgeait le journal. Elle exige `RouteProtection::WRITE`. Choix : **authentifier plutôt que borner** — ce n'est pas un refus d'authentification, et l'action efface une fenêtre de diagnostic que l'opérateur observe. L'interface l'appelait déjà via `authFetch` ; seul un `curl` sans jeton est impacté.
+
 ```bash
-curl -X POST http://poolcontroller.local/debug/sensor_trace_clear
+curl -X POST -H "X-Auth-Token: <jeton>" http://poolcontroller.local/debug/sensor_trace_clear
 ```
+
+**Erreurs** : `401` si non authentifié.
 
 **Réponse 200**
 

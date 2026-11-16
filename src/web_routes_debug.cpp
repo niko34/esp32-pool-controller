@@ -97,7 +97,15 @@ void setupDebugRoutes(AsyncWebServer* server) {
 
   // ---------- POST /debug/sensor_trace_clear ----------
   // feature-057 : vide le ring buffer de trace (démarre une fenêtre propre).
+  // bug-112 : REQUIRE_AUTH(WRITE) posé. Cette route était SANS authentification et
+  // journalisait un INFO persisté par requête : un client anonyme purgeait le
+  // journal (aucun quota ne s'appliquait). Choix de l'authentification plutôt que
+  // d'un site de throttle : ce n'est pas un refus d'authentification (un site
+  // l'aurait annoncé comme tel) et l'action efface l'état d'une fenêtre de diagnostic
+  // que l'opérateur observe — elle n'a pas à être ouverte. Le frontend l'appelle déjà
+  // via authFetch ; seul un `curl` sans jeton est impacté.
   server->on("/debug/sensor_trace_clear", HTTP_POST, [](AsyncWebServerRequest* req) {
+    REQUIRE_AUTH(req, RouteProtection::WRITE);
     sensors.clearSensorTrace();
     systemLogger.info("[Debug] Trace capteur vidée");
     req->send(200, "application/json", "{\"success\":true}");

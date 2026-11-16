@@ -5,6 +5,7 @@
 #include "ota_version_request_logic.h"  // feature-151 D3-b2 : liaison version (journal seulement)
 #include "constants.h"
 #include "auth.h"
+#include "auth_log_throttle_site.h"  // bug-112 : recul exponentiel du WARN de refus (PUR)
 #include "logger.h"
 #include "version.h"
 #include "pump_controller.h"
@@ -393,46 +394,45 @@ static String otaClientIpOf(AsyncWebServerRequest* request) {
   return request->client()->remoteIP().toString();
 }
 
-// Journalisation THROTTLÉE du refus (1 WARN/min pour ce site).
+// Journalisation THROTTLÉE du refus (recul exponentiel, bug-112 ; module pur
+// auth_log_throttle_logic.h, constantes kUnauthWarn* de constants.h).
 // MOTIF : le quota kMaxRequestsPerMinute ne borne PAS cet émetteur — checkRateLimit()
 // est appelé par checkAuth() dans le handler de REQUÊTE, donc APRÈS l'upload ; le
 // handler d'upload tourne pour chaque requête reçue, quota dépassé ou non. Sans
 // throttle, un émetteur non authentifié purge les 6 144 o conservés du journal
-// (kRotateKeepBytes, logger.h:50-51) en ~27 requêtes soit ~13 s, effaçant la fenêtre
-// forensique dont dépend bug-080.
-// ⚠️ MOTIF SUREVALUÉ — corrigé après revue (2026-09-07) : ce throttle réduit la
-// pression, il ne la supprime PAS. sendAuthRequired() (auth.cpp:234) émet déjà, dans
-// le lambda de réponse, UN WARN NON THROTTLÉ par requête sur cette route. La fenêtre
-// forensique reste donc purgeable sans authentification, et ce throttle-ci n'y change
-// rien à lui seul. Le sujet est l'émetteur GÉNÉRIQUE : voir bug-112. Ne pas conclure
-// de la présence de ce throttle que le vecteur est fermé.
-// Seuil RÉUTILISÉ tel quel : kCalibrationAuthWarnThrottleMs (60 s). Même valeur, même
-// motif et même chiffrage documenté dans constants.h — introduire une constante jumelle
-// n'aurait fait que dupliquer la démonstration. Le nom mériterait d'être généralisé
-// (kBodyAuthWarnThrottleMs) le jour où constants.h sera rouvert.
+// (kRotateKeepBytes) en ~27 requêtes soit ~13 s, effaçant la fenêtre forensique
+// dont dépend bug-080.
+// ÉTAT PROPRE À CE SITE (condition P1) : un 401 quelconque (sendAuthRequired, état
+// distinct dans auth.cpp) ne masque jamais « POST /update non authentifié ».
 // INVARIANT : quand le site est muet, AUCUNE String n'est construite — sortie avant
 // toute concaténation. Ce chemin est atteignable sans authentification.
-static void logUnauthorizedOtaUpload(AsyncWebServerRequest* request) {
-  static unsigned long lastWarnMs = 0;
-  static uint16_t suppressedCount = 0;
+// Statique PRIVÉE à cette unité ; seul drainOtaUnauthWarnLogs() est exporté.
+static AuthLogThrottleSite gOtaAuthSite;
 
-  const unsigned long now = millis();
-  // lastWarnMs == 0 == « jamais journalisé » : sans ce cas, la première tentative des
-  // 60 premières secondes de vie de l'appareil serait avalée. La comparaison par
-  // soustraction non signée reste immunisée au repliement de millis() (49,7 j).
-  if (lastWarnMs != 0 && (now - lastWarnMs) < kCalibrationAuthWarnThrottleMs) {
-    if (suppressedCount < UINT16_MAX) suppressedCount++;
-    return;  // MUET : zéro allocation
-  }
+static void logUnauthorizedOtaUpload(AsyncWebServerRequest* request) {
+  const bool hasClient = (request != nullptr && request->client() != nullptr);
+  const uint32_t ip = hasClient ? static_cast<uint32_t>(request->client()->remoteIP()) : 0;
+  const AuthLogSiteReport r = authLogSiteAttempt(gOtaAuthSite, millis(), 0, ip, kUnauthWarnThrottleMs,
+                                                 kUnauthWarnMaxShift, kUnauthWarnDecayMs);
+  if (!r.emit) return;  // MUET : zéro allocation
 
   String msg = String("[OTA] POST /update NON AUTHENTIFIÉ depuis ") + otaClientIpOf(request) +
                " — upload ignoré (aucun Update.begin(), aucune écriture de partition)";
-  if (suppressedCount > 0) {
-    msg += " ; et " + String(suppressedCount) + " tentatives non journalisées";
-    suppressedCount = 0;
+  if (r.occulted > 0) {
+    msg += String(" ; et ") + String(r.occulted) + " " +
+           authLogThrottlePlural(r.occulted, "tentative non journalisée", "tentatives non journalisées");
   }
   systemLogger.warning(msg);
-  lastWarnMs = now;
+}
+
+// Drain (loop uniquement), borné par le même recul que l'émission.
+void drainOtaUnauthWarnLogs() {
+  const AuthLogSiteReport r = authLogSiteDrain(gOtaAuthSite, millis(), kUnauthWarnThrottleMs,
+                                               kUnauthWarnMaxShift, kUnauthWarnDrainQuietMs);
+  if (!r.emit) return;
+  systemLogger.warning(String("[OTA] POST /update : ") + String(r.occulted) + " " +
+                       authLogThrottlePlural(r.occulted, "tentative non authentifiée non journalisée",
+                                             "tentatives non authentifiées non journalisées"));
 }
 
 // feature-118 lot B : trace, pour CHAQUE requête d'upload, le verdict que le
