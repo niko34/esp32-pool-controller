@@ -21,7 +21,12 @@ constexpr uint8_t kPumpPhPin               = 25;  // Pompe doseuse pH (PWM via l
 constexpr uint8_t kFiltrationRelayPin      = 26;  // Relais filtration (actif haut)
 constexpr uint8_t kLightingRelayPin        = 27;  // Relais éclairage (actif haut)
 constexpr uint8_t kPumpOrpPin              = 33;  // Pompe doseuse ORP/chlore (PWM via ledc)
-constexpr uint8_t kFactoryResetButtonPin   = 35;  // Bouton factory reset (input-only, pull-up externe 10kΩ — actif bas)
+// ⚠️ ACTIF HAUT : au repos la broche lit LOW, appuyé elle lit HIGH — c'est ce que fait
+// main.cpp (`digitalRead(...) == HIGH`), et le comportement est CONFIRMÉ sur la carte
+// (utilisateur, 2026-11-16). Le commentaire disait « pull-up externe 10 kΩ — actif bas » :
+// c'était FAUX et contredit par le code comme par le terrain. Ne pas réintroduire cette
+// mention sans l'avoir relue sur le schéma KiCad.
+constexpr uint8_t kFactoryResetButtonPin   = 35;  // Bouton factory reset (input-only, actif haut)
 
 // Pins réservés feature-future — déclarés mais pas de pinMode() actif dans cette feature
 constexpr uint8_t kRtcSqwPin               = 23;  // RTC DS3231 SQW (open-drain, INPUT_PULLUP attendu, future feature)
