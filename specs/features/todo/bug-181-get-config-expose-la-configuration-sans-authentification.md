@@ -2,10 +2,10 @@
 - **ID** : bug-181
 - **Slug** : get-config-expose-la-configuration-sans-authentification
 - **Type** : bug — 🔴 **sécurité applicative** (divulgation d'informations)
-- **Statut** : todo
+- **Statut** : todo — ⚠️ **périmètre réduit au seul `/wifi/status`** depuis le 2026-11-17
 - **Priorité** : normale
 - **Version cible** : 2.89.0
-- **Spec(s) liée(s)** : `bug-179`, `bug-180` (relevés dans la même campagne)
+- **Spec(s) liée(s)** : `bug-179`, `bug-180` (relevés dans la même campagne) · [`bug-185`](../done/bug-185-fenetre-de-premier-demarrage-ouverte-indefiniment.md) (a fermé `/get-config`) · [`bug-186`](bug-186-cinq-essais-de-premier-demarrage-non-prouves-sur-materiel.md) (porte l'essai D3)
 
 ## Domaines touchés
 - [ ] Capteurs · [ ] Régulation · [ ] Filtration / Éclairage
@@ -68,6 +68,31 @@ GET /wifi/status  (sans authentification)
 `web_routes_config.cpp`). ⛔ **Tout correctif qui ne traite qu'une des deux voies donne l'illusion
 d'avoir réglé le problème** — c'est le motif d'application partielle que ce projet documente déjà.
 
+## ⭐ MISE À JOUR DU 2026-11-17 — une moitié est fermée, l'autre NON
+
+`bug-185` (livrée en **2.93.0**, déployée le 2026-11-17) a fermé **`/get-config`**, et plus
+fortement que cette fiche ne le demandait : ⛔ **la route entière exige désormais une
+authentification** (`REQUIRE_AUTH(WRITE)`), au lieu d'une liste blanche champ par champ.
+
+**Mesuré sur l'appareil le 2026-11-17 :**
+```
+GET /get-config  sans jeton  -> 401   ✅ (était 200)
+GET /get-config  avec jeton  -> 200   ✅ inchangé
+GET /wifi/status sans jeton  -> 200   ⛔ SSID TOUJOURS EN CLAIR, en mode STA
+```
+
+⚠️ **La seconde voie du SSID reste ouverte** — exactement ce que cette fiche annonçait :
+« tout correctif qui ne traite qu'une des deux voies donne l'illusion d'avoir réglé le problème ».
+⛔ **Cette fiche RESTE en `todo`** pour ce seul motif.
+
+⇒ **Périmètre résiduel** : livrable **A2** uniquement (`/wifi/status`, SSID restreint au mode AP),
+plus ses tests. Les livrables A0/A1 sont **sans objet** pour `/get-config` : la route n'émet plus
+rien sans jeton, donc il n'y a plus de liste à tenir.
+
+⚠️ **Et le risque principal reste entier** : `/get-config` est désormais fermée **sans que le
+premier démarrage ait été rejoué sur un appareil neuf**. Le livrable **D3** de cette fiche est
+suivi dans [`bug-186`](bug-186-cinq-essais-de-premier-demarrage-non-prouves-sur-materiel.md).
+
 ## Comportement attendu
 1. ⛔ **Rien de sensible hors du bloc `isAuthenticated`.** Le non authentifié ne reçoit que le
    **strict nécessaire** au premier démarrage et à la page de login.
@@ -103,14 +128,14 @@ masquer deux champs. Les 114 autres sont émis dans tous les cas.
 - `docs/API.md`, `CHANGELOG.md`
 
 ## Livrables — check-list
-- [ ] A0 — ⭐ **Inventaire par LECTURE du frontend** : quels champs sont réellement nécessaires sans authentification
-- [ ] A1 — Tout le reste derrière `isAuthenticated` (**liste blanche** plutôt que liste noire)
-- [ ] A2 — `/wifi/status` : SSID restreint au **mode AP**
+- [~] A0 — ⭐ **sans objet pour `/get-config`** depuis `bug-185` (route entière authentifiée). Reste valable pour `/wifi/status`.
+- [x] A1 — ✅ **fait autrement** par `bug-185` : `/get-config` entière derrière l'authentification (mesuré 401 le 2026-11-17)
+- [ ] A2 — ⛔ **TOUJOURS OUVERT** — `/wifi/status` rend le SSID en clair sans jeton, en mode STA (mesuré le 2026-11-17). **C'est le seul motif qui maintient cette fiche en `todo`.**
 - [ ] A3 — Logique de décision en module **pur**, testable en natif
 - [ ] C1 — `docs/API.md` (contrat des deux routes), `CHANGELOG.md` (**changement de comportement**)
 - [ ] D1 — Suite native sur la décision d'exposition
 - [ ] D2 — Validation par MUTATION (⚠️ dont « un champ neuf est exposé par défaut » ⇒ doit tuer)
-- [ ] D3 — ⭐ **Essai de terrain : premier démarrage ET page de login fonctionnent toujours**
+- [ ] D3 — ⭐ **Essai de terrain** — ⚠️ **déplacé dans [`bug-186`](bug-186-cinq-essais-de-premier-demarrage-non-prouves-sur-materiel.md)**, repoussé par l'utilisateur au 2026-11-17 (appareil réinitialisé, horizon début 2027)
 
 ## ADR attendu ?
 - **Probable** : non — durcissement, sans alternative structurante. ⚠️ Sauf si l'inversion
