@@ -49,8 +49,9 @@
 // légitime passe. Pas de sendAuthRequired() ni de checkRateLimit() ici : une seule
 // réponse au client, un seul décompte de quota par requête.
 static bool calibrationBodyAuthorized(AsyncWebServerRequest* request) {
+  if (request == nullptr) return false;       // fail-closed (même garde qu'otaUploadAuthorized)
   if (!authManager.isEnabled()) return true;  // authentification désactivée
-  return authManager.checkTokenAuth(request) || authManager.checkBasicAuth(request);
+  return authManager.checkTokenAuth(request);
 }
 
 // IP d'origine, sans jamais déréférencer un client nul : le client peut avoir disparu

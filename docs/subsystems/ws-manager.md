@@ -137,7 +137,7 @@ Le `out.reserve(kWsSensorJsonReserveBytes = 2048)` de la String de `_buildSensor
 ## Authentification
 
 Le WebSocket exige un token valide. Architecture :
-1. Client appelle `GET /auth/token` (HTTP, avec Basic Auth) pour obtenir un token court.
+1. Client appelle `GET /auth/token` (HTTP, avec l'en-tête `X-Auth-Token` ; HTTP Basic est retiré depuis bug-184) pour obtenir un token court.
 2. Client ouvre `ws://.../ws?token=<token>` (ou envoie `{"type":"auth","token":"..."}` après connexion).
 3. `_authRegistry` (`WsClientRegistry<kWsRegistrySlots>`, [`ws_client_registry_logic.h`](../../src/ws_client_registry_logic.h)) garde les client IDs validés.
 4. Les messages des clients non authentifiés sont ignorés.

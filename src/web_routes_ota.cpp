@@ -336,55 +336,41 @@ static void remountUploadFsIfNeeded(bool afterFailure = true) {
 //
 // ÉQUIVALENCE avec REQUIRE_AUTH(CRITICAL) — dans les deux sens, sinon l'appareil
 // devient non déployable (l'OTA est son SEUL canal : pas de port série) :
-//   checkAuth(CRITICAL) accepte  ⇔  (jeton valide) OU (basic valide)
+//   checkAuth(CRITICAL) accepte  ⇔  jeton X-Auth-Token valide
+// (la voie HTTP Basic est RETIRÉE, bug-184 : une seule preuve d'identité)
 //     · l'exemption RouteProtection::NONE ne concerne pas /update ;
-//     · l'exemption « premier démarrage » de checkAuth() est bornée aux URL
-//       commençant par /save-config — elle n'a jamais couvert /update, donc son
-//       absence ici n'ajoute AUCUNE restriction (et l'ajouter serait un trou) ;
+//     · l'exemption « premier démarrage » de checkAuth() est bornée à l'URL EXACTE
+//       /save-config — elle n'a jamais couvert /update, donc son absence ici
+//       n'ajoute AUCUNE restriction (et l'ajouter serait un trou) ;
 //     · checkRateLimit() est volontairement absent (cf. ci-dessus) : il ne peut
 //       que REFUSER, jamais accepter — l'omettre élargit, ne restreint pas.
-//   Les deux méthodes que ota_update.sh peut employer passent donc la garde :
-//     · `curl -u admin:<mdp>`      → checkBasicAuth  → request->authenticate()
-//       lit _authorization, renseigné au PARSE DES EN-TÊTES ;
+//   ota_update.sh et l'interface web emploient le même chemin :
 //     · `curl -H 'X-Auth-Token: …'` → checkTokenAuth → request->getHeader(),
 //       lu dans _headers, renseigné au PARSE DES EN-TÊTES.
-//   L'interface web (data/app.js, xhr.setRequestHeader('X-Auth-Token')) emprunte
-//   le second chemin.
 //
 // DISPONIBILITÉ DES EN-TÊTES AU PREMIER FRAGMENT — vérifié sur ESPAsyncWebServer
-// 3.11.2 (le supposer ne suffisait pas) : _parseReqHeader() renseigne
-// _authorization/_authMethod et empile chaque en-tête dans _headers pendant
-// l'état PARSE_REQ_HEADERS ; _parseMultipartPostByte() → _handleUploadByte() ne
-// tourne qu'ensuite, et RIEN ne purge _headers avant la fin de la requête. Les
-// deux méthodes sont donc lisibles dès le fragment index == 0 et le restent
+// 3.11.2 (le supposer ne suffisait pas) : _parseReqHeader() empile chaque en-tête
+// dans _headers pendant l'état PARSE_REQ_HEADERS ; _parseMultipartPostByte() →
+// _handleUploadByte() ne tourne qu'ensuite, et RIEN ne purge _headers avant la fin
+// de la requête. L'en-tête est donc lisible dès le fragment index == 0 et le reste
 // jusqu'au fragment final. (Le commentaire « check if authenticated before
 // calling the upload » de WebRequest.cpp:738 n'est suivi d'AUCUN contrôle en
 // amont : la responsabilité est bien à notre charge.)
 //
-// ORDRE DES DEUX PRÉDICATS — inversé par rapport à checkAuth() (basic d'abord),
-// et le court-circuit hasHeader() est délibéré : cette garde s'exécute à CHAQUE
-// fragment (≈1000 fois pour un firmware de 1,5 Mo), or checkTokenAuth() émet
-// `systemLogger.debug("Aucun header X-Auth-Token trouvé")` quand l'en-tête est
-// absent — soit, pour un upload en authentification basique, une String
-// construite et un millier de lignes de journal PENDANT le flash. L'ensemble
-// accepté est identique : checkTokenAuth() ne peut retourner true QUE si
-// l'en-tête existe, donc « en-tête absent » ⇒ false dans les deux écritures.
+// COURT-CIRCUIT hasHeader() — délibéré : cette garde s'exécute à CHAQUE fragment
+// (≈1000 fois pour un firmware de 1,5 Mo), et sortir tout de suite évite autant
+// d'appels inutiles. ⚠️ Le MOTIF D'ORIGINE n'est plus valable : ce commentaire
+// invoquait un `systemLogger.debug(...)` émis par checkTokenAuth() quand l'en-tête
+// manque — ce journal a été SUPPRIMÉ par bug-112 (cf. src/auth.cpp, « debug
+// "aucun header" supprimé »). Le court-circuit est conservé pour son seul coût
+// évité, pas pour un journal qui n'existe plus. L'ensemble accepté est identique :
+// checkTokenAuth() ne peut retourner true QUE si l'en-tête existe.
+// ⚠️ La garde est réévaluée par fragment À DESSEIN (un pointeur réutilisé après
+// free accorderait l'auth) ; le retrait de Basic supprime en plus les 2 new char[]
+// de generateBasicHash qui étaient payés à chaque fragment.
 static bool otaUploadAuthorized(AsyncWebServerRequest* request) {
   if (request == nullptr) return false;                 // fail-closed
   if (!authManager.isEnabled()) return true;            // authentification désactivée
-  if (authManager.checkBasicAuth(request)) return true;  // curl -u admin:<mdp>
-  // Court-circuit STRICTEMENT équivalent : checkTokenAuth() ne lit que cet en-tête et
-  // refuse délibérément le paramètre d'URL (motifs écrits dans auth.cpp). Il évite la
-  // String de son systemLogger.debug() quand l'en-tête manque — ~1000 fragments par
-  // flash de 1,5 Mo.
-  // ⚠️ La justification initiale de l'ORDRE des prédicats était INVERSÉE (corrigée
-  // après revue, 2026-09-07) : authenticate() court-circuite déjà sur _authorization
-  // vide, donc le chemin JETON n'allouait rien de toute façon. C'est le chemin BASIC
-  // — celui d'ota_update.sh par défaut — qui paie generateBasicHash (2 new char[] +
-  // String) à CHAQUE fragment. Aucun ordre ne l'évite : la garde est réévaluée par
-  // fragment à dessein (un pointeur réutilisé après free accorderait l'auth).
-  // Allocations transitoires et LIFO, jugées non bloquantes en revue — mais c'est un
-  // coût assumé, pas un coût évité.
   if (!request->hasHeader("X-Auth-Token")) return false;
   return authManager.checkTokenAuth(request);            // curl -H 'X-Auth-Token: …'
 }

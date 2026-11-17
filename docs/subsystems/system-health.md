@@ -764,7 +764,7 @@ agrégée) ; les planchers `boot` ne se rattrapent pas.
 1. **Ligne de base, appareil au calme** (aucun navigateur ouvert) :
 
    ```bash
-   curl -s -u admin:MDP 'http://<ip>/get-system-info?hf=1' | python3 -m json.tool
+   curl -s -H "X-Auth-Token: $TOKEN" 'http://<ip>/get-system-info?hf=1' | python3 -m json.tool
    ```
 
    Vérifier d'abord **la validité de l'instrument** : `hf.n` > 0 (échantillons

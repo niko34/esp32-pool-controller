@@ -310,7 +310,7 @@ LightingMode parseLightingModeFrom(const String& raw);
 
 struct AuthConfig {
   bool enabled = true;            // Authentification activée/désactivée
-  String adminPassword = "admin"; // Mot de passe administrateur (HTTP Basic Auth)
+  String adminPassword = "admin"; // Mot de passe administrateur (POST /auth/login -> jeton ; HTTP Basic retiré, bug-184)
   String apiToken = "";           // Token API pour intégrations (généré au boot si vide)
   String apPassword = "";         // Mot de passe réseau WiFi AP (généré au premier boot si vide)
   bool forceWifiConfig = false;   // Forcer l'affichage du bouton Wi-Fi sur l'écran login

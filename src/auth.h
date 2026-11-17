@@ -69,9 +69,6 @@ public:
   // Vérification d'authentification
   bool checkAuth(AsyncWebServerRequest* req, RouteProtection level = RouteProtection::WRITE);
 
-  // HTTP Basic Auth
-  bool checkBasicAuth(AsyncWebServerRequest* req);
-
   // API Token Auth
   bool checkTokenAuth(AsyncWebServerRequest* req);
 

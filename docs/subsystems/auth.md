@@ -15,12 +15,21 @@ enum class RouteProtection {
 };
 ```
 
-## Mécanismes supportés
+## Mécanisme supporté : une seule preuve d'identité
 
-1. **HTTP Basic Auth** (`checkBasicAuth`) — header `Authorization: Basic base64(user:password)`.
-2. **API Token** (`checkTokenAuth`) — header `X-Auth-Token: <token>` uniquement (le query param `?token=...` est refusé, voir Cas limites).
+**API Token** (`checkTokenAuth`) — header `X-Auth-Token: <token>` uniquement (le query param `?token=...` est refusé, voir Cas limites). Un mot de passe s'échange contre ce jeton par `POST /auth/login`.
 
-Les routes CRITICAL exigent Basic Auth (pas le token), les routes WRITE acceptent l'un ou l'autre.
+⛔ **HTTP Basic a été retiré (bug-184, v2.92.0)** : `checkBasicAuth()` n'existe plus. La bibliothèque serveur comparait le Base64 reçu **sans tenir compte de la casse** (`WebAuthentication.cpp:24`) ; mesuré sur l'appareil, une casse inversée répondait `200`. Voir [ADR-0130](../adr/0130-l-appareil-n-accepte-que-le-jeton-pas-http-basic.md).
+
+⚠️ **Correction d'une phrase fausse de longue date** : ce fichier affirmait « les routes CRITICAL exigent Basic Auth (pas le token), les routes WRITE acceptent l'un ou l'autre ». C'était faux **avant** ce lot : `checkAuth()` n'a jamais distingué `WRITE` de `CRITICAL` dans le choix de la méthode. Le niveau ne change que la politique de quota et de journalisation.
+
+### Décision d'admission : module pur
+
+`checkAuth()` ne décide plus elle-même : elle collecte les faits (auth activée, premier démarrage, URL exacte `/save-config`, jeton valide, quota) et délègue à [`decideAdmission()`](../../src/auth_admission_logic.h) → `AuthVerdict{kAllow, kDenyUnauth, kDenyRateLimited}`. Testé en natif : `test/test_native_auth_admission/` (ADR-0017).
+
+**Exemption du premier démarrage** : elle porte sur l'URL **exacte** `/save-config` (elle portait sur le préfixe `startsWith("/save-config")`). Même resserrement dans `saveConfigBodyAuthorized()`, partagé avec `/tune-ph-offset` : avant bug-184, le premier démarrage ouvrait **aussi** l'écriture de l'offset pH à n'importe qui sur le réseau.
+
+⚠️ **Le premier démarrage n'est pas sûr pour autant** (ouvert, traité par [bug-185](../../specs/features/todo/bug-185-fenetre-de-premier-demarrage-ouverte-indefiniment.md)) : la fenêtre ne se referme que sur `/auth/complete-wizard`, et le jeton n'est **pas régénéré** au changement de mot de passe. De plus, le **corps** de `/save-config` est admis par `saveConfigBodyAuthorized()` avant tout décompte de quota : ne pas lire « `/save-config` est sous quota au premier démarrage ».
 
 ## Comparaison de token à temps constant (v2.11.2, feature-028)
 
@@ -84,7 +93,7 @@ Les refus d'authentification journalisent en `WARNING`, mais **de façon bornée
 - **Une tentative isolée reste journalisée.** Le 401/429 HTTP part toujours : seul le journal est borné.
 - **Contrat** : `sendRateLimitExceeded` ne journalise plus ; l'appelant (`checkRateLimit`) l'a déjà fait. `checkRateLimit` retourne `true` si `client()` est nul (non exploitable : sans connexion aucune réponse ne revient ; l'ancien code déréférençait nul).
 - **Chiffres** : pire cas **mesuré** 38 lignes/24 h par site, **342 (9 × 38)** pour neuf sites — somme de maxima mesurés, aucun scénario joint mesuré, aucun majorant établi (38 est le pire **trouvé**, un 39 reste possible) ⇒ le journal reste purgeable à vitesse lente, assumé.
-- **Garde CI** : `tools/check_unauth_log_guard.sh` (job `unauth-log-guard`), **cinq règles**, chacune validée par mutation : (1) aucun `systemLogger` dans la branche de refus d'une garde `if (!…Authorized(` de `web_routes_*.cpp` ; (2) aucun `systemLogger` entre l'en-tête d'un handler et sa garde ; (3) dans tout **lambda handler** de `web_routes_*.cpp`, un `systemLogger` ne vient qu'**après** un `REQUIRE_AUTH`, un `…Authorized(` ou un `checkAuth(` ; (4) aucun `systemLogger` dans `ws_manager.cpp::_onData` ni `_onClientConnect` ; (5) aucun `systemLogger` dans `checkAuth`, `checkTokenAuth`, `checkBasicAuth`, `checkRateLimit`, `sendAuthRequired`, `sendRateLimitExceeded`. ⚠️ **Limite** : la règle 3 ne juge que les lambdas — un lambda sans garde qui appelle une **fonction nommée** contenant un `systemLogger` n'est pas vu (juger aussi les fonctions nommées donnait 48 faux positifs dans `web_routes_ota.cpp`). Exemption unique : `AUTH-LOG-EXEMPT` sur l'INFO de `/auth/complete-wizard` (écrit une seule fois : `clearFirstBootFlag()` rend `isFirstBootDetected()` faux). Code : `auth_log_throttle_logic.h` (pur), `auth_log_throttle_site.h` (coquille atomique).
+- **Garde CI** : `tools/check_unauth_log_guard.sh` (job `unauth-log-guard`), **cinq règles**, chacune validée par mutation : (1) aucun `systemLogger` dans la branche de refus d'une garde `if (!…Authorized(` de `web_routes_*.cpp` ; (2) aucun `systemLogger` entre l'en-tête d'un handler et sa garde ; (3) dans tout **lambda handler** de `web_routes_*.cpp`, un `systemLogger` ne vient qu'**après** un `REQUIRE_AUTH`, un `…Authorized(` ou un `checkAuth(` ; (4) aucun `systemLogger` dans `ws_manager.cpp::_onData` ni `_onClientConnect` ; (5) aucun `systemLogger` dans `checkAuth`, `checkTokenAuth`, `checkRateLimit`, `sendAuthRequired`, `sendRateLimitExceeded`. ⚠️ **Limite** : la règle 3 ne juge que les lambdas — un lambda sans garde qui appelle une **fonction nommée** contenant un `systemLogger` n'est pas vu (juger aussi les fonctions nommées donnait 48 faux positifs dans `web_routes_ota.cpp`). Exemption unique : `AUTH-LOG-EXEMPT` sur l'INFO de `/auth/complete-wizard` (écrit une seule fois : `clearFirstBootFlag()` rend `isFirstBootDetected()` faux). Code : `auth_log_throttle_logic.h` (pur), `auth_log_throttle_site.h` (coquille atomique).
 
 ## Premier démarrage
 
@@ -103,7 +112,7 @@ Flag `isFirstBoot = true` quand le mot de passe admin est encore celui par défa
 |----------|------|
 | `POST /auth/login` | Vérifie les creds, retourne un token API |
 | `GET /auth/status` | État courant (enabled, firstBoot) |
-| `GET /auth/token` | Obtient le token API (Basic Auth requis) |
+| `GET /auth/token` | Obtient le token API (CRITICAL : exige déjà un jeton valide ; sert à relire un jeton connu, pas à en récupérer un perdu) |
 | `POST /auth/change-password` | Change le mot de passe admin |
 | `POST /auth/regenerate-token` | Génère un nouveau token (invalide l'ancien) |
 | `POST /auth/complete-wizard` | Marque la fin de l'onboarding premier démarrage |
@@ -126,12 +135,12 @@ server->on("/save-config", HTTP_POST, [](AsyncWebServerRequest* req) {
 
 ## Stockage du mot de passe
 
-Le mot de passe est hashé (voir `setPassword()` dans [`auth.cpp`](../../src/auth.cpp)) et persisté en NVS. Il n'est **jamais** renvoyé par l'API.
+⚠️ Le mot de passe est stocké **en clair** en NVS : `setPassword()` ([`auth.cpp:147`](../../src/auth.cpp:147)) fait `adminPassword = pwd;` sans aucune transformation, et `config.cpp` l'écrit tel quel (`prefs.putString("auth_password", …)`). Il n'est **jamais** renvoyé par l'API (`"******"`). (Une version antérieure de ce fichier affirmait à tort qu'il était hashé.)
 
 ## Cas limites
 
 - **Auth désactivée** (`authEnabled = false`) : toutes les routes sont accessibles sans creds — déconseillé, mais possible pour debug local.
-- **Token perdu** : l'utilisateur doit `POST /auth/regenerate-token` (Basic Auth).
+- **Token perdu** : `POST /auth/regenerate-token` est `CRITICAL` ([`web_routes_auth.cpp:165`](../../src/web_routes_auth.cpp:165)) : **elle exige le jeton qu'on vient de perdre**, donc elle ne sert pas à le récupérer. ⚠️ Et il ne se retrouve **pas** dans l'interface non plus : **aucun écran de `data/` n'affiche le jeton** (vérifié le 2026-11-17). ⇒ Le **seul** chemin est `POST /auth/login` avec le mot de passe administrateur — donc hors premier démarrage, où cette route rend `403`. ⚠️ Sur un appareil en premier démarrage, le seul fournisseur de jeton est `POST /auth/change-password` (cf. [`bug-185`](../../specs/features/todo/bug-185-fenetre-de-premier-demarrage-ouverte-indefiniment.md)).
 - **Rate limit atteint** : réponse 429, pas de décompte de la requête elle-même.
 - **Token en query param** (`?token=...`) : **refusé** — seul le header `X-Auth-Token` est accepté (fuite via logs, historique navigateur, Referer).
 - **CORS** : mécanisme **retiré** en v2.11.2 — politique même-origine stricte, voir [ADR-0023](../adr/0023-politique-cors-retrait.md).

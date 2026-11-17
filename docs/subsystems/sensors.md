@@ -191,7 +191,7 @@ Les trois routes [`/calibrate_ph`, `/calibrate_orp`, `/calibrate_clear`](../API.
 
 [`src/web_routes_calibration.cpp:46`](../../src/web_routes_calibration.cpp:46) — appelée en **première instruction** des trois handlers de corps, avant tout `deserializeJson()` et avant tout `enqueue*()`.
 
-- **Prédicat identique à `checkAuth()` moins le rate limiting** : `authManager.isEnabled()` faux → autorisé ; sinon `checkTokenAuth() || checkBasicAuth()`. Toute requête que `REQUIRE_AUTH` accepterait est acceptée ici — **aucune calibration légitime n'est refusée** (vérifié dans les deux sens).
+- **Prédicat identique à `checkAuth()` moins le rate limiting** : `authManager.isEnabled()` faux → autorisé ; sinon `checkTokenAuth()` (HTTP Basic retiré, bug-184). Toute requête que `REQUIRE_AUTH` accepterait est acceptée ici — **aucune calibration légitime n'est refusée** (vérifié dans les deux sens).
 - **Pas de `checkRateLimit()` ni de `sendAuthRequired()` dans la garde** : une seule réponse au client, un seul décompte de quota par requête. C'est le handler de requête qui répond.
 - **Pas d'exemption `isFirstBootDetected()`**, contrairement au site de référence `/save-config` : aucune des trois routes n'appartient au flux de premier démarrage (l'interface les appelle via `authFetch` depuis la page Réglages ; `/calibrate_clear` n'a aucun appelant d'interface). L'exemption y serait un trou, pas une compatibilité.
 

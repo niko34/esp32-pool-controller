@@ -8,7 +8,7 @@
 | Priorité | **Haute** — deux défauts indépendants sur la seule porte d'entrée par mot de passe |
 | Version cible | à définir |
 | Relevé par | `security-reviewer`, 2026-11-16, passe P2 de [`bug-112`](../done/bug-112-journal-non-borne-sur-route-protegee.md) |
-| Specs liées | [`bug-112`](../done/bug-112-journal-non-borne-sur-route-protegee.md) (bornage du journal des refus), [`feature-172`](feature-172-retention-protegee-des-traces-de-securite.md) (rétention protégée) |
+| Specs liées | [`bug-112`](../done/bug-112-journal-non-borne-sur-route-protegee.md) (bornage du journal des refus), [`feature-172`](../todo/feature-172-retention-protegee-des-traces-de-securite.md) (rétention protégée) |
 
 ## Domaines touchés
 - [x] Web — routes HTTP / Authentification (`src/web_routes_auth.cpp`, `src/auth.*`)
@@ -35,6 +35,121 @@ Deux défauts **indépendants** sur `POST /auth/login`, la seule porte d'entrée
 ⚠️ **Portée réelle de l'attaque temporelle, à établir avant de dimensionner le correctif.** Sur un réseau local, la gigue réseau et l'ordonnancement FreeRTOS peuvent noyer l'écart, qui se compte en microsecondes. ⛔ Mais « probablement noyé » n'est pas un argument : le correctif coûte une ligne, la primitive existe, et l'écart se mesure. Le dimensionnement de l'attaque est un **objet d'étude de la spec**, pas une raison de ne rien faire.
 
 **Le premier défaut, lui, est sans ambiguïté.** `bug-112` vient de borner le journal des refus `401` pour qu'une trace survive. ⇒ Mais `/auth/login` ne produit **aucune** ligne à borner : un attaquant qui essaie des mots de passe ne laisse rien derrière lui, et le quota de `checkRateLimit` le ralentit sans jamais le **nommer**.
+
+## ✅ RELEVÉ DANS LE CODE COURANT — 2026-11-17 (⚠️ 3 ajouts, dont un qui change le correctif)
+
+⚠️ **Vérification faite AVANT de traiter la fiche**, à la demande de l'utilisateur (*« l'application
+a évolué »*). Résultat : **les affirmations de la fiche tiennent**, numéro de ligne `:58` compris.
+⇒ Mais elle est **incomplète** sur trois points.
+
+### ✅ Confirmé tel quel
+| Affirmation | État au 2026-11-17 |
+|---|---|
+| `web_routes_auth.cpp:58` : `username != "admin" \|\| password != authManager.getPassword()` | ✅ **exact**, ligne inchangée |
+| Aucun journal sur échec de connexion | ✅ **exact** — un seul `systemLogger` dans tout le fichier (`:214`), sans rapport |
+| `secureTokenEquals()` existe | ✅ `auth.h:59` / `auth.cpp:88`, employé par `ws_manager.cpp:327` |
+| Le `403` premier démarrage est rendu **après** la vérification du mot de passe | ✅ `:64-67`, après le `401` de `:58` |
+| `checkRateLimit` s'applique | ✅ `:42` |
+| Coquille de bornage réemployable | ✅ `src/auth_log_throttle_site.h` (`AuthLogThrottleSite`) |
+
+### 🔴 AJOUT 1 — une SECONDE comparaison en temps variable, absente de la fiche
+`web_routes_auth.cpp:117` (route de **changement de mot de passe**) :
+```cpp
+if (currentPassword != authManager.getPassword()) {
+```
+⇒ Même défaut, même fichier, **non mentionné**. ⛔ Traiter `:58` seul laisserait la moitié du
+sujet ouvert. ℹ️ `:124` compare aussi `currentPassword != "admin"` au premier démarrage — ⛔ celui-ci
+ne fuit rien (valeur publique), **ne pas le « corriger » par symétrie**.
+
+### ⭐ AJOUT 2 — la primitive existe mais n'est PAS accessible
+La fiche dit « la primitive existe ». ⚠️ Précision : la vraie primitive générique est
+`constantTimeEquals(const String&, const String&)` — et elle est **`static`** dans `auth.cpp:77`,
+donc **invisible depuis `web_routes_auth.cpp`**. `secureTokenEquals()` n'en est qu'une enveloppe
+**figée sur `apiToken`** : ⛔ elle ne peut pas servir pour le mot de passe.
+⇒ Il faudra **exposer** une primitive (ex. `AuthManager::secureSecretEquals(a, b)`), pas en
+« réemployer » une telle quelle.
+
+### 🔴 AJOUT 3 — ET C'EST LE POINT QUI CHANGE LE CORRECTIF
+`constantTimeEquals` commence par :
+```cpp
+if (a.length() != b.length()) { return false; }
+```
+Sa justification est **écrite dans le code** (`auth.cpp:74-76`) :
+> *« La vérification de longueur en amont est acceptable : **la longueur du token n'est pas
+> secrète** (format fixe, 32 caractères hexadécimaux). »*
+
+⛔ **Ce raisonnement est VRAI pour le jeton et FAUX pour un mot de passe.** La longueur d'un mot de
+passe, elle, **est** un secret : ce retour anticipé la révèle par le temps de réponse. ⇒ Réemployer
+la primitive **telle quelle** sur le mot de passe introduirait une fuite que la fiche ne prévoit
+pas — alors qu'elle interdit par ailleurs, avec raison, de journaliser la longueur du mot de passe.
+
+⚠️ **Le correctif doit donc comparer en temps constant SANS sortie anticipée sur la longueur**
+(ex. hacher les deux côtés et comparer les empreintes, de longueur fixe). ⛔ Et la mesure exigée
+par le livrable **D3** doit inclure un essai **« mot de passe de longueur différente »**, pas
+seulement « faux au 1ᵉʳ octet » vs « faux au dernier ».
+
+### ⚠️ Conséquence sur la portée
+`bug-183` ne se referme pas sur `/auth/login` : il couvre **toute comparaison de secret en temps
+variable dans `web_routes_auth.cpp`**, et l'exposition d'une primitive sûre pour les secrets de
+**longueur variable**.
+
+## ⭐ AJOUT DU 2026-11-17 (après bug-184) — le mot de passe est stocké EN CLAIR
+
+**Vérifié dans le code courant, pas déduit** :
+- `AuthManager::setPassword()` (`src/auth.cpp`) fait `adminPassword = pwd;` — **aucune
+  transformation**. ⛔ Il n'existe **aucune** fonction `hashPassword()` dans `src/` (la
+  documentation en citait une : phrase supprimée par bug-184).
+- `src/config.cpp:395` : `prefs.putString("auth_password", authCfg.adminPassword);` ⇒ **le mot de
+  passe administrateur est écrit tel quel en NVS**.
+
+⇒ **Pourquoi c'est ICI et pas ailleurs** : le remède (stocker une **empreinte** au lieu du mot de
+passe) réécrit **exactement les mêmes lignes** que celles que cette fiche doit déjà corriger — les
+comparaisons de `/auth/login` (`:58`) et de `/auth/change-password` (`:117`). Les traiter dans deux
+lots séparés ferait réécrire deux fois le même code.
+
+⚠️ **Ce que ça NE résout PAS, et qu'il ne faut pas laisser croire** : une empreinte protège le mot
+de passe, ⛔ **pas** le jeton d'API, ⛔ pas le mot de passe Wi-Fi, ⛔ pas les identifiants MQTT —
+tous écrits en clair dans la même NVS. Celui qui a la puce en main les lit. ⇒ Ce qui couvrirait ces
+trois-là est le **chiffrement de la NVS**, un sujet distinct (⚠️ non ouvert à ce jour ;
+`security-reviewer` le recommande).
+
+ℹ️ Relevé par `security-reviewer` pendant la passe P2 de
+[`bug-184`](../done/bug-184-authentification-basic-accepte-un-mot-de-passe-qui-n-est-pas-le-bon.md),
+versé ici sur son avis.
+
+## 🔴 MESURÉ SUR L'APPAREIL LE 2026-11-17 (v2.92.0) — `GET /get-config` n'est PAS authentifiée
+
+⛔ **Relevé par hasard** en vérifiant `bug-184` sur l'appareil réel : `GET /get-config` répond
+**`200` sans aucun identifiant**.
+
+**Vérifié dans le code** : `src/web_routes_config.cpp:2411` —
+`server->on("/get-config", HTTP_GET, handleGetConfig);` ⇒ **ni `REQUIRE_AUTH`, ni `checkAuth`,
+ni `RouteProtection`**. Ce n'est pas une route déclarée publique : c'est une route **sans aucune
+garde**.
+
+⚠️ **Comparaison qui situe l'écart** : `GET /data` (les mesures) répond `401` sans jeton.
+⇒ La **configuration entière** est plus exposée que les **mesures**.
+
+**Ce qui sort, et ce qui ne sort pas** (mesuré, 116 champs) :
+- ✅ **Protégés** : le mot de passe administrateur, le mot de passe MQTT et le jeton d'API sont
+  **masqués** (`******`). ⛔ Aucune identification exploitable ne fuit.
+- 🔴 **Exposés** : le **nom du réseau Wi-Fi**, l'**identifiant de connexion MQTT**, le nom mDNS,
+  et **toute la configuration de régulation** — consignes pH/ORP, limites journalières et horaires,
+  débits de pompes, horaires de filtration, mode d'installation.
+  *(⛔ les valeurs réelles ne sont PAS recopiées ici : règle « jamais de SSID ni d'identifiant MQTT
+  dans le dépôt ».)*
+
+⇒ **Portée honnête** : ce n'est **pas** une prise de contrôle — c'est une **divulgation**. Elle
+dresse la carte complète de l'installation pour qui est sur le réseau local, **sans laisser la
+moindre trace** (aucune garde ⇒ aucun journal, aucun quota). ⚠️ Et elle **renseigne** l'attaquant
+avant les essais de mot de passe que cette fiche doit justement rendre visibles.
+
+⚠️ **À trancher, pas à corriger en silence** : l'interface web lit `/get-config` — ⛔ vérifier si
+elle le fait **avant** d'avoir un jeton (page de connexion, assistant). Si oui, la fermer d'un
+coup casserait l'ouverture de l'application.
+
+ℹ️ ⛔ **Sans rapport avec `bug-184`** : ce défaut existait avant et n'a pas été introduit par le
+retrait de HTTP Basic. Il est noté ici parce que c'est la même surface — l'admission des requêtes.
 
 ## Comportement actuel
 
@@ -122,6 +237,6 @@ Deux défauts **indépendants** sur `POST /auth/login`, la seule porte d'entrée
 
 ## Hors périmètre
 
-- La rétention séparée des traces de sécurité → [`feature-172`](feature-172-retention-protegee-des-traces-de-securite.md).
+- La rétention séparée des traces de sécurité → [`feature-172`](../todo/feature-172-retention-protegee-des-traces-de-securite.md).
 - `rateLimitMap` : allocation par requête non authentifiée et absence de plafond dur → `feature-131`.
-- Les autres routes sans authentification → [`bug-181`](bug-181-get-config-expose-la-configuration-sans-authentification.md), [`feature-070`](feature-070-durcissement-routes-debug-et-cooldown-reset.md).
+- Les autres routes sans authentification → [`bug-181`](../todo/bug-181-get-config-expose-la-configuration-sans-authentification.md), [`feature-070`](../todo/feature-070-durcissement-routes-debug-et-cooldown-reset.md).

@@ -18,8 +18,10 @@
 #      REQUIRE_AUTH / `…Authorized(` / `checkAuth(` du même handler — c'est la règle
 #      qui attrape les sites NEUFS (route sans aucune garde) ;
 #  (4) ws_manager.cpp : AUCUN systemLogger dans _onData et _onClientConnect ;
-#  (5) auth.cpp : AUCUN systemLogger dans checkAuth, checkTokenAuth, checkBasicAuth,
+#  (5) auth.cpp : AUCUN systemLogger dans checkAuth, checkTokenAuth,
 #      checkRateLimit, sendAuthRequired, sendRateLimitExceeded.
+#      (checkBasicAuth RETIRÉE du firmware par bug-184 : la voie HTTP Basic
+#       n'existe plus, donc plus rien à garder de ce côté.)
 # La journalisation passe par la coquille AuthLogThrottleSite (helpers dédiés).
 # Sortie 0 = sain, 1 = violation.
 # =============================================================================
@@ -106,7 +108,7 @@ for name in ('WsManager::_onData', 'WsManager::_onClientConnect'):
 
 # --- règle (5)
 L = load('src/auth.cpp')
-for name in ('AuthManager::checkAuth', 'AuthManager::checkTokenAuth', 'AuthManager::checkBasicAuth',
+for name in ('AuthManager::checkAuth', 'AuthManager::checkTokenAuth',
              'AuthManager::checkRateLimit', 'AuthManager::sendAuthRequired',
              'AuthManager::sendRateLimitExceeded'):
     r = func_body(L, name)

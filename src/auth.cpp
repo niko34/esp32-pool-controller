@@ -3,6 +3,7 @@
 #include "config.h"
 #include <esp_random.h>
 #include "auth_log_throttle_site.h"
+#include "auth_admission_logic.h"
 
 // ---------------------------------------------------------------------------
 // Bornage du journal des refus d'authentification (bug-112)
@@ -125,7 +126,7 @@ void AuthManager::begin() {
   }
 
   if (authEnabled) {
-    systemLogger.info("Authentification activée (HTTP Basic + API Token)");
+    systemLogger.info("Authentification activée (API Token X-Auth-Token uniquement)");
   } else {
     systemLogger.warning("Authentification désactivée - Mode ouvert !");
   }
@@ -164,14 +165,6 @@ void AuthManager::regenerateApiToken() {
   // SÉCURITÉ: Ne jamais logger le token complet
   String maskedToken = apiToken.length() > 8 ? (apiToken.substring(0, 8) + "...") : "***";
   systemLogger.info("Nouveau API Token généré: " + maskedToken);
-}
-
-bool AuthManager::checkBasicAuth(AsyncWebServerRequest* req) {
-  // Vérifier HTTP Basic Auth
-  if (!req->authenticate("admin", adminPassword.c_str())) {
-    return false;
-  }
-  return true;
 }
 
 bool AuthManager::checkTokenAuth(AsyncWebServerRequest* req) {
@@ -262,37 +255,40 @@ void AuthManager::cleanupRateLimitMap() {
 }
 
 bool AuthManager::checkAuth(AsyncWebServerRequest* req, RouteProtection level) {
-  // Si l'authentification est désactivée, autoriser
-  if (!authEnabled) {
-    return true;
+  // Collecte des faits ; la décision est dans le module pur (bug-184).
+  AuthAdmissionInput in{};
+  in.authEnabled = authEnabled;
+  in.publicRoute = (level == RouteProtection::NONE);
+  in.firstBoot = isFirstBoot;
+  // URL comparée EXACTEMENT (plus de startsWith) : l'exemption de l'assistant ne
+  // couvre que /save-config, pas /save-config-quelquechose.
+  in.isSaveConfigUrl = (req->url() == "/save-config");
+  // Le quota n'est consommé que si la décision l'atteint (auth active, route
+  // protégée) ; il passe AVANT l'exemption de l'assistant.
+  // ⚠️ PORTÉE EXACTE, à ne pas surestimer : cela borne les requêtes qui passent
+  // PAR checkAuth(). Le CORPS de /save-config, lui, est admis plus tôt, par
+  // saveConfigBodyAuthorized() (web_routes_config.cpp), qui ne consulte aucun
+  // quota pendant le premier démarrage. ⛔ Donc : « /save-config est désormais
+  // sous quota au premier démarrage » serait FAUX.
+  in.rateLimitOk = (!in.authEnabled || in.publicRoute) ? true : checkRateLimit(req);
+  // ⚠️ Ces gardes REFLÈTENT l'« ORDRE IMPOSÉ » déclaré en tête de
+  // auth_admission_logic.h : elles n'évaluent un fait que si la décision peut
+  // encore l'atteindre, pour ne pas payer un calcul inutile. ⛔ Si cet ordre
+  // changeait dans le header, elles fourniraient SILENCIEUSEMENT false — les
+  // deux doivent bouger ensemble.
+  in.tokenValid = (in.authEnabled && !in.publicRoute && in.rateLimitOk) ? checkTokenAuth(req) : false;
+
+  switch (decideAdmission(in)) {
+    case AuthVerdict::kAllow:
+      return true;
+    case AuthVerdict::kDenyRateLimited:
+      sendRateLimitExceeded(req);  // le journal borné a déjà été écrit par checkRateLimit()
+      return false;
+    case AuthVerdict::kDenyUnauth:
+    default:
+      sendAuthRequired(req);  // journal borné (gUnauthSite) + 401
+      return false;
   }
-
-  // Les routes publiques ne nécessitent pas d'auth
-  if (level == RouteProtection::NONE) {
-    return true;
-  }
-
-  // Si premier démarrage (wizard en cours), autoriser l'accès à /save-config
-  // car l'utilisateur configure le système pour la première fois
-  if (isFirstBoot && String(req->url()).startsWith("/save-config")) {
-    return true;
-  }
-
-  // Vérifier le rate limiting d'abord (même pour les requêtes authentifiées)
-  if (!checkRateLimit(req)) {
-    sendRateLimitExceeded(req);
-    return false;
-  }
-
-  // Vérifier l'authentification (Token en priorité, puis Basic Auth)
-  bool authenticated = checkTokenAuth(req) || checkBasicAuth(req);
-
-  if (!authenticated) {
-    sendAuthRequired(req);
-    return false;
-  }
-
-  return true;
 }
 
 void AuthManager::sendAuthRequired(AsyncWebServerRequest* req) {

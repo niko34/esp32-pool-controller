@@ -4,21 +4,25 @@
 
 Tous les endpoints nécessitent une authentification sauf ceux marqués **public**.
 
-### Méthodes d'Authentification
+### Méthode d'authentification
 
-#### HTTP Basic Auth
-
-```bash
-curl -u admin:monmotdepasse http://poolcontroller.local/get-config
-```
-
-#### Token API (header)
+Il n'existe **qu'une seule** preuve d'identité : l'en-tête `X-Auth-Token`.
 
 ```bash
 curl -H "X-Auth-Token: abc123def456..." http://poolcontroller.local/get-config
 ```
 
-Le token API est généré automatiquement au premier démarrage. Il est visible dans **Paramètres → Système → Token API** et peut être régénéré via `/auth/regenerate-token`.
+⚠️ **HTTP Basic est retiré (bug-184, v2.92.0).** `curl -u admin:motdepasse ...` est refusé (`401`) : la bibliothèque serveur comparait le contenu Base64 sans tenir compte de la casse, donc un mot de passe à la casse inversée pouvait être accepté (voir [ADR-0130](adr/0130-l-appareil-n-accepte-que-le-jeton-pas-http-basic.md)). Tout script qui utilisait `-u` doit échanger son mot de passe contre un jeton :
+
+```bash
+TOKEN=$(curl -s -X POST -H "Content-Type: application/json" \
+  -d '{"username":"admin","password":"monmotdepasse"}' \
+  http://poolcontroller.local/auth/login | jq -r .token)
+```
+
+Les exemples de ce document supposent `$TOKEN` défini ainsi. Le jeton est généré au premier démarrage et **régénéré uniquement par `POST /auth/regenerate-token`**. ⚠️ **Il n'est affiché nulle part dans l'interface web** (vérifié le 2026-11-17) : `POST /auth/login` est le **seul** moyen de l'obtenir.
+
+> ⚠️ Premier démarrage : tant que l'assistant n'est pas terminé, la fenêtre de configuration initiale reste ouverte et le jeton n'est pas régénéré au changement de mot de passe — voir [bug-185](../specs/features/todo/bug-185-fenetre-de-premier-demarrage-ouverte-indefiniment.md). L'exemption porte désormais sur l'URL **exacte** `/save-config` (plus sur tout préfixe) ; elle n'ouvre plus `/tune-ph-offset`.
 
 ### Niveaux de protection
 
@@ -255,10 +259,10 @@ curl -X POST http://poolcontroller.local/auth/complete-wizard
 
 ### GET /auth/token — CRITICAL
 
-Retourne le token API courant.
+Retourne le token API courant. `CRITICAL` : exige déjà un jeton valide (relecture, pas récupération).
 
 ```bash
-curl -u admin:monmotdepasse http://poolcontroller.local/auth/token
+curl -H "X-Auth-Token: $TOKEN" http://poolcontroller.local/auth/token
 ```
 
 ```json
@@ -271,8 +275,10 @@ curl -u admin:monmotdepasse http://poolcontroller.local/auth/token
 
 Régénère un nouveau token API (invalide l'ancien).
 
+⚠️ Route `CRITICAL` : elle **exige le jeton actuel**. ⇒ Un jeton perdu ne se récupère **pas** ici. Le seul chemin est `POST /auth/login` avec le mot de passe administrateur.
+
 ```bash
-curl -u admin:monmotdepasse -X POST http://poolcontroller.local/auth/regenerate-token
+curl -H "X-Auth-Token: $TOKEN" -X POST http://poolcontroller.local/auth/regenerate-token
 ```
 
 ```json
@@ -290,7 +296,7 @@ curl -u admin:monmotdepasse -X POST http://poolcontroller.local/auth/regenerate-
 Retourne le mot de passe WiFi du point d'accès `PoolControllerAP`. Utile si l'étiquette collée sur le boîtier est illisible ou perdue.
 
 ```bash
-curl -u admin:monmotdepasse http://poolcontroller.local/auth/ap-password
+curl -H "X-Auth-Token: $TOKEN" http://poolcontroller.local/auth/ap-password
 ```
 
 ```json
@@ -311,7 +317,7 @@ curl -u admin:monmotdepasse http://poolcontroller.local/auth/ap-password
 Retourne les valeurs actuelles des capteurs.
 
 ```bash
-curl -u admin:monmotdepasse http://poolcontroller.local/data
+curl -H "X-Auth-Token: $TOKEN" http://poolcontroller.local/data
 ```
 
 ```json
@@ -621,7 +627,7 @@ du dosage (coupée dès l'entrée, et le restant immédiatement visible via `phR
 Retourne l'historique des mesures.
 
 ```bash
-curl -u admin:monmotdepasse "http://poolcontroller.local/get-history?range=24h"
+curl -H "X-Auth-Token: $TOKEN" "http://poolcontroller.local/get-history?range=24h"
 ```
 
 Paramètre `range` : `24h` (défaut), `3d`, `7d`, `30d`, `all`. Une valeur **inconnue** est traitée comme `all` — et depuis la v2.14.0, seul le **token reconnu** est échoé dans le champ `range` de la réponse (jamais la valeur brute du client, qui pourrait malformer le JSON).
@@ -700,7 +706,7 @@ Mémoire **7 jours** du [temps d'atteinte de cible](subsystems/time-to-target.md
 **Authentification** : `RouteProtection::WRITE` — la **même classe que `/data`**. `NONE` exposerait sans authentification le comportement du bassin (heures de circulation, réactivité de la régulation, jours de maintenance) et rejouerait bug-081.
 
 ```bash
-curl -u admin:monmotdepasse "http://poolcontroller.local/get-kpi"
+curl -H "X-Auth-Token: $TOKEN" "http://poolcontroller.local/get-kpi"
 ```
 
 **Réponse 200**
@@ -748,7 +754,7 @@ curl -u admin:monmotdepasse "http://poolcontroller.local/get-kpi"
 Efface tout l'historique des mesures.
 
 ```bash
-curl -u admin:monmotdepasse -X POST http://poolcontroller.local/history/clear
+curl -H "X-Auth-Token: $TOKEN" -X POST http://poolcontroller.local/history/clear
 ```
 
 ---
@@ -758,7 +764,7 @@ curl -u admin:monmotdepasse -X POST http://poolcontroller.local/history/clear
 Importe un lot de points d'historique.
 
 ```bash
-curl -u admin:monmotdepasse -X POST -H "Content-Type: application/json" \
+curl -H "X-Auth-Token: $TOKEN" -X POST -H "Content-Type: application/json" \
   -d '{"history":[{"timestamp":1700000000,"ph":7.2,"phFiltered":7.23,"orp":720,"orpFiltered":719,"temperature":24.5}]}' \
   http://poolcontroller.local/history/import
 ```
@@ -794,12 +800,12 @@ une reprise après coupure réseau sûre. Détail et motif :
 
 ```bash
 # lot 1 — repart de zéro
-curl -u admin:monmotdepasse -X POST -H "Content-Type: application/json" \
+curl -H "X-Auth-Token: $TOKEN" -X POST -H "Content-Type: application/json" \
   -d '{"mode":"replace","history":[{"timestamp":1700000000,"ph":7.2,"temperature":24.5}]}' \
   http://poolcontroller.local/history/import
 
 # lots suivants — s'ajoutent au précédent
-curl -u admin:monmotdepasse -X POST -H "Content-Type: application/json" \
+curl -H "X-Auth-Token: $TOKEN" -X POST -H "Content-Type: application/json" \
   -d '{"mode":"append","history":[{"timestamp":1700001800,"ph":7.3,"temperature":24.6}]}' \
   http://poolcontroller.local/history/import
 ```
@@ -926,8 +932,8 @@ tiers doit faire de même.
 Retourne les logs système par **pages bornées** (v2.10.4, [ADR-0032](adr/0032-reponses-http-bornees.md)). Paramètre optionnel `?since=TIMESTAMP` : ne retourne que les entrées dont le timestamp est **strictement supérieur** — c'est à la fois le curseur de pagination et le mécanisme de récupération incrémentale.
 
 ```bash
-curl -u admin:monmotdepasse http://poolcontroller.local/get-logs
-curl -u admin:monmotdepasse "http://poolcontroller.local/get-logs?since=14400000"
+curl -H "X-Auth-Token: $TOKEN" http://poolcontroller.local/get-logs
+curl -H "X-Auth-Token: $TOKEN" "http://poolcontroller.local/get-logs?since=14400000"
 ```
 
 ```json
@@ -969,7 +975,7 @@ curl -u admin:monmotdepasse "http://poolcontroller.local/get-logs?since=14400000
 Télécharge les logs système sous forme de fichier texte (`pool_logs.txt`).
 
 ```bash
-curl -u admin:monmotdepasse http://poolcontroller.local/download-logs -o pool_logs.txt
+curl -H "X-Auth-Token: $TOKEN" http://poolcontroller.local/download-logs -o pool_logs.txt
 ```
 
 ```
@@ -1010,7 +1016,7 @@ Limites assumées de l'export (best-effort, route de diagnostic) :
 Efface intégralement les logs côté ESP32 : buffer RAM circulaire, tampon de flush en attente, fichier persistant `/system.log` et son éventuel `.tmp` de rotation.
 
 ```bash
-curl -u admin:monmotdepasse -X DELETE http://poolcontroller.local/logs
+curl -H "X-Auth-Token: $TOKEN" -X DELETE http://poolcontroller.local/logs
 ```
 
 ```json
@@ -1030,7 +1036,7 @@ Une entrée `INFO : Logs effacés (RAM + fichier persistant)` est écrite imméd
 Retourne la configuration complète du système.
 
 ```bash
-curl -u admin:monmotdepasse http://poolcontroller.local/get-config
+curl -H "X-Auth-Token: $TOKEN" http://poolcontroller.local/get-config
 ```
 
 ```json
@@ -1235,7 +1241,7 @@ Six clés **en lecture seule** s'ajoutent aux 10 clés de suivi produit déjà s
 `orp_target` est validé **côté serveur** contre `kOrpTargetPlausibleMin` = **300 mV** et `kOrpTargetPlausibleMax` = **950 mV**, arrondie à l'entier (`kOrpTargetStep` = 1). **Mêmes bornes sur les deux chemins d'écriture** (`POST /save-config` et la commande MQTT `{base}/orp_target/set`, voir [MQTT.md](MQTT.md)) — avant ce lot, le chemin MQTT était **plus strict** ([400 ; 900], littéraux en dur), un resserrement sans justification propre : *une fenêtre resserrée interdirait la recalibration légitime après un changement de stabilisant (acide cyanurique)*.
 
 ```bash
-curl -u admin:monmotdepasse -X POST -H "Content-Type: application/json" \
+curl -H "X-Auth-Token: $TOKEN" -X POST -H "Content-Type: application/json" \
   -d '{"orp_target":200}' http://poolcontroller.local/save-config
 ```
 
@@ -1318,7 +1324,7 @@ Journal : pesée avec duty explicite → `INFO Pesée pompe N enregistrée : dut
 Sauvegarde la configuration complète. Corps JSON identique à la réponse de `/get-config`.
 
 ```bash
-curl -u admin:monmotdepasse -X POST -H "Content-Type: application/json" \
+curl -H "X-Auth-Token: $TOKEN" -X POST -H "Content-Type: application/json" \
   -d '{"ph_target":7.2,"orp_target":700}' \
   http://poolcontroller.local/save-config
 ```
@@ -1354,7 +1360,7 @@ Depuis la v2.25.0, le handler de **corps** vérifie l'authentification **avant**
 ⚠️ **Changement de contrat visible** : la borne haute passe de **7.60 à 7.50**. À 7.60 pile, la consigne atteindrait le seuil d'inhibition ORP (`kPhOrpInhibit`) et le chlore serait suspendu **en permanence** dès que la régulation tient sa consigne. Une installation persistée à 7.60 est clampée à 7.50 au premier démarrage, avec avertissement journalisé. Voir [ADR-0048](adr/0048-seuils-ph-fixes-derives-de-la-plage-de-consigne.md).
 
 ```bash
-curl -u admin:monmotdepasse -X POST -H "Content-Type: application/json" \
+curl -H "X-Auth-Token: $TOKEN" -X POST -H "Content-Type: application/json" \
   -d '{"ph_target":6.8}' http://poolcontroller.local/save-config
 ```
 
@@ -1424,11 +1430,11 @@ Acquitter puis réarmer (deux requêtes, patron de l'interface web) :
 
 ```bash
 # 1. Acquitter (efface la trace, reste en manuel)
-curl -u admin:monmotdepasse -X POST -H "Content-Type: application/json" \
+curl -H "X-Auth-Token: $TOKEN" -X POST -H "Content-Type: application/json" \
   -d '{"ph_auto_manual_ack":true}' http://poolcontroller.local/save-config
 
 # 2. Choisir le mode
-curl -u admin:monmotdepasse -X POST -H "Content-Type: application/json" \
+curl -H "X-Auth-Token: $TOKEN" -X POST -H "Content-Type: application/json" \
   -d '{"ph_regulation_mode":"automatic"}' http://poolcontroller.local/save-config
 ```
 
@@ -1511,7 +1517,7 @@ Même garde que `POST /save-config` : le corps est vérifié **en première inst
 **Corps vide** — aucune valeur ne transite par le client, donc **aucun parsing JSON** : les valeurs appliquées viennent exclusivement de la source unique [`src/regulation_defaults.h`](../src/regulation_defaults.h) et ne peuvent pas diverger de celles annoncées par l'objet `regulation_defaults` de `/get-config` (qui reflète la même colonne).
 
 ```bash
-curl -u admin:monmotdepasse -X POST http://poolcontroller.local/reset-regulation-defaults
+curl -H "X-Auth-Token: $TOKEN" -X POST http://poolcontroller.local/reset-regulation-defaults
 ```
 
 **Réponse 200** — les valeurs appliquées (mêmes clés que l'objet `regulation_defaults` de `/get-config`) :
@@ -1550,7 +1556,7 @@ curl -u admin:monmotdepasse -X POST http://poolcontroller.local/reset-regulation
 Retourne les informations système de l'ESP32.
 
 ```bash
-curl -u admin:monmotdepasse http://poolcontroller.local/get-system-info
+curl -H "X-Auth-Token: $TOKEN" http://poolcontroller.local/get-system-info
 ```
 
 ```json
@@ -1739,7 +1745,7 @@ firmware ne lit ces champs** — elles restent sur `MALLOC_CAP_INTERNAL|MALLOC_C
 (`0x0804`), cf. [ADR-0077](adr/0077-metrique-de-garde-exclut-les-pools-inatteignables.md).
 
 ```bash
-curl -s -u admin:monmotdepasse 'http://poolcontroller.local/get-system-info?hf=1'
+curl -s -H "X-Auth-Token: $TOKEN" 'http://poolcontroller.local/get-system-info?hf=1'
 ```
 
 **Pourquoi un paramètre et pas un ajout inconditionnel** : la réponse est
@@ -2010,7 +2016,7 @@ aucune décision du firmware ne les relit :
 Retourne l'heure système courante.
 
 ```bash
-curl -u admin:monmotdepasse http://poolcontroller.local/time-now
+curl -H "X-Auth-Token: $TOKEN" http://poolcontroller.local/time-now
 ```
 
 ```json
@@ -2096,7 +2102,7 @@ et un SSID UTF-8 pathologique y serait refusé.
 Déconnecte du WiFi et efface les credentials.
 
 ```bash
-curl -u admin:monmotdepasse -X POST http://poolcontroller.local/wifi/disconnect
+curl -H "X-Auth-Token: $TOKEN" -X POST http://poolcontroller.local/wifi/disconnect
 ```
 
 ---
@@ -2106,7 +2112,7 @@ curl -u admin:monmotdepasse -X POST http://poolcontroller.local/wifi/disconnect
 Désactive le mode point d'accès.
 
 ```bash
-curl -u admin:monmotdepasse -X POST http://poolcontroller.local/wifi/ap/disable
+curl -H "X-Auth-Token: $TOKEN" -X POST http://poolcontroller.local/wifi/ap/disable
 ```
 
 ---
@@ -2465,8 +2471,8 @@ Jusqu'en v2.38.0, `/get-config` servait **89** clés et la trame **66** : les cl
 Démarre ou arrête la pompe doseuse 1 (pH) manuellement (test bench).
 
 ```bash
-curl -u admin:monmotdepasse -X POST http://poolcontroller.local/pump1/on
-curl -u admin:monmotdepasse -X POST http://poolcontroller.local/pump1/off
+curl -H "X-Auth-Token: $TOKEN" -X POST http://poolcontroller.local/pump1/on
+curl -H "X-Auth-Token: $TOKEN" -X POST http://poolcontroller.local/pump1/off
 ```
 
 **Paramètre optionnel (v2.20.5)**
@@ -2477,9 +2483,9 @@ curl -u admin:monmotdepasse -X POST http://poolcontroller.local/pump1/off
 
 ```bash
 # Balayage du seuil de rotation réel : 96/255 pendant 120 s
-curl -u admin:monmotdepasse -X POST "http://poolcontroller.local/pump1/on?duty=96"
+curl -H "X-Auth-Token: $TOKEN" -X POST "http://poolcontroller.local/pump1/on?duty=96"
 sleep 120
-curl -u admin:monmotdepasse -X POST http://poolcontroller.local/pump1/off
+curl -H "X-Auth-Token: $TOKEN" -X POST http://poolcontroller.local/pump1/off
 ```
 
 > **Motif** : ce paramètre sert à **caractériser au banc** le duty en dessous duquel la pompe cesse réellement de tourner, et à peser le débit à un duty fixe. C'est lui qui a produit la mesure du 2026-08-23 (Dmin = 82 ; 61/67 mL/min à 255) fondant le modèle en proportionnel de temps ([ADR-0043](adr/0043-dosage-proportionnel-de-temps-amplitude-calibree.md)). Voir [pump-controller.md — Dosage en proportionnel de temps](subsystems/pump-controller.md#dosage-en-proportionnel-de-temps-itération-2-v2210).
@@ -2519,8 +2525,8 @@ curl -u admin:monmotdepasse -X POST http://poolcontroller.local/pump1/off
 Démarre ou arrête la pompe doseuse 2 (ORP/chlore) manuellement (test bench).
 
 ```bash
-curl -u admin:monmotdepasse -X POST http://poolcontroller.local/pump2/on
-curl -u admin:monmotdepasse -X POST http://poolcontroller.local/pump2/off
+curl -H "X-Auth-Token: $TOKEN" -X POST http://poolcontroller.local/pump2/on
+curl -H "X-Auth-Token: $TOKEN" -X POST http://poolcontroller.local/pump2/off
 ```
 
 > ⚠️ **Garde filtration (v2.1.2)** : mêmes règles que `/pump1/on` ci-dessus — y compris, depuis la **v2.91.0 (bug-171)**, l'échéance appareil de 10 s, les coupures sur perte d'eau / étalonnage et le `409 already_injecting`.
@@ -2567,7 +2573,7 @@ Paramètres (querystring, exclusifs) :
 | `duration` | integer (secondes) | fallback legacy, borné **1 – 600** (`kManualInjectMaxDurationS`, abaissé de 3600 → 600 en v2.1.2 — voir CHANGELOG) |
 
 ```bash
-curl -u admin:monmotdepasse -X POST "http://poolcontroller.local/ph/inject/start?volume=15"
+curl -H "X-Auth-Token: $TOKEN" -X POST "http://poolcontroller.local/ph/inject/start?volume=15"
 ```
 
 Réponses :
@@ -2607,7 +2613,7 @@ Le volume/durée évalués sont ceux **réellement injectés** (post-plafonnemen
 Arrête immédiatement l'injection manuelle pH en cours.
 
 ```bash
-curl -u admin:monmotdepasse -X POST http://poolcontroller.local/ph/inject/stop
+curl -H "X-Auth-Token: $TOKEN" -X POST http://poolcontroller.local/ph/inject/stop
 ```
 
 ---
@@ -2619,7 +2625,7 @@ Identique à `/ph/inject/start` pour la pompe ORP (`orp_pump`). Mêmes paramètr
 > ✅ **Injection manuelle gardée (v2.6.0, feature-006)** : mêmes gardes et même format de refus **`409` JSON** que `/ph/inject/start` — voir [tableau des codes](#codes-de-refus-409-v260). Limites appliquées côté ORP : `max_chlorine_ml_per_day` (journalière prédictive), `orp_limit_minutes` (horaire partagée avec l'auto), cycles/jour et anti-rafale (compteurs partagés), stabilisation post-cal ORP. Arrêt cyclique automatique si la filtration tombe en cours d'injection, alerte MQTT `orp_injection_aborted` publiée sur `{base}/alerts`. Bornage `duration` à 600 s (idem `/ph/inject/start`). **Écrêtage automatique au reliquat journalier (v2.9.2)** symétrique à la route pH (log `[Injection] ORP : volume écrêté de X à Y mL (reliquat journalier)`). `POST /orp/inject/stop` jamais gardé.
 
 ```bash
-curl -u admin:monmotdepasse -X POST "http://poolcontroller.local/orp/inject/start?volume=50"
+curl -H "X-Auth-Token: $TOKEN" -X POST "http://poolcontroller.local/orp/inject/start?volume=50"
 ```
 
 ---
@@ -2629,7 +2635,7 @@ curl -u admin:monmotdepasse -X POST "http://poolcontroller.local/orp/inject/star
 Arrête immédiatement l'injection manuelle ORP en cours.
 
 ```bash
-curl -u admin:monmotdepasse -X POST http://poolcontroller.local/orp/inject/stop
+curl -H "X-Auth-Token: $TOKEN" -X POST http://poolcontroller.local/orp/inject/stop
 ```
 
 ---
@@ -2648,8 +2654,8 @@ trois seuls qui existent (`on` / `off` / `schedule`, voir [docs/subsystems/light
 avant. Aucun état caché ne peut plus subsister derrière un appel à ces routes.
 
 ```bash
-curl -u admin:monmotdepasse -X POST http://poolcontroller.local/lighting/on
-curl -u admin:monmotdepasse -X POST http://poolcontroller.local/lighting/off
+curl -H "X-Auth-Token: $TOKEN" -X POST http://poolcontroller.local/lighting/on
+curl -H "X-Auth-Token: $TOKEN" -X POST http://poolcontroller.local/lighting/off
 ```
 
 ---
@@ -2662,10 +2668,10 @@ Le paramètre `running` est accepté en **corps de formulaire** (`application/x-
 
 ```bash
 # corps de formulaire
-curl -u admin:monmotdepasse -X POST -d "running=true" \
+curl -H "X-Auth-Token: $TOKEN" -X POST -d "running=true" \
   http://poolcontroller.local/filtration/external-state
 # ou query string
-curl -u admin:monmotdepasse -X POST \
+curl -H "X-Auth-Token: $TOKEN" -X POST \
   "http://poolcontroller.local/filtration/external-state?running=false"
 ```
 
@@ -2693,7 +2699,7 @@ Passer en mode Arrêt pendant que le Boost est actif **l'annule** (`stopBoost()`
 veille) — journalisé en `warning`, état republié.
 
 ```bash
-curl -u admin:monmotdepasse -X POST http://poolcontroller.local/boost/start
+curl -H "X-Auth-Token: $TOKEN" -X POST http://poolcontroller.local/boost/start
 ```
 
 **Réponse 200** :
@@ -2732,7 +2738,7 @@ Quand un levier est inerte, `startBoost()` logue en plus un `warning` (couvre l'
 Désactive le Mode Boost immédiatement. Retour intégral au comportement normal (cible ORP, limite journalière et filtration selon la configuration). Inconditionnel (jamais refusé).
 
 ```bash
-curl -u admin:monmotdepasse -X POST http://poolcontroller.local/boost/stop
+curl -H "X-Auth-Token: $TOKEN" -X POST http://poolcontroller.local/boost/stop
 ```
 
 **Réponse 200** :
@@ -2750,7 +2756,7 @@ Active la **Chloration de secours** (feature-140, v2.55.0) : surcouche temporair
 **Paramètre `ml` (query, optionnel) — v2.56.0 (feature-141)** : volume quotidien **saisi** par l'utilisateur dans le dialogue d'activation, en mL entiers. **Absent ou non numérique** ⇒ la valeur est résolue par la **chaîne de pré-remplissage** (`orp_daily_target_ml` si > 0, sinon défaut par taille de bassin, sinon 1500 mL de repli). **Fourni** ⇒ seulement **borné** côté serveur, jamais réinterprété ni refusé : plancher **100 mL/j** (sous ce plancher, l'illusion d'une désinfection sans la fournir est jugée pire que ne pas armer le mode), plafond `min(limite journalière utilisateur si > 0, 2000 mL/j)`. **Le clamp serveur fait foi** — l'UI n'est qu'un confort, jamais une garde. Une valeur `> 1500` est acceptée : 1500 n'est plus qu'un **défaut**, pas un plafond (le bénéfice au-delà n'est simplement pas démontré — voir le libellé d'avertissement dans [page-dashboard.md](features/page-dashboard.md#chaînage-depuis-le-bandeau--dosage-bloqué--b4-feature-140)).
 
 ```bash
-curl -u admin:monmotdepasse -X POST "http://poolcontroller.local/rescue/start?ml=1200"
+curl -H "X-Auth-Token: $TOKEN" -X POST "http://poolcontroller.local/rescue/start?ml=1200"
 ```
 
 **Réponse 200** :
@@ -2780,7 +2786,7 @@ curl -u admin:monmotdepasse -X POST "http://poolcontroller.local/rescue/start?ml
 Désactive la Chloration de secours immédiatement. Retour au comportement normal selon la configuration réelle de l'utilisateur (`orp_regulation_mode` en NVS n'ayant jamais changé). Inconditionnel (jamais refusé).
 
 ```bash
-curl -u admin:monmotdepasse -X POST http://poolcontroller.local/rescue/stop
+curl -H "X-Auth-Token: $TOKEN" -X POST http://poolcontroller.local/rescue/stop
 ```
 
 **Réponse 200** :
@@ -2804,7 +2810,7 @@ Le filtre visé est vidé (médiane + lissage exponentiel) et la **détection de
 **Paramètre** `sensor` (corps `form-urlencoded` **ou** query string) : `ph` ou `orp`. **Obligatoire** — pas de valeur par défaut : réparer le pH ne doit jamais sacrifier un filtre ORP sain.
 
 ```bash
-curl -u admin:monmotdepasse -X POST "http://poolcontroller.local/reset-sensor-filter?sensor=ph"
+curl -H "X-Auth-Token: $TOKEN" -X POST "http://poolcontroller.local/reset-sensor-filter?sensor=ph"
 ```
 
 **Réponse 200**
@@ -2846,7 +2852,7 @@ Ouvre (ou rejoint) la session d'assistant et lance une marche minutée serveur. 
 | `phase` | `purge` \| `measure` | Type de marche (duty/durée déduits côté serveur — voir ci-dessus) |
 
 ```bash
-curl -u admin:monmotdepasse -X POST -d "pump=1&phase=purge" \
+curl -H "X-Auth-Token: $TOKEN" -X POST -d "pump=1&phase=purge" \
   http://poolcontroller.local/flow-assist/start
 ```
 
@@ -2877,7 +2883,7 @@ Chaque requête `/flow-assist/*` **réarme le timeout de session** (15 min). Un 
 Arrêt **anticipé** de la marche en cours (coupe-circuit opérateur — jamais gardé). La **session est conservée** : suspension du dosage maintenue, l'utilisateur reste dans l'assistant. Le volume est crédité **prorata au majorant** (`flow255 × temps écoulé`). Idempotent (aucune marche → `stopped: false`).
 
 ```bash
-curl -u admin:monmotdepasse -X POST http://poolcontroller.local/flow-assist/stop
+curl -H "X-Auth-Token: $TOKEN" -X POST http://poolcontroller.local/flow-assist/stop
 ```
 
 **Réponse 200**
@@ -2891,7 +2897,7 @@ curl -u admin:monmotdepasse -X POST http://poolcontroller.local/flow-assist/stop
 Sortie de l'assistant (Annuler, Terminer, sortie normale) : arrêt de la marche éventuelle (crédit prorata), **fermeture de la session puis levée de la suspension** — dans cet ordre, invariant anti-course (voir [pump-controller.md](subsystems/pump-controller.md#suspension--assistant-de-mesure-du-débit--feature-075-v2240)). Idempotent : sans session, ne fait que confirmer le rétablissement.
 
 ```bash
-curl -u admin:monmotdepasse -X POST http://poolcontroller.local/flow-assist/exit
+curl -H "X-Auth-Token: $TOKEN" -X POST http://poolcontroller.local/flow-assist/exit
 ```
 
 **Réponse 200**
@@ -2931,7 +2937,7 @@ Calibration EZO pH — déclenche `Cal,mid,7.00` (point milieu) ou `Cal,low,4.00
 - `503 calibration queue saturée — réessayer dans 1s` si la queue (4 slots) est pleine.
 
 ```bash
-curl -u admin:monmotdepasse -X POST -H "Content-Type: application/json" \
+curl -H "X-Auth-Token: $TOKEN" -X POST -H "Content-Type: application/json" \
   -d '{"step":"mid"}' \
   http://poolcontroller.local/calibrate_ph
 ```
@@ -2961,7 +2967,7 @@ Calibration EZO ORP — déclenche `Cal,<reference>` avec la référence en mV.
 - `503 calibration queue saturée — réessayer dans 1s`.
 
 ```bash
-curl -u admin:monmotdepasse -X POST -H "Content-Type: application/json" \
+curl -H "X-Auth-Token: $TOKEN" -X POST -H "Content-Type: application/json" \
   -d '{"reference":470}' \
   http://poolcontroller.local/calibrate_orp
 ```
@@ -2989,7 +2995,7 @@ Efface complètement la calibration EZO mémorisée dans le module (`Cal,clear`)
 - `503 calibration queue saturée`.
 
 ```bash
-curl -u admin:monmotdepasse -X POST -H "Content-Type: application/json" \
+curl -H "X-Auth-Token: $TOKEN" -X POST -H "Content-Type: application/json" \
   -d '{"sensor":"ph"}' \
   http://poolcontroller.local/calibrate_clear
 ```
@@ -3041,7 +3047,7 @@ pas. Voir [tableau des codes 409](#codes-de-refus-409-v260) (`calibration_sessio
 (⚠️ n'est **plus** toujours `true` depuis le correctif du 2026-10-13 — v2.76.2).
 
 ```bash
-curl -u admin:monmotdepasse -X POST http://poolcontroller.local/calibration/enter
+curl -H "X-Auth-Token: $TOKEN" -X POST http://poolcontroller.local/calibration/enter
 ```
 
 ---
@@ -3081,7 +3087,7 @@ compris, jusqu'à cet appel.
 ```
 
 ```bash
-curl -u admin:monmotdepasse -X POST http://poolcontroller.local/calibration/exit
+curl -H "X-Auth-Token: $TOKEN" -X POST http://poolcontroller.local/calibration/exit
 ```
 
 > **Routes legacy supprimées** (404 désormais) : `POST /calibrate_ph_neutral`, `POST /calibrate_ph_acid`, `POST /clear_ph_calibration`. Remplacées par les 3 routes ci-dessus. Voir [ADR-0014](adr/0014-migration-atlas-ezo.md).
@@ -3096,12 +3102,12 @@ Met à jour le firmware ou le filesystem via multipart/form-data.
 
 ```bash
 # Firmware
-curl -u admin:monmotdepasse -X POST \
+curl -H "X-Auth-Token: $TOKEN" -X POST \
   -F "update_type=firmware" -F "update=@.pio/build/esp32dev_core3/firmware.bin" \
   http://poolcontroller.local/update
 
 # Filesystem
-curl -u admin:monmotdepasse -X POST \
+curl -H "X-Auth-Token: $TOKEN" -X POST \
   -F "update_type=filesystem" -F "update=@.pio/build/esp32dev_core3/littlefs.bin" \
   http://poolcontroller.local/update
 ```
@@ -3114,7 +3120,7 @@ curl -u admin:monmotdepasse -X POST \
 
 Depuis la v2.46.2, la garde `otaUploadAuthorized()` est la **première instruction** du handler d'upload, **avant** le verrou anti-uploads concurrents et avant tout effet de bord : un corps non autorisé est **ignoré en totalité** — aucun `Update.begin()`, **aucune écriture de partition**, pompes doseuses jamais inhibées, LittleFS jamais démonté. Un **`401` est donc désormais un résultat possible de cette route**, et il reste produit par le handler de **requête** (`REQUIRE_AUTH`) : la réponse, son corps et le décompte de quota sont inchangés, seul l'effet de bord disparaît.
 
-**Aucun client légitime n'est affecté** — équivalence vérifiée dans les deux sens sur ESPAsyncWebServer 3.11.2 (`_parseReqHeader()` renseigne `_authorization` **et** empile tous les en-têtes avant le premier fragment, et rien ne les purge en cours de requête). Les **trois** appelants passent : `ota_update.sh` en authentification basique (`curl -u admin:<mdp>`), le même en jeton (`-H 'X-Auth-Token: …'`), et la page web d'upload (XHR + `X-Auth-Token`).
+**Aucun client légitime n'est affecté** — équivalence vérifiée dans les deux sens sur ESPAsyncWebServer 3.11.2 (`_parseReqHeader()` empile tous les en-têtes avant le premier fragment, et rien ne les purge en cours de requête). ⚠️ **Mis à jour par bug-184 (v2.92.0)** : il n'y a plus **qu'une** preuve d'identité, donc plus que **deux** appelants — `ota_update.sh` (`-H 'X-Auth-Token: …'`, jeton obtenu par `POST /auth/login`) et la page web d'upload (XHR + `X-Auth-Token`). La troisième voie, `ota_update.sh` en authentification basique (`curl -u admin:<mdp>`), a disparu avec HTTP Basic ([ADR-0130](adr/0130-l-appareil-n-accepte-que-le-jeton-pas-http-basic.md)).
 
 Une tentative non authentifiée est journalisée `WARNING` **au plus 1 fois/60 s**, avec l'IP d'origine — et **une seule fois par upload** (au premier fragment). Détail, motif et limites : [`docs/subsystems/ota-manager.md`](subsystems/ota-manager.md#authentification-du-handler-dupload-v2462).
 
@@ -3140,7 +3146,7 @@ lit comme absent) :
 | `signature` | Signature RSA-3072/PKCS#1 v1.5/SHA-256 du manifeste **re-sérialisé**, en base64 standard **sans padding** (512 caractères) |
 
 ```bash
-curl -u admin:monmotdepasse -X POST \
+curl -H "X-Auth-Token: $TOKEN" -X POST \
   -F "update_type=firmware" -F "sha256=sha256:<64 hex>" \
   -F 'manifest=pool-ota/1 firmware 2.86.0 sha256:<64 hex>' \
   -F "signature=<512 caractères base64>" \
@@ -3247,7 +3253,7 @@ requête. Comparer ces octets à ce qui a réellement été signé permet de dis
 d'outillage (`echo` ajoutant un LF final, au lieu de `printf '%s'`) d'une mauvaise clé.
 
 ```bash
-curl -u admin:monmotdepasse -X POST \
+curl -H "X-Auth-Token: $TOKEN" -X POST \
   -F "update_type=firmware" -F "sha256=sha256:<64 hex>" \
   -F "update=@.pio/build/esp32dev_core3/firmware.bin" \
   http://poolcontroller.local/update
@@ -3304,7 +3310,7 @@ L'ESP32 redémarre automatiquement après une mise à jour réussie — **unique
 Vérifie la dernière release disponible sur GitHub.
 
 ```bash
-curl -u admin:monmotdepasse http://poolcontroller.local/check-update
+curl -H "X-Auth-Token: $TOKEN" http://poolcontroller.local/check-update
 ```
 
 ```json
@@ -3504,7 +3510,7 @@ Absent d'un firmware ≤ 2.80.x → traiter l'absence comme « information indis
 Relaie **à la demande** le fichier `.sig` d'un genre de la release analysée par le dernier [`/check-update`](#get-check-update--write) (bug-176, v2.88.0, [ADR-0123](adr/0123-une-seule-session-tls-sortante-par-requete-http.md)). Une requête = **une seule** session TLS sortante (≈ 4,5 s). La page l'appelle juste avant d'installer, **séquentiellement** (firmware puis filesystem, jamais en parallèle).
 
 ```bash
-curl -u admin:monmotdepasse "http://poolcontroller.local/ota-sig?kind=firmware"
+curl -H "X-Auth-Token: $TOKEN" "http://poolcontroller.local/ota-sig?kind=firmware"
 ```
 
 **Authentification** : niveau `WRITE` (comme `/check-update`).
@@ -3555,7 +3561,7 @@ L'énumération `reason` est **fermée** : jamais de texte libre. Garde TLS ferm
 Télécharge et installe une mise à jour depuis une URL GitHub, avec vérification d'intégrité SHA-256 **obligatoire** (v2.11.0, [ADR-0022](adr/0022-verification-integrite-ota.md)).
 
 ```bash
-curl -u admin:monmotdepasse -X POST \
+curl -H "X-Auth-Token: $TOKEN" -X POST \
   -H "Content-Type: application/x-www-form-urlencoded" \
   -d "url=https://github.com/.../firmware.bin&digest=sha256:<64 hex>&restart=true" \
   http://poolcontroller.local/download-update
@@ -3587,7 +3593,7 @@ Chaque refus émet un log `CRITICAL` avec empreintes attendue/calculée.
 **Depuis la v2.87.0 (feature-151 D3-a)** : quand `manifest` et `signature` sont fournis et que la signature est **valide**, le **genre signé** choisit la partition et l'**empreinte attendue** vient du **manifeste** (source unique), non plus du seul paramètre `digest`. Exemple complet :
 
 ```bash
-curl -u admin:monmotdepasse -X POST \
+curl -H "X-Auth-Token: $TOKEN" -X POST \
   -H "Content-Type: application/x-www-form-urlencoded" \
   --data-urlencode "url=https://github.com/.../firmware.bin" \
   --data-urlencode "digest=sha256:<64 hex>" \
@@ -3629,7 +3635,7 @@ Ces trois endpoints permettent de consulter, télécharger et effacer le coredum
 Retourne un résumé JSON du dernier coredump disponible.
 
 ```bash
-curl -u admin:monmotdepasse http://poolcontroller.local/coredump/info
+curl -H "X-Auth-Token: $TOKEN" http://poolcontroller.local/coredump/info
 ```
 
 **Si un coredump est disponible :**
@@ -3671,7 +3677,7 @@ curl -u admin:monmotdepasse http://poolcontroller.local/coredump/info
 Télécharge le coredump brut sous forme de fichier binaire. Streamé via `AsyncCallbackResponse` sans allocation de 64 KB côté firmware.
 
 ```bash
-curl -u admin:monmotdepasse http://poolcontroller.local/coredump/download -o coredump.bin
+curl -H "X-Auth-Token: $TOKEN" http://poolcontroller.local/coredump/download -o coredump.bin
 ```
 
 - **Content-Type** : `application/octet-stream`
@@ -3691,7 +3697,7 @@ Pour décoder le fichier obtenu :
 Efface la partition `coredump` pour permettre l'enregistrement d'un prochain crash.
 
 ```bash
-curl -u admin:monmotdepasse -X DELETE http://poolcontroller.local/coredump
+curl -H "X-Auth-Token: $TOKEN" -X DELETE http://poolcontroller.local/coredump
 ```
 
 ```json
@@ -3709,7 +3715,7 @@ curl -u admin:monmotdepasse -X DELETE http://poolcontroller.local/coredump
 Redémarre l'ESP32.
 
 ```bash
-curl -u admin:monmotdepasse -X POST http://poolcontroller.local/reboot
+curl -H "X-Auth-Token: $TOKEN" -X POST http://poolcontroller.local/reboot
 ```
 
 ---
@@ -3719,7 +3725,7 @@ curl -u admin:monmotdepasse -X POST http://poolcontroller.local/reboot
 Efface les credentials WiFi et redémarre en mode point d'accès.
 
 ```bash
-curl -u admin:monmotdepasse -X POST http://poolcontroller.local/reboot-ap
+curl -H "X-Auth-Token: $TOKEN" -X POST http://poolcontroller.local/reboot-ap
 ```
 
 ---
@@ -3729,14 +3735,14 @@ curl -u admin:monmotdepasse -X POST http://poolcontroller.local/reboot-ap
 Réinitialisation d'usine complète (efface la partition NVS).
 
 ```bash
-curl -u admin:monmotdepasse -X POST http://poolcontroller.local/factory-reset
+curl -H "X-Auth-Token: $TOKEN" -X POST http://poolcontroller.local/factory-reset
 ```
 
 > Efface : mot de passe admin, token API, WiFi, MQTT, calibrations. Préserve : historique, fichiers LittleFS, **mot de passe AP WiFi** (l'étiquette sur le boîtier reste valide).
 
 ## Endpoints ajoutés en feature-020 (identification 2 sondes DS18B20, PCB v2)
 
-Tous les endpoints `/sensors/onewire/*` requièrent l'auth (HTTP Basic + token).
+Tous les endpoints `/sensors/onewire/*` requièrent l'auth (jeton `X-Auth-Token`).
 
 ### `GET /sensors/onewire/scan`
 
@@ -3819,7 +3825,7 @@ Réinitialise un filtre (médiane + lissage exponentiel). Le filtre repasse en *
 La sélectivité est un correctif : lors du déblocage en production du 2026-08-16, cette route a sacrifié le filtre ORP qui était parfaitement sain.
 
 ```bash
-curl -u admin:monmotdepasse -X POST "http://poolcontroller.local/debug/sensor_filter_reset?sensor=ph"
+curl -H "X-Auth-Token: $TOKEN" -X POST "http://poolcontroller.local/debug/sensor_filter_reset?sensor=ph"
 ```
 
 **Réponse 200**
@@ -4017,7 +4023,7 @@ les blocs **occupés** dont l'adresse tombe dans la fenêtre `[used_from,
 used_to)`.
 
 ```bash
-curl -u admin:monmotdepasse -X POST \
+curl -H "X-Auth-Token: $TOKEN" -X POST \
   "http://poolcontroller.local/debug/heap_census?used_from=0x3FFB0000&used_to=0x3FFB4000"
 ```
 
@@ -4062,7 +4068,7 @@ recensement **abouti**) : il permet de corréler une réponse `202` avec les
 Lit l'instantané figé du dernier recensement abouti, paginé.
 
 ```bash
-curl -u admin:monmotdepasse \
+curl -H "X-Auth-Token: $TOKEN" \
   "http://poolcontroller.local/debug/heap_census?kind=used&offset=0&count=24"
 ```
 
@@ -4148,7 +4154,7 @@ enregistrée). Voir l'ADR pour le mécanisme complet de non-livraison,
 vérifié à la fois sur l'arbre (CI) et sur l'artefact publié (`/release`).
 
 ```bash
-curl -u admin:monmotdepasse -X POST \
+curl -H "X-Auth-Token: $TOKEN" -X POST \
   "http://poolcontroller.local/debug/heap_peek?addr=0x3FFB0210&len=64"
 ```
 
@@ -4179,7 +4185,7 @@ Lit le résultat de la dernière demande aboutie : hexadécimal **et** ASCII
 imprimable des octets copiés.
 
 ```bash
-curl -u admin:monmotdepasse "http://poolcontroller.local/debug/heap_peek"
+curl -H "X-Auth-Token: $TOKEN" "http://poolcontroller.local/debug/heap_peek"
 ```
 
 **Réponse 200**

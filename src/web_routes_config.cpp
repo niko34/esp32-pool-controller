@@ -115,8 +115,8 @@ static void handleGetConfig(AsyncWebServerRequest* request) {
   // Vérifier si l'utilisateur est authentifié pour accéder aux données sensibles
   // Note: On ne bloque PAS la requête (route publique pour premier démarrage),
   // mais on vérifie l'authentification pour savoir quelles données révéler
-  // On utilise checkTokenAuth/checkBasicAuth directement pour ne pas bloquer avec sendAuthRequired()
-  bool isAuthenticated = authManager.checkTokenAuth(request) || authManager.checkBasicAuth(request);
+  // On utilise checkTokenAuth directement pour ne pas bloquer avec sendAuthRequired()
+  bool isAuthenticated = authManager.checkTokenAuth(request);
 
   // Buffer statique : ~55 champs (configs MQTT, pH, ORP, calibration, WiFi, boost, etc.)
   // feature-053 : +2 champs boost_active/boost_until → marge portée à 2304.
@@ -542,10 +542,31 @@ void drainConfigUnauthWarnLogs() {
   }
 }
 
+// bug-184 (A4) — ARBITRAGE ÉCRIT de l'exemption du premier démarrage.
+//
+// L'assistant de premier démarrage DOIT pouvoir écrire la configuration avant
+// qu'un mot de passe existe : c'est le seul moyen d'amener l'appareil dans un
+// état utilisable. L'exemption est donc CONSERVÉE — mais elle est désormais
+// NOMMÉE et BORNÉE à la seule URL qui en a besoin.
+//
+// ⛔ Ce qu'elle était avant ce lot : ce helper est partagé par /save-config ET
+// /tune-ph-offset. Un `isFirstBootDetected()` sans test d'URL ouvrait donc AUSSI
+// l'écriture de l'offset pH à n'importe qui sur le réseau, indéfiniment tant que
+// l'assistant n'était pas terminé — alors que l'assistant n'appelle JAMAIS cette
+// route (elle exige 10 min de filtration et une calibration). Exemption
+// involontaire, fermée ici.
+//
+// ⚠️ Ce que cette borne NE corrige PAS, et qui est traité par bug-185 : la
+// fenêtre elle-même ne se referme que sur /auth/complete-wizard, et le jeton
+// n'est pas régénéré au changement de mot de passe. ⛔ Ne pas lire ce commentaire
+// comme « le premier démarrage est sûr ».
 static bool saveConfigBodyAuthorized(AsyncWebServerRequest* request) {
+  if (request == nullptr) return false;                 // fail-closed AVANT request->url()
   if (!authManager.isEnabled()) return true;            // authentification désactivée
-  if (authManager.isFirstBootDetected()) return true;   // wizard de premier démarrage
-  return authManager.checkTokenAuth(request) || authManager.checkBasicAuth(request);
+  // Exemption de l'assistant : /save-config EXACTEMENT, et rien d'autre.
+  // Même comparaison stricte que AuthManager::checkAuth() (bug-184).
+  if (authManager.isFirstBootDetected() && request->url() == "/save-config") return true;
+  return authManager.checkTokenAuth(request);
 }
 
 static void handleSaveConfig(AsyncWebServerRequest* request, uint8_t* data, size_t len, size_t index, size_t total) {

@@ -2,6 +2,25 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [2.92.0] - 2026-11-17
+
+### Firmware
+- **Sécurité — authentification (bug-184)** : l'appareil acceptait un mot de passe qui n'était pas le bon en HTTP Basic (la bibliothèque serveur compare le contenu sans tenir compte de la casse ; une casse inversée a répondu `200` sur l'appareil). **HTTP Basic est retiré** : il ne reste que le jeton `X-Auth-Token`.
+  - ⚠️ **Rupture** : `curl -u admin:motdepasse ...` est refusé (`401`). Tout script tiers doit échanger son mot de passe contre un jeton par `POST /auth/login`, puis envoyer `X-Auth-Token`. Le navigateur et l'interface ne sont pas concernés.
+  - L'exemption du premier démarrage porte sur l'URL **exacte** `/save-config` (et non plus sur tout préfixe) : le premier démarrage n'ouvre plus l'écriture de l'offset pH (`/tune-ph-offset`) à n'importe qui sur le réseau.
+  - Journal de démarrage : « Authentification activée (API Token X-Auth-Token uniquement) ».
+  - ⛔ **Reste ouvert** ([bug-185](specs/features/todo/bug-185-fenetre-de-premier-demarrage-ouverte-indefiniment.md)) : la fenêtre de premier démarrage ne se referme que sur la fin de l'assistant, et le jeton n'est pas régénéré au changement de mot de passe.
+
+### Fonctionnalités
+- **Interface — Réglages → Installation, astuce « Comment signaler l'état de la filtration ? »** : l'exemple HTTP enseignait `curl -u <utilisateur>:<mot_de_passe>`, que l'appareil **refuse désormais**. ⚠️ C'est la route qui lui dit que l'eau circule : un système tiers qui suivait cette consigne n'aurait **jamais** obtenu de régulation, sans aucun indice de pourquoi. L'astuce montre maintenant les **deux étapes** (obtenir un jeton, puis signaler) — et les blocs de commande **se replient** au lieu de masquer l'URL derrière un défilement latéral à 390 px.
+- **`ota_update.sh`** : n'envoie plus d'identifiants Basic ; le mot de passe est échangé contre un jeton (`POST /auth/login`). Nouvelle voie recommandée : `POOL_TOKEN`. Ni mot de passe ni jeton sur la ligne de commande de `curl` (`/proc/<pid>/cmdline` est lisible par tout utilisateur de la machine). Le jeton est **refusé s'il contient un caractère de structure** : il vient du réseau, et un fichier de configuration `curl` porte une option par ligne.
+
+### Documentation
+- `docs/API.md` : section d'authentification réécrite, ~90 exemples `curl -u` passés au jeton. `docs/subsystems/auth.md` corrigé : la phrase « les routes CRITICAL exigent Basic » était fausse avant ce lot ; `regenerate-token` exige le jeton perdu ; **le mot de passe est stocké en clair en NVS** (le fichier et `page-settings.md` le disaient hashé, à tort). Aussi `sensors.md`, `ota-manager.md`, `ws-manager.md`, `UPDATE_GUIDE.md`.
+- **ADR-0130** (retrait de Basic) ; note datée en fin d'ADR-0127 (règle 5 : cinq fonctions).
+
+---
+
 ## [2.91.0] - 2026-11-17
 
 ### Firmware

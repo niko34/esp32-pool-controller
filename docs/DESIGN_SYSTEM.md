@@ -255,6 +255,20 @@ informatif sans enjeu — c'est à ça que sert `.field__hint` ou `.detail-row`.
 
 Les trois sous-éléments sont **optionnels indépendamment** : un refus simplement bloquant n'utilise que `.callout__lead` (chapeau et détail masqués) ; l'avertissement non bloquant utilise les trois. Voir [`docs/features/page-ph.md`](features/page-ph.md#avertissement-et-impasse-de-régulation-v2820) pour l'emploi complet et les textes exacts.
 
+### 5.10bis `.tips__code--wrap` — bloc de commande qui se replie (bug-184, v2.92.0)
+
+**Contexte d'emploi déclaré : les blocs `<pre class="tips__code">` d'un `.tips` qui contiennent une COMMANDE (shell, `curl`, `mosquitto_pub`). ⛔ PAS un bloc dont l'indentation porte du sens — YAML, JSON, arborescence.**
+
+`.tips__code` est en `white-space: pre` + `overflow-x: auto` : à 390 px, **environ 34 à 36 caractères** sont visibles, le reste se lit par défilement latéral. ⚠️ Mesuré sur capture le 2026-11-17 : c'est l'**URL** qui disparaissait — c'est-à-dire l'élément dont l'utilisateur a le plus besoin (`http://poolcontroller.local/filtration/external-state`, 53 caractères). Le défilement latéral n'est pas un repli : c'est une information cachée.
+
+Le modificateur passe le bloc en `white-space: pre-wrap` + `overflow-wrap: anywhere`. ⭐ **Le repli est VISUEL : aucun saut de ligne n'est inséré dans le texte, donc le copier-coller reste exact.**
+
+Deux règles d'écriture qui accompagnent le modificateur :
+1. **Une option par ligne** (`\` en fin de ligne), l'**URL en dernier** — c'est la seule qui peut dépasser, et elle se replie alors proprement.
+2. **Les commentaires sortent des lignes de commande** : un commentaire en fin de ligne allonge la ligne et c'est lui qu'on perd.
+
+⛔ **Ne pas l'appliquer** au bloc YAML Home Assistant du même `.tips` : son indentation est porteuse, un repli la rendrait fausse à l'œil. C'est le seul endroit où le défilement latéral reste assumé.
+
 ### 5.11 `.field__hint`
 Texte d'aide discret (12px, `--muted`, pas de fond) attaché à **un contrôle précis** juste
 au-dessus ou en dessous de lui. ⚠️ **Ne doit jamais être le seul support d'une information de

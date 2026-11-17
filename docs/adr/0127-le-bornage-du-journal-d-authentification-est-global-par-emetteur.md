@@ -45,6 +45,10 @@ Le refus d'authentification doit rester **visible** (information de sécurité) 
 - Tout nouveau handler protégé doit passer par la garde `check_unauth_log_guard.sh` : un `systemLogger` avant l'authentification ou dans une branche de refus échoue en CI.
 - La vraie réponse (rétention séparée des traces de sécurité) reste à faire : spec de suivi.
 
+## Note datée (2026-11-17)
+
+`checkBasicAuth` a disparu avec bug-184 ([ADR-0130](0130-l-appareil-n-accepte-que-le-jeton-pas-http-basic.md)) : la règle (5) de la garde CI porte désormais sur **cinq** fonctions (`checkAuth`, `checkTokenAuth`, `checkRateLimit`, `sendAuthRequired`, `sendRateLimitExceeded`). La décision ci-dessus est inchangée.
+
 ## Références
 
 - [`src/auth_log_throttle_logic.h`](../../src/auth_log_throttle_logic.h), [`src/auth_log_throttle_site.h`](../../src/auth_log_throttle_site.h), [`src/auth.cpp`](../../src/auth.cpp), [`src/constants.h`](../../src/constants.h) (`kUnauthWarn*`)

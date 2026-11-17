@@ -5150,6 +5150,13 @@
   function fillExternalTips() {
     const urlEl = $("#tips-http-url");
     if (urlEl) urlEl.textContent = `${location.protocol}//${location.host}/filtration/external-state`;
+    // bug-184 : l'appareil n'accepte plus que le jeton X-Auth-Token, et ce jeton
+    // n'est affiché NULLE PART dans l'interface — la seule façon de l'obtenir est
+    // POST /auth/login. L'astuce montre donc les deux étapes, la 1re portant
+    // l'adresse réelle de l'appareil comme la 2e.
+    document.querySelectorAll(".tips-login-url").forEach((el) => {
+      el.textContent = `${location.protocol}//${location.host}/auth/login`;
+    });
     const base = (window._config && window._config.topic)
       || ($("#mqtt_topic") && $("#mqtt_topic").value)
       || "pool/sensors";

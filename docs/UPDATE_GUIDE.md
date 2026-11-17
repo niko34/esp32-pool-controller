@@ -84,7 +84,7 @@ Le script demande confirmation, efface la flash, réinstalle firmware + filesyst
 ./deploy.sh ota-fs        # Filesystem uniquement via WiFi
 ```
 
-Le script demande le mot de passe admin au lancement (ou via `POOL_PASSWORD=... ./deploy.sh ota-all`).
+Le script obtient un jeton : mot de passe admin demandé au lancement (ou `POOL_PASSWORD=... ./deploy.sh ota-all`), **échangé contre un jeton par `POST /auth/login`** ; seul `X-Auth-Token` est ensuite envoyé (HTTP Basic n'est plus accepté par l'appareil, bug-184). Voie recommandée : `POOL_TOKEN=<jeton>`. ⚠️ **Le jeton n'est affiché nulle part dans l'interface** (vérifié le 2026-11-17 : aucun écran de `data/` ne l'expose) — on l'obtient par `POST /auth/login` avec le mot de passe administrateur, qui le renvoie dans le champ `token`. Ni mot de passe ni jeton ne passent par la ligne de commande de `curl`. Si l'assistant de configuration n'est pas terminé, le script s'arrête (403).
 
 Par défaut, le script contacte l'ESP32 via mDNS (`poolcontroller.local`). Si le mDNS ne fonctionne pas sur votre réseau (certains CPL ou routeurs ne le relaient pas), utilisez directement l'adresse IP :
 
@@ -1041,7 +1041,7 @@ Aucune action requise. Le firmware effectue la migration à la première lecture
 | Bouton Installer grisé « pas d'empreinte d'intégrité » | Release GitHub sans champ `digest` — installer via upload manuel ou `deploy.sh` |
 | ESP32 ne redémarre pas | Utiliser le bouton RESET ou débrancher |
 | Interface inaccessible, ou page « Interface à restaurer » | Procédure de [secours](#secours--linterface-web-est-absente-ou-endommagée--depuis-la-prochaine-version-feature-151-d3-b1) (WiFi, sans câble) ; à défaut `./deploy.sh fs` (USB) |
-| Authentification refusée | Vérifier le mot de passe ou utiliser `POOL_PASSWORD=...` |
+| Authentification refusée | 401 : mot de passe incorrect ; 403 : assistant de configuration non terminé. Vérifier le mot de passe, ou utiliser `POOL_TOKEN=...` / `POOL_PASSWORD=...` |
 | `poolcontroller.local` inaccessible | mDNS non supporté par le réseau — utiliser l'IP directe : `./ota_update.sh both 192.168.1.x motdepasse` |
 | « Aucun port série USB détecté » | Module non branché ou nom de port inattendu — le script liste les `/dev/cu.*` trouvés, relancer avec `PORT=/dev/cu.usbserial-XX ./deploy.sh all` |
 | Upload USB échoue alors que le module est branché | Un autre module occupe le port historique — forcer le bon : `PORT=... ./deploy.sh firmware` |

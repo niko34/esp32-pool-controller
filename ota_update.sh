@@ -16,11 +16,18 @@
 #   - Une adresse IP : 192.168.1.42       (fonctionne sans mDNS, utile si le réseau ne le supporte pas)
 # Par défaut : poolcontroller.local
 #
-# Authentification (par ordre de priorité) :
-#   1. Argument $3 : ./ota_update.sh both poolcontroller.local monmotdepasse
-#   2. Variable d'environnement POOL_PASSWORD : POOL_PASSWORD=monmotdepasse ./ota_update.sh
-#   3. Variable d'environnement POOL_TOKEN    : POOL_TOKEN=<api_token> ./ota_update.sh
+# Authentification (bug-184) : UNE seule preuve, le jeton X-Auth-Token. L'appareil
+# n'accepte plus HTTP Basic. Ordre de priorité :
+#   1. Variable d'environnement POOL_TOKEN    : POOL_TOKEN=<api_token> ./ota_update.sh
+#   2. Argument $3 : ./ota_update.sh both poolcontroller.local monmotdepasse
+#      ⚠️ DÉCONSEILLÉ : un argument reste visible dans /proc et dans l'historique
+#      du shell. Préférer POOL_TOKEN, POOL_PASSWORD ou la saisie interactive.
+#   3. Variable d'environnement POOL_PASSWORD : POOL_PASSWORD=monmotdepasse ./ota_update.sh
 #   4. Saisie interactive si aucun des précédents n'est défini
+# Un mot de passe est échangé contre un jeton par POST /auth/login (existe aussi
+# sur les anciens firmwares : ce script marche sur ancien et neuf). Erreurs :
+#   401 -> mot de passe incorrect
+#   403 -> assistant de configuration non terminé : terminez-le dans l'interface web
 #
 # Signature OTA (feature-151 D1) :
 #   Chaque envoi est signé (RSA-3072/PKCS#1 v1.5/SHA-256) avec la clé privée
@@ -354,18 +361,106 @@ if [ "$SIGN_ONLY" = "1" ]; then
     exit 0
 fi
 
-# Résoudre les credentials
+# Résoudre les credentials (bug-184) : toujours un jeton X-Auth-Token.
+# Mot de passe -> POST /auth/login -> jeton.
+#
+# ⚠️ NI le mot de passe NI le jeton ne doivent apparaître dans la ligne de
+# commande de curl : /proc/<pid>/cmdline est lisible par TOUT utilisateur de la
+# machine, alors que /proc/<pid>/environ ne l'est que par son propriétaire.
+# ⇒ le mot de passe part dans un fichier de corps (`--data @fichier`, mode 600)
+#   et le jeton dans un fichier de configuration curl (`--config`, mode 600).
+# ⛔ Ne jamais revenir à `-H "X-Auth-Token: $jeton"` : c'est un argument.
 AUTH_ARGS=()
-if [ -n "${3}" ]; then
-    AUTH_ARGS=(-u "admin:${3}")
-elif [ -n "${POOL_PASSWORD}" ]; then
-    AUTH_ARGS=(-u "admin:${POOL_PASSWORD}")
-elif [ -n "${POOL_TOKEN}" ]; then
-    AUTH_ARGS=(-H "X-Auth-Token: ${POOL_TOKEN}")
+AUTH_CONF=""
+auth_conf_from_token() {
+    # $1 = jeton. Écrit un fichier de configuration curl illisible par les autres
+    # et renseigne AUTH_ARGS. Le jeton ne transite jamais par argv.
+    #
+    # ⛔ VALIDATION OBLIGATOIRE AVANT ÉCRITURE. Un fichier `--config` porte UNE
+    # OPTION PAR LIGNE : un saut de ligne, un guillemet ou un antislash dans le
+    # jeton refermerait l'en-tête et ouvrirait des lignes d'options arbitraires
+    # (destination, fichier de sortie, fichier à téléverser) — c'est-à-dire la
+    # prise de contrôle de CETTE machine, celle qui détient la clé de signature
+    # OTA. Or le jeton vient du RÉSEAU en clair (réponse de POST /auth/login) :
+    # un faux appareil sur le LAN le choisit. Relevé par security-reviewer (P2).
+    # Le firmware en génère 32 caractères hexadécimaux (AuthManager::generateRandomToken).
+    # L'alphabet accepté est un peu plus large pour survivre à un futur format,
+    # mais ⛔ sans AUCUN caractère de structure.
+    case "$1" in
+        *[!A-Za-z0-9._-]*|"")
+            echo -e "${RED}❌ Jeton refusé : caractère interdit${NC}" >&2
+            echo -e "   Attendu : lettres, chiffres, '.', '_' ou '-' uniquement." >&2
+            echo -e "   ⛔ Aucun fichier de configuration n'a été écrit." >&2
+            exit 1
+            ;;
+    esac
+    AUTH_CONF=$(mktemp)
+    chmod 600 "$AUTH_CONF"
+    printf 'header = "X-Auth-Token: %s"\n' "$1" > "$AUTH_CONF"
+    AUTH_ARGS=(--config "$AUTH_CONF")
+}
+cleanup_auth_files() { rm -f "$AUTH_CONF" "$LOGIN_BODY" "$LOGIN_RESP"; }
+LOGIN_BODY=""
+LOGIN_RESP=""
+trap cleanup_auth_files EXIT
+
+if [ -n "${POOL_TOKEN}" ]; then
+    auth_conf_from_token "${POOL_TOKEN}"
 else
-    read -rsp "Mot de passe admin (poolcontroller.local) : " password
-    echo
-    AUTH_ARGS=(-u "admin:${password}")
+    if [ -n "${3}" ]; then
+        password="${3}"
+    elif [ -n "${POOL_PASSWORD}" ]; then
+        password="${POOL_PASSWORD}"
+    else
+        read -rsp "Mot de passe admin ($ESP32_HOST) : " password
+        echo
+    fi
+    if ! command -v python3 >/dev/null 2>&1; then
+        # Même exigence déclarée que pour openssl et sha256sum plus haut : sans
+        # ce contrôle, `set -e` tuerait le script sur un « command not found »
+        # nu, sans dire ce qui manque.
+        echo -e "${RED}❌ python3 est requis pour échanger le mot de passe contre un jeton${NC}" >&2
+        echo -e "   Contournement sans python3 : fournir POOL_TOKEN=<jeton> directement." >&2
+        exit 1
+    fi
+    LOGIN_BODY=$(mktemp)
+    LOGIN_RESP=$(mktemp)
+    # mktemp crée DÉJÀ en 0600 ; ce chmod est une ceinture redondante, pas la
+    # protection elle-même (⚠️ ne pas lire l'inverse : il n'y a pas de fenêtre
+    # de course à refermer ici).
+    chmod 600 "$LOGIN_BODY" "$LOGIN_RESP"
+    # Le mot de passe passe par l'environnement du python (lisible du seul
+    # propriétaire), jamais par son argv.
+    PW="$password" python3 -c 'import json,os;print(json.dumps({"username":"admin","password":os.environ["PW"]}))' > "$LOGIN_BODY"
+    unset password
+    login_code=$(curl -s --connect-timeout 10 --max-time 20 -o "$LOGIN_RESP" -w "%{http_code}" \
+        -X POST -H "Content-Type: application/json" --data @"$LOGIN_BODY" \
+        "http://$ESP32_HOST/auth/login") || login_code="000"
+    rm -f "$LOGIN_BODY"; LOGIN_BODY=""
+    case "$login_code" in
+        200)
+            # `|| token_obtained=""` : un corps qui n'est pas du JSON ferait lever
+            # python et `set -e` tuerait le script sur une trace d'erreur illisible.
+            # On retombe sur le message maison juste en dessous.
+            token_obtained=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1])).get("token",""))' "$LOGIN_RESP" 2>/dev/null) || token_obtained=""
+            if [ -z "$token_obtained" ]; then
+                echo -e "${RED}❌ Connexion acceptée mais aucun jeton reçu${NC}"; exit 1
+            fi
+            auth_conf_from_token "$token_obtained"
+            unset token_obtained
+            rm -f "$LOGIN_RESP"; LOGIN_RESP=""   # le jeton n'a plus à traîner sur le disque
+            ;;
+        401) echo -e "${RED}❌ Mot de passe incorrect${NC}"; exit 1 ;;
+        403)
+            echo -e "${RED}❌ Premier démarrage : l'assistant de configuration n'est pas terminé.${NC}"
+            echo -e "   Terminez-le dans l'interface web, puis relancez."
+            echo -e "   ⚠️ Si l'interface est HORS SERVICE (c'est souvent pourquoi on envoie une mise à jour) :"
+            echo -e "   la page de secours http://$ESP32_HOST/recovery permet d'obtenir un jeton ;"
+            echo -e "   relancez ensuite avec POOL_TOKEN=<jeton> $0 ..."
+            exit 1 ;;
+        429) echo -e "${RED}❌ Trop de requêtes : patientez une minute${NC}"; exit 1 ;;
+        *)   echo -e "${RED}❌ Connexion impossible (HTTP $login_code)${NC}"; exit 1 ;;
+    esac
 fi
 
 # feature-151 D2 : relit un `.sig` à DEUX LIGNES (ADR-0121) et le valide avec
@@ -494,7 +589,11 @@ update_file() {
         fi
         return 0
     elif [ "$http_code" = "401" ]; then
-        echo -e "${RED}❌ Authentification refusée (mot de passe incorrect ?)${NC}"
+        # bug-184 : ici le mot de passe a DÉJÀ été validé par /auth/login — un 401
+        # à ce stade ne peut donc PAS être « mot de passe incorrect ». C'est le
+        # JETON qui est refusé : régénéré entre-temps, ou POOL_TOKEN périmé.
+        echo -e "${RED}❌ Jeton refusé par l'appareil${NC}"
+        echo -e "   Il a pu être régénéré depuis. Relancez SANS POOL_TOKEN pour en obtenir un neuf."
         return 1
     else
         echo -e "${RED}❌ Échec de la mise à jour de $name (HTTP $http_code)${NC}"

@@ -4514,6 +4514,15 @@ h1, h2, h3 {
   background: none;
   padding: 0;
 }
+/* bug-184 : les commandes d'une ligne débordaient à 390 px et le défilement
+   latéral masquait justement l'URL. `pre-wrap` replie VISUELLEMENT sans insérer
+   de saut de ligne réel : le copier-coller reste exact.
+   ⛔ Ne PAS l'appliquer au bloc YAML (Home Assistant) : son indentation porte
+   du sens, un repli la rendrait illisible. */
+.tips__code--wrap {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
 
 /* ==========================================================================
    feature-075 : assistant de mesure du débit des pompes doseuses

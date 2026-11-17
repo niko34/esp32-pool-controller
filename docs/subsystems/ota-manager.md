@@ -589,10 +589,10 @@ Jusqu'en 2.46.1 incluse, `handleOtaUpdate()` ([`src/web_routes_ota.cpp:360`](../
 
 [`src/web_routes_ota.cpp:290`](../../src/web_routes_ota.cpp:290) — appelée en **première instruction** du handler d'upload, **avant** le verrou `g_uploadOwner`, avant le pré-contrôle du type et avant tout effet de bord.
 
-- **`fail-closed` sur pointeur nul**, puis `authManager.isEnabled()` faux → autorisé ; sinon `checkBasicAuth() || checkTokenAuth()`.
+- **`fail-closed` sur pointeur nul**, puis `authManager.isEnabled()` faux → autorisé ; sinon `checkTokenAuth()` (la voie Basic a été retirée avec bug-184 ; ce paragraphe décrivait `checkBasicAuth() || checkTokenAuth()`).
 - **Aucun état touché sur le chemin de refus** : aucune statique, pas de `g_uploadOwner`, pas de `markUploadRejected()`, rien sur `Update`, ni empreinte, ni rollback, ni pré-contrôle du type. C'est `REQUIRE_AUTH`, dans le lambda de réponse, qui émet le `401`.
 - **Pas de `checkRateLimit()`** : il ne peut que **refuser**, jamais accepter — l'omettre élargit l'ensemble accepté, il ne le restreint pas. Une seule réponse au client, un seul décompte de quota.
-- **Pas d'exemption « premier démarrage »** : celle de `checkAuth()` est bornée aux URL commençant par `/save-config` et n'a **jamais** couvert `/update`. Son absence n'ajoute donc aucune restriction — l'ajouter serait un trou.
+- **Pas d'exemption « premier démarrage »** : celle de `checkAuth()` est bornée à l'URL **exacte** `/save-config` (depuis bug-184) et n'a **jamais** couvert `/update`. Son absence n'ajoute donc aucune restriction — l'ajouter serait un trou.
 - La garde **ne remplace pas** `REQUIRE_AUTH` et n'en est **pas** redondante : `REQUIRE_AUTH` produit le `401` propre, la garde empêche l'**effet de bord**. Supprimer l'une ou l'autre réouvre le trou.
 
 ### Chercher la PLACE de la garde, jamais sa seule présence

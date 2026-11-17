@@ -35,6 +35,10 @@ Nouvelle section **en 1ᵉʳ onglet** (feature-056, v2.19.0). Un `radiogroup` (`
 
 - Champ WS/config : `install_mode` (string). Sauvegarde via bouton dédié `#install_save_btn` → `POST /save-config`.
 - **Callout signal externe** (`#install-ext-status`, affiché uniquement en mode `external`) : pill `#install-ext-pill` (« Aucun signal » / « Marche » / « Arrêt » / « Périmé ») alimentée par les champs WS `filtration_ext_known` / `filtration_ext_on` / `filtration_ext_age_s` / `filtration_state_stale`. Rappelle les deux canaux de signalement (`POST /filtration/external-state`, MQTT `.../filtration_external_state/set`) et le fail-safe à 3 min.
+  - **Bloc dépliable « Comment signaler l'état de la filtration ? »** (`#install-ext-tips`) — trois exemples prêts à copier : HTTP, MQTT, Home Assistant.
+    ⚠️ **Mis à jour par bug-184 (v2.92.0)** : l'exemple HTTP montrait `curl -u <utilisateur>:<mot_de_passe>`, que l'appareil **refuse désormais** (`401`). Il montre maintenant **deux étapes** — `POST /auth/login` pour obtenir un jeton, puis `POST /filtration/external-state` avec `X-Auth-Token`. ⛔ C'était une consigne d'interface devenue **fausse** : la suivre ne donnait aucune régulation, sans que rien ne l'explique.
+    - Les blocs HTTP et MQTT portent `.tips__code--wrap` (repli visuel, cf. [`DESIGN_SYSTEM.md`](../DESIGN_SYSTEM.md)) : à 390 px, environ 34 à 36 caractères étaient visibles et c'est l'**URL** qui disparaissait. Le bloc YAML garde son défilement latéral (son indentation porte du sens).
+    - Le jeton n'est **affiché nulle part** dans l'interface : `POST /auth/login` est le seul moyen de l'obtenir — d'où la première étape de l'exemple.
 - **Aide intégrée** (`<details class="tips">` `#install-ext-tips`, dans le callout external) : bloc repliable montrant des exemples prêts à l'emploi pour signaler l'état de la filtration — commande HTTP `curl`, publication MQTT `mosquitto_pub`, et une automatisation Home Assistant complète (recopie de l'état d'une prise + republication toutes les minutes). `fillExternalTips()` (app.js) renseigne dynamiquement l'URL réelle (`location.host`) et le topic MQTT réel (`window._config.topic`, défaut `pool/sensors`).
 
 ### Wi-Fi (`panel-wifi`)
@@ -510,7 +514,7 @@ Plus aucun dialogue natif `alert()` / `confirm()` sur cette page (ni ailleurs da
 - **Reboot obligatoire** pour appliquer : bascule Wi-Fi STA ↔ AP, changement de timezone (nouvel env TZ).
 - **Factory reset** ([`web_routes_config.cpp`](../../src/web_routes_config.cpp) `/factory-reset`) : efface NVS + config LittleFS + calibrations, redémarre en mode AP `PoolControllerAP` sur `192.168.4.1`.
 - **OTA** : partition active préservée, partitions app0/app1 = 1408 KB chacune, historique isolé sur une partition dédiée `history` 64 KB, coredump sur partition dédiée 64 KB — voir [ADR-0009](../adr/0009-partition-coredump.md) et [`partitions.csv`](../../partitions.csv).
-- **Mot de passe** : hashé par `hashPassword()` avec salt ([`auth_*.cpp`](../../src/)), stocké en NVS, jamais renvoyé par l'API.
+- **Mot de passe** : stocké **en clair** en NVS (aucune fonction de hachage n'existe dans le code ; corrigé, cette ligne le disait hashé avec salt), jamais renvoyé par l'API.
 - **Pas de CORS** : politique même-origine stricte depuis v2.11.2 ([ADR-0023](../adr/0023-politique-cors-retrait.md)).
 
 ## Cas limites

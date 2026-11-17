@@ -2256,14 +2256,25 @@
                           (≤&nbsp;60&nbsp;s)&nbsp;: sans nouveau signal pendant 3&nbsp;min, le dosage est suspendu par sécurité.
                         </p>
 
-                        <h4 class="tips__h">API HTTP <span class="muted small">(authentification requise)</span></h4>
-                        <pre class="tips__code"><code>curl -u &lt;utilisateur&gt;:&lt;mot_de_passe&gt; -X POST \
-  <span id="tips-http-url">http://poolcontroller.local/filtration/external-state</span> \
-  -d "running=true"     # filtration démarrée
-# -d "running=false"   → filtration éteinte</code></pre>
+                        <h4 class="tips__h">API HTTP</h4>
+                        <p class="muted small">
+                          Il faut d'abord un <strong>jeton d'accès</strong>. On l'obtient avec le mot de passe
+                          administrateur&nbsp;; il reste valable tant qu'il n'est pas régénéré.
+                        </p>
+                        <pre class="tips__code tips__code--wrap"><code># 1. Obtenir le jeton (champ "token" de la réponse)
+curl -X POST \
+  -H "Content-Type: application/json" \
+  -d '{"username":"admin","password":"&lt;mot_de_passe&gt;"}' \
+  <span class="tips-login-url">http://poolcontroller.local/auth/login</span></code></pre>
+                        <pre class="tips__code tips__code--wrap"><code># 2. Signaler la filtration, avec ce jeton
+curl -X POST \
+  -H "X-Auth-Token: &lt;jeton&gt;" \
+  -d "running=true" \
+  <span id="tips-http-url">http://poolcontroller.local/filtration/external-state</span>
+# running=false pour signaler l'arrêt</code></pre>
 
                         <h4 class="tips__h">MQTT</h4>
-                        <pre class="tips__code"><code># Publier ON (démarrée) ou OFF (éteinte), sans retain
+                        <pre class="tips__code tips__code--wrap"><code># Publier ON (démarrée) ou OFF (éteinte), sans retain
 mosquitto_pub -t "<span class="tips-topic">pool/sensors/filtration_external_state/set</span>" -m "ON"</code></pre>
 
                         <h4 class="tips__h">Depuis Home Assistant</h4>
