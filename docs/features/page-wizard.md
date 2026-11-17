@@ -5,7 +5,7 @@
 
 ## Rôle
 
-Assistant d'**onboarding** affiché au premier démarrage (ou après un factory reset) : il guide la mise en service initiale avant l'accès à l'interface principale. La fin de l'assistant est marquée côté firmware par `POST /auth/complete-wizard` (voir [`docs/subsystems/auth.md`](../subsystems/auth.md)). L'exemption d'authentification « premier démarrage » de `/save-config` couvre ce parcours (voir [`docs/API.md`](../API.md#authentification-du-corps-de-requête-durcissement-v2250)).
+Assistant d'**onboarding** affiché au premier démarrage (ou après un factory reset) : il guide la mise en service initiale avant l'accès à l'interface principale. L'assistant se rouvre tant que le mot de passe est celui d'usine (bug-185, v2.93.0 : l'état se déduit du mot de passe, [ADR-0131](../adr/0131-l-etat-de-premier-demarrage-se-deduit-du-mot-de-passe.md)). Sa seule requête anonyme est `POST /auth/change-password` (étape 1), qui rend le jeton ; **toutes** les écritures suivantes, dont `/save-config`, passent par `authFetch`. La fin est marquée par `POST /auth/complete-wizard`, désormais protégée par le jeton (`409` si le mot de passe est encore celui d'usine) — voir [`docs/subsystems/auth.md`](../subsystems/auth.md).
 
 ## Déroulé — 4 étapes
 
@@ -38,4 +38,4 @@ Assistant d'**onboarding** affiché au premier démarrage (ou après un factory 
 
 - [`data/wizard.html`](../../data/wizard.html) — page complète (HTML + CSS + JS inline)
 - [`src/web_routes_config.cpp`](../../src/web_routes_config.cpp) — `/save-config` (bloc `pool_size`, feature-090)
-- [`src/auth_manager.cpp`](../../src/) — `/auth/complete-wizard`, exemption premier démarrage
+- [`src/web_routes_auth.cpp`](../../src/web_routes_auth.cpp) — `/auth/change-password`, `/auth/complete-wizard` ; [`src/auth_bootstrap_logic.h`](../../src/auth_bootstrap_logic.h)

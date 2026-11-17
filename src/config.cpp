@@ -394,6 +394,12 @@ void saveMqttConfig() {
   prefs.putBool("disable_ap_boot", authCfg.disableApOnBoot);
   prefs.putString("auth_password", authCfg.adminPassword);
   prefs.putString("auth_token", authCfg.apiToken);
+  // bug-185 — ⛔ L'ÉPOQUE S'ÉCRIT APRÈS LE JETON, JAMAIS AVANT. Une coupure de
+  // courant entre les deux, au premier démarrage qui suit la mise à jour,
+  // laisserait l'époque à jour et l'ANCIEN jeton en mémoire : il redeviendrait
+  // valide pour de bon, et la rotation ne se rejouerait jamais. Dans cet ordre,
+  // une coupure fait simplement rejouer la rotation au démarrage suivant.
+  prefs.putUShort("auth_epoch", authCfg.authEpoch);
   prefs.putString("auth_ap_pwd", authCfg.apPassword);
   prefs.putBool("sensor_logs", authCfg.sensorLogsEnabled);
   prefs.putBool("debug_logs", authCfg.debugLogsEnabled);
@@ -858,6 +864,9 @@ void loadMqttConfig() {
   authCfg.enabled = prefs.getBool("auth_enabled", authCfg.enabled);
   authCfg.forceWifiConfig = prefs.getBool("auth_force_cfg", authCfg.forceWifiConfig);
   authCfg.wizardCompleted = prefs.getBool("wizard_done", false);
+  // bug-185 : 0 par défaut => un appareil mis à jour depuis une version
+  // antérieure régénère son jeton une fois (voir kAuthEpoch).
+  authCfg.authEpoch = prefs.getUShort("auth_epoch", 0);
   authCfg.disableApOnBoot = prefs.getBool("disable_ap_boot", false);
   authCfg.adminPassword = prefs.getString("auth_password", authCfg.adminPassword);
   authCfg.apiToken = prefs.getString("auth_token", authCfg.apiToken);

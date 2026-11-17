@@ -62,6 +62,8 @@ public:
   // Gestion premier démarrage
   bool isFirstBootDetected() const { return isFirstBoot; }
   void clearFirstBootFlag();
+  // bug-185 : vrai si le mot de passe en place est celui d'usine ("admin" ou vide).
+  bool isFactoryPassword() const;
 
   // Réinitialisation mot de passe (bouton physique)
   void resetPasswordToDefault();

@@ -613,7 +613,8 @@
       // Si 401, rediriger vers login
       if (response.status === 401) {
         sessionStorage.removeItem('authToken');
-        window.location.href = '/login.html';
+        // bug-185 : la session saute aussi quand le mot de passe change ailleurs.
+        window.location.href = '/login.html?expired=1';
         throw new Error('Authentication required');
       }
       return response;

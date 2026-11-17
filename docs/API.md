@@ -20,9 +20,23 @@ TOKEN=$(curl -s -X POST -H "Content-Type: application/json" \
   http://poolcontroller.local/auth/login | jq -r .token)
 ```
 
-Les exemples de ce document supposent `$TOKEN` défini ainsi. Le jeton est généré au premier démarrage et **régénéré uniquement par `POST /auth/regenerate-token`**. ⚠️ **Il n'est affiché nulle part dans l'interface web** (vérifié le 2026-11-17) : `POST /auth/login` est le **seul** moyen de l'obtenir.
+Les exemples de ce document supposent `$TOKEN` défini ainsi. Le jeton est généré au premier démarrage. Il est **régénéré** par `POST /auth/regenerate-token`, **à chaque changement de mot de passe** (`POST /auth/change-password`) et **une fois** à la mise à jour 2.93.0 (voir ci-dessous). ⚠️ **Il n'est affiché nulle part dans l'interface web** (vérifié le 2026-11-17). Deux routes le renvoient : `POST /auth/login` (appareil déjà possédé) et `POST /auth/change-password` — cette dernière est la **seule** voie sur un appareil **vierge**, où `/auth/login` répond `403`. ⇒ C'est ce qui permet à la page de secours OTA de fonctionner sur un appareil neuf.
 
-> ⚠️ Premier démarrage : tant que l'assistant n'est pas terminé, la fenêtre de configuration initiale reste ouverte et le jeton n'est pas régénéré au changement de mot de passe — voir [bug-185](../specs/features/todo/bug-185-fenetre-de-premier-demarrage-ouverte-indefiniment.md). L'exemption porte désormais sur l'URL **exacte** `/save-config` (plus sur tout préfixe) ; elle n'ouvre plus `/tune-ph-offset`.
+#### Premier démarrage et mot de passe d'usine (bug-185, v2.93.0)
+
+L'état de sécurité se déduit du **mot de passe** (« vaut `admin` »), plus du drapeau `wizardCompleted` — [ADR-0131](adr/0131-l-etat-de-premier-demarrage-se-deduit-du-mot-de-passe.md). Tant que le mot de passe est celui d'usine, **le seul droit anonyme est de choisir un mot de passe** (`POST /auth/change-password`).
+
+| Route | Avant (≤ 2.92.0) | Depuis 2.93.0 |
+|---|---|---|
+| `GET /get-config` | `200` **sans authentification** | **`401`** sans jeton (`WRITE`) — ℹ️ cette page la déclarait déjà `WRITE` : c'est le code qui rejoint la documentation |
+| `POST /auth/login` | `403` seulement pendant le premier démarrage | **`403` tant que le mot de passe vaut `admin`**, quel que soit l'état de l'assistant |
+| `POST /auth/complete-wizard` | anonyme | **`401`** sans jeton ; **`409`** si le mot de passe est encore celui d'usine |
+| `POST /save-config` | corps anonyme accepté pendant le premier démarrage | **jeton exigé dans tous les cas** |
+| `POST /auth/change-password` | anonyme dès `firstBoot` | anonyme **uniquement** si aucun mot de passe n'a jamais été choisi ; **régénère le jeton** et renvoie le **nouveau** |
+
+> 🔴 **Reconnexion obligatoire.** Changer le mot de passe **déconnecte les autres sessions** (le jeton tourne ; l'onglet qui fait le changement reçoit le nouveau jeton et ne voit rien). De plus, **à la mise à jour vers la 2.93.0, tout le monde se reconnecte une fois** : un jeton pris avant la correction n'aurait sinon jamais cessé de valoir. Un `POOL_TOKEN` figé dans un script tiers devient **périmé** : le redemander par `POST /auth/login`. MQTT et Home Assistant ne sont pas touchés.
+
+> ⚠️ **Ce que ce lot ne garantit PAS.** Entre la mise sous tension d'un appareil neuf et le choix du mot de passe, **le premier arrivé sur le réseau local gagne** : aucun geste physique n'est exigé (décision de l'utilisateur). L'attaque devient **visible** (l'assistant du propriétaire est refusé) et **réversible** (appui long sur le bouton physique). La rotation du jeton protège de l'**émission**, pas de l'**écoute** : le serveur reste en HTTP clair.
 
 ### Niveaux de protection
 
@@ -183,10 +197,27 @@ curl http://poolcontroller.local/auth/status
 ```json
 {
   "firstBoot": false,
+  "virgin": false,
   "authEnabled": true,
   "forceWifiConfig": false
 }
 ```
+
+⭐ **`virgin` (ajouté en v2.93.0, bug-185) — ⛔ À NE PAS CONFONDRE AVEC `firstBoot`.** C'est leur
+confusion qui a produit le défaut.
+
+| Clé | Signification | Ce qu'elle commande |
+|---|---|---|
+| `firstBoot` | « l'assistant de configuration doit encore être montré » | l'affichage de l'assistant, le démarrage du point d'accès |
+| **`virgin`** | « **aucun mot de passe n'a jamais été choisi** » (le mot de passe vaut encore celui d'usine) | ⭐ **le seul** cas où le formulaire ANONYME de choix de mot de passe est accepté |
+
+⚠️ **Elles diffèrent** sur un appareil dont l'assistant a été **interrompu après** le choix du mot de
+passe : `firstBoot` vrai, `virgin` **faux**. ⛔ Une page qui brancherait sur `firstBoot` lui
+proposerait un formulaire que l'appareil **refuse** — c'est ce qui transformait la page de secours
+en impasse. ⇒ **Brancher sur `virgin`**, jamais sur `firstBoot`, pour tout ce qui est anonyme.
+
+ℹ️ Ajout **additif** : aucune clé existante n'a changé, le contrat de sondabilité ci-dessous est
+intact.
 
 **Réponses possibles** : `200` (ci-dessus) ; `429` avec `Retry-After: 60` si l'IP a dépassé le quota global de 120 req/min (`kMaxRequestsPerMinute`, imposé en amont de cette route). Un `429` reçu par un sondage est une **preuve de vie** : l'appareil a répondu.
 
@@ -196,7 +227,7 @@ Depuis la v2.88.2 (bug-177), la page web **sonde cette route** toutes les 2 s, p
 
 1. **Publique** : ni `REQUIRE_AUTH` ni `checkAuth`. Elle doit répondre alors que la page n'a pas encore pu se ré-authentifier.
 2. **Hors quota** : ⛔ ne jamais y ajouter `checkRateLimit()`. Le sondage ne doit consommer aucune des 120 req/min, sinon il s'auto-refuse.
-3. **Sans système de fichiers** : elle ne sert que trois booléens, donc répond même si LittleFS n'a pas pu être remonté après un envoi du filesystem.
+3. **Sans système de fichiers** : elle ne sert que **quatre** booléens (⚠️ trois jusqu'en 2.92.0 — `virgin` s'y est ajouté), donc répond même si LittleFS n'a pas pu être remonté après un envoi du filesystem.
 4. **Enregistrée en premier** (`web_server.cpp`) : hors de la garde `503` de famine mémoire, un appareil sous pression répond quand même « je suis là ».
 
 ⚠️ **Pourquoi ça compte** : ces quatre propriétés étaient des **accidents** jusqu'au 2026-11-15, rien ne les déclarait. Les casser ne produirait **aucune erreur**, seulement une page qui ne constate plus le retour de l'appareil, **en silence**. Le même contrat est inscrit en commentaire dans `src/web_routes_auth.cpp`. Toute modification de cette route doit le relire.
@@ -221,13 +252,15 @@ curl -X POST -H "Content-Type: application/json" \
 }
 ```
 
-> ⚠️ Bloqué si `firstBoot=true` — le mot de passe doit d'abord être changé via `/auth/change-password`.
+**Erreurs**
+- `401` : identifiants invalides.
+- `403` : le mot de passe est **encore celui d'usine** (`admin`) — à changer d'abord via `/auth/change-password`. ⚠️ Depuis 2.93.0 ce refus ne dépend plus de l'état de l'assistant : un appareil dont l'assistant a été interrompu **après** le choix du mot de passe accepte la connexion.
 
 ---
 
-### POST /auth/change-password — public (premier démarrage) / WRITE (ensuite)
+### POST /auth/change-password — public (appareil vierge) / jeton ou mot de passe actuel (ensuite)
 
-Change le mot de passe admin. Accessible sans authentification lors du premier démarrage.
+Change le mot de passe admin. **Anonyme uniquement si aucun mot de passe n'a jamais été choisi** (mot de passe encore `admin`) ; ensuite, il faut le jeton **ou** `currentPassword`. L'authentification est vérifiée **avant** la longueur (`401`, jamais `400`, pour un anonyme).
 
 ```bash
 curl -X POST -H "Content-Type: application/json" \
@@ -243,17 +276,23 @@ curl -X POST -H "Content-Type: application/json" \
 }
 ```
 
-Règles : minimum 8 caractères, différent du mot de passe actuel.
+Règles : minimum 8 caractères, différent du mot de passe actuel. Codes : `400` (trop court / identique), `401` (non authentifié ou `currentPassword` faux).
+
+⚠️ **Le jeton est régénéré** à chaque succès et la réponse contient le **nouveau** : les autres sessions et les connexions WebSocket authentifiées avec l'ancien sont révoquées. Un client qui garde l'ancien jeton reçoit `401`.
 
 ---
 
-### POST /auth/complete-wizard — public (premier démarrage uniquement)
+### POST /auth/complete-wizard — WRITE
 
-Marque le wizard de configuration initiale comme complété.
+Marque l'assistant de configuration initiale comme terminé. Simple **filet idempotent** : la clôture normale se fait déjà par `/auth/change-password`.
 
 ```bash
-curl -X POST http://poolcontroller.local/auth/complete-wizard
+curl -H "X-Auth-Token: $TOKEN" -X POST http://poolcontroller.local/auth/complete-wizard
 ```
+
+**Erreurs**
+- `401` : jeton absent ou invalide (la route était anonyme jusqu'en 2.92.0).
+- `409` : le mot de passe est encore celui d'usine (« Choisissez d'abord un mot de passe »).
 
 ---
 
@@ -1335,7 +1374,7 @@ curl -H "X-Auth-Token: $TOKEN" -X POST -H "Content-Type: application/json" \
 
 Depuis la v2.25.0, le handler de **corps** vérifie l'authentification **avant** d'accumuler ou d'appliquer quoi que ce soit : un corps non autorisé est **ignoré en totalité** (aucune modification, aucun buffer alloué), un `warning` journalise l'IP d'origine, et la complétion émet le `401` comme avant.
 
-- L'**exemption « premier démarrage »** (assistant de configuration initiale) est conservée à l'identique.
+- ⚠️ **L'exemption « premier démarrage » est SUPPRIMÉE depuis la v2.93.0** (bug-185) : le corps anonyme écrivait aussi `auth_enabled`, le mot de passe et le courtier MQTT. L'assistant n'en a pas besoin : il obtient son jeton à `/auth/change-password`, puis écrit avec lui.
 - Le quota `kMaxRequestsPerMinute` reste compté **une seule fois** par requête (le contrôle du corps ne rejoue pas le rate-limiting).
 
 #### Codes de réponse

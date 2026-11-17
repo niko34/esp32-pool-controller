@@ -2,6 +2,27 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [2.93.0] - 2026-11-17
+
+### Firmware
+- 🔴 **Reconnexion obligatoire, une fois.** À la mise à jour vers la 2.93.0, **tout le monde devra se reconnecter** (navigateurs, tableaux de bord, scripts). L'appareil renouvelle son jeton d'accès au démarrage : corriger le code ne retire pas les jetons **déjà pris**, et sans ce renouvellement le correctif ne protégerait que les appareils neufs. ⛔ Un `POOL_TOKEN` figé dans un script tiers devient périmé : le redemander par `POST /auth/login`. MQTT et Home Assistant ne sont pas touchés.
+- **Sécurité — premier démarrage (bug-185)** : un inconnu sur le réseau pouvait **refermer** la fenêtre de premier démarrage sans choisir de mot de passe, après quoi `admin`/`admin` ouvrait l'appareil **pour toujours** ; le jeton pris pendant la fenêtre ne s'invalidait jamais ; et le corps anonyme de `/save-config` pouvait couper l'authentification et substituer le courtier MQTT. Désormais l'état de sécurité se déduit du **mot de passe** (« vaut `admin` »), plus d'un drapeau qu'un tiers pouvait poser :
+  - `POST /auth/login` refuse `admin` (`403`) **tant que le mot de passe est celui d'usine**, quel que soit l'état de l'assistant ;
+  - `POST /auth/complete-wizard` exige le jeton (`401`) et refuse (`409`) si le mot de passe est encore celui d'usine ;
+  - `POST /save-config` : **plus aucune exemption anonyme** ;
+  - `GET /get-config` rend **`401`** sans jeton (elle répondait `200` à n'importe qui : nom du Wi-Fi, identifiant MQTT, toute la régulation ; `docs/API.md` la déclarait déjà protégée) ;
+  - `POST /auth/change-password` n'est anonyme que si aucun mot de passe n'a jamais été choisi ; il **régénère le jeton** et renvoie le nouveau.
+  - `GET /auth/status` publie une clé de plus, **`virgin`** (« aucun mot de passe n'a jamais été choisi »), distincte de `firstBoot` (« l'assistant doit être montré »). ⚠️ Une **page de secours** ou un écran de connexion qui confondait les deux proposait un formulaire que l'appareil refuse : sur un appareil dont l'installation a été interrompue, il n'y avait **plus d'issue** que l'effacement complet.
+- **Changer le mot de passe déconnecte les autres sessions** (le jeton tourne). L'onglet qui fait le changement ne voit rien ; les autres retombent sur la page de connexion avec « Le mot de passe a été modifié sur cet appareil. Reconnectez-vous. ».
+- **Migration auto-réparatrice** : un appareil dont un tiers avait refermé la fenêtre (assistant « terminé » mais mot de passe `admin`) **rouvre son assistant** à la mise à jour, au lieu de rester sur `admin`/`admin`.
+- ⛔ **Ce que ce correctif ne ferme PAS** : entre la mise sous tension d'un appareil neuf et le choix du mot de passe, **le premier arrivé sur le réseau local gagne** — aucun geste n'est imposé au client (décision de l'utilisateur). L'attaque devient **visible** (l'assistant du propriétaire est refusé) et **réversible** (appui long sur le bouton physique). Le serveur reste en HTTP clair : la rotation du jeton protège de l'émission, pas de l'écoute.
+
+### Documentation
+- **ADR-0131** (l'état de premier démarrage se déduit du mot de passe) ; `docs/API.md` (cinq contrats), `docs/subsystems/auth.md` (module `auth_bootstrap_logic.h`, `kAuthEpoch`, deux notions `factoryPassword` / `firstBoot`), `docs/UPDATE_GUIDE.md` (reconnexion unique), `docs/features/page-settings.md`, `page-wizard.md`, `docs/user/src/guide-utilisation.html` (déconnexion des autres appareils).
+- Corrections de faits faux : le mot de passe du point d'accès est **tiré au hasard** (et non dérivé du chipID) ; `resetPasswordToDefault()` est du code mort ; la route `change-password` attend `currentPassword`/`newPassword` (pas `current`/`new`).
+
+---
+
 ## [2.92.0] - 2026-11-17
 
 ### Firmware
@@ -9,7 +30,7 @@
   - ⚠️ **Rupture** : `curl -u admin:motdepasse ...` est refusé (`401`). Tout script tiers doit échanger son mot de passe contre un jeton par `POST /auth/login`, puis envoyer `X-Auth-Token`. Le navigateur et l'interface ne sont pas concernés.
   - L'exemption du premier démarrage porte sur l'URL **exacte** `/save-config` (et non plus sur tout préfixe) : le premier démarrage n'ouvre plus l'écriture de l'offset pH (`/tune-ph-offset`) à n'importe qui sur le réseau.
   - Journal de démarrage : « Authentification activée (API Token X-Auth-Token uniquement) ».
-  - ⛔ **Reste ouvert** ([bug-185](specs/features/todo/bug-185-fenetre-de-premier-demarrage-ouverte-indefiniment.md)) : la fenêtre de premier démarrage ne se referme que sur la fin de l'assistant, et le jeton n'est pas régénéré au changement de mot de passe.
+  - ⛔ **Reste ouvert** ([bug-185](specs/features/done/bug-185-fenetre-de-premier-demarrage-ouverte-indefiniment.md)) : la fenêtre de premier démarrage ne se referme que sur la fin de l'assistant, et le jeton n'est pas régénéré au changement de mot de passe.
 
 ### Fonctionnalités
 - **Interface — Réglages → Installation, astuce « Comment signaler l'état de la filtration ? »** : l'exemple HTTP enseignait `curl -u <utilisateur>:<mot_de_passe>`, que l'appareil **refuse désormais**. ⚠️ C'est la route qui lui dit que l'eau circule : un système tiers qui suivait cette consigne n'aurait **jamais** obtenu de régulation, sans aucun indice de pourquoi. L'astuce montre maintenant les **deux étapes** (obtenir un jeton, puis signaler) — et les blocs de commande **se replient** au lieu de masquer l'URL derrière un défilement latéral à 390 px.

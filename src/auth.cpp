@@ -4,6 +4,7 @@
 #include <esp_random.h>
 #include "auth_log_throttle_site.h"
 #include "auth_admission_logic.h"
+#include "auth_bootstrap_logic.h"
 
 // ---------------------------------------------------------------------------
 // Bornage du journal des refus d'authentification (bug-112)
@@ -114,15 +115,41 @@ void AuthManager::begin() {
     systemLogger.info("================================================");
   }
 
-  // Détecter premier démarrage (wizard non complété)
-  // Basé uniquement sur wizardCompleted pour éviter de déclencher le wizard
-  // si l'utilisateur change volontairement son mot de passe vers une valeur simple.
-  if (!authCfg.wizardCompleted) {
-    isFirstBoot = true;
+  // Détecter premier démarrage (bug-185) : l'état se déduit du MOT DE PASSE, pas
+  // du seul drapeau wizardCompleted (qu'un inconnu pouvait poser). Migration
+  // auto-réparatrice : wizardCompleted vrai + mot de passe d'usine => l'assistant
+  // se rouvre, au lieu de laisser admin/admin à vie.
+  isFirstBoot = computeFirstBoot(authCfg.wizardCompleted, isFactoryPassword());
+  if (isFirstBoot) {
     if (adminPassword.isEmpty()) {
       adminPassword = "admin";
     }
     systemLogger.warning("SÉCURITÉ: Premier démarrage détecté - Configuration initiale requise !");
+  }
+
+  // bug-185 — ROTATION UNIQUE À LA MISE À JOUR. Corriger le code ne retire pas
+  // les jetons DÉJÀ pris : avant ce lot, n'importe qui sur le réseau pouvait en
+  // obtenir un pendant la fenêtre de premier démarrage, et rien ne l'invalidait
+  // jamais — pas même un changement de mot de passe. ⇒ Sans ce passage, le
+  // correctif ne protégerait que les appareils NEUFS.
+  // ⚠️ Visible : toutes les sessions ouvertes retombent sur l'écran de connexion,
+  // UNE fois.
+  // ⛔ `wasPristine` se lit sur `authCfg.apiToken` (l'état NVS), ⛔ JAMAIS sur le
+  // membre `apiToken` : celui-ci vient peut-être d'être généré quelques lignes
+  // plus haut, donc il n'est JAMAIS vide ici — le tester rendait la garde morte
+  // et faisait journaliser « jeton renouvelé par la mise à jour » sur un appareil
+  // SORTI DU CARTON, où il n'y a eu ni mise à jour ni session à reconnecter.
+  // (Relevé par code-reviewer : le commentaire d'origine expliquait vouloir
+  // éviter ce mensonge, sans voir qu'il le produisait.)
+  if (authCfg.authEpoch < kAuthEpoch) {
+    const bool wasPristine = authCfg.apiToken.isEmpty();
+    regenerateApiToken();          // pose apiToken (RAM)
+    authCfg.apiToken = apiToken;   // ⛔ ET la NVS : sans cette ligne l'ANCIEN jeton
+    authCfg.authEpoch = kAuthEpoch;//   ressusciterait au redémarrage suivant.
+    saveMqttConfig();
+    if (!wasPristine) {
+      systemLogger.warning("SÉCURITÉ: jeton d'API renouvelé par la mise à jour — reconnexion requise (bug-185)");
+    }
   }
 
   if (authEnabled) {
@@ -259,17 +286,10 @@ bool AuthManager::checkAuth(AsyncWebServerRequest* req, RouteProtection level) {
   AuthAdmissionInput in{};
   in.authEnabled = authEnabled;
   in.publicRoute = (level == RouteProtection::NONE);
-  in.firstBoot = isFirstBoot;
-  // URL comparée EXACTEMENT (plus de startsWith) : l'exemption de l'assistant ne
-  // couvre que /save-config, pas /save-config-quelquechose.
-  in.isSaveConfigUrl = (req->url() == "/save-config");
   // Le quota n'est consommé que si la décision l'atteint (auth active, route
-  // protégée) ; il passe AVANT l'exemption de l'assistant.
-  // ⚠️ PORTÉE EXACTE, à ne pas surestimer : cela borne les requêtes qui passent
-  // PAR checkAuth(). Le CORPS de /save-config, lui, est admis plus tôt, par
-  // saveConfigBodyAuthorized() (web_routes_config.cpp), qui ne consulte aucun
-  // quota pendant le premier démarrage. ⛔ Donc : « /save-config est désormais
-  // sous quota au premier démarrage » serait FAUX.
+  // protégée). bug-185 : plus AUCUNE exemption anonyme ici (celle du premier
+  // démarrage sur /save-config est supprimée) ; seule la route publique
+  // /auth/change-password porte le droit anonyme d'un appareil vierge.
   in.rateLimitOk = (!in.authEnabled || in.publicRoute) ? true : checkRateLimit(req);
   // ⚠️ Ces gardes REFLÈTENT l'« ORDRE IMPOSÉ » déclaré en tête de
   // auth_admission_logic.h : elles n'évaluent un fait que si la décision peut
@@ -315,6 +335,10 @@ void AuthManager::clearFirstBootFlag() {
 
   // Sauvegarder immédiatement dans la NVS pour persister au redémarrage
   saveMqttConfig();
+}
+
+bool AuthManager::isFactoryPassword() const {
+  return isFactoryPasswordLiteral(adminPassword.c_str());
 }
 
 void AuthManager::resetPasswordToDefault() {

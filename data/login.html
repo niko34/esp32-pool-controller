@@ -330,13 +330,25 @@
       const firstBootAlert = document.getElementById('firstBootAlert');
       const errorAlert = document.getElementById('errorAlert');
       const successAlert = document.getElementById('successAlert');
+      // bug-185 : session invalidée (mot de passe modifié ailleurs) -> message
+      // posé directement (showError masquerait l'alerte après 5 s).
+      if (new URLSearchParams(window.location.search).get('expired') === '1') {
+        errorAlert.textContent = 'Le mot de passe a été modifié sur cet appareil. Reconnectez-vous.';
+        errorAlert.classList.remove('hidden');
+      }
       // Vérifier si premier démarrage
       async function checkFirstBoot() {
         try {
           const response = await fetch('/auth/status');
           if (response.ok) {
             const data = await response.json();
-            if (data.firstBoot) {
+            // bug-185 : on ne redirige vers l'assistant que si AUCUN mot de passe
+            // n'a jamais été choisi (`virgin`). ⛔ Pas sur `firstBoot` : un appareil
+            // dont l'assistant a été interrompu APRÈS le choix du mot de passe a
+            // firstBoot vrai, et l'assistant lui serait refusé — impasse. Dans ce
+            // cas on affiche le formulaire de connexion : son mot de passe marche.
+            const virgin = (data.virgin === undefined) ? data.firstBoot : data.virgin;
+            if (virgin) {
               // Rediriger vers l'assistant de configuration au lieu d'afficher le formulaire
               window.location.href = '/wizard.html';
               return;

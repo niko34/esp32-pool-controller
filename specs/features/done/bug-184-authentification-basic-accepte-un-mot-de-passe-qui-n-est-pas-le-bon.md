@@ -128,7 +128,7 @@ exige 10 min de filtration et une calibration). ⇒ **Exemption involontaire, fe
 
 ⚠️ **Ce que cette borne NE corrige PAS** : la fenêtre de premier démarrage elle-même ne se referme
 que sur `/auth/complete-wizard`, et le jeton **n'est pas régénéré** au changement de mot de passe.
-⇒ [`bug-185`](../todo/bug-185-fenetre-de-premier-demarrage-ouverte-indefiniment.md), ouverte le
+⇒ [`bug-185`](../done/bug-185-fenetre-de-premier-demarrage-ouverte-indefiniment.md), ouverte le
 même jour. ⛔ **Ce lot ne rend pas le premier démarrage sûr.**
 
 ⚠️ **Et le quota n'a pas bougé pour le corps de `/save-config`** : il est admis par
@@ -275,7 +275,7 @@ tous les trois sous `set -u`. ⇒ Si quelqu'un l'ajoute un jour, il faudra passe
 
 ## Critères d'acceptation
 - [x] Une variante de casse des identifiants rend **401** — ⭐ **MESURÉ SUR L'APPAREIL** (tableau D2)
-- [x] `admin`/`admin` n'ouvre **aucune** route protégée — **mesuré** sur quatre routes. ⚠️ **ET CE N'EST PAS LA MÊME CHOSE QUE « le premier démarrage est sûr »** : `POST /auth/change-password` reste anonyme pendant cette fenêtre **et rend le jeton** ⇒ [`bug-185`](../todo/bug-185-fenetre-de-premier-demarrage-ouverte-indefiniment.md)
+- [x] `admin`/`admin` n'ouvre **aucune** route protégée — **mesuré** sur quatre routes. ⚠️ **ET CE N'EST PAS LA MÊME CHOSE QUE « le premier démarrage est sûr »** : `POST /auth/change-password` reste anonyme pendant cette fenêtre **et rend le jeton** ⇒ [`bug-185`](../done/bug-185-fenetre-de-premier-demarrage-ouverte-indefiniment.md)
 - [x] `ota_update.sh` envoie firmware et interface **sans** Basic — ⭐ **ENVOI RÉEL RÉUSSI**, vers un appareil qui tournait l'**ancien** firmware
 - [x] La page de secours OTA fonctionne toujours — `src/ota_recovery_page.html.in` **n'a pas une ligne touchée** par ce lot et n'emploie que `X-Auth-Token`. ⚠️ ⛔ **non rejouée sur l'appareil** : la déclencher exige de mettre l'appareil en panne
 - [x] `pio run` sans nouveau warning ; **toutes** les gardes CI vertes (`check_release_artefacts.sh` excepté : il exige une signature de release)
@@ -296,7 +296,7 @@ tous les trois sous `set -u`. ⇒ Si quelqu'un l'ajoute un jour, il faudra passe
 
 ⚠️ **Ce que la clôture de cette fiche ne dit PAS** : que l'authentification de l'appareil est
 saine. Deux défauts **vérifiés** restent ouverts — la fenêtre de premier démarrage
-([`bug-185`](../todo/bug-185-fenetre-de-premier-demarrage-ouverte-indefiniment.md), qualifiée
+([`bug-185`](../done/bug-185-fenetre-de-premier-demarrage-ouverte-indefiniment.md), qualifiée
 « bloquante pour la vente ») et `GET /get-config` sans aucune garde
 ([`bug-183`](../todo/bug-183-auth-login-echecs-muets-et-comparaison-non-constante.md)).
 

@@ -473,7 +473,7 @@ Toggles complémentaires :
 | Sauvegarder config (tous champs sauf password, dont `install_mode`) | `POST /save-config` | CRITICAL |
 | Restaurer les valeurs d'usine de régulation (feature-088, v2.31.0 — corps vide, dialogue avant/après) | `POST /reset-regulation-defaults` | CRITICAL |
 | Signaler l'état d'une filtration externe (mode `external`) | `POST /filtration/external-state?running=…` | WRITE |
-| Changer mot de passe admin | `POST /auth/change-password` (body `{current, new}`) | CRITICAL |
+| Changer mot de passe admin | `POST /auth/change-password` (body `{currentPassword, newPassword}`) | jeton ou mot de passe actuel — ⚠️ **le jeton est régénéré** ; l'onglet qui change reçoit le nouveau (`sessionStorage`), les **autres sessions sont déconnectées** et retombent sur `login.html?expired=1` (« Le mot de passe a été modifié sur cet appareil. Reconnectez-vous. ») — bug-185 |
 | Scanner Wi-Fi | `POST /wifi/scan` | WRITE |
 | Déconnecter Wi-Fi | `POST /wifi/disconnect` | CRITICAL |
 | Vérifier une update | `GET /check-update` | READ |

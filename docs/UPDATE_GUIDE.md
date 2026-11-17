@@ -458,6 +458,20 @@ La page de secours n'est **pas une protection** : elle ne durcit rien. Elle repo
 
 ## Notes de migration
 
+### Mise à jour vers la 2.93.0 — reconnexion unique (bug-185)
+
+⛔ **ENVOYER LE SYSTÈME DE FICHIERS AVEC LE FIRMWARE** (`ota-all`, pas `ota-firmware`). La
+2.93.0 ajoute une clé à `GET /auth/status` (`virgin`) sur laquelle l'écran de connexion
+branche. Un **ancien** `login.html` servi par un **nouveau** firmware renverrait, sur un appareil
+dont l'installation a été interrompue, vers un assistant que l'appareil refuse ⇒ **interface
+principale bloquée** jusqu'à l'envoi du système de fichiers.
+ℹ️ La **page de secours**, elle, reste accessible : elle est embarquée dans le firmware, donc
+toujours cohérente avec lui. C'est précisément à ça qu'elle sert.
+
+🔴 **Après cette mise à jour, tout le monde doit se reconnecter une fois** (navigateurs, scripts). L'appareil renouvelle son jeton d'API au premier démarrage (`kAuthEpoch`) : un jeton pris avant la correction n'aurait sinon jamais cessé de valoir. Un `POOL_TOKEN` figé dans un script tiers est **périmé** : le redemander par `POST /auth/login`. MQTT et Home Assistant ne sont pas touchés. Aucune manipulation USB.
+
+⚠️ Un appareil dont le mot de passe vaut encore `admin` mais dont l'assistant avait été refermé **rouvre son assistant** : c'est voulu (voir [ADR-0131](adr/0131-l-etat-de-premier-demarrage-se-deduit-du-mot-de-passe.md)).
+
 ### Migration layout v4 → v5 (flash 8 Mo) — depuis 2026-09-05
 
 ⛔ **Mise à jour par câble USB obligatoire. L'OTA ne peut PAS appliquer ce changement.**

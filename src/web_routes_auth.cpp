@@ -3,6 +3,8 @@
 #include "auth.h"
 #include "config.h"
 #include "logger.h"
+#include "constants.h"            // bug-185 : kAdminPasswordMinLength
+#include "auth_bootstrap_logic.h"  // bug-185 : décisions pures
 #include "ws_manager.h"  // bug-081 : révocation WS à la rotation de token
 #include <ArduinoJson.h>
 #include <WiFi.h>
@@ -31,6 +33,17 @@ void setupAuthRoutes(AsyncWebServer* server) {
   server->on("/auth/status", HTTP_GET, [](AsyncWebServerRequest *req) {
     JsonDocument doc;
     doc["firstBoot"] = authManager.isFirstBootDetected();
+    // bug-185 — DEUX NOTIONS DISTINCTES, et leur confusion était le défaut :
+    //   · firstBoot : « l'assistant doit encore être montré » ;
+    //   · virgin    : « AUCUN mot de passe n'a jamais été choisi ».
+    // ⛔ Seul `virgin` autorise le formulaire ANONYME de choix de mot de passe.
+    // Sans cette clé, un appareil dont l'assistant a été interrompu APRÈS le
+    // choix du mot de passe voyait les pages lui proposer un formulaire que
+    // l'appareil REFUSE — la page de secours devenait une impasse, et la seule
+    // issue était l'appui long, qui efface étalonnages, consignes et limites.
+    // ⚠️ Ajout ADDITIF : aucune clé existante ne change, le contrat de
+    // sondabilité de bug-177 (toujours répondre, sans auth ni quota) est intact.
+    doc["virgin"] = authManager.isFactoryPassword();
     doc["authEnabled"] = authManager.isEnabled();
     doc["forceWifiConfig"] = authCfg.forceWifiConfig;
     sendJsonResponse(req, doc);
@@ -55,16 +68,24 @@ void setupAuthRoutes(AsyncWebServer* server) {
       String username = doc["username"] | "";
       String password = doc["password"] | "";
 
-      if (username != "admin" || password != authManager.getPassword()) {
-        sendErrorResponse(req, 401, "Nom d'utilisateur ou mot de passe invalide");
-        return;
-      }
-
-      // SÉCURITÉ: Bloquer le login si premier démarrage (mot de passe par défaut)
-      // L'utilisateur DOIT changer le mot de passe via /auth/change-password d'abord
-      if (authManager.isFirstBootDetected()) {
-        sendErrorResponse(req, 403, "Changement de mot de passe obligatoire au premier démarrage");
-        return;
+      // bug-185 : la décision est dans le module pur. Le mot de passe d'usine est
+      // refusé (403) QUEL QUE SOIT isFirstBoot : sinon un tiers qui referme la
+      // fenêtre rendrait admin/admin valide pour toujours.
+      // ⛔ `isFirstBoot` n'est PAS passé, délibérément : un assistant interrompu
+      // APRÈS le choix du mot de passe laisse isFirstBoot vrai sur un appareil
+      // déjà possédé — le tester ici enfermerait son propriétaire dehors, et
+      // l'OTA est le SEUL canal de déploiement. Voir auth_bootstrap_logic.h.
+      switch (decideLogin(username == "admin", password == authManager.getPassword(),
+                          authManager.isFactoryPassword())) {
+        case LoginVerdict::kAllow:
+          break;
+        case LoginVerdict::kDenyMustChangePassword:
+          sendErrorResponse(req, 403, "Changement de mot de passe obligatoire au premier démarrage");
+          return;
+        case LoginVerdict::kDenyCredentials:
+        default:
+          sendErrorResponse(req, 401, "Nom d'utilisateur ou mot de passe invalide");
+          return;
       }
 
       // Authentification réussie - retourner le token API
@@ -95,67 +116,90 @@ void setupAuthRoutes(AsyncWebServer* server) {
       String currentPassword = doc["currentPassword"] | "";
       String newPassword = doc["newPassword"] | "";
 
-      // Logique d'authentification :
-      // 1. Si premier démarrage (firstBoot) : autoriser sans authentification
-      // 2. Si currentPassword fourni : vérifier qu'il correspond
-      // 3. Si currentPassword vide : vérifier que l'utilisateur est déjà authentifié
+      // bug-185 : décision dans le module pur (auth_bootstrap_logic.h). ⛔ Ordre
+      // imposé là-bas : authentification AVANT longueur (401, pas 400, sinon fuite
+      // de l'existence d'un compte). Droit anonyme = appareil vierge seulement.
+      const bool isFirstBoot = authManager.isFirstBootDetected();
+      // ⛔ LE DROIT ANONYME SUIT LE MOT DE PASSE, PAS L'ASSISTANT. Un appareil dont
+      // l'assistant a été interrompu après le choix du mot de passe garde
+      // isFirstBoot vrai alors qu'il est DÉJÀ possédé : lui accorder le droit
+      // anonyme laisserait un inconnu écraser le mot de passe du propriétaire.
+      const bool virginState = authManager.isFactoryPassword();
+      PwdChangeInput in;
+      in.virginState = virginState;
+      in.hasCurrentPassword = !currentPassword.isEmpty();
+      in.currentMatches = (currentPassword == authManager.getPassword());
+      in.currentIsFactoryLiteral = (currentPassword == "admin");
+      // checkTokenAuth : ne répond pas lui-même (le 401 est émis ici, une seule fois).
+      in.tokenValid = (!virginState && !in.hasCurrentPassword) ? authManager.checkTokenAuth(req) : false;
+      in.newLenOk = (newPassword.length() >= kAdminPasswordMinLength);  // constante partagée avec /save-config (bug-185)
+      in.newEqualsCurrent = in.hasCurrentPassword && (newPassword == currentPassword);
 
-      bool isFirstBoot = authManager.isFirstBootDetected();
-      bool isAuthenticated = false;
-
-      if (!isFirstBoot) {
-        // Pas en premier démarrage : authentification requise
-        if (currentPassword.isEmpty()) {
-          // Pas de currentPassword : vérifier l'authentification par token
-          isAuthenticated = authManager.checkAuth(req, RouteProtection::WRITE);
-          if (!isAuthenticated) {
-            sendErrorResponse(req, 401, "Authentication required");
-            return;
-          }
-        } else {
-          // currentPassword fourni : vérifier qu'il correspond
-          if (currentPassword != authManager.getPassword()) {
-            sendErrorResponse(req, 401, "Current password incorrect");
-            return;
-          }
-        }
-      } else {
-        // Premier démarrage : vérifier que le currentPassword est "admin"
-        if (!currentPassword.isEmpty() && currentPassword != "admin") {
+      switch (decidePasswordChange(in)) {
+        case PwdChangeVerdict::kAllow:
+          break;
+        case PwdChangeVerdict::kDenyUnauth:
+          sendErrorResponse(req, 401, "Authentication required");
+          return;
+        case PwdChangeVerdict::kDenyBadCurrent:
           sendErrorResponse(req, 401, "Current password incorrect");
           return;
-        }
+        case PwdChangeVerdict::kDenyTooShort:
+          sendErrorResponse(req, 400, "New password must be at least 8 characters");
+          return;
+        case PwdChangeVerdict::kDenySame:
+        default:
+          sendErrorResponse(req, 400, "New password must be different from current password");
+          return;
       }
 
-      // Vérifier la longueur du nouveau mot de passe
-      if (newPassword.length() < 8) {
-        sendErrorResponse(req, 400, "New password must be at least 8 characters");
-        return;
-      }
+      const AuthEffectPlan plan = planAfterPasswordChange(isFirstBoot);
 
-      // Vérifier que le nouveau mot de passe est différent (seulement si currentPassword fourni)
-      if (!currentPassword.isEmpty() && newPassword == currentPassword) {
-        sendErrorResponse(req, 400, "New password must be different from current password");
-        return;
-      }
-
-      // Changer le mot de passe
+      // ⛔ ORDRE D'EFFETS FIGÉ (bug-185) — non testable en natif (NVS/HTTP),
+      // protégé par ce commentaire : 1 mot de passe, 2 forceWifiConfig, 3 jeton
+      // (RAM ET authCfg ensemble), 4 UNE SEULE écriture NVS, 5 révocation WS,
+      // 6 réponse avec le NOUVEAU jeton.
+      // 1.
       authCfg.adminPassword = newPassword;
       authManager.setPassword(newPassword);
 
-      // Si c'était un reset password, désactiver le flag forceWifiConfig
-      // L'utilisateur a maintenant défini un nouveau mot de passe sécurisé
-      // Le mode AP sera désactivé automatiquement après connexion si WiFi est connecté
+      // 2. Si c'était un reset password, désactiver le flag forceWifiConfig
       if (authCfg.forceWifiConfig) {
         authCfg.forceWifiConfig = false;
       }
 
-      saveMqttConfig();
+      // 3. ⛔ LES DEUX LIGNES ENSEMBLE : tourner le jeton en RAM sans le recopier
+      // dans authCfg ferait RESSUSCITER l'ancien jeton de la NVS au redémarrage.
+      if (plan.rotateToken) {
+        authManager.regenerateApiToken();
+        authCfg.apiToken = authManager.getApiToken();
+      }
 
-      // Retourner le token API pour connexion automatique
+      // 4. UNE SEULE écriture : deux saveMqttConfig() ouvriraient une fenêtre de
+      // redémarrage à l'état mi-ancien mi-neuf (drapeau persisté sans mot de passe
+      // = appareil enfermé dehors). clearFirstBootFlag() sauvegarde déjà.
+      if (plan.closeFirstBootWindow) {
+        authManager.clearFirstBootFlag();
+      } else {
+        saveMqttConfig();
+      }
+
+      // 5. Les clients WS authentifiés avec l'ancien jeton sont révoqués.
+      if (plan.revokeWebsockets) {
+        wsManager.revokeAllAuthenticated();
+      }
+
+      // 6. Réponse : le NOUVEAU jeton (les clients stockent response.token ; la
+      // page de secours OTA échoue sans jeton).
       JsonDocument response;
       response["success"] = true;
-      response["token"] = authManager.getApiToken();
+      // ⛔ `plan.returnRotatedToken` est CONSULTÉ, pas décoratif : un champ de plan
+      // que la production n'applique pas ferait affirmer à ses tests une propriété
+      // fausse (relevé par code-reviewer). Il vaut toujours vrai aujourd'hui — et
+      // c'est le test de mutation qui le prouve, pas cette ligne.
+      if (plan.returnRotatedToken) {
+        response["token"] = authManager.getApiToken();
+      }
       response["message"] = "Password changed successfully";
       sendJsonResponse(req, response);
     }
@@ -204,11 +248,24 @@ void setupAuthRoutes(AsyncWebServer* server) {
   });
 
   // Route: Marquer le wizard comme complété (désactive le flag firstBoot)
-  // PUBLIC : doit rester accessible sans token pour couvrir le cas où l'utilisateur
-  // revient sur le wizard après interruption (sessionStorage vidé, pas de token).
-  // Idempotente : retourne 200 même si firstBoot est déjà false.
+  // bug-185 : n'est plus PUBLIQUE. Filet idempotent : exige le jeton (donc un mot
+  // de passe déjà choisi, la clôture normale passant par /auth/change-password) et
+  // refuse (409) si le mot de passe est encore celui d'usine.
   server->on("/auth/complete-wizard", HTTP_POST, [](AsyncWebServerRequest *req) {
-    if (authManager.isFirstBootDetected()) {
+    REQUIRE_AUTH(req, RouteProtection::WRITE);
+    // ⛔ `tokenValid` est codé à `true` À DESSEIN : le REQUIRE_AUTH ci-dessus a DÉJÀ
+    // répondu 401 et rendu la main si le jeton manquait. Rappeler checkAuth ici
+    // consommerait un SECOND quota et enverrait une SECONDE réponse sur la même
+    // requête. ⚠️ Conséquence assumée : la branche kDenyUnauth du module pur est
+    // donc inatteignable depuis cette route — ses tests protègent le module, pas
+    // ce site. La vraie garde est la ligne au-dessus.
+    const WizardCloseVerdict v = decideWizardClose(authManager.isFirstBootDetected(), true,
+                                                   authManager.isFactoryPassword());
+    if (v == WizardCloseVerdict::kDenyFactoryPassword) {
+      sendErrorResponse(req, 409, "Choisissez d'abord un mot de passe");
+      return;
+    }
+    if (v == WizardCloseVerdict::kClose) {
       authManager.clearFirstBootFlag();
       // AUTH-LOG-EXEMPT(borné par nature : n'écrit qu'une fois, gardé par isFirstBootDetected() que clearFirstBootFlag() rend faux)
       systemLogger.info("Premier démarrage finalisé - Configuration wizard complétée");

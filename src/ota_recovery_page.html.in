@@ -154,7 +154,17 @@ async function start() {
     const res = await fetch("/auth/status");
     const st = await res.json();
     show("s-wait", false);
-    if (st.firstBoot) { show("s-first", true); return; }
+    // bug-185 : brancher sur `virgin` (aucun mot de passe jamais choisi), ⛔ PAS
+    // sur `firstBoot`. Un appareil dont l'assistant a été interrompu APRÈS le
+    // choix du mot de passe a firstBoot vrai mais REFUSE le formulaire anonyme :
+    // cette page devenait une impasse, sur le dernier filet de réparation.
+    // ⛔ AUCUN repli sur `firstBoot` ici, délibérément : cette page est EMBARQUÉE
+    // DANS LE FIRMWARE qui sert /auth/status. Les deux voyagent ensemble, donc
+    // `st.virgin` ne peut pas être absent. Un repli serait du code mort — et du
+    // code mort dans le dernier filet de réparation est un piège.
+    // (⚠️ `data/login.html`, lui, EN A un : le système de fichiers se déploie
+    // séparément et peut tourner sur un firmware antérieur.)
+    if (st.virgin) { show("s-first", true); return; }
     if (st.authEnabled === false || sessionStorage.getItem(TOKEN_KEY)) { openUpload(); return; }
     show("s-login", true);
   } catch (e) {

@@ -3,7 +3,7 @@
 - **Statut** : Accepté
 - **Date** : 2026-11-17
 - **Décideurs** : `security-reviewer` (relevé et direction recommandée), `architect` — ⚠️ décision **technique**, prise dans le lot ; l'utilisateur a demandé le traitement de `bug-184`, pas le choix entre retrait et durcissement.
-- **Spec(s) liée(s)** : [bug-184](../../specs/features/done/bug-184-authentification-basic-accepte-un-mot-de-passe-qui-n-est-pas-le-bon.md) · [bug-185](../../specs/features/todo/bug-185-fenetre-de-premier-demarrage-ouverte-indefiniment.md) · [ADR-0127](0127-le-bornage-du-journal-d-authentification-est-global-par-emetteur.md)
+- **Spec(s) liée(s)** : [bug-184](../../specs/features/done/bug-184-authentification-basic-accepte-un-mot-de-passe-qui-n-est-pas-le-bon.md) · [bug-185](../../specs/features/done/bug-185-fenetre-de-premier-demarrage-ouverte-indefiniment.md) · [ADR-0127](0127-le-bornage-du-journal-d-authentification-est-global-par-emetteur.md)
 
 ## Contexte
 

@@ -112,10 +112,20 @@ static void fillRegulationDefaults(JsonObject o, PoolSize size) {
 }
 
 static void handleGetConfig(AsyncWebServerRequest* request) {
-  // Vérifier si l'utilisateur est authentifié pour accéder aux données sensibles
-  // Note: On ne bloque PAS la requête (route publique pour premier démarrage),
-  // mais on vérifie l'authentification pour savoir quelles données révéler
-  // On utilise checkTokenAuth directement pour ne pas bloquer avec sendAuthRequired()
+  // bug-185 : plus publique (la justification « premier démarrage » était périmée :
+  // ni wizard.html, ni login.html, ni wifi.html ne l'appellent). Macro qui
+  // `return` : avant toute allocation.
+  REQUIRE_AUTH(request, RouteProtection::WRITE);
+  // ⚠️ La requête EST bloquée depuis bug-185 (la ligne ci-dessus) : cette route
+  // répondait 200 SANS aucune authentification, et son ancien commentaire la
+  // disait « publique pour premier démarrage » — justification périmée, aucune
+  // page hors SPA ne l'appelle.
+  // Le masquage qui suit est CONSERVÉ comme défense en profondeur. ⚠️ Il devient
+  // toujours vrai UNIQUEMENT quand l'authentification est ACTIVE : si elle est
+  // coupée, checkAuth laisse passer mais checkTokenAuth rend faux, et les champs
+  // sensibles restent donc masqués. ⛔ Ne pas « nettoyer » cette branche.
+  // checkTokenAuth est employée directement pour ne RIEN renvoyer au client ici
+  // (pas de second sendAuthRequired : le 401 est déjà parti plus haut).
   bool isAuthenticated = authManager.checkTokenAuth(request);
 
   // Buffer statique : ~55 champs (configs MQTT, pH, ORP, calibration, WiFi, boost, etc.)
@@ -542,30 +552,16 @@ void drainConfigUnauthWarnLogs() {
   }
 }
 
-// bug-184 (A4) — ARBITRAGE ÉCRIT de l'exemption du premier démarrage.
+// bug-185 (A8) — l'exemption anonyme du premier démarrage est SUPPRIMÉE.
 //
-// L'assistant de premier démarrage DOIT pouvoir écrire la configuration avant
-// qu'un mot de passe existe : c'est le seul moyen d'amener l'appareil dans un
-// état utilisable. L'exemption est donc CONSERVÉE — mais elle est désormais
-// NOMMÉE et BORNÉE à la seule URL qui en a besoin.
-//
-// ⛔ Ce qu'elle était avant ce lot : ce helper est partagé par /save-config ET
-// /tune-ph-offset. Un `isFirstBootDetected()` sans test d'URL ouvrait donc AUSSI
-// l'écriture de l'offset pH à n'importe qui sur le réseau, indéfiniment tant que
-// l'assistant n'était pas terminé — alors que l'assistant n'appelle JAMAIS cette
-// route (elle exige 10 min de filtration et une calibration). Exemption
-// involontaire, fermée ici.
-//
-// ⚠️ Ce que cette borne NE corrige PAS, et qui est traité par bug-185 : la
-// fenêtre elle-même ne se referme que sur /auth/complete-wizard, et le jeton
-// n'est pas régénéré au changement de mot de passe. ⛔ Ne pas lire ce commentaire
-// comme « le premier démarrage est sûr ».
+// Le corps anonyme de /save-config écrivait auth_enabled, auth_password et le
+// courtier MQTT (qui pilote les consignes de dosage). Rien n'en a besoin :
+// l'assistant obtient son jeton à /auth/change-password (étape 1), puis toutes
+// ses écritures passent par authFetch. Helper partagé par /save-config et
+// /tune-ph-offset.
 static bool saveConfigBodyAuthorized(AsyncWebServerRequest* request) {
-  if (request == nullptr) return false;                 // fail-closed AVANT request->url()
+  if (request == nullptr) return false;                 // fail-closed
   if (!authManager.isEnabled()) return true;            // authentification désactivée
-  // Exemption de l'assistant : /save-config EXACTEMENT, et rien d'autre.
-  // Même comparaison stricte que AuthManager::checkAuth() (bug-184).
-  if (authManager.isFirstBootDetected() && request->url() == "/save-config") return true;
   return authManager.checkTokenAuth(request);
 }
 
@@ -1587,6 +1583,34 @@ static void handleSaveConfig(AsyncWebServerRequest* request, uint8_t* data, size
     mqttCfg.temperatureEnabled = doc["temperature_enabled"];
   }
 
+  // bug-185 — REFUS AVANT TOUTE MUTATION D'AUTHENTIFICATION.
+  // ⛔ Placé ICI, et pas au moment d'écrire `auth_password`, pour deux raisons
+  // mesurées par code-reviewer :
+  //   1. plus bas, le refus serait prononcé APRÈS que `auth_enabled` ait déjà
+  //      été appliqué en mémoire — une requête refusée aurait quand même coupé
+  //      l'authentification ;
+  //   2. toute sortie anticipée de ce handler DOIT rendre `configMutex` (pris
+  //      en amont) ; les onze autres le font, une douzième oubliée le fuirait
+  //      DÉFINITIVEMENT, et la panne serait intermittente (mutex récursif :
+  //      la même tâche repasse, les autres expirent).
+  // ⚠️ Sans cette garde, un détenteur de jeton pouvait écrire "admin" par cette
+  // route et RAMENER L'APPAREIL À L'ÉTAT VIERGE, rouvrant le droit anonyme de
+  // /auth/change-password à tout le réseau.
+  if (!doc["auth_password"].isNull()) {
+    const String candidate = doc["auth_password"].as<String>();
+    if (candidate != "******" && candidate.length() > 0 &&
+        candidate.length() < kAdminPasswordMinLength) {
+      // Drapeau + message + code : c'est la COMPLÉTION qui répond.
+      (*g_configErrors)[request] = true;
+      g_configErrorStatus[request] = 400;
+      g_configErrorMessages[request] =
+        "{\"error\":\"Mot de passe trop court\","
+        "\"message\":\"Le mot de passe administrateur doit faire au moins 8 caract\\u00e8res.\"}";
+      xSemaphoreGiveRecursive(configMutex);  // ⛔ comme les onze autres sorties
+      return;
+    }
+  }
+
   // Configuration d'authentification
   if (!doc["auth_enabled"].isNull()) {
     bool wasEnabled = authCfg.enabled;
@@ -1602,6 +1626,17 @@ static void handleSaveConfig(AsyncWebServerRequest* request, uint8_t* data, size
   }
 
   // Mot de passe admin: ne mettre à jour que si différent de "******"
+  //
+  // ⛔ LONGUEUR MINIMALE OBLIGATOIRE ICI AUSSI (bug-185, relevé par security-reviewer).
+  // Sans elle, un détenteur de jeton pouvait écrire "admin" par cette route et
+  // RAMENER L'APPAREIL À L'ÉTAT VIERGE — ce qui rouvre aussitôt le droit anonyme
+  // de /auth/change-password à tout le réseau. ⚠️ Ce chemin n'est employé par
+  // AUCUNE page (aucune occurrence de `auth_password` en écriture dans data/) :
+  // c'est une voie d'API seule, et elle contournait la règle de /auth/change-password.
+  // ⚠️ Le jeton n'est PAS régénéré ici, contrairement à /auth/change-password :
+  //    c'est une incohérence connue, écrite dans la fiche, à trancher avec le sort
+  //    du champ lui-même. ⛔ Ne pas « réparer » en silence : le retrait du champ est
+  //    une décision à part.
   if (!doc["auth_password"].isNull()) {
     String receivedPassword = doc["auth_password"].as<String>();
     if (receivedPassword != "******" && receivedPassword.length() > 0) {

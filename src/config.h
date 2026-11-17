@@ -315,6 +315,7 @@ struct AuthConfig {
   String apPassword = "";         // Mot de passe réseau WiFi AP (généré au premier boot si vide)
   bool forceWifiConfig = false;   // Forcer l'affichage du bouton Wi-Fi sur l'écran login
   bool wizardCompleted = false;   // Wizard de configuration initiale complété (persiste au redémarrage)
+  uint16_t authEpoch = 0;         // Époque d'auth appliquée (bug-185) ; < kAuthEpoch => le jeton est régénéré UNE fois au démarrage
   bool disableApOnBoot = false;   // Désactiver le mode AP au prochain redémarrage (pour transition WiFi)
   bool sensorLogsEnabled = false; // Logs détaillés des sondes (pH, ORP, Temp) activés/désactivés
   bool debugLogsEnabled = false;  // Logs DEBUG (firmware + UI) activés/désactivés

@@ -4259,4 +4259,34 @@ static_assert(kHistoryImportChunkBudgetBytes + 1024 == kHistoryImportMaxBodyByte
               "La marge de 1 024 o entre budget client et plafond de route est "
               "l'invariant qui empeche un 413 sur un lot nominal.");
 
+
+// ---------------------------------------------------------------------------
+// Époque d'authentification (bug-185)
+// ---------------------------------------------------------------------------
+// ⚠️ COMPTEUR À INCRÉMENTER quand une livraison doit INVALIDER tous les jetons
+// d'API déjà en circulation. L'appareil compare cette valeur à celle qu'il a
+// gardée en mémoire : si la sienne est plus ancienne, il régénère son jeton UNE
+// FOIS, puis enregistre la nouvelle époque.
+//
+// ⛔ Pourquoi c'est nécessaire et pas décoratif : avant bug-185, n'importe qui
+// sur le réseau pouvait obtenir un jeton pendant la fenêtre de premier
+// démarrage, et ce jeton n'était JAMAIS invalidé — pas même par un changement
+// de mot de passe. Corriger le code ne retire pas les jetons déjà pris : sans
+// ce compteur, le correctif ne protégerait que les appareils neufs.
+//
+// ⚠️ Conséquence VISIBLE, à annoncer : à la livraison qui l'incrémente, toutes
+// les sessions ouvertes retombent sur l'écran de connexion, une fois. Un jeton
+// figé dans un script tiers devient périmé. ⛔ N'INCRÉMENTER que pour une raison
+// de sécurité nommée — pas « au cas où ».
+//
+// 1 = bug-185 (v2.93.0) : fermeture de la fenêtre de premier démarrage.
+static const uint16_t kAuthEpoch = 1;
+
+// Longueur minimale du mot de passe administrateur. ⛔ DOIT être appliquée sur
+// TOUS les chemins qui l'écrivent — /auth/change-password ET la clé
+// `auth_password` de /save-config. Un seul chemin laissé libre suffit à
+// reposer "admin" et à ramener l'appareil à l'état VIERGE, donc à rouvrir le
+// droit anonyme à tout le réseau (bug-185).
+constexpr size_t kAdminPasswordMinLength = 8;
+
 #endif // CONSTANTS_H

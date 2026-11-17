@@ -25,11 +25,44 @@ enum class RouteProtection {
 
 ### Décision d'admission : module pur
 
-`checkAuth()` ne décide plus elle-même : elle collecte les faits (auth activée, premier démarrage, URL exacte `/save-config`, jeton valide, quota) et délègue à [`decideAdmission()`](../../src/auth_admission_logic.h) → `AuthVerdict{kAllow, kDenyUnauth, kDenyRateLimited}`. Testé en natif : `test/test_native_auth_admission/` (ADR-0017).
+`checkAuth()` ne décide plus elle-même : elle collecte les faits (auth activée, route publique, quota, jeton valide) et délègue à [`decideAdmission()`](../../src/auth_admission_logic.h) → `AuthVerdict{kAllow, kDenyUnauth, kDenyRateLimited}`. Testé en natif : `test/test_native_auth_admission/` (ADR-0017).
 
-**Exemption du premier démarrage** : elle porte sur l'URL **exacte** `/save-config` (elle portait sur le préfixe `startsWith("/save-config")`). Même resserrement dans `saveConfigBodyAuthorized()`, partagé avec `/tune-ph-offset` : avant bug-184, le premier démarrage ouvrait **aussi** l'écriture de l'offset pH à n'importe qui sur le réseau.
+**Plus aucune exemption anonyme** (bug-185, v2.93.0) : l'exemption du premier démarrage sur `/save-config` est **supprimée** (champs `firstBoot` et `isSaveConfigUrl` retirés de `AuthAdmissionInput`). `saveConfigBodyAuthorized()` (partagé avec `/tune-ph-offset`) exige le jeton dans tous les cas. Le seul droit anonyme restant est `/auth/change-password`, route publique par déclaration, à l'état vierge (voir ci-dessous).
 
-⚠️ **Le premier démarrage n'est pas sûr pour autant** (ouvert, traité par [bug-185](../../specs/features/todo/bug-185-fenetre-de-premier-demarrage-ouverte-indefiniment.md)) : la fenêtre ne se referme que sur `/auth/complete-wizard`, et le jeton n'est **pas régénéré** au changement de mot de passe. De plus, le **corps** de `/save-config` est admis par `saveConfigBodyAuthorized()` avant tout décompte de quota : ne pas lire « `/save-config` est sous quota au premier démarrage ».
+## Module pur `auth_bootstrap_logic.h` (bug-185, v2.93.0)
+
+[`src/auth_bootstrap_logic.h`](../../src/auth_bootstrap_logic.h) — sans Arduino, sans allocation, sans journal ; testé en natif (`test/test_native_auth_bootstrap/`, ADR-0017). Décisions : `isFactoryPasswordLiteral`, `computeFirstBoot`, `decideLogin`, `decidePasswordChange`, `planAfterPasswordChange`, `decideWizardClose`. Décision d'architecture : [ADR-0131](../adr/0131-l-etat-de-premier-demarrage-se-deduit-du-mot-de-passe.md).
+
+**Invariant** : *un droit anonyme n'existe que si aucun mot de passe n'a jamais été choisi, et il se limite à en choisir un.*
+
+⛔ **Deux notions distinctes — leur confusion était le défaut** :
+
+| Notion | Sens | Sert à |
+|---|---|---|
+| `factoryPassword` (`AuthManager::isFactoryPassword()`) | le mot de passe vaut `admin` **ou est vide** | **accorder ou refuser les droits** : droit anonyme de `change-password`, refus `403` de `/auth/login`, `409` de `complete-wizard` |
+| `firstBoot` (`isFirstBootDetected()`) | « l'assistant doit encore être montré » = `!wizardCompleted \|\| factoryPassword` | **l'affichage** de l'assistant et la fermeture de la fenêtre — **jamais** un droit |
+
+⭐ **Les deux sont PUBLIÉES par `GET /auth/status`** (`firstBoot` et, depuis la v2.93.0, **`virgin`**
+= `isFactoryPassword()`). ⛔ **Toute page qui propose un formulaire ANONYME doit brancher sur
+`virgin`**, jamais sur `firstBoot` : sur un appareil dont l'assistant a été interrompu **après** le
+choix du mot de passe, `firstBoot` est vrai mais le formulaire anonyme est **refusé** — c'est ce
+qui transformait la page de secours OTA en **impasse**.
+⇒ Deux points de branchement, et deux seulement : `src/ota_recovery_page.html.in` (⛔ **sans**
+repli : elle est embarquée dans le firmware qui sert la clé) et `data/login.html` (**avec** repli
+sur `firstBoot` : le système de fichiers se déploie séparément et peut tourner sur un firmware
+antérieur).
+
+Pourquoi : `wizardCompleted` est le bit qu'un inconnu pouvait poser (`complete-wizard` anonyme). `firstBoot` reste vrai sur un appareil **déjà possédé** dont l'assistant a été interrompu : lui accorder un droit laisserait un inconnu écraser le mot de passe du propriétaire. Et `decideLogin` ne reçoit **pas** `firstBoot`, volontairement : il enfermerait dehors le propriétaire d'un appareil interrompu après le choix du mot de passe (l'OTA est le seul canal de déploiement, pas de port série).
+
+**Migration auto-réparatrice** : au démarrage, `computeFirstBoot` rouvre l'assistant d'un appareil dont un tiers avait refermé la fenêtre (`wizardCompleted` vrai **et** mot de passe `admin`).
+
+**Ordre d'effets de `/auth/change-password`** (figé, non testable en natif) : mot de passe → `forceWifiConfig` → jeton régénéré **en RAM et dans `authCfg`** (sinon l'ancien ressuscite au redémarrage) → **une seule** écriture NVS → révocation des WebSockets → réponse avec le **nouveau** jeton.
+
+### Époque d'authentification `kAuthEpoch`
+
+`kAuthEpoch` ([`constants.h`](../../src/constants.h), valeur **1** = bug-185) est comparée au champ persisté `authEpoch` (NVS `auth_epoch`, défaut 0). Si l'appareil est en retard, `AuthManager::begin()` **régénère le jeton une fois**, l'enregistre, puis écrit la nouvelle époque. **Motif** : corriger le code ne retire pas les jetons **déjà pris** ; sans ce passage, le correctif ne protégerait que les appareils neufs. ⚠️ Effet visible : **tout le monde se reconnecte une fois** ; un `POOL_TOKEN` figé dans un script tiers devient périmé. MQTT et Home Assistant ne sont pas touchés. ⛔ N'incrémenter que pour une raison de sécurité nommée. Journal : `warning` « jeton d'API renouvelé par la mise à jour » (pas sur un appareil neuf).
+
+⚠️ **Ce que cela ne ferme pas** : entre la mise sous tension d'un appareil neuf et le choix du mot de passe, le premier arrivé gagne (décision de l'utilisateur, aucun geste physique). Attaque **visible** et **réversible** (bouton physique). Le serveur reste en HTTP clair : la rotation protège de l'émission, pas de l'écoute.
 
 ## Comparaison de token à temps constant (v2.11.2, feature-028)
 
@@ -97,25 +130,25 @@ Les refus d'authentification journalisent en `WARNING`, mais **de façon bornée
 
 ## Premier démarrage
 
-Flag `isFirstBoot = true` quand le mot de passe admin est encore celui par défaut (défini par le firmware). L'UI affiche alors un onboarding forçant le changement de mot de passe.
+`isFirstBoot = !wizardCompleted || isFactoryPassword()` (v2.93.0 ; avant : `!wizardCompleted` seul). L'UI affiche alors l'assistant, qui force le choix du mot de passe. Voir la section « Module pur » ci-dessus pour la différence avec `factoryPassword`.
 
-- `clearFirstBootFlag()` — appelé après le premier changement de mot de passe réussi.
-- `resetPasswordToDefault()` — déclenché par maintien du bouton physique factory reset pendant `kFactoryResetButtonHoldMs = 10000` ms ([`constants.h:34`](../../src/constants.h:34)).
+- `clearFirstBootFlag()` — appelé après le premier changement de mot de passe réussi (et par `complete-wizard` si le mot de passe n'est plus celui d'usine).
+- ⚠️ `resetPasswordToDefault()` est du **code mort** (aucun appelant). Le bouton physique (maintien `kFactoryResetButtonHoldMs`) efface la NVS entière puis redémarre ; l'appareil revient donc à l'état vierge.
 
 ## AP fallback password
 
-`getApPassword()` retourne le mot de passe SSID `PoolControllerAP` affiché au factory reset. Dérivé du chipID pour rester unique par appareil.
+`getApPassword()` retourne le mot de passe du point d'accès `PoolControllerAP`. ⚠️ Il n'est **pas** dérivé du chipID : il est **tiré au hasard** (8 caractères) au premier démarrage, stocké en NVS, **journalisé en clair à dessein** (« Notez-le sur une étiquette ») et **survit** à la remise à zéro.
 
 ## Endpoints d'auth
 
 | Endpoint | Rôle |
 |----------|------|
-| `POST /auth/login` | Vérifie les creds, retourne un token API |
+| `POST /auth/login` | Vérifie les creds, retourne un token API ; `403` tant que le mot de passe vaut `admin` |
 | `GET /auth/status` | État courant (enabled, firstBoot) |
 | `GET /auth/token` | Obtient le token API (CRITICAL : exige déjà un jeton valide ; sert à relire un jeton connu, pas à en récupérer un perdu) |
-| `POST /auth/change-password` | Change le mot de passe admin |
+| `POST /auth/change-password` | Change le mot de passe admin ; anonyme **seulement** à l'état vierge ; régénère le jeton et rend le nouveau |
 | `POST /auth/regenerate-token` | Génère un nouveau token (invalide l'ancien) |
-| `POST /auth/complete-wizard` | Marque la fin de l'onboarding premier démarrage |
+| `POST /auth/complete-wizard` | Filet idempotent de fin d'onboarding ; `WRITE` (jeton), `409` si mot de passe d'usine |
 | `POST /auth/ap-password` | Change le mot de passe AP (mode hors-ligne) |
 
 ## Macro helper
@@ -140,7 +173,7 @@ server->on("/save-config", HTTP_POST, [](AsyncWebServerRequest* req) {
 ## Cas limites
 
 - **Auth désactivée** (`authEnabled = false`) : toutes les routes sont accessibles sans creds — déconseillé, mais possible pour debug local.
-- **Token perdu** : `POST /auth/regenerate-token` est `CRITICAL` ([`web_routes_auth.cpp:165`](../../src/web_routes_auth.cpp:165)) : **elle exige le jeton qu'on vient de perdre**, donc elle ne sert pas à le récupérer. ⚠️ Et il ne se retrouve **pas** dans l'interface non plus : **aucun écran de `data/` n'affiche le jeton** (vérifié le 2026-11-17). ⇒ Le **seul** chemin est `POST /auth/login` avec le mot de passe administrateur — donc hors premier démarrage, où cette route rend `403`. ⚠️ Sur un appareil en premier démarrage, le seul fournisseur de jeton est `POST /auth/change-password` (cf. [`bug-185`](../../specs/features/todo/bug-185-fenetre-de-premier-demarrage-ouverte-indefiniment.md)).
+- **Token perdu** : `POST /auth/regenerate-token` est `CRITICAL` ([`web_routes_auth.cpp:165`](../../src/web_routes_auth.cpp:165)) : **elle exige le jeton qu'on vient de perdre**, donc elle ne sert pas à le récupérer. ⚠️ Et il ne se retrouve **pas** dans l'interface non plus : **aucun écran de `data/` n'affiche le jeton** (vérifié le 2026-11-17). ⇒ Le **seul** chemin est `POST /auth/login` avec le mot de passe administrateur — donc hors état vierge, où cette route rend `403` (mot de passe d'usine). ⚠️ Sur un appareil vierge, le seul fournisseur de jeton est `POST /auth/change-password` (bug-185, [ADR-0131](../adr/0131-l-etat-de-premier-demarrage-se-deduit-du-mot-de-passe.md)).
 - **Rate limit atteint** : réponse 429, pas de décompte de la requête elle-même.
 - **Token en query param** (`?token=...`) : **refusé** — seul le header `X-Auth-Token` est accepté (fuite via logs, historique navigateur, Referer).
 - **CORS** : mécanisme **retiré** en v2.11.2 — politique même-origine stricte, voir [ADR-0023](../adr/0023-politique-cors-retrait.md).
