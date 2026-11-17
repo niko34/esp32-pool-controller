@@ -2,6 +2,15 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [2.93.2] - 2026-11-17
+
+### Firmware
+- **Sécurité — un état d'admission construit par défaut AUTORISAIT** (`src/auth_admission_logic.h`). Le commentaire du fichier affirmait « fail-closed par construction » ; le code faisait l'inverse : `authEnabled` valait `false` par défaut, et la première ligne de la décision est « si l'authentification n'est pas active, autoriser ». Une structure dont un appelant aurait oublié de remplir ce champ ouvrait donc la route.
+  - ⚠️ **Jamais exploitable** : l'unique appelant (`AuthManager::checkAuth`) affecte toujours le champ. C'était un piège armé pour le prochain appelant — sur le chemin d'admission de **toutes** les routes, **dosage compris**.
+  - ⛔ **Aucun changement de comportement observable** : rien à déployer pour s'en protéger aujourd'hui.
+  - Le balayage des 16 combinaisons ne pouvait pas voir ce défaut (son helper remplit les quatre champs). Un test dédié l'affirme désormais, et il en est le **seul** garde — vérifié par mutation.
+  - Relevé par `security-reviewer` pendant `bug-181`.
+
 ## [2.93.1] - 2026-11-17
 
 ### Firmware

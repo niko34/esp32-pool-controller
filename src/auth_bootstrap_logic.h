@@ -25,9 +25,20 @@
 // c'est précisément le bit qu'un inconnu pouvait poser (POST /auth/complete-wizard
 // anonyme). Un état de sécurité ne dépend pas d'un bit que l'attaquant contrôle.
 //
-// Chaque struct porte ses initialiseurs `= false` : un champ ajouté plus tard et
-// oublié chez un appelant vaudra false, donc n'ouvrira rien (fail-closed par
-// construction).
+// Chaque struct porte ses initialiseurs `= false`.
+//
+// ⚠️ MAIS « = false » N'EST PAS PARTOUT L'ÉTAT FERMÉ — ⛔ affirmation corrigée le
+// 2026-11-17 (relevée par security-reviewer pendant bug-181, même défaut que celui
+// d'auth_admission_logic.h : un commentaire qui promettait plus que le code).
+//   · `PwdChangeInput` : OUI, fail-closed. Une entrée tout-à-faux rend kDenyUnauth.
+//     (⚠️ sauf `newEqualsCurrent`, dont l'oubli saute un contrôle d'HYGIÈNE — pas
+//     d'autorisation.)
+//   · ⛔ `AuthEffectPlan` : NON. Tout-à-faux = pas de rotation du jeton, pas de
+//     révocation des WebSockets, fenêtre non refermée — c'est l'état OUVERT. Un
+//     plan vide ne protège rien.
+//     ⇒ `planAfterPasswordChange()` est la SEULE fabrique légitime, elle pose les
+//     quatre champs, et test_effect_plan la couvre. ⛔ NE JAMAIS construire un
+//     AuthEffectPlan à la main : passer par la fabrique.
 // =============================================================================
 
 // Mot de passe d'usine : "admin", OU VIDE. Le vide est atteignable (une lecture

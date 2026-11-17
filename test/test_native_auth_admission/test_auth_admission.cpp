@@ -22,6 +22,17 @@ static AuthVerdict expected(const AuthAdmissionInput& i) {
   return i.tokenValid ? AuthVerdict::kAllow : AuthVerdict::kDenyUnauth;
 }
 
+// ⭐ bug-181 (relevé par security-reviewer) : une entrée construite PAR DÉFAUT
+// doit REFUSER. Avant le 2026-11-17 elle AUTORISAIT (`authEnabled = false` +
+// `if (!authEnabled) return kAllow`), alors que l'en-tête affirmait l'inverse.
+// ⛔ CE TEST EST LE SEUL GARDE DE CETTE PROPRIÉTÉ : le balayage des 16
+// combinaisons ne peut pas la voir, son helper mk() remplit les quatre champs.
+// ⚠️ Chemin d'admission de TOUTES les routes, dosage compris.
+void test_entree_par_defaut_refuse(void) {
+  AuthAdmissionInput vierge;  // aucun champ affecté : le cas de l'appelant distrait
+  TEST_ASSERT_NOT_EQUAL((int)AuthVerdict::kAllow, (int)decideAdmission(vierge));
+}
+
 // C1
 void test_c1_all_16_combinations(void) {
   int allow = 0;
@@ -86,6 +97,7 @@ void test_c7_nothing_true_denies(void) {
 
 int main(int, char**) {
   UNITY_BEGIN();
+  RUN_TEST(test_entree_par_defaut_refuse);
   RUN_TEST(test_c1_all_16_combinations);
   RUN_TEST(test_c2_auth_disabled_allows_everything);
   RUN_TEST(test_c3_public_route_allowed_even_when_rate_limited);
