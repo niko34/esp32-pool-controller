@@ -33,10 +33,10 @@ qui interdit le retour en arrière vers une image plus ancienne (donc potentiell
 vulnérable) même si elle était signée légitimement en son temps.
 
 ## Contexte
-Voir [ADR-0096](../../docs/adr/0096-empreinte-sha256-obligatoire-sur-post-update.md) pour
+Voir [ADR-0096](../../../docs/adr/0096-empreinte-sha256-obligatoire-sur-post-update.md) pour
 l'arbitrage complet des trois issues envisagées par `feature-118` (empreinte + JS embarqué,
 retenue pour ce lot-là ; exemption de la page web, écartée ; signature, reportée ici). Voir
-aussi [ADR-0081](../../docs/adr/0081-recensement-du-tas-et-non-livraison-de-la-lecture-de-contenu.md),
+aussi [ADR-0081](../../../docs/adr/0081-recensement-du-tas-et-non-livraison-de-la-lecture-de-contenu.md),
 dont le régime de sécurité R2 (recensement du tas, compilé inconditionnellement) reste
 conditionné à l'absence d'authenticité OTA **jusqu'à la livraison de cette spec** — pas
 jusqu'à celle de `feature-118` lot A/B, qui ne change pas la nature de la preuve.
@@ -85,7 +85,7 @@ options, aucune gratuite, à arbitrer **avant tout code** (passage `security-rev
    aucune clé privée exposée.
 2. **Exemption de la page web** pour la signature (elle resterait sur le mécanisme
    `feature-118`, empreinte seule) — **ramène exactement au dilemme déjà arbitré par
-   `feature-118`/[ADR-0096](../../docs/adr/0096-empreinte-sha256-obligatoire-sur-post-update.md)** :
+   `feature-118`/[ADR-0096](../../../docs/adr/0096-empreinte-sha256-obligatoire-sur-post-update.md)** :
    le firmware ne peut **structurellement pas** distinguer la page officielle d'un `curl`
    qui imiterait ses champs — une exemption serait universellement invocable. **Ne pas
    redécouvrir ce point en cours d'implémentation : il est connu dès l'écriture de cette
@@ -176,17 +176,17 @@ LXC). Une spec séparée devra, le cas échéant, documenter comment lever cette
 - [x] La documentation dit ce que la signature prouve (authenticité d'origine) par
       opposition à ce que l'empreinte de `feature-118` prouvait seule (intégrité du
       transfert) — ne pas laisser les deux mécanismes se confondre dans le texte
-- [x] ADR créé pour le schéma retenu — [ADR-0120](../../docs/adr/0120-signature-rsa-du-manifeste-ota-verifiee-avant-refus.md)
+- [x] ADR créé pour le schéma retenu — [ADR-0120](../../../docs/adr/0120-signature-rsa-du-manifeste-ota-verifiee-avant-refus.md)
 
 ### Notes techniques — lot D1 (2026-10-18)
 Lot D1 livré : modules purs (`ota_manifest_logic`, `ota_base64_logic`, `ota_authenticity_logic`)
 + vérificateur mbedtls (`ota_signature`), clé publique embarquée, vérification posée à sa place
 définitive sur les deux routes d'écriture — **JOURNALISE SEULEMENT, aucun refus**. `ota_update.sh`
 signe chaque envoi et refuse d'en faire sans outillage. Documentation à jour :
-[`docs/API.md`](../../docs/API.md#authenticite-manifest-signature-feature-151-d1),
-[`docs/subsystems/ota-manager.md`](../../docs/subsystems/ota-manager.md#d1--authenticite-par-signature-journalise-seulement-feature-151-verdict-security-reviewer-p1),
-[`docs/UPDATE_GUIDE.md`](../../docs/UPDATE_GUIDE.md#signature-des-envois-ota),
-[ADR-0120](../../docs/adr/0120-signature-rsa-du-manifeste-ota-verifiee-avant-refus.md).
+[`docs/API.md`](../../../docs/API.md#authenticite-manifest-signature-feature-151-d1),
+[`docs/subsystems/ota-manager.md`](../../../docs/subsystems/ota-manager.md#d1--authenticite-par-signature-journalise-seulement-feature-151-verdict-security-reviewer-p1),
+[`docs/UPDATE_GUIDE.md`](../../../docs/UPDATE_GUIDE.md#signature-des-envois-ota),
+[ADR-0120](../../../docs/adr/0120-signature-rsa-du-manifeste-ota-verifiee-avant-refus.md).
 ⛔ **Spec NON déplacée vers `done/`** : D2 (preuve terrain) à **D4** restent à livrer avant que la
 feature ne satisfasse réellement la règle de sécurité n° 6 de `CLAUDE.md`.
 ⚠️ *Disait « à D5 » — ⛔ D5 est annulé depuis le 2026-11-17 (plus de plancher).*
@@ -197,14 +197,14 @@ Jusqu'ici, la condition 1 (« nommer les DEUX gardes et leur place ») n'était 
 `docs/API.md` — pas dans la spec elle-même. Les voici, explicitement :
 
 - **Garde 1 — authenticité du manifeste** (`computeOtaAuthenticityVerdict`, verdict à sept issues,
-  `OtaAuthenticityVerdict`, [`src/ota_authenticity_logic.h`](../../src/ota_authenticity_logic.h)).
+  `OtaAuthenticityVerdict`, [`src/ota_authenticity_logic.h`](../../../src/ota_authenticity_logic.h)).
   Place : **avant** toute prise de propriété de la session d'upload (`g_uploadOwner = request;`)
   et avant le pré-contrôle de l'octet magique sur `POST /update` ; **avant**
   `refuseIfTlsGateClosed` (donc avant toute session TLS sortante) sur `POST /download-update`.
   Prouve que le manifeste a été **signé par la bonne clé**.
 - **Garde 2 — liaison manifeste ↔ image** (`otaManifestBindingVerdict`, verdict
   `kSkipped`/`kBound`/`kUnbound`, lot B1 ci-dessous,
-  [`src/ota_manifest_binding_logic.h`](../../src/ota_manifest_binding_logic.h)). Place : **deux**
+  [`src/ota_manifest_binding_logic.h`](../../../src/ota_manifest_binding_logic.h)). Place : **deux**
   points sur **chacune** des deux routes — à l'**arrivée** du manifeste (comparaison à l'empreinte
   déjà fournie par l'appelant, paramètre `sha256`/`digest`) **et** après le **calcul réel** de
   l'empreinte de l'image effectivement écrite en flash (`final` sur `/update`, fin de
@@ -228,7 +228,7 @@ prédicat de décision ») **aurait été violée sans que rien ne le signale.**
 
 **Correctif** : module pur `ota_manifest_binding_logic` (Garde 2 ci-dessus) — deux comparaisons sur
 chacune des deux routes (quatre au total), voir le détail et le tableau des quatre points dans
-[`docs/subsystems/ota-manager.md`](../../docs/subsystems/ota-manager.md#b1--la-signature-ne-liait-rien-a-limage-feature-151-correction-de-revue-du-2026-10-18).
+[`docs/subsystems/ota-manager.md`](../../../docs/subsystems/ota-manager.md#b1--la-signature-ne-liait-rien-a-limage-feature-151-correction-de-revue-du-2026-10-18).
 ⛔ **Toujours aucun refus** : D1 journalise.
 
 **Garde structurelle supplémentaire** : deux tests (`[G5]`, `[G6]`, `test/test_native_ota_order_guard/`)
@@ -1726,7 +1726,7 @@ jour — à couvrir par `bug-176` (plan de test, scénario 4).
 - `/check-update` mémorise les URL des `.sig` et rend `firmware_sig_status` / `filesystem_sig_status` (+ `*_sig_reason`). `absent` (`no_asset`) n'est émis **que** si la réponse GitHub a été analysée **avec succès** et ne contient pas d'asset de ce nom (état `kCheckedNoAsset`). Tout autre doute — jamais vérifié, URL trop longue, hôte refusé, mémoire, horloge, HTTP, délai, grammaire, anti-déni, **y compris une valeur d'état hors énumération** — est `unavailable` + motif d'une énumération fermée.
 - `GET /ota-sig?kind=` porte le même couple `status`/`reason` au moment de la demande de signature.
 - La page traite tout statut inconnu comme `unavailable`, ne dit rien pour `absent`, et affiche une ligne dédiée pour `unavailable`.
-- ⇒ En D3-c, le refus pourra dire **pourquoi** : « non signée » (`absent`) n'est plus confondu avec « non récupérée » (`unavailable`). Voir [ADR-0123](../../../docs/adr/0123-une-seule-session-tls-sortante-par-requete-http.md) et [`bug-176`](bug-176-relais-sig-filesystem-saute-sous-pression-memoire.md).
+- ⇒ En D3-c, le refus pourra dire **pourquoi** : « non signée » (`absent`) n'est plus confondu avec « non récupérée » (`unavailable`). Voir [ADR-0123](../../../docs/adr/0123-une-seule-session-tls-sortante-par-requete-http.md) et [`bug-176`](../done/bug-176-relais-sig-filesystem-saute-sous-pression-memoire.md).
 
 ⚠️ Reste à D3-c : décider **quel statut refuse** (`unavailable` ⇒ refus ? `deferred` jamais résolu ?) — une décision de lot, pas de C2.
 

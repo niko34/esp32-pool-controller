@@ -95,6 +95,31 @@ Par défaut, le script contacte l'ESP32 via mDNS (`poolcontroller.local`). Si le
 
 > L'adresse IP de l'ESP32 est visible dans **Paramètres > Système** ou dans les logs au démarrage (`INFO: IP: 192.168.x.x`).
 
+### ⛔ `ota_update.sh` refuse un binaire plus ancien que ses sources
+
+Avant de **signer** (`--sign-only`) et avant d'**envoyer**, le script vérifie que le fichier à
+envoyer a été construit **après** la dernière modification des sources :
+
+- firmware : `.pio/build/esp32dev_core3/firmware.bin` comparé à tout `src/` (et, explicitement, à `src/version.h`) ;
+- interface web : `littlefs.bin` comparé à tout `data/`.
+
+**Pourquoi.** Le numéro de version écrit dans la signature est lu dans `src/version.h`, pas dans le
+fichier envoyé. Un `pio run` oublié après un changement de version donnait donc une signature
+parfaitement valide, mais portant une étiquette fausse : l'empreinte décrit bien le fichier, le
+numéro décrit un autre build. Ce n'est pas une faille (l'étiquette vient de votre propre clé) et
+l'appareil n'en décide rien (aucun plancher de version, [feature-151](../specs/features/doing/feature-151-signature-de-l-image-ota.md)) ;
+mais le numéro s'affiche sur la ligne de récapitulatif de la carte « Mise à jour manuelle », et il
+mentirait. Autre cause : le 2026-11-14, un `build_fs.sh` relancé entre la signature et l'envoi a
+rendu la signature caduque. Une consigne écrite finit par être oubliée ; elle est maintenant vérifiée.
+
+**Ce que vous voyez.** Un message en français qui nomme jusqu'à 5 fichiers modifiés après la
+construction, puis le correctif : `pio run` (firmware) ou `./build_fs.sh` (interface), puis
+**re-signer**. Code de sortie **1**, dans les deux modes. En `--sign-only`, le refus tombe **avant**
+la demande de phrase de passe.
+
+⛔ Aucune dérogation et aucune variable d'échappement. `--use-sig-raw` n'est pas concerné : il porte
+sur le couple manifeste/signature, pas sur la fraîcheur du binaire.
+
 ---
 
 ## Mise à Jour via Interface Web — WiFi uniquement

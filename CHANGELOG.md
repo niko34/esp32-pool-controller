@@ -2,6 +2,18 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [Non publié] - 2026-11-17
+
+> ℹ️ Aucun changement de firmware : `src/version.h` reste à 2.90.0. Outillage seul.
+
+### Fonctionnalités
+- **`ota_update.sh`** : le script **refuse de signer et d'envoyer un binaire plus ancien que ses sources** (`firmware.bin` contre `src/`, `littlefs.bin` contre `data/`). Il nomme jusqu'à 5 fichiers modifiés après la construction, indique le correctif (`pio run` ou `./build_fs.sh`, puis re-signer) et sort en code 1, avant toute demande de phrase de passe en `--sign-only`. ⛔ Aucune dérogation. Raison : le numéro de version signé est lu dans `src/version.h`, pas dans le binaire — un `pio run` oublié produisait une signature valide avec une étiquette fausse.
+
+### Documentation
+- `docs/UPDATE_GUIDE.md` (nouvelle section sur ce refus), `docs/BUILD.md` (la consigne « compiler avant d'envoyer » est désormais vérifiée, plus seulement écrite).
+
+---
+
 ## [2.90.0] - 2026-11-16
 
 ### Firmware

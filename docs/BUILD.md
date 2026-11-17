@@ -458,6 +458,8 @@ Les modes OTA utilisent par défaut `poolcontroller.local` (mDNS). Pour cibler u
 ./ota_update.sh both 192.168.1.42 monmotdepasse
 ```
 
+> ⚠️ **Compiler juste avant d'envoyer n'est plus une affaire de vigilance : `ota_update.sh` le vérifie.** Il refuse de signer ou d'envoyer (code de sortie 1) si `firmware.bin` est plus ancien que `src/`, ou `littlefs.bin` plus ancien que `data/`. La règle reste la même — `pio run` / `./build_fs.sh` après tout changement, et **rien à recompiler entre la signature et l'envoi** — mais une erreur est désormais bloquée au lieu d'être signée. Détail : [UPDATE_GUIDE.md](UPDATE_GUIDE.md#-ota_updatesh-refuse-un-binaire-plus-ancien-que-ses-sources).
+
 Voir aussi [UPDATE_GUIDE.md](UPDATE_GUIDE.md) pour la procédure détaillée.
 
 ## Archivage automatique des artefacts de build (v2.20.2)

@@ -215,6 +215,84 @@ if [ "$TYPE" = "both" ] && [ "$USE_SIG" = "0" ]; then
 fi
 
 # =============================================================================
+# FRAÎCHEUR DU BINAIRE (2026-11-17) — le garde-fou qui remplace une discipline.
+#
+# POURQUOI : le manifeste signé déclare un numéro de version lu dans
+# `src/version.h` de l'ARBRE DE TRAVAIL (l. ~200), pas dans le binaire envoyé.
+# Un `pio run` oublié après un bump produit donc une signature PARFAITEMENT
+# VALIDE portant une étiquette FAUSSE : l'empreinte décrit bien le fichier,
+# mais le numéro décrit un autre build. L'utilisateur lit ce numéro sur la
+# carte de confirmation (`data/app.js`, ligne de récapitulatif) avant de
+# cliquer — c'est la seule chose qu'il ait pour savoir ce qu'il installe.
+#
+# ⛔ CE N'EST PAS UNE FAILLE : l'étiquette est produite par la clé privée de
+# l'utilisateur, un tiers ne peut pas la fabriquer, et AUCUNE décision de
+# l'appareil n'en dépend (le plancher de version est figé à 0.0.0, et D5 — le
+# lot qui devait le relever — a été ANNULÉ le 2026-11-17 : décision produit
+# « AUCUN PLANCHER, NULLE PART », feature-151). C'est de la comptabilité :
+# savoir ce qui tourne réellement.
+#
+# LA FORMULATION JUSTE DU DÉFAUT n'est pas « le numéro vient du code source »
+# mais « le binaire peut être PLUS VIEUX que le code source ». Ainsi posé, le
+# contrôle est le même pour les deux genres — et il n'a pas besoin de savoir
+# lire une version à l'intérieur d'un binaire (⚠️ impossible pour
+# `littlefs.bin` : les pages y sont gzippées, mesuré le 2026-11-17).
+#
+# ⚠️ POURQUOI UN SCRIPT ET PAS UNE CONSIGNE : la consigne existait déjà, dans
+# `docs/BUILD.md` ET dans le commentaire de FIRMWARE_MANIFEST_VERSION. Le
+# 2026-11-14 la règle jumelle (« ne recompilez rien entre la signature et les
+# tests ») était écrite dans la spec depuis quelques heures : un sous-agent a
+# relancé `build_fs.sh`, la signature est devenue caduque et la réparation d'un
+# essai destructif a été REFUSÉE. ⇒ Une règle qu'aucune machine ne vérifie
+# finit par être violée.
+#
+# ⛔ PAS DE DÉROGATION, pas de variable d'échappement : un interrupteur
+# « sauter le contrôle » serait mis une fois pour débloquer, puis oublié.
+# `--use-sig-raw` (essais négatifs) n'est PAS concerné — il joue sur le couple
+# manifeste/signature, pas sur la fraîcheur du binaire.
+# =============================================================================
+require_fresh_binary() {
+    local bin=$1 genre=$2 src_dir
+
+    case "$genre" in
+        firmware)   src_dir="src"  ;;
+        filesystem) src_dir="data" ;;
+        *) echo -e "${RED}❌ require_fresh_binary : genre inconnu « $genre »${NC}"; return 1 ;;
+    esac
+
+    [ -d "$src_dir" ] || return 0   # hors dépôt (binaire fourni) : rien à comparer
+
+    # `find -newer` compare les mtime. ⚠️ Pour le firmware on ajoute
+    # `src/version.h` explicitement : c'est LUI qui fournit l'étiquette, et un
+    # montage réseau à granularité de mtime grossière peut le faire manquer à
+    # `find`. `sort -u` dédoublonne — sans lui le fichier sortait DEUX fois.
+    # On n'affiche que 5 coupables : la liste complète d'un `git checkout`
+    # serait illisible et noierait le message.
+    local recents
+    recents=$( { find "$src_dir" -type f -newer "$bin" 2>/dev/null
+                 if [ "$genre" = "firmware" ] && [ src/version.h -nt "$bin" ]; then
+                     echo "src/version.h"
+                 fi
+               } | sort -u | head -5 )
+
+    [ -z "$recents" ] && return 0
+
+    echo -e "${RED}❌ $bin est PLUS ANCIEN que ses sources — envoi refusé (fail-closed)${NC}" >&2
+    echo    "   Modifié après la construction du binaire :" >&2
+    # ⛔ IFS=newline, pas de word-splitting : un nom de fichier peut contenir
+    # des espaces, et une liste mal découpée rendrait le message trompeur.
+    printf '     %s\n' "$recents" >&2
+    if [ "$genre" = "firmware" ]; then
+        echo "   ⇒ Le manifeste déclarerait la version de src/version.h (${FIRMWARE_MANIFEST_VERSION:-?})," >&2
+        echo "     alors que le binaire envoyé vient d'une construction antérieure." >&2
+        echo "   Correctif : « pio run », puis re-signer (⚠️ signer est le DERNIER geste)." >&2
+    else
+        echo "   Correctif : « ./build_fs.sh », puis re-signer (⚠️ signer est le DERNIER geste)." >&2
+    fi
+    return 1
+}
+
+# =============================================================================
 # --sign-only (feature-151 D1-bis) : produit le(s) ".sig" et S'ARRÊTE LÀ.
 # ⛔ Aucune requête réseau, ⛔ aucun mot de passe admin requis dans ce mode —
 # c'est pourquoi ce bloc est placé AVANT "Résoudre les credentials" : inutile
@@ -229,6 +307,9 @@ sign_only_file() {
         echo -e "${RED}❌ Fichier introuvable : $file${NC}"
         return 1
     fi
+
+    # ⭐ AVANT de signer : c'est ICI que l'étiquette de version est frappée.
+    require_fresh_binary "$file" "$genre" || return 1
 
     local digest
     if ! digest=$(compute_sha256 "$file"); then
@@ -343,6 +424,10 @@ update_file() {
         echo -e "${RED}❌ Fichier introuvable : $file${NC}"
         return 1
     fi
+
+    # ⭐ Même contrôle à l'envoi qu'à la signature : avec `--use-sig` le `.sig`
+    # a pu être produit sur une machine ou à un moment où l'arbre était sain.
+    require_fresh_binary "$file" "$type" || return 1
 
     # [O1] Champ "sha256" calculé AVANT l'envoi et placé AVANT "update" dans
     # l'ordre des arguments curl (le serveur lit les champs non-fichier du
