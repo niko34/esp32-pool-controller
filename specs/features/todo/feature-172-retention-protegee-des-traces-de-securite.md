@@ -123,5 +123,5 @@ Toutes les lignes — diagnostic, régulation, sécurité, redémarrages — par
 
 - Le bornage des émetteurs : **fait**, `bug-112`.
 - Les échecs de `/auth/login` : [`bug-183`](../todo/bug-183-auth-login-echecs-muets-et-comparaison-non-constante.md).
-- `rateLimitMap` : `feature-131`. Routes `/debug/*` : [`feature-070`](feature-070-durcissement-routes-debug-et-cooldown-reset.md). `/get-config` : [`bug-181`](bug-181-get-config-expose-la-configuration-sans-authentification.md).
+- `rateLimitMap` : `feature-131`. Routes `/debug/*` : [`feature-070`](feature-070-durcissement-routes-debug-et-cooldown-reset.md). `/get-config` : [`bug-181`](../done/bug-181-get-config-expose-la-configuration-sans-authentification.md).
 - Le retrait du code mort `ArduinoOTA` (`src/ota_manager.cpp:57-66`, un ERROR d'authentification anonyme avec écriture flash synchrone s'il était rebranché) : **simple suppression**, à faire au prochain passage dans ce fichier — ⛔ pas une spec.

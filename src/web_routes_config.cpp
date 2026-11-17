@@ -3,6 +3,7 @@
 #include "config.h"
 #include "constants.h"
 #include "auth.h"
+#include "wifi_status_exposure_logic.h"  // bug-181 : qui voit le SSID de /wifi/status
 #include "auth_log_throttle_site.h"  // bug-112 : recul exponentiel du WARN de refus
 #include "ws_manager.h"
 #include "sensors.h"
@@ -2447,14 +2448,47 @@ void setupConfigRoutes(AsyncWebServer* server, bool* restartApRequested, unsigne
   server->on("/time-now", HTTP_GET, handleTimeNow);
   server->on("/get-system-info", HTTP_GET, handleGetSystemInfo);
 
-  // Routes Wi-Fi publiques (utilisées depuis la page de login en mode AP)
+  // GET /wifi/status — consommée par data/wifi.html et data/wizard.html (JAMAIS
+  // par login.html). Le SSID du réseau domestique n'est servi qu'à qui a droit
+  // de le voir : auth désactivée, jeton valide, ou mode AP/AP+STA (décision dans
+  // wifi_status_exposure_logic.h, bit AP dérivé du mode brut).
+  // ⛔ Ce prédicat n'est PAS wifiConfigAllowed() : cette route DIVULGUE, elle
+  // n'AGIT pas. Ses voisines (/wifi/scan, connect...) restent ouvertes pour
+  // rattraper une connexion perdue ; pas celle-ci. « Harmoniser » rouvrirait la
+  // fuite du SSID à tout anonyme du LAN en mode STA.
+  // Handler MUET et jamais refusant : checkTokenAuth() seul (prédicat silencieux),
+  // ni systemLogger, ni checkAuth/sendAuthRequired/checkRateLimit (ils journalisent
+  // et le premier émet le 401). 200 toujours ; la clé `ssid` reste présente ("" si
+  // masquée) et `connected` reste libre : le wizard conclut au succès sur elle.
+  // ⛔ wifi_status_exposure_logic.h est PUR : il ne peut pas inclure l'en-tête
+  // Wi-Fi, il code donc 2 et 3 en dur. Ces deux contrôles amarrent ces littéraux
+  // à l'énumération RÉELLE : si l'IDF la renumérote, la COMPILATION échoue ICI.
+  // Sans eux, la renumérotation produirait l'un de DEUX défauts SILENCIEUX, et
+  // ⛔ aucun test natif ne verrait ni l'un ni l'autre (le module pur, lui,
+  // resterait juste — c'est le site d'appel qui mentirait) :
+  //   · AP/AP+STA quittent 2 et 3  -> le bit AP se tait, le SSID est MASQUÉ même
+  //     en point d'accès : le portail de configuration casse ;
+  //   · un AUTRE mode prend 2 ou 3 -> le SSID est EXPOSÉ hors point d'accès :
+  //     la fuite que ce lot ferme se rouvre.
+  // ⚠️ LIMITE CONNUE : un mode NEUF portant un point d'accès retomberait sur
+  // « masqué » sans erreur de compilation — le portail casserait en silence.
+  static_assert(static_cast<int>(WIFI_MODE_AP) == kWifiModeApValue,
+                "WIFI_MODE_AP a changé de valeur : corriger wifi_status_exposure_logic.h (bug-181)");
+  static_assert(static_cast<int>(WIFI_MODE_APSTA) == kWifiModeApStaValue,
+                "WIFI_MODE_APSTA a changé de valeur : corriger wifi_status_exposure_logic.h (bug-181)");
+
   server->on("/wifi/status", HTTP_GET, [](AsyncWebServerRequest* request) {
     JsonDocument doc;
     wifi_mode_t mode = WiFi.getMode();
     String modeLabel = (mode == WIFI_MODE_AP) ? "AP" : (mode == WIFI_MODE_APSTA ? "AP+STA" : "STA");
     doc["mode"] = modeLabel;
     doc["connected"] = WiFi.isConnected();
-    doc["ssid"] = WiFi.SSID();
+    WifiSsidExposureInput expo;
+    expo.authEnabled = authManager.isEnabled();
+    expo.tokenValid = authManager.checkTokenAuth(request);
+    expo.wifiMode = static_cast<int>(mode);
+    expo.staConnected = WiFi.isConnected();
+    doc["ssid"] = shouldExposeWifiSsid(expo) ? WiFi.SSID() : String("");
     doc["ap_ssid"] = WiFi.softAPSSID();
     doc["ap_ip"] = WiFi.softAPIP().toString();
     sendJsonResponse(request, doc);

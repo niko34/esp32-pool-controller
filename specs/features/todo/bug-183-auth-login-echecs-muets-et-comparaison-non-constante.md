@@ -239,4 +239,4 @@ retrait de HTTP Basic. Il est noté ici parce que c'est la même surface — l'a
 
 - La rétention séparée des traces de sécurité → [`feature-172`](../todo/feature-172-retention-protegee-des-traces-de-securite.md).
 - `rateLimitMap` : allocation par requête non authentifiée et absence de plafond dur → `feature-131`.
-- Les autres routes sans authentification → [`bug-181`](../todo/bug-181-get-config-expose-la-configuration-sans-authentification.md), [`feature-070`](../todo/feature-070-durcissement-routes-debug-et-cooldown-reset.md).
+- Les autres routes sans authentification → [`bug-181`](../done/bug-181-get-config-expose-la-configuration-sans-authentification.md), [`feature-070`](../todo/feature-070-durcissement-routes-debug-et-cooldown-reset.md).

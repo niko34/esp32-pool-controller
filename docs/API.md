@@ -2072,21 +2072,39 @@ curl -H "X-Auth-Token: $TOKEN" http://poolcontroller.local/time-now
 
 ### GET /wifi/status — public
 
-Retourne l'état de la connexion WiFi.
+Retourne l'état de la connexion WiFi. La route reste **publique** : elle répond **toujours `200`**, jamais `401`, et les **cinq clés** sont toujours présentes. Seule la **valeur** de `ssid` est conditionnelle (depuis 2.93.1).
+
+**Règle d'exposition de `ssid`** — le SSID réel est rendu si l'une de ces conditions est vraie, sinon `""` (chaîne vide, pas d'omission de clé) :
+- l'authentification est désactivée ;
+- un jeton `X-Auth-Token` valide est présenté ;
+- le WiFi est en mode `AP` ou `AP+STA` (le portail de configuration en a besoin avant toute authentification).
+
+Sans jeton, en STA :
 
 ```bash
 curl http://poolcontroller.local/wifi/status
 ```
 
 ```json
-{
-  "mode": "STA",
-  "connected": true,
-  "ssid": "MonWiFi",
-  "ap_ssid": "PoolControllerAP",
-  "ap_ip": "192.168.4.1"
-}
+{ "mode": "STA", "connected": true, "ssid": "", "ap_ssid": "PoolControllerAP", "ap_ip": "192.168.4.1" }
 ```
+
+Avec jeton :
+
+```bash
+curl -H "X-Auth-Token: $POOL_TOKEN" http://poolcontroller.local/wifi/status
+```
+
+```json
+{ "mode": "STA", "connected": true, "ssid": "MonWiFi", "ap_ssid": "PoolControllerAP", "ap_ip": "192.168.4.1" }
+```
+
+Un client tiers qui lisait `ssid` sans jeton reçoit désormais `""`.
+
+⚠️ **Ce qui reste exposé après ce correctif**
+1. **En AP+STA connecté**, un anonyme du réseau domestique lit toujours le SSID. Fenêtre probablement courte : `src/main.cpp:1774-1778` coupe le point d'accès dès que la station est connectée (lu, pas mesuré).
+2. **MQTT** : `<base>/diagnostic` porte le SSID **et** l'adresse IP (`mqtt_manager.cpp:1416-1419`) et est publié **retenu** : lisible par tout abonné du broker, même appareil éteint. `<base>/logs` relaie « WiFi connecté: <SSID> ». La protection est celle du **broker**, pas de l'appareil.
+3. **Oracle de jeton** : hors point d'accès, un `ssid` non vide signifie « ce jeton est valide ». Jeton de 128 bits comparé en temps constant : inexploitable par force brute, mais sans quota ni trace.
 
 ---
 

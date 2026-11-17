@@ -2,6 +2,19 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [2.93.1] - 2026-11-17
+
+### Firmware
+- **Sécurité — `GET /wifi/status` (bug-181)** : la route servait le SSID sans aucune garde. Elle reste publique et répond toujours `200` avec ses cinq clés, mais `ssid` vaut désormais `""` sauf si l'authentification est désactivée, ou si un jeton `X-Auth-Token` valide est présenté, ou si le WiFi est en mode `AP`/`AP+STA`. Décision portée par `src/wifi_status_exposure_logic.h` (pur, testé en natif).
+  - ⚠️ **Changement de comportement** : un client tiers qui lisait `ssid` sans jeton reçoit une chaîne vide.
+  - ⛔ Ce n'est **pas** « le SSID n'est plus exposé » : la box diffuse son nom en clair dans chaque trame de balise, lisible par quiconque est à portée radio. Gain réel : (1) un réseau **masqué** n'est plus trahi par l'appareil ; (2) un visiteur **sur le réseau mais hors de portée radio** (VPN, réseau ponté) n'apprend plus à quel réseau l'appareil appartient ; (3) cohérence : plus aucune des cinq routes Wi-Fi sans garde.
+  - ⚠️ **Résidus** : en AP+STA connecté le SSID reste lisible ; MQTT `<base>/diagnostic` (SSID + IP, **retenu**) et `<base>/logs` l'exposent selon la protection du broker ; hors AP, un `ssid` non vide revient à valider le jeton (sans quota ni trace).
+
+### Documentation
+- `docs/API.md` (contrat de `/wifi/status`, résidus), `docs/subsystems/auth.md` (`checkTokenAuth` en prédicat silencieux), `docs/features/page-settings.md` (trois erreurs préexistantes corrigées : route non consommée, `web_routes_wifi.cpp` et `auth_manager.cpp` inexistants).
+
+---
+
 ## [2.93.0] - 2026-11-17
 
 ### Firmware

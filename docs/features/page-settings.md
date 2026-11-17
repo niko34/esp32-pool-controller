@@ -42,7 +42,7 @@ Nouvelle section **en 1ᵉʳ onglet** (feature-056, v2.19.0). Un `radiogroup` (`
 - **Aide intégrée** (`<details class="tips">` `#install-ext-tips`, dans le callout external) : bloc repliable montrant des exemples prêts à l'emploi pour signaler l'état de la filtration — commande HTTP `curl`, publication MQTT `mosquitto_pub`, et une automatisation Home Assistant complète (recopie de l'état d'une prise + republication toutes les minutes). `fillExternalTips()` (app.js) renseigne dynamiquement l'URL réelle (`location.host`) et le topic MQTT réel (`window._config.topic`, défaut `pool/sensors`).
 
 ### Wi-Fi (`panel-wifi`)
-- Depuis `GET /wifi/status` : `ssid`, `ip`, `mode` (STA/AP), `mdns_hostname`.
+- La page Réglages **ne consomme pas** `GET /wifi/status` (ses seuls consommateurs sont `data/wifi.html` et `data/wizard.html`). Les valeurs Wi-Fi viennent de `GET /get-config` (authentifiée). La route `/wifi/status` n'émet que `mode`, `connected`, `ssid`, `ap_ssid`, `ap_ip` ; depuis 2.93.1 `ssid` vaut `""` sans jeton hors mode AP (voir [`API.md`](../API.md#get-wifistatus--public) pour les résidus : AP+STA, MQTT `<base>/diagnostic` retenu, oracle de jeton).
 
 ### MQTT (`panel-mqtt`)
 - `mqtt_enabled`, `mqtt_server`, `mqtt_port`, `mqtt_topic`, `mqtt_username`, `mqtt_password`
@@ -538,8 +538,8 @@ Le champ `mqtt_enabled` pilote directement la présence / l'absence du client MQ
 - [`data/app.js`](../../data/app.js) — handlers des 9 onglets (`setupInstall` (feature-056), `setupWifi`, `setupMqtt`, `setupTime`, `setupSecurity`, `setupRegulation`, `setupSystem`, `setupDev`)
 - [`src/config.h`](../../src/config.h) — structs `MqttConfig`, `AuthConfig`, `PumpControlParams`, `SafetyLimits`, `PumpProtection`
 - [`src/web_routes_config.cpp`](../../src/web_routes_config.cpp) — `/save-config`, `/reset-regulation-defaults` (feature-088), `/reboot`, `/reboot-ap`, `/factory-reset`
-- [`src/web_routes_auth.cpp`](../../src/) / [`src/auth_manager.cpp`](../../src/) — endpoints `/auth/*`
-- [`src/web_routes_wifi.cpp`](../../src/) — `/wifi/scan`, `/wifi/status`, `/wifi/disconnect`, `/wifi/ap/disable`
+- [`src/web_routes_auth.cpp`](../../src/) / [`src/auth.cpp`](../../src/) — endpoints `/auth/*`
+- [`src/web_routes_config.cpp`](../../src/) — `/wifi/scan`, `/wifi/status`, `/wifi/disconnect`, `/wifi/ap/disable`
 - [`src/web_routes_control.cpp`](../../src/web_routes_control.cpp) — `/pump1/*`, `/pump2/*`, `/flow-assist/*` (feature-075)
 - [`src/web_routes_data.cpp:303`](../../src/web_routes_data.cpp:303) — historique (`/get-history`, `/history/import`, `/history/clear`)
 - [`src/ota.cpp`](../../src/) / [`src/update.cpp`](../../src/) — `/update`, `/check-update`, `/download-update`
