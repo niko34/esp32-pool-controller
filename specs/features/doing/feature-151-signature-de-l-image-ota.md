@@ -159,18 +159,20 @@ LXC). Une spec séparée devra, le cas échéant, documenter comment lever cette
   page web (ADR attendu ci-dessus)
 
 ## Critères d'acceptation
-- [ ] Une image non signée, ou signée par une clé inconnue, est **refusée** avant tout
+- [x] ✅ Une image non signée, ou signée par une clé inconnue, est **refusée** avant tout
       `Update.end()`, sur `/update` **et** `/download-update` — ⛔ **pas avant D3** : D1
-      vérifie et journalise, ne refuse rien (c'est son objet)
-- [ ] Une image signée mais de version inférieure au plancher est **refusée**, avec une
-      cause distincte d'un échec de signature — ⛔ **pas avant D3** (plancher inerte à 0.0.0
-      en D1)
+      vérifie et journalise, ne refuse rien (c'est son objet).
+      ⭐ **PROUVÉ SUR L'APPAREIL le 2026-11-17** — voir « Campagne D3-c » en fin de spec.
+- [~] ⛔ **SANS OBJET** — « image signée mais de version inférieure au plancher ». Ce critère
+      est **annulé** par la décision utilisateur du 2026-11-15 (« AUCUN PLANCHER, NULLE PART »,
+      section plus bas). ⛔ Ne pas le rouvrir sans rouvrir la décision elle-même.
 - [ ] L'impasse « la page web ne peut pas signer » est tranchée **explicitement** (option 1
       ou 2 ci-dessus) et documentée, pas redécouverte en cours d'implémentation — **reportée
       explicitement** à un lot ultérieur en D1 (documenté dans `docs/UPDATE_GUIDE.md`,
       jamais redécouverte en silence), pas encore tranchée
-- [ ] `ota_update.sh` fonctionne — prouvé par un déploiement réel, firmware et filesystem —
-      **c'est l'objet de D2**, non encore mené à cette étape
+- [x] ✅ `ota_update.sh` fonctionne — prouvé par un déploiement réel, firmware et filesystem.
+      D2 (2026-11-14) puis **déploiement de 2.90.0 le 2026-11-17** (`--use-sig both`, les deux
+      binaires acceptés, signatures relues sans re-signature).
 - [x] La documentation dit ce que la signature prouve (authenticité d'origine) par
       opposition à ce que l'empreinte de `feature-118` prouvait seule (intégrité du
       transfert) — ne pas laisser les deux mécanismes se confondre dans le texte
@@ -185,8 +187,9 @@ signe chaque envoi et refuse d'en faire sans outillage. Documentation à jour :
 [`docs/subsystems/ota-manager.md`](../../docs/subsystems/ota-manager.md#d1--authenticite-par-signature-journalise-seulement-feature-151-verdict-security-reviewer-p1),
 [`docs/UPDATE_GUIDE.md`](../../docs/UPDATE_GUIDE.md#signature-des-envois-ota),
 [ADR-0120](../../docs/adr/0120-signature-rsa-du-manifeste-ota-verifiee-avant-refus.md).
-⛔ **Spec NON déplacée vers `done/`** : D2 (preuve terrain) à D5 restent à livrer avant que la
+⛔ **Spec NON déplacée vers `done/`** : D2 (preuve terrain) à **D4** restent à livrer avant que la
 feature ne satisfasse réellement la règle de sécurité n° 6 de `CLAUDE.md`.
+⚠️ *Disait « à D5 » — ⛔ D5 est annulé depuis le 2026-11-17 (plus de plancher).*
 
 ### 🔒 Les deux gardes — nommées et placées ici (condition 1 du verdict P1, levée dans la spec)
 
@@ -246,7 +249,9 @@ existe déjà dans le même fichier depuis feature-118 lot B (sans rapport avec 
   décision B (ci-dessus).
 - **La version inscrite dans le manifeste vient de `src/version.h` de l'arbre de travail**, pas du
   binaire réellement envoyé — écart assumé, mitigé par un `pio run` systématique avant envoi ;
-  deviendra un champ de sécurité (plancher) en D5.
+  ⛔ ~~deviendra un champ de sécurité (plancher) en D5~~ — **ne deviendra rien** : D5 et le
+  plancher sont annulés (2026-11-17). ⇒ L'écart reste mitigé **uniquement** par le `pio run`
+  systématique avant envoi. ⚠️ C'est donc une mitigation de **procédure**, sans filet technique.
 - **`.gitignore`** : motifs `*.pem`/`*.sig` restreints à la **racine** (`/*.pem`, `/*.sig`) — un
   motif global aurait silencieusement masqué une future ancre TLS `.pem` versionnée ailleurs dans
   l'arbre.
@@ -299,7 +304,7 @@ seul le `if` de refus change.
 | **D3-b** | ⛔ **Aucun refus.** **La porte de sortie** : mode dégradé du serveur web + page de secours embarquée (cond. 6, 7, 8). | D3-a | ⭐ Récupération prouvée **en conditions réelles**, `spiffs` détruite |
 | **D3-c** | ✅ **Le refus.** Les `if`, les verdicts HTTP distincts, plancher **inerte à 0.0.0**, interrupteur. | D3-b | ⛔ Ne commence pas tant que D3-b n'est pas prouvé. 🔴 **ET ne sort PAS dans le même firmware que bug-176 (2.88.0)** — voir « CONTRAINTE D'ORDRE » en fin de spec |
 | **D4** | Bump sans effet, firmware + FS, script **et** page. ⭐ **Premier déploiement réellement filtré.** | D3 | 4 déploiements acceptés |
-| **D5** | Relèvement du plancher (geste explicite). | — | D4 vert |
+| ~~**D5**~~ | ⛔ **ANNULÉ le 2026-11-17.** « Relèvement du plancher » n'a plus d'objet : la décision utilisateur du 2026-11-15 (« AUCUN PLANCHER, NULLE PART », section plus bas) a supprimé le plancher lui-même. ⚠️ Cette ligne a survécu **deux jours** à la décision qui la vide, et a été resservie à l'utilisateur comme du travail restant — c'est **lui** qui l'a relevé. ⇒ **D4 est le dernier lot.** | — | — |
 
 ## Décisions
 - **Q1 — RSA-3072, PKCS#1 v1.5 sur SHA-256.** ⚠️ **Mesuré dans l'ELF** : `mbedtls_pk_verify`,
@@ -379,8 +384,10 @@ la lui **rend**, en deux requêtes au lieu d'une.
 
 ## Durcissements à ouvrir ensuite (ordre imposé)
 1. **Mise en attente PSRAM de l'image FS** ⇒ ferme C1 pour de bon.
-2. **Fenêtre de secours par bouton PHYSIQUE** ⇒ ⭐ seule façon d'obtenir « jeton ≠ code
-   arbitraire ». ⛔ À n'ouvrir qu'**après D5**.
+2. **Fenêtre de secours par bouton PHYSIQUE** ([`feature-171`](../todo/feature-171-bouton-physique-autorisation-temporaire.md))
+   ⇒ ⭐ seule façon d'obtenir « jeton ≠ code arbitraire ».
+   ⛔ À n'ouvrir qu'**après D4** — ⚠️ disait « après D5 », or **D5 est annulé** (2026-11-17) :
+   la porte était gardée par un lot qui n'existe plus.
 3. **bug-112** (journal purgeable sans authentification) — ⚠️ il conditionne la valeur de la
    trace de l'interrupteur. ⇒ **Avant** le durcissement n°2.
 
@@ -1304,7 +1311,8 @@ accepté »* **ne prouve rien**. La clôture se lit **dans les verdicts du journ
    l'ouverture par écrit** dans l'ADR.
 4. **Interrupteur par bouton PHYSIQUE** pour les appareils clients — ⭐ *le client a le bouton
    sous la main et n'a pas forcément MQTT pour témoin* ⇒ c'est la **forme naturelle** de
-   l'interrupteur côté client. ⛔ Après D5.
+   l'interrupteur côté client. ⛔ Après **D4** (disait « après D5 » — D5 est annulé, 2026-11-17).
+   ⇒ Fiche ouverte : [`feature-171`](../todo/feature-171-bouton-physique-autorisation-temporaire.md).
 5. **Bouton « réparer en ligne »** dans la page de secours, s'il est écarté de D3-b.
 6. 🔴 **À soumettre à `pool-chemistry`** (hors mandat de `security-reviewer`) : **l'appareil
    doit-il continuer à DOSER quand son interface est détruite ?** ⚠️ C'est le cas **aujourd'hui**,
@@ -2509,7 +2517,7 @@ affirment sur la **forme des messages**. Le renommage les fera rougir — c'est 
 
 ### ⛔ Reste ouvert (la spec RESTE dans `doing/`)
 
-- **D3-c** (refus), **D4**, **D5**. ✅ ~~marche 3 de B12~~ **passée le 2026-11-16** (voir ci-dessus) : **B12 est clos**.
+- ✅ ~~**D3-c** (refus)~~ **livré et prouvé le 2026-11-17** · **D4** · ⛔ ~~**D5**~~ **annulé**. ✅ ~~marche 3 de B12~~ **passée le 2026-11-16** (voir ci-dessus) : **B12 est clos**.
 - Hors lot, à ouvrir (revue P1/P2) : **`bug-112` avant D3-c** ; `RouteProtection::CRITICAL` réellement distinct de `WRITE` ; **référence de version indépendante de GitHub** avant toute promotion du « désaccord » en refus.
 - ✅ **Bouton physique : fiche ouverte** — [`feature-171`](../todo/feature-171-bouton-physique-autorisation-temporaire.md) (2026-11-16). ⚠️ Elle **renverse l'exigence centrale d'ADR-0125** : l'autorisation ne survivrait plus à un redémarrage — ce qui supprime à la fois l'impasse « sans heure valide, aucune autorisation possible » et toute la dette du résidu NVS. ⛔ Inerte tant que D3-c n'est pas livré.
 - 🔴 « Jeton admin volé » : **ouvert, rouvert plus facilement** par l'interrupteur.
@@ -2521,7 +2529,7 @@ Le journal des refus d'authentification est désormais borné ([ADR-0127](../../
 
 ## ✅ D3-c « le refus » — NOTES D'IMPLÉMENTATION (2026-11-16)
 
-⛔ **La spec RESTE dans `doing/`** : D4 et D5 restent ouverts. [ADR-0128](../../../docs/adr/0128-l-appareil-refuse-une-image-ota-non-authentique.md) acte la décision.
+⛔ **La spec RESTE dans `doing/`** : **D4** reste ouvert (⛔ ~~D5~~ annulé le 2026-11-17). [ADR-0128](../../../docs/adr/0128-l-appareil-refuse-une-image-ota-non-authentique.md) acte la décision.
 
 **Livré** : `src/ota_refusal_messages.{h,cpp}` (neufs, purs) — `otaRefusalDecide(verdict)` sans paramètre de page, `otaRefusalPhrase(verdict, pageAnnouncedVersion, site)` ; refus branchés en sortie des blocs d'authenticité figés ([G5] `/update`, [G6] `/download-update`), avant toute écriture et avant les trois `setOtaInProgress(true)` ; 4 blocs « TOLÉRANCE D3-a » supprimés ; repli d'empreinte illisible = refus précoce ; renommage « interrupteur » → « autorisation temporaire de mise à jour non signée » (entité HA « Mise à jour non signée autorisée », `unique_id`/topic inchangés) ; garde CI `tools/check_ota_manager_isolated.sh` (job `ota-manager-isole`) ; interface : phrase de l'appareil affichée, pré-contrôle (absente ≠ non récupérée), un seul `/ota-sig` par genre, 3 sélecteurs `.pick` en français.
 
@@ -2531,11 +2539,45 @@ Le journal des refus d'authentification est désormais borné ([ADR-0127](../../
 
 **Mesures (relevées par l'orchestrateur)** : `pio run` SUCCESS, 0 warning, flash 52,3 % / 1 952 961 o, RAM 30,0 % / 98 256 o ; `pio test -e native` 87 suites / 2 583 cas / 0 échec ; `./build_fs.sh` SUCCESS ; page de secours 16 625 o.
 
-### ⚠️ Campagne de terrain D3-c — NON FAITE
-Douze essais (G0 à F11) restent à mener sur l'appareil. ⚠️ **L'expiration naturelle à 60 min de l'autorisation temporaire n'a jamais été observée** sur l'appareil. Le lot est livré **sans** preuve de terrain du refus : ne pas le présenter comme éprouvé.
+### ✅ Campagne de terrain D3-c — LE REFUS EST PROUVÉ (2026-11-17)
+
+**2.90.0 déployée à 07:49** par `./ota_update.sh --use-sig both 192.168.1.48` — les deux binaires
+acceptés, signatures **relues** (aucune re-signature). Empreinte de clé publique journalisée au
+démarrage : `844449550704da06b085d24a8ae2b079a349730d520e61824dc2816956a57ebb`, **identique** à
+celle vérifiée avant l'envoi.
+
+**Quatre essais négatifs sur `POST /update`, tous refusés, avec la VRAIE image 2.90.0** (⭐ choix
+délibéré : si un refus avait échoué, l'appareil aurait réinstallé la version qu'il portait déjà —
+essai négatif **sans conséquence**) :
+
+| Envoi | HTTP | Verdict journalisé |
+|---|---|---|
+| aucune signature | **403** | `authenticité OTA : absente — refusé : oui` |
+| `.sig` du filesystem sur l'image firmware | **415** | `genre discordant — refusé : oui` |
+| signature altérée d'1 caractère | **403** | `invalide — refusé : oui` |
+| signature tronquée (`ABCD`) | **400** | `malformée — refusé : oui` |
+
+⭐ **`uptime` CONTINU pendant les quatre essais** (aucun redémarrage, partition `app0` inchangée)
+⇒ preuve que le refus tombe **avant toute écriture flash**, et pas seulement avant l'activation.
+
+Chaque refus produit **deux** lignes : le verdict (WARN) et la phrase rendue à l'utilisateur
+(CRIT). Les phrases sont conformes au texte figé.
+
+**Autorisation temporaire — vérifiée AVANT le déploiement** (sur 2.89.0, 07:45) : ouverture →
+`remaining_s: 3600` → fermeture → `no_entry`, les deux lignes au journal persistant. ⇒ La porte de
+sortie existe et répond.
+
+⚠️ **Ce qui reste NON prouvé** : (1) l'**expiration naturelle à 60 min** (essai **F9**) — jamais
+observée ; (2) les **refus tardifs** (liaison image↔manifeste), qui exigent un essai
+**destructif** et un accord explicite ; (3) **D4** — qu'une image **légitime** soit **acceptée**
+par un appareil qui filtre (le déploiement du jour est parti vers un appareil en 2.89.0, qui ne
+filtrait pas encore : ⛔ il ne compte pas pour D4).
 
 ### 🔴 Consigné dans l'ADR-0128
 Le vecteur « jeton admin volé » reste ouvert (deux requêtes). ADR-0022 déclare encore `ArduinoOTA` actif alors qu'il n'a aucun appelant : le rebrancher contournerait totalement le refus ; `check_ota_manager_isolated.sh` l'interdit désormais.
 
 ### ⛔ Reste ouvert
-D4, D5, la campagne de terrain D3-c ci-dessus.
+**D4 uniquement** — plus F9 (expiration naturelle) et les refus tardifs (essai destructif).
+⛔ ~~D5~~ **annulé le 2026-11-17** : voir le tableau d'ordre de déploiement. Le « relèvement du
+plancher » n'a plus d'objet depuis la décision du 2026-11-15, et la ligne avait survécu deux jours
+à la décision qui la vide.
