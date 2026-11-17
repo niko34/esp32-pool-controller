@@ -48,7 +48,7 @@ régulation et la pertinence de deux autres specs.
 
 ## Contexte — les mesures, toutes datées du 2026-09-20
 
-Fixture versionnée : [`test/fixtures/f097_purge_noise_20260920.csv`](../../test/fixtures/f097_purge_noise_20260920.csv)
+Fixture versionnée : [`test/fixtures/f097_purge_noise_20260920.csv`](../../../test/fixtures/f097_purge_noise_20260920.csv)
 — 300 échantillons **uniques** à 5 s (25 min), eau établie, porte de mesure
 ouverte, firmware 2.53.0.
 

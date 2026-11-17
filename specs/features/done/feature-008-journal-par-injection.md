@@ -6,7 +6,7 @@
 - **Priorité** : normale (à la rédaction — caduque à la clôture)
 - **Version cible** : n/a
 - **Dernière mise à jour** : 2026-07-04
-- **Doc(s) liée(s)** : [docs/subsystems/history.md](../../docs/subsystems/history.md), [docs/subsystems/pump-controller.md](../../docs/subsystems/pump-controller.md)
+- **Doc(s) liée(s)** : [docs/subsystems/history.md](../../../docs/subsystems/history.md), [docs/subsystems/pump-controller.md](../../../docs/subsystems/pump-controller.md)
 
 ## Note de clôture (2026-07-04)
 
@@ -50,7 +50,7 @@ Aucun code modifié au titre de cette spec. Le contenu ci-dessous est conservé 
 Ajouter un journal circulaire « par-injection » : chaque injection pH ou ORP (auto, programmée, manuelle) génère une entrée avec timestamp, produit, volume, durée, origine, raison d'arrêt. Consultable via un nouvel endpoint `GET /api/history/injection` et exposé dans les pages /ph et /orp.
 
 ## Contexte
-À ce jour, seul l'historique 5 min agrégé existe (`/get-history`, voir [docs/subsystems/history.md](../../docs/subsystems/history.md)). Impossible de répondre à « à 14h02, j'ai injecté 25 mL de pH- parce que la cible était à 7.5 ».
+À ce jour, seul l'historique 5 min agrégé existe (`/get-history`, voir [docs/subsystems/history.md](../../../docs/subsystems/history.md)). Impossible de répondre à « à 14h02, j'ai injecté 25 mL de pH- parce que la cible était à 7.5 ».
 
 Utile pour :
 - Auditer un dépassement de quota journalier a posteriori
@@ -60,7 +60,7 @@ Utile pour :
 ## Comportement attendu
 
 ### Côté firmware
-- Nouveau fichier `/injection.log` sur la partition `history` dédiée ([ADR-0007](../../docs/adr/0007-table-partitions-custom.md)) — 128 KB, déjà isolée.
+- Nouveau fichier `/injection.log` sur la partition `history` dédiée ([ADR-0007](../../../docs/adr/0007-table-partitions-custom.md)) — 128 KB, déjà isolée.
 - Format : CSV binaire compact ou JSON lines (à trancher par architect). Recommandation : JSON lines pour rester compat avec `/get-history`.
 - Une entrée par injection, générée **à l'arrêt** de l'injection (pas au démarrage) pour disposer de la durée et de la raison :
   - `ts` (ISO 8601 local, YYYY-MM-DDTHH:MM:SS)

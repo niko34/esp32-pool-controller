@@ -331,12 +331,12 @@ chaque déploiement**. Chimiquement pire.
 ## Notes d'implémentation (doc-writer, 2026-10-08 — v2.58.0)
 
 ### Ce qui a été livré
-- Module pur [`src/dosing_window_logic.h`](../../src/dosing_window_logic.h)
+- Module pur [`src/dosing_window_logic.h`](../../../src/dosing_window_logic.h)
   (ADR-0017) : structures `DosingWindowRtcRecord` (220 o, T2) /
   `DosingWindowNvsRecord` (56 o, T1), rebasage d'ancre wrap-safe, résolution
   « au plus défavorable », fail-closed T3 (option d), rebasage du ring
   anti-rafale.
-- Coquille [`src/dosing_window.{h,cpp}`](../../src/dosing_window.h) : lecture
+- Coquille [`src/dosing_window.{h,cpp}`](../../../src/dosing_window.h) : lecture
   `RTC_NOINIT_ATTR` + NVS `pool-dose`, `esp_reset_reason()`,
   `esp_rtc_get_time_us()`, journalisation par voie.
 - Câblage `pump_controller.{h,cpp}` : `applyRestoredDosingWindow()` (appelée
@@ -350,7 +350,7 @@ chaque déploiement**. Chimiquement pire.
 ### Décisions du gate P1 (conception) reprises telles quelles
 Voir la section « Gate pool-chemistry P1 » ci-dessus pour le détail complet
 des 12 conditions (C1-C12). Résumé des arbitrages les plus engageants, repris
-dans [ADR-0089](../../docs/adr/0089-ce-qu-un-redemarrage-a-le-droit-doublier.md) :
+dans [ADR-0089](../../../docs/adr/0089-ce-qu-un-redemarrage-a-le-droit-doublier.md) :
 fusion au plus défavorable (jamais moyenne ni plus récent), T3 = une seule
 fenêtre à la limite (jamais un blocage — motif chimique : RTC morte + hors
 réseau bloquerait l'acide indéfiniment, le pH dériverait au-delà de 7,60 et la
@@ -392,14 +392,14 @@ ans avant 100 000 cycles garantis (48 ans au plafond physique estimé)**.
   de démarrage, sinon un repli conservateur C4 est indiscernable d'une
   reprise nominale, et la dette C7 ne peut jamais être levée par
   l'observation. »* Soldée : `DosingWindowManager::begin()`
-  ([`dosing_window.cpp:165-220`](../../src/dosing_window.cpp:165)) construit
+  ([`dosing_window.cpp:165-220`](../../../src/dosing_window.cpp:165)) construit
   explicitement `coupure=<n>s` ou `écoulé=inconnu` dans la ligne de journal.
 - **S3** — *« La magie (`magic`) de chaque instantané était écrite mais
   jamais comparée au restore : un enregistrement scellé par un autre module
   de la RAM RTC partagée (`heap_ring`, `oom_guard`, `time_to_target`,
   `measure_validity`, auto-guérison) resterait auto-cohérent et passerait le
   CRC. »* Soldée : `dosingWindowRtcIntact()` / `dosingWindowNvsIntact()`
-  ([`dosing_window_logic.h:133-159`](../../src/dosing_window_logic.h:133))
+  ([`dosing_window_logic.h:133-159`](../../../src/dosing_window_logic.h:133))
   comparent désormais `r.magic` à `kDosingWindowRtcMagic`/`kDosingWindowNvsMagic`
   avant le calcul du CRC complet.
 

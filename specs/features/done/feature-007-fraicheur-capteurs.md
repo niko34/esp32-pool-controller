@@ -6,7 +6,7 @@
 - **Priorité** : haute (à la rédaction — caduque à la clôture)
 - **Version cible** : n/a
 - **Dernière mise à jour** : 2026-07-04
-- **Doc(s) liée(s)** : [docs/subsystems/sensors.md](../../docs/subsystems/sensors.md), [docs/subsystems/pump-controller.md](../../docs/subsystems/pump-controller.md)
+- **Doc(s) liée(s)** : [docs/subsystems/sensors.md](../../../docs/subsystems/sensors.md), [docs/subsystems/pump-controller.md](../../../docs/subsystems/pump-controller.md)
 
 ## Note de clôture (2026-07-04)
 
@@ -53,7 +53,7 @@ Exposer explicitement la fraîcheur des mesures pH et ORP via un timestamp `last
 ## Contexte
 Aujourd'hui, si le module EZO pH ou ORP ne répond pas, `sensors.getPh()` peut renvoyer NAN. Le PID tolère partiellement NAN (la plupart des branches retournent simplement `false` sans démarrer), mais **aucune alerte explicite** n'est levée : l'utilisateur voit `--` sur l'UI et peut croire à un simple glitch. Pire, une valeur figée (dernière lecture valide conservée) serait utilisée par le PID sans être détectée.
 
-Voir [docs/subsystems/sensors.md](../../docs/subsystems/sensors.md) (lecture périodique) et [docs/subsystems/pump-controller.md](../../docs/subsystems/pump-controller.md) (gardes du PID).
+Voir [docs/subsystems/sensors.md](../../../docs/subsystems/sensors.md) (lecture périodique) et [docs/subsystems/pump-controller.md](../../../docs/subsystems/pump-controller.md) (gardes du PID).
 
 ## Comportement attendu
 

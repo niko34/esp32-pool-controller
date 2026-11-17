@@ -327,7 +327,7 @@ récupération — seul le redémarrage de Home Assistant (détecté via
       (2026-09-20, `doc-writer`) — condition de republication, abonnement
       `homeassistant/status`, geste manuel pour les orphelins, décompte
       d'entités corrigé (54 → 60).
-- [x] C2 — [ADR-0085](../../docs/adr/0085-republication-decouverte-ha-sur-empreinte.md)
+- [x] C2 — [ADR-0085](../../../docs/adr/0085-republication-decouverte-ha-sur-empreinte.md)
       créé (critères 1, 2, 3, 4).
 - [x] C3 — `CHANGELOG.md` mis à jour, section `[Unreleased]` (cible 2.53.1) —
       **sans** affirmer que les déconnexions MQTT sont corrigées.

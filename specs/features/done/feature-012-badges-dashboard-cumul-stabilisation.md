@@ -20,7 +20,7 @@ Audit contre le code v2.8.0 + avis `ux-ui-designer` : la spec d'avril est aux 2/
 **Abandonnés sur avis UX** : barre de progression 4 px (chrome permanent pour info actionnable ~10 % du temps ; la lecture pré-75 % n'est pas actionnable et vit sur /ph, /orp), tooltip (hover inexistant sur iOS), icône ⛔, fade 300 ms, décompte animé seconde par seconde (distraction sans action possible — le rafraîchissement WS suffit).
 
 Aucun changement firmware (tous les champs WS existent). Cycle allégé : web-ui-developer → vérifs → code-reviewer → doc-writer.
-- **Doc(s) liée(s)** : [docs/features/page-dashboard.md](../../docs/features/page-dashboard.md), [docs/features/page-ph.md](../../docs/features/page-ph.md), [docs/features/page-orp.md](../../docs/features/page-orp.md)
+- **Doc(s) liée(s)** : [docs/features/page-dashboard.md](../../../docs/features/page-dashboard.md), [docs/features/page-ph.md](../../../docs/features/page-ph.md), [docs/features/page-orp.md](../../../docs/features/page-orp.md)
 
 ## Domaines touchés
 - [ ] Capteurs (pH / ORP / température)
@@ -49,7 +49,7 @@ Aucun changement firmware (tous les champs WS existent). Cycle allégé : web-ui
 Ajouter sur la page dashboard deux informations transverses : (a) cumul journalier pH/ORP en barre de progression compacte sur chaque carte, (b) badge « stabilisation en cours — XXs » quand un timer est actif.
 
 ## Contexte
-Voir [docs/features/page-ph.md](../../docs/features/page-ph.md) et [docs/features/page-orp.md](../../docs/features/page-orp.md). Actuellement le cumul journalier n'est affiché que sur /ph et /orp (bloc Statistiques). Le dashboard, point d'entrée de l'utilisateur, n'en dit rien — ce qui masque un dépassement imminent jusqu'à ce qu'on clique sur la page détaillée. De même, quand la stabilisation bloque une injection, aucune information visuelle sur le dashboard.
+Voir [docs/features/page-ph.md](../../../docs/features/page-ph.md) et [docs/features/page-orp.md](../../../docs/features/page-orp.md). Actuellement le cumul journalier n'est affiché que sur /ph et /orp (bloc Statistiques). Le dashboard, point d'entrée de l'utilisateur, n'en dit rien — ce qui masque un dépassement imminent jusqu'à ce qu'on clique sur la page détaillée. De même, quand la stabilisation bloque une injection, aucune information visuelle sur le dashboard.
 
 ## Comportement attendu
 

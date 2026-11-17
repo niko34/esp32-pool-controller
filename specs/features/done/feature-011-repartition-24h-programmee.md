@@ -36,7 +36,7 @@ Vrais noms : `phInjectionLimitMinutes` (5 min/h) / `orpInjectionLimitMinutes` (1
 - B2 (toast reliquat) → réalisable côté client avec les données déjà exposées (cible dans la config, injecté dans le WS) ; à défaut simple hint statique — arbitrage web-ui-developer, pas de nouveau champ WS dédié au reliquat.
 - Champs WS `ph/orp_scheduled_flow_ml_per_min` (A8) conservés : débit moyen planifié restant, `null` hors mode scheduled ou hors plage.
 - Version cible : **2.8.0**.
-- **Doc(s) liée(s)** : [docs/features/page-ph.md](../../docs/features/page-ph.md#règles-firmware-appliquées), [docs/features/page-orp.md](../../docs/features/page-orp.md#règles-firmware-appliquées), [docs/adr/0002-mode-programmee-volume-quotidien.md](../../docs/adr/0002-mode-programmee-volume-quotidien.md), [docs/subsystems/pump-controller.md](../../docs/subsystems/pump-controller.md)
+- **Doc(s) liée(s)** : [docs/features/page-ph.md](../../../docs/features/page-ph.md#règles-firmware-appliquées), [docs/features/page-orp.md](../../../docs/features/page-orp.md#règles-firmware-appliquées), [docs/adr/0002-mode-programmee-volume-quotidien.md](../../../docs/adr/0002-mode-programmee-volume-quotidien.md), [docs/subsystems/pump-controller.md](../../../docs/subsystems/pump-controller.md)
 
 ## Domaines touchés
 - [ ] Capteurs (pH / ORP / température)
@@ -65,7 +65,7 @@ Vrais noms : `phInjectionLimitMinutes` (5 min/h) / `orpInjectionLimitMinutes` (1
 Définir et implémenter un algorithme de **répartition** du volume quotidien programmé (`ph_daily_target_ml`, `orp_daily_target_ml`) sur les plages de filtration de la journée, en respectant les limites horaires, `maxCyclesPerDay`, `minInjectionTimeMs` et le délai de stabilisation.
 
 ## Contexte
-Le mode `scheduled` (voir [ADR-0002](../../docs/adr/0002-mode-programmee-volume-quotidien.md)) permet à l'utilisateur de saisir un volume quotidien à injecter, indépendant de la mesure capteur. Le comportement actuel est grossier : injecter tant qu'on n'a pas atteint la cible **ou** la limite horaire, sans lisser sur la journée.
+Le mode `scheduled` (voir [ADR-0002](../../../docs/adr/0002-mode-programmee-volume-quotidien.md)) permet à l'utilisateur de saisir un volume quotidien à injecter, indépendant de la mesure capteur. Le comportement actuel est grossier : injecter tant qu'on n'a pas atteint la cible **ou** la limite horaire, sans lisser sur la journée.
 
 Problèmes observés :
 - L'intégralité du volume peut être injectée dans la première plage de filtration du matin → pic de concentration localisé.
@@ -99,7 +99,7 @@ Problèmes observés :
 - Changement du volume cible en cours de journée : recalculer le débit sur le reste de la journée avec le nouveau target.
 
 ## Comportement actuel
-Le mode `scheduled` injecte dès qu'il peut, sans répartition. Voir [docs/subsystems/pump-controller.md#mode-scheduled](../../docs/subsystems/pump-controller.md#mode-scheduled).
+Le mode `scheduled` injecte dès qu'il peut, sans répartition. Voir [docs/subsystems/pump-controller.md#mode-scheduled](../../../docs/subsystems/pump-controller.md#mode-scheduled).
 
 ## Contraintes techniques
 - ESP32, offline first

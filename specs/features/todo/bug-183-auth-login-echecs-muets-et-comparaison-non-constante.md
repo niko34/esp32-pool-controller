@@ -30,7 +30,7 @@ Deux défauts **indépendants** sur `POST /auth/login`, la seule porte d'entrée
 
 ## Contexte
 
-**Le second défaut est une régression de principe, pas un oubli isolé.** Le projet a **déjà** traité ce sujet : `authManager.secureTokenEquals()` existe depuis la **v2.11.2** (`feature-028`) et impose une comparaison à temps constant sur le **jeton**, y compris côté WebSocket (`src/ws_manager.cpp`, cf. [`docs/subsystems/ws-manager.md`](../../docs/subsystems/ws-manager.md)). La règle est posée, l'outil existe — **le mot de passe y échappe**.
+**Le second défaut est une régression de principe, pas un oubli isolé.** Le projet a **déjà** traité ce sujet : `authManager.secureTokenEquals()` existe depuis la **v2.11.2** (`feature-028`) et impose une comparaison à temps constant sur le **jeton**, y compris côté WebSocket (`src/ws_manager.cpp`, cf. [`docs/subsystems/ws-manager.md`](../../../docs/subsystems/ws-manager.md)). La règle est posée, l'outil existe — **le mot de passe y échappe**.
 
 ⚠️ **Portée réelle de l'attaque temporelle, à établir avant de dimensionner le correctif.** Sur un réseau local, la gigue réseau et l'ordonnancement FreeRTOS peuvent noyer l'écart, qui se compte en microsecondes. ⛔ Mais « probablement noyé » n'est pas un argument : le correctif coûte une ligne, la primitive existe, et l'écart se mesure. Le dimensionnement de l'attaque est un **objet d'étude de la spec**, pas une raison de ne rien faire.
 

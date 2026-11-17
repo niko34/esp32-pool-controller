@@ -248,7 +248,7 @@ une valeur figée, c'est un décompte en cours. Ces deux champs sont des getters
 l'utilisateur a vues étaient une pause mélange vraie.**
 
 **Seul le couple code/texte était hérité** — c'est le vrai défaut, celui que corrige
-`evaluateSuspendCause()` et que documente [ADR-0118](../../docs/adr/0118-une-sortie-anticipee-publie-la-cause-quelle-rend-inatteignable.md),
+`evaluateSuspendCause()` et que documente [ADR-0118](../../../docs/adr/0118-une-sortie-anticipee-publie-la-cause-quelle-rend-inatteignable.md),
 qui lui ne porte pas cette confusion.
 
 **La vraie raison de taire le décompte de mélange côté client** : une cause de suspension

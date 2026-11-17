@@ -204,11 +204,11 @@ déploiement de la 2.46.1, et **seulement** après.
 1. **`RT,<tempC>`** ([`atlas_ezo.cpp:150`](../../../src/atlas_ezo.cpp:150)) —
    compensation de température du pH, **sans borne de plausibilité visible à ce
    niveau** : une température fausse fausse le pH **sans** toucher la calibration.
-   Chemin que ni ce correctif ni `feature-070` ne couvrent. → [`bug-114`](../todo/bug-114-compensation-temperature-sans-borne-de-plausibilite.md), ouverte.
+   Chemin que ni ce correctif ni `feature-070` ne couvrent. → [`bug-114`](bug-114-compensation-temperature-sans-borne-de-plausibilite.md), ouverte.
 2. **Tamponnage JSON non authentifié** — `/history/import`,
    `/sensors/onewire/identify`, `/wifi/connect` : **16 Ko par requête** allouables sans
    authentification. Dégradation propre, mais vecteur réel pendant la famine mémoire de
-   `bug-080`. → [`bug-113`](../todo/bug-113-tamponnage-json-non-authentifie.md), ouverte.
+   `bug-080`. → [`bug-113`](bug-113-tamponnage-json-non-authentifie.md), ouverte.
 3. **Double-`send` préexistant** — requête **authentifiée** mais **au-dessus du quota** :
    le handler de corps répond `200`, puis le handler de requête répond `429`. Consigné en « hors
    périmètre » de [`bug-112`](../done/bug-112-journal-non-borne-sur-route-protegee.md), sans spec propre.

@@ -64,7 +64,7 @@ s'est relevée seule six minutes plus tard, par hystérésis.
 ### La nature du signal — mesurée, pas supposée
 
 Trace de 300 échantillons uniques à 5 s (25 min), eau établie, porte ouverte.
-Fixture versionnée : [`test/fixtures/f097_purge_noise_20260920.csv`](../../test/fixtures/f097_purge_noise_20260920.csv).
+Fixture versionnée : [`test/fixtures/f097_purge_noise_20260920.csv`](../../../test/fixtures/f097_purge_noise_20260920.csv).
 
 | Grandeur | Valeur |
 |---|---|

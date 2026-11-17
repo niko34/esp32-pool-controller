@@ -94,7 +94,7 @@ Cause racine candidate établie le 2026-09-08 (voir `bug-080`, section « LOT C 
 ### Ce que la dérivation a déjà tranché — à CONFIRMER, non à explorer
 
 En appliquant la règle `(all_caps(heap) & caps) == caps`, que
-[`src/oom_guard_logic.h`](../../src/oom_guard_logic.h) documente déjà :
+[`src/oom_guard_logic.h`](../../../src/oom_guard_logic.h) documente déjà :
 
 | Masque | DRAM interne | PSRAM | Réserve DMA |
 |---|---|---|---|
@@ -155,7 +155,7 @@ redéployer :
 
 ## Comportement actuel
 
-`heapProbeForCaps(uint32_t caps)` ([`src/heap_metrics.h`](../../src/heap_metrics.h))
+`heapProbeForCaps(uint32_t caps)` ([`src/heap_metrics.h`](../../../src/heap_metrics.h))
 donne déjà `free` et `largestBlock` en **un seul parcours**, et conserve
 explicitement le parcours O(blocs) pour `0x0804` et `0x080C`. **La brique de
 mesure existe** : ce lot l'exploite, il ne la réécrit pas.

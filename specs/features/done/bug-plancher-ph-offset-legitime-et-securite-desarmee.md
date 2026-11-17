@@ -87,7 +87,7 @@ Quatrième occurrence du même patron cette semaine (limites journalières, `max
 
 ### C — Transverse
 - [x] C1 — `src/version.h` → 2.25.0
-- [x] C2 — Docs : `docs/subsystems/pump-controller.md`, `docs/API.md`, `docs/MQTT.md`, `docs/features/page-ph.md`, `docs/UPDATE_GUIDE.md`, `CHANGELOG.md`, **[ADR-0048](../../../docs/adr/0048-plancher-ph-continu-et-bornes-de-consigne.md)** créé et indexé (réécrit au raffinement : le modèle à paliers n'est jamais entré dans un commit).
+- [x] C2 — Docs : `docs/subsystems/pump-controller.md`, `docs/API.md`, `docs/MQTT.md`, `docs/features/page-ph.md`, `docs/UPDATE_GUIDE.md`, `CHANGELOG.md`, **[ADR-0048](../../../docs/adr/0048-seuils-ph-fixes-derives-de-la-plage-de-consigne.md)** créé et indexé (réécrit au raffinement : le modèle à paliers n'est jamais entré dans un commit).
 - [x] C3 *(ajouté)* — Spec de suivi tracée : `specs/features/todo/bug-inhibition-orp-seuil-ph-brut-non-asservi.md` (même classe de bug côté chlore).
 - [x] D1 — `pio run` 0 warning, `pio test -e native` **723/723** (base 674, +44 puis +5), `./build_fs.sh` OK.
 
@@ -130,7 +130,7 @@ Décision finale : **plancher continu** `max(kPhRawFloorAbsolute, kPhRealFloorTa
 
 **Invariant garanti** : consigne ∈ [7,20 ; 7,60] + plancher réel 7,00 ⇒ marge ≥ **0,20 pH** pour tout offset valide (branche asservie `(7,20 − off) − (7,00 − off)` ; branche butée `(7,20 − 0,50) − 6,50`). **Aucune configuration acceptée ne peut être inatteignable** — vérifié par 4 `static_assert` et 4141 couples en natif. `checkPhTargetReachable()` devient un **détecteur d'anomalie** (NVS hors bornes).
 
-L'alternative « plancher sur le pH **corrigé** + borne dure sur `|offset|` » (évoquée dans la réserve ci-dessus) a été **rejetée par le gate** : elle ferait dépendre le garde-fou de la valeur contre laquelle il protège. Le plancher continu obtient le résultat qu'elle visait (plancher réel constant) **sans** ce prix. Toutes ces alternatives sont consignées dans [ADR-0048](../../../docs/adr/0048-plancher-ph-continu-et-bornes-de-consigne.md), **réécrit** au raffinement plutôt que superseded (il n'était pas encore commité).
+L'alternative « plancher sur le pH **corrigé** + borne dure sur `|offset|` » (évoquée dans la réserve ci-dessus) a été **rejetée par le gate** : elle ferait dépendre le garde-fou de la valeur contre laquelle il protège. Le plancher continu obtient le résultat qu'elle visait (plancher réel constant) **sans** ce prix. Toutes ces alternatives sont consignées dans [ADR-0048](../../../docs/adr/0048-seuils-ph-fixes-derives-de-la-plage-de-consigne.md), **réécrit** au raffinement plutôt que superseded (il n'était pas encore commité).
 
 ### Décision B6 — le chemin Home Assistant
 

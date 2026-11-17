@@ -65,7 +65,7 @@ référence, jamais une file d'attente.
 réouverture** *et* **comment les constater** — une grandeur observable, pas une
 intention. Sans le « comment », une condition n'est qu'un vœu.
 
-Spécimens : [`feature-125`](feature-125-reserves-du-lot-c-serialisation-et-mesure.md)
+Spécimens : [`feature-125`](../todo/feature-125-reserves-du-lot-c-serialisation-et-mesure.md)
 (S2 et la mesure du fragmenteur, rendues inutiles par S7 — trois conditions, chacune
 constatable sur `hf.i8.mb` ou le compteur `cumul`) et
 [`feature-123`](feature-123-experience-de-reserve-dma-au-demarrage.md) (réserve DMA,

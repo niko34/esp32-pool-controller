@@ -8,7 +8,7 @@
 | Priorité | Haute — `bug-117` est **close** (`specs/features/done/`), le prérequis est levé |
 | Version cible | 2.67.0 (`src/version.h`, lot B) |
 | Origine | 4ᵉ critère d'acceptation de `bug-117`, délibérément **non traité** dans son correctif |
-| Specs liées | `bug-117` (la garde d'authentification), `feature-026` (vérification d'intégrité OTA), [`feature-151`](../todo/feature-151-signature-de-l-image-ota.md) (suivi : signature à clé publique, seule réponse complète à la règle n° 6) |
+| Specs liées | `bug-117` (la garde d'authentification), `feature-026` (vérification d'intégrité OTA), [`feature-151`](../doing/feature-151-signature-de-l-image-ota.md) (suivi : signature à clé publique, seule réponse complète à la règle n° 6) |
 
 ## Domaines touchés
 - [x] OTA (`src/web_routes_ota.cpp`), `ota_update.sh`
@@ -44,7 +44,7 @@ Deux routes qui écrivent la même partition n'ont pas la même exigence.
 > preuve** : aucune des deux n'authentifie l'origine de l'image, seule `/download-update`
 > **exige** la présence du paramètre. Ce que ce lot aligne, c'est l'**obligation**, pas la
 > **nature** de la preuve. Voir le verdict complet ci-dessous et
-> [ADR-0096](../../docs/adr/0096-empreinte-sha256-obligatoire-sur-post-update.md).
+> [ADR-0096](../../../docs/adr/0096-empreinte-sha256-obligatoire-sur-post-update.md).
 
 ## Ce que `CLAUDE.md` demande, et ce qui est réellement fait
 Règle de sécurité absolue n° 6 : « OTA : toujours vérifier la signature/CRC avant flash ».
@@ -246,7 +246,7 @@ onglet en cache, pas d'un ordre de champs fautif).
 poids FS, complexité, et ce que chacune **prouve réellement**.
 
 **Issue retenue : issue 1, empreinte obligatoire + SHA-256 JS embarqué — lots A et B livrés.**
-Détail complet de l'arbitrage et des coûts mesurés : [ADR-0096](../../docs/adr/0096-empreinte-sha256-obligatoire-sur-post-update.md).
+Détail complet de l'arbitrage et des coûts mesurés : [ADR-0096](../../../docs/adr/0096-empreinte-sha256-obligatoire-sur-post-update.md).
 
 ## ✅ VERDICT `security-reviewer` P2 (DIFF), lot A — GO, conditions reportées au lot B
 
@@ -261,7 +261,7 @@ conditions du P1 ci-dessus sont reprises une à une ; celles qui concernent le l
 | 3 | Lot A = même prédicat, verdict journalisé, zéro régression | **Livré** — refus « malformée » et « non conforme » existants **conservés** (le second n'atteint plus ce point que via `g_uploadHasExpected`, inchangé en comportement) ; `logOtaUploadIntegrityVerdict()` journalise sans introduire de refus nouveau |
 | 4 | Ordre de déploiement (script avant page, 4 cas « conforme ») | **Livré** — observation on-target du 2026-10-11, table ci-dessus (script firmware/FS, page firmware/FS, ordinateur et téléphone) |
 | 5 | Vecteurs SHA-256 JS versionnés | **Livré** — `test/sha256_vectors.js`, exécuté par `tools/check_sha256_vectors.sh`, **vecteurs vérifiés le 2026-10-10** : chaîne vide, « abc », 55/56/64/65 octets, bloc > 1 Mo entier et fragmenté — tous conformes à `node:crypto` |
-| 6 | Formulation de la doc (intégrité du transfert, pas sécurité) | **Livré par ce tour** — `docs/API.md`, `docs/subsystems/ota-manager.md`, [ADR-0096](../../docs/adr/0096-empreinte-sha256-obligatoire-sur-post-update.md) portent les trois phrases et le constat de non-satisfaction de la règle n° 6 |
+| 6 | Formulation de la doc (intégrité du transfert, pas sécurité) | **Livré par ce tour** — `docs/API.md`, `docs/subsystems/ota-manager.md`, [ADR-0096](../../../docs/adr/0096-empreinte-sha256-obligatoire-sur-post-update.md) portent les trois phrases et le constat de non-satisfaction de la règle n° 6 |
 | 7 | ADR-0081 relu | **Livré par ce tour** — ligne datée du 2026-10-10, déclencheur déplacé vers `feature-151` |
 | 8 | Messages d'erreur (ordre des champs) | **Livré** — `kOtaSha256MissingMessage` préparé pour le lot B (pas encore utilisé) ; message « malformée » explicite ; `ota_update.sh` affiche un indice ciblé (`[O3]`) sur un refus `400` mentionnant sha256/empreinte |
 | 9 | Spec de suivi créée avant clôture | **Livré par ce tour** — `specs/features/doing/feature-151-signature-de-l-image-ota.md` |
@@ -293,7 +293,7 @@ conditions du P1 lot B ci-dessus sont reprises une à une.
 | 3 | Message à deux causes, ordre par fréquence réelle | **Livré** — `kOtaSha256MissingMessage` cite d'abord la page en cache (cause constatée en pratique), puis l'ordre des champs (cause scriptée) ; 317 o UTF-8 mesurés, sous `kLogMessageMaxBytes` |
 | 4 | `ota_update.sh` fail-closed | **Livré et PROUVÉ PAR EXÉCUTION** — `PATH` privé d'outil de hachage, `curl` remplacé par un piège qui se serait marqué s'il avait été appelé : **jamais appelé**, code de sortie 1. Garde structurelle dédiée : `test/test_native_ota_update_fail_closed/` (échec de `compute_sha256()` avant l'appel `curl` réel, aucune troisième branche de repli ne produit de digest bidon) |
 | 5 | Calcul JS éprouvé sur téléphone AVANT le lot B | **Levée** — essai du 2026-10-11, voir ci-dessus |
-| 6 | Pas de parade cache ad hoc non vérifiée | **Violation PUIS correction, consignée** — une première version de ce lot a ajouté une parade cache manuelle sur 7 routes HTML, vérifiée à tort (`grep` sur le littéral `"Cache-Control"` au lieu de la constante `T_Cache_Control` de la bibliothèque). `security-reviewer` P2 a établi que `AsyncFileResponse` posait déjà `ETag`+`Cache-Control: no-cache` et testait déjà `If-None-Match` — la version manuelle était **redondante ET régressive** (perdait le support du `304`). **Retiré**, conservé uniquement `.setCacheControl("no-cache")` explicite sur `serveStatic("/")`, vérifié par la garde `G4`. Voir l'addendum daté de [ADR-0096](../../docs/adr/0096-empreinte-sha256-obligatoire-sur-post-update.md) |
+| 6 | Pas de parade cache ad hoc non vérifiée | **Violation PUIS correction, consignée** — une première version de ce lot a ajouté une parade cache manuelle sur 7 routes HTML, vérifiée à tort (`grep` sur le littéral `"Cache-Control"` au lieu de la constante `T_Cache_Control` de la bibliothèque). `security-reviewer` P2 a établi que `AsyncFileResponse` posait déjà `ETag`+`Cache-Control: no-cache` et testait déjà `If-None-Match` — la version manuelle était **redondante ET régressive** (perdait le support du `304`). **Retiré**, conservé uniquement `.setCacheControl("no-cache")` explicite sur `serveStatic("/")`, vérifié par la garde `G4`. Voir l'addendum daté de [ADR-0096](../../../docs/adr/0096-empreinte-sha256-obligatoire-sur-post-update.md) |
 | 7 | Vocabulaire inchangé | **Livré par ce tour** — `docs/API.md`, `docs/subsystems/ota-manager.md`, `docs/UPDATE_GUIDE.md`, ADR-0096 répètent « intégrité du transfert », jamais « sécurité » ; non-satisfaction de la règle n° 6 réaffirmée |
 
 **Zéro régression confirmée** : `pio test -e native` — **66 suites / 2 156 cas, tous verts**
@@ -328,13 +328,13 @@ déploiement de cette version, conformément à la contrainte ci-dessous.
 - [x] La page web d'upload fonctionne, ou son exemption est **explicite et documentée** —
       **prouvé sur ordinateur ET téléphone** (observations on-target + essai téléphone du
       2026-10-11) ; l'exemption a été **tranchée par le refus** (issue 2 écartée, voir
-      [ADR-0096](../../docs/adr/0096-empreinte-sha256-obligatoire-sur-post-update.md)),
+      [ADR-0096](../../../docs/adr/0096-empreinte-sha256-obligatoire-sur-post-update.md)),
       aucune route web n'est exemptée
 - [x] La documentation dit ce que le mécanisme prouve **et ce qu'il ne prouve pas** :
       transport contre authenticité. Ne pas laisser croire à une signature ce qui n'en est pas une.
       (`docs/API.md`, `docs/subsystems/ota-manager.md`, ADR-0096, `docs/UPDATE_GUIDE.md`)
 - [x] ADR : le choix entre les trois issues verrouille un futur, il en relève
-      ([ADR-0096](../../docs/adr/0096-empreinte-sha256-obligatoire-sur-post-update.md),
+      ([ADR-0096](../../../docs/adr/0096-empreinte-sha256-obligatoire-sur-post-update.md),
       addendum lot B daté du 2026-10-11)
 
 ## Hors périmètre

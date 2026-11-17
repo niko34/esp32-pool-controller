@@ -147,7 +147,7 @@ lieu de la contourner, et la contrainte qui l'interdisait a disparu.
 instruit. Logique de décision extraite en module pur `src/ota_response_buffer_logic.h`
 (`otaBufferedReadNextAction`, `otaBufferedReadLengthMismatch`, `otaBufferedReadResultFor`),
 testée nativement par `test/test_native_ota_response_buffer/` (ADR-0017). Nouvel ADR
-[0119](../../docs/adr/0119-reponse-check-update-bufferisee-en-psram-bornee.md) : trade-off
+[0119](../../../docs/adr/0119-reponse-check-update-bufferisee-en-psram-bornee.md) : trade-off
 documenté, trois options tracées (tampon PSRAM retenue, envelopper le flux et bibliothèque
 tierce écartées). ADR-0032 **non supersédé** — note datée ajoutée sur son extension 2026-08-04.
 

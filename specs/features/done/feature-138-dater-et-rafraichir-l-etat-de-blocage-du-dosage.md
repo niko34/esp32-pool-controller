@@ -409,7 +409,7 @@ reformuler sans repasser le gate.
   Critères 2 et 3 remplis : la décision contraint tout champ WS futur (financé
   par retrait, pas par défaut) et n'est pas lisible dans le code sans son
   historique de chiffrage.
-- **ADR créé** : [`docs/adr/0086-trame-websocket-sous-ensemble-choisi-de-data.md`](../../docs/adr/0086-trame-websocket-sous-ensemble-choisi-de-data.md) — « La trame WebSocket est un sous-ensemble choisi de `/data`, financé par élagage ».
+- **ADR créé** : [`docs/adr/0086-trame-websocket-sous-ensemble-choisi-de-data.md`](../../../docs/adr/0086-trame-websocket-sous-ensemble-choisi-de-data.md) — « La trame WebSocket est un sous-ensemble choisi de `/data`, financé par élagage ».
 - Le gate `pool-chemistry` a donné **GO SOUS CONDITIONS** sur B3 (conditions C1-C6, cf. ci-dessus) — pas de refus à consigner.
 
 ## Éléments visibles (pour doc-writer)

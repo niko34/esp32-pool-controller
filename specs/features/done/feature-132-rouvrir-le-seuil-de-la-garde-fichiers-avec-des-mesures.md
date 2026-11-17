@@ -117,7 +117,7 @@ d'alternative crédible non documentée (le seul palier intermédiaire, 7 168, e
 écarté et chiffré dans le même commentaire), et elle ne verrouille aucun
 trade-off nouveau : elle **confirme** un verrou déjà posé par ADR-0070/ADR-0058.
 L'annotation datée du 2026-09-20 a été ajoutée à
-[ADR-0070 §b](../../docs/adr/0070-fopen-interne-helper-unique-et-classes-de-contention.md)
+[ADR-0070 §b](../../../docs/adr/0070-fopen-interne-helper-unique-et-classes-de-contention.md)
 (motif dupliqué), sans modifier son statut ni son contenu accepté.
 
 ## Éléments visibles (pour doc-writer)

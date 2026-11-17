@@ -701,7 +701,7 @@ doit pas laisser croire le contraire.
   compose NVS + état secours. Routage audité en **deux passes** (un premier
   audit avait laissé passer quatre sites de lecture de `mqttCfg.orpDailyTargetMl`
   et un site de `ws_manager.cpp` mal classé publication/décision). Règle
-  opposable formalisée dans [ADR-0087](../../docs/adr/0087-ce-qu-un-mode-temporaire-a-le-droit-de-faire.md).
+  opposable formalisée dans [ADR-0087](../../../docs/adr/0087-ce-qu-un-mode-temporaire-a-le-droit-de-faire.md).
 - **Durée = 48 h glissantes (epoch)**, minuit local disqualifié techniquement
   (collision avec le rollover du compteur journalier de chlore) — pas une
   préférence, une incompatibilité structurelle. 72 h écarté (mode oublié).
@@ -803,7 +803,7 @@ taxonomie `DOSE_BLOCK_CODES` existante mais n'en a repris que la moitié — le
 ton générique, sans l'override par voie déjà présent dans la table pour le
 code 250. Un test ne voit pas ce genre d'oubli ; un œil humain devant l'écran
 l'attrape en une seconde. Voir
-[`docs/features/page-dashboard.md`](../../docs/features/page-dashboard.md#bandeau--dosage-bloqué--feature-138-v2540)
+[`docs/features/page-dashboard.md`](../../../docs/features/page-dashboard.md#bandeau--dosage-bloqué--feature-138-v2540)
 pour le détail et la check-list de vigilance pour toute future consommation
 de cette table.
 
@@ -841,7 +841,7 @@ l'activation du secours. Un retrait total aurait laissé tourner jusqu'à
 48 h de dosage aveugle sans statut ni interrupteur visibles depuis le
 tableau de bord, et aurait rendu intenable la promesse de L2 (« désactivez-le
 vous-même »). Le gate a également exigé que
-[`docs/user/src/guide-regulation.html`](../../docs/user/src/guide-regulation.html)
+[`docs/user/src/guide-regulation.html`](../../../docs/user/src/guide-regulation.html)
 dise explicitement que, hors blocage constaté par l'appareil, l'accès
 permanent à l'équivalent de ce mode est le **mode Programmée** de la
 régulation chlore (page Chlore) — sans quoi l'activation devient
@@ -853,7 +853,7 @@ et se traite par le mode Programmée.
 
 **Fichiers modifiés** : `data/app.js`, `data/index.html` (et leur CSS
 inchangé). Aucun changement firmware. Voir
-[`docs/features/page-dashboard.md`](../../docs/features/page-dashboard.md#sous-bloc-chloration-de-secours-feature-140-v2550--masquage-conditionnel-et-retrait-du-bouton-activer-en-v2551)
+[`docs/features/page-dashboard.md`](../../../docs/features/page-dashboard.md#sous-bloc-chloration-de-secours-feature-140-v2550--masquage-conditionnel-et-retrait-du-bouton-activer-en-v2551)
 pour le détail à l'écran.
 
 ⚠️ **Capture d'écran à refaire** : `screenshots/03_Tableau_de_bord.jpg`
@@ -898,7 +898,7 @@ bloc qu'il faut aller consulter dans un widget.
 
 **Fichiers modifiés** : `data/index.html`, `data/app.js`, `data/app.css`.
 Aucun changement firmware. Voir
-[`docs/features/page-dashboard.md`](../../docs/features/page-dashboard.md#bandeau--chloration-de-secours-active--rescue-active-banner-feature-140-v2552)
+[`docs/features/page-dashboard.md`](../../../docs/features/page-dashboard.md#bandeau--chloration-de-secours-active--rescue-active-banner-feature-140-v2552)
 pour le détail à l'écran.
 
 ⚠️ **Capture d'écran encore à refaire** : `screenshots/03_Tableau_de_bord.jpg`
@@ -966,10 +966,10 @@ réflexe « ça ne monte pas, j'en remets ».
 
 **Fichiers modifiés** : `data/app.js`, `data/index.html`. Aucun changement
 firmware. Voir
-[`docs/features/page-dashboard.md`](../../docs/features/page-dashboard.md#ligne-deffet-combiné-b2-feature-140--retirée-en-v2553)
+[`docs/features/page-dashboard.md`](../../../docs/features/page-dashboard.md#ligne-deffet-combiné-b2-feature-140--retirée-en-v2553)
 pour le détail à l'écran, et
-[`docs/user/src/guide-utilisation.html`](../../docs/user/src/guide-utilisation.html) /
-[`docs/user/src/guide-regulation.html`](../../docs/user/src/guide-regulation.html)
+[`docs/user/src/guide-utilisation.html`](../../../docs/user/src/guide-utilisation.html) /
+[`docs/user/src/guide-regulation.html`](../../../docs/user/src/guide-regulation.html)
 pour le vocabulaire aligné côté documentation utilisateur (PDF non
 régénérés, à faire en release).
 

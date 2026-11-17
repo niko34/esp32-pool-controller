@@ -145,14 +145,14 @@ découpe s'extrait (ADR-0017)
 - [x] Mesure avant/après de `max_alloc_8bit` **pendant** une sauvegarde — instrumentation F1 en place (minimum observé pendant l'écriture, DEBUG) ; confirmation sur cible à faire en usage réel, cf. Suivi post-déploiement
 - [x] Réexamen des deux admissions `fsGuardAdmit` — fusionnées en **une seule**, en tête de `saveToFile()`
 - [x] Tests natifs de la logique pure extraite + **validation par mutation** — **6/6 mutants tués**
-- [x] ADR si le compromis atomicité/mémoire mérite d'être figé — [ADR-0083](../../docs/adr/0083-ecriture-atomique-historique-et-contrat-de-format-persiste.md)
+- [x] ADR si le compromis atomicité/mémoire mérite d'être figé — [ADR-0083](../../../docs/adr/0083-ecriture-atomique-historique-et-contrat-de-format-persiste.md)
 
 ## ADR attendu ?
 
 **Probablement.** Si l'atomicité doit être reconstruite différemment, c'est un
 arbitrage qui verrouille un choix futur.
 
-**Livré** : [ADR-0083](../../docs/adr/0083-ecriture-atomique-historique-et-contrat-de-format-persiste.md) —
+**Livré** : [ADR-0083](../../../docs/adr/0083-ecriture-atomique-historique-et-contrat-de-format-persiste.md) —
 écriture atomique `.tmp`+`rename` (dissolution du motif d'ADR-0033 sur la
 partition 256 Ko), règle « le `.tmp` de l'historique n'est jamais promu »
 (différence assumée avec ADR-0076), contrat « un émetteur, deux puits », et
@@ -224,7 +224,7 @@ longue durée :
    `rename()` écrase bien une destination existante sur cible. `lfs_rename`
    le fait par conception (confirmé par `nm` sur `libjoltwallet__littlefs.a`),
    mais **ce dépôt n'a jamais exercé ce chemin exact** :
-   [`logger.cpp:725-726`](../../src/logger.cpp) fait un `remove(dest)`
+   [`logger.cpp:725-726`](../../../src/logger.cpp) fait un `remove(dest)`
    **puis** un `rename()` pour sa propre rotation — un chemin différent de
    celui livré ici. Si le `rename()` de `saveToFile()` échouait à écraser
    `/history.json` sur cible, le symptôme serait **sournois** : historique
@@ -246,7 +246,7 @@ longue durée :
   contre `test/fixtures/history_reference.json` généré par le code réel de la
   2.52.2 (`tools/gen_history_reference_json.cpp`).
 - **Sites `fopen`** : **−1** (14 → 13, recensement
-  [`docs/subsystems/acces-fichiers.md`](../../docs/subsystems/acces-fichiers.md)) —
+  [`docs/subsystems/acces-fichiers.md`](../../../docs/subsystems/acces-fichiers.md)) —
   la lecture de `oldSize` disparaît avec le crédit qu'elle finançait.
 - **Chiffre à ne pas propager** : une estimation initiale du gain par
   conversion de flottant parlait de `malloc(314 o)` — c'est faux pour ce
@@ -287,7 +287,7 @@ donc après le pic du `JsonDocument`) : le plus gros bloc contigu était tombé 
 **6 900 o**, sous le seuil de 8 192, et **une sauvegarde a été perdue**. Preuve
 mesurée et datée que le pic était réel. Ce message ne peut plus jamais
 réapparaître : la seconde admission qu'il accompagnait a été supprimée par ce
-lot (cf. [Une admission unique](../../docs/subsystems/history.md#une-admission-unique-dans-savetofile-feature-131)).
+lot (cf. [Une admission unique](../../../docs/subsystems/history.md#une-admission-unique-dans-savetofile-feature-131)).
 
 ### Après (firmware 2.53.0)
 
@@ -307,7 +307,7 @@ ligne[64]` alors que le **préfixe seul pèse 59 octets en UTF-8** (l'« é » d
 « écriture » en coûte 2). `snprintf` ne laissait que **4 chiffres**, et le
 suffixe « o » — absent de la sortie — était le seul indice de la troncature.
 
-Corrigé dans [`src/history.cpp:777`](../../src/history.cpp:777) : tampon porté
+Corrigé dans [`src/history.cpp:777`](../../../src/history.cpp:777) : tampon porté
 à **96 octets**, avec un commentaire qui explique le calcul et pourquoi la
 taille est mesurée et non estimée. `pio run` SUCCESS, `pio test -e native` 1
 917 cas verts.
@@ -315,9 +315,9 @@ taille est mesurée et non estimée. `pio run` SUCCESS, `pio test -e native` 1
 Un diagnostic qui perd des chiffres en silence fournit un nombre faux
 d'apparence plausible — sans le suffixe manquant, « 5528 » aurait été lu comme
 une chute catastrophique de contiguïté et aurait fait conclure l'inverse de la
-vérité. Même famille de piège qu'[ADR-0073](../../docs/adr/0073-chiffre-consigne-porte-sa-methode.md)
+vérité. Même famille de piège qu'[ADR-0073](../../../docs/adr/0073-chiffre-consigne-porte-sa-methode.md)
 (un chiffre recopié sans sa méthode). Documenté dans
-[`docs/subsystems/history.md`](../../docs/subsystems/history.md#sonde-f1--defaut-de-dimensionnement-trouve-en-production-2026-09-19).
+[`docs/subsystems/history.md`](../../../docs/subsystems/history.md#sonde-f1--defaut-de-dimensionnement-trouve-en-production-2026-09-19).
 
 ## Hors périmètre
 - Tout changement du format de `/history.json`.

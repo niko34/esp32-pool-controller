@@ -168,7 +168,7 @@ commandé ON ; `PoweredByFiltration` renvoie toujours `true`). L'argument qui ti
 global de suspension** — pas la force d'une garde qui reste une présomption.
 
 Un ADR a été créé sur le mécanisme, pas seulement sur l'instance :
-[ADR-0117](../../docs/adr/0117-un-routage-dynamique-generique-ne-sert-jamais-un-actionneur.md) —
+[ADR-0117](../../../docs/adr/0117-un-routage-dynamique-generique-ne-sert-jamais-un-actionneur.md) —
 un routage dynamique générique (`onNotFound`) ne doit jamais servir un actionneur, parce qu'il
 échappe par construction à l'inventaire des routes déclarées (c'est exactement ce qui a permis à
 ce chemin de rester invisible pendant des mois).

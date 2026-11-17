@@ -8,7 +8,7 @@
 - **Priorité** : normale — manque réel mais borné (voir « Contexte ») ; pas d'incident déclencheur, écarté comme prérequis au retrait de feature-139
 - **Version cible** : N/A (à cadrer)
 - **Dernière mise à jour** : 2026-10-08
-- **Spec(s) liée(s)** : feature-139 (retrait de l'analyse de stabilité de la porte de mesure, v2.62.0) — [ADR-0092](../../docs/adr/0092-retrait-analyse-stabilite-porte-mesures.md) ; [ADR-0048](../../docs/adr/0048-seuils-ph-fixes-derives-de-la-plage-de-consigne.md) (butées pH existantes, modèle à suivre)
+- **Spec(s) liée(s)** : feature-139 (retrait de l'analyse de stabilité de la porte de mesure, v2.62.0) — [ADR-0092](../../../docs/adr/0092-retrait-analyse-stabilite-porte-mesures.md) ; [ADR-0048](../../../docs/adr/0048-seuils-ph-fixes-derives-de-la-plage-de-consigne.md) (butées pH existantes, modèle à suivre)
 
 ## Domaines touchés
 - [ ] Capteurs (pH / ORP / température)
@@ -49,7 +49,7 @@ Une sonde ORP qui dérive et lit **faussement bas en permanence** (pas seulement
 
 ## Comportement attendu
 
-À cadrer par `architect` + `pool-chemistry`, sur le modèle des butées pH existantes ([ADR-0048](../../docs/adr/0048-seuils-ph-fixes-derives-de-la-plage-de-consigne.md)) :
+À cadrer par `architect` + `pool-chemistry`, sur le modèle des butées pH existantes ([ADR-0048](../../../docs/adr/0048-seuils-ph-fixes-derives-de-la-plage-de-consigne.md)) :
 
 - une butée **basse** et une butée **haute** sur l'ORP **brut** (pas filtré), grossières et non statistiques — pas calées sur un bassin particulier ;
 - refus de dosage chlore **immédiat** tant que le brut est hors bornes, indépendamment de la valeur filtrée ;

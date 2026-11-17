@@ -225,7 +225,7 @@ qui a rendu ce diagnostic déductif plutôt que factuel.
       rétablie, pattern edge) + 5 champs additifs `/get-system-info` (bloc `net`)
 - [x] A4 — Arbitrage écrit : un broker MQTT en panne seul ne mène pas au reboot tant que
       l'écho ICMP passerelle (preuve externe, indépendante de MQTT) continue de réarmer —
-      arbitrage documenté dans [ADR-0084](../../docs/adr/0084-ce-qui-prouve-qu-un-reseau-est-vivant.md)
+      arbitrage documenté dans [ADR-0084](../../../docs/adr/0084-ce-qui-prouve-qu-un-reseau-est-vivant.md)
 - [x] D1 — Le défaut n'était pas dans `evaluateNetHealth()` mais dans la coquille impure :
       extraction de `evaluateNetRearm()` (+ `netProbeSeemsDead()`) comme prédit par la note
       ci-dessous, désormais couverte nativement. **Mesuré le 2026-09-20** :
@@ -325,7 +325,7 @@ en cours au moment de ce tour) :
   périmées **recomptées une par une** sur HEAD (aucune recopiée depuis la
   spec).
 - `docs/adr/0084-ce-qui-prouve-qu-un-reseau-est-vivant.md` (nouveau) — amende
-  [ADR-0030](../../docs/adr/0030-watchdog-connectivite.md), qui reste
+  [ADR-0030](../../../docs/adr/0030-watchdog-connectivite.md), qui reste
   **Accepté et non modifié** (immuabilité respectée : le renvoi croisé
   0030→0084 est porté par `docs/subsystems/system-health.md` et
   `docs/adr/README.md`, pas par une édition du fichier 0030 lui-même — l'ADR
@@ -344,7 +344,7 @@ en cours au moment de ce tour) :
    `AppTraffic`), donc le reboot peut en théorie être différé indéfiniment
    tant qu'un client reste actif alors même que la passerelle ne répond
    plus. **Ce n'est pas une régression de ce lot** — `AppTraffic` réarme
-   sans limite depuis [ADR-0030](../../docs/adr/0030-watchdog-connectivite.md)
+   sans limite depuis [ADR-0030](../../../docs/adr/0030-watchdog-connectivite.md)
    — mais la garantie ne doit pas être crue plus forte qu'elle ne l'est.
    Consigné dans ADR-0084 et `system-health.md` (§ Cas limites).
 2. **Spec de suivi à ouvrir** : `DosingState` (`src/pump_controller.h:20-32`)

@@ -8,7 +8,7 @@
   sur quelle température il repose
 - **Version cible** : à déterminer
 - **Dernière mise à jour** : 2026-09-13
-- **Spec(s) liée(s)** : [bug-126](../doing/bug-126-le-recalcul-du-planning-annule-le-cycle-qui-l-a-produit.md), [ADR-0079](../../../docs/adr/0079-planning-filtration-fige-a-l-arret-promu-a-minuit.md)
+- **Spec(s) liée(s)** : [bug-126](../done/bug-126-le-recalcul-du-planning-annule-le-cycle-qui-l-a-produit.md), [ADR-0079](../../../docs/adr/0079-planning-filtration-fige-a-l-arret-promu-a-minuit.md)
 
 ## Domaines touchés
 - [ ] Capteurs (pH / ORP / température)

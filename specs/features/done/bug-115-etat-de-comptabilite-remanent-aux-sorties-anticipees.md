@@ -451,7 +451,7 @@ ligne de logique touchée). Doc : voir CHANGELOG `[2.61.0]`.
 section « Correction de la rémanence »), `docs/MQTT.md` (changement de
 signification `ph_total_ml`/`orp_total_ml`), `docs/features/page-dosages.md`
 (avertissement jauge + estampillage version), `CHANGELOG.md [2.61.0]`,
-[ADR-0091](../../docs/adr/0091-comptabilite-hors-du-corps-decisionnel-dupdate.md)
+[ADR-0091](../../../docs/adr/0091-comptabilite-hors-du-corps-decisionnel-dupdate.md)
 (nouveau — la comptabilité est hors du corps décisionnel d'`update()`), et
 `specs/features/todo/bug-116-instantane-de-composition-perime-en-fenetre-operateur.md`
 (critère d'acceptation « aucune ligne modifiée » marqué caduc, à reformuler à la

@@ -84,6 +84,6 @@ Dans `tickDailyRollover` (minuit local) : si boost actif → le désactiver + lo
 
 **Mineure concurrence corrigée** : ordre d'écriture de `boostState` — `untilEpoch` écrit **avant** `active`, pour qu'un lecteur inter-core ne voie jamais `active == true` avec un `untilEpoch` non encore initialisé.
 
-**Décision structurante** : [ADR-0025](../../docs/adr/0025-mode-boost.md) (surcouche « valeurs effectives » + relèvement borné de la limite chlore).
+**Décision structurante** : [ADR-0025](../../../docs/adr/0025-mode-boost.md) (surcouche « valeurs effectives » + relèvement borné de la limite chlore).
 
 **Reste à valider on-target** : activer Boost → filtration ON + cible/limite relevées ; expiration à minuit → retour normal ; reboot avec heure non synchronisée ; mode manuel = filtration seule ; entité HA + carte UI (état + expiration + toast).

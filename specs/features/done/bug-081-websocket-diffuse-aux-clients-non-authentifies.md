@@ -92,7 +92,7 @@ snapshot des ids authentifiés sur la pile de `loopTask`, un seul
 `_authenticatedClients` (`std::set<uint32_t>`) est remplacé par
 `_authRegistry`, instance de `WsClientRegistry<kWsRegistrySlots>`
 (`src/ws_client_registry_logic.h`, nouveau module pur ADR-0017). Détail complet,
-y compris le raisonnement de sûreté sans verrou : [ws-manager.md](../../docs/subsystems/ws-manager.md#bug-081--diffusion-ciblée-sur-registre-au-lieu-de-textall).
+y compris le raisonnement de sûreté sans verrou : [ws-manager.md](../../../docs/subsystems/ws-manager.md#bug-081--diffusion-ciblée-sur-registre-au-lieu-de-textall).
 
 ### API du fork retenue
 

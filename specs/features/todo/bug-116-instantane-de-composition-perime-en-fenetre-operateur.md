@@ -54,7 +54,7 @@ branches, ou étendre la porte de mesure à ces trois états.
 `bug-115` (v2.61.0, même chaîne de sorties anticipées) a changé la **structure**
 d'`update()` : l'ancien corps est renommé `updateDosingCore(now)` et un nouveau
 `update()` l'enveloppe (point de passage unique de la comptabilité pompe, voir
-[ADR-0091](../../docs/adr/0091-comptabilite-hors-du-corps-decisionnel-dupdate.md)).
+[ADR-0091](../../../docs/adr/0091-comptabilite-hors-du-corps-decisionnel-dupdate.md)).
 Le critère d'acceptation initial de **cette** spec — « aucune ligne du chemin de
 dosage modifiée » — est donc **matériellement impossible à tenir** : toute
 implémentation de `bug-116` touchera forcément des lignes de ce chemin, ne

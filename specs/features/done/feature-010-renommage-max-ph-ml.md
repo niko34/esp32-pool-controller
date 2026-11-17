@@ -12,7 +12,7 @@
 Audit contre le code v2.7.0 : **le contrat externe portait déjà le nom cible partout** — clé NVS `max_ph_ml` (config.cpp l.163/336), API `/get-config`/`/save-config` `max_ph_ml_per_day`, WS `max_ph_ml_per_day`, UART idem, JS idem (6 occurrences app.js), docs sans aucune occurrence de l'ancien nom, champ non exposé en MQTT. La migration NVS (A2/A3, le point le plus risqué de la spec) et le breaking change API (A5) n'ont donc **jamais eu lieu d'être** : le renommage externe a été absorbé silencieusement au fil des refontes précédentes.
 
 **Résidu vivant implémenté ce jour** : renommage interne `SafetyLimits::maxPhMinusMlPerDay` → `maxPhMlPerDay` (8 fichiers src/ + docs/subsystems/pump-controller.md, ~25 occurrences, sed mécanique vérifié par compilation). Bénéfice observable unique : le log de plafonnement (`pump_controller.cpp` ~l.885) cite désormais `maxPhMlPerDay` au lieu du nom trompeur `maxPhMinusMlPerDay` quand on dose du pH+ (support pH+ confirmé : `phCorrectionType`, PID bidirectionnel). Aucune valeur, aucune logique, aucun contrat modifiés. Validation : `pio run` SUCCESS 0 warning, 135/135 tests natifs (résultats en fin de cycle), revue de code OK.
-- **Doc(s) liée(s)** : [docs/subsystems/pump-controller.md](../../docs/subsystems/pump-controller.md#paramètres-en-dur-récapitulatif), [docs/API.md](../../docs/API.md)
+- **Doc(s) liée(s)** : [docs/subsystems/pump-controller.md](../../../docs/subsystems/pump-controller.md#paramètres-en-dur-récapitulatif), [docs/API.md](../../../docs/API.md)
 
 ## Domaines touchés
 - [ ] Capteurs (pH / ORP / température)
@@ -41,7 +41,7 @@ Audit contre le code v2.7.0 : **le contrat externe portait déjà le nom cible p
 Renommer `maxPhMinusMlPerDay` en `maxPhMlPerDay` (et clé NVS, champ API, champ WS, label UI correspondants) car la limite s'applique aussi au cas `ph_plus` — le nom actuel suggère à tort qu'elle ne couvre que le pH-.
 
 ## Contexte
-Le champ `maxPhMinusMlPerDay` (dans `SafetyLimits`, voir [docs/subsystems/pump-controller.md](../../docs/subsystems/pump-controller.md#paramètres-en-dur-récapitulatif)) exprime la limite journalière totale du dosage pH (pH- **ou** pH+), mais son nom parle uniquement de pH-. Source de confusion pour les contributeurs et les utilisateurs via l'API.
+Le champ `maxPhMinusMlPerDay` (dans `SafetyLimits`, voir [docs/subsystems/pump-controller.md](../../../docs/subsystems/pump-controller.md#paramètres-en-dur-récapitulatif)) exprime la limite journalière totale du dosage pH (pH- **ou** pH+), mais son nom parle uniquement de pH-. Source de confusion pour les contributeurs et les utilisateurs via l'API.
 
 Renommage pur : **aucun changement sémantique**, aucun impact chimique. `pool-chemistry` peut être consulté par prudence mais n'est pas bloquant.
 

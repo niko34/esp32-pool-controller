@@ -9,7 +9,7 @@
 - **Spec(s) liée(s)** : `doing/bug-173-la-reponse-github-est-lue-au-fil-de-l-eau-et-tronquee.md`
   (⚠️ reste en `doing/` : son critère n°1 — test sur l'appareil réel — n'est pas encore coché)
   (c'est son instruction qui a fait remonter cette lacune, sans la corriger — hors périmètre
-  explicite de ce lot-là) · [ADR-0119](../../docs/adr/0119-reponse-check-update-bufferisee-en-psram-bornee.md)
+  explicite de ce lot-là) · [ADR-0119](../../../docs/adr/0119-reponse-check-update-bufferisee-en-psram-bornee.md)
 
 ## Domaines touchés
 - [ ] Capteurs · [ ] Régulation · [ ] Filtration / Éclairage

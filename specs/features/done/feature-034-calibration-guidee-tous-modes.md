@@ -37,9 +37,9 @@ Améliorer l'expérience de calibration des sondes pH et ORP sur deux axes :
 2. **Accompagner réellement l'utilisateur** pendant la calibration : étapes symbolisées (faites / en cours / restantes), minuteries d'attente pour respecter les temps de stabilisation, repères visuels clairs.
 
 ## Contexte
-- **Verrou mode auto** : aujourd'hui le bloc d'accès à la calibration (`#ph-calibration-info` / équivalent ORP, contenant le bouton « Calibrer ») n'est affiché **que si le mode = automatique** ([`data/app.js:1225,1242`](../../data/app.js)). En mode **programmée** ou **manuelle**, l'utilisateur ne peut pas calibrer — alors que calibrer est une opération de maintenance utile **indépendamment** du mode de régulation choisi.
+- **Verrou mode auto** : aujourd'hui le bloc d'accès à la calibration (`#ph-calibration-info` / équivalent ORP, contenant le bouton « Calibrer ») n'est affiché **que si le mode = automatique** ([`data/app.js:1225,1242`](../../../data/app.js)). En mode **programmée** ou **manuelle**, l'utilisateur ne peut pas calibrer — alors que calibrer est une opération de maintenance utile **indépendamment** du mode de régulation choisi.
 - **Accompagnement insuffisant** : les premières versions du projet utilisaient des **steppers** donnant des étapes claires. L'écran pH/ORP actuel repose sur un `.cal-point-block` avec une simple liste `<ol>` de micro-étapes, sans progression visuelle, sans état « étape faite/en cours/restante », et sans minuterie pour aider à attendre la stabilisation de l'électrode. L'utilisateur doit deviner combien de temps attendre.
-- Un pattern de steppers existe encore pour la **calibration température** (`.calibration-steps` / `.step` / `.step__number`, [`data/index.html`](../../data/index.html)) — base d'inspiration possible, à moderniser.
+- Un pattern de steppers existe encore pour la **calibration température** (`.calibration-steps` / `.step` / `.step__number`, [`data/index.html`](../../../data/index.html)) — base d'inspiration possible, à moderniser.
 
 ## Comportement attendu
 

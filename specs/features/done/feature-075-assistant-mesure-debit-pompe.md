@@ -170,7 +170,7 @@ Formulaire nu par pompe (feature-074) : un champ « Débit mesuré (ml/min) » p
 
   **Résidu routé** : la **nature** du biais et son éventuel correctif appartiennent
   à [feature-078](../done/feature-078-rendement-des-impulsions-et-lenteur-regulation-ph.md),
-  dont le **préalable** est [feature-110](../todo/feature-110-compteur-d-impulsions-de-dosage.md)
+  dont le **préalable** est [feature-110](feature-110-compteur-d-impulsions-de-dosage.md)
   (compteur d'impulsions : deux inconnues, deux équations). Sans ce compteur,
   **chaque concordance future sera aussi peu concluante que celle-ci**.
 - [x] Fermer l'onglet pendant purge ou mesure → la pompe s'arrête à l'échéance
@@ -283,7 +283,7 @@ en soi, et il est routé :
 
 | Suite | Objet | Pourquoi elle passe avant / après |
 |---|---|---|
-| [feature-110](../todo/feature-110-compteur-d-impulsions-de-dosage.md) | Compteur d'impulsions par pompe, persistant, remis à zéro **avec** le volume | **Préalable.** Deux inconnues, deux équations : sans lui, **chaque concordance future sera aussi peu concluante que celle du 06/09**. Il se relève sans effort, au geste déjà fait du changement de bidon. |
+| [feature-110](feature-110-compteur-d-impulsions-de-dosage.md) | Compteur d'impulsions par pompe, persistant, remis à zéro **avec** le volume | **Préalable.** Deux inconnues, deux équations : sans lui, **chaque concordance future sera aussi peu concluante que celle du 06/09**. Il se relève sans effort, au geste déjà fait du changement de bidon. |
 | [feature-078](../done/feature-078-rendement-des-impulsions-et-lenteur-regulation-ph.md) | Nature du biais (M2) puis correction du modèle de comptage | **Après.** Toute correction du comptage est une **hausse de dose réelle** : elle exige la nature établie et un visa `pool-chemistry`. |
 
 **Aucune modification de code n'a été faite par cette clôture** — le sens du biais

@@ -18,7 +18,7 @@ Spec rédigée en avril 2026, **écartée** après audit contre le code v2.9.2. 
 **Porte de sortie** : si un réglage précis devient nécessaire un jour, ouvrir une micro-spec dédiée au paramètre concerné (avec plages validées pool-chemistry) plutôt que d'exposer le lot.
 
 Aucun code modifié au titre de cette spec. Le contenu ci-dessous est conservé à titre de traçabilité.
-- **Doc(s) liée(s)** : [docs/subsystems/pump-controller.md](../../docs/subsystems/pump-controller.md#paramètres-en-dur-récapitulatif), [docs/features/page-settings.md](../../docs/features/page-settings.md)
+- **Doc(s) liée(s)** : [docs/subsystems/pump-controller.md](../../../docs/subsystems/pump-controller.md#paramètres-en-dur-récapitulatif), [docs/features/page-settings.md](../../../docs/features/page-settings.md)
 
 ## Domaines touchés
 - [ ] Capteurs (pH / ORP / température)
@@ -47,7 +47,7 @@ Aucun code modifié au titre de cette spec. Le contenu ci-dessous est conservé 
 Ajouter un **mode expert** dans la page Paramètres (onglet Avancé ou nouvel onglet Expert) exposant les paramètres aujourd'hui en dur : seuils anti-cycling, `maxCyclesPerDay`, `minInjectionTimeMs`, deadband pH/ORP, `integralMax`. L'accès nécessite un bandeau d'avertissement + activation explicite. Valeurs par défaut inchangées.
 
 ## Contexte
-Voir le tableau récap dans [docs/subsystems/pump-controller.md](../../docs/subsystems/pump-controller.md#paramètres-en-dur-récapitulatif) pour la liste complète des paramètres aujourd'hui en dur.
+Voir le tableau récap dans [docs/subsystems/pump-controller.md](../../../docs/subsystems/pump-controller.md#paramètres-en-dur-récapitulatif) pour la liste complète des paramètres aujourd'hui en dur.
 
 L'écart actuel : toute modification de ces valeurs exige un nouveau build firmware, ce qui freine l'itération. Mais exposer sans garde-fou risquerait de dégrader la protection pompes / chimie. La réponse produite : **mode expert désactivé par défaut**, activation explicite, valeurs bornées, reset facile aux défauts.
 
@@ -86,7 +86,7 @@ L'écart actuel : toute modification de ces valeurs exige un nouveau build firmw
 - Restauration des défauts : bouton unique qui écrase les 11 champs en une seule requête.
 
 ## Comportement actuel
-Les 11 paramètres sont des `constexpr` dans `config.h` et `constants.h`, modifiables uniquement par build + flash. Voir [docs/features/page-settings.md](../../docs/features/page-settings.md) (tableau ⚠️ des paramètres non exposés).
+Les 11 paramètres sont des `constexpr` dans `config.h` et `constants.h`, modifiables uniquement par build + flash. Voir [docs/features/page-settings.md](../../../docs/features/page-settings.md) (tableau ⚠️ des paramètres non exposés).
 
 ## Contraintes techniques
 - ESP32, offline first

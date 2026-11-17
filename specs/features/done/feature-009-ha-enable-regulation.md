@@ -6,7 +6,7 @@
 - **Priorité** : normale
 - **Version cible** : 2.7.0 (livrée)
 - **Dernière mise à jour** : 2026-07-04 (livraison v2.7.0 — voir Notes d'implémentation)
-- **Doc(s) liée(s)** : [docs/MQTT.md](../../docs/MQTT.md), [docs/subsystems/mqtt-manager.md](../../docs/subsystems/mqtt-manager.md), [docs/features/page-ph.md](../../docs/features/page-ph.md), [docs/features/page-orp.md](../../docs/features/page-orp.md)
+- **Doc(s) liée(s)** : [docs/MQTT.md](../../../docs/MQTT.md), [docs/subsystems/mqtt-manager.md](../../../docs/subsystems/mqtt-manager.md), [docs/features/page-ph.md](../../../docs/features/page-ph.md), [docs/features/page-orp.md](../../../docs/features/page-orp.md)
 
 > **Annotations d'audit (2026-07-04)** — spec confrontée au code v2.6.0, prémisses exactes, non supersédée :
 > 1. **Modèle d'implémentation** : suivre le `select` du **mode filtration** (`mqtt_manager.cpp` l.1006-1010 : discovery + `command_topic` + souscription + handler `InboundCmdType::FiltrationMode` drainé sur loopTask sous `configMutex`) — modèle plus direct que le `number.*_ph_target` cité plus bas.
@@ -40,7 +40,7 @@
 Exposer dans Home Assistant des entités `select` permettant de changer le `ph_regulation_mode` et `orp_regulation_mode` (`automatic` / `scheduled` / `manual`). Aujourd'hui, le champ est publié en MQTT state, mais pas exposé comme entité commandable.
 
 ## Contexte
-Le topic `{base}/ph_regulation_mode` est déjà publié ([docs/features/page-ph.md](../../docs/features/page-ph.md#interaction-mqtt)), mais non exposé comme entité HA → l'utilisateur ne peut pas créer un automatisme « passer en mode manuel quand la piscine est en hivernage ».
+Le topic `{base}/ph_regulation_mode` est déjà publié ([docs/features/page-ph.md](../../../docs/features/page-ph.md#interaction-mqtt)), mais non exposé comme entité HA → l'utilisateur ne peut pas créer un automatisme « passer en mode manuel quand la piscine est en hivernage ».
 
 Cas d'usage type : scripts HA qui activent/désactivent la régulation en fonction de la saison, d'une détection d'absence longue, ou d'un basculement manuel via un dashboard HA.
 
@@ -145,7 +145,7 @@ Cas d'usage type : scripts HA qui activent/désactivent la régulation en foncti
 ## Notes pour agent
 - **Cohérence avec l'UI web** : la même route de persistance (`saveConfig()`) doit être utilisée pour que le changement soit identique.
 - **Futur** : exposer aussi `ph_daily_target_ml` / `orp_daily_target_ml` comme `number` HA → hors périmètre ici (spec séparée si demandée).
-- **Attention** : `ph_enabled` / `orp_enabled` sont des miroirs booléens (voir [ADR-0004](../../docs/adr/0004-mode-regulation-enum-3-valeurs.md)) : ne pas exposer de `switch` HA séparé pour éviter la confusion. Le `select` est la source de vérité.
+- **Attention** : `ph_enabled` / `orp_enabled` sont des miroirs booléens (voir [ADR-0004](../../../docs/adr/0004-mode-regulation-enum-3-valeurs.md)) : ne pas exposer de `switch` HA séparé pour éviter la confusion. Le `select` est la source de vérité.
 
 ## Notes d'implémentation (2026-07-04)
 

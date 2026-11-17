@@ -9,7 +9,7 @@
   **même classe de défaut**, côté chlore, et laissé hors périmètre)
 - **Domaine** : Firmware — régulation ORP, filets de sécurité pH brut
 - **Specs liées** : `bug-plancher-ph-offset-legitime-et-securite-desarmee` (v2.25.0),
-  feature-067 (offset pH), [ADR-0048](../../../docs/adr/0048-plancher-ph-continu-et-bornes-de-consigne.md),
+  feature-067 (offset pH), [ADR-0048](../../../docs/adr/0048-seuils-ph-fixes-derives-de-la-plage-de-consigne.md),
   [ADR-0039](../../../docs/adr/0039-offset-ph-applique-en-sortie-des-accesseurs.md)
 
 ## Symptôme

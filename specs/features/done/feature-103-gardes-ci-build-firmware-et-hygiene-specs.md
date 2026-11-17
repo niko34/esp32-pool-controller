@@ -347,7 +347,7 @@ remplacer cette fin de phrase par :
 > `build-firmware.yml` (**`pio run -e esp32dev_core3`** — la compilation est un gate depuis
 > feature-103) et `hygiene-specs.yml` (**`./tools/check_specs.sh`**, unicité d'une spec entre
 > `todo/` · `doing/` · `done/` — **lançable en local avant de committer**). Voir
-> [`docs/BUILD.md`](docs/BUILD.md#intégration-continue-github-actions).
+> [`docs/BUILD.md`](../../../docs/BUILD.md#intégration-continue-github-actions).
 
 **C3 — `.claude/skills/spec-workflow/SKILL.md`, § « Promotion todo → doing »** — ajouter après le
 bloc `mv` :

@@ -2125,9 +2125,9 @@ complète, hypothèses déjà réfutées et marche à suivre dans
 | | Objet | État |
 |---|---|---|
 | [feature-129](../done/feature-129-les-string-du-journal-fractionnent-le-grand-bloc.md) | Le lot C : l'arène du journal | **livré, v2.52.1** |
-| [feature-130](../todo/feature-130-une-sentinelle-empeche-de-defaire-le-travail-memoire.md) | Rendre la discipline mémoire vérifiable par la CI | todo, **haute** |
-| [feature-131](../todo/feature-131-la-sauvegarde-de-l-historique-cesse-de-batir-le-json-en-ram.md) | Le plus gros pic transitoire restant | todo, **haute** |
-| [feature-132](../todo/feature-132-rouvrir-le-seuil-de-la-garde-fichiers-avec-des-mesures.md) | Le seuil de la garde fichiers | todo, bloquée par 131 |
+| [feature-130](feature-130-une-sentinelle-empeche-de-defaire-le-travail-memoire.md) | Rendre la discipline mémoire vérifiable par la CI | todo, **haute** |
+| [feature-131](feature-131-la-sauvegarde-de-l-historique-cesse-de-batir-le-json-en-ram.md) | Le plus gros pic transitoire restant | todo, **haute** |
+| [feature-132](feature-132-rouvrir-le-seuil-de-la-garde-fichiers-avec-des-mesures.md) | Le seuil de la garde fichiers | todo, bloquée par 131 |
 | [feature-133](../todo/feature-133-identifier-le-second-mecanisme-de-fragmentation.md) | Le second mécanisme | todo, basse |
 
 ## ⚠️ Deux specs que cette clôture débloque ou périme — à traiter

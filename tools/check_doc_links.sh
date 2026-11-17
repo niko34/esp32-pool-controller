@@ -38,8 +38,24 @@ INVENTAIRE="$(mktemp "${TMPDIR:-/tmp}/check_doc_links.XXXXXX")" || {
 }
 trap 'rm -f "$INVENTAIRE"' EXIT
 
-# Fichiers examinés : toute la doc, plus les .md de la racine.
+# Fichiers examinés : toute la doc, TOUTES LES SPECS, plus les .md de la racine.
+#
+# ⚠️ `specs/` A ÉTÉ AJOUTÉ LE 2026-11-17, et c'est l'essentiel de l'histoire de
+# ce script. Il a été écrit POUR le problème des promotions de specs
+# (todo → doing → done), il est cité dans la mémoire du projet comme la garde à
+# relancer après un `git mv`… et il ne regardait QUE `docs/` et la racine. Il
+# attrapait les liens *vers* une spec depuis la doc, jamais les liens *entre*
+# specs — c'est-à-dire la grande majorité.
+# ⇒ Le balayage du 2026-11-17 a trouvé **123 liens morts dans 43 fichiers de
+# specs**, invisibles depuis toujours : 84 erreurs de profondeur (`../../docs/`
+# au lieu de `../../../docs/` depuis `specs/features/<dossier>/`), 16 specs
+# promues dont les citations pointaient encore vers l'ancien dossier, et 3 noms
+# d'ADR inexistants. Tous corrigés dans le même lot.
+# ⛔ Ne pas restreindre ce périmètre à nouveau : une garde qui ne regarde pas
+# là où le problème vit donne une fausse assurance, ce qui est pire que pas de
+# garde du tout.
 find docs -name '*.md' -type f 2>/dev/null > "$INVENTAIRE.f" || true
+find specs -name '*.md' -type f 2>/dev/null >> "$INVENTAIRE.f" || true
 find . -maxdepth 1 -name '*.md' -type f >> "$INVENTAIRE.f"
 
 while IFS= read -r fichier; do
