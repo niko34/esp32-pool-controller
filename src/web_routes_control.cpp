@@ -544,12 +544,30 @@ void updateManualInject() {
   }
 }
 
+// bug-171 (décision utilisateur 2026-11-17, 2e) : un test de pompe est REFUSÉ pendant
+// une autre marche manuelle (injection pH/ORP, mesure de débit). Motif : CONFLIT
+// D'USAGE de l'actionneur — le test couperait la pompe de la victime sans refermer sa
+// session (crédit plancher faux, débit ml/min faux validé par l'utilisateur).
+// ⛔ Ce n'est PAS une garde de plafond journalier (écartée : un test matériel doit
+// toujours fonctionner). Patron : 409 assist_busy.
+static bool manualRunBusyReject(AsyncWebServerRequest* req) {
+  const char* what = nullptr;
+  if (sFlowAssist.active) what = "{\"error\":\"already_injecting\",\"message\":\"Une mesure de débit est en cours. Arrêtez-la ou attendez sa fin avant de tester une pompe.\"}";
+  else if (manualInjectPh.active) what = "{\"error\":\"already_injecting\",\"message\":\"Une injection de pH est en cours. Arrêtez-la ou attendez sa fin avant de tester une pompe.\"}";
+  else if (manualInjectOrp.active) what = "{\"error\":\"already_injecting\",\"message\":\"Une injection d'ORP est en cours. Arrêtez-la ou attendez sa fin avant de tester une pompe.\"}";
+  if (!what) return false;
+  req->send(409, "application/json", what);
+  return true;
+}
+
 void setupControlRoutes(AsyncWebServer* server) {
   // Routes pour test manuel des pompes - PROTÉGÉES
   // Sécurité chimique (pool-chemistry validation 2026-05-11, feature-056) :
   // démarrage refusé sans présence d'eau (resolveWaterPresence().waterPresent,
   // selon le mode d'installation). Pas de bornage de durée ici (test bench) — l'utilisateur doit
-  // arrêter manuellement via /pumpN/off OU passer par /ph/inject/start qui borne.
+  // arrêter via /pumpN/off OU passer par /ph/inject/start qui borne.
+  // bug-171 : l'APPAREIL borne désormais le test (kManualPumpTestMaxOnMs, 10 s) ;
+  // le minuteur du navigateur n'est plus qu'un arrêt anticipé de confort.
   // Paramètre OPTIONNEL ?duty=N (0-255), défaut MAX_PWM_DUTY : sert à CARACTÉRISER
   // le seuil de rotation réel de la pompe. Motif (bug-dosage-fantome-duty-non-calibre) :
   // le régulateur commande des duty au ras de MIN_ACTIVE_DUTY (82/255 pour une erreur
@@ -560,6 +578,7 @@ void setupControlRoutes(AsyncWebServer* server) {
   // atteignable sans lui, et toutes les gardes d'injection restent en amont.
   server->on("/pump1/on", HTTP_POST, [](AsyncWebServerRequest *req) {
     REQUIRE_AUTH(req, RouteProtection::WRITE);
+    if (manualRunBusyReject(req)) return;
     if (!injectionAllowedOrReject(req, "Test pompe 1")) return;
     uint8_t duty = readTestDutyParam(req);
     PumpController.setManualPump(0, duty);
@@ -576,6 +595,7 @@ void setupControlRoutes(AsyncWebServer* server) {
 
   server->on("/pump2/on", HTTP_POST, [](AsyncWebServerRequest *req) {
     REQUIRE_AUTH(req, RouteProtection::WRITE);
+    if (manualRunBusyReject(req)) return;
     if (!injectionAllowedOrReject(req, "Test pompe 2")) return;
     uint8_t duty = readTestDutyParam(req);   // cf. commentaire de /pump1/on
     PumpController.setManualPump(1, duty);
@@ -654,7 +674,8 @@ void setupControlRoutes(AsyncWebServer* server) {
     // Injection acceptée : enregistrer le démarrage de cycle MANUEL (ring
     // anti-rafale + cyclesToday partagés avec l'auto, consommé en loopTask).
     PumpController.requestManualCycleRecord(0);
-    PumpController.setManualPump(pumpIdx, plan.duty);
+    PumpController.setManualPump(pumpIdx, plan.duty,
+                                  (uint32_t)durationS * 1000UL + kManualRunGraceMs);  // bug-171
     manualInjectPh.active = true;
     manualInjectPh.startMs = millis();
     manualInjectPh.durationMs = (unsigned long)durationS * 1000UL;
@@ -746,7 +767,8 @@ void setupControlRoutes(AsyncWebServer* server) {
     // Injection acceptée : enregistrer le démarrage de cycle MANUEL (ring
     // anti-rafale + cyclesToday partagés avec l'auto, consommé en loopTask).
     PumpController.requestManualCycleRecord(1);
-    PumpController.setManualPump(pumpIdx, plan.duty);
+    PumpController.setManualPump(pumpIdx, plan.duty,
+                                  (uint32_t)durationS * 1000UL + kManualRunGraceMs);  // bug-171
     manualInjectOrp.active = true;
     manualInjectOrp.startMs = millis();
     manualInjectOrp.durationMs = (unsigned long)durationS * 1000UL;
@@ -1081,7 +1103,7 @@ void setupControlRoutes(AsyncWebServer* server) {
     // --- Acceptée : cycle manuel comptabilisé, suspension posée, marche armée ---
     PumpController.requestManualCycleRecord(isPh ? 0 : 1);
     PumpController.setFlowAssistSuspend(true);
-    PumpController.setManualPump(pumpIdx, duty);
+    PumpController.setManualPump(pumpIdx, duty, durS * 1000UL + kManualRunGraceMs);  // bug-171 : borné (60/120 s non tronquées)
     mi.active = true;
     mi.startMs = millis();
     mi.durationMs = (unsigned long)durS * 1000UL;

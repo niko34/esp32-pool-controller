@@ -2494,6 +2494,24 @@ curl -u admin:monmotdepasse -X POST http://poolcontroller.local/pump1/off
 >
 > ⚠️ **v2.83.0 (feature-163)** : `/pump1/on` et `/pump2/on` partagent désormais `injectionAllowedOrReject()` avec `/ph|orp/inject/start` — elles refusent aussi en **409 `calibration_session_open`** si une session de calibration est ouverte, **avant** même la vérification de filtration. Voir [tableau des codes](#codes-de-refus-409-v260).
 
+> 🔴 **v2.91.0 (bug-171) — l'appareil borne lui-même la marche.** Avant cette version, `/pumpN/on` ne posait **aucune échéance côté appareil** : seul un minuteur du navigateur envoyait `/pumpN/off` au bout de 10 s, et il ne survit ni à la veille d'un téléphone, ni à un onglet fermé, ni à une coupure Wi-Fi — la pompe pouvait alors injecter sans limite. Désormais :
+>
+> - **Échéance appareil de 10 s** (`kManualPumpTestMaxOnMs`), **sans grâce**. Le minuteur du navigateur n'est plus qu'un arrêt anticipé de confort. Journal : `[Test] Pompe N arrêtée — échéance appareil atteinte`.
+> - **Coupure sur perte de présence d'eau** : la pompe de test est coupée dès que la filtration s'arrête (log `critical` `[Sécurité] Pompe N manuelle COUPÉE — présence d'eau perdue` + alerte MQTT `manual_pump_cut_water`).
+> - **Coupure à l'ouverture d'une session d'étalonnage** (log `critical` `… session d'étalonnage ouverte` + alerte MQTT `manual_pump_cut_calibration`).
+> - Une seule pompe en marche manuelle à la fois : démarrer l'une **coupe** l'autre (journalisé).
+> - `/pumpN/off` (ou `duty=0`) reste **inconditionnel** et annule l'échéance.
+>
+> **`409 already_injecting` (v2.91.0)** — `/pump1/on` et `/pump2/on` sont **refusées** tant qu'une autre marche manuelle occupe une pompe, avant les autres gardes (c'est un conflit d'**usage** de l'actionneur : la couper aurait faussé le crédit d'une injection ou le débit validé d'une mesure). Trois messages possibles dans `message`, tous avec `error: "already_injecting"` :
+>
+> | Cause | `message` |
+> |---|---|
+> | Mesure de débit en cours | `Une mesure de débit est en cours. Arrêtez-la ou attendez sa fin avant de tester une pompe.` |
+> | Injection pH manuelle en cours | `Une injection de pH est en cours. Arrêtez-la ou attendez sa fin avant de tester une pompe.` |
+> | Injection ORP manuelle en cours | `Une injection d'ORP est en cours. Arrêtez-la ou attendez sa fin avant de tester une pompe.` |
+>
+> ⚠️ **Aucune garde de plafond journalier sur `/pumpN/on`** — décision produit explicite (2026-11-17) : *« un bouton pour tester le matériel doit toujours fonctionner »*. Le refus `409` ci-dessus porte sur un conflit d'usage, **pas** sur l'état chimique du bassin. Rouvrir cette décision exige une nouvelle décision produit, pas un contournement. Voir [ADR-0129](adr/0129-toute-marche-manuelle-porte-une-echeance-fournie-par-l-appelant.md).
+
 ---
 
 ### POST /pump2/on, /pump2/off — WRITE
@@ -2505,7 +2523,7 @@ curl -u admin:monmotdepasse -X POST http://poolcontroller.local/pump2/on
 curl -u admin:monmotdepasse -X POST http://poolcontroller.local/pump2/off
 ```
 
-> ⚠️ **Garde filtration (v2.1.2)** : mêmes règles que `/pump1/on` ci-dessus.
+> ⚠️ **Garde filtration (v2.1.2)** : mêmes règles que `/pump1/on` ci-dessus — y compris, depuis la **v2.91.0 (bug-171)**, l'échéance appareil de 10 s, les coupures sur perte d'eau / étalonnage et le `409 already_injecting`.
 >
 > **Paramètre optionnel `?duty=N` (v2.20.5)** : identique à `/pump1/on` — borné `[0, 255]`, défaut `255`, pas de plancher `MIN_ACTIVE_DUTY`, comportement inchangé sans le paramètre. Journal : `[Test] Pompe 2 démarrée en mode manuel (duty=N)`.
 
@@ -2572,7 +2590,7 @@ Format du corps (`application/json`) :
 | `calibration_session_open` | **v2.83.0 (feature-163)** — une session de calibration est **ouverte** (`mqttCfg.calSessionOpen`, posée inconditionnellement par `POST /calibration/enter`, quel que soit le mode de régulation). Garde **rang 3** — derrière Watchdog/Présence d'eau, **devant** la stabilisation post-cal et tout le reste (voir [pump-controller.md](subsystems/pump-controller.md#garde-rang-4--session-détalonnage-ouverte-tous-modes-feature-163-adr-0115)). Refus **inconditionnel**, aucune exception (y compris chloration de secours). Émet un `critical` `[Sécurité] Dosage refusé : étalonnage en cours (session de calibration ouverte) — aucune injection tant que la session n'est pas fermée`. Message : « Étalonnage en cours — injection refusée tant que la session de calibration est ouverte. » | — |
 | `stabilization_in_progress` | Stabilisation post-calibration en cours **pour la pompe visée** | `seconds_remaining` (int) |
 | `automatic_inject_in_progress` | **v2.77.0 (bug-161, gate `pool-chemistry` C1)** — une injection **automatique** est en cours sur cette pompe (`PumpController.isPhDosing()` / `isOrpDosing()`). Garde **rang 5** (était rang 4 avant v2.83.0, décalée par l'insertion de `calibration_session_open` en rang 3) — derrière Watchdog/Présence d'eau/session d'étalonnage/Stabilisation, **devant** le double démarrage manuel et les quotas. Ce trou était inatteignable tant que le bouton d'injection manuelle restait masqué hors du mode `manual` (feature-161 lève ce masquage) — voir [pump-controller.md](subsystems/pump-controller.md#garde-rang-5--injection-automatique-en-cours-bug-161-gate-c1). Message : « Une injection automatique est en cours — réessayez dans un instant. » | — |
-| `already_injecting` | Une injection manuelle est déjà en cours sur cette pompe (double start) | — |
+| `already_injecting` | **Depuis v2.91.0 (bug-171)**, `/pump1/on` et `/pump2/on` refusent aussi quand une **autre** marche manuelle (injection pH/ORP, mesure de débit) est en cours — 3 messages, voir [POST /pump1/on](#post-pump1on-pump1off--write). Historique : une injection manuelle est déjà en cours sur cette pompe (double start) | — |
 | `daily_limit` | Reliquat journalier **nul ou < 1 s de pompe** (sinon la demande est **écrêtée** au reliquat et acceptée — v2.9.2 ; frontière `==` **acceptée** ; limite ≤ 0 = illimité) | `remaining_ml` (int, reliquat arrondi **vers le bas** depuis v2.9.2 — le message ne promet jamais plus que disponible) |
 | `hourly_limit` | `usedMs + durée demandée > *_limit_minutes × 60000` (budget **partagé** auto + manuel ; frontière `==` acceptée ; limite 0 = illimité) | — |
 | `max_cycles` | Cycles/jour atteints (`maxCyclesPerDay = 20`, compteur partagé auto + manuel) | — |

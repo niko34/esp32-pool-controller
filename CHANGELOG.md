@@ -2,6 +2,26 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [2.91.0] - 2026-11-17
+
+### Firmware
+- **Sécurité — test manuel des pompes (bug-171)** : une pompe doseuse lancée par « Pompe 1 » / « Pompe 2 » (`POST /pumpN/on`, onglet Avancé des Réglages) **ne s'arrêtait jamais côté appareil**. Seul un minuteur du navigateur envoyait l'arrêt, et il ne survit ni à la veille du téléphone, ni à un onglet fermé, ni à une coupure Wi-Fi : la pompe pouvait injecter à pleine puissance sans limite, et l'appareil se croyait à l'arrêt. ⚠️ **L'interface et la documentation affirmaient pourtant « arrêt automatique après 10 secondes côté firmware » : c'était faux jusqu'à cette version.** Désormais :
+  - l'appareil **borne lui-même** la marche à **10 s** (`kManualPumpTestMaxOnMs`) ; les injections manuelles et la mesure de débit portent leur durée + `kManualRunGraceMs` (2 s) ;
+  - la pompe est **coupée sur perte de présence d'eau** et **à l'ouverture d'une session d'étalonnage** (qui ne couvrait jusque-là que les démarrages, feature-163) ; journal `critical` + alertes MQTT `manual_pump_cut_water` / `manual_pump_cut_calibration` ;
+  - démarrer une pompe en test **coupe l'autre** (une seule à la fois) ; mode maintenance et OTA purgent l'échéance ;
+  - `POST /pumpN/on` répond **`409 already_injecting`** pendant une injection manuelle pH/ORP ou une mesure de débit (conflit d'usage : la couper aurait faussé un crédit ou un débit validé).
+  - ⛔ **Volontairement inchangé** : aucun plafond journalier sur ce bouton (décision produit : un test matériel doit toujours fonctionner).
+- **Journal** : doublon connu et accepté quand la filtration s'arrête pendant une injection manuelle (coupure du garde-fou, puis « INTERROMPUE » au tour suivant).
+
+### Fonctionnalités
+- **Interface — carte « Test manuel des pompes »** : les refus de l'appareil (409, réseau) sont **affichés** dans un encadré au lieu d'être avalés ; le décompte ne démarre qu'une fois la pompe réellement acceptée ; boutons sans pictogramme.
+
+### Documentation
+- `docs/API.md` (`/pumpN/on`, tableau des 409), `docs/subsystems/pump-controller.md` (nouvelle section « Marche manuelle bornée »), `docs/MQTT.md` (2 alertes), `docs/features/page-settings.md` (correction de la phrase fausse « arrêt auto côté firmware »), `docs/user/src/guide-utilisation.html`.
+- **ADR-0129** : toute marche manuelle porte une échéance fournie par l'appelant.
+
+---
+
 ## [Non publié] - 2026-11-17
 
 > ℹ️ Aucun changement de firmware : `src/version.h` reste à 2.90.0. Outillage seul.

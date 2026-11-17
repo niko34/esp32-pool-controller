@@ -3456,6 +3456,18 @@ constexpr uint32_t kFlowAssistMeasureDurationS = 120;    // 120 s — mesure min
 // et le temps de marche hors régulation (une purge qui n'amorce pas en 3
 // tentatives signale un problème matériel, pas un besoin de purge de plus).
 constexpr uint8_t kFlowAssistMaxPurgesPerSession = 3;
+// ---------------------------------------------------------------------------
+// bug-171 : ÉCHÉANCE côté APPAREIL de toute pompe en mode manuel (avant, seul un
+// minuteur du navigateur arrêtait un test : téléphone en veille = pompe sans fin).
+// Source : pool-chemistry 2026-11-17 ; débit mesuré 68 ml/min à duty 255, majorant
+// retenu kPumpFlow255MlPerMin = 74 ml/min ⇒ 74 × 10 / 60 = 12,3 ml par test.
+// 10 s = la promesse de l'interface (« Arrêt automatique après 10 secondes »).
+constexpr uint32_t kManualPumpTestMaxOnMs = 10000;       // 10 s — test /pumpN/on
+// Grâce ajoutée à l'échéance des marches qui possèdent LEUR PROPRE arrêt
+// (injection manuelle, assistant de débit) : l'échéance appareil n'est alors
+// qu'un filet, jamais le premier arrêt (il doit laisser son crédit plancher se
+// faire). ⛔ Zéro grâce pour le test. Source : pool-chemistry 2026-11-17, cond. 6.
+constexpr uint32_t kManualRunGraceMs = 2000;             // 2 s
 // Timeout serveur de la SUSPENSION du dosage auto : un assistant abandonné
 // (onglet fermé, WiFi tombé) ne doit jamais laisser la régulation suspendue
 // indéfiniment. Réarmé à CHAQUE interaction de l'assistant (chaque requête).

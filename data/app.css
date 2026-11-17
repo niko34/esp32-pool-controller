@@ -4681,3 +4681,14 @@ h1, h2, h3 {
 #ota_recovery:hover { transform: none; }
 #ota_recovery p { margin: 8px 0 0; }
 #ota_recovery a.btn { text-decoration: none; }
+
+/* bug-171 : carte « Test manuel des pompes » (onglet Avancé) — locale à la carte. */
+.pump-test {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.pump-test .btn { min-height: 44px; }
+.pump-test__stop { grid-column: 1 / -1; }
+#pump_test_msg { overflow-wrap: anywhere; }
+#pump_test_msg[hidden] { display: none; }

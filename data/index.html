@@ -2902,12 +2902,13 @@ action:
 
                   <div style="margin-top:16px">
                     <div class="row__title" style="margin-bottom:8px">Test manuel des pompes</div>
-                    <div class="muted small" style="margin-bottom:10px">Démarre la pompe à puissance maximale. Arrêt automatique après 10 secondes.</div>
-                    <div style="display:flex;gap:8px;flex-wrap:wrap">
-                      <button class="btn btn--secondary" id="pump1_test_btn">▶ Pompe 1</button>
-                      <button class="btn btn--secondary" id="pump2_test_btn">▶ Pompe 2</button>
-                      <button class="btn" id="pumps_stop_btn">⏹ Arrêter</button>
+                    <div class="muted small" style="margin-bottom:10px">Démarre la pompe à puissance maximale. L'appareil l'arrête de lui-même après 10 secondes, même si cette page est fermée.</div>
+                    <div class="pump-test">
+                      <button class="btn btn--secondary" id="pump1_test_btn">Pompe 1</button>
+                      <button class="btn btn--secondary" id="pump2_test_btn">Pompe 2</button>
+                      <button class="btn btn--danger pump-test__stop" id="pumps_stop_btn">Arrêter</button>
                     </div>
+                    <div class="callout callout--warn" id="pump_test_msg" role="alert" hidden></div>
                   </div>
 
                   <div class="detail-actions" style="margin-top:12px">

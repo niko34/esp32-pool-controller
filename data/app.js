@@ -13441,10 +13441,20 @@
     let pumpTestTimer = null;
     let pumpCountdownInterval = null;
 
+    const PUMP_LABELS = { "#pump1_test_btn": "Pompe 1", "#pump2_test_btn": "Pompe 2" };
+
+    const showPumpMsg = (txt) => {
+      const m = $("#pump_test_msg");
+      if (!m) return;
+      if (txt) { m.textContent = txt; m.hidden = false; }
+      else { m.textContent = ""; m.hidden = true; }
+    };
+
     const resetPumpButtons = () => {
-      const b1 = $("#pump1_test_btn"), b2 = $("#pump2_test_btn");
-      if (b1) { b1.textContent = "▶ Pompe 1"; b1.disabled = false; }
-      if (b2) { b2.textContent = "▶ Pompe 2"; b2.disabled = false; }
+      for (const [sel, lbl] of Object.entries(PUMP_LABELS)) {
+        const b = $(sel);
+        if (b) { b.textContent = lbl; b.disabled = false; b.removeAttribute("aria-busy"); }
+      }
     };
 
     const stopAllPumps = async () => {
@@ -13453,39 +13463,105 @@
       pumpTestTimer = null;
       pumpCountdownInterval = null;
       resetPumpButtons();
-      await authFetch("/pump1/off", { method: "POST" }).catch(() => {});
-      await authFetch("/pump2/off", { method: "POST" }).catch(() => {});
+      showPumpMsg("");
+      // ⚠️ allSettled, PAS deux `await` en série (revue 2026-11-17, bug-171).
+      // Avec `await r1` puis `await r2`, un échec réseau sur /pump1/off empêchait
+      // /pump2/off d'être envoyé : ⛔ sur un bouton d'ARRÊT D'URGENCE, la panne
+      // d'une pompe privait l'autre de son ordre d'arrêt. Les deux partent
+      // désormais TOUJOURS, et en parallèle.
+      const res = await Promise.allSettled([
+        authFetch("/pump1/off", { method: "POST" }),
+        authFetch("/pump2/off", { method: "POST" }),
+      ]);
+      // 401 : authFetch redirige déjà vers /login.html — ne rien afficher par-dessus.
+      if (res.some((r) => r.status === "rejected" && r.reason && r.reason.message === "Authentication required")) return;
+      const ko = res.some((r) => r.status === "rejected" || !r.value.ok);
+      if (ko) {
+        showPumpMsg("L'arrêt n'a pas pu être confirmé. Coupez l'alimentation de la pompe si elle tourne encore.");
+      }
+    };
+
+    // Texte du refus : JSON {error|message}, sinon texte brut court, sinon secours.
+    const pumpRefusalText = async (res) => {
+      try {
+        const raw = (await res.text()).trim();
+        if (raw) {
+          try {
+            const j = JSON.parse(raw);
+            const t = j && (j.message || j.error);
+            if (typeof t === "string" && t.trim()) return t.trim();
+          } catch (_) {
+            if (raw.length <= 200 && raw[0] !== "<") return raw;
+          }
+        }
+      } catch (_) {}
+      return "L'appareil a refusé de lancer la pompe.";
     };
 
     const startPumpTest = async (onRoute, btnId, otherBtnId, label) => {
       clearTimeout(pumpTestTimer);
       clearInterval(pumpCountdownInterval);
+      showPumpMsg("");
 
       const btn = document.querySelector(btnId);
       const otherBtn = document.querySelector(otherBtnId);
 
-      // Feedback immédiat avant la requête
-      let remaining = PUMP_TEST_DURATION;
-      if (btn) { btn.textContent = `⏳ ${label} — ${remaining}s`; btn.disabled = true; }
+      // (1) Retour immédiat NEUTRE : on ne promet rien avant la réponse de l'appareil.
+      if (btn) { btn.textContent = "Démarrage…"; btn.disabled = true; btn.setAttribute("aria-busy", "true"); }
       if (otherBtn) otherBtn.disabled = true;
 
-      // Décompte
+      // (2) Requête — aucune erreur avalée (bug-171).
+      let res;
+      try {
+        res = await authFetch(onRoute, { method: "POST" });
+      } catch (e) {
+        if (e && e.message === "Authentication required") return; // redirection /login.html en cours
+        resetPumpButtons();
+        showPumpMsg("L'appareil ne répond pas. Si la pompe tourne, elle s'arrêtera seule au bout de 10 secondes.");
+        authFetch(onRoute.replace("/on", "/off"), { method: "POST" }).catch(() => {});
+        return;
+      }
+
+      // (4) Refus : message, boutons rendus, aucun décompte.
+      if (!res.ok) {
+        resetPumpButtons();
+        showPumpMsg(await pumpRefusalText(res));
+        return;
+      }
+
+      // (3) Accepté : décompte.
+      let remaining = PUMP_TEST_DURATION;
+      if (btn) { btn.textContent = `${label} — ${remaining} s`; btn.removeAttribute("aria-busy"); }
       pumpCountdownInterval = setInterval(() => {
         remaining--;
-        if (remaining > 0) {
-          if (btn) btn.textContent = `⏳ ${label} — ${remaining}s`;
-        }
+        if (remaining > 0 && btn) btn.textContent = `${label} — ${remaining} s`;
       }, 1000);
 
-      // Arrêt auto
+      // Arrêt auto — ⚠️ CONFORT, PLUS UNE GARANTIE (bug-171, 2026-11-17).
+      //
+      // Ce minuteur a été, jusqu'à cette date, LA SEULE chose qui arrêtait une pompe
+      // doseuse lancée en test. ⛔ Il ne survit ni à la veille du téléphone (les
+      // navigateurs mobiles SUSPENDENT les minuteurs des onglets en arrière-plan :
+      // c'est le cas NOMINAL, pas une panne), ni à un onglet fermé ou rechargé, ni à
+      // une coupure Wi-Fi. La pompe tournait alors à pleine puissance sans limite.
+      //
+      // ⇒ Depuis bug-171, l'APPAREIL porte sa propre échéance (kManualPumpTestMaxOnMs
+      //   = 10 s, src/constants.h) et coupe aussi sur perte de présence d'eau et sur
+      //   ouverture d'une session d'étalonnage. La phrase « Arrêt automatique après
+      //   10 secondes » de data/index.html est donc VRAIE côté appareil — elle ne
+      //   l'était pas avant.
+      //
+      // On garde ce setTimeout : il rend la main plus tôt côté interface et remet les
+      // boutons dans leur état. ⛔ Mais ne jamais le présenter, en code ou en doc,
+      // comme la garantie d'arrêt — c'est l'erreur exacte que docs/features/page-settings.md
+      // a commise en écrivant « arrêt auto après 10 s côté firmware » alors que rien
+      // de tel n'existait.
       pumpTestTimer = setTimeout(async () => {
         clearInterval(pumpCountdownInterval);
         resetPumpButtons();
+        showPumpMsg("");
         await authFetch(onRoute.replace("/on", "/off"), { method: "POST" }).catch(() => {});
       }, PUMP_TEST_DURATION * 1000);
-
-      // Requête démarrage (après le feedback visuel)
-      await authFetch(onRoute, { method: "POST" }).catch(() => {});
     };
 
     $("#pump1_test_btn")?.addEventListener("click", () => startPumpTest("/pump1/on", "#pump1_test_btn", "#pump2_test_btn", "Pompe 1"));

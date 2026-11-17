@@ -243,6 +243,8 @@ informatif sans enjeu — c'est à ça que sert `.field__hint` ou `.detail-row`.
 
 **Emploi ajouté (feature-151 D3-c) : refus de l'appareil dans une carte de réglage** — `#update_refusal` (carte « Mise à jour manuelle ») et `#update_sig_note` en blocage (carte en ligne) : `callout callout--warn` + `role="alert"`, texte inséré par `textContent` (la phrase de l'appareil, jamais du HTML). Contexte : page de réglage, sous le champ concerné. Le même `#update_sig_note` reste un simple `.field__hint` (`role="status"`) tant que rien ne bloque. Aucune nouvelle classe.
 
+**Emploi ajouté (bug-171) : refus ou échec d'un test de pompe** — `#pump_test_msg` (carte « Test manuel des pompes », onglet Avancé) : `callout callout--warn` + `role="alert"`, persistant (effacé au prochain appui ou en fin de décompte, pas de toast), texte par `textContent`. Contexte : page de réglage. La grille `.pump-test` (2 colonnes + « Arrêter » pleine largeur, `.btn--danger`) est locale à la carte ; aucun composant partagé modifié.
+
 ### 5.10bis `.callout__eyebrow` / `.callout__lead` / `.callout__more` (v2.82.0, feature-168)
 
 **Contexte d'emploi déclaré : page de réglage pH (`#ph_tune_blocked`), généralisable à tout `.callout` qui doit distinguer deux niveaux de gravité sur le MÊME propos sans empiler deux encadrés.** Né de l'avertissement non bloquant de correction de mesure pH (dépassement de l'ancienne borne ±0,50) : au-delà d'un second seuil (« impasse »), le même encadré doit se faire plus pressant **sans changer de couleur de boîte** (⛔ pas de 3ᵉ couleur — daltonisme, §7) et sans forcer la lecture d'un pavé de texte entier à chaque ouverture.

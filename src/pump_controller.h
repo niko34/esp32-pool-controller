@@ -6,6 +6,7 @@
 #include "config.h"
 #include "constants.h"
 #include "pulse_dosing_logic.h"  // itération 2 : proportionnel de temps (option B+C)
+#include "manual_pump_guard_logic.h"  // bug-171 : coupure des pompes manuelles (PURE)
 #include "dosing_logic.h"        // v2.25.1 : DoseRefusal (code de cause exposé)
 #include "ph_integral_logic.h"   // v2.26.0 : terme intégral pH (logique PURE)
 #include "ph_persist_logic.h"    // feature-084 : persistance de l'intégrale (PURE)
@@ -74,6 +75,12 @@ private:
   PumpDriver pumps[2];
   uint8_t pumpDuty[2] = {0, 0};
   bool manualMode[2] = {false, false};  // Mode test manuel par pompe
+  // bug-171 : échéance millis() (0 = désarmée) de la marche manuelle, UN SEUL mot
+  // atomique par pompe (jamais deux champs à lire ensemble — défaut « reset
+  // multi-champs non atomique » déjà payé, feature-075). Écrit par la tâche web
+  // (setManualPump), lu/purgé par loopTask (tickManualPumpGuard).
+  // Ordre d'armement : échéance → manualMode → duty ; à l'arrêt l'inverse.
+  std::atomic<uint32_t> _manualDeadlineMs[2] = {{0}, {0}};
   // volatile : écrit par loopTask, lu aussi en contexte web async / OTA.
   volatile bool otaInProgress = false;
   // Auto-guérison v2.9.1 (condition pool-chemistry C2) : quand true, tout dosage
@@ -1603,8 +1610,18 @@ public:
   // inactive ou index invalide.
   uint32_t getPulsePhaseMs(int chem, uint32_t nowMs) const;
 
-  // Test manuel des pompes (à utiliser avec précaution)
-  void setManualPump(int pumpIndex, uint8_t duty);
+  // Test manuel des pompes (à utiliser avec précaution).
+  // bug-171 : toute mise en marche (duty > 0) arme une ÉCHÉANCE appareil de
+  // budgetMs (défaut kManualPumpTestMaxOnMs). Les marches qui possèdent leur
+  // propre arrêt (injection, assistant) passent durée + kManualRunGraceMs.
+  // duty == 0 reste INCONDITIONNEL : coupe et annule l'échéance. Une seule pompe
+  // en marche manuelle à la fois : démarrer l'une coupe l'autre.
+  void setManualPump(int pumpIndex, uint8_t duty, uint32_t budgetMs = kManualPumpTestMaxOnMs);
+
+  // bug-171 : garde-fou appelé à CHAQUE tour d'update() (loopTask), AVANT les
+  // sorties « filtration coupée ». Coupe toute pompe manuelle sur échéance,
+  // perte d'eau ou session d'étalonnage, avec journal de la cause.
+  void tickManualPumpGuard(unsigned long now, const WaterPresence& water);
 };
 
 extern PumpControllerClass PumpController;

@@ -3743,6 +3743,16 @@ void PumpControllerClass::updateDosingCore(unsigned long now) {
     // `isPhDosing()` mentait à l'UI. La fermeture est idempotente : elle ne
     // journalise qu'au premier tour de maintenance.
     closePhDosingSession(now, "mode maintenance");
+    // bug-171 (pool-chemistry cond. 2) : purger manualMode + échéance, comme l'OTA —
+    // sinon l'exemption des blocs de suspension survit au retour de maintenance.
+    if (manualMode[0] || manualMode[1]) {
+      // Coupure non demandée par l'utilisateur : la tracer (const char*, ADR-0082).
+      systemLogger.warning("[Test] Pompe en marche manuelle coupée : mode maintenance activé");
+    }
+    manualMode[0] = false;
+    manualMode[1] = false;
+    _manualDeadlineMs[0].store(0);
+    _manualDeadlineMs[1].store(0);
     applyPumpDuty(0, 0);
     applyPumpDuty(1, 0);
     settlePumpAccounting(now);  // bug-115 (v2.61.0) : C1 — régler avant de sortir
@@ -3775,6 +3785,14 @@ void PumpControllerClass::updateDosingCore(unsigned long now) {
   // quand la branche automatique n'est plus atteinte (c'est la purge C4
   // elle-même qui referme l'épisode C5 après un hiver sans filtration).
   tickPhUndersizedAlert();
+
+  // bug-171 : présence d'eau calculée ICI (hissée depuis la garde globale plus
+  // bas) pour que le garde-fou des pompes manuelles soit atteint AVANT les
+  // sorties « capteurs non initialisés » et « filtration coupée » — placé après,
+  // il serait inatteignable filtration coupée, c'est-à-dire le cas visé
+  // (bassin en hivernage). Après les sorties OTA / maintenance (déjà coupées).
+  const WaterPresence waterPresence = filtration.resolveWaterPresence();
+  tickManualPumpGuard(now, waterPresence);
 
   // feature-084 (sujet 3) : lecture DIFFÉRÉE de l'instantané NVS. Placée ici, en
   // aval des sorties OTA et maintenance (une lecture NVS ne doit pas s'inviter au
@@ -3885,7 +3903,7 @@ void PumpControllerClass::updateDosingCore(unsigned long now) {
   // NE PEUT PAS faire : il ne commande pas la pompe, il a perdu un signal.
   // Le journal est la seule trace qui les sépare (le champ d'API, lui, disait
   // déjà « filtration arrêtée » et ⛔ ne change pas).
-  const WaterPresence waterPresence = filtration.resolveWaterPresence();
+  // (waterPresence est calculée plus haut — bug-171, voir tickManualPumpGuard)
   bool filtrationOk = waterPresence.waterPresent;
   bool stabilizationActive = isStabilizationTimerActive(0) ||
                              isStabilizationTimerActive(1);
@@ -5536,6 +5554,8 @@ void PumpControllerClass::setOtaInProgress(bool inProgress) {
     unsigned long now = millis();
     manualMode[0] = false;
     manualMode[1] = false;
+    _manualDeadlineMs[0].store(0);  // bug-171 : échéance purgée avec le mode manuel
+    _manualDeadlineMs[1].store(0);
     // ===== v2.26.0 (revue, bloquant n°2) : FERMETURE DE SESSION pH DÉLÉGUÉE =====
     // Ce setter est appelé depuis la tâche WEB ASYNC (routes OTA) autant que
     // depuis loopTask (ArduinoOTA). Il refermait la session pH sur place
@@ -5582,7 +5602,7 @@ void PumpControllerClass::resetDosingStates() {
   systemLogger.info("États de dosage réinitialisés (demande)");
 }
 
-void PumpControllerClass::setManualPump(int pumpIndex, uint8_t duty) {
+void PumpControllerClass::setManualPump(int pumpIndex, uint8_t duty, uint32_t budgetMs) {
   // Auto-guérison v2.9.1 (condition pool-chemistry C2) : setManualPump est le point
   // de passage UNIQUE de TOUTE activation manuelle directe (routes web pumpN/on,
   // inject/start). En mode maintenance, cette voie pilote
@@ -5619,14 +5639,115 @@ void PumpControllerClass::setManualPump(int pumpIndex, uint8_t duty) {
 
   duty = duty > MAX_PWM_DUTY ? MAX_PWM_DUTY : duty;
 
-  // Activer/désactiver le mode manuel
-  manualMode[pumpIndex] = (duty > 0);
-
-  applyPumpDuty(pumpIndex, duty);
+  if (duty > 0) {
+    // Exclusivité : démarrer une pompe en manuel coupe l'autre. TROIS motifs, et
+    // ⛔ AUCUN n'est « éviter un dégagement de Cl2 » :
+    //   1. borne le coût instantané du chemin test à UNE pompe (12,3 ml) au lieu de deux ;
+    //   2. un seul créneau manuel propriétaire ⇒ une seule échéance armée, comptabilité
+    //      non ambiguë — c'est l'hygiène d'état dont dépend tout bug-171 ;
+    //   3. aligné sur le verrou « une pompe à la fois » déjà posé par l'assistant de
+    //      débit (409 assist_busy).
+    // ⚠️ CE COMMENTAIRE A ÉTÉ FAUX (2026-11-17) : il invoquait « acide puis hypochlorite
+    // stagnants au même point ⇒ dégagement de Cl2 ». ⛔ Cette justification est RETIRÉE par
+    // pool-chemistry lui-même, après vérification chiffrée : 12,3 ml de chlore 36° = 1,40 g
+    // de chlore actif, soit 0,44 L de Cl2 au maximum THÉORIQUE — mais la canalisation est
+    // PLEINE D'EAU (solubilité ~7 g/L à 20 °C, davantage à 13 °C ; un PVC 50 contient ~2 L
+    // par mètre ⇒ ~14 g de capacité, DIX FOIS la quantité émise). Rien ne dégaze. Et les
+    // deux bouchons ne se rencontrent pas : diffusion en eau stagnante sur 10 min ≈ 1 mm
+    // (D ≈ 1e-9 m²/s) contre ≥ 30 cm entre deux points d'injection.
+    // ⚠️ Surtout, l'exclusivité n'aurait RIEN protégé : elle n'empêche que le simultané,
+    // alors que le geste redouté (P1, échéance, puis P2) est SÉQUENTIEL — la première
+    // pompe était déjà arrêtée. ⛔ Ne pas réintroduire cette justification : une garde dont
+    // le commentaire promet une protection inexistante est pire que pas de garde.
+    // ⇒ Ce qui protège réellement du bouchon stagnant est l'ÉCHÉANCE + la COUPURE SUR
+    //   PERTE D'EAU, c'est-à-dire le cœur de bug-171.
+    const int other = 1 - pumpIndex;
+    if (_manualDeadlineMs[other].load() != 0 || manualMode[other]) {
+      manualMode[other] = false;
+      _manualDeadlineMs[other].store(0);
+      applyPumpDuty(other, 0);
+      systemLogger.warning("[Test] Pompe en marche manuelle coupée : l'autre pompe démarre (une seule à la fois)");
+    }
+    // Ordre : échéance → manualMode → duty (jamais de pompe manuelle sans échéance).
+    uint32_t deadline = (uint32_t)millis() + budgetMs;
+    if (deadline == 0) deadline = 1;  // 0 = désarmée
+    _manualDeadlineMs[pumpIndex].store(deadline);
+    manualMode[pumpIndex] = true;
+    applyPumpDuty(pumpIndex, duty);
+  } else {
+    // Arrêt INCONDITIONNEL : mode manuel levé PUIS échéance annulée.
+    manualMode[pumpIndex] = false;
+    _manualDeadlineMs[pumpIndex].store(0);
+    applyPumpDuty(pumpIndex, 0);
+  }
 
   if (duty > 0) {
     systemLogger.info("Test manuel pompe " + String(pumpIndex + 1) + " activée (duty=" + String(duty) + ")");
   } else {
     systemLogger.info("Test manuel pompe " + String(pumpIndex + 1) + " désactivée");
+  }
+}
+
+// bug-171 : garde-fou des pompes en mode manuel. Exécuté en loopTask, à chaque
+// tour. Ne consomme PAS _calEntryInterruptRequested (one-shot du bloc d'entrée
+// en étalonnage) : calSessionOpen est persistant et suffit. La comptabilité n'est
+// pas touchée : les marches à crédit plancher (injection, assistant) restent
+// closes par updateManualInject() qui voit sa session encore active.
+void PumpControllerClass::tickManualPumpGuard(unsigned long now, const WaterPresence& water) {
+  for (int i = 0; i < 2; ++i) {
+    if (!manualMode[i] && _manualDeadlineMs[i].load() == 0) continue;
+    const uint32_t deadline = _manualDeadlineMs[i].load();
+    const ManualCut cut = evaluateManualCut(
+        manualMode[i], deadline != 0,
+        deadline != 0 && isManualRunExpired((uint32_t)now, deadline),
+        water.waterPresent, mqttCfg.calSessionOpen);
+    if (cut == ManualCut::kNone) {
+      // Échéance orpheline sans mode manuel : nettoyer — ⚠️ SEULEMENT si elle est
+      // EXPIRÉE (revue 2026-11-17, bug-171).
+      // setManualPump() arme dans l'ordre deadline → manualMode → duty. Si la
+      // loopTask s'intercale entre les deux premières écritures, elle voit
+      // `deadline != 0 && !manualMode[i]` sur une marche qui DÉMARRE, pas sur une
+      // orpheline. L'ancien nettoyage effaçait alors l'échéance qu'on venait
+      // d'armer ⇒ au tour suivant `manualOn && !deadlineArmed` ⇒ fail-closed ⇒
+      // ⛔ le test était coupé après ~100 ms au lieu de 10 s, sans raison.
+      // ⚠️ Le comportement restait SÛR (jamais fail-open), mais faux.
+      // ⇒ Une échéance expirée, elle, ne peut pas être une pose en cours.
+      if (!manualMode[i] && deadline != 0 && isManualRunExpired((uint32_t)now, deadline)) {
+        _manualDeadlineMs[i].store(0);
+      }
+      continue;
+    }
+    manualMode[i] = false;
+    _manualDeadlineMs[i].store(0);
+    applyPumpDuty(i, 0);
+    // Littéraux const char* : aucune allocation (ADR-0082). Numéro de pompe fixé
+    // par deux libellés distincts plutôt que par concaténation.
+    const bool first = (i == 0);
+    switch (cut) {
+      case ManualCut::kDeadline:
+        systemLogger.info(first ? "[Test] Pompe 1 arrêtée — échéance appareil atteinte"
+                                : "[Test] Pompe 2 arrêtée — échéance appareil atteinte");
+        break;
+      case ManualCut::kWaterLost:
+        // DOUBLON CONNU, ATTENDU ET ACCEPTÉ : si la marche est une injection manuelle,
+        // updateManualInject() journalisera aussi « INTERROMPUE » (+ alerte MQTT) au tour
+        // suivant. Cause : dans main.cpp, filtration.update() (:583) s'intercale entre
+        // updateManualInject() (:570) et PumpController.update() (:589). Les deux messages
+        // sont vrais ; ne pas y voir un bug. Coût : 2 lignes sur un journal de 8 Ko (~1 min).
+        // Corriger exigerait de toucher à l'ordre de la loop() : hors périmètre.
+        systemLogger.critical(first ? "[Sécurité] Pompe 1 manuelle COUPÉE — présence d'eau perdue"
+                                    : "[Sécurité] Pompe 2 manuelle COUPÉE — présence d'eau perdue");
+        mqttManager.publishAlert("manual_pump_cut_water",
+                                 "Pompe en marche manuelle coupée : présence d'eau perdue (filtration arrêtée).");
+        break;
+      case ManualCut::kCalSession:
+        systemLogger.critical(first ? "[Sécurité] Pompe 1 manuelle COUPÉE — session d'étalonnage ouverte"
+                                    : "[Sécurité] Pompe 2 manuelle COUPÉE — session d'étalonnage ouverte");
+        mqttManager.publishAlert("manual_pump_cut_calibration",
+                                 "Pompe en marche manuelle coupée : session d'étalonnage ouverte.");
+        break;
+      default:
+        break;
+    }
   }
 }

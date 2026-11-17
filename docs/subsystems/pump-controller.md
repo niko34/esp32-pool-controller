@@ -154,7 +154,9 @@ float getOrpDemandFlow() const;             // demande ORP = terme P borné
 float getOrpSustainableMlPerMin() const;    // miroir de getPhSustainableMlPerMin()
 bool isOrpLimitedByHourlyBudget() const;    // VERDICT « chlore borné par sa limite horaire »
 
-void setManualPump(int pumpIndex, uint8_t duty);  // test manuel
+void setManualPump(int pumpIndex, uint8_t duty,
+                   uint32_t budgetMs = kManualPumpTestMaxOnMs);  // marche manuelle BORNÉE (bug-171)
+void tickManualPumpGuard(unsigned long now, const WaterPresence& water);  // garde-fou, loopTask
 ```
 
 Voir [`pump_controller.h`](../../src/pump_controller.h).
@@ -174,9 +176,24 @@ Ordre par cycle :
 4bis. **Court-circuit maintenance** (v2.9.1) : `maintenanceInhibit` actif → `applyPumpDuty(0,0)` + `applyPumpDuty(1,0)` puis `return`. Gate identique à l'OTA, placée **avant** toute évaluation de dosage ([`pump_controller.cpp:798`](../../src/pump_controller.cpp:798)). Voir [Mode maintenance auto-guérison](#mode-maintenance-auto-guérison-v291).
 5. Refresh des fenêtres glissantes 1 h (`refreshDosingState`).
 6. Court-circuit capteurs : `!sensors.isInitialized()` → arrêt pompes.
-7. Gate `canDose()` (cf. ci-dessous) → arrêt pompes si non autorisé (mais respecte `manualMode[i]` pour ne pas couper un test développeur en cours).
+6bis. **v2.91.0 (bug-171)** — `tickManualPumpGuard(now, waterPresence)` : coupe toute pompe en marche manuelle sur échéance, perte de présence d'eau ou session d'étalonnage ouverte. `waterPresence` est calculée **ici** (hissée depuis la garde globale) et le garde-fou est placé **avant** les sorties « capteurs non initialisés » et « filtration coupée » : placé après, il serait inatteignable filtration coupée — le cas visé. Voir [Marche manuelle bornée](#marche-manuelle-bornée-bug-171-v2910).
+7. Gate `canDose()` (cf. ci-dessous) → arrêt pompes si non autorisé. ⚠️ **L'exemption `manualMode[i]` demeure** dans les blocs de suspension (l'assistant de débit en dépend), mais **sa signification a changé en v2.91.0** : ce n'est plus « le mode manuel échappe aux suspensions » mais « toute marche manuelle porte une échéance fournie par l'appelant, vérifiée par `tickManualPumpGuard()` hors de toute conjonction d'éligibilité » ([ADR-0129](../adr/0129-toute-marche-manuelle-porte-une-echeance-fournie-par-l-appelant.md)).
 7bis. **v2.27.0** — `tickPhIntegralAuto()` : **entretien du terme intégral pH, hors de toute conjonction de dosage**, après `tickPhGuardSurveillance()` et après la garde de présence d'eau. Porte aussi la confirmation R4 d'une restauration NVS en attente. Voir [Cadence, mémoire et charge observée de l'intégrale pH](#cadence-mémoire-et-charge-observée-de-lintégrale-ph-v2270). **v2.28.0** — `tickPhFeedforward()` est évalué **immédiatement avant** ce tick (ordre impératif : l'anti-windup du PI retranche le débit FF de son soutenable dans le **même** tour). Voir [Dose de base apprise](#dose-de-base-apprise--feedforward-ph-v2280).
 8. Pour pH puis ORP : calcul de l'erreur, anti-cycling start/stop, PID (demande de débit **moyen**), puis ordonnanceur d'impulsions (`evaluatePulseGate` → `planPulseWithCarry` (v2.22.0, [accumulateur sous-plancher](#accumulateur-sous-le-pouls-minimal-feature-073-v2220)) → `tickPulse`, [Dosage en proportionnel de temps](#dosage-en-proportionnel-de-temps-itération-2-v2210)), `applyPumpDuty()` (255 pendant le kick, amplitude calibrée sinon). *(`flowToDuty()`/`dutyToFlow()` supprimés en v2.21.0, [ADR-0043](../adr/0043-dosage-proportionnel-de-temps-amplitude-calibree.md).)*
+
+## Marche manuelle bornée (bug-171, v2.91.0)
+
+**Avant la v2.91.0**, `setManualPump()` posait `manualMode[i] = true` sans aucune échéance, et les trois blocs de suspension de `updateDosingCore()` épargnent `manualMode`. Une pompe lancée par `/pumpN/on` ne s'arrêtait donc que sur `/pumpN/off` — envoyé par un minuteur **du navigateur**. Téléphone en veille, onglet fermé ou Wi-Fi coupé : pompe à pleine puissance sans limite, et l'appareil « se croyait à l'arrêt ».
+
+**Contrat désormais** :
+
+- `setManualPump(i, duty, budgetMs)` : pour `duty > 0`, arme une échéance `_manualDeadlineMs[i]` (un seul mot `std::atomic<uint32_t>` par pompe, `0` = désarmée ; écrit par la tâche web, lu/purgé par `loopTask`). Ordre d'armement : échéance → `manualMode` → duty ; à l'arrêt l'inverse. `duty == 0` reste **inconditionnel**.
+- `budgetMs` par défaut = `kManualPumpTestMaxOnMs` = **10 000 ms** (test `/pumpN/on`, **zéro grâce**). Les marches qui possèdent **leur propre arrêt** (injections manuelles `/ph|orp/inject/start`, assistant de débit) passent `durée + kManualRunGraceMs` (**2 000 ms**) : l'échéance appareil n'y est qu'un filet, jamais le premier arrêt, pour laisser leur crédit plancher se faire.
+- `tickManualPumpGuard()` appelle la logique pure `evaluateManualCut()` ([`manual_pump_guard_logic.h`](../../src/manual_pump_guard_logic.h)) et coupe sur : **échéance** (`info`), **perte de présence d'eau** (`critical` + alerte MQTT `manual_pump_cut_water`), **session d'étalonnage** `mqttCfg.calSessionOpen` (`critical` + alerte `manual_pump_cut_calibration`). Libellés `const char*` (ADR-0082). Il ne consomme **pas** `_calEntryInterruptRequested` (one-shot) et ne touche pas à la comptabilité : l'injection / l'assistant sont soldés par `updateManualInject()` qui voit sa session encore active.
+- **Exclusivité** : démarrer une pompe en manuel **coupe l'autre** (warning). Trois motifs vrais : coût instantané du chemin test borné à **une** pompe (12,3 ml) ; un seul créneau propriétaire ⇒ une seule échéance, comptabilité non ambiguë ; aligné sur `409 assist_busy`. ⛔ **Ce n'est pas une garde anti-Cl₂** : cette justification a été retirée après calcul (la canalisation est pleine d'eau, capacité de dissolution ~10× la quantité émise ; diffusion ≈ 1 mm en 10 min), et l'exclusivité n'empêche de toute façon que le simultané alors que le geste redouté est séquentiel.
+- **Purge** : `manualMode` **et** échéance sont remis à zéro par l'OTA (`setOtaInProgress`) et à l'entrée en **mode maintenance** (log `warning`).
+- La route refuse en amont (`409 already_injecting`) si `manualInjectPh/Orp.active` ou `sFlowAssist.active` : la couper aurait faussé un crédit plancher ou un débit ml/min validé. ⛔ **Aucun refus sur plafond journalier** (décision produit : un test matériel doit toujours fonctionner).
+- **Doublon d'alerte connu, attendu et accepté** : quand la filtration s'arrête pendant une injection manuelle, `tickManualPumpGuard()` journalise la coupure puis `updateManualInject()` journalise aussi « INTERROMPUE » (+ alerte `ph|orp_injection_aborted`) au tour suivant, car `filtration.update()` s'intercale entre les deux dans `loop()`. Les deux messages sont vrais ; corriger exigerait de réordonner `loop()`.
 
 ## Mode maintenance auto-guérison (v2.9.1)
 
