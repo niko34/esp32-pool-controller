@@ -4,9 +4,10 @@
 // =============================================================================
 // Interrupteur de signature OTA — enveloppe NVS + miroir RAM (feature-151 D3-b2)
 // =============================================================================
-// ⛔ LOT INERTE : aucun appelant n'en tire un REFUS ni une ACCEPTATION neuve. Les
-// sites de web_routes_ota.cpp LISENT (décision journalisée) et CONSOMMENT
-// (« premier flash réussi »). L'ensemble des envois acceptés reste celui de 2.89.0.
+// D3-c : vocabulaire utilisateur « autorisation temporaire de mise à jour non signée »
+// (« activée » / « retirée »). Les sites de web_routes_ota.cpp LISENT la décision — une
+// autorisation activée LÈVE le refus d'authenticité (jamais la liaison d'empreinte) — et
+// CONSOMMENT l'autorisation (« premier flash réussi »).
 //
 // Stockage : UNE clé U32 (échéance, epoch UTC) dans le namespace `pool-ota` (celui de
 // D3-b1), ⛔ JAMAIS via config.cpp ni son mutex (interdit depuis `async_tcp`).

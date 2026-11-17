@@ -6373,7 +6373,7 @@
       } else {
         showToast(msg, 'success');
       }
-      if (ui.input) ui.input.value = '';
+      if (ui.input) { ui.input.value = ''; syncFilePick(ui.input); }
       // Succès : plus de reprise en attente, les deux imports redeviennent
       // disponibles via refreshHistoryImportButtons() dans le finally.
     } catch (err) {
@@ -6458,6 +6458,25 @@
     }))) return;
 
     await runHistoryImport({ chunks, index: 0, mode, points: points.length });
+  }
+
+  // Sélecteur de fichier `.pick` (DESIGN_SYSTEM §5) : l'<input type=file class="vh"> natif reste
+  // dans le DOM (focus clavier) et son <label class="pick"> suivant porte le nom choisi, en
+  // textContent. Les trois sélecteurs de data/index.html l'emploient ensemble.
+  const PICK_EMPTY_TEXT = "Appuyer pour choisir un fichier";
+  function syncFilePick(input) {
+    const lab = input && input.nextElementSibling;
+    if (!lab || !lab.classList.contains("pick")) return;
+    const f = input.files && input.files[0];
+    const span = lab.querySelector("span");
+    if (span) span.textContent = f ? f.name : PICK_EMPTY_TEXT;
+    lab.classList.toggle("has", !!f);
+  }
+  function bindFilePicks() {
+    document.querySelectorAll('input[type="file"].vh').forEach((inp) => {
+      inp.addEventListener("change", () => syncFilePick(inp));
+      syncFilePick(inp);
+    });
   }
 
   function bindHistoryBackup() {
@@ -10950,16 +10969,23 @@
 
   // Traduit les erreurs d'intégrité OTA (feature-026) en message français.
   // Retourne null si l'erreur n'est pas liée à l'intégrité.
-  function integrityErrorMessage(errJson, isFs) {
+  const OTA_REFUSAL_FALLBACK = "Mise à jour refusée. Consultez le journal (onglet Avancé).";
+  function integrityErrorMessage(errJson, isFs) { // isFs conservé : signature des appelants
     const code = errJson?.error;
     if (code === "integrity_digest_missing" || code === "integrity_digest_invalid") {
       return "Empreinte d'intégrité absente ou invalide — mise à jour refusée par sécurité.";
     }
+    // feature-151 D3-c : la PHRASE vient de l'appareil (elle dépend du site du refus : firmware
+    // intact, ou interface effacée). Aucun texte local ne peut la contredire. Valeurs relayées :
+    // affichées en textContent par les appelants, jamais en HTML.
     if (code === "integrity_mismatch") {
-      return (
-        "Échec de la vérification d'intégrité — image refusée, version actuelle conservée." +
-        (isFs ? " Réinstallez le filesystem." : "")
-      );
+      const m = typeof errJson?.message === "string" ? errJson.message.trim() : "";
+      return m || OTA_REFUSAL_FALLBACK;
+    }
+    // Refus d'authenticité : la phrase est dans `error`, le code machine dans `code`.
+    if (typeof errJson?.code === "string" && errJson.code.startsWith("sig_")) {
+      const e = typeof errJson.error === "string" ? errJson.error.trim() : "";
+      return e || OTA_REFUSAL_FALLBACK;
     }
     return null;
   }
@@ -10996,6 +11022,12 @@
     onlineUpdateBlocked = blocked;
   }
 
+  // feature-151 D3-c : marqueur « page à jour » envoyé avec CHAQUE envoi d'image (POST /update et
+  // /download-update). L'appareil le lit par PRÉSENCE seule (jamais sa valeur) et ne s'en sert que
+  // pour choisir la PHRASE d'un refus ; il n'influence jamais la décision.
+  const OTA_UI_MARKER_NAME = "ui";
+  const OTA_UI_MARKER_VALUE = "1";
+
   // feature-151 D3-a : manifeste + signature relayés tels quels à l'appareil (qui vérifiera).
   // Omis si vides : une release non signée s'installe comme avant. Jamais affichés.
   // Tout-ou-rien : les deux paramètres ou aucun.
@@ -11009,7 +11041,6 @@
   // 2 passager (memory, time, timeout, http, no_check et TOUT statut inconnu), 1 throttled,
   // 0 absent/deferred (muet). Le code brut va dans title et console, jamais dans le texte.
   const INSTALL_LABEL_DEFAULT = "Mettre à jour";
-  const INSTALL_LABEL_UNVERIFIED = "Mettre à jour sans vérification";
   function sigGravity(st, rs) {
     if (st === "absent" || st === "deferred") return 0;
     if (st === "unavailable" && rs === "throttled") return 1;
@@ -11020,7 +11051,10 @@
     "",
     "Appareil trop sollicité. Réessayez dans 1 minute.",
     "Signature non récupérée. Cliquez sur Vérifier pour réessayer.",
-    "Signature non récupérable pour cette version : rien ne sera vérifié.",
+    "Signature non récupérable pour cette version : l'appareil la refuserait.",
+    // 4 et 5 : BLOQUANTS (pré-contrôle avant installation), mêmes mots que le firmware refuserait.
+    "Cette version n'est pas signée : l'appareil la refuserait. Installation bloquée. Attendez la publication d'une version signée.",
+    "Je n'ai pas pu récupérer la signature de cette version (GitHub n'a pas répondu). Installation bloquée. Réessayez dans quelques minutes avec « Vérifier ».",
   ];
   let sigShownRank = 0; // gravité déjà affichée dans la séquence en cours (jamais dégradée)
   function writeSigNote(rank, rawReason, reset) {
@@ -11033,9 +11067,14 @@
       note.textContent = text;
       note.title = text && rawReason ? rawReason : "";
       note.hidden = !text;
+      // Blocage : même rendu que #update_refusal (callout --warn, role=alert) ; sinon simple indice.
+      const blocking = rank >= 4;
+      note.classList.toggle("callout", blocking);
+      note.classList.toggle("callout--warn", blocking);
+      note.setAttribute("role", blocking ? "alert" : "status");
     }
     const b = $("#install_update_btn");
-    if (b) b.textContent = rank >= 1 ? INSTALL_LABEL_UNVERIFIED : INSTALL_LABEL_DEFAULT;
+    if (b) b.textContent = INSTALL_LABEL_DEFAULT; // plus de « sans vérification » : l'appareil refuse sans signature
   }
   // /check-update : le pire des DEUX genres (les deux images s'installent). null = remise à zéro.
   function renderSigNote(data) {
@@ -11056,7 +11095,18 @@
   // côté firmware). Un échec n'est jamais silencieux : la ligne et le bouton le disent, puis
   // l'installation CONTINUE (un seul clic) sans paramètres. Une divergence de tag est un
   // unavailable passager (S3 : « non récupérée », jamais « non signée »).
+  // UN SEUL appel /ota-sig par genre (le firmware étrangle à 10 s par genre, horodatage posé AVANT
+  // la session TLS) : le pré-contrôle appelle fetchSigParams puis dépose le résultat ici ; l'appel
+  // d'envoi le CONSOMME au lieu de redemander. `sigOutcome` dit pourquoi un résultat est vide.
+  const sigCache = {};
+  const sigOutcome = {};
   async function fetchSigParams(kind, latestVersion) {
+    if (Object.prototype.hasOwnProperty.call(sigCache, kind)) {
+      const cached = sigCache[kind];
+      delete sigCache[kind];
+      return cached;
+    }
+    sigOutcome[kind] = "unavailable";
     let st = "unavailable";
     let rs = "http";
     try {
@@ -11072,6 +11122,7 @@
             writeSigNote(2, "tag");
             return ""; // sans paramètres
           }
+          sigOutcome[kind] = "relayed";
           return sigParams(d.manifest, d.signature);
         }
       }
@@ -11079,10 +11130,29 @@
       st = "unavailable";
       rs = "http";
     }
+    sigOutcome[kind] = st === "absent" ? "absent" : "unavailable";
     const r = sigGravity(st, rs);
     console.warn("[ota-sig]", kind, st, rs);
     if (r >= 1) writeSigNote(r, rs);
     return "";
+  }
+
+  // feature-151 D3-c : pré-contrôle AVANT tout envoi. L'appareil refuse une image sans signature ;
+  // inutile de télécharger puis d'échouer (et, pour le filesystem, d'abîmer l'état). Retourne
+  // null si les deux genres sont signés et récupérés, sinon "absent" (non signée) ou "unavailable"
+  // (non récupérée). Lecture d'état seule : l'envoi réel passe par fetchSigParams.
+  async function precheckSigs(latestVersion) {
+    delete sigCache.filesystem; delete sigCache.firmware; // jamais de reste d'une séquence interrompue
+    for (const kind of ["filesystem", "firmware"]) {
+      const params = await fetchSigParams(kind, latestVersion); // l'UNIQUE appel /ota-sig du genre
+      const why = sigOutcome[kind];
+      if (why === "absent" || why === "unavailable" || !params) {
+        delete sigCache.filesystem; delete sigCache.firmware;
+        return why === "absent" ? "absent" : "unavailable";
+      }
+      sigCache[kind] = params; // consommé par l'envoi, sans second appel
+    }
+    return null;
   }
 
   function bindGithubUpdate() {
@@ -11112,7 +11182,7 @@
         checkStatus.hidden = false;
       }
       if (info) info.style.display = "none";
-      if (installBtn) installBtn.disabled = true;
+      if (installBtn) { installBtn.disabled = true; installBtn.removeAttribute("aria-disabled"); }
       renderSigNote(null); // B6 : jamais les deux lignes ensemble, l'erreur du check prime
       if (progress) progress.style.display = "none";
       if (barWrap) barWrap.style.display = "";
@@ -11234,6 +11304,7 @@
     });
 
     installBtn?.addEventListener("click", async () => {
+      if (installBtn.getAttribute("aria-disabled") === "true") return; // bloqué : signature absente
       if (latestRelease && latestRelease.update_state && latestRelease.update_state !== "update_available") return;
       if (!latestRelease || !latestRelease.firmware_url || !latestRelease.filesystem_url) {
         showToast("Aucune mise à jour disponible.", "info");
@@ -11255,6 +11326,16 @@
       checkBtn.disabled = true;
       installBtn.disabled = true;
       sigShownRank = 0; // nouvelle séquence : une ancienne alerte ne survit pas
+      {
+        const blockedSig = await precheckSigs(latestRelease.latest_version);
+        if (blockedSig) {
+          writeSigNote(blockedSig === "absent" ? 4 : 5, "");
+          installBtn.disabled = false;
+          installBtn.setAttribute("aria-disabled", "true");
+          checkBtn.disabled = onlineUpdateBlocked;
+          return; // rien n'est envoyé
+        }
+      }
 
       progress.style.display = "block";
       if (barWrap) barWrap.style.display = "";
@@ -11281,6 +11362,7 @@
             "url=" + encodeURIComponent(latestRelease.filesystem_url) +
             "&digest=" + encodeURIComponent(latestRelease.filesystem_digest) +
             fsSig +
+            "&" + OTA_UI_MARKER_NAME + "=" + OTA_UI_MARKER_VALUE +
             "&restart=false",
         });
 
@@ -11335,6 +11417,7 @@
               "url=" + encodeURIComponent(latestRelease.firmware_url) +
               "&digest=" + encodeURIComponent(latestRelease.firmware_digest) +
               fwSig +
+              "&" + OTA_UI_MARKER_NAME + "=" + OTA_UI_MARKER_VALUE +
               "&restart=true",
           });
 
@@ -11840,8 +11923,8 @@
     // dépend désormais de `bindingState` — une divergence nom↔genre est une
     // heuristique sur un NOM, la comparaison d'empreinte (B4) établit une
     // LIAISON (ces octets-là, ce manifeste-là) — JAMAIS une authenticité :
-    // seul l'appareil vérifie la signature elle-même (en D1, il se contente
-    // de la journaliser). Quand `bindingState === "match"`, la liaison est
+    // seul l'appareil vérifie la signature elle-même (depuis D3-c, il
+    // REFUSE une image non authentique). Quand `bindingState === "match"`, la liaison est
     // établie : la notice reste affichée (elle informe) mais passe en "info"
     // — et c'est `otaManualSendBlocked` — pas cette fonction — qui décide de
     // ne plus bloquer dans ce cas précis. ⛔ Zéro mot ici qui suggérerait que
@@ -11902,16 +11985,16 @@
         case "skip":
           return;  // "ok"/"error" déjà rendus par handleSigChange
         case "no-file":
-          setSigHint("Facultative pour l'instant : sans elle, l'appareil n'a rien à vérifier.");
+          setSigHint("Obligatoire : livrée avec le .bin.");
           return;
         case "deduced":
           setSigHint(
-            `Facultative pour l'instant : sans elle, l'appareil n'a rien à vérifier. ` +
+            `Obligatoire : livrée avec le .bin. ` +
             `Type déduit du nom : « ${typeLabel(typeFromName)} ».`);
           return;
         case "defaulted":
           setSigHint(
-            `Facultative pour l'instant : sans elle, l'appareil n'a rien à vérifier. ` +
+            `Obligatoire : livrée avec le .bin. ` +
             `Type retenu par défaut : « ${typeLabel("firmware")} » (nom non reconnu). Renommez le fichier ` +
             `(ex. littlefs.bin) ou fournissez le .sig.`);
           return;
@@ -12103,10 +12186,11 @@
       sigParsed = result;
       sigReadState = "ok";
       // "lue", jamais "vérifiée" (revue de code, point C) : seul l'appareil
-      // vérifie la signature — en l'état (D1), il la JOURNALISE seulement,
-      // le refus d'une signature invalide n'est pas encore activé (D3).
+      // vérifie la signature. Depuis D3-c il REFUSE (phrases 3/4/6 du firmware : « Rien n'a été
+      // modifié ») une signature illisible, non reconnue ou d'un autre genre. Ici le .sig est
+      // seulement bien formé : ce texte ne promet donc rien d'autre que la vérification.
       setSigHintForFile(sf,
-        `Signature lue. L'appareil la journalise seulement : aucun refus pour l'instant.`);
+        `Signature lue. L'appareil la vérifie à l'envoi et refuse une image non conforme.`);
       await recomputeBinding();
     }
 
@@ -12185,11 +12269,12 @@
       // partie fichier — un champ placé après "update_file" se lit comme
       // absent (security-reviewer, feature-118/feature-151). "manifest" et
       // "signature" sont OMIS (jamais envoyés vides) quand aucun .sig valide
-      // n'est chargé : le firmware journalise alors kSkipped, un état
-      // légitime en D1/D2.
+      // n'est chargé : le firmware REFUSE alors (D3-c, phrase 1 : « Signature
+      // manquante… Rien n'a été modifié »).
       const formData = new FormData();
       formData.append("sha256", sha256Hex);
       formData.append("update_type", finalType);
+      formData.append(OTA_UI_MARKER_NAME, OTA_UI_MARKER_VALUE);  // D3-c : présence seule, avant le fichier
       if (sigParsed) {
         formData.append("manifest", sigParsed.manifest);
         formData.append("signature", sigParsed.signature);
@@ -12197,6 +12282,8 @@
       formData.append("update_file", selectedFile);  // TOUJOURS EN DERNIER
 
       status.textContent = "Préparation…";
+      const refusalBox = $("#update_refusal");
+      if (refusalBox) { refusalBox.hidden = true; refusalBox.textContent = ""; }
 
       const xhr = new XMLHttpRequest();
       let lastAnnounced = -1;  // Dernier palier de 10 % annoncé
@@ -12228,7 +12315,16 @@
           bar.style.width = "100%";
           bar.classList.add("error");
           bar.setAttribute("aria-valuenow", "100");
-          status.textContent = "✗ Échec : " + parseUpdateFailure(xhr.responseText, xhr.status);
+          // D3-c : la PHRASE de l'appareil, telle quelle, en callout (textContent, jamais HTML).
+          const cause = parseUpdateFailure(xhr.responseText, xhr.status);
+          const refusal = $("#update_refusal");
+          if (refusal) {
+            refusal.textContent = cause;
+            refusal.hidden = false;
+            status.textContent = "✗ Refusée par l'appareil.";
+          } else {
+            status.textContent = "✗ Échec : " + cause;
+          }
           status.classList.add("is-error");
           updateButtonState();  // revue de code, point D : jamais un `false` en dur
           file.disabled = false;
@@ -15163,6 +15259,7 @@
 
     bindUI();
     bindConfirmModal();
+    bindFilePicks();
     bindHistoryBackup();
     bindDetailActions();
     bindDashboardModeSelectors();  // feature-161 (lot A) : sélecteurs pH/ORP du tableau de bord

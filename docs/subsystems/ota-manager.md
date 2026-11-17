@@ -275,7 +275,7 @@ La vérification initiale de cette parade avait elle-même été faite à tort (
 
 <a id="d1--authenticite-par-signature-journalise-seulement-feature-151-verdict-security-reviewer-p1"></a>
 
-## D1 — authenticité par signature, JOURNALISE SEULEMENT (feature-151, verdict `security-reviewer` P1)
+## D1 — authenticité par signature (journalise seulement en D1/D2, REFUSE depuis D3-c ; feature-151, verdict `security-reviewer` P1)
 
 ⛔ **Principe directeur, à ne jamais diluer** : *le chemin d'ACCEPTATION doit être prouvé sur le
 terrain AVANT que le chemin de REFUS n'existe.* L'OTA est le **seul** canal de déploiement de ce
@@ -283,15 +283,15 @@ projet (pas de port série) : un firmware qui **exigerait** une signature, livr�
 cassé ou une clé perdue, rendrait l'appareil **définitivement non déployable** — l'exigence ne
 s'éprouve qu'au déploiement **suivant**, trop tard pour revenir en arrière une fois le firmware
 en place. D1 vérifie donc **tout** ce que D3 vérifiera, calcule le verdict complet, le
-**journalise** — et ⛔ **ne refuse rien**. Le découpage complet (D0 → D5) et son arbitrage
+**journalise** — et, **en D1/D2 seulement**, ne refuse rien. ✅ **Depuis D3-c l'appareil refuse** (section « D3-c » plus bas). Le découpage complet (D0 → D5) et son arbitrage
 `security-reviewer` P1 : [`specs/features/doing/feature-151-signature-de-l-image-ota.md`](../../specs/features/doing/feature-151-signature-de-l-image-ota.md).
 
 | # | Contenu | Statut |
 |---|---|---|
 | **D0** | Paire RSA-3072 générée **hors dépôt** par l'utilisateur, clé publique embarquée | Fait (2026-10-18) |
-| **D1** | Vérifie et **journalise seulement** — ⛔ jamais de refus. Outillage complet dans ce lot | **Ce lot** |
+| **D1** | Vérifie et **journalise seulement** (historique). Outillage complet | Fait |
 | **D2** | Preuve terrain : 4 combinaisons (script × page) × (firmware × FS) + 2 essais négatifs, tous journalisés | À venir — **condition d'existence de D3** |
-| **D3** | Refus **activé**. Plancher inerte à 0.0.0. Interrupteur de secours (bouton d'urgence) | Hors périmètre de ce lot |
+| **D3** | Refus **activé** (D3-c, **livré**, [ADR-0128](../adr/0128-l-appareil-refuse-une-image-ota-non-authentique.md)). Plancher inerte à 0.0.0. Autorisation temporaire de mise à jour non signée (ex-« interrupteur ») | **D3-c livré** ; campagne de terrain **NON faite** |
 | **D4** | Bump sans effet, 4 déploiements acceptés — premier déploiement réellement filtré | Hors périmètre |
 | **D5** | Relèvement du plancher (geste explicite) | Hors périmètre |
 
@@ -303,8 +303,8 @@ SHA-256 conforme **gratuitement** (GitHub le calcule lui-même à l'upload de l'
 ne peut produire la signature**, qui exige la clé privée restée hors dépôt. S'y ajoute la
 protection contre le **retour en arrière** vers une version vulnérable (plancher de version).
 
-⛔ **Ce que cette signature NE ferme PAS : le vecteur « jeton admin volé ».** L'interrupteur de
-secours prévu en D3 (indispensable contre une clé perdue, ou un défaut du vérificateur lui-même)
+⛔ **Ce que cette signature NE ferme PAS : le vecteur « jeton admin volé ».** L'autorisation temporaire
+de secours (D3) (indispensable contre une clé perdue, ou un défaut du vérificateur lui-même)
 est posable par une requête **authentifiée** : un porteur du jeton admin fait **deux requêtes au
 lieu d'une** pour obtenir l'exécution de code arbitraire, au lieu d'une seule aujourd'hui.
 **Ne jamais présenter cette feature comme fermant ce vecteur-là** — le gain réel est la chaîne
@@ -326,8 +326,7 @@ vérification, au même point relatif — avant toute prise de propriété de la
 Dans les deux cas, une fonction interne commune (`computeOtaAuthenticityVerdict`, statique dans
 `web_routes_ota.cpp`) calcule le verdict ; `logOtaAuthenticityVerdict()` le journalise (`WARNING`
 si D3 l'aurait refusé, `INFO` sinon, préfixe `[feature-151 D1]`, rappelant explicitement
-qu'**aucun refus n'est appliqué** — pour qu'un opérateur lisant un `WARNING` ne croie pas à tort
-qu'un flash a été bloqué).
+qu'un refus est appliqué ou non (depuis D3-c : `refusé : oui|non`).)
 
 ### Le manifeste et sa re-sérialisation canonique
 
@@ -514,7 +513,7 @@ jour quelque chose à vérifier. **Champs additifs**, non encore exploités côt
 ⛔ **Rien n'est refusé** : tout est journalisé. Décision complète : [ADR-0122](../adr/0122-socle-decision-ota-genre-empreinte-relais-sig.md).
 
 - **Autorité du genre signé** (`src/ota_kind_authority_logic.*`) : si le verdict est `kValid`, le genre du manifeste choisit la partition. ⚠️ **No-op aujourd'hui** : `combineOtaAuthenticityVerdict` rend `kKindMismatch` si le genre signé diffère de celui de l'appelant, donc le genre effectif ne change jamais. Le **drapeau de désaccord** est journalisé même hors `kValid`.
-- **Source unique d'empreinte** (`src/ota_digest_source_logic.h`) : avec une signature valide, l'empreinte attendue vient du **manifeste**. Un bloc « `TOLÉRANCE D3-a` » (4 occurrences dans `web_routes_ota.cpp`, 0 attendu en D3-c) absorbe la divergence manifeste ↔ `digest` en `CRITICAL`.
+- **Source unique d'empreinte** (`src/ota_digest_source_logic.h`) : avec une signature valide, l'empreinte attendue vient du **manifeste**. Les 4 blocs « `TOLÉRANCE D3-a` » ont été **supprimés en D3-c** : la divergence manifeste ↔ `digest` est désormais refusée ; le repli d'empreinte illisible est un **refus précoce** (il était muet).
 - **Relais du `.sig`** (`src/ota_sig_relay_logic.*`) — ⚠️ *remplacé en v2.88.0 par le relais à la demande, voir [bug-176](#bug-176-v2880--relais-sig-à-la-demande-adr-0123)* : `/check-update` lisait `firmware.bin.sig` / `littlefs.bin.sig` après `heap_caps_free(rawBuffer)`, dans une **session TLS séparée** par fichier, **non bloquante** (7 cas d'échec ⇒ champs vides + `200`). Corps borné à `kOtaSigFetchMaxBytes` = **1024 o** ; seul le contenu **canonique** est relayé. Précédé du prédicat `otaTlsGateClosed()` (le 503 de `refuseIfTlsGateClosed` est inchangé ; le relais, lui, se saute).
 - **Délais TLS** (`constants.h`) : `kOtaTlsConnectTimeoutMs` = 3000, `kOtaTlsHandshakeTimeoutSec` = **5** (secondes, pas ms), `kOtaTlsSocketTimeoutMs` = 3000, posés sur les **trois** sessions (les deux `.sig` et le GET API). `esp_task_wdt_reset()` avant chaque GET. Borne qui compte : la plus longue attente **sans acquitter** le watchdog = `.sig` via redirection (2 connexions) = `2×(3+5)+3` = **19 s** < 30 s, verrouillée par `static_assert`. DNS non bornable.
 - `kOtaCheckJsonBudgetBytes` est **inchangé** (il borne le parse de la réponse GitHub, qui ne grossit pas).
@@ -773,9 +772,9 @@ La sonde d'index est `fsPathResolvableIfHeapAllows()` (`fs_guard.*`) : **`.gz` d
 
 [`src/ota_recovery_page.cpp`](../../src/ota_recovery_page.cpp) est **généré et versionné** (`node tools/gen_recovery_page.js`, source `ota_recovery_page.html.in` + extraits de `data/app.js` : SHA-256 et parseur de `.sig`, une seule implémentation). `tools/check_recovery_page_generated.sh` rougit à la dérive ; `check_release_artefacts.sh` le lance et arrête `/release`. Toute modification du SHA-256 ou de `parseSigFile` dans `data/app.js` impose de régénérer. Tests natifs : `test/test_native_ota_recovery/`.
 
-## Interrupteur de signature (feature-151 D3-b2, [ADR-0125](../adr/0125-l-expiration-de-l-interrupteur-de-signature-se-mesure-sur-un-horodatage-nvs.md))
+## Autorisation temporaire de mise à jour non signée (ex-« interrupteur », feature-151 D3-b2/D3-c, [ADR-0125](../adr/0125-l-expiration-de-l-interrupteur-de-signature-se-mesure-sur-un-horodatage-nvs.md))
 
-⛔ **Lot INERTE.** L'interrupteur **journalise, il ne refuse ni n'accepte rien** : l'ensemble des envois acceptés est celui de 2.89.0, l'appareil reste en mode D1 (« D3 refuserait : oui/non — AUCUN refus appliqué »). Il prépare D3-c, où il pourra lever l'exigence de signature pendant une fenêtre bornée. Routes : [API.md](../API.md#interrupteur-de-signature-ota-feature-151-d3-b2-adr-0125).
+✅ **Dispositif ACTIF depuis D3-c** (fin du « lot inerte » de D3-b2). Vocabulaire : « interrupteur » devient **« autorisation temporaire de mise à jour non signée »**, « armé / désarmé » devient **« activée / retirée »**. Les identifiants de code (`otaSignatureSwitch*`, route `/ota-signature-switch`, champ JSON `armed`, `kOtaSignatureSwitchNvsKey`) **ne changent pas**. Tant qu'elle est activée, les refus de signature ne sont **pas appliqués** (`switchWaived`) ; sinon l'appareil refuse (voir « D3-c » ci-dessous). Routes : [API.md](../API.md#autorisation-temporaire-de-mise-à-jour-non-signée-ex-interrupteur-feature-151-d3-b2d3-c-adr-0125).
 
 ### Stockage et décision
 
@@ -801,7 +800,7 @@ La sonde d'index est `fsPathResolvableIfHeapAllows()` (`fs_guard.*`) : **`.gz` d
 
 `otaSignatureSwitchInit()` (setup, avant `server->begin()`) · `Read()` (relit la NVS, honore le verrou) · `Peek()` · `Arm(&until)` (`kArmed` / `kNoClock` / `kWriteFailed`, **un seul appelant** : la route d'armement) · `Clear()` · `Consume(sessionWasWaived)` · `ResidualEpoch()` · `RearmsOnReboot()`.
 
-- **Jamais armé automatiquement** ; **absent de la page de secours** (motif interdit dans `gen_recovery_page.js`).
+- **Jamais activée automatiquement** ; **absent de la page de secours** (motif interdit dans `gen_recovery_page.js`).
 - **Désarmement (C7)** : verrou RAM « fermé » posé **avant** le `remove()`, honoré par `Read()` ; si l'effacement échoue, repli `putUInt(..., 0)` ; si tout échoue, journal **CRITICAL**, le 500 rend l'état réel. Résiduel assumé : une échéance qui subsiste en NVS ré-armerait au redémarrage (≤ 60 min).
 - **Consommation** : `Consume()` à **exactement 3 sites** de `web_routes_ota.cpp`, **après** `Update.end(true)` (ou validation complète côté filesystem de `/download-update`) : `/update` (deux genres), `/download-update` filesystem, `/download-update` firmware. Lecture à `index==0` de `/update` et à l'entrée de `/download-update`, **avant** toute écriture flash.
 - **Ordre des gardes (C8)** : la décision est **capturée** au début de session (`g_uploadSwitchWaived`) et **jamais relue pour accorder**. Une session commencée « exigée » ne devient jamais « levée » ; une expiration ou un désarmement en cours de transfert ne révoquent pas, mais un WARNING le journalise. Figé par `[G7]` dans `test_native_ota_order_guard`.
@@ -809,14 +808,28 @@ La sonde d'index est `fsPathResolvableIfHeapAllows()` (`fs_guard.*`) : **`.gz` d
 
 ### Liaison genre + version
 
-[`ota_version_request_logic.h`](../../src/ota_version_request_logic.h) (PURE, fichier distinct : `ota_manifest_logic.cpp` reste intact). Compare la version **déclarée par le manifeste** à la version **demandée**. Résultat : `kNoReference` (silencieux), `kReferenceUnparsable`, `kAgree` (silencieux), `kDisagree`. **Aucun refus.** La « version demandée » est le **tag mémorisé par `/check-update`** ; le paramètre **facultatif** `expected_version` ne sert que sans tag mémorisé. ⛔ Elle ne vient **jamais** d'une sous-chaîne d'URL ([ADR-0126](../adr/0126-la-version-demandee-ne-vient-jamais-d-une-sous-chaine-d-url.md)). ⚠️ Ce n'est **pas** un contrôle d'authenticité : le tag vient de GitHub, la chaîne dont la feature se défie, et il est **périmé** après un envoi direct (`ota_update.sh`) — un « désaccord » peut être un faux positif.
+[`ota_version_request_logic.h`](../../src/ota_version_request_logic.h) (PURE, fichier distinct : `ota_manifest_logic.cpp` reste intact). Compare la version **déclarée par le manifeste** à la version **demandée**. Résultat : `kNoReference` (silencieux), `kReferenceUnparsable`, `kAgree` (silencieux), `kDisagree`. ⛔ **Jamais un motif de refus** (D3-c compris : la référence périme après un envoi direct). La « version demandée » est le **tag mémorisé par `/check-update`** ; le paramètre **facultatif** `expected_version` ne sert que sans tag mémorisé. ⛔ Elle ne vient **jamais** d'une sous-chaîne d'URL ([ADR-0126](../adr/0126-la-version-demandee-ne-vient-jamais-d-une-sous-chaine-d-url.md)). ⚠️ Ce n'est **pas** un contrôle d'authenticité : le tag vient de GitHub, la chaîne dont la feature se défie, et il est **périmé** après un envoi direct (`ota_update.sh`) — un « désaccord » peut être un faux positif.
 
 ### Libellés de journal (nouveaux ou modifiés)
 
-- Verdict : `… — D3 refuserait : oui|non` suivi, **interrupteur armé**, de ` — levé par l'interrupteur (reste N min)` (si D3 refuserait) ou ` — interrupteur armé (reste N min)`. ⛔ **Verdict et levée restent distincts (C4)** : `wouldReject` ne dépend que du verdict ; il pilote seul le niveau **WARNING** et la ligne des **octets canoniques** (sinon une signature invalide armée passerait en INFO et perdrait sa trace). Désarmé : ligne **inchangée**.
-- `[feature-151 D3-b2] /download-update — désaccord de version : le manifeste déclare « 2.88.0 », la release demandée est « 2.89.0 » (release vérifiée | paramètre expected_version) — aucun refus appliqué (D3-b2)` (WARNING) ; `… référence de version illisible (…)`.
-- Interrupteur : `ARMÉ pour 60 min (échéance …) — MQTT connecté | NON connecté (témoin absent)` (WARNING) ; `désarmé` (INFO) ; `consommé (premier flash réussi)` (INFO) ; `plus armé à la fin du transfert (expiré ou désarmé en cours)` (WARNING) ; `DÉSARMEMENT NVS ÉCHOUÉ` (CRITICAL).
+- Verdict (D3-c) : `[feature-151 D3-c] <route> — authenticité OTA : <verdict> — refusé : oui|non` suivi, **autorisation activée**, de ` — levé par l'autorisation temporaire (reste N min)` (si le verdict aurait été refusé) ou ` — autorisation temporaire activée (reste N min)`. ⛔ **Verdict et levée restent distincts (C4)** : `wouldReject` ne dépend que du verdict ; il pilote seul le niveau **WARNING** et la ligne des **octets canoniques** (sinon une signature invalide armée passerait en INFO et perdrait sa trace). Désarmé : ligne **inchangée**.
+- `[feature-151 D3-b2] /download-update — désaccord de version : le manifeste déclare « 2.88.0 », la release demandée est « 2.89.0 » (release vérifiée | paramètre expected_version) — journalisé seulement` (jamais un refus) (WARNING) ; `… référence de version illisible (…)`.
+- Autorisation temporaire : `Autorisation temporaire de mise à jour non signée ACTIVÉE pour 60 min (échéance …) — MQTT connecté | NON connecté (témoin absent)` (WARNING) ; `… retirée` (INFO) ; `… consommée (premier flash réussi)` (INFO) ; `… plus activée à la fin du transfert (expirée ou retirée en cours)` (WARNING) ; échec de retrait NVS (CRITICAL). Refus d'un envoi : `Mise à jour OTA refusée : <phrase>` (CRITICAL).
 - **Deux messages corrigés** (faux depuis D3-b1) : `Impossible de remonter le filesystem après la mise à jour…` dit désormais que la page de secours est servie et répare **sur place, sans redémarrage** ; `Filesystem non remonté après la mise à jour (attendu)…` (site de succès de `/download-update`) dit que la page de secours est servie **jusqu'au redémarrage planifié**, qui remontera le filesystem — car sur ce site le redémarrage **est** planifié.
+
+## D3-c — l'appareil REFUSE une image non authentique (feature-151, [ADR-0128](../adr/0128-l-appareil-refuse-une-image-ota-non-authentique.md))
+
+✅ **Dispositif ACTIF.** Jusqu'à D3-b2 tout était inerte (vérifier, journaliser, ne rien appliquer). Depuis D3-c, un verdict d'authenticité autre que `kValid` est **refusé avant toute écriture** (avant les trois `setOtaInProgress(true)`), sauf autorisation temporaire activée.
+
+- **Module pur** [`ota_refusal_messages.{h,cpp}`](../../src/ota_refusal_messages.h) (ADR-0017). ⭐ **Séparation typée** : `otaRefusalDecide(verdict)` → `{rejected, http, code}` **sans aucun paramètre de page** ; `otaRefusalPhrase(verdict, pageAnnouncedVersion, site)` → la phrase. Le marqueur POST `ui` (présence seule, jamais comparé ni stocké) est **incapable par construction** d'atteindre la décision : l'option « le firmware tolère une page ancienne » est fermée par le type, pas par surveillance.
+- **Table** (verdict → HTTP / `code`) : absente 403 `sig_absente` ; malformée 400 `sig_malformee` ; invalide 403 `sig_invalide` ; vérification impossible 503 `sig_verif_impossible` ; genre discordant **415** `sig_genre_discordant` (409 est pris par « envoi concurrent ») ; plancher 403 `sig_sous_plancher` (**inatteignable**). `/update` : `text/plain` `FAIL: <phrase>`, **sans** `code` ; `/download-update` : JSON `error` + `code` (dissymétrie assumée). Corps et phrases : [API.md](../API.md#refus-d-une-image-non-authentique-feature-151-d3-c).
+- **Place des refus** : en sortie des blocs d'authenticité déjà figés (gardes `[G5]` `/update`, `[G6]` `/download-update`), avant toute écriture. Le repli « empreinte du manifeste illisible » devient un refus précoce.
+- **Trois sites tardifs** (liaison image↔manifeste rompue après écriture) : `400` texte / `422 integrity_mismatch`, formats **figés**, phrases 7 (firmware : image de secours perdue) et 8 (interface effacée : page de secours). ⚠️ « Rien n'a été modifié » n'y figure **jamais**.
+- ⛔ **Jamais refusés** : désaccord de version, plancher (aucun).
+- **Journal** : `Mise à jour OTA refusée : <phrase>` (`CRITICAL`, tampon de pile 300 o, pas de `String`) ; la phrase la plus longue fait 199 octets, tout tampon doit faire ≥ 256 o.
+- **Garde CI** [`tools/check_ota_manager_isolated.sh`](../../tools/check_ota_manager_isolated.sh) (job `ota-manager-isole`) : aucun fichier hors `ota_manager.{h,cpp}` ne référence `otaManager`, `ota_manager.h` ni `ArduinoOTA`. ⚠️ [ADR-0022](../adr/0022-verification-integrite-ota.md) déclare encore `ArduinoOTA` actif alors qu'il n'a **aucun appelant** : le rebrancher contournerait **totalement** le refus. Consigné dans l'ADR-0128 (ADR-0022 est immuable).
+- **Interface** : affiche la phrase de l'appareil ; pré-contrôle avant envoi (signature absente **ou** non récupérée : deux messages distincts) ; **un seul** appel `GET /ota-sig` par genre. Voir [page-settings.md](../features/page-settings.md).
+- ⚠️ **Campagne de terrain NON faite** : douze essais (G0 à F11) restent à mener, dont l'**expiration naturelle à 60 min**, jamais observée sur l'appareil. D4 et D5 restent ouverts.
 
 ## Interaction avec `pump_controller`
 

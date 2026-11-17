@@ -6,11 +6,10 @@
 // security-reviewer P1, condition 9). Header sans dépendance
 // Arduino/mbedtls → testable en natif (ADR-0017).
 //
-// ⛔ D1 N'APPELLE JAMAIS otaAuthenticityIsRejected() POUR REFUSER — il ne
-// fait que choisir le NIVEAU de journalisation. D3 (hors périmètre de ce
-// lot) sera le PREMIER appelant à conditionner un refus sur ce verdict — le
-// combinateur lui-même ne change pas d'une virgule entre D1 et D3
-// (condition 10 : le diff D1→D3 ne touche QUE le prédicat de décision).
+// D3-c : le refus est appliqué par web_routes_ota.cpp via otaRefusalDecide()
+// (ota_refusal_messages.h), fonction du verdict seul ; otaAuthenticityIsRejected()
+// ne choisit que le NIVEAU de journalisation. Le combinateur n'a pas changé d'une
+// virgule (condition 10).
 //
 // La vérification cryptographique elle-même (mbedtls, non testable en natif)
 // vit dans src/ota_signature.*. Son résultat est injecté ici en PARAMÈTRE

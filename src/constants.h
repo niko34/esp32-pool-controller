@@ -191,7 +191,7 @@ constexpr const char* kOtaNvsNamespace = "pool-ota";   // namespace NVS DÉDIÉ 
 constexpr const char* kOtaRecoveryNvsKey = "fsupd";            // clé du marqueur « mise à jour du filesystem en cours »
 constexpr const char* kOtaRecoveryProbePath = "/index.html";   // sondé en .gz D'abord (minify.js n'écrit que les .gz) — lié par tools/check_fs_probe_paths.sh
 
-// feature-151 D3-b2 — interrupteur de signature (gardes INERTES : journalise, ne refuse rien)
+// feature-151 D3-b2/D3-c — autorisation temporaire de mise à jour non signée (lève le refus d'authenticité)
 constexpr const char* kOtaSignatureSwitchNvsKey = "sigsw";                    // clé NVS (U32) : échéance d'armement, epoch UTC en secondes — namespace kOtaNvsNamespace
 constexpr uint32_t kOtaSignatureSwitchWindowSec = 3600;                       // 60 min - durée de l'armement ; AUSSI borne HAUTE de l'échéance acceptée (C1)
 constexpr const char* kOtaSignatureSwitchRoutePath = "/ota-signature-switch";          // GET état / POST désarme
@@ -4015,9 +4015,9 @@ constexpr const char* kOtaSha256MissingMessage =
 // ============================================================================
 // OTA AUTHENTICITY CONSTANTS - Signature à clé publique (feature-151 D1)
 // ============================================================================
-// ⛔ D1 vérifie et JOURNALISE SEULEMENT — AUCUN refus n'est encore appliqué
-// sur ces constantes (voir src/web_routes_ota.cpp, computeOtaAuthenticityVerdict).
-// Le refus arrive en D3 (hors périmètre de ce lot).
+// D1 a introduit la vérification ; D3-c APPLIQUE le refus (src/ota_refusal_messages.*,
+// web_routes_ota.cpp, computeOtaAuthenticityVerdict calcule le verdict).
+// Le bloc de clé ci-dessous est inchangé.
 
 // ADR-0098 : toute constante déclare sa source. SOURCE DE CETTE CLÉ : paire
 // RSA 3072 bits générée par l'UTILISATEUR, HORS DÉPÔT, le 2026-10-18

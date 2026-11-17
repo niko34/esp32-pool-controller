@@ -2,6 +2,27 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [2.90.0] - 2026-11-16
+
+### Firmware
+- ⚠️ **Changement de comportement majeur : l'appareil REFUSE désormais une image OTA non authentique** (`POST /update` et `POST /download-update`). Jusqu'ici il vérifiait la signature, journalisait, et n'appliquait aucun refus. Refus **avant toute écriture** : absente `403 sig_absente`, malformée `400 sig_malformee`, invalide `403 sig_invalide`, vérification impossible `503 sig_verif_impossible`, genre discordant `415 sig_genre_discordant` (le `code` JSON n'existe que sur `/download-update` ; `/update` répond `text/plain` `FAIL: …`). Les trois refus tardifs (liaison image↔manifeste, après écriture) gardent leurs formats `400` / `422 integrity_mismatch`. [ADR-0128](docs/adr/0128-l-appareil-refuse-une-image-ota-non-authentique.md).
+- ⛔ **Jamais refusés** : le **désaccord de version** et le **plancher** (aucun). Le retour arrière manuel par une image signée reste possible.
+- **Séparation typée** (`src/ota_refusal_messages.{h,cpp}`, module pur) : la décision de refus ne reçoit aucun paramètre de page ; le marqueur de page ne change que la phrase.
+- **Neuf phrases de refus**, en français, dont « Rien n'a été modifié » **uniquement** sur les refus précoces.
+- Les 4 blocs « TOLÉRANCE D3-a » sont supprimés ; le repli d'empreinte illisible devient un refus précoce (il était muet).
+- **Vocabulaire** : « interrupteur de signature » devient « autorisation temporaire de mise à jour non signée » (journal, doc) ; entité Home Assistant renommée **« Mise à jour non signée autorisée »** (`unique_id` et topic inchangés).
+- 🔴 **Limite** : le vecteur « jeton administrateur volé » reste ouvert ; l'autorisation temporaire le rouvre en deux requêtes.
+- **CI** : nouveau job `ota-manager-isole` (`tools/check_ota_manager_isolated.sh`) — rien hors `ota_manager.*` ne référence `otaManager` / `ArduinoOTA`, qui contourneraient totalement le refus.
+- ⚠️ **Campagne de terrain NON faite** : douze essais (G0 à F11) restent à mener, dont l'expiration naturelle à 60 min, jamais observée sur l'appareil. D4 et D5 restent ouverts.
+
+### Fonctionnalités
+- **Interface** : la phrase de refus de l'appareil s'affiche telle quelle dans un encadré ; pré-contrôle avant envoi (installation bloquée si la signature est absente **ou** non récupérée, deux messages distincts) ; le champ Signature est **obligatoire** ; un seul appel `/ota-sig` par genre ; les trois sélecteurs de fichier sont en français ; page de secours à 16 625 o.
+
+### Documentation
+- `docs/API.md`, `docs/subsystems/ota-manager.md`, `docs/MQTT.md`, `docs/subsystems/mqtt-manager.md`, `docs/UPDATE_GUIDE.md` (procédure de réparation, trousse signée), `docs/features/page-settings.md`, `docs/user/src/guide-utilisation.html`, `docs/BUILD.md` ; [ADR-0128](docs/adr/0128-l-appareil-refuse-une-image-ota-non-authentique.md) (consigne que ADR-0022 déclare encore `ArduinoOTA` actif sans appelant).
+
+---
+
 ## [2.89.1] - 2026-11-16
 
 ### Firmware

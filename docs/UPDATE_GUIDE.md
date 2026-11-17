@@ -389,22 +389,41 @@ prouve rien sur l'origine, seulement que ce manifeste décrit bien ces octets. L
 
 Si ni l'appareil **ni** votre poste n'ont accès à internet, il n'existe pas de procédure de secours par le navigateur : les fichiers ne peuvent pas être téléchargés. Il faut obtenir les fichiers autrement (autre connexion, par exemple le partage de connexion d'un téléphone) ou passer par le câble USB (`./deploy.sh fs`). Ce cas n'est **jamais** résolu en acceptant une image non signée.
 
-### Interrupteur de signature (feature-151 D3-b2, **inerte**)
+### Autorisation temporaire de mise à jour non signée (feature-151 D3-b2/D3-c, **active**)
 
-L'appareil expose un **interrupteur de signature** destiné à D3-c. Dans cette version il **n'impose et ne lève rien** : il change seulement une mention du journal (« D3 refuserait : … interrupteur armé »). Il s'administre **par l'API**, jamais par l'interface ni par la page de secours :
+✅ **Depuis D3-c, l'appareil REFUSE une image dont la signature manque, est illisible, fausse, ou d'un autre type** ([ADR-0128](adr/0128-l-appareil-refuse-une-image-ota-non-authentique.md)). Cette **autorisation temporaire** est la seule façon de lever ce refus pour un envoi. Elle s'administre **par l'API**, jamais par l'interface ni par la page de secours :
 
 ```bash
-curl -X POST -H "X-Auth-Token: <jeton>" http://poolcontroller.local/ota-signature-switch/arm   # arme 60 min
+curl -X POST -H "X-Auth-Token: <jeton>" http://poolcontroller.local/ota-signature-switch/arm   # active 60 min
 curl -H "X-Auth-Token: <jeton>" http://poolcontroller.local/ota-signature-switch               # état
-curl -X POST -H "X-Auth-Token: <jeton>" http://poolcontroller.local/ota-signature-switch       # désarme
+curl -X POST -H "X-Auth-Token: <jeton>" http://poolcontroller.local/ota-signature-switch       # retire
 ```
 
-- **Jamais armé automatiquement** ; **expire seul au bout de 60 min** (mesuré sur une échéance en mémoire non volatile, pas sur le temps écoulé depuis le démarrage) ; **consommé au premier flash réussi** ; la clé absente, la mémoire illisible ou l'heure non valide valent **« signature exigée »**.
-- L'armement répond `403` si l'authentification est coupée ou au premier démarrage, et `409` si l'heure n'est pas valide.
-- Si le désarmement échoue (`500`), la réponse indique `rearms_on_reboot` : un redémarrage **peut ré-armer** l'interrupteur (≤ 60 min). `"unknown"` ne signifie **pas** « non ».
-- Une entité Home Assistant **« Piscine Signature OTA Levée »** (diagnostic) en donne un témoin. ⚠️ Ce témoin **n'est pas une preuve** (voir [MQTT.md](MQTT.md#topics-et-entité-ajoutés-en-feature-151-d3-b2-interrupteur-de-signature-ota)) ; seul l'historique de Home Assistant garde la trace d'un passage à `on`.
+- **Jamais activée automatiquement** ; **expire seul au bout de 60 min** (mesuré sur une échéance en mémoire non volatile, pas sur le temps écoulé depuis le démarrage) ; **consommé au premier flash réussi** ; la clé absente, la mémoire illisible ou l'heure non valide valent **« signature exigée »**.
+- L'activation répond `403` si l'authentification est coupée ou au premier démarrage, et `409` si l'heure n'est pas valide.
+- Si le désarmement échoue (`500`), la réponse indique `rearms_on_reboot` : un redémarrage **peut réactiver** l'autorisation (≤ 60 min). `"unknown"` ne signifie **pas** « non ».
+- Une entité Home Assistant **« Mise à jour non signée autorisée »** (diagnostic, ex-« Piscine Signature OTA Levée ») en donne un témoin. ⚠️ Ce témoin **n'est pas une preuve** (voir [MQTT.md](MQTT.md#topics-et-entité-ajoutés-en-feature-151-d3-b2-interrupteur-de-signature-ota)) ; seul l'historique de Home Assistant garde la trace d'un passage à `on`.
 
-🔴 **Ce que l'interrupteur NE protège PAS** : le vecteur **« jeton administrateur volé » reste ouvert**, et l'interrupteur le **rouvre en deux requêtes au lieu d'une** (armer, puis envoyer l'image). Le jeton est statique et en clair en NVS ; quiconque le détient peut armer. Ne pas lire cette fonction comme une défense : c'est une **fenêtre bornée et observable**. Voir [ADR-0125](adr/0125-l-expiration-de-l-interrupteur-de-signature-se-mesure-sur-un-horodatage-nvs.md).
+🔴 **Ce que le refus NE protège PAS** : le vecteur **« jeton administrateur volé » reste ouvert**, et l'autorisation temporaire le **rouvre en deux requêtes au lieu d'une** (activer, puis envoyer l'image). Le jeton est statique et en clair en NVS ; quiconque le détient peut armer. Ne pas lire cette fonction comme une défense : c'est une **fenêtre bornée et observable**.
+
+<a id="appareil-refuse-une-mise-à-jour-non-signée"></a>
+
+### L'appareil refuse une mise à jour : que faire ? (D3-c)
+
+**La phrase à donner à un client** : *« L'appareil n'accepte que les mises à jour signées, c'est volontaire. Il faut envoyer le fichier d'image (`.bin`) **et** son fichier de signature (`.sig`), téléchargés ensemble depuis la même version publiée. Votre régulation n'est jamais interrompue par ce refus. »*
+
+**Lire le message** : l'interface affiche la phrase de l'appareil (neuf phrases, [API.md](API.md#refus-d-une-image-non-authentique-feature-151-d3-c)). « **Rien n'a été modifié** » n'apparaît que pour un refus avant écriture ; si le message dit que l'interface a été effacée ou que l'image de secours est perdue, l'écriture avait commencé.
+
+**Trousse signée à garder sous la main** : les quatre fichiers `firmware.bin`, `firmware.bin.sig`, `littlefs.bin`, `littlefs.bin.sig` **de la version installée** (et idéalement de la précédente). Ils servent à réparer sans internet côté appareil (voir « Interface à restaurer » plus haut : téléchargez-les **avant** de rejoindre le point d'accès).
+
+**Quatre portes de sortie** :
+
+1. **Page de secours** (`/recovery`) : réinstalle l'interface avec `littlefs.bin` + `littlefs.bin.sig` (cas d'une interface effacée).
+2. **Autorisation temporaire** (ci-dessus) : lève le refus 60 min, pour un envoi non signé assumé (clé perdue, défaut du vérificateur).
+3. **`POST /update` signé** : un envoi signé passe **sans plancher de version**.
+4. **`/factory-reset`** : dernier recours.
+
+**Retour arrière manuel : toujours possible, aucun plancher.** Envoyer une version plus ancienne **signée** (`firmware.bin` + `.sig` de cette version) est accepté : l'appareil ne compare jamais les versions pour refuser. Le **désaccord de version** n'est jamais un motif de refus. Voir [ADR-0125](adr/0125-l-expiration-de-l-interrupteur-de-signature-se-mesure-sur-un-horodatage-nvs.md).
 
 ### Ce que cela ne change pas — risques résiduels
 

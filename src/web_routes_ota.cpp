@@ -1,7 +1,7 @@
 #include "web_routes_ota.h"
 #include "web_helpers.h"
 #include "ota_recovery_marker.h"  // feature-151 D3-b1 : pose/levée du marqueur FS (écriture seule)
-#include "ota_signature_switch.h"   // feature-151 D3-b2 : interrupteur de signature (INERTE : journal + consommation)
+#include "ota_signature_switch.h"   // feature-151 D3-b2/D3-c : autorisation temporaire (lecture + consommation)
 #include "ota_version_request_logic.h"  // feature-151 D3-b2 : liaison version (journal seulement)
 #include "constants.h"
 #include "auth.h"
@@ -33,22 +33,23 @@
 // placement PSRAM, même idiome que mbedtls_psram_alloc.cpp.
 #include "ota_response_buffer_logic.h"
 #include <esp_memory_utils.h>  // esp_ptr_external_ram
-// feature-151 D1 : vérification d'AUTHENTICITÉ (signature à clé publique) —
-// JOURNALISE SEULEMENT, ne refuse rien (le refus est D3, hors périmètre de ce
-// lot). Modules purs testables en natif (grammaire manifeste, base64,
+// feature-151 D1/D3-c : vérification d'AUTHENTICITÉ (signature à clé publique) —
+// le verdict est calculé ici, le REFUS est prononcé par les appelants
+// (ota_refusal_messages.h). Modules purs testables en natif (grammaire manifeste, base64,
 // plancher, combinaison du verdict) + wrapper mbedtls non testable en natif.
 #include "ota_manifest_logic.h"
 #include "ota_base64_logic.h"
 #include "ota_authenticity_logic.h"
+#include "ota_refusal_messages.h"  // feature-151 D3-c : décision de refus + phrases constantes (PUR)
 #include "ota_signature.h"
 // feature-151 D1, lot B1 (revue de sécurité du 2026-10-18) : la signature
 // n'autorisait AUCUNE image en particulier — ce module PUR ferme ce trou en
 // liant l'empreinte DÉCLARÉE par le manifeste à une empreinte connue
 // indépendamment (paramètre déjà fourni, ou empreinte réellement calculée).
-// JOURNALISE SEULEMENT, comme le reste de D1.
+// Journalisée à chaque comparaison ; refusée aux seuls sites tardifs (D3-c).
 #include "ota_manifest_binding_logic.h"
 // feature-151 D3-a : socle de la décision OTA (genre effectif, source de
-// l'empreinte attendue, parse borné du `.sig` relayé). ⛔ Aucun refus neuf.
+// l'empreinte attendue, parse borné du `.sig` relayé).
 #include "ota_kind_authority_logic.h"
 #include "ota_digest_source_logic.h"
 #include "ota_sig_relay_logic.h"
@@ -166,12 +167,14 @@ static bool g_uploadManifestDigestValid = false;
 // g_uploadAuthenticityValid : verdict == kValid (posé à index==0 dans le bloc
 // d'authenticité). g_uploadCallerDigest : copie du paramètre `sha256` de
 // l'appelant (g_uploadExpected devient l'empreinte EFFECTIVE, éventuellement
-// celle du manifeste). Servent uniquement à la tolérance D3-a de `final`.
+// celle du manifeste). D3-c : plus de tolérance de liaison. g_uploadCallerDigest et
+// g_uploadDigestDivergent alimentent la décision de source de l'empreinte et le CRITICAL de
+// divergence manifeste ↔ paramètre (seule visibilité restante sur cet écart) — à conserver.
 static bool g_uploadAuthenticityValid = false;
-// feature-151 D3-b2 (C8) : décision de l'interrupteur de signature CAPTURÉE à index==0.
-// ⛔ Jamais relue pour ACCORDER quoi que ce soit : elle ne sert qu'à la journalisation
-// (levée constatée, expiration/désarmement en cours de transfert, via Consume). Une session
-// commencée « exigée » ne devient JAMAIS « levée ».
+// feature-151 D3-b2/D3-c (C8) : décision de l'autorisation temporaire CAPTURÉE à index==0.
+// Elle LÈVE le refus d'authenticité (jamais la liaison d'empreinte des sites tardifs) et sert
+// à la journalisation de fin de session (via Consume). Capturée UNE fois : une session
+// commencée « exigée » ne devient JAMAIS « levée » en cours de transfert.
 static bool g_uploadSwitchWaived = false;
 static uint8_t g_uploadCallerDigest[32];
 static bool g_uploadDigestFromManifest = false;
@@ -455,21 +458,17 @@ static void logOtaUploadIntegrityVerdict(OtaUploadIntegrityVerdict verdict) {
 }
 
 // =============================================================================
-// feature-151 D1 : vérification d'AUTHENTICITÉ — JOURNALISE SEULEMENT.
+// feature-151 D1/D3-c : vérification d'AUTHENTICITÉ — CALCUL du verdict.
 // =============================================================================
-// ⛔ Cette fonction ne doit JAMAIS produire de refus — Q0 du verdict
-// security-reviewer P1 : le chemin d'ACCEPTATION doit être prouvé sur le
-// terrain (D2) AVANT que le chemin de REFUS n'existe (D3). D3 réutilisera
-// cette MÊME fonction à l'identique ; seul l'appelant ajoutera un
-// `if (otaAuthenticityIsRejected(verdict))` (condition 10 : octet pour octet
-// identique entre D1 et D3 sur le vérificateur, la clé, la grammaire).
+// Cette fonction CALCULE seulement : elle ne prononce pas le refus. Le refus est pris par
+// l'appelant (otaRefusalDecide), à l'identique du vérificateur, de la clé et de la grammaire
+// (condition 10).
 //
 // Paramètres attendus (form-data, mêmes conventions que le `sha256` existant
 // de feature-118) : `manifest` (texte brut "pool-ota/1 ...") et `signature`
 // (base64 standard, 512 caractères sans padding pour RSA-3072). Absents sur
 // le chemin normal aujourd'hui (aucun outillage ne les envoie encore côté
-// page web, hors périmètre de ce lot) : verdict kAbsent, journalisé en INFO,
-// sans aucune conséquence.
+// page web) : verdict kAbsent, refusé par l'appelant (403 `sig_absente`).
 //
 // Résultat complet de computeOtaAuthenticityVerdict() — le verdict seul ne
 // suffit plus depuis le lot B1 (revue de sécurité du 2026-10-18) : l'appelant
@@ -540,10 +539,9 @@ static OtaAuthenticityComputation computeOtaAuthenticityVerdict(bool manifestPre
   return result;
 }
 
-// Journalisation du verdict d'authenticité — WARNING si D3 aurait refusé,
-// INFO sinon. Le texte rappelle EXPLICITEMENT qu'aucun refus n'est appliqué
-// (D1) : un opérateur qui lirait seulement le niveau WARNING ne doit pas
-// croire à tort qu'un flash a été bloqué.
+// Journalisation du verdict d'authenticité — WARNING si le verdict est un refus, INFO sinon.
+// D3-c : le refus EST appliqué (sauf autorisation temporaire activée) ; la ligne dit ce qui a
+// été décidé, pour qu'un opérateur ne lise pas seulement un niveau.
 //
 // M2 (revue de sécurité, 2026-10-18) : le piège du LF final (un manifeste
 // signé via `echo` au lieu de `printf`, cf. ota_update.sh) produit un verdict
@@ -555,14 +553,14 @@ static OtaAuthenticityComputation computeOtaAuthenticityVerdict(bool manifestPre
 // l'opérateur de les comparer en quelques secondes à ce que son `printf` a
 // réellement signé.
 // feature-151 D3-b2 (C4) : le VERDICT et la LEVÉE restent DISTINCTS. `wouldReject` ne dépend
-// que du verdict ; il pilote seul le niveau (WARNING) et la ligne des octets canoniques. Un
-// interrupteur armé n'ajoute qu'une MENTION — sinon un flash à signature invalide passerait de
-// WARNING à INFO et perdrait sa trace. Aucun refus n'est appliqué dans aucun cas (lot inerte).
+// que du verdict ; il pilote seul le niveau (WARNING) et la ligne des octets canoniques. Une
+// autorisation temporaire activée n'ajoute qu'une MENTION — sinon un flash à signature invalide
+// passerait de WARNING à INFO et perdrait sa trace.
 static void logOtaAuthenticityVerdict(const char* routeName,
                                       const OtaAuthenticityComputation& computation,
                                       const OtaSignatureSwitchDecision& sw) {
   const bool wouldReject = otaAuthenticityIsRejected(computation.verdict);
-  const bool armed = (sw.requirement == OtaSignatureRequirement::kWaived);
+  const bool armed = (sw.requirement == OtaSignatureRequirement::kWaived);  // autorisation temporaire activée
   // R6 (D3-b2) : tampons de pile + snprintf (pas de String sur un chemin OTA, comme le reste
   // du module). Tout est borné : canonical <= kOtaManifestMaxLen ; une troncature ne perd que
   // la fin d'une ligne de journal, jamais la décision.
@@ -570,21 +568,21 @@ static void logOtaAuthenticityVerdict(const char* routeName,
   levee[0] = '\0';
   if (armed) {
     snprintf(levee, sizeof(levee), "%s (reste %lu min)",
-             wouldReject ? " — levé par l'interrupteur" : " — interrupteur armé",
+             wouldReject ? " — levé par l'autorisation temporaire"
+                         : " — autorisation temporaire activée",
              static_cast<unsigned long>((sw.remainingSec + 59) / 60));
   }
   char msg[400];
   snprintf(msg, sizeof(msg),
-           "[feature-151 D1] %s — authenticité OTA : %s — D3 refuserait : %s%s"
-           " — AUCUN refus appliqué (D1, vérification seule)",
+           "[feature-151 D3-c] %s — authenticité OTA : %s — refusé : %s%s",
            routeName, otaAuthenticityVerdictLabel(computation.verdict),
-           wouldReject ? "oui" : "non", levee);
+           (wouldReject && !armed) ? "oui" : "non", levee);
   if (wouldReject) {
     systemLogger.warning(msg);
     if (computation.canonicalLen > 0) {
       char canon[kOtaManifestMaxLen + 200];
       snprintf(canon, sizeof(canon),
-               "[feature-151 D1] %s — octets canoniques re-sérialisés par l'appareil (comparer "
+               "[feature-151 D3-c] %s — octets canoniques re-sérialisés par l'appareil (comparer "
                "avec ce qui a été signé) : \"%s\"",
                routeName, computation.canonical);
       systemLogger.warning(canon);
@@ -594,16 +592,17 @@ static void logOtaAuthenticityVerdict(const char* routeName,
   }
 }
 
-// feature-151 D3-b2 : liaison genre + version — JOURNALISE SEULEMENT (définie plus bas, après
+// feature-151 D3-b2 : liaison genre + version — journalise (définie plus bas, après
 // g_sigSource dont elle lit le tag mémorisé).
 static void logOtaVersionAgreement(const char* routeName, bool kindIsFilesystem,
                                    AsyncWebServerRequest* request,
                                    const OtaAuthenticityComputation& computation);
 
 // =============================================================================
-// feature-151 D1, lot B1 : liaison manifeste ↔ image — JOURNALISE SEULEMENT.
+// feature-151 D1, lot B1 : liaison manifeste ↔ image — journalisée ici ; REFUSÉE aux trois
+// sites tardifs seulement (comparaison finale des empreintes), jamais aux sites précoces.
 // =============================================================================
-// ⛔ Même principe que logOtaAuthenticityVerdict : AUCUN refus. Un verdict
+// Un verdict
 // d'authenticité « valide » prouve que LE MANIFESTE a été signé par la bonne
 // clé — jamais que l'image reçue est CELLE qu'il décrit (B1, revue de
 // sécurité du 2026-10-18 : sans cette liaison, un manifeste signé pour
@@ -614,8 +613,7 @@ static void logOtaManifestBindingVerdict(const char* routeName, const char* stag
   const bool divergent = otaManifestBindingIsDivergent(verdict);
   const String msg = String("[feature-151 D1 B1] ") + routeName + " — liaison manifeste/image (" +
                      stage + ") : " + otaManifestBindingVerdictLabel(verdict) +
-                     " — D3 refuserait : " + (divergent ? "oui" : "non") +
-                     " — AUCUN refus appliqué (D1, vérification seule)";
+                     " — divergente : " + (divergent ? "oui" : "non");
   if (divergent) {
     systemLogger.warning(msg);
   } else {
@@ -686,12 +684,12 @@ static void handleOtaUpdate(AsyncWebServerRequest* request, const String& filena
       systemLogger.info("Type de mise à jour: Firmware (détection nom fichier)");
     }
 
-    // ---- feature-151 D1 : vérification d'AUTHENTICITÉ — JOURNALISE SEULEMENT --
+    // ---- feature-151 D1/D3-c : vérification d'AUTHENTICITÉ, puis REFUS PRÉCOCE ----
     // Placée ici à dessein : AVANT le pré-contrôle de l'octet magique,
     // `g_uploadOwner`, `setOtaInProgress(true)`, `LittleFS.end()` et
-    // `Update.begin()` — place DÉFINITIVE pour D3 (Q0 du verdict
-    // security-reviewer P1), mais ⛔ AUCUN `return` de refus ici : D1 ne fait
-    // que calculer et journaliser le verdict que D3 appliquera.
+    // `Update.begin()` (Q0 du verdict security-reviewer P1). Le bloc calcule le
+    // verdict, le journalise, puis REFUSE (`return`) tout verdict non valide sauf
+    // autorisation temporaire activée.
     // GARDE STRUCTURELLE : test/test_native_ota_order_guard (guard [G5]) fige
     // cette place — ne pas la déplacer sans mettre à jour ce test.
     {
@@ -706,13 +704,40 @@ static void handleOtaUpdate(AsyncWebServerRequest* request, const String& filena
       const OtaAuthenticityComputation authenticity = computeOtaAuthenticityVerdict(
           manifestPresent, signaturePresent, manifestRaw.c_str(), signatureRaw.c_str(),
           expectedKind);
-      // D3-b2 : LECTURE de l'interrupteur (1/2), AVANT Update.begin. Décision capturée pour
-      // la session (C8) ; ne change AUCUNE issue : le verdict est journalisé, pas appliqué.
+      // D3-b2 : LECTURE de l'autorisation temporaire (1/2), AVANT Update.begin. Décision
+      // capturée pour la session (C8) ; elle conditionne le refus précoce ci-dessous.
       const OtaSignatureSwitchDecision switchDecision = otaSignatureSwitchRead();
       g_uploadSwitchWaived = (switchDecision.requirement == OtaSignatureRequirement::kWaived);
       logOtaAuthenticityVerdict("/update", authenticity, switchDecision);
       logOtaVersionAgreement("/update", expectedKind == OtaManifestKind::kFilesystem, request,
                              authenticity);
+
+      // ---- feature-151 D3-c : REFUS PRÉCOCE d'une image non authentique ----
+      // ⛔ La DÉCISION ne dépend que du verdict et de l'autorisation temporaire : le marqueur
+      // `ui` (lu par présence seule, jamais comparé ni stocké ni journalisé) ne change que la
+      // PHRASE. Sortie placée AVANT g_uploadOwner, setOtaInProgress(true), LittleFS.end() et
+      // Update.begin() : rien n'a été écrit, « Rien n'a été modifié » est VRAI.
+      // ⚠️ SÉQUENCE COMPLÈTE des refus voisins (pool-chemistry, BLOQUANTE) : sans
+      // markUploadRejected, Update.hasError() est faux → réponse « OK » + redémarrage parasite
+      // → le flush différé (30 s) des compteurs NVS est perdu → volume injecté non comptabilisé,
+      // plafond journalier dépassable.
+      const OtaRefusalDecision refusal = otaRefusalDecide(authenticity.verdict);
+      if (refusal.rejected && !g_uploadSwitchWaived) {
+        const bool pageAnnounced = request->hasParam("ui", true);
+        markUploadRejected(request);
+        failOtaUpload(request, refusal.http,
+                      otaRefusalPhrase(authenticity.verdict, pageAnnounced,
+                                       OtaRefusalSite::kEarly),
+                      true);
+        request->onDisconnect([request]() {
+          if (g_uploadVerdictOwner == request) {
+            g_uploadVerdictOwner = nullptr;
+            g_uploadVerdictStatus = 0;
+            g_uploadVerdictBody = String();
+          }
+        });
+        return;
+      }
 
       // ---- lot B1 : liaison manifeste ↔ image (revue de sécurité, 2026-10-18) --
       // Mémorise le hex DÉCLARÉ (PAS pré-décodé : voir le commentaire de
@@ -745,7 +770,7 @@ static void handleOtaUpdate(AsyncWebServerRequest* request, const String& filena
                                     "manifeste déclare « ") +
                              otaManifestKindLiteral(authenticity.fields.kind) +
                              "», la requête attend « " + otaManifestKindLiteral(expectedKind) +
-                             "» — aucun refus appliqué (D3-a)");
+                             "» — désaccord journalisé");
       }
     }
 
@@ -874,7 +899,7 @@ static void handleOtaUpdate(AsyncWebServerRequest* request, const String& filena
     // sur g_uploadHasExpected), donc g_uploadExpected est rempli. AUCUN nouvel
     // appel à parseOtaSha256Param ici — réemploi direct du résultat déjà
     // calculé (la garde structurelle G1 exige que cet appel reste un site
-    // UNIQUE dans ce fichier). ⛔ JOURNALISE SEULEMENT.
+    // UNIQUE dans ce fichier). Cette ligne journalise ; le refus de liaison est tardif.
     logOtaManifestBindingVerdict(
         "/update", "paramètre sha256 (index==0)",
         otaManifestBindingVerdict(g_uploadManifestDigestValid, g_uploadManifestSha256Hex,
@@ -884,7 +909,8 @@ static void handleOtaUpdate(AsyncWebServerRequest* request, const String& filena
     // g_uploadExpected devient l'empreinte EFFECTIVE : celle du manifeste si
     // l'authenticité est valide (kValid), sinon celle de l'appelant. ⛔ Lecture
     // seule de la paire g_uploadManifest* ; le paramètre de l'appelant est
-    // conservé à part pour la tolérance de `final`. ⛔ Aucun refus ici.
+    // conservé à part (décision de source, journal de divergence). Seul refus de ce bloc :
+    // le décodage de l'empreinte du manifeste signé qui échoue (voir ci-dessous).
     memcpy(g_uploadCallerDigest, g_uploadExpected, sizeof(g_uploadCallerDigest));
     g_uploadDigestFromManifest = false;
     g_uploadDigestDivergent = false;
@@ -904,6 +930,25 @@ static void handleOtaUpdate(AsyncWebServerRequest* request, const String& filena
         if (parseSha256Digest(prefixed, manifestDigest)) {
           memcpy(g_uploadExpected, manifestDigest, sizeof(g_uploadExpected));
           g_uploadDigestFromManifest = true;
+        } else {
+          // Voie (a), revue P2 : signature VALIDE mais empreinte du manifeste indécodable
+          // (inatteignable : la grammaire impose 64 hexadécimaux minuscules). Se replier en
+          // silence sur l'empreinte de l'appelant lierait une signature valide à une image
+          // QUELCONQUE : on refuse, avant toute écriture, comme un manifeste illisible.
+          const OtaRefusalDecision bad = otaRefusalDecide(OtaAuthenticityVerdict::kMalformed);
+          markUploadRejected(request);
+          failOtaUpload(request, bad.http,
+                        otaRefusalPhrase(OtaAuthenticityVerdict::kMalformed,
+                                         request->hasParam("ui", true), OtaRefusalSite::kEarly),
+                        true);
+          request->onDisconnect([request]() {
+            if (g_uploadVerdictOwner == request) {
+              g_uploadVerdictOwner = nullptr;
+              g_uploadVerdictStatus = 0;
+              g_uploadVerdictBody = String();
+            }
+          });
+          return;
         }
       }
       if (digestDecision.divergent) {
@@ -1054,7 +1099,7 @@ static void handleOtaUpdate(AsyncWebServerRequest* request, const String& filena
     // ICI, et seulement ici, que la liaison manifeste ↔ image peut être
     // tranchée avec certitude (comparaison 1/2 plus haut ne portait que sur le
     // paramètre déclaré par l'appelant, pas sur ce qui a été effectivement
-    // écrit). ⛔ JOURNALISE SEULEMENT.
+    // écrit). Cette ligne journalise ; le refus suit juste après (comparaison finale).
     logOtaManifestBindingVerdict(
         "/update", "empreinte calculée (final)",
         otaManifestBindingVerdict(g_uploadManifestDigestValid, g_uploadManifestSha256Hex,
@@ -1075,32 +1120,30 @@ static void handleOtaUpdate(AsyncWebServerRequest* request, const String& filena
           otaUploadIntegrityVerdict(paramVerdictAtFinal, g_uploadExpected, computed));
     }
 
-    // ⛔ TOLÉRANCE D3-a — SUPPRIMER EN D3-c (feature-151)
-    // La source de l'empreinte a basculé vers le manifeste : si manifeste ≠
-    // paramètre ET que l'image calculée égale le paramètre de l'appelant, le
-    // refus d'intégrité serait NEUF (interdit en D3-a). On le journalise en
-    // CRITICAL et on poursuit ; tout autre écart reste refusé, inchangé.
-    bool digestDivergenceTolerated = false;
-    if (g_uploadHasExpected && !sha256Equal(computed, g_uploadExpected) &&
-        g_uploadDigestFromManifest && g_uploadDigestDivergent &&
-        sha256Equal(computed, g_uploadCallerDigest)) {
-      systemLogger.critical("/update : divergence manifeste ↔ paramètre — TOLÉRÉ EN D3-a, "
-                            "D3-c refusera");
-      digestDivergenceTolerated = true;
-    }
-    // ⛔ FIN TOLÉRANCE D3-a
-
     // Empreinte attendue (désormais TOUJOURS fournie, lot B) → comparaison
     // AVANT Update.end() : en cas de mismatch l'image n'est jamais activée.
-    if (g_uploadHasExpected && !sha256Equal(computed, g_uploadExpected) &&
-        !digestDivergenceTolerated) {
+    // D3-c : plus aucune tolérance. En kValid g_uploadExpected EST l'empreinte du manifeste
+    // signé : un écart est donc une rupture de liaison, refusée ici (site TARDIF : l'écriture a
+    // commencé → phrases 7/8, jamais « Rien n'a été modifié »). Hors kValid (autorisation
+    // temporaire), g_uploadExpected est le paramètre de l'appelant : message historique.
+    if (g_uploadHasExpected && !sha256Equal(computed, g_uploadExpected)) {
       char expectedHex[kOtaSha256HexLen + 1];
       sha256ToHex(g_uploadExpected, expectedHex, sizeof(expectedHex));
       Update.abort();
-      failOtaUpload(request, 400,
-                    String("empreinte SHA-256 non conforme (attendue ") + expectedHex +
-                        ", calculée " + computedHex + ") — flash refusé",
-                    true);
+      if (g_uploadDigestFromManifest) {
+        systemLogger.critical(String("/update : liaison manifeste ↔ image rompue (attendue ") +
+                              expectedHex + ", calculée " + computedHex + ")");
+        failOtaUpload(request, 400,
+                      otaRefusalPhrase(OtaAuthenticityVerdict::kValid, false,
+                                       g_uploadIsFilesystem ? OtaRefusalSite::kLateFilesystem
+                                                            : OtaRefusalSite::kLateFirmware),
+                      true);
+      } else {
+        failOtaUpload(request, 400,
+                      String("empreinte SHA-256 non conforme (attendue ") + expectedHex +
+                          ", calculée " + computedHex + ") — flash refusé",
+                      true);
+      }
       // ORDRE IMPOSÉ : setOtaInProgress(false) AVANT LittleFS.begin().
       PumpController.setOtaInProgress(false);
       remountUploadFsIfNeeded();
@@ -1382,7 +1425,7 @@ static void storeSigSource(OtaSigSourceSlot& slot, const String& sigUrl, const S
   slot.state = OtaSigSourceState::kPresent;
 }
 
-// feature-151 D3-b2 : liaison genre + version — JOURNALISE SEULEMENT, aucun refus.
+// feature-151 D3-b2 : liaison genre + version — journalisation : un désaccord de version ne motive jamais un refus.
 // Référence : le tag mémorisé par /check-update (donc issu de GITHUB : ce n'est PAS un contrôle
 // d'authenticité, et il est périmé après un envoi direct — un « désaccord » peut être un faux
 // positif). Le paramètre facultatif `expected_version` ne sert que sans tag mémorisé (C9).
@@ -1409,7 +1452,7 @@ static void logOtaVersionAgreement(const char* routeName, bool kindIsFilesystem,
     char ligne[200];
     snprintf(ligne, sizeof(ligne),
              "[feature-151 D3-b2] %s — référence de version illisible (%s)"
-             " — aucun refus appliqué (D3-b2)", routeName, origin);
+             " — journalisé seulement", routeName, origin);
     systemLogger.warning(ligne);
   } else if (agreement == OtaVersionAgreement::kDisagree) {
     char declared[24];
@@ -1421,7 +1464,7 @@ static void logOtaVersionAgreement(const char* routeName, bool kindIsFilesystem,
     char ligne[260];
     snprintf(ligne, sizeof(ligne),
              "[feature-151 D3-b2] %s — désaccord de version : le manifeste déclare « %s »,"
-             " la release demandée est « %s » (%s) — aucun refus appliqué (D3-b2)",
+             " la release demandée est « %s » (%s) — journalisé seulement",
              routeName, declared, requested, origin);
     systemLogger.warning(ligne);
   }
@@ -2151,14 +2194,12 @@ static void handleDownloadUpdate(AsyncWebServerRequest* request) {
   bool digestDivergent = false;
   bool switchWaived = false;  // D3-b2 (C8) : décision de l'interrupteur capturée à l'entrée
 
-  // ---- feature-151 D1 : vérification d'AUTHENTICITÉ — JOURNALISE SEULEMENT --
+  // ---- feature-151 D1/D3-c : vérification d'AUTHENTICITÉ, puis REFUS PRÉCOCE --
   // AVANT refuseIfTlsGateClosed (Q0/condition 1 du verdict security-reviewer
-  // P1) et avant tout esp_partition_erase_range()/LittleFS.end() : place
-  // DÉFINITIVE pour D3, mais ⛔ AUCUN `return` de refus ici — D1 ne fait que
-  // calculer et journaliser le verdict que D3 appliquera. Mêmes paramètres
-  // `manifest`/`signature` que /update ; absents aujourd'hui sur ce chemin
-  // (la page web ne les envoie pas encore, hors périmètre de ce lot) →
-  // verdict kAbsent, journalisé en INFO, sans conséquence.
+  // P1) et avant tout esp_partition_erase_range()/LittleFS.end(). Le bloc calcule
+  // le verdict, le journalise, puis REFUSE (`return`) tout verdict non valide
+  // sauf autorisation temporaire activée. Mêmes paramètres `manifest`/`signature`
+  // que /update : leur absence est un refus 403 `sig_absente`.
   // GARDE STRUCTURELLE : test/test_native_ota_order_guard (guard [G6]) fige
   // cette place — ne pas la déplacer sans mettre à jour ce test.
   {
@@ -2173,13 +2214,35 @@ static void handleDownloadUpdate(AsyncWebServerRequest* request) {
     const OtaAuthenticityComputation authenticity = computeOtaAuthenticityVerdict(
         manifestPresent, signaturePresent, manifestRaw.c_str(), signatureRaw.c_str(),
         expectedKind);
-    // D3-b2 : LECTURE de l'interrupteur (2/2), AVANT toute écriture flash. Capturée dans
-    // `switchWaived` (C8) : ne sert qu'à la journalisation, jamais à accorder.
+    // D3-b2 : LECTURE de l'autorisation temporaire (2/2), AVANT toute écriture flash. Capturée
+    // dans `switchWaived` (C8) : elle lève le refus précoce ci-dessous.
     const OtaSignatureSwitchDecision switchDecision = otaSignatureSwitchRead();
     switchWaived = (switchDecision.requirement == OtaSignatureRequirement::kWaived);
     logOtaAuthenticityVerdict("/download-update", authenticity, switchDecision);
     logOtaVersionAgreement("/download-update", expectedKind == OtaManifestKind::kFilesystem,
                            request, authenticity);
+
+    // ---- feature-151 D3-c : REFUS PRÉCOCE d'une image non authentique ----
+    // Avant refuseIfTlsGateClosed, setOtaInProgress(true), LittleFS.end() et tout effacement :
+    // aucun effet de bord à défaire, « Rien n'a été modifié » est VRAI. La décision ne dépend
+    // que du verdict et de l'autorisation temporaire ; `ui` (présence seule) ne change que la
+    // phrase. Réponse JSON : `error` (phrase, lue par l'interface) + `code` (machine).
+    const OtaRefusalDecision refusal = otaRefusalDecide(authenticity.verdict);
+    if (refusal.rejected && !switchWaived) {
+      const bool pageAnnounced = request->hasParam("ui", true);
+      const char* phrase =
+          otaRefusalPhrase(authenticity.verdict, pageAnnounced, OtaRefusalSite::kEarly);
+      char logLine[300];  // octets (accents sur 2 octets), pas de String sur ce chemin
+      snprintf(logLine, sizeof(logLine), "Mise à jour OTA refusée : %s", phrase);
+      systemLogger.critical(logLine);
+      JsonDocument refusalJson;
+      refusalJson["error"] = phrase;
+      refusalJson["code"] = refusal.code;
+      String refusalBody;
+      serializeJson(refusalJson, refusalBody);
+      request->send(refusal.http, "application/json", refusalBody);
+      return;
+    }
 
     // ---- lot B1 : liaison manifeste ↔ image — comparaison 1/2 ---------------
     // Au paramètre `digest` DÉJÀ décodé ci-dessus (`expectedHash`) : contrairement
@@ -2196,7 +2259,7 @@ static void handleDownloadUpdate(AsyncWebServerRequest* request) {
 
     // ---- feature-151 D3-a : genre EFFECTIF + SOURCE de l'empreinte — fin de bloc --
     // ⛔ Le bloc n'est pas déplacé (garde [G6]) : il gagne une sortie, toujours
-    // AVANT refuseIfTlsGateClosed et le choix de partition. Aucun refus.
+    // AVANT refuseIfTlsGateClosed et le choix de partition. Seul refus de ce segment : voir le décodage de l'empreinte du manifeste.
     // Genre : no-op prouvable en kValid (voir /update) ; désaccord journalisé
     // même hors kValid.
     const bool authenticityValid = (authenticity.verdict == OtaAuthenticityVerdict::kValid);
@@ -2208,7 +2271,7 @@ static void handleDownloadUpdate(AsyncWebServerRequest* request) {
                                   "le manifeste déclare « ") +
                            otaManifestKindLiteral(authenticity.fields.kind) +
                            "», la requête attend « " + otaManifestKindLiteral(expectedKind) +
-                           "» — aucun refus appliqué (D3-a)");
+                           "» — désaccord journalisé");
     }
     // Empreinte attendue : celle du manifeste si kValid, sinon le paramètre
     // `digest` (inchangé). `expectedHash` devient l'empreinte EFFECTIVE.
@@ -2226,6 +2289,23 @@ static void handleDownloadUpdate(AsyncWebServerRequest* request) {
         if (parseSha256Digest(prefixed, manifestDigest)) {
           memcpy(expectedHash, manifestDigest, sizeof(expectedHash));
           digestFromManifest = true;
+        } else {
+          // Voie (a), revue P2 : voir le site jumeau de /update. Signature valide + empreinte
+          // du manifeste indécodable (inatteignable) : refus avant tout téléchargement.
+          const OtaRefusalDecision bad = otaRefusalDecide(OtaAuthenticityVerdict::kMalformed);
+          const char* badPhrase = otaRefusalPhrase(OtaAuthenticityVerdict::kMalformed,
+                                                   request->hasParam("ui", true),
+                                                   OtaRefusalSite::kEarly);
+          char badLine[300];
+          snprintf(badLine, sizeof(badLine), "Mise à jour OTA refusée : %s", badPhrase);
+          systemLogger.critical(badLine);
+          JsonDocument badJson;
+          badJson["error"] = badPhrase;
+          badJson["code"] = bad.code;
+          String badBody;
+          serializeJson(badJson, badBody);
+          request->send(bad.http, "application/json", badBody);
+          return;
         }
       }
       if (digestDivergent) {
@@ -2235,20 +2315,6 @@ static void handleDownloadUpdate(AsyncWebServerRequest* request) {
       }
     }
   }
-
-  // ⛔ TOLÉRANCE D3-a — SUPPRIMER EN D3-c (feature-151)
-  // Si manifeste ≠ paramètre ET que l'image calculée égale le paramètre de
-  // l'appelant, le refus d'intégrité serait NEUF (interdit en D3-a) : CRITICAL
-  // puis on poursuit. Utilisé aux DEUX comparaisons finales (filesystem, firmware).
-  auto digestDivergenceTolerated = [&](const uint8_t computedDigest[32]) -> bool {
-    if (digestFromManifest && digestDivergent && sha256Equal(computedDigest, callerHash)) {
-      systemLogger.critical("/download-update : divergence manifeste ↔ paramètre — TOLÉRÉ EN "
-                            "D3-a, D3-c refusera");
-      return true;
-    }
-    return false;
-  };
-  // ⛔ FIN TOLÉRANCE D3-a
 
   // Garde PSRAM + heap 8 bits avant la session TLS sortante
   // (bug-garde-tls-trop-permissive-sans-psram, bug-165/bug-108) : MÊME garde
@@ -2436,13 +2502,13 @@ static void handleDownloadUpdate(AsyncWebServerRequest* request) {
 
     // feature-151 D1, lot B1 : comparaison 2/2 — l'empreinte DÉCLARÉE par le
     // manifeste (si authentifiable) contre l'empreinte RÉELLEMENT téléchargée
-    // et écrite en partition. ⛔ JOURNALISE SEULEMENT.
+    // et écrite en partition. Cette ligne journalise ; le refus suit juste après.
     logOtaManifestBindingVerdict(
         "/download-update", "empreinte calculée (fichier filesystem reçu)",
         otaManifestBindingVerdict(manifestDigestValid, manifestSha256Hex,
                                   /*comparedDigestValid=*/true, computedFs));
 
-    if (!sha256Equal(computedFs, expectedHash) && !digestDivergenceTolerated(computedFs)) {
+    if (!sha256Equal(computedFs, expectedHash)) {
       char expectedHex[kOtaSha256HexLen + 1];
       char computedHex[kOtaSha256HexLen + 1];
       sha256ToHex(expectedHash, expectedHex, sizeof(expectedHex));
@@ -2450,20 +2516,12 @@ static void handleDownloadUpdate(AsyncWebServerRequest* request) {
       systemLogger.critical("Intégrité OTA FS: empreinte SHA-256 non conforme (attendue " +
                             String(expectedHex) + ", calculée " + String(computedHex) +
                             ") — redémarrage annulé");
-      // ORDRE IMPOSÉ (gate pool-chemistry 2.20.1) : réarmer le dosage AVANT le
-      // montage — ⛔ ORDRE INCHANGÉ, il reste juste.
-      // 🔴 MAIS SA JUSTIFICATION ÉTAIT FAUSSE (relevé en revue de sécurité,
-      // 2026-10-18, vérifié dans la bibliothèque) : elle affirmait que « la
-      // tâche AsyncTCP n'est PAS abonnée au watchdog ». ⚠️ Elle L'EST :
-      // `CONFIG_ASYNC_TCP_USE_WDT` vaut 1 par défaut (AsyncTCP.h:41-42), le
-      // `#undef` d'AsyncTCP.cpp:18 ne s'applique qu'à LIBRETINY, et
-      // `platformio.ini` ne surcharge rien.
-      // ⇒ Un montage long ou un panic PROVOQUE donc bien un reboot. L'ordre
-      // reste néanmoins le bon : le réarmement est un drapeau RAM, et le faire
-      // avant garantit l'état sûr **sans dépendre** du reboot pour y arriver.
-      // ⚠️ À faire reconfirmer par `pool-chemistry` : sa décision reposait sur
-      // une prémisse inexacte, même si la conclusion tient. ⛔ Ne pas changer
-      // cet ordre sans son verdict.
+      // ORDRE IMPOSÉ (gate pool-chemistry 2.20.1) : réarmer le dosage AVANT le montage.
+      // Raison RÉELLE (chimique) : setOtaInProgress(false) est un drapeau RAM instantané,
+      // alors que LittleFS.begin(false) sur une partition effacée peut DURER ou paniquer ;
+      // inverser l'ordre PROLONGERAIT le gel du dosage. (La justification historique « AsyncTCP
+      // n'est pas abonnée au watchdog » était FAUSSE : CONFIG_ASYNC_TCP_USE_WDT vaut 1.)
+      // ⛔ Ne pas changer cet ordre sans le verdict de `pool-chemistry`.
       PumpController.setOtaInProgress(false);  // Appariement du setOtaInProgress(true)
       // Remontage best-effort : la partition contient une image corrompue,
       // LittleFS échouera probablement (l'UI restera servie depuis le cache
@@ -2473,8 +2531,13 @@ static void handleDownloadUpdate(AsyncWebServerRequest* request) {
       if (!remountedAfterMismatch) {
         systemLogger.warning("Impossible de remonter LittleFS après échec d'intégrité");
       }
+      // D3-c : site TARDIF. Liaison à la signature (empreinte du manifeste) : phrase 8 ; sinon
+      // message historique. Formats 422 / integrity_mismatch FIGÉS.
       sendIntegrityMismatch(request, expectedHex, computedHex,
-        "Empreinte SHA-256 non conforme : image filesystem corrompue ou tronquée, redémarrage annulé");
+        digestFromManifest
+            ? otaRefusalPhrase(OtaAuthenticityVerdict::kValid, false,
+                               OtaRefusalSite::kLateFilesystem)
+            : "Empreinte SHA-256 non conforme : image filesystem corrompue ou tronquée, redémarrage annulé");
       return;  // PAS de restart demandé
     }
 
@@ -2565,13 +2628,13 @@ static void handleDownloadUpdate(AsyncWebServerRequest* request) {
     hasher.finish(computedFw);
 
     // feature-151 D1, lot B1 : comparaison 2/2 — voir le commentaire jumeau de
-    // la branche filesystem ci-dessus. ⛔ JOURNALISE SEULEMENT.
+    // la branche filesystem ci-dessus. Cette ligne journalise ; le refus suit juste après.
     logOtaManifestBindingVerdict(
         "/download-update", "empreinte calculée (fichier firmware reçu)",
         otaManifestBindingVerdict(manifestDigestValid, manifestSha256Hex,
                                   /*comparedDigestValid=*/true, computedFw));
 
-    if (!sha256Equal(computedFw, expectedHash) && !digestDivergenceTolerated(computedFw)) {
+    if (!sha256Equal(computedFw, expectedHash)) {
       char expectedHex[kOtaSha256HexLen + 1];
       char computedHex[kOtaSha256HexLen + 1];
       sha256ToHex(expectedHash, expectedHex, sizeof(expectedHex));
@@ -2581,8 +2644,12 @@ static void handleDownloadUpdate(AsyncWebServerRequest* request) {
                             ") — flash refusé");
       Update.abort();  // AVANT tout end() : la partition OTA n'est pas validée
       PumpController.setOtaInProgress(false);  // Appariement du setOtaInProgress(true)
+      // D3-c : site TARDIF, même règle que la branche filesystem (phrase 7).
       sendIntegrityMismatch(request, expectedHex, computedHex,
-        "Empreinte SHA-256 non conforme : image firmware corrompue ou tronquée, flash refusé");
+        digestFromManifest
+            ? otaRefusalPhrase(OtaAuthenticityVerdict::kValid, false,
+                               OtaRefusalSite::kLateFirmware)
+            : "Empreinte SHA-256 non conforme : image firmware corrompue ou tronquée, flash refusé");
       return;
     }
 

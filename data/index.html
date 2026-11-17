@@ -2707,19 +2707,19 @@ action:
                 <div class="card__body">
                   <!-- feature-151 D1-bis : le sélecteur de type a disparu (ux-ui-designer,
                        2026-10-21) — le genre est désormais LU dans la ligne signée du .sig
-                       quand il est fourni (autorité en D3, condition 2), ou déduit du nom du
+                       quand il est fourni (autorité de l'appareil, D3), ou déduit du nom du
                        fichier à défaut. Le garder aurait permis de CONTREDIRE la signature. -->
-                  <label class="field">
-                    <span class="field__label">Image (.bin)</span>
-                    <input type="file" id="update_file" accept=".bin" />
+                  <div class="field">
+                    <input type="file" id="update_file" class="vh" accept=".bin" />
+                    <label class="pick" for="update_file"><b>Image (.bin)</b><span>Appuyer pour choisir un fichier</span></label>
                     <span class="field__hint" id="update_file_hint"></span>
-                  </label>
+                  </div>
 
-                  <label class="field">
-                    <span class="field__label">Signature (.sig)</span>
-                    <input type="file" id="update_sig" accept=".sig" />
-                    <span class="field__hint" id="update_sig_hint">Facultative pour l'instant : sans elle, l'appareil n'a rien à vérifier.</span>
-                  </label>
+                  <div class="field">
+                    <input type="file" id="update_sig" class="vh" accept=".sig" />
+                    <label class="pick" for="update_sig"><b>Signature (.sig)</b><span>Appuyer pour choisir un fichier</span></label>
+                    <span class="field__hint" id="update_sig_hint">Obligatoire : livrée avec le .bin.</span>
+                  </div>
 
                   <div id="update_type_notice" class="callout" role="status" aria-live="polite" style="display:none;"></div>
 
@@ -2738,6 +2738,8 @@ action:
                   <div class="row row--gap">
                     <button class="btn" type="button" id="update_btn" disabled>Mettre à jour</button>
                   </div>
+                  <!-- D3-c : phrase de refus de l'appareil, en textContent (jamais HTML) -->
+                  <div id="update_refusal" class="callout callout--warn" role="alert" hidden></div>
                 </div>
               </div>
 
@@ -2785,10 +2787,10 @@ action:
                     Le fichier CSV contient la date au format <code>yyyy-MM-dd'T'HH:mm:ss</code> pour chaque point.
                   </div>
 
-                  <label class="field" style="margin-top: 16px;">
-                    <span class="field__label">Importer un fichier CSV</span>
-                    <input type="file" id="history_import_file" accept=".csv,text/csv" />
-                  </label>
+                  <div class="field" style="margin-top: 16px;">
+                    <input type="file" id="history_import_file" class="vh" accept=".csv,text/csv" />
+                    <label class="pick" for="history_import_file"><b>Importer un fichier CSV</b><span>Appuyer pour choisir un fichier</span></label>
+                  </div>
 
                   <div class="row row--gap">
                     <button class="btn btn--danger" type="button" id="history_import_replace_btn" disabled>Remplacer l'historique</button>

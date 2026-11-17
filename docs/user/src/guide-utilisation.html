@@ -1507,13 +1507,16 @@ son <strong>adresse IP</strong>&nbsp;: ouvrez-la, en sachant que vous devrez
 <strong>vous reconnecter</strong>.</p>
 
 <p>Pendant une mise à jour en ligne, l'appareil vérifie aussi la
-<strong>signature</strong> de la nouvelle version, au moment de l'installer.
-Si la version est signée, une ligne «&nbsp;Release signée&nbsp;» le confirme&nbsp;;
-si elle ne l'est pas (versions anciennes), rien ne s'affiche, c'est normal. Si
-la signature n'a pas pu être récupérée, la ligne «&nbsp;Signature non
-récupérée&nbsp;» apparaît au-dessus des boutons, et le bouton devient
-«&nbsp;Mettre à jour sans vérification&nbsp;»&nbsp;: recliquez d'abord sur
-«&nbsp;Vérifier&nbsp;» pour réessayer.</p>
+<strong>signature</strong> de la nouvelle version. <strong>L'appareil refuse
+toute image non signée ou dont la signature n'est pas la bonne.</strong> Avant
+même d'envoyer quoi que ce soit, la page contrôle que la signature existe&nbsp;:
+si la version n'est pas signée, l'installation est <strong>bloquée</strong> par un
+encadré orange («&nbsp;Cette version n'est pas signée… Installation
+bloquée&nbsp;»)&nbsp;; attendez alors la publication d'une version signée. Si la
+signature n'a pas pu être récupérée («&nbsp;Je n'ai pas pu récupérer la
+signature de cette version… Installation bloquée&nbsp;»), recliquez sur
+«&nbsp;Vérifier&nbsp;» dans quelques minutes. Le bouton ne propose plus de
+«&nbsp;mise à jour sans vérification&nbsp;».</p>
 
 <p>L'appareil ne propose <strong>jamais</strong> d'installer une version plus
 ancienne que la sienne. Si la version installée est plus récente que la dernière
@@ -1524,8 +1527,8 @@ c'est normal. Pour un retour en arrière voulu, utilisez la carte
 illisible, la carte affiche «&nbsp;Version de la release illisible&nbsp;» et ne propose rien.</p>
 
 <p>La carte «&nbsp;Mise à jour manuelle&nbsp;» propose deux champs&nbsp;:
-l'<strong>image</strong> (le fichier <code>.bin</code>) et, facultatif, sa
-<strong>signature</strong> (le fichier <code>.sig</code> qui l'accompagne
+l'<strong>image</strong> (le fichier <code>.bin</code>) et sa
+<strong>signature</strong>, <strong>obligatoire</strong> (le fichier <code>.sig</code> qui l'accompagne
 dans la même release). Il n'y a plus de sélecteur «&nbsp;Type&nbsp;» à
 choisir à la main&nbsp;: le type (firmware ou système de fichiers) est
 déterminé automatiquement, d'après la signature si vous l'avez fournie,
@@ -1556,6 +1559,19 @@ d'une release, prenez-les <strong>ensemble, dans la même release</strong>
   l'écriture, et l'interface serait alors inaccessible jusqu'au prochain
   envoi. Vérifiez que l'image et la signature viennent bien de la
   <strong>même</strong> release, puis recommencez.</p>
+</div>
+
+<div class="box-alerte">
+  <span class="box-title">Envoi refusé par l'appareil</span>
+  <p>Un encadré orange affiche <strong>la phrase de l'appareil</strong>, qui dit
+  quoi faire (par exemple «&nbsp;Signature manquante&nbsp;: choisissez aussi le
+  fichier .sig…&nbsp;»). Dans la plupart des cas, la phrase se termine par
+  «&nbsp;Rien n'a été modifié&nbsp;»&nbsp;: rien n'a été touché, vous pouvez
+  recommencer sans risque. Si elle dit au contraire que l'interface a été
+  effacée, ouvrez la <strong>page de secours</strong> (même adresse) et envoyez-y
+  l'image et sa signature&nbsp;; <strong>la régulation continue</strong> pendant
+  ce temps. Gardez sous la main les fichiers <code>.bin</code> et <code>.sig</code>
+  de la version installée, téléchargés ensemble.</p>
 </div>
 
 <div class="box-alerte">

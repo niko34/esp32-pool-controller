@@ -524,6 +524,17 @@ jobs:
       - name: Contrôle de l'interrupteur de signature
         run: ./tools/check_ota_signature_switch.sh
 
+  ota-manager-isole:
+    name: Aucun appelant de otaManager / ArduinoOTA hors ota_manager.* (feature-151 D3-c, P1-8)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # ArduinoOTA contournerait totalement le refus d'authenticité s'il était rebranché.
+      - name: Contrôle de l'isolement d'ota_manager
+        run: ./tools/check_ota_manager_isolated.sh
+
   fs-probe-paths:
     name: Chemins sondés par le firmware = fichiers produits par minify.js (feature-151 D3-b1)
     runs-on: ubuntu-latest

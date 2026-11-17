@@ -404,7 +404,9 @@ $("b-send").addEventListener("click", async () => {
         backToLogin();
         fail("connexion expirée, reconnectez-vous.");
       } else {
-        fail("refus de l'appareil (HTTP " + xhr.status + "), voir le journal.");
+        // La PHRASE de l'appareil (corps « FAIL: <phrase> »), telle quelle, en textContent.
+        let c = String(xhr.responseText || "").replace(/^\s*FAIL\s*:?\s*/i, "").trim().slice(0, 200);
+        fail(c || "Mise à jour refusée. Consultez le journal (onglet Avancé).");
       }
       rearm();
     });

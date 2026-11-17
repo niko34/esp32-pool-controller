@@ -121,9 +121,9 @@ Quand le secours est **armé**, ces deux routes rendent la page de secours (200)
 
 ⚠️ `/` et `/index.html` restent **sous** la garde 503 : en famine mémoire, seul `/recovery` répond.
 
-### Interrupteur de signature OTA (feature-151 D3-b2, [ADR-0125](adr/0125-l-expiration-de-l-interrupteur-de-signature-se-mesure-sur-un-horodatage-nvs.md))
+### Autorisation temporaire de mise à jour non signée (ex-« interrupteur », feature-151 D3-b2/D3-c, [ADR-0125](adr/0125-l-expiration-de-l-interrupteur-de-signature-se-mesure-sur-un-horodatage-nvs.md))
 
-⛔ **Lot INERTE : l'interrupteur n'impose ni ne lève rien.** L'appareil reste en mode D1 (« D3 refuserait : oui/non — AUCUN refus appliqué »). Armé, il change seulement une **mention du journal**. Les trois routes ci-dessous sont enregistrées dans [`web_routes_ota_switch.cpp`](../src/web_routes_ota_switch.cpp), un fichier **sans** `Update`, `LittleFS`, `onBody`, `onUpload` ni lecture de paramètre.
+✅ **Dispositif ACTIF (feature-151 D3-c).** L'appareil **refuse** désormais une image OTA non authentique ([ADR-0128](adr/0128-l-appareil-refuse-une-image-ota-non-authentique.md)). Cette autorisation (« autorisation temporaire de mise à jour non signée », anciennement « interrupteur ») est la **seule** manière de lever le refus pour un envoi : tant qu'elle est **activée**, les refus de signature des routes `/update` et `/download-update` ne sont pas appliqués. Les champs JSON conservent leurs noms (`armed`, `arm`) : seul le vocabulaire affiché change (« activée » / « retirée »). Les trois routes ci-dessous sont enregistrées dans [`web_routes_ota_switch.cpp`](../src/web_routes_ota_switch.cpp), un fichier **sans** `Update`, `LittleFS`, `onBody`, `onUpload` ni lecture de paramètre.
 
 Toutes : niveau **`CRITICAL`** (`REQUIRE_AUTH` en première instruction), enregistrées en `AsyncURIMatcher::exact(...)` — le mode par défaut de `server->on(const char*)` équivaut à `^{uri}(/.*)?$` et ferait capter `/ota-signature-switch/arm` par `/ota-signature-switch`. Aucune n'a de paramètre : la fenêtre (60 min) est une constante compilée. Réponse d'auth refusée : `401`.
 
@@ -131,7 +131,7 @@ Toutes : niveau **`CRITICAL`** (`REQUIRE_AUTH` en première instruction), enregi
 
 #### `POST /ota-signature-switch/arm` — CRITICAL
 
-Arme l'interrupteur pour **3600 s** (échéance = heure courante + 3600, écrite en NVS **puis relue** avant de répondre).
+**Active** l'autorisation pour **3600 s** (échéance = heure courante + 3600, écrite en NVS **puis relue** avant de répondre).
 
 | Code | Corps | Cas |
 |---|---|---|
@@ -160,9 +160,9 @@ Désarme (verrou RAM posé **avant** l'écriture NVS, repli à `0` si l'effaceme
 | `200` | même corps que le `GET` | Désarmé (`armed:false`) |
 | `500` | `{"error":"nvs_clear_failed","rearms_on_reboot":…,"nvs_residual_until":…,"armed":false,"reason":"locked","remaining_s":0}` | NVS non effacée : fermé pour toute décision **jusqu'au prochain armement**, mais une échéance (≤ 60 min) peut **ré-armer au redémarrage**. Journal `CRITICAL` |
 
-L'interrupteur est **consommé** au premier flash réussi (`/update`, les deux genres, ou `/download-update`), et **n'est jamais armé automatiquement**. ⛔ Il n'apparaît **pas** dans la page de secours. Détail : [ota-manager.md](subsystems/ota-manager.md#interrupteur-de-signature-feature-151-d3-b2).
+L'autorisation est **consommée** au premier flash réussi (`/update`, les deux genres, ou `/download-update`), et **n'est jamais activée automatiquement**. ⛔ Il n'apparaît **pas** dans la page de secours. Détail : [ota-manager.md](subsystems/ota-manager.md#interrupteur-de-signature-feature-151-d3-b2).
 
-🔴 **Ce que cela ne ferme PAS** : le vecteur « jeton administrateur volé » reste **ouvert**, et l'interrupteur le **rouvre en deux requêtes au lieu d'une** (armer, puis envoyer). Voir [ADR-0125](adr/0125-l-expiration-de-l-interrupteur-de-signature-se-mesure-sur-un-horodatage-nvs.md).
+🔴 **Ce que cela ne ferme PAS** : le vecteur « jeton administrateur volé » reste **ouvert**, et l'autorisation temporaire le **rouvre en deux requêtes au lieu d'une** (activer, puis envoyer). Voir [ADR-0125](adr/0125-l-expiration-de-l-interrupteur-de-signature-se-mesure-sur-un-horodatage-nvs.md).
 
 ---
 
@@ -3110,9 +3110,9 @@ Une tentative non authentifiée est journalisée `WARNING` **au plus 1 fois/60 s
 
 <a id="authenticite-manifest-signature-feature-151-d1"></a>
 
-#### Champs `manifest` / `signature` — authenticité (feature-151 D1, additifs, ⛔ AUCUN refus)
+#### Champs `manifest` / `signature` — authenticité (feature-151 D1, refus appliqué depuis D3-c)
 
-**feature-151 D1** ajoute deux paramètres **optionnels** au même multipart, **avant** la partie
+**feature-151 D1** ajoute deux paramètres au même multipart (**obligatoires en pratique depuis D3-c** : leur absence est refusée, voir « Refus d'une image non authentique » ci-dessous), **avant** la partie
 fichier (même contrainte d'ordre que `sha256` ci-dessus : un champ envoyé après `update_file` se
 lit comme absent) :
 
@@ -3167,24 +3167,49 @@ celle déclarée par la ligne signée du `.sig`. En cas de divergence, l'envoi e
 dérogation** côté page — avant même d'atteindre cette route. ⛔ Cette comparaison ne prouve rien
 sur l'origine du fichier (n'importe qui peut calculer une empreinte) : elle établit seulement
 que **ce** `.sig` décrit bien **ce** `.bin`, jamais que l'un ou l'autre est authentique.
-L'authenticité reste vérifiée par **l'appareil** via `manifest`/`signature` ci-dessus, et en
-D1/D2 elle est **journalisée seulement** — voir l'encadré « AUCUN refus » ci-dessus.
+L'authenticité est vérifiée par **l'appareil** via `manifest`/`signature` ci-dessus, et **refusée** si elle échoue — voir « Refus d'une image non authentique » ci-dessous.
 
-⛔ **D1 vérifie et JOURNALISE SEULEMENT — il ne refuse RIEN sur ce verdict.** Le firmware calcule
-un verdict d'authenticité à **sept** issues (`absente`, `malformée`, `vérification impossible`,
-`invalide`, `genre discordant`, `sous le plancher`, `valide`) et le journalise (`WARNING` si D3
-l'aurait refusé, `INFO` sinon, préfixe `[feature-151 D1]`) — mais **aucune requête n'est bloquée**
-par ce mécanisme en D1, que son manifeste soit authentique, falsifié, ou absent. Aujourd'hui,
-**aucun appelant officiel côté page web** ne les envoie encore (absence = cas normal, verdict
-`absente`) ; `ota_update.sh` les envoie systématiquement depuis ce même lot (voir
-[`docs/UPDATE_GUIDE.md`](UPDATE_GUIDE.md#signature-des-envois-ota)).
+<a id="refus-d-une-image-non-authentique-feature-151-d3-c"></a>
 
-Le refus (D3, lot **ultérieur**) est conditionné à une preuve terrain D2 réussie (quatre
-combinaisons script/page × firmware/filesystem journalisées « valide », et deux essais négatifs —
-sans signature, mauvaise clé — journalisés sans aucun effet de bord). Détail du mécanisme,
-de l'ordre D1→D5 imposé et de ce que la signature protège réellement (et ce qu'elle **ne**
-protège **pas** — le vecteur « jeton admin volé » reste ouvert) :
-[`docs/subsystems/ota-manager.md`](subsystems/ota-manager.md#d1--authenticite-par-signature-journalise-seulement-feature-151-verdict-security-reviewer-p1).
+##### Refus d'une image non authentique (feature-151 D3-c, [ADR-0128](adr/0128-l-appareil-refuse-une-image-ota-non-authentique.md))
+
+✅ **L'appareil REFUSE.** Le firmware calcule un verdict d'authenticité à **sept** issues (`absente`, `malformée`, `vérification impossible`, `invalide`, `genre discordant`, `sous le plancher`, `valide`), le journalise (préfixe `[feature-151 D1]`) **et** rejette tout verdict autre que `valide`, **avant toute écriture** et avant les trois `setOtaInProgress(true)` : pompes non gelées, filesystem non démonté, aucune partition touchée. Le refus est journalisé `CRITICAL` (`Mise à jour OTA refusée : <phrase>`).
+
+La décision est une fonction du **seul verdict** (`otaRefusalDecide()`, [`src/ota_refusal_messages.cpp`](../src/ota_refusal_messages.cpp)). Le champ POST **`ui`** que la page web ajoute (lu par **présence**, jamais comparé) ne change que la **phrase** du refus « absente », jamais la décision.
+
+| Verdict | HTTP | `code` (JSON, `/download-update` **seul**) |
+|---|---|---|
+| signature absente | `403` | `sig_absente` |
+| malformée | `400` | `sig_malformee` |
+| invalide | `403` | `sig_invalide` |
+| vérification impossible | `503` | `sig_verif_impossible` |
+| genre discordant | `415` | `sig_genre_discordant` |
+| sous le plancher | `403` | `sig_sous_plancher` (**inatteignable** : aucun plancher n'est appliqué) |
+| liaison image↔manifeste rompue (**3 sites tardifs**, écriture déjà commencée) | `400` texte / `422` `integrity_mismatch` | — (formats **figés**) |
+
+`409` est pris par « envoi concurrent », d'où `415` pour le genre discordant.
+
+⚠️ **Dissymétrie assumée entre les deux routes** : `POST /update` répond `text/plain` `FAIL: <phrase>` **sans `code`** ; `POST /download-update` répond en JSON `{"error":"<phrase>","code":"<code>"}`. Dans les deux cas la phrase est celle de l'appareil, en français, et l'interface l'affiche telle quelle.
+
+**Les neuf phrases** (constantes de `otaRefusalPhrase()`) :
+
+1. *absente* : `Signature manquante : choisissez aussi le fichier .sig livré avec cette version, puis recommencez. Rien n'a été modifié.`
+2. *absente, page périmée (marqueur `ui` absent)* : `Signature non reçue : cette page est périmée. Rechargez-la (Ctrl+F5, ou tirez vers le bas sur téléphone) puis recommencez. Hors navigateur : joignez le .sig. Rien n'a été modifié.`
+3. *malformée* : `Fichier de signature illisible (incomplet ou modifié). Retéléchargez le .sig avec son image, puis recommencez. Rien n'a été modifié.`
+4. *invalide* : `Signature non reconnue : fichier non officiel ou modifié. Ne l'installez pas ; retéléchargez la version officielle. Rien n'a été modifié.`
+5. *vérification impossible* : `L'appareil n'a pas pu vérifier la signature (problème interne). Redémarrez-le puis recommencez ; si cela persiste, contactez le support. Rien n'a été modifié.`
+6. *genre discordant* : `Mauvais type de fichier : la signature annonce un firmware, vous envoyez l'interface (ou l'inverse). Prenez le .bin et le .sig du même type. Rien n'a été modifié.`
+7. *tardif, firmware* : `Fichier non conforme à sa signature. L'appareil tourne toujours, mais son image de secours (retour arrière) est perdue. Retéléchargez image et signature ensemble, puis recommencez.`
+8. *tardif, interface* : `Fichier non conforme à sa signature : l'interface a été effacée. La régulation continue. Ouvrez la page de secours (même adresse) et envoyez-y l'image et sa signature, téléchargées ensemble.`
+9. *repli* : `Mise à jour refusée. Consultez le journal (onglet Avancé).`
+
+⚠️ « **Rien n'a été modifié** » n'apparaît **que** sur les refus précoces (phrases 1 à 6) : aux trois sites tardifs (phrases 7 et 8) l'écriture a commencé, et le dire serait faux.
+
+⛔ **Ce qui n'est JAMAIS refusé** : le **désaccord de version** (la référence vient du tag GitHub, mémorisé par `/check-update`, et **périme après un envoi direct**) et le **plancher** (aucun, nulle part — le retour arrière manuel reste possible). Le désaccord de version reste **journalisé seulement**.
+
+**Quatre portes de sortie** si le refus bloque un dépannage légitime : page de secours (`/recovery`, filesystem), autorisation temporaire (ci-dessus), `POST /update` avec une image **signée** (sans plancher), `/factory-reset`. Détail dans l'[ADR-0128](adr/0128-l-appareil-refuse-une-image-ota-non-authentique.md) et [UPDATE_GUIDE.md](UPDATE_GUIDE.md#appareil-refuse-une-mise-à-jour-non-signée).
+
+🔴 **Ce que le refus ne ferme PAS** : le vecteur « jeton administrateur volé » reste **ouvert** (un administrateur authentifié peut activer l'autorisation temporaire, puis envoyer).
 
 🔴 **Ce que le verdict `valide` ne couvre PAS, et qui est vérifié séparément (lot B1, correction de
 revue du 2026-10-18)** : `kValid` prouve que le **manifeste** a été signé par la bonne clé — jamais
@@ -3194,7 +3219,7 @@ contredise. Le firmware compare désormais l'empreinte **déclarée** par le man
 obtenue indépendamment, à **deux** moments sur **chacune** des deux routes (à l'arrivée du
 manifeste, contre le paramètre `sha256`/`digest` déjà fourni ; puis contre l'empreinte **réellement
 calculée** sur les octets écrits) — verdict distinct « non applicable » / « liée » / « NON liée »,
-journalisé sous le préfixe `[feature-151 D1 B1]`. ⛔ **Toujours aucun refus en D1.** Détail et les
+journalisé sous le préfixe `[feature-151 D1 B1]`. Les trois sites **tardifs** (après écriture) refusent depuis D3-c (`400` texte / `422` `integrity_mismatch`, formats figés ; phrases 7 et 8). Détail et les
 quatre points de comparaison :
 [`docs/subsystems/ota-manager.md`](subsystems/ota-manager.md#b1--la-signature-ne-liait-rien-a-limage-feature-151-correction-de-revue-du-2026-10-18).
 
@@ -3305,7 +3330,7 @@ La comparaison est **numérique**, composant par composant (`2.10.0` est postér
 
 Champs additifs v2.11.0 : `firmware_digest` / `filesystem_digest` — empreintes SHA-256 des assets (champ `digest` de l'API GitHub, format `sha256:<64 hex>`, chaîne vide si la release ne le fournit pas). L'UI les relaie en paramètre `digest=` de `/download-update` et **désactive le bouton Installer** si l'une des deux est vide (fail-closed).
 
-Champs additifs feature-151 D1 : `firmware_sig_url` / `filesystem_sig_url` — URL de l'asset `.sig` correspondant (`firmware.bin.sig` / `littlefs.bin.sig`) parmi les assets de la release, **chaîne vide** si absent (releases publiées avant ce lot, ou release sans `.sig`). ⛔ **Non encore exploités côté page web** en D1 — `/download-update` n'applique aucun refus fondé sur ces URL pour l'instant ; ils sont relayés pour que la page ait, un jour, quelque chose à aller chercher. Champ additif : un client qui l'ignore ne casse rien.
+Champs additifs feature-151 D1 : `firmware_sig_url` / `filesystem_sig_url` — URL de l'asset `.sig` correspondant (`firmware.bin.sig` / `littlefs.bin.sig`) parmi les assets de la release, **chaîne vide** si absent (releases publiées avant ce lot, ou release sans `.sig`). ⛔ **Non encore exploités côté page web** en D1 — la décision de refus de `/download-update` ne repose pas sur ces URL mais sur le `manifest`/`signature` reçus (voir « Refus d'une image non authentique »). Champ additif : un client qui l'ignore ne casse rien.
 
 Champs `firmware_manifest` / `firmware_signature` / `filesystem_manifest` / `filesystem_signature` (feature-151 D3-a, v2.87.0) — ⚠️ **depuis la v2.88.0 (`bug-176`, [ADR-0123](adr/0123-une-seule-session-tls-sortante-par-requete-http.md)) ces quatre champs subsistent mais sont TOUJOURS VIDES.** `/check-update` ne relaie plus les fichiers `.sig` : il en **mémorise l'URL** côté appareil, et la signature se demande à part via [`GET /ota-sig`](#get-ota-sig--write). **Changement de comportement pour tout client existant** qui lisait ces champs : il doit désormais appeler `/ota-sig` (le contrat reste additif, un client qui les ignorait ne casse rien). Raison : trois sessions TLS enchaînées dans une seule requête affamaient la mémoire interne (relais du filesystem sauté 9 fois sur 9 sous trafic concurrent) ; une seule session par requête tient.
 
@@ -3526,8 +3551,8 @@ Paramètres POST :
 |---|---|---|
 | `url` | oui | URL de l'asset (`firmware.bin` ou `littlefs.bin`, hôtes whitelistés) |
 | `digest` | **oui** (v2.11.0) | Empreinte SHA-256 attendue, format `sha256:<64 hex>` (relayée depuis `/check-update`) |
-| `manifest` | non (feature-151 D1, relayé par la page depuis D3-a) | Même manifeste et même grammaire que [`POST /update`](#authenticite-manifest-signature-feature-151-d1) — ⛔ **journalisé seulement, aucun refus**. Depuis la v2.88.0, valeur du champ `manifest` de [`GET /ota-sig`](#get-ota-sig--write) (les champs `*_manifest` de `/check-update` sont désormais vides) |
-| `signature` | non (feature-151 D1, relayé par la page depuis D3-a) | Même format (RSA-3072, base64 sans padding, 512 caractères) — ⛔ **journalisé seulement, aucun refus**. Tout-ou-rien : un `manifest` sans `signature` (ou l'inverse) est ignoré |
+| `manifest` | non (feature-151 D1, relayé par la page depuis D3-a) | Même manifeste et même grammaire que [`POST /update`](#authenticite-manifest-signature-feature-151-d1) — **refus `403 sig_absente` s'il manque** (D3-c). Depuis la v2.88.0, valeur du champ `manifest` de [`GET /ota-sig`](#get-ota-sig--write) (les champs `*_manifest` de `/check-update` sont désormais vides) |
+| `signature` | non (feature-151 D1, relayé par la page depuis D3-a) | Même format (RSA-3072, base64 sans padding, 512 caractères) — vérifiée, **refus sinon** (D3-c, table ci-dessus). Tout-ou-rien : un `manifest` sans `signature` (ou l'inverse) est traité comme signature **absente** |
 | `restart` | non | `false` pour ne pas redémarrer après une installation filesystem réussie |
 | `expected_version` | non (feature-151 D3-b2) | Version que la requête est censée porter (`v2.89.0` ou `2.89.0`). ⛔ **Journalisée seulement** (observation « désaccord de version »), jamais une condition d'acceptation, jamais prioritaire sur le tag mémorisé par `/check-update`. Re-sérialisée depuis les entiers parsés, jamais recopiée brute dans le journal. **Facultative exprès** : un onglet resté ouvert qui exécute un JS périmé (celui d'avant la mise à jour, qui ne la connaît pas) doit continuer à fonctionner — la rendre obligatoire casserait l'envoi pour ce client, comme l'épisode du 2026-11-15 l'a montré. Voir [ADR-0126](adr/0126-la-version-demandee-ne-vient-jamais-d-une-sous-chaine-d-url.md) |
 
@@ -3571,11 +3596,7 @@ Les corps des **trois** refus sont produits par le **même helper** (`refuseIfTl
 
 **Position de la garde** (importante) : après la validation `url` / allowlist / `digest` (une requête malformée reste un `400`/`403`) et **avant** `WiFiClientSecure`, `setOtaInProgress()`, `LittleFS.end()` et tout effacement de partition — un refus n'a donc **aucun effet de bord** : pompes non gelées, filesystem non démonté, aucune partition touchée. Le WARN de refus est identique à celui de `/check-update`, préfixé `/download-update`.
 
-⚠️ **feature-151 D1** calcule et journalise le verdict d'authenticité (`manifest`/`signature`)
-à cette **même** place — avant la garde TLS ci-dessus, donc avant toute ouverture de session
-sortante — mais ⛔ **sans y conditionner aucun refus** (voir
-[`POST /update`](#authenticite-manifest-signature-feature-151-d1)). C'est la place **définitive**
-retenue pour D3 ; seul un `if` de refus s'y ajoutera.
+✅ **feature-151 D3-c** : le verdict d'authenticité (`manifest`/`signature`) est calculé à cette **même** place — avant la garde TLS ci-dessus, donc avant toute ouverture de session sortante — **et le refus y est prononcé** (JSON `error` + `code`, voir [« Refus d'une image non authentique »](#refus-d-une-image-non-authentique-feature-151-d3-c)).
 
 ---
 

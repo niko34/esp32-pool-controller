@@ -1187,18 +1187,43 @@ canvas:hover {
   position: relative;
 }
 
-/* ux-ui-designer (feature-151 D1-bis) : débordement horizontal à 390 px —
-   inventaire mesuré, 3 <input type="file"> dans data/ (#update_file,
-   #update_sig, #history_import_file), AUCUN n'avait de règle de largeur. Un
-   nom de fichier long et insécable fait grossir la piste implicite de la
-   grille au-delà du conteneur. Règle GÉNÉRIQUE, les TROIS emplois ensemble —
-   composant partagé, application partielle interdite. ⚠️ Scope DIFFÉRENT de
-   `.product-card .field > .form-control` (ligne ~3338, Produits) : ne pas
-   réemployer ce motif-là tel quel, celui-ci est générique à tout .field. */
-.field > input[type="file"] {
-  width: 100%;
-  min-width: 0;
+/* feature-151 D3-c : l'ancienne règle de largeur des <input type=file> natifs est supprimée —
+   les 3 emplois sont des `.pick` (voir plus bas), il n'y a plus de champ natif visible. */
+
+/* feature-151 D3-c (C6) : sélecteur de fichier à libellé propre — le contrôle natif affichait
+   « Choose File » en anglais. Les TROIS emplois ensemble (#update_file, #update_sig,
+   #history_import_file), contexte : page de réglage. L'<input class="vh"> reste dans le DOM
+   (focus clavier), immédiatement AVANT son label.pick. Vide = cadre pointillé ; rempli = plein
+   + nom (textContent) : le sens ne repose pas sur la couleur seule. Copie de la page de secours. */
+.vh {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  overflow: hidden;
 }
+.pick {
+  display: block;
+  min-height: 56px;
+  padding: 8px 10px;
+  border: 2px dashed var(--muted);
+  border-radius: 10px;
+  cursor: pointer;
+}
+.pick b { display: block; }
+.pick span {
+  display: block;
+  color: var(--muted);
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
+.pick.has { border-style: solid; border-color: var(--accent); }
+.pick.has span { color: var(--text); }
+.vh:focus-visible + .pick { outline: 3px solid var(--accent); outline-offset: 2px; }
+.vh:disabled + .pick { opacity: 0.5; cursor: not-allowed; }
+#update_refusal, #update_sig_note { overflow-wrap: anywhere; }
+#update_refusal { margin-top: 12px; }
+#update_refusal[hidden], #update_sig_note[hidden] { display: none; }
 
 @keyframes fadeIn {
   from {
@@ -1335,7 +1360,9 @@ canvas:hover {
 /* États: idle → typing → valid | error */
 
 /* 2026 Form inputs - machine d'états standardisée */
-input, select, textarea {
+/* `:where(:not(.vh))` : exclut le champ masqué du motif .pick/.vh (sinon il hérite de padding et
+   bordure et recouvre le libellé) SANS relever la spécificité (0,0,1) des règles qui surchargent. */
+input:where(:not(.vh)), select, textarea {
   border-radius: var(--radius);
   border: 1.5px solid var(--border);
   background: var(--panel2);

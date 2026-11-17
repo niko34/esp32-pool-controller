@@ -112,13 +112,13 @@ bool disarm(const char* motif) {
   }
   esp_task_wdt_reset();
 
-  char ligne[120];
+  char ligne[256];
   if (done) {
     sResidualEpoch.store(0, std::memory_order_relaxed);
     sWord.store(kWordClosed, std::memory_order_relaxed);
     if (fallbackUsed) {
       snprintf(ligne, sizeof(ligne),
-               "Interrupteur de signature OTA (%s) : effacement NVS en échec, repli à 0 appliqué",
+               "Autorisation temporaire de mise à jour non signée (%s) : effacement NVS en échec, repli à 0 appliqué",
                motif);
       systemLogger.warning(ligne);
     }
@@ -134,8 +134,8 @@ bool disarm(const char* motif) {
                               : (p ? (wordFromNvs(r, p, w) == kWordClosed ? 0u : w) : 0u);
     sResidualEpoch.store(resid, std::memory_order_relaxed);
     snprintf(ligne, sizeof(ligne),
-             "Interrupteur de signature OTA (%s) : DÉSARMEMENT NVS ÉCHOUÉ — verrou RAM fermé, "
-             "un redémarrage RÉ-ARMERAIT l'interrupteur (<= 60 min) si une échéance subsiste en NVS",
+             "Autorisation temporaire de mise à jour non signée (%s) : RETRAIT NVS ÉCHOUÉ — verrou RAM fermé, "
+             "un redémarrage la RÉACTIVERAIT (<= 60 min) si une échéance subsiste en NVS",
              motif);
     systemLogger.critical(ligne);
   }
@@ -150,7 +150,7 @@ void otaSignatureSwitchInit() {
   readNvs(&readable, &present, &expiry);
   sWord.store(wordFromNvs(readable, present, expiry), std::memory_order_relaxed);
   if (!readable) {
-    systemLogger.warning("Interrupteur de signature OTA illisible (NVS) — signature exigée");
+    systemLogger.warning("Autorisation temporaire de mise à jour non signée illisible (NVS) — signature exigée");
   }
 }
 
@@ -193,7 +193,7 @@ OtaSwitchArmResult otaSignatureSwitchArm(uint32_t* untilOut) {
   esp_task_wdt_reset();
 
   if (!ok) {
-    systemLogger.error("Interrupteur de signature OTA : écriture NVS échouée — NON armé");
+    systemLogger.error("Autorisation temporaire de mise à jour non signée : écriture NVS échouée — NON activée");
     return OtaSwitchArmResult::kWriteFailed;
   }
   sResidualEpoch.store(0, std::memory_order_relaxed);
@@ -203,7 +203,7 @@ OtaSwitchArmResult otaSignatureSwitchArm(uint32_t* untilOut) {
 }
 
 bool otaSignatureSwitchClear() {
-  return disarm("désarmement");
+  return disarm("retrait");
 }
 
 void otaSignatureSwitchConsume(bool sessionWasWaived) {
@@ -212,13 +212,13 @@ void otaSignatureSwitchConsume(bool sessionWasWaived) {
   // qu'elle ne tenait plus à la fin (expiration ou désarmement pendant le transfert).
   if (sessionWasWaived &&
       decisionFromWord(word).requirement != OtaSignatureRequirement::kWaived) {
-    systemLogger.warning("Interrupteur de signature OTA : plus armé à la fin du transfert "
-                         "(expiré ou désarmé en cours) — décision de début de session conservée");
+    systemLogger.warning("Autorisation temporaire de mise à jour non signée : plus activée à la fin du transfert "
+                         "(expirée ou retirée en cours) — décision de début de session conservée");
   }
   // Rien à consommer si aucune échéance n'existe (cas nominal : aucune E/S flash).
   if (word == kWordClosed || word == kWordUnreadable) return;
   if (disarm("consommé par un flash réussi")) {
-    systemLogger.info("Interrupteur de signature OTA consommé (premier flash réussi)");
+    systemLogger.info("Autorisation temporaire de mise à jour non signée consommée (premier flash réussi)");
   }
 }
 

@@ -3146,7 +3146,7 @@ void MqttManager::publishDiscovery(DiscoveryReason reason) {
   // ⛔ JAMAIS un `switch` HA : ce serait une surface d'ARMEMENT hors jeton admin. Entité NOUVELLE
   // (`unique_id` inédit). `safety` : ON = « dangereux » (signature non exigée).
   topic = discoveryBase + "binary_sensor/" + HA_DEVICE_ID + "_ota_signature_switch/config";
-  doc["name"] = "Piscine Signature OTA Levée";
+  doc["name"] = "Mise à jour non signée autorisée";
   doc["unique_id"] = String(HA_DEVICE_ID) + "_ota_signature_switch";
   doc["state_topic"] = topics.otaSignatureSwitchState;
   doc["payload_on"] = "ON";

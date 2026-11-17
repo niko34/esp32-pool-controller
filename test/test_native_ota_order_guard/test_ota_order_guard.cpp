@@ -825,13 +825,20 @@ void test_d3b2_lectures_et_consommations_comptees_et_ordonnees(void) {
   free(src);
 }
 
-// Une ligne qui mentionne la décision ne doit JAMAIS la tester : c'est l'invariant « inerte ».
+// [G7, propriété 3 RÉÉCRITE par D3-c] La décision de l'autorisation temporaire (switchDecision /
+// switchWaived / g_uploadSwitchWaived) est désormais UNE CONDITION — mais exactement deux, de forme
+// LITTÉRALE : `refusal.rejected && !g_uploadSwitchWaived` (/update) et
+// `refusal.rejected && !switchWaived` (/download-update). Tout le reste (condition C4) : AUCUNE
+// ligne qui la mentionne ne touche au verdict (otaAuthenticityIsRejected, computation.verdict) ni
+// au niveau de journal (systemLogger, warning, info) : la levée ne change NI le verdict NI le niveau.
 void test_d3b2_la_decision_n_est_jamais_une_condition(void) {
   long len = 0;
   char* src = readProjectFile("src/web_routes_ota.cpp", &len);
   TEST_ASSERT_NOT_NULL(src);
   const char* names[] = {"switchDecision", "switchWaived", "g_uploadSwitchWaived"};
-  int mentions = 0;
+  const char* litA = "refusal.rejected && !g_uploadSwitchWaived";
+  const char* litB = "refusal.rejected && !switchWaived";
+  int mentions = 0, conditionLines = 0;
   const char* line = src;
   while (*line) {
     const char* nl = strchr(line, '\n');
@@ -844,27 +851,36 @@ void test_d3b2_la_decision_n_est_jamais_une_condition(void) {
     for (const char* nm : names) if (strstr(buf, nm)) mentioned = true;
     if (mentioned) {
       mentions++;
-      const char* forbidden[] = {"if (", "if(", "return", "while", "&&", "||", " ? ", "refuse", "failOtaUpload", "send("};
-      for (const char* f : forbidden) {
-        // Seule exception : l'affectation `g_uploadSwitchWaived = (switchDecision.requirement == ...)`
-        // et `switchWaived = (...)` — elles portent == mais aucun des mots interdits.
-        char msg[160];
-        snprintf(msg, sizeof(msg), "REGRESSION D3-b2 (inerte) : la decision de l'interrupteur est testee (« %s ») : %.100s", f, buf);
+      char msg[200];
+      const char* verdictOrLog[] = {"otaAuthenticityIsRejected", "computation.verdict", "systemLogger",
+                                    "warning", "info"};
+      for (const char* f : verdictOrLog) {
+        snprintf(msg, sizeof(msg), "REGRESSION D3-c (C4) : la levee touche le verdict ou le niveau (« %s ») : %.100s", f, buf);
         TEST_ASSERT_TRUE_MESSAGE(strstr(buf, f) == NULL, msg);
+      }
+      const char* condish[] = {"if (", "if(", "return", "while", "&&", "||", " ? ", "refuse", "failOtaUpload", "send("};
+      bool isCond = false;
+      for (const char* f : condish) if (strstr(buf, f)) isCond = true;
+      if (isCond) {
+        conditionLines++;
+        snprintf(msg, sizeof(msg), "REGRESSION D3-c : condition de forme non litterale : %.100s", buf);
+        TEST_ASSERT_TRUE_MESSAGE(strstr(buf, litA) != NULL || strstr(buf, litB) != NULL, msg);
       }
     }
     if (!nl) break;
     line = nl + 1;
   }
-  // 2 decl/affectations + 2 logs + 3 consommations... : on exige au moins les 3 consommations + 2 captures.
-  TEST_ASSERT_TRUE_MESSAGE(mentions >= 5, "garde aveugle : la decision n'est plus mentionnee comme attendu");
+  TEST_ASSERT_EQUAL_INT_MESSAGE(2, conditionLines, "D3-c : EXACTEMENT 2 lignes testent la decision");
+  TEST_ASSERT_EQUAL_INT_MESSAGE(1, countIn(src, litA), "D3-c : forme litterale /update (1 occurrence)");
+  TEST_ASSERT_EQUAL_INT_MESSAGE(1, countIn(src, litB), "D3-c : forme litterale /download-update (1 occurrence)");
+  TEST_ASSERT_TRUE_MESSAGE(mentions >= 7, "garde aveugle : la decision n'est plus mentionnee comme attendu");
 
-  // Captures : une seule ecriture par site, jamais ailleurs.
-  TEST_ASSERT_EQUAL_INT(1, countIn(src, "g_uploadSwitchWaived = (")); // l'affectation ; la declaration est `= false;`
+  // Captures : une seule ecriture par site, jamais ailleurs (comptes INCHANGES).
+  TEST_ASSERT_EQUAL_INT(1, countIn(src, "g_uploadSwitchWaived = ("));
   TEST_ASSERT_EQUAL_INT(1, countIn(src, "otaSignatureSwitchConsume(g_uploadSwitchWaived)"));
   TEST_ASSERT_EQUAL_INT(1, countIn(src, "static bool g_uploadSwitchWaived = false;"));
   TEST_ASSERT_EQUAL_INT(1, countIn(src, "g_uploadSwitchWaived = (switchDecision.requirement == OtaSignatureRequirement::kWaived)"));
-  TEST_ASSERT_EQUAL_INT(1, countIn(src, "switchWaived = (switchDecision.requirement == OtaSignatureRequirement::kWaived)"));  // /download-update (la forme g_upload... ne contient pas « switchWaived » en minuscule)
+  TEST_ASSERT_EQUAL_INT(1, countIn(src, "switchWaived = (switchDecision.requirement == OtaSignatureRequirement::kWaived)"));
   TEST_ASSERT_EQUAL_INT(2, countIn(src, "otaSignatureSwitchConsume(switchWaived)"));
   free(src);
 }
@@ -897,8 +913,14 @@ void test_d3b2_verdict_et_levee_distincts(void) {
   TEST_ASSERT_EQUAL_INT_MESSAGE(1, countIn(gate, "canonicalLen > 0"), "C4 : octets canoniques conserves sous wouldReject");
   free(gate);
   TEST_ASSERT_EQUAL_INT(0, countIn(body, "return"));
-  TEST_ASSERT_EQUAL_INT_MESSAGE(1, countIn(body, "D3 refuserait : %s%s") + countIn(body, "wouldReject ? \"oui\" : \"non\", levee);") - 1,
-      "C4 : la mention de levee s'AJOUTE au verdict, elle ne le remplace pas");
+  // D3-c : la ligne dit le verdict (libelle) ET ce qui a ete decide ; la mention de levee
+  // (`levee`) s'AJOUTE en fin de ligne, elle ne remplace pas le verdict.
+  TEST_ASSERT_EQUAL_INT_MESSAGE(1, countIn(body, "authenticité OTA : %s — refusé : %s%s"),
+      "C4 : la ligne porte verdict ET decision, la levee en suffixe");
+  TEST_ASSERT_EQUAL_INT_MESSAGE(1, countIn(body, "otaAuthenticityVerdictLabel(computation.verdict)"),
+      "C4 : le libelle du verdict reste journalise");
+  TEST_ASSERT_EQUAL_INT_MESSAGE(1, countIn(body, "(wouldReject && !armed) ? \"oui\" : \"non\", levee);"),
+      "C4 : « refuse » = verdict ET pas de levee ; la levee s'ajoute en suffixe");
   free(body);
   free(src);
 }
@@ -973,6 +995,348 @@ void test_d3b2_routes_de_l_interrupteur_en_matcher_exact(void) {
   free(src);
 }
 
+// =============================================================================
+// [G9] feature-151 D3-c : le REFUS d'une image non authentique.
+//   (a) la sortie précoce de /update : markUploadRejected, failOtaUpload, onDisconnect, return,
+//       toutes AVANT `g_uploadOwner = request;` ;
+//   (b) les 2 return neufs sont en amont des 3 setOtaInProgress(true) ;
+//   (c) la séparation TYPÉE : `ui` / pageAnnounced n'atteint pas otaRefusalDecide ;
+//   (d) phrases constantes (bornes mesurées dans test_native_ota_refusal_messages) ;
+//   (e) INVERSE : empreinte du manifeste illisible => REFUS précoce (plus de repli muet) ;
+//   (f) aucun otaManager hors ota_manager.* ;
+//   (g) les marqueurs de tolérance D3-a et la mention « aucun refus » ont disparu du code.
+// =============================================================================
+static bool refusalBlock(const char* src, const char* cond, long* open, long* close) {
+  const long at = indexOf(src, cond);
+  if (at < 0) return false;
+  const char* b = strchr(src + at, '{');
+  if (b == NULL) return false;
+  *open = (long)(b - src);
+  *close = findMatchingBrace(src, *open);
+  return *close > *open;
+}
+
+void test_g9a_sortie_precoce_update_sequence_complete(void) {
+  long len = 0;
+  char* src = readProjectFile("src/web_routes_ota.cpp", &len);
+  TEST_ASSERT_NOT_NULL(src);
+  long bo = 0, bc = 0;
+  TEST_ASSERT_TRUE(refusalBlock(src, "if (refusal.rejected && !g_uploadSwitchWaived)", &bo, &bc));
+  char* blk = sliceCopy(src, bo, bc);
+  const long mark = indexOf(blk, "markUploadRejected(request);");
+  const long fail = indexOf(blk, "failOtaUpload(request, refusal.http");
+  const long disc = indexOf(blk, "request->onDisconnect(");
+  const long ret = indexOf(blk, "return;");
+  TEST_ASSERT_TRUE_MESSAGE(mark >= 0, "G9a : markUploadRejected absent -> reponse OK + redemarrage parasite, compteurs NVS perdus");
+  TEST_ASSERT_TRUE_MESSAGE(fail >= 0, "G9a : failOtaUpload absent");
+  TEST_ASSERT_TRUE_MESSAGE(disc >= 0, "G9a : onDisconnect absent (verdict fantome)");
+  TEST_ASSERT_TRUE_MESSAGE(ret >= 0, "G9a : return absent");
+  TEST_ASSERT_TRUE_MESSAGE(mark < fail && fail < disc && disc < ret, "G9a : ordre mark < fail < onDisconnect < return");
+  TEST_ASSERT_EQUAL_INT_MESSAGE(1, countIn(blk, "return"), "G9a : un seul return dans la sortie");
+  free(blk);
+  // La sortie est AVANT la prise de propriete.
+  const long owner = indexOf(src, "g_uploadOwner = request;");
+  TEST_ASSERT_TRUE(owner > 0);
+  TEST_ASSERT_TRUE_MESSAGE(bc < owner, "G9a : la sortie doit preceder g_uploadOwner = request");
+  free(src);
+}
+
+void test_g9b_returns_en_amont_des_setOtaInProgress_true(void) {
+  long len = 0;
+  char* src = readProjectFile("src/web_routes_ota.cpp", &len);
+  TEST_ASSERT_NOT_NULL(src);
+  TEST_ASSERT_EQUAL_INT_MESSAGE(3, countIn(src, "setOtaInProgress(true)"), "G9b : 3 sites setOtaInProgress(true)");
+  long uo = 0, uc = 0, do_ = 0, dc = 0, bo = 0, bc = 0;
+  TEST_ASSERT_TRUE(functionBody(src, "static void handleOtaUpdate(AsyncWebServerRequest* request, const String& filename", &uo, &uc));
+  TEST_ASSERT_TRUE(functionBody(src, "static void handleDownloadUpdate(AsyncWebServerRequest* request) {", &do_, &dc));
+
+  // /update : sortie < 1er setOtaInProgress(true) ; /download-update : sortie < 1er aussi.
+  TEST_ASSERT_TRUE(refusalBlock(src, "if (refusal.rejected && !g_uploadSwitchWaived)", &bo, &bc));
+  const long uTrue = indexOf(src + uo, "setOtaInProgress(true)") + uo;
+  TEST_ASSERT_TRUE_MESSAGE(bc < uTrue, "G9b : le return de /update doit preceder setOtaInProgress(true)");
+  TEST_ASSERT_TRUE_MESSAGE(uTrue < uc, "G9b : setOtaInProgress(true) de /update dans handleOtaUpdate");
+
+  TEST_ASSERT_TRUE(refusalBlock(src, "if (refusal.rejected && !switchWaived)", &bo, &bc));
+  char* blk = sliceCopy(src, bo, bc);
+  TEST_ASSERT_EQUAL_INT_MESSAGE(1, countIn(blk, "return;"), "G9b : le refus de /download-update se termine par return");
+  free(blk);
+  const long dTrue1 = nthIndexOf(src + do_, "setOtaInProgress(true)", 1) + do_;
+  TEST_ASSERT_TRUE_MESSAGE(bo > do_ && bc < dTrue1, "G9b : le return de /download-update precede setOtaInProgress(true)");
+  TEST_ASSERT_TRUE(nthIndexOf(src + do_, "setOtaInProgress(true)", 2) >= 0);
+
+  // Appariement : chaque setOtaInProgress(true) a ses setOtaInProgress(false) (comptes mesures
+  // par fonction ; supprimer un false laisse la regulation bloquee « OTA en cours »).
+  char* up = sliceCopy(src, uo, uc);
+  char* dl = sliceCopy(src, do_, dc);
+  TEST_ASSERT_EQUAL_INT_MESSAGE(1, countIn(up, "setOtaInProgress(true)"), "G9b : /update : 1 true");
+  TEST_ASSERT_EQUAL_INT_MESSAGE(2, countIn(dl, "setOtaInProgress(true)"), "G9b : /download-update : 2 true");
+  TEST_ASSERT_EQUAL_INT_MESSAGE(6, countIn(up, "setOtaInProgress(false)"), "G9b : /update : 6 false (aucun retire)");
+  TEST_ASSERT_EQUAL_INT_MESSAGE(8, countIn(dl, "setOtaInProgress(false)"), "G9b : /download-update : 8 false (aucun retire)");
+  free(up);
+  free(dl);
+  free(src);
+}
+
+// (c) La séparation typée : la DÉCISION ne reçoit aucun paramètre de page.
+void test_g9c_decision_sans_parametre_de_page(void) {
+  long len = 0;
+  char* h = readProjectFile("src/ota_refusal_messages.h", &len);
+  char* c = readProjectFile("src/ota_refusal_messages.cpp", &len);
+  TEST_ASSERT_NOT_NULL(h);
+  TEST_ASSERT_NOT_NULL(c);
+  TEST_ASSERT_EQUAL_INT(1, countIn(h, "OtaRefusalDecision otaRefusalDecide(OtaAuthenticityVerdict verdict);"));
+  TEST_ASSERT_EQUAL_INT(1, countIn(c, "OtaRefusalDecision otaRefusalDecide(OtaAuthenticityVerdict verdict) {"));
+  long o = 0, cl = 0;
+  TEST_ASSERT_TRUE(functionBody(c, "OtaRefusalDecision otaRefusalDecide(", &o, &cl));
+  char* body = sliceCopy(c, o, cl);
+  TEST_ASSERT_EQUAL_INT_MESSAGE(0, countIn(body, "pageAnnounced") + countIn(body, "ui"),
+                                "G9c : le marqueur ui ne doit JAMAIS atteindre la decision");
+  free(body);
+  // Sites d'appel : 4 (2 verdicts d'authenticite, 2 refus precoces d'empreinte illisible a verdict
+  // CONSTANT). Aucun argument ne peut etre autre chose que l'un de ces deux textes exacts.
+  char* r = readProjectFile("src/web_routes_ota.cpp", &len);
+  TEST_ASSERT_NOT_NULL(r);
+  TEST_ASSERT_EQUAL_INT_MESSAGE(4, countIn(r, "otaRefusalDecide("), "G9c : 4 sites d'appel de la decision");
+  TEST_ASSERT_EQUAL_INT(2, countIn(r, "otaRefusalDecide(authenticity.verdict);"));
+  TEST_ASSERT_EQUAL_INT(2, countIn(r, "otaRefusalDecide(OtaAuthenticityVerdict::kMalformed);"));
+  // Renfort (revue de code) : `ui` n'est lu qu'a 4 endroits, tous DANS un bloc de refus, jamais
+  // stocke (statique, membre) pour atteindre la decision par la bande.
+  TEST_ASSERT_EQUAL_INT_MESSAGE(4, countIn(r, "hasParam(\"ui\", true)"), "G9c : `ui` lu 4 fois exactement");
+  TEST_ASSERT_EQUAL_INT_MESSAGE(2, countIn(r, "const bool pageAnnounced = request->hasParam(\"ui\", true);"),
+                                "G9c : 2 lectures locales const bool pageAnnounced");
+  TEST_ASSERT_EQUAL_INT_MESSAGE(4, countIn(r, "pageAnnounced"), "G9c : pageAnnounced = 2 declarations + 2 usages, rien d'autre");
+  TEST_ASSERT_EQUAL_INT_MESSAGE(0, countIn(r, "static bool pageAnnounced") + countIn(r, "g_pageAnnounced") +
+                                       countIn(r, "static const bool pageAnnounced"),
+                                "G9c : ui stocke dans une statique");
+  long bo = 0, bc = 0;
+  // 2 lectures locales : dans les blocs `if (refusal.rejected ...)`.
+  TEST_ASSERT_TRUE(refusalBlock(r, "if (refusal.rejected && !g_uploadSwitchWaived)", &bo, &bc));
+  char* blk = sliceCopy(r, bo, bc);
+  TEST_ASSERT_EQUAL_INT_MESSAGE(1, countIn(blk, "hasParam(\"ui\", true)"), "G9c : /update : 1 lecture de ui, dans le bloc de refus");
+  free(blk);
+  TEST_ASSERT_TRUE(refusalBlock(r, "if (refusal.rejected && !switchWaived)", &bo, &bc));
+  blk = sliceCopy(r, bo, bc);
+  TEST_ASSERT_EQUAL_INT_MESSAGE(1, countIn(blk, "hasParam(\"ui\", true)"), "G9c : /download-update : 1 lecture de ui, dans le bloc de refus");
+  free(blk);
+  // 2 lectures en ligne : dans le bloc `else` du decodage d'empreinte, qui reste un refus.
+  for (int n = 1; n <= 2; ++n) {
+    const long at = nthIndexOf(r, "const OtaRefusalDecision bad = otaRefusalDecide(", n);
+    TEST_ASSERT_TRUE(at > 0);
+    const long ui = indexOf(r + at, "hasParam(\"ui\", true)");
+    TEST_ASSERT_TRUE(ui > 0);
+    TEST_ASSERT_TRUE_MESSAGE(ui < 600, "G9c : la lecture de ui doit rester dans le bloc de refus d'empreinte");
+    char* seg = sliceCopy(r, at, at + ui);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(0, countIn(seg, "static ") + countIn(seg, ";\n}"), "G9c : lecture de ui hors bloc de refus");
+    free(seg);
+  }
+  free(r);
+  free(h);
+  free(c);
+}
+
+// (d) phrases constantes : le module n'assemble rien ; les sites d'appel ne copient pas dans un tampon.
+void test_g9d_phrases_constantes(void) {
+  long len = 0;
+  char* c = readProjectFile("src/ota_refusal_messages.cpp", &len);
+  TEST_ASSERT_NOT_NULL(c);
+  const char* forbidden[] = {"String", "snprintf", "sprintf", "malloc", "new ", "strcat", "strcpy", "strncpy"};
+  for (const char* f : forbidden) {
+    char msg[100];
+    snprintf(msg, sizeof(msg), "G9d : « %s » dans ota_refusal_messages.cpp (phrase non constante)", f);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(0, countIn(c, f), msg);
+  }
+  TEST_ASSERT_EQUAL_INT_MESSAGE(9, countIn(c, "static const char kPhrase"), "G9d : 9 phrases constantes");
+  free(c);
+  char* js = readProjectFile("data/app.js", &len);
+  TEST_ASSERT_NOT_NULL(js);
+  TEST_ASSERT_EQUAL_INT_MESSAGE(1, countIn(js, "if (cause.length > 200) cause = cause.slice(0, 200);"),
+      "G9d : la troncature JS a change : re-mesurer les phrases (borne 200 caracteres)");
+  free(js);
+  char* r = readProjectFile("src/web_routes_ota.cpp", &len);
+  TEST_ASSERT_NOT_NULL(r);
+  TEST_ASSERT_EQUAL_INT_MESSAGE(0, countIn(r, "char phrase["), "G9d : aucun tampon char[] local pour les phrases");
+  free(r);
+}
+
+// (e) INVERSE (revue de securite P2) : si le decodage de l'empreinte du manifeste echoue, la
+// signature etant VALIDE, on REFUSE avant toute ecriture. Un repli muet lierait une signature
+// valide a une image quelconque.
+void test_g9e_empreinte_illisible_refusee(void) {
+  long len = 0;
+  char* src = readProjectFile("src/web_routes_ota.cpp", &len);
+  TEST_ASSERT_NOT_NULL(src);
+  const char* cond = "if (parseSha256Digest(prefixed, manifestDigest)) {";
+  TEST_ASSERT_EQUAL_INT_MESSAGE(2, countIn(src, cond), "G9e : 2 sites de decodage d'empreinte du manifeste");
+  for (int n = 1; n <= 2; ++n) {
+    const long at = nthIndexOf(src, cond, n);
+    const long open = at + (long)strlen(cond) - 1;
+    const long close = findMatchingBrace(src, open);
+    TEST_ASSERT_TRUE(close > open);
+    const char* after = src + close + 1;
+    while (*after == ' ' || *after == '\n' || *after == '\r' || *after == '\t') ++after;
+    TEST_ASSERT_TRUE_MESSAGE(strncmp(after, "else", 4) == 0, "G9e : branche else ABSENTE = repli muet (signature valide + image quelconque)");
+    const long eo = (long)(strchr(after, '{') - src);
+    const long ec = findMatchingBrace(src, eo);
+    TEST_ASSERT_TRUE(ec > eo);
+    char* blk = sliceCopy(src, eo, ec);
+    TEST_ASSERT_TRUE_MESSAGE(indexOf(blk, "otaRefusalDecide(OtaAuthenticityVerdict::kMalformed)") >= 0, "G9e : verdict kMalformed attendu");
+    TEST_ASSERT_TRUE_MESSAGE(indexOf(blk, "OtaRefusalSite::kEarly") >= 0, "G9e : phrase du site precoce");
+    TEST_ASSERT_EQUAL_INT_MESSAGE(1, countIn(blk, "return;"), "G9e : un seul return");
+    TEST_ASSERT_EQUAL_INT_MESSAGE(0, countIn(blk, "setOtaInProgress(true)") + countIn(blk, "g_uploadOwner = "),
+                                  "G9e : le refus precede toute prise de propriete / blocage regulation");
+    if (n == 1) {  // /update : sequence complete des refus voisins
+      const long mark = indexOf(blk, "markUploadRejected(request);");
+      const long fail = indexOf(blk, "failOtaUpload(request, bad.http");
+      const long disc = indexOf(blk, "request->onDisconnect(");
+      const long ret = indexOf(blk, "return;");
+      TEST_ASSERT_TRUE_MESSAGE(mark >= 0 && fail >= 0 && disc >= 0 && ret >= 0, "G9e : sequence markUploadRejected/failOtaUpload/onDisconnect/return incomplete");
+      TEST_ASSERT_TRUE_MESSAGE(mark < fail && fail < disc && disc < ret, "G9e : ordre mark < fail < onDisconnect < return");
+      TEST_ASSERT_TRUE_MESSAGE(indexOf(blk, "true);") > fail, "G9e : failOtaUpload critical");
+    } else {  // /download-update : critical + JSON + return
+      const long crit = indexOf(blk, "systemLogger.critical(");
+      const long send = indexOf(blk, "request->send(bad.http");
+      const long ret = indexOf(blk, "return;");
+      TEST_ASSERT_TRUE_MESSAGE(crit >= 0 && send >= 0 && ret >= 0, "G9e : critical/send/return incomplet");
+      TEST_ASSERT_TRUE_MESSAGE(crit < send && send < ret, "G9e : ordre critical < send < return");
+      TEST_ASSERT_TRUE_MESSAGE(indexOf(blk, "badJson[\"code\"] = bad.code;") >= 0, "G9e : code sig_malformee absent du JSON");
+    }
+    free(blk);
+  }
+  free(src);
+}
+
+// (f) aucun otaManager hors ota_manager.* : on relit les sources de ce lot.
+void test_g9f_aucun_otaManager_hors_ota_manager(void) {
+  const char* files[] = {"src/web_routes_ota.cpp", "src/web_routes_ota_switch.cpp", "src/ota_signature_switch.cpp",
+                         "src/ota_refusal_messages.cpp", "src/main.cpp", "src/web_server.cpp", "src/mqtt_manager.cpp"};
+  for (const char* f : files) {
+    long len = 0;
+    char* src = readProjectFile(f, &len);
+    char msg[120];
+    snprintf(msg, sizeof(msg), "%s introuvable — garde aveugle", f);
+    TEST_ASSERT_NOT_NULL_MESSAGE(src, msg);
+    snprintf(msg, sizeof(msg), "G9f : %s reference otaManager / ArduinoOTA (contournement du refus D3-c)", f);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(0, countIn(src, "otaManager") + countIn(src, "ota_manager.h") + countIn(src, "ArduinoOTA"), msg);
+    free(src);
+  }
+}
+
+// Lecture BRUTE (commentaires conservés) : (g) vise justement les commentaires périmés.
+static char* readRawSrc(const char* rel) {
+  char path[600];
+  const char* f = __FILE__;
+  const char* m = strstr(f, "test/test_native_ota_order_guard/");
+  if (m == NULL) return NULL;
+  const size_t n = (size_t)(m - f);
+  memcpy(path, f, n);
+  path[n] = '\0';
+  strncat(path, rel, sizeof(path) - strlen(path) - 1);
+  FILE* fp = fopen(path, "rb");
+  if (fp == NULL) return NULL;
+  fseek(fp, 0, SEEK_END);
+  const long len = ftell(fp);
+  fseek(fp, 0, SEEK_SET);
+  char* buf = (char*)malloc((size_t)len + 1);
+  const size_t got = fread(buf, 1, (size_t)len, fp);
+  fclose(fp);
+  buf[got] = '\0';
+  return buf;
+}
+
+// kBelowFloor reste inatteignable : plancher fige a 0.0.0 (decision utilisateur : /update reste
+// installable avec une version anterieure signee). Et le desaccord de version reste journal seul.
+void test_g9h_plancher_fige_et_version_journal_seul(void) {
+  long len = 0;
+  char* k = readProjectFile("src/constants.h", &len);
+  TEST_ASSERT_NOT_NULL(k);
+  TEST_ASSERT_EQUAL_INT(1, countIn(k, "kOtaVersionFloorDefaultMajor = 0;"));
+  TEST_ASSERT_EQUAL_INT(1, countIn(k, "kOtaVersionFloorDefaultMinor = 0;"));
+  TEST_ASSERT_EQUAL_INT(1, countIn(k, "kOtaVersionFloorDefaultPatch = 0;"));
+  free(k);
+  char* r = readProjectFile("src/web_routes_ota.cpp", &len);
+  TEST_ASSERT_NOT_NULL(r);
+  TEST_ASSERT_EQUAL_INT_MESSAGE(0, countIn(r, "otaRefusalDecide(authenticity.verdict)") - 2, "decision : 2 sites");
+  TEST_ASSERT_EQUAL_INT_MESSAGE(0, countIn(r, "kBelowFloor"), "G9h : aucun traitement special de kBelowFloor dans les routes");
+  free(r);
+}
+
+// (g) Les mentions « aucun refus appliqué » et « TOLÉRANCE D3-a » ont disparu du code.
+// Les needles sont assemblés pour que ce fichier ne se contienne pas lui-même.
+void test_g9g_marqueurs_perimes_disparus(void) {
+  const char* files[] = {"src/web_routes_ota.cpp", "src/web_routes_ota_switch.cpp", "src/ota_signature_switch.cpp",
+                         "src/ota_signature_switch.h", "src/ota_authenticity_logic.h", "src/ota_refusal_messages.cpp",
+                         "src/ota_refusal_messages.h", "data/app.js", "data/index.html", "src/constants.h",
+                         "src/ota_recovery_page.cpp", "src/ota_recovery_page.html.in"};
+  // Aiguilles SPECIFIQUES (pas de mot nu : « INERTE » designe aussi la temperature figee dans
+  // constants.h, « journalise seulement » est legitime dans ota_signature_switch.cpp).
+  const char* extra[] = {"gardes" " inertes", "lot" " inerte", "jamais relue pour" " accorder",
+                         "aucun refus pour" " l'instant", "pas encore" " activé"};
+  const char* needleA = "aucun refus" " appliqué";
+  const char* needleB = "TOLÉRANCE" " D3-a";
+  for (const char* f : files) {
+    char* src = readRawSrc(f);
+    char msg[140];
+    snprintf(msg, sizeof(msg), "%s introuvable — garde aveugle", f);
+    TEST_ASSERT_NOT_NULL_MESSAGE(src, msg);
+    // Comparaison insensible à la casse pour A (grep -i).
+    for (char* p = src; *p; ++p) if (*p >= 'A' && *p <= 'Z') *p = (char)(*p + 32);
+    snprintf(msg, sizeof(msg), "G9g : mention perimee « aucun refus applique » dans %s", f);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(0, countIn(src, needleA), msg);
+    free(src);
+    src = readRawSrc(f);
+    snprintf(msg, sizeof(msg), "G9g : marqueur « TOLERANCE D3-a » dans %s", f);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(0, countIn(src, needleB), msg);
+    free(src);
+    src = readRawSrc(f);
+    for (char* p = src; *p; ++p) if (*p >= 'A' && *p <= 'Z') *p = (char)(*p + 32);
+    for (const char* x : extra) {
+      snprintf(msg, sizeof(msg), "G9g : mention perimee « %s » dans %s", x, f);
+      TEST_ASSERT_EQUAL_INT_MESSAGE(0, countIn(src, x), msg);
+    }
+    free(src);
+  }
+}
+
+// (C) kPhraseFallback existe en 4 exemplaires (module C++, app.js, 2 pages de secours) : leur
+// identite est figee, sinon la page de secours et la carte diraient deux phrases differentes.
+static bool quotedAfter(const char* src, const char* marker, char* out, size_t cap) {
+  const long at = indexOf(src, marker);
+  if (at < 0) return false;
+  const char* q = strchr(src + at + strlen(marker), '"');
+  if (q == NULL) return false;
+  const char* e = strchr(q + 1, '"');
+  if (e == NULL || (size_t)(e - q - 1) >= cap) return false;
+  memcpy(out, q + 1, (size_t)(e - q - 1));
+  out[e - q - 1] = '\0';
+  return true;
+}
+
+void test_g9i_phrase_de_repli_identique_partout(void) {
+  struct Src { const char* file; const char* marker; };
+  const Src srcs[] = {{"src/ota_refusal_messages.cpp", "kPhraseFallback[] ="},
+                      {"data/app.js", "OTA_REFUSAL_FALLBACK ="},
+                      {"src/ota_recovery_page.cpp", "fail(c ||"},
+                      {"src/ota_recovery_page.html.in", "fail(c ||"}};
+  char ref[300] = {0};
+  for (int i = 0; i < 4; ++i) {
+    long len = 0;
+    char* src = readProjectFile(srcs[i].file, &len);
+    TEST_ASSERT_NOT_NULL(src);
+    char cur[300] = {0};
+    char msg[160];
+    snprintf(msg, sizeof(msg), "G9i : phrase de repli introuvable dans %s", srcs[i].file);
+    TEST_ASSERT_TRUE_MESSAGE(quotedAfter(src, srcs[i].marker, cur, sizeof(cur)), msg);
+    free(src);
+    if (i == 0) {
+      TEST_ASSERT_TRUE(strlen(cur) > 10);
+      strcpy(ref, cur);
+    } else {
+      snprintf(msg, sizeof(msg), "G9i : phrase de repli de %s differe de celle du module C++", srcs[i].file);
+      TEST_ASSERT_EQUAL_STRING_MESSAGE(ref, cur, msg);
+    }
+  }
+}
+
 // -----------------------------------------------------------------------------
 // Runner
 // -----------------------------------------------------------------------------
@@ -995,5 +1359,14 @@ int main(int argc, char** argv) {
   RUN_TEST(test_d3b2_aucune_mention_dans_auth_et_ota_signature);
   RUN_TEST(test_d3b2_routes_de_l_interrupteur_en_matcher_exact);
   RUN_TEST(test_d3b2_liaison_version_est_purement_journalistique);
+  RUN_TEST(test_g9a_sortie_precoce_update_sequence_complete);
+  RUN_TEST(test_g9b_returns_en_amont_des_setOtaInProgress_true);
+  RUN_TEST(test_g9c_decision_sans_parametre_de_page);
+  RUN_TEST(test_g9d_phrases_constantes);
+  RUN_TEST(test_g9e_empreinte_illisible_refusee);
+  RUN_TEST(test_g9f_aucun_otaManager_hors_ota_manager);
+  RUN_TEST(test_g9g_marqueurs_perimes_disparus);
+  RUN_TEST(test_g9i_phrase_de_repli_identique_partout);
+  RUN_TEST(test_g9h_plancher_fige_et_version_journal_seul);
   return UNITY_END();
 }

@@ -9,10 +9,11 @@
 #include "ota_signature_switch.h"
 
 // =============================================================================
-// feature-151 D3-b2 — administration de l'interrupteur de signature (INERTE)
+// feature-151 D3-b2/D3-c — administration de l'autorisation temporaire de mise à jour non signée
 // =============================================================================
 // ⛔ Ce fichier ne contient ni upload, ni accès au filesystem, ni lecture de
-// paramètre de requête : il n'ajoute AUCUNE surface d'acceptation d'image.
+// paramètre de requête : il ne reçoit aucune image. Il ne fait qu'activer ou retirer
+// l'autorisation que web_routes_ota.cpp lit pour lever le refus d'authenticité.
 // ⛔ `REQUIRE_AUTH(req, RouteProtection::CRITICAL)` est la PREMIÈRE instruction de
 // chaque lambda. ATTENTION : checkAuth() rend `true` quand l'authentification est
 // coupée et ne distingue pas CRITICAL de WRITE — d'où le 403 explicite de l'armement.
@@ -56,7 +57,7 @@ void setupOtaSignatureSwitchRoutes(AsyncWebServer* server) {
     // C3 : auth coupée ou premier démarrage (mot de passe par défaut) ⇒ l'armement serait
     // ouvert à tout le LAN : refus explicite (le désarmement, lui, reste toujours permis).
     if (!authManager.isEnabled() || authManager.isFirstBootDetected()) {
-      systemLogger.warning("Interrupteur de signature OTA : armement refusé (authentification inactive ou premier démarrage)");
+      systemLogger.warning("Autorisation temporaire de mise à jour non signée : activation refusée (authentification inactive ou premier démarrage)");
       req->send(403, "application/json", "{\"error\":\"auth_required\"}");
       return;
     }
@@ -72,9 +73,9 @@ void setupOtaSignatureSwitchRoutes(AsyncWebServer* server) {
       req->send(500, "application/json", "{\"error\":\"nvs_write_failed\"}");  // NON armé
       return;
     }
-    char ligne[150];
+    char ligne[256];
     snprintf(ligne, sizeof(ligne),
-             "Interrupteur de signature OTA ARMÉ pour %lu min (échéance %lu) — MQTT %s",
+             "Autorisation temporaire de mise à jour non signée ACTIVÉE pour %lu min (échéance %lu) — MQTT %s",
              static_cast<unsigned long>(kOtaSignatureSwitchWindowSec / 60),
              static_cast<unsigned long>(until), mqttUp ? "connecté" : "NON connecté (témoin absent)");
     systemLogger.warning(ligne);
@@ -109,7 +110,7 @@ void setupOtaSignatureSwitchRoutes(AsyncWebServer* server) {
       sendState(req, 500, d, extra);
       return;
     }
-    systemLogger.info("Interrupteur de signature OTA désarmé");
+    systemLogger.info("Autorisation temporaire de mise à jour non signée retirée");
     sendState(req, 200, d, "");
   });
 }

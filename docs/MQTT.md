@@ -1053,11 +1053,11 @@ Même facture que les topics du terme intégral et du feedforward : **une grande
 
 ## Topics et entité ajoutés en feature-151 D3-b2 (interrupteur de signature OTA)
 
-Témoin de l'[interrupteur de signature OTA](subsystems/ota-manager.md#interrupteur-de-signature-feature-151-d3-b2). ⛔ **Lot inerte** : l'interrupteur ne refuse ni n'accepte rien ; ces topics ne font que **rendre son état visible**.
+Témoin de l'**autorisation temporaire de mise à jour non signée** (anciennement « interrupteur de signature », [ota-manager.md](subsystems/ota-manager.md#autorisation-temporaire-de-mise-à-jour-non-signée-ex-interrupteur-feature-151-d3-b2d3-c-adr-0125)). ✅ Depuis D3-c ([ADR-0128](adr/0128-l-appareil-refuse-une-image-ota-non-authentique.md)) le dispositif est **actif** : l'appareil refuse une image non signée sauf si cette autorisation est activée. Ces topics ne font que **rendre son état visible** (aucune commande). Les identifiants (`ota_signature_switch`, `unique_id`) sont **inchangés** ; seul le nom affiché change.
 
 ### `{base}/ota_signature_switch`
 
-**Direction** : ESP32 → broker (`retain=true`). **Payload** : `ON` / `OFF`. `ON` tant que l'interrupteur est **armé**, ou qu'un désarmement a **échoué** avec une échéance subsistant en NVS (ou d'état inconnu). Publié sur transition seulement, et **republié à chaque (re)connexion** (le courtier a pu perdre le `retain`). Journal : `MQTT ota_signature_switch → ON` (WARNING) / `→ OFF` (INFO).
+**Direction** : ESP32 → broker (`retain=true`). **Payload** : `ON` / `OFF`. `ON` tant que l'autorisation est **activée**, ou qu'un retrait a **échoué** avec une échéance subsistant en NVS (ou d'état inconnu). Publié sur transition seulement, et **republié à chaque (re)connexion** (le courtier a pu perdre le `retain`). Journal : `MQTT ota_signature_switch → ON` (WARNING) / `→ OFF` (INFO).
 
 ### `{base}/ota_signature_switch_until`
 
@@ -1069,13 +1069,13 @@ Publiés depuis `mqttTask` **uniquement**, à partir du miroir atomique (aucune 
 
 | Entité | Type | État | `unique_id` | Attributs |
 |---|---|---|---|---|
-| Piscine Signature OTA Levée | `binary_sensor` | `{base}/ota_signature_switch` | `poolcontroller_ota_signature_switch` | `device_class: safety` (ON = « dangereux » : signature non exigée), `entity_category: diagnostic`, `payload_on: ON`, `payload_off: OFF`, `icon: mdi:shield-off` |
+| Mise à jour non signée autorisée | `binary_sensor` | `{base}/ota_signature_switch` | `poolcontroller_ota_signature_switch` | `device_class: safety` (ON = « dangereux » : signature non exigée), `entity_category: diagnostic`, `payload_on: ON`, `payload_off: OFF`, `icon: mdi:shield-off` |
 
-Entité **nouvelle** (`unique_id` inédit) : l'appariement des entités existantes ne bouge pas. **Visible** dans Home Assistant (catégorie diagnostic de l'appareil). ⛔ **Jamais un `switch` HA** : ce serait une surface d'**armement** hors jeton administrateur ; ces topics sont un témoin, jamais une commande.
+Entité **renommée en D3-c** (nom « Piscine Signature OTA Levée » avant) : ⛔ `unique_id` et topic **inchangés**, donc l'entité Home Assistant existante est conservée avec son historique ; seul le libellé affiché change. **Visible** dans Home Assistant (catégorie diagnostic de l'appareil). ⛔ **Jamais un `switch` HA** : ce serait une surface d'**activation** hors jeton administrateur ; ces topics sont un témoin, jamais une commande.
 
 ### 🔴 Ce témoin n'est PAS fiable comme preuve
 
-Ne pas conclure « l'interrupteur n'a pas été armé » de la valeur `OFF` :
+Ne pas conclure « l'autorisation n'a pas été activée » de la valeur `OFF` :
 
 - un firmware hostile **lit les identifiants MQTT en NVS** et peut **republier `OFF`** ;
 - un courtier **sans persistance** perd le `retain` ;

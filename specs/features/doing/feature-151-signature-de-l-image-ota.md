@@ -1735,6 +1735,79 @@ Conditions pour lancer D3-c :
 
 ⛔ Mécanisme de verrouillage : la case « D3-c » du plan de lots reste décochée tant que 1 et 2 ne sont pas consignés ici avec leur date.
 
+### ✅ S6 — LES TROIS PRÉALABLES DE D3-c SONT CONSIGNÉS (2026-11-16, 21:35)
+
+⛔ Le verrou ci-dessus (« la case D3-c reste décochée tant que 1 et 2 ne sont pas consignés ici avec
+leur date ») est **levé par ce bloc**. Les trois conditions étaient **vraies dans les faits** et
+n'étaient écrites nulle part — c'est exactement ce que le verrou devait empêcher.
+
+| # | Condition | État | Preuve, datée |
+|---|---|---|---|
+| **S6-1** | Release publiée dont le `littlefs.bin` porte la page neuve, **et installée sur l'appareil** | ✅ | `gh release list` : **v2.88.2** (2026-11-15), assets `littlefs.bin` **et** `littlefs.bin.sig` présents. La page neuve date de 2.88.0 (ADR-0123). L'appareil tourne un filesystem construit depuis ce `data/` — voir S6-3. |
+| **S6-2** | Voie de réparation **indépendante de la page**, documentée **et prouvée** | ✅ | **Deux** voies, toutes deux prouvées : (a) `./ota_update.sh --use-sig` en ligne de commande, employé six fois le 2026-11-16 ; (b) la **page de secours** de D3-b1, éprouvée par **B12 marche 3** le 2026-11-16 — filesystem détruit **puis** redémarrage, réparation au navigateur, verdicts `valide`/`liée`. ⇒ Rattachées à S6, ce qui n'avait jamais été fait. |
+| **S6-3** | `/ota-sig` présent dans l'`app.js` **servi par l'appareil** | ✅ | `curl --compressed http://192.168.1.48/app.js` à **21:30 le 2026-11-16** : 310 182 o, **1 occurrence** de `ota-sig`. ⚠️ Mesuré sur ce que l'appareil SERT, pas sur `data/` local — c'est la seule mesure qui vaut. |
+
+⚠️ **S6 complétée — l'onglet rechargé.** La condition ajoutée le 2026-11-15 (« l'onglet doit aussi
+avoir été rechargé côté utilisateur ») ⛔ **ne peut pas être prouvée depuis l'appareil** : un onglet
+ouvert depuis la veille exécute du JavaScript ancien, et rien côté serveur ne le voit. ⇒ Elle est
+traitée **par l'interface**, pas par une preuve : le refus doit distinguer « page périmée, rechargez »
+de « signature absente » (voir la décision U2 ci-dessous).
+
+### ✅ DÉCISIONS UTILISATEUR DU 2026-11-16 (21:33) — à ne pas rouvrir
+
+1. ⭐ **Aucun appareil chez un client.** Seul l'appareil de l'utilisateur (192.168.1.48) est en
+   service. ⇒ Le risque d'immobilisation ne porte que sur lui, et la fenêtre de déploiement de D3-c
+   n'a pas à être coordonnée avec une flotte. ⚠️ **Les messages de refus restent à soigner** : le
+   produit aura des clients, et c'est la phrase affichée qui les sauvera, pas le `if`.
+2. ⭐ **`kVerificationImpossible` est REFUSÉ** (fail-closed). Un échec d'outillage cryptographique
+   (allocation, clé illisible) **ne passe pas**. ⚠️ Conséquence acceptée : un appareil en pénurie
+   mémoire ne peut plus être mis à jour à distance **sans** l'autorisation temporaire — qui est la
+   porte de sortie, et elle est prouvée (F0). L'alternative (fail-open) créait une condition
+   **provocable** par le porteur du jeton.
+3. ⭐ **Le refus TARDIF est accepté.** Une image à signature **valide** dont les octets divergent du
+   manifeste sera refusée **après** le début de l'écriture, laissant le filesystem détruit. ⚠️ C'est
+   une **nouvelle façon de casser un appareil**, acceptée sciemment : B12 marche 3 a prouvé ce soir
+   que cet état se répare au navigateur, et ce cas suppose un outillage cassé ou une attaque, jamais
+   un client ordinaire.
+
+### ✅ U2 — LA PAGE PÉRIMÉE : option (1) seulement (2026-11-16)
+
+La spec proposait deux voies. **Seule la (1) est retenue** : la page annonce sa version, et le refus
+distingue « page périmée, rechargez » de « signature absente ».
+
+⛔ **L'option (2) — le firmware TOLÈRE l'absence de paramètres d'une page qu'il « sait » ancienne —
+est un NO GO de conception** : l'indication de version viendrait de **l'appelant**. N'importe qui
+prétendrait être une vieille page et obtiendrait une acceptation non signée à la demande. Cela
+**annulerait D3-c** et violerait **B2** (le prédicat ne prend en entrée ni l'état de montage ni
+l'origine de la requête) et **B3** (aucune fenêtre d'acceptation armée sur un état).
+⇒ ⚠️ L'indication de version fournie par la page est une **aide au message**, ⛔ **jamais une preuve**
+et ⛔ jamais une entrée du prédicat de refus. À confirmer par `security-reviewer` P1.
+
+### ✅ QUEL STATUT REFUSE — décision de lot (2026-11-16)
+
+La question ouverte (« `unavailable` ⇒ refus ? `deferred` jamais résolu ? ») est tranchée **par la
+sémantique déjà écrite dans `src/ota_sig_relay_logic.h:69-72`**, condition S2 :
+
+> « `absent` n'est émis QUE si la réponse GitHub a été analysée AVEC SUCCÈS et ne contient pas d'asset
+> de ce nom. Tout autre doute est `unavailable` AVEC son motif — sinon le refus D3-c frapperait au
+> hasard. »
+
+⇒ **`absent` et `unavailable` ne disent pas la même chose et n'appellent pas la même action :**
+
+| Statut | Ce que ça veut dire | Côté page | Côté firmware |
+|---|---|---|---|
+| `absent` | La release **n'est pas signée** (constaté) | ⛔ l'installation **ne part pas** | — |
+| `unavailable` | **On ne sait pas** (hôte refusé, URL trop longue, pas vérifié) | ⛔ l'installation **ne part pas**, message **distinct** | — |
+| `deferred` | URL connue, signature à demander | la page demande, puis `relayed` ou `unavailable` | — |
+| `relayed` | Signature récupérée et validée | l'installation part avec manifeste + signature | vérifie |
+
+⚠️ **Le firmware, lui, ne lit AUCUN de ces statuts** : il juge ce qu'il **reçoit**. Une page qui
+n'envoie rien produit `kAbsent` côté vérificateur et sera refusée. Le statut sert **uniquement** au
+pré-contrôle de la page et au **message**. ⛔ Ne jamais faire entrer un statut relayé dans le prédicat
+de refus (B2).
+⚠️ Conséquence utilisateur assumée : **GitHub injoignable ⇒ pas de mise à jour en ligne.** La voie
+manuelle `/update` reste disponible, sans plancher, y compris pour revenir en arrière.
+
 ## ⚠️ AJOUT POUR D3-c (2026-11-15) — le plancher de version est figé à `0.0.0`
 
 Relevé par la revue de sécurité de `bug-178` : `ota_manifest_logic.h:87-95` fige le plancher de
@@ -2440,7 +2513,29 @@ affirment sur la **forme des messages**. Le renommage les fera rougir — c'est 
 - Hors lot, à ouvrir (revue P1/P2) : **`bug-112` avant D3-c** ; `RouteProtection::CRITICAL` réellement distinct de `WRITE` ; **référence de version indépendante de GitHub** avant toute promotion du « désaccord » en refus.
 - ✅ **Bouton physique : fiche ouverte** — [`feature-171`](../todo/feature-171-bouton-physique-autorisation-temporaire.md) (2026-11-16). ⚠️ Elle **renverse l'exigence centrale d'ADR-0125** : l'autorisation ne survivrait plus à un redémarrage — ce qui supprime à la fois l'impasse « sans heure valide, aucune autorisation possible » et toute la dette du résidu NVS. ⛔ Inerte tant que D3-c n'est pas livré.
 - 🔴 « Jeton admin volé » : **ouvert, rouvert plus facilement** par l'interrupteur.
-- **Essai terrain du lot non fait** : déploiement, armement/désarmement réels, témoin HA, affichage de la version sur l'appareil.
+- ✅ ~~**Essai terrain du lot non fait**~~ — **FAIT le 2026-11-16** : 2.89.0 signée déployée (19:11), armement et désarmement réels, témoin MQTT basculé ON puis OFF, version affichée sur la page de secours. Voir « F0 — PREUVE DE TERRAIN » ci-dessus. ⚠️ **Seule réserve** : l'**expiration naturelle à 60 min** n'a jamais été observée sur l'appareil (le décompte a été vu décroître, l'autorisation a été consommée par un flash avant son terme). ⇒ essai **F9** de la campagne D3-c.
+  ⚠️ Cette ligne disait encore « non fait » alors que la section F0 était déjà écrite au-dessus : **un ajout sans rature laisse deux vérités contradictoires dans le même fichier**, et c'est le lecteur suivant qui trinque (relevé par `spec-reader`, 2026-11-16).
 
 ## ✅ bug-112 clos (2.89.1, 2026-11-16) — D3-c débloqué sur ce point
 Le journal des refus d'authentification est désormais borné ([ADR-0127](../../../docs/adr/0127-le-bornage-du-journal-d-authentification-est-global-par-emetteur.md)). Pourquoi cela compte pour D3-c : selon l'[ADR-0125](../../../docs/adr/0125-l-expiration-de-l-interrupteur-de-signature-se-mesure-sur-un-horodatage-nvs.md), **le journal persistant est le témoin qui survit** ; le témoin MQTT n'en est pas un (courtier sans persistance, appareil hors ligne). Il n'était plus purgeable en ~13 s par un anonyme ; il reste purgeable **à vitesse lente** (pire cas mesuré 38 lignes/24 h par site, aucun majorant établi) — les preuves B11, B12, B14 en héritent.
+
+## ✅ D3-c « le refus » — NOTES D'IMPLÉMENTATION (2026-11-16)
+
+⛔ **La spec RESTE dans `doing/`** : D4 et D5 restent ouverts. [ADR-0128](../../../docs/adr/0128-l-appareil-refuse-une-image-ota-non-authentique.md) acte la décision.
+
+**Livré** : `src/ota_refusal_messages.{h,cpp}` (neufs, purs) — `otaRefusalDecide(verdict)` sans paramètre de page, `otaRefusalPhrase(verdict, pageAnnouncedVersion, site)` ; refus branchés en sortie des blocs d'authenticité figés ([G5] `/update`, [G6] `/download-update`), avant toute écriture et avant les trois `setOtaInProgress(true)` ; 4 blocs « TOLÉRANCE D3-a » supprimés ; repli d'empreinte illisible = refus précoce ; renommage « interrupteur » → « autorisation temporaire de mise à jour non signée » (entité HA « Mise à jour non signée autorisée », `unique_id`/topic inchangés) ; garde CI `tools/check_ota_manager_isolated.sh` (job `ota-manager-isole`) ; interface : phrase de l'appareil affichée, pré-contrôle (absente ≠ non récupérée), un seul `/ota-sig` par genre, 3 sélecteurs `.pick` en français.
+
+**Table** : absente 403 `sig_absente` · malformée 400 `sig_malformee` · invalide 403 `sig_invalide` · vérification impossible 503 `sig_verif_impossible` · genre discordant 415 `sig_genre_discordant` · plancher 403 `sig_sous_plancher` (inatteignable) · liaison tardive 400 texte / 422 `integrity_mismatch`. Dissymétrie assumée : `/update` `text/plain` sans `code`, `/download-update` JSON `error` + `code`. ⛔ Jamais refusés : désaccord de version, plancher.
+
+**Fichiers** : `src/ota_refusal_messages.{h,cpp}`, `src/web_routes_ota.cpp`, `src/web_routes_ota_switch.cpp`, `src/ota_signature_switch.{h,cpp}`, `src/ota_authenticity_logic.h`, `src/ota_recovery_page.{cpp,html.in}`, `src/mqtt_manager.cpp`, `src/constants.h`, `data/{app.js,app.css,index.html}`, `tools/check_ota_manager_isolated.sh`, `.github/workflows/hygiene-specs.yml`, `test/test_native_ota_refusal_messages/`, `test/test_native_ota_order_guard/`.
+
+**Mesures (relevées par l'orchestrateur)** : `pio run` SUCCESS, 0 warning, flash 52,3 % / 1 952 961 o, RAM 30,0 % / 98 256 o ; `pio test -e native` 87 suites / 2 583 cas / 0 échec ; `./build_fs.sh` SUCCESS ; page de secours 16 625 o.
+
+### ⚠️ Campagne de terrain D3-c — NON FAITE
+Douze essais (G0 à F11) restent à mener sur l'appareil. ⚠️ **L'expiration naturelle à 60 min de l'autorisation temporaire n'a jamais été observée** sur l'appareil. Le lot est livré **sans** preuve de terrain du refus : ne pas le présenter comme éprouvé.
+
+### 🔴 Consigné dans l'ADR-0128
+Le vecteur « jeton admin volé » reste ouvert (deux requêtes). ADR-0022 déclare encore `ArduinoOTA` actif alors qu'il n'a aucun appelant : le rebrancher contournerait totalement le refus ; `check_ota_manager_isolated.sh` l'interdit désormais.
+
+### ⛔ Reste ouvert
+D4, D5, la campagne de terrain D3-c ci-dessus.
