@@ -159,6 +159,24 @@ jobs:
       - name: Contrôle de la comparaison des secrets
         run: ./tools/check_secret_compare_guard.sh
 
+  # bug-189 — le ralentissement des échecs ne touche JAMAIS le chemin du jeton.
+  # ⭐ Ce job existe parce qu'aucun test natif ne peut le faire : les handlers HTTP ne
+  # se compilent pas en natif, donc brancher le ralentissement sur le chemin d'un jeton
+  # valide laisse la suite native VERTE (mutant 4, survivant assumé et consigné).
+  # ⛔ Or c'est la contrainte rédhibitoire du lot : l'OTA est le seul canal de reprise,
+  # un propriétaire exclu de son appareil = appareil PERDU.
+  # ⛔ Ce que ce job ne prouve pas : il lit le SOURCE. Il voit la forme de l'appel, pas
+  # son effet ; un appel indirect (pointeur, macro) lui échapperait.
+  auth-fail-guard:
+    name: Le ralentissement épargne le jeton valide (bug-189)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Contrôle du ralentissement des échecs
+        run: ./tools/check_auth_fail_guard.sh
+
   # JOB 7 — diffusion WebSocket ciblée (bug-081). Les trois `textAll()` de
   # src/ws_manager.cpp diffusaient à TOUS les clients de /ws, authentifiés ou
   # non — la garde ne vérifiait qu'« au moins un client authentifié ». Sans ce

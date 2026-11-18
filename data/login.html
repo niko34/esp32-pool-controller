@@ -21,6 +21,7 @@
         background: linear-gradient(135deg, #e8ecf4 0%, #dfe5f0 100%);
         background-attachment: fixed;
         min-height: 100vh;
+        min-height: 100dvh;
         display: flex;
         align-items: center;
         justify-content: center;
@@ -28,20 +29,6 @@
         -webkit-font-smoothing: antialiased;
         -moz-osx-font-smoothing: grayscale;
         position: relative;
-      }
-
-      /* Subtle grain overlay */
-      body::before {
-        content: '';
-        position: fixed;
-        top: 0;
-        left: 0;
-        width: 100%;
-        height: 100%;
-        opacity: 0.03;
-        z-index: 0;
-        pointer-events: none;
-        background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)'/%3E%3C/svg%3E");
       }
 
       /* 2026 Container - cohérent avec wizard */
@@ -107,7 +94,13 @@
     .alert.error {
       background: rgba(255, 59, 48, 0.06);
       border-color: rgba(255, 59, 48, 0.2);
-      color: #dc2626;
+      color: #b91c1c;
+    }
+
+    .alert.warn {
+      background: rgba(245, 158, 11, 0.10);
+      border-color: rgba(180, 83, 9, 0.35);
+      color: #92400e;
     }
 
     .alert.success {
@@ -130,7 +123,7 @@
         letter-spacing: -0.1px;
       }
 
-      input {
+      input:not(.vh) {
         width: 100%;
         padding: 12px 14px;
         border: 1.5px solid #e5e7eb;
@@ -155,7 +148,7 @@
 
       /* État error - SEULEMENT après blur ou submit */
     input.is-error {
-      border-color: #dc2626;
+      border-color: #b91c1c;
       background: rgba(255, 59, 48, 0.03);
     }
 
@@ -174,7 +167,7 @@
         width: 100%;
         min-height: 44px;
         padding: 12px 20px;
-        background: linear-gradient(135deg, #5c7cdb 0%, #687ad8 100%);
+        background: linear-gradient(135deg, #4a68c8 0%, #5470d0 100%);
         color: white;
         border: none;
         border-radius: 10px;
@@ -205,7 +198,7 @@
       }
 
       button:disabled {
-        opacity: 0.4;
+        opacity: 0.6;
         cursor: not-allowed;
         transform: none;
         pointer-events: none;
@@ -237,6 +230,27 @@
       .hidden {
         display: none;
       }
+
+      /* Champ identifiant masqué visuellement (gestionnaires de mots de passe) */
+      .vh {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        opacity: 0;
+        overflow: hidden;
+      }
+
+      @media (max-width: 499px) {
+        .login-container {
+          padding: 28px;
+        }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        .alert {
+          animation: none;
+        }
+      }
     </style>
   </head>
 
@@ -263,16 +277,7 @@
 
       <!-- Formulaire connexion standard -->
       <form id="loginForm" aria-label="Formulaire de connexion">
-        <div class="form-group">
-          <label for="username">Nom d'utilisateur</label>
-          <input
-            type="text"
-            id="username"
-            name="username"
-            value="admin"
-            readonly
-            aria-readonly="true" />
-        </div>
+        <input type="text" class="vh" name="username" value="admin" autocomplete="username" tabindex="-1" aria-hidden="true" />
 
         <div class="form-group">
           <label for="password">Mot de passe</label>
@@ -330,12 +335,78 @@
       const firstBootAlert = document.getElementById('firstBootAlert');
       const errorAlert = document.getElementById('errorAlert');
       const successAlert = document.getElementById('successAlert');
+      const loginBtn = document.getElementById('loginBtn');
+      const passwordInput = document.getElementById('password');
+      const LOGIN_LABEL = 'Se connecter';
+      let countdownTimer = null;
+
+      function setAlert(kind, text) {
+        errorAlert.className = 'alert ' + kind;
+        errorAlert.textContent = text; // textContent : jamais le texte du serveur
+        successAlert.classList.add('hidden');
+      }
+      function clearAlert() {
+        errorAlert.classList.add('hidden');
+        errorAlert.textContent = '';
+      }
+      function clearFieldError() {
+        passwordInput.classList.remove('is-error');
+        passwordInput.removeAttribute('aria-invalid');
+        passwordInput.removeAttribute('aria-describedby');
+      }
+      function stopCountdown() {
+        if (countdownTimer) { clearInterval(countdownTimer); countdownTimer = null; }
+        loginBtn.disabled = false;
+        loginBtn.textContent = LOGIN_LABEL;
+      }
+      function fmtRemaining(ms) {
+        const t = Math.max(0, Math.ceil(ms / 1000));
+        return Math.floor(t / 60) + ':' + String(t % 60).padStart(2, '0');
+      }
+      // bug-189 : ralentissement annoncé. Le bouton porte le compte à rebours ;
+      // l'alerte, statique, porte la cause. Rien n'est mémorisé : recharger la
+      // page est sans danger (le prochain clic reçoit un 429 et réarme).
+      function startCountdown(seconds) {
+        stopCountdown();
+        const deadline = Date.now() + seconds * 1000;
+        setAlert('warn', 'Trop d\u2019essais. Patientez un instant.');
+        errorAlert.classList.remove('hidden');
+        loginBtn.disabled = true;
+        const draw = () => {
+          const left = deadline - Date.now();
+          if (left <= 0) {
+            stopCountdown();
+            clearAlert();
+            passwordInput.focus();
+            return;
+          }
+          loginBtn.textContent = 'Réessayer dans ' + fmtRemaining(left);
+        };
+        draw();
+        countdownTimer = setInterval(draw, 1000);
+      }
+      async function retryAfterSeconds(response) {
+        let n = parseInt(response.headers.get('Retry-After'), 10);
+        if (!(n > 0)) {
+          try {
+            const body = await response.json();
+            n = parseInt(body && body.retryAfter, 10);
+          } catch (e) { n = NaN; }
+        }
+        if (!(n > 0)) n = 30;
+        return Math.min(3600, Math.max(1, n));
+      }
+
       // bug-185 : session invalidée (mot de passe modifié ailleurs) -> message
-      // posé directement (showError masquerait l'alerte après 5 s).
+      // posé directement ; effacé au submit suivant ou à la première frappe.
       if (new URLSearchParams(window.location.search).get('expired') === '1') {
-        errorAlert.textContent = 'Le mot de passe a été modifié sur cet appareil. Reconnectez-vous.';
+        setAlert('warn', 'Mot de passe modifié sur l\u2019appareil. Reconnectez-vous.');
         errorAlert.classList.remove('hidden');
       }
+      passwordInput.addEventListener('input', () => {
+        clearFieldError();
+        if (!countdownTimer) clearAlert();
+      });
       // Vérifier si premier démarrage
       async function checkFirstBoot() {
         try {
@@ -366,10 +437,8 @@
       }
 
       function showError(message) {
-        errorAlert.textContent = message;
+        setAlert('error', message);
         errorAlert.classList.remove('hidden');
-        successAlert.classList.add('hidden');
-        setTimeout(() => errorAlert.classList.add('hidden'), 5000);
       }
 
       function showSuccess(message) {
@@ -381,10 +450,14 @@
       // Connexion standard
       loginForm.addEventListener('submit', async (e) => {
         e.preventDefault();
-        const password = document.getElementById('password').value;
+        if (countdownTimer) return;
+        const password = passwordInput.value;
+        clearAlert();
+        clearFieldError();
 
+        let response;
         try {
-          const response = await fetch('/auth/login', {
+          response = await fetch('/auth/login', {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
@@ -394,25 +467,36 @@
               password: password
             })
           });
-
-          if (response.ok) {
-            const data = await response.json();
-            // Stocker le token en session
-            sessionStorage.setItem('authToken', data.token);
-
-            // Note: Ne pas désactiver automatiquement l'AP lors du login
-            // L'utilisateur peut désactiver l'AP manuellement depuis la page de configuration WiFi
-            // ou via l'assistant de configuration (wizard)
-            // Cela évite un redémarrage inattendu de l'ESP32 pendant la connexion
-
-            // Rediriger vers l'application (le token est déjà en sessionStorage)
-            window.location.href = '/';
-          } else {
-            const error = await response.json();
-            showError(error.error || 'Mot de passe incorrect');
-          }
         } catch (error) {
-          showError('Erreur de connexion: ' + error.message);
+          setAlert('warn', 'Appareil injoignable. Vérifiez le Wi-Fi.');
+          errorAlert.classList.remove('hidden');
+          return;
+        }
+
+        if (response.ok) {
+          let data = null;
+          try { data = await response.json(); } catch (err) { data = null; }
+          if (!data || typeof data.token !== 'string') {
+            setAlert('warn', 'Réponse inattendue de l\u2019appareil (HTTP ' + response.status + ').');
+            errorAlert.classList.remove('hidden');
+            return;
+          }
+          // Stocker le token en session
+          sessionStorage.setItem('authToken', data.token);
+          // Note: ne pas désactiver l'AP au login (redémarrage inattendu).
+          window.location.href = '/';
+        } else if (response.status === 401) {
+          showError('Mot de passe incorrect.');
+          passwordInput.classList.add('is-error');
+          passwordInput.setAttribute('aria-invalid', 'true');
+          passwordInput.setAttribute('aria-describedby', 'errorAlert');
+          passwordInput.focus();
+          passwordInput.select();
+        } else if (response.status === 429) {
+          startCountdown(await retryAfterSeconds(response));
+        } else {
+          setAlert('warn', 'Réponse inattendue de l\u2019appareil (HTTP ' + response.status + ').');
+          errorAlert.classList.remove('hidden');
         }
       });
 
@@ -464,7 +548,7 @@
             showError(error.error || 'Erreur lors du changement de mot de passe');
           }
         } catch (error) {
-          showError('Erreur de connexion: ' + error.message);
+          showError('Appareil injoignable. Vérifiez le Wi-Fi.');
         }
       });
 

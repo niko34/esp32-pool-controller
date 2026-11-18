@@ -29,9 +29,15 @@ CANNED = {'/data': 'data.json',
 
 # Page d'amorçage : pose un jeton de session bidon (sinon l'application
 # redirige vers l'écran de connexion) puis rejoue la route demandée.
+# bug-189 : la page cible est paramétrable (?page=/login.html). Sans cela l'outil
+# ne savait photographier QUE /index.html, et un brief d'ergonomie sur l'écran de
+# connexion partait sans image — ce que CLAUDE.md interdit.
+# ⛔ Le jeton bidon n'est posé QUE pour /index.html : sur /login.html il ferait
+# fuir la page vers le tableau de bord, et on photographierait le mauvais écran.
 BOOT = (b"<!doctype html><meta charset=utf-8><script>"
-        b"try{sessionStorage.setItem('authToken','mock')}catch(e){};"
-        b"location.replace('/index.html'+location.hash)</script>")
+        b"var p=new URLSearchParams(location.search).get('page')||'/index.html';"
+        b"if(p==='/index.html'){try{sessionStorage.setItem('authToken','mock')}catch(e){}};"
+        b"location.replace(p+location.hash)</script>")
 
 
 class Handler(http.server.SimpleHTTPRequestHandler):

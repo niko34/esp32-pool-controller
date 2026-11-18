@@ -110,13 +110,24 @@ Le code mort de debug (`maskedReceived` / `maskedExpected`) a été supprimé au
 ## Rate limiting
 
 ```cpp
-MAX_REQUESTS_PER_MINUTE = kMaxRequestsPerMinute = 30  // constants.h:37
-RATE_LIMIT_WINDOW_MS   = kRateLimitWindowMs   = 60000 // constants.h:38
+MAX_REQUESTS_PER_MINUTE = kMaxRequestsPerMinute = 120    // constants.h
+RATE_LIMIT_WINDOW_MS    = kRateLimitWindowMs    = 60000  // constants.h
 ```
+
+⚠️ **Corrigé le 2026-11-18 (bug-189)** : ce bloc annonçait **30** et renvoyait à `constants.h:37`.
+La valeur réelle est **120** et la constante vit bien plus bas dans le fichier. ⛔ Le défaut est
+devenu visible parce que la section bug-189 ci-dessous cite **120** : le fichier se contredisait
+lui-même. ⇒ ⛔ **Ne pas recopier un numéro de ligne dans cette documentation** ([ADR-0073](../adr/0073-chiffre-consigne-porte-sa-methode.md)) :
+il pourrit à la première insertion. La constante se cherche par son nom.
 
 `rateLimitMap` : `std::map<String, RateLimitEntry>` indexé par IP cliente. Entrées expirées nettoyées périodiquement par `cleanupRateLimitMap()`.
 
-Au-delà de 30 requêtes / minute par IP → `sendRateLimitExceeded()` (HTTP 429).
+Au-delà de **120 requêtes / minute par IP** → `sendRateLimitExceeded()` (HTTP 429).
+
+⚠️ Ce quota protège l'appareil de la **charge**, ⛔ **pas** le mot de passe : il plafonne le
+débit sans jamais sanctionner un échec. C'est précisément ce que bug-189 ajoute, séparément
+et sans y toucher (voir plus bas). ⚠️ Les deux 429 se distinguent par le champ `retryAfter`,
+présent seulement sur celui de bug-189.
 
 ## Bornage du journal des refus (`bug-112`, v2.89.1)
 
@@ -143,6 +154,63 @@ Famille de lignes `[Auth] …`, bornée par **un seul** site (`gAuthFailSite`) p
 - ⚠️ **Trois limites du compteur** : (1) **en RAM**, remis à zéro au redémarrage et à chaque connexion réussie ; (2) il **agrège les deux routes** `/auth/login` et `/auth/change-password` ; (3) il **ne compte pas** les 401 par jeton des autres routes.
 - La réponse HTTP est **inchangée** : 401 identique que le nom ou le mot de passe soit faux ; le classement ne sert qu'au texte du journal.
 - `drainAuthRoutesWarnLogs()` est exporté et appelé depuis `main.cpp`.
+
+## Ralentissement des échecs de mot de passe (`bug-189`, v2.94.0)
+
+Avant : le quota (`kMaxRequestsPerMinute`, 120/min/IP) plafonnait le débit sans sanctionner l'échec, soit **172 800 essais/jour/adresse** (un dictionnaire d'un million de mots en ~6 jours). Désormais les essais ratés ralentissent progressivement. Décision, alternatives chiffrées : [ADR-0133](../adr/0133-le-ralentissement-des-echecs-de-mot-de-passe-est-global-avec-exemption.md).
+
+**Module pur** `src/auth_fail_backoff_logic.h` (ADR-0017 : natif, sans allocation ni journal). État `gAuthBackoff` dans `web_routes_auth.cpp`, **en RAM**, capacité fixe. Fonctions : `authFailCheck()` (lecture seule), `authFailRecordFailure()`, `authFailRecordPasswordProof()`, `authFailClearExemptions()` (via `authFailBackoffClearExemptions()`, appelée par `setPassword` et `resetPasswordToDefault`).
+
+| Porte | Constantes (`constants.h`) | Valeurs |
+|---|---|---|
+| Par IP | `kAuthFailIpSlots` / `…Franchise` / `…BaseMs` / `…MaxShift` / `…CapMs` / `…DecayMs` | 8 créneaux · **3** essais gratuits · 1 s · shift 6 · plafond **60 s** · pardon **300 s** |
+| Globale | `kAuthFailGlobalFranchise` / `…BaseMs` / `…MaxShift` / `…CapMs` / `…DecayMs` | **10** essais · 1 s · shift 4 · plafond **10 s** · pardon **60 s** |
+| Exemption | `kAuthFailExemptSlots` | **4** adresses ayant prouvé le mot de passe |
+
+- **Verdict** : refus si la porte IP refuse, ou si l'adresse n'est pas exemptée et que la globale refuse ; `Retry-After` = le plus grand des délais. Une adresse exemptée n'a que **sa propre** porte par IP (indépendante des créneaux) ; ses échecs n'alimentent pas la globale. Adresse inconnue (`ip == 0`) : jamais exemptée.
+- **Temps** : pas d'échéance absolue ; verdict sur l'écart **non signé** `now - lastFailMs`, décalage borné avant le `<<` ⇒ attente ≤ plafond par construction, y compris au repliement de `millis()`. Pardon **incrémental** (un échec par période). Un refus ne modifie aucun état.
+- **Refus immédiat** (jamais un `delay()`) : HTTP 429, voir [API.md](../API.md#post-authlogin--public). Nom inconnu et mot de passe faux sont comptés à l'identique (le délai n'est pas un oracle d'énumération). Un refus est journalisé (`… essai refusé (ralentissement)`) mais ne gonfle pas le compteur d'échecs de `bug-183`.
+- **Où** : `/auth/login` après `checkRateLimit`, avant `deserializeJson` ; `/auth/change-password` après l'analyse, avant `passwordMatches`/`checkTokenAuth`, **seulement** pour l'essai par `currentPassword` et hors état vierge. Tout `kAllow` de cette route vide la table puis réinscrit l'auteur (sauf IP inconnue).
+
+### ⭐ Un jeton valide passe toujours
+
+La garde est **hors** de `checkAuth`/`decideAdmission`/`checkRateLimit` : `auth.cpp:338` n'examine le jeton que si le quota passe, donc une garde placée là désarmerait le jeton et **enfermerait le propriétaire dehors**. L'OTA étant le seul canal de reprise, ce serait perdre l'appareil. Aucun état n'exige d'action humaine : tout s'efface par écoulement du temps, au plus 60 s d'attente.
+
+### Relevé sur l'appareil (2026-11-18, v2.94.0 — livrable D3 de `bug-189`)
+
+⚠️ Chiffres **mesurés**, méthode comprise ([ADR-0073](../adr/0073-chiffre-consigne-porte-sa-methode.md)) : 133 tentatives anonymes à une par seconde pendant 150 s, depuis une seule adresse, sur l'appareil de production.
+
+| Grandeur | Relevé |
+|---|---|
+| Mots de passe réellement comparés | **11** sur 133 |
+| Attente entre deux essais acceptés | 1 · 2 · 4 · 8 · 16 · 32 · puis **60 s** (plafond) |
+| Régime établi | **1 essai/minute** contre 120 auparavant — facteur **120** |
+| Temps de traitement (réseau compris) | **16 à 25 ms**, 401 comme 429 |
+| Lignes de journal pour 133 essais | **4** (2 émises + 56 + 75 occultés = 133) |
+
+Portes fermées (429 obtenu juste avant), avec un jeton émis **avant** le ralentissement : page protégée **200**, changement de mot de passe **200**. Avec un `currentPassword` volontairement faux : **401** « mot de passe actuel incorrect » — ⛔ pas un 429, donc la demande est bien **instruite** et le porteur du jeton épargné.
+
+⛔ **Ce que ce relevé ne couvre pas** : l'adresse qui attaquait était **exemptée** (connexion réussie préalable), donc ses échecs ont alimenté sa propre porte. Aucune autre adresse n'a été gênée — effet voulu — mais **la porte globale et les 8 créneaux n'ont pas été éprouvés sur matériel** : ils restent couverts par les cas natifs. La politique mesurée est celle **par IP** ; une adresse non exemptée subit `max(créneau, globale)`, donc au moins cette sévérité.
+
+### ⛔ Ce que ce mécanisme ne couvre PAS
+
+1. **8 640 essais/jour** en attaque distribuée (simulé : 8 642 max globale, 1 441 par adresse, facteur 20×) ; jusqu'à **14 400** si l'attaquant tient les quatre adresses exemptées.
+2. Un **mot de passe faible** : 10 000 mots tombent en **1,2 jour**.
+3. L'écoute du mot de passe **en clair** sur le Wi-Fi (décision produit).
+4. ⚠️ **Famine du propriétaire hors table pendant une attaque active** : après un redémarrage (table en RAM), depuis un nouveau client, ou depuis la page de secours OTA.
+5. **NAT partagé** avec l'attaquant : sa porte monte à 60 s.
+6. ⚠️ **`/save-config` vide la table sans réinscrire l'auteur** (`web_routes_config.cpp:1645` → `setPassword`) ; aucune page n'emploie ce chemin et le jeton n'y est pas renouvelé, la session survit.
+7. Le modèle de test n'est pas le handler réel (non compilable en natif) ; un redémarrage rend en outre la franchise (3 essais gratuits).
+
+⚠️ La robustesse du mot de passe choisi n'est traitée par aucun livrable de ce lot.
+
+### Garde CI `tools/check_auth_fail_guard.sh` (job `auth-fail-guard`)
+
+Règles : `authFailCheck(` n'est appelé que dans `web_routes_auth.cpp`, exactement 2 fois ; le 2ᵉ est précédé de `!currentPassword.isEmpty() && !virginState` ; `authFailRecordFailure(` exactement 2 fois ; `auth.cpp` et `auth_admission_logic.h` n'appellent aucune `authFail*` hors `authFailBackoffClearExemptions`. ⛔ **Ce qu'elle ne prouve pas** : elle lit le **source** (commentaires retirés), donc la forme de l'appel et non son effet ; un appel indirect (pointeur, macro) lui échapperait.
+
+### Écran de connexion et page de secours
+
+Pas de page `docs/features/` dédiée (un seul formulaire) : le comportement est ici, le visuel dans [DESIGN_SYSTEM §5.22](../DESIGN_SYSTEM.md). Sur 429, `login.html` et la page de secours OTA lisent `Retry-After` (repli : champ `retryAfter`, puis 30 s ; borné à 1–3600 s), affichent « Trop d'essais. Patientez un instant. » et désactivent le bouton avec le décompte « Réessayer dans 0:42 ». Rien n'est mémorisé : recharger est sans danger. Le champ « Nom d'utilisateur » visible est supprimé (champ masqué conservé pour les gestionnaires de mots de passe).
 
 ## Premier démarrage
 
@@ -198,5 +266,6 @@ server->on("/save-config", HTTP_POST, [](AsyncWebServerRequest* req) {
 
 - [`src/auth.h`](../../src/auth.h), [`src/auth.cpp`](../../src/auth.cpp)
 - [`src/web_routes_auth.cpp`](../../src/)
+- [`src/auth_fail_backoff_logic.h`](../../src/auth_fail_backoff_logic.h) — ralentissement des échecs (bug-189)
 - [`src/constants.h:37`](../../src/constants.h:37) — rate limits
 - [docs/API.md](../API.md) — matrice complète des niveaux d'auth par route

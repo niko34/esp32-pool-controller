@@ -40,7 +40,7 @@ l'appareil déchiffre pour fonctionner. Il protège **uniquement** l'appareil **
 revendu ou jeté**.
 
 ⇒ ⚠️ **Ne pas le vendre comme un durcissement du chemin d'authentification.** Les deux
-portes réelles de ce côté-là sont ailleurs : [`bug-189`](bug-189-aucun-verrouillage-sur-les-essais-de-mot-de-passe-en-ligne.md) (essais en ligne) et le HTTP clair
+portes réelles de ce côté-là sont ailleurs : [`bug-189`](../done/bug-189-aucun-verrouillage-sur-les-essais-de-mot-de-passe-en-ligne.md) (essais en ligne) et le HTTP clair
 sur le Wi-Fi (décision assumée).
 
 ## Pourquoi la priorité est basse, et pourquoi la fiche existe quand même
@@ -127,6 +127,6 @@ NVS en clair, aucun chiffrement, aucun eFuse brûlé. Décision tracée dans [AD
 
 ## Hors périmètre
 
-- Les essais en ligne → [`bug-189`](bug-189-aucun-verrouillage-sur-les-essais-de-mot-de-passe-en-ligne.md).
+- Les essais en ligne → [`bug-189`](../done/bug-189-aucun-verrouillage-sur-les-essais-de-mot-de-passe-en-ligne.md).
 - Le HTTP clair sur le Wi-Fi — décision produit assumée, ⛔ pas de spec.
 - Le mot de passe du point d'accès → [`bug-187`](bug-187-mot-de-passe-du-point-d-acces-a-32-bits.md).

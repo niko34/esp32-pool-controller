@@ -111,5 +111,5 @@ Le handler s'exécute intégralement à chaque morceau reçu.
 
 ## Hors périmètre
 
-- Le ralentissement des essais → [`bug-189`](bug-189-aucun-verrouillage-sur-les-essais-de-mot-de-passe-en-ligne.md).
+- Le ralentissement des essais → [`bug-189`](../done/bug-189-aucun-verrouillage-sur-les-essais-de-mot-de-passe-en-ligne.md).
 - `rateLimitMap` (allocation par requête non authentifiée) → `feature-131`.

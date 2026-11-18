@@ -129,4 +129,4 @@ zéro.
 
 - La rétention des traces → [`feature-172`](feature-172-retention-protegee-des-traces-de-securite.md). ⚠️ Sans elle, les lignes ajoutées
   ici vivent dans un journal de 6 Ko.
-- Le ralentissement des essais → [`bug-189`](bug-189-aucun-verrouillage-sur-les-essais-de-mot-de-passe-en-ligne.md).
+- Le ralentissement des essais → [`bug-189`](../done/bug-189-aucun-verrouillage-sur-les-essais-de-mot-de-passe-en-ligne.md).

@@ -294,6 +294,35 @@ constexpr uint8_t kUnauthWarnMaxShift = 6;                // plafond du recul : 
 constexpr unsigned long kUnauthWarnDrainQuietMs = 120000; // 2 min de silence avant d'annoncer les occultés
 constexpr unsigned long kUnauthWarnDecayMs = 3600000;     // 1h sans tentative = recul -1
 
+// ----------------------------------------------------------------------------
+// bug-189 : ralentissement progressif des ÉCHECS de mot de passe (/auth/login et
+// /auth/change-password avec mot de passe actuel). Logique pure : auth_fail_backoff_logic.h.
+// Ce n'est PAS le quota kMaxRequestsPerMinute (charge) : ici on protège le MOT DE PASSE.
+// Trois portes : par IP (8 créneaux fixes, sans éviction), globale (un état), et une
+// table d'EXEMPTION des adresses ayant PROUVÉ le mot de passe (échappent à la globale,
+// mais chacune garde SA PROPRE porte par IP). Un refus est IMMÉDIAT (429), jamais un
+// delay() : c'est le débit d'essais qui s'effondre. Attente <= plafond PAR CONSTRUCTION.
+// ⛔ Limites assumées : 8 640 essais/jour en attaque distribuée ; un redémarrage rend
+// la franchise et VIDE la table d'exemption (RAM) ; le propriétaire hors table peut
+// subir la porte globale pendant une attaque active (famine possible, G1 de P1).
+// Franchise : essais d'échec gratuits avant tout délai (fautes de frappe du propriétaire).
+constexpr uint8_t kAuthFailIpFranchise = 3;
+// Délai après le (franchise+1)-ième échec ; doublé à chaque échec, jusqu'au plafond.
+constexpr unsigned long kAuthFailIpBaseMs = 1000;
+// 1 s << 6 = 64 s, donc le plafond 60 s est atteint : le décalage est borné AVANT le <<.
+constexpr uint8_t kAuthFailIpMaxShift = 6;
+constexpr unsigned long kAuthFailIpCapMs = 60000;   // 60 s : attente maximale par adresse
+// Un échec « pardonné » par tranche de 5 min sans essai (le délai, lui, ne dépasse jamais le plafond).
+constexpr unsigned long kAuthFailIpDecayMs = 300000;
+constexpr uint8_t kAuthFailGlobalFranchise = 10;    // 10 essais gratuits, toutes adresses confondues
+constexpr unsigned long kAuthFailGlobalBaseMs = 1000;
+constexpr uint8_t kAuthFailGlobalMaxShift = 4;      // 1 s << 4 = 16 s -> plafond 10 s
+constexpr unsigned long kAuthFailGlobalCapMs = 10000;  // 10 s : ~8 640 essais/jour au mieux pour l'attaquant
+constexpr unsigned long kAuthFailGlobalDecayMs = 60000;
+// Capacités FIXES (feature-131 : aucune structure à croissance pilotée par l'attaquant).
+constexpr uint8_t kAuthFailIpSlots = 8;             // créneaux par IP, remplis sur ÉCHEC
+constexpr uint8_t kAuthFailExemptSlots = 4;         // adresses ayant prouvé le mot de passe
+
 // ============================================================================
 // MEMORY & BUFFER CONSTANTS - Limites mémoire et buffers
 // ============================================================================

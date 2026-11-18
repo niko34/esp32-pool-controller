@@ -7,6 +7,7 @@
 #include "auth_bootstrap_logic.h"  // bug-185 : décisions pures
 #include "ws_manager.h"  // bug-081 : révocation WS à la rotation de token
 #include "auth_log_throttle_site.h"  // bug-183 : journal BORNÉ des échecs
+#include "auth_fail_backoff_logic.h"  // bug-189 : ralentissement progressif des échecs
 #include <ArduinoJson.h>
 #include <WiFi.h>
 #include <atomic>
@@ -24,18 +25,47 @@ AuthLogThrottleSite gAuthFailSite;
 // Échecs depuis la dernière connexion RÉUSSIE. Compte TOUS les échecs, journalisés
 // ou occultés par le bornage : c'est ce que dit la ligne de réussite. Saturant.
 std::atomic<uint16_t> gFailuresSinceSuccess{0};
+// bug-189 : état des trois portes (IP, globale, exemption). Capacité FIXE, en RAM.
+// Tous les handlers /auth/* tournent sur async_tcp : pas de verrou (voir le module pur).
+AuthFailBackoff gAuthBackoff;
 }  // namespace
+
+// bug-189 : appelé à TOUT changement de mot de passe (AuthManager::setPassword,
+// resetPasswordToDefault) : les adresses qui avaient prouvé l'ancien mot de passe
+// perdent leur exemption.
+void authFailBackoffClearExemptions() { authFailClearExemptions(gAuthBackoff); }
+
+static uint32_t clientIpOf(AsyncWebServerRequest* req) {
+  return (req != nullptr && req->client() != nullptr) ? static_cast<uint32_t>(req->client()->remoteIP()) : 0;
+}
+
+// Réponse 429 de PÉNALITÉ. ⛔ Construite SANS JsonDocument (un refus ne doit rien allouer
+// de lourd). Distinguable du 429 de quota (« Too many requests », sans retryAfter) par le
+// champ retryAfter ; le texte est fixe et n'apprend rien sur le compte (ni nature, ni IP).
+static void sendAuthPenalty(AsyncWebServerRequest* req, uint32_t retryAfterSec) {
+  char body[112];
+  snprintf(body, sizeof(body), "{\"error\":\"Trop d'essais de connexion, réessayez dans %lu s\",\"retryAfter\":%lu}",
+           static_cast<unsigned long>(retryAfterSec), static_cast<unsigned long>(retryAfterSec));
+  char retry[12];
+  snprintf(retry, sizeof(retry), "%lu", static_cast<unsigned long>(retryAfterSec));
+  AsyncWebServerResponse* response = req->beginResponse(429, "application/json", body);
+  response->addHeader("Retry-After", retry);
+  req->send(response);
+}
 
 // Journalise (borné) un échec. `what` = « /route : nature », texte FIXE choisi par
 // l'appelant. ⛔ Jamais le mot de passe, aucun fragment, aucune longueur, ni le nom
 // d'utilisateur essayé (attaquant-contrôlé, de longueur libre : le recopier
 // permettrait d'injecter du texte dans le journal). On dit le FAIT, pas la valeur.
 // MUET => aucune allocation (ADR-0082) : IP lue brute, sortie AVANT toute String.
-static void logAuthFailure(AsyncWebServerRequest* req, const char* what) {
+// `countFailure` : faux pour un REFUS de ralentissement (bug-189, condition 7) — un refus
+// n'est pas un échec de mot de passe et ne doit pas gonfler « échecs depuis la dernière
+// connexion réussie ».
+static void logAuthFailure(AsyncWebServerRequest* req, const char* what, bool countFailure = true) {
   // Incrément saturant via le helper PUR déjà testé en natif (ADR-0017) plutôt
   // qu'une saturation réécrite à la main : une logique de moins hors couverture.
   uint16_t cur = gFailuresSinceSuccess.load(std::memory_order_relaxed);
-  while (cur != UINT16_MAX &&
+  while (countFailure && cur != UINT16_MAX &&
          !gFailuresSinceSuccess.compare_exchange_weak(cur, authLogThrottleSatInc(cur),
                                                       std::memory_order_relaxed)) {
   }
@@ -149,6 +179,22 @@ void setupAuthRoutes(AsyncWebServer* server) {
         return;
       }
 
+      // bug-189 : ralentissement des échecs. ⛔ PLACE IMPOSÉE : après checkRateLimit,
+      // AVANT deserializeJson (la garde ne dépend pas du corps : pas de JsonDocument par
+      // refus). ⛔ Jamais dans checkRateLimit/checkAuth/decideAdmission : auth.cpp
+      // n'examine le jeton que si le quota passe, la garde y enfermerait le propriétaire.
+      // Contrôle, comparaison et comptage : même invocation.
+      const uint32_t clientIp = clientIpOf(req);
+      {
+        const AuthFailVerdict gate = authFailCheck(gAuthBackoff, clientIp, millis(), authFailIpPolicy(),
+                                                   authFailGlobalPolicy());
+        if (gate.refuse) {
+          logAuthFailure(req, "/auth/login : essai refusé (ralentissement)", false);
+          sendAuthPenalty(req, gate.retryAfterSec());
+          return;
+        }
+      }
+
       JsonDocument doc;
       DeserializationError error = deserializeJson(doc, data, len);
 
@@ -172,6 +218,8 @@ void setupAuthRoutes(AsyncWebServer* server) {
       const bool pwMatches = authManager.passwordMatches(password);
       switch (decideLogin(userMatches, pwMatches, authManager.isFactoryPassword())) {
         case LoginVerdict::kAllow:
+          // Mot de passe PROUVÉ : libère le créneau et inscrit l'adresse à l'exemption.
+          authFailRecordPasswordProof(gAuthBackoff, clientIp);
           break;
         case LoginVerdict::kDenyMustChangePassword:
           // A5 : 403 NON journalisé (bruit). Il est conservé, mais ce n'est pas la
@@ -181,6 +229,9 @@ void setupAuthRoutes(AsyncWebServer* server) {
           return;
         case LoginVerdict::kDenyCredentials:
         default:
+          // bug-189 : les DEUX natures (nom inconnu, mot de passe faux) sont comptées à
+          // l'identique — sinon le délai serait un oracle d'énumération du compte.
+          authFailRecordFailure(gAuthBackoff, clientIp, millis(), authFailIpPolicy(), authFailGlobalPolicy());
           // Le classifieur ne sert QU'au texte du journal : la réponse reste unique.
           switch (classifyLoginFailure(userMatches, pwMatches)) {
             case LoginLogKind::kUnknownUser:
@@ -235,6 +286,26 @@ void setupAuthRoutes(AsyncWebServer* server) {
       // isFirstBoot vrai alors qu'il est DÉJÀ possédé : lui accorder le droit
       // anonyme laisserait un inconnu écraser le mot de passe du propriétaire.
       const bool virginState = authManager.isFactoryPassword();
+      const uint32_t clientIp = clientIpOf(req);
+      // bug-189 : garde APRÈS l'analyse du corps, AVANT passwordMatches et checkTokenAuth.
+      // ⚠️ Elle ne s'applique qu'à l'essai de MOT DE PASSE ACTUEL SANS JETON VALIDE.
+      // ⛔ PIÈGE À NE PAS REFAIRE : l'interface envoie le jeton ET currentPassword à la
+      // fois (data/app.js). Tester le seul mot de passe freinerait donc un propriétaire
+      // muni d'un jeton valide (A2 violé sous attaque). Un jeton valide prouve que le
+      // demandeur contrôle déjà l'appareil : le freiner ne protège rien. checkTokenAuth
+      // est le prédicat SILENCIEUX (ni journal ni quota) : ne pas lui substituer checkAuth.
+      // ⛔ `!virginState` : la prise de possession depuis la page de secours envoie
+      // currentPassword "admin" sur un appareil vierge ; la freiner la laisserait affamer
+      // par la porte globale. L'état vierge est public par construction : rien à protéger.
+      if (!currentPassword.isEmpty() && !virginState && !authManager.checkTokenAuth(req)) {
+        const AuthFailVerdict gate = authFailCheck(gAuthBackoff, clientIp, millis(), authFailIpPolicy(),
+                                                   authFailGlobalPolicy());
+        if (gate.refuse) {
+          logAuthFailure(req, "/auth/change-password : essai refusé (ralentissement)", false);
+          sendAuthPenalty(req, gate.retryAfterSec());
+          return;
+        }
+      }
       PwdChangeInput in;
       in.virginState = virginState;
       in.hasCurrentPassword = !currentPassword.isEmpty();
@@ -255,6 +326,8 @@ void setupAuthRoutes(AsyncWebServer* server) {
           return;
         case PwdChangeVerdict::kDenyBadCurrent:
           logAuthFailure(req, "/auth/change-password : mot de passe actuel incorrect");
+          // Cohérent avec la garde : l'état vierge n'est ni freiné ni compté.
+          if (!virginState) authFailRecordFailure(gAuthBackoff, clientIp, millis(), authFailIpPolicy(), authFailGlobalPolicy());
           sendErrorResponse(req, 401, "Current password incorrect");
           return;
         case PwdChangeVerdict::kDenyTooShort:
@@ -274,7 +347,12 @@ void setupAuthRoutes(AsyncWebServer* server) {
       // 6 réponse avec le NOUVEAU jeton.
       // 1.
       authCfg.adminPassword = newPassword;
-      authManager.setPassword(newPassword);
+      authManager.setPassword(newPassword);  // vide aussi la table d'exemption (bug-189)
+      // bug-189 : TOUT kAllow de /auth/change-password (mot de passe actuel, jeton valide
+      // ou prise de possession anonyme d'un appareil vierge) a vidé la table (setPassword)
+      // puis réinscrit l'auteur — sauf ip inconnue, ignorée par le module. Seulement ici :
+      // pas sur n'importe quelle requête porteuse d'un jeton.
+      authFailRecordPasswordProof(gAuthBackoff, clientIp);
 
       // 2. Si c'était un reset password, désactiver le flag forceWifiConfig
       if (authCfg.forceWifiConfig) {

@@ -548,6 +548,18 @@ aucune raison de reprendre ce défaut.
 
 Parcours : page **unique**, étapes révélées par `hidden`, **aucune redirection** (le lien « Ouvrir l'interface quand même » vers `/ui` doit rester visible). Tout est empilé en pleine largeur : **aucun libellé sur une ligne partagée** (390 px d'abord, §6).
 
+### 5.22 Écran de connexion (`login.html`) — ralentissement annoncé (bug-189, v2.94.0)
+
+**Contexte d'emploi déclaré : `data/login.html` uniquement** (feuille `<style>` interne, `app.css` n'est pas chargé). **Aucun composant partagé n'évolue** ; aucun inventaire d'emplois dans `app.css` n'est dû.
+
+- **`.alert.warn`** — variante **locale** à `login.html` (fond ambre translucide, bordure `rgba(180,83,9,.35)`, texte `#92400e`), à côté de `.alert` d'erreur (rouge `#b91c1c`, assombri de `#dc2626`). Emploi : le seul message « Trop d'essais. Patientez un instant. » (texte fixe par `textContent`, jamais celui du serveur). Factuel et sans reproche : le ralentissement peut frapper le propriétaire à cause d'un tiers. Le compte à rebours n'est **pas** dans l'alerte : il vit dans le libellé du **bouton désactivé** (« Réessayer dans 0:42 »), seule source du chiffre, hors `aria-live`. L'alerte 429 vit exactement le temps du décompte ; les alertes 401/« injoignable » ne s'effacent plus au bout de 5 s (une alerte de 5 s sur un blocage de 60 s laissait un bouton inerte sans explication).
+- **Champ « Nom d'utilisateur » supprimé** (il était en lecture seule, valeur `admin`). ⚠️ Un champ `name="username"` masqué (`.vh`, `tabindex="-1"`, `aria-hidden`) est **conservé** pour les gestionnaires de mots de passe ; la règle d'entrée devient `input:not(.vh)`.
+- **Contraste du bouton** : fond de `#5c7cdb` (**3,92:1** avec le texte blanc, sous le seuil AA de 4,5) à `#4a68c8` (**5,12:1**, mesuré) ; second arrêt du dégradé `#687ad8` → `#5470d0` (4,56:1). Appliqué à `login.html`, `wifi.html` et `wizard.html` : **3 occurrences** changées sur 15 — `#5c7cdb` sert aussi aux bordures de focus et à la barre de progression (critère 3:1, non textuels, **non concernés**). ⛔ Un remplacement global aurait été faux.
+- Bouton désactivé : opacité 0,4 → 0,6 (le libellé de décompte doit rester lisible).
+- La **page de secours OTA** (§5.21) reprend le même mécanisme (`#msg.warn`, décompte dans `#b-login`), en copie figée locale.
+
+🔴 **RÉSIDU NON TRAITÉ — sous le seuil AA** : le **sous-titre de `wizard.html`** (14 px, poids 400, blanc sur le dégradé d'en-tête) reste à **3,92:1**, et c'est le **premier écran qu'un client voit à la livraison**. La **pastille d'étape** (`wizard.html:148`, chiffre blanc) est dans le même cas. L'en-tête de `wifi.html` (24 px) **passe**, lui, au titre du « grand texte ». Spec de suite à ouvrir ; non traité dans bug-189 (composant et écrans hors périmètre).
+
 ## 6. Responsive — 390 px d'abord
 
 Référence de calcul pour toute nouvelle rangée de boutons dans une carte d'accueil :

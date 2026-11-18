@@ -32,6 +32,7 @@ progress{width:100%;height:12px;margin-top:12px}
 #msg{margin-top:12px;font-weight:600}
 #msg.err{color:var(--danger);border:1px solid var(--danger);border-radius:10px;padding:10px}
 #msg.ok{color:var(--ok)}
+#msg.warn{color:#92400e;border:1px solid #b45309;border-radius:10px;padding:10px}
 .vh{position:absolute;width:1px;height:1px;opacity:0;overflow:hidden}
 .pick{display:block;min-height:56px;margin:12px 0 0;padding:8px 10px;border:2px dashed var(--line);border-radius:10px;font-weight:400}
 .pick b{display:block}
@@ -317,11 +318,40 @@ async function start() {
   }
 }
 
+// bug-189 : ralentissement annoncé. Le bouton porte le compte à rebours ;
+// `deadline` est recalculée à chaque tick (minuteries ralenties en arrière-plan).
+// Rien n'est mémorisé : recharger la page est sans danger.
+let cdTimer = null;
+function endCountdown() {
+  if (cdTimer) { clearInterval(cdTimer); cdTimer = null; }
+  $("b-login").disabled = false;
+  $("b-login").textContent = "Se connecter";
+}
+function startCountdown(sec) {
+  endCountdown();
+  const deadline = Date.now() + sec * 1000;
+  say("warn", "trop d'essais, patientez un instant.");
+  $("b-login").disabled = true;
+  const draw = () => {
+    const left = Math.ceil((deadline - Date.now()) / 1000);
+    if (left <= 0) { endCountdown(); say("", ""); $("pw").focus(); return; }
+    $("b-login").textContent = "Réessayer dans " + Math.floor(left / 60) + ":" + String(left % 60).padStart(2, "0");
+  };
+  draw();
+  cdTimer = setInterval(draw, 1000);
+}
+
 $("b-login").addEventListener("click", async () => {
+  if (cdTimer) return;
   say("", "");
   try {
     const r = await postJson("/auth/login", { username: "admin", password: $("pw").value });
     if (r.ok) gotToken(r.data);
+    else if (r.status === 429) {
+      let n = parseInt(r.data && r.data.retryAfter, 10);
+      if (!(n > 0)) n = 30;
+      startCountdown(Math.min(3600, Math.max(1, n)));
+    }
     else fail(r.status === 401 ? "mot de passe incorrect." : "connexion refusée (HTTP " + r.status + ").");
   } catch (e) { fail("appareil injoignable."); }
 });

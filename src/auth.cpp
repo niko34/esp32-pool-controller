@@ -5,6 +5,7 @@
 #include "auth_log_throttle_site.h"
 #include "auth_admission_logic.h"
 #include "auth_bootstrap_logic.h"
+#include "web_routes_auth.h"  // bug-189 : authFailBackoffClearExemptions
 #include "secret_compare.h"   // bug-183 : fixedWidthEquals (pur)
 #include "ota_integrity.h"    // bug-183 : OtaStreamHasher (porte déjà le garde mbedtls 2/3)
 #include <mbedtls/platform_util.h>
@@ -210,8 +211,11 @@ String AuthManager::generateRandomToken() {
   return token;
 }
 
+// Invariant de concurrence (bug-189) : appelée UNIQUEMENT depuis la tâche async_tcp
+// (handlers HTTP) ou setup() ; l'état de ralentissement qu'elle vide n'a donc pas de verrou.
 void AuthManager::setPassword(const String& pwd) {
   adminPassword = pwd;
+  authFailBackoffClearExemptions();  // bug-189 : les preuves de l'ancien mot de passe tombent
   systemLogger.info("Mot de passe administrateur modifié");
   // Note: isFirstBoot n'est plus désactivé ici, il sera désactivé uniquement
   // quand le wizard est complété via completeFirstBoot()
@@ -383,6 +387,7 @@ bool AuthManager::isFactoryPassword() const {
 void AuthManager::resetPasswordToDefault() {
   // Réinitialiser le mot de passe à "admin"
   adminPassword = "admin";
+  authFailBackoffClearExemptions();  // bug-189
   isFirstBoot = true;
 
   systemLogger.critical("SÉCURITÉ: Mot de passe réinitialisé à 'admin' via bouton physique !");

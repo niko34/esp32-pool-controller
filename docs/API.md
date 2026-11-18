@@ -254,6 +254,7 @@ curl -X POST -H "Content-Type: application/json" \
 
 **Erreurs**
 - `401` : identifiants invalides. La réponse est identique que le nom d'utilisateur ou le mot de passe soit faux ; l'échec est journalisé côté appareil (`[Auth] …`, sans le mot de passe), voir [auth.md](subsystems/auth.md).
+- `429` : **ralentissement des échecs de mot de passe** (bug-189, v2.94.0). En-tête `Retry-After: N` (secondes) et corps `{"error":"Trop d'essais de connexion, réessayez dans N s","retryAfter":N}`. ⚠️ C'est le champ **`retryAfter`** qui le distingue du 429 de quota (`{"error":"Too many requests"}`, sans ce champ). Refus **immédiat**, aucun essai de mot de passe n'est évalué ; le texte n'apprend rien sur le compte. Une adresse ayant déjà prouvé le mot de passe n'est freinée que par sa propre porte. Voir [auth.md](subsystems/auth.md).
 - `403` : le mot de passe est **encore celui d'usine** (`admin`) — à changer d'abord via `/auth/change-password`. ⚠️ Depuis 2.93.0 ce refus ne dépend plus de l'état de l'assistant : un appareil dont l'assistant a été interrompu **après** le choix du mot de passe accepte la connexion.
 
 ---
@@ -276,7 +277,7 @@ curl -X POST -H "Content-Type: application/json" \
 }
 ```
 
-Règles : minimum 8 caractères, différent du mot de passe actuel. Codes : `400` (trop court / identique), `401` (non authentifié ou `currentPassword` faux).
+Règles : minimum 8 caractères, différent du mot de passe actuel. Codes : `400` (trop court / identique), `401` (non authentifié ou `currentPassword` faux), `429` (ralentissement, même forme que pour `/auth/login` : `Retry-After` + `retryAfter`). ⚠️ Le ralentissement ne frappe que l'essai par `currentPassword` ; le chemin **par jeton** et l'appareil vierge ne sont jamais freinés.
 
 ⚠️ **Le jeton est régénéré** à chaque succès et la réponse contient le **nouveau** : les autres sessions et les connexions WebSocket authentifiées avec l'ancien sont révoquées. Un client qui garde l'ancien jeton reçoit `401`.
 

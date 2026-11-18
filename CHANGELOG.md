@@ -2,6 +2,25 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [2.94.0] - 2026-11-18
+
+> Version **proposée** : `src/version.h` est encore à 2.93.3 et n'a pas été modifié par la documentation.
+
+### Firmware
+- **Sécurité — les essais de mot de passe ratés sont ralentis (bug-189)**. Avant, l'appareil acceptait 172 800 essais par jour et par adresse sans jamais fatiguer : un dictionnaire d'un million de mots s'épuisait en 6 jours. Désormais, après quelques échecs (3 par adresse, 10 en tout), il refuse immédiatement les essais suivants pendant un délai croissant (jusqu'à 60 s par adresse, 10 s en tout), annoncé par `Retry-After`. Mesuré par simulation : au plus **8 642 essais/jour** pour un attaquant sur plusieurs adresses (facteur 20×, et 1 000× face à 50 adresses).
+  - ⭐ **Le propriétaire n'est pas enfermé dehors** : un jeton déjà émis continue de passer, tout s'efface seul par écoulement du temps, et une adresse qui a déjà prouvé le mot de passe depuis le dernier redémarrage n'est pas touchée par la limite globale.
+  - ⚠️ **Ce que ça ne ferme pas** : un mot de passe faible (10 000 mots en 1,2 jour) reste vulnérable ; après un redémarrage, depuis un nouvel appareil ou depuis la page de secours, le propriétaire peut être gêné pendant une attaque active ; le mot de passe circule toujours en clair sur le Wi-Fi.
+  - Réponse HTTP 429 avec `Retry-After` et `retryAfter` sur `/auth/login` et `/auth/change-password` (essai par mot de passe actuel).
+
+### Fonctionnalités
+- **Écran de connexion et page de secours OTA** : en cas de ralentissement, un message « Trop d'essais. Patientez un instant. » s'affiche et le bouton devient « Réessayer dans 0:42 » avec décompte. Le champ « Nom d'utilisateur » (non modifiable) est retiré ; les gestionnaires de mots de passe continuent de fonctionner.
+- **Lisibilité** : le bouton des pages connexion, Wi-Fi et assistant passe à un bleu plus foncé (contraste 5,12:1 au lieu de 3,92:1). ⚠️ Le sous-titre et la pastille d'étape de l'assistant restent à 3,92:1 (non traité).
+
+### Documentation
+- [ADR-0133](docs/adr/0133-le-ralentissement-des-echecs-de-mot-de-passe-est-global-avec-exemption.md) (nouveau), `docs/subsystems/auth.md`, `docs/API.md` (429 de pénalité), `docs/BUILD.md` (job `auth-fail-guard`, 32 jobs), `docs/DESIGN_SYSTEM.md` §5.22, `docs/user/src/guide-utilisation.html`.
+
+---
+
 ## [2.93.3] - 2026-11-17
 
 ### Firmware

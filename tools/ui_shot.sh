@@ -10,7 +10,8 @@
 # Usage :
 #   ./tools/ui_shot.sh                          # tableau de bord, 390 px
 #   ./tools/ui_shot.sh -w 1024                  # largeur desktop
-#   ./tools/ui_shot.sh -r '#/ph' -o /tmp/ph.png # une autre page
+#   ./tools/ui_shot.sh -r '#/ph' -o /tmp/ph.png # une autre vue du tableau de bord
+#   ./tools/ui_shot.sh -p /login.html            # une AUTRE PAGE que l'application
 #   ./tools/ui_shot.sh -f cal_switch_active=true    # forcer un champ de /data
 #   ./tools/ui_shot.sh -c lighting_mode=scheduled   # forcer un champ de /get-config
 #   ./tools/ui_shot.sh -k '#ph_cal_trigger_btn'     # cliquer avant la capture
@@ -45,16 +46,18 @@ set -euo pipefail
 WIDTH=390
 HEIGHT=2600
 ROUTE=""
+PAGE="/index.html"   # bug-189 : page cible (-p), par defaut l'application
 OUT=""
 declare -a FORCE=()
 declare -a FORCE_CFG=()
 declare -a CLICKS=()
 
-while getopts "w:h:r:o:f:c:k:" opt; do
+while getopts "w:h:r:p:o:f:c:k:" opt; do
   case "$opt" in
     w) WIDTH="$OPTARG" ;;
     h) HEIGHT="$OPTARG" ;;
     r) ROUTE="$OPTARG" ;;
+    p) PAGE="$OPTARG" ;;
     o) OUT="$OPTARG" ;;
     f) FORCE+=("$OPTARG") ;;
     c) FORCE_CFG+=("$OPTARG") ;;
@@ -159,7 +162,7 @@ for _ in $(seq 1 40); do
   python3 -c 'import time;time.sleep(0.1)'
 done
 
-echo "→ Capture ${WIDTH}×${HEIGHT}${ROUTE:+ (route $ROUTE)}…"
+echo "→ Capture ${WIDTH}×${HEIGHT} de ${PAGE}${ROUTE:+ (route $ROUTE)}…"
 # ⚠️ LIMITE CONNUE DE CET OUTIL, mesurée le 2026-10-14 :
 #    les champs `<input type="time">` apparaissent au format AMÉRICAIN
 #    (« 08:00 PM ») dans les captures. Ce N'EST PAS un défaut de l'interface :
@@ -173,7 +176,7 @@ LANG=fr_FR.UTF-8 LC_ALL=fr_FR.UTF-8 LANGUAGE=fr \
 "$CHROME" --headless --no-sandbox --disable-gpu --hide-scrollbars \
   --lang=fr-FR --accept-lang=fr-FR,fr \
   --window-size="$WIDTH,$HEIGHT" --virtual-time-budget=10000 \
-  --screenshot="$OUT" "http://127.0.0.1:$PORT/__boot.html$ROUTE" 2>/dev/null
+  --screenshot="$OUT" "http://127.0.0.1:$PORT/__boot.html?page=$PAGE$ROUTE" 2>/dev/null
 
 [[ -s "$OUT" ]] || { echo "ERREUR : capture vide." >&2; exit 1; }
 echo "✅ $OUT ($(wc -c < "$OUT") octets)"
