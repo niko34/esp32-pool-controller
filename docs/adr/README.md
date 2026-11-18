@@ -151,3 +151,4 @@ Certaines décisions techniques ne sont pas lisibles dans le code : elles expliq
 ## Template
 
 Copier `_template.md` pour créer un nouvel ADR.
+| [0132](0132-le-mot-de-passe-se-compare-par-empreintes-en-temps-fixe.md) | **Le mot de passe se compare par empreintes SHA-256 en temps fixe ; le jeton, directement** (bug-183). Longueur du jeton publique, celle du mot de passe secrète. `getPassword()` supprimée. ⚠️ Stockage en clair inchangé : le zeroize n'efface que les empreintes de la pile. |

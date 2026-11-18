@@ -49,6 +49,10 @@ Le refus d'authentification doit rester **visible** (information de sécurité) 
 
 `checkBasicAuth` a disparu avec bug-184 ([ADR-0130](0130-l-appareil-n-accepte-que-le-jeton-pas-http-basic.md)) : la règle (5) de la garde CI porte désormais sur **cinq** fonctions (`checkAuth`, `checkTokenAuth`, `checkRateLimit`, `sendAuthRequired`, `sendRateLimitExceeded`). La décision ci-dessus est inchangée.
 
+## Addendum (2026-11-17, bug-183)
+
+Un dixième site borné, `gAuthFailSite`, a été ajouté pour les échecs de `/auth/login` et `/auth/change-password` (un seul site pour les deux routes : deux sites doubleraient le budget de qui choisit sa route). Les chiffres ci-dessus deviennent **380 (10 × 38)** pour **dix** sites, soit **~87 Ko / 24 h** à ~230 o la ligne. Le corps de l'ADR n'est pas modifié. Voir [ADR-0132](0132-le-mot-de-passe-se-compare-par-empreintes-en-temps-fixe.md) et la fiche bug-183.
+
 ## Références
 
 - [`src/auth_log_throttle_logic.h`](../../src/auth_log_throttle_logic.h), [`src/auth_log_throttle_site.h`](../../src/auth_log_throttle_site.h), [`src/auth.cpp`](../../src/auth.cpp), [`src/constants.h`](../../src/constants.h) (`kUnauthWarn*`)

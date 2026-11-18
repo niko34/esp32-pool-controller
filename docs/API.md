@@ -253,7 +253,7 @@ curl -X POST -H "Content-Type: application/json" \
 ```
 
 **Erreurs**
-- `401` : identifiants invalides.
+- `401` : identifiants invalides. La réponse est identique que le nom d'utilisateur ou le mot de passe soit faux ; l'échec est journalisé côté appareil (`[Auth] …`, sans le mot de passe), voir [auth.md](subsystems/auth.md).
 - `403` : le mot de passe est **encore celui d'usine** (`admin`) — à changer d'abord via `/auth/change-password`. ⚠️ Depuis 2.93.0 ce refus ne dépend plus de l'état de l'assistant : un appareil dont l'assistant a été interrompu **après** le choix du mot de passe accepte la connexion.
 
 ---

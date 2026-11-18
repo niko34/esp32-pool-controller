@@ -50,7 +50,10 @@ public:
   void setEnabled(bool enabled) { authEnabled = enabled; }
   bool isEnabled() const { return authEnabled; }
   void setPassword(const String& pwd);
-  String getPassword() const { return adminPassword; }
+  // bug-183 : le mot de passe ne SORT PLUS de la classe (l'ancien accesseur
+  // en rendait une copie par valeur à chaque tentative). La comparaison se fait
+  // ici, sans sortie anticipée (SHA-256 des deux côtés puis OR des XOR).
+  bool passwordMatches(const String& candidate) const;
   void setApiToken(const String& token);
   String getApiToken() const { return apiToken; }
   void regenerateApiToken();

@@ -7,8 +7,8 @@
 | Statut | **done** — ⭐ **déployé en 2.92.0 et vérifié sur l'appareil réel le 2026-11-17** |
 | Priorité | **CRITIQUE** — ⚠️ deux défauts **mesurés**, sur la seule barrière d'accès d'un appareil **vendu à des clients** |
 | Version cible | **2.92.0** |
-| Relevé par | `security-reviewer` (passe P1 de [`bug-183`](../todo/bug-183-auth-login-echecs-muets-et-comparaison-non-constante.md)), **vérifié et mesuré sur l'appareil** le 2026-11-17 |
-| Specs liées | [`bug-183`](../todo/bug-183-auth-login-echecs-muets-et-comparaison-non-constante.md) (⚠️ **mise en pause**, ce lot passe avant) · `feature-028` (comparaison à temps constant, v2.11.2) · [`bug-112`](../done/bug-112-journal-non-borne-sur-route-protegee.md) |
+| Relevé par | `security-reviewer` (passe P1 de [`bug-183`](../done/bug-183-auth-login-echecs-muets-et-comparaison-non-constante.md)), **vérifié et mesuré sur l'appareil** le 2026-11-17 |
+| Specs liées | [`bug-183`](../done/bug-183-auth-login-echecs-muets-et-comparaison-non-constante.md) (⚠️ **mise en pause**, ce lot passe avant) · `feature-028` (comparaison à temps constant, v2.11.2) · [`bug-112`](../done/bug-112-journal-non-borne-sur-route-protegee.md) |
 
 ## Domaines touchés
 - [ ] Capteurs — [ ] Régulation — [ ] Filtration / Éclairage — [ ] UART / écran
@@ -48,7 +48,7 @@ return generateBasicHash(username, password).equalsIgnoreCase(hash);
 
 ⛔ **Ce n'est pas une déduction : l'appareil a répondu `200` à une chaîne d'identifiants qui ne contient pas le mot de passe.**
 
-**Portée réelle, à ne pas surestimer** : ⛔ ce n'est **pas** un contournement direct — l'attaquant doit toujours trouver une préimage dont le base64 est une variante de casse du bon. ⇒ L'effet est un **affaiblissement** : chaque lettre du base64 perd ~1 bit. Pour un mot de passe courant, de l'ordre de **15 à 20 bits**. ⚠️ Combiné à l'absence totale de trace sur les échecs ([`bug-183`](../todo/bug-183-auth-login-echecs-muets-et-comparaison-non-constante.md)) et à un quota de 120 req/min, cela rend un essai en ligne **plus rapide et toujours invisible**.
+**Portée réelle, à ne pas surestimer** : ⛔ ce n'est **pas** un contournement direct — l'attaquant doit toujours trouver une préimage dont le base64 est une variante de casse du bon. ⇒ L'effet est un **affaiblissement** : chaque lettre du base64 perd ~1 bit. Pour un mot de passe courant, de l'ordre de **15 à 20 bits**. ⚠️ Combiné à l'absence totale de trace sur les échecs ([`bug-183`](../done/bug-183-auth-login-echecs-muets-et-comparaison-non-constante.md)) et à un quota de 120 req/min, cela rend un essai en ligne **plus rapide et toujours invisible**.
 
 ℹ️ Accessoirement, cette comparaison est aussi **en temps variable** et **révèle la longueur** — c'est la **troisième** comparaison de mot de passe du fichier, celle que `bug-183` n'avait pas vue.
 
@@ -197,7 +197,7 @@ ouvrait l'appareil sans contenir le mot de passe — est maintenant refusée. �
 - 🔴 **Trouvé par hasard pendant ces mesures** : `GET /get-config` répond **`200` sans aucun
   identifiant** — aucune garde dans le code (`web_routes_config.cpp:2411`). ⛔ **Sans rapport avec
   ce lot**, défaut préexistant. Les mots de passe et le jeton y sont masqués, mais toute la
-  configuration sort. ⇒ Versé à [`bug-183`](../todo/bug-183-auth-login-echecs-muets-et-comparaison-non-constante.md).
+  configuration sort. ⇒ Versé à [`bug-183`](../done/bug-183-auth-login-echecs-muets-et-comparaison-non-constante.md).
 
 ## 🔎 VERDICTS DES AGENTS — 2026-11-17
 
@@ -298,15 +298,15 @@ tous les trois sous `set -u`. ⇒ Si quelqu'un l'ajoute un jour, il faudra passe
 saine. Deux défauts **vérifiés** restent ouverts — la fenêtre de premier démarrage
 ([`bug-185`](../done/bug-185-fenetre-de-premier-demarrage-ouverte-indefiniment.md), qualifiée
 « bloquante pour la vente ») et `GET /get-config` sans aucune garde
-([`bug-183`](../todo/bug-183-auth-login-echecs-muets-et-comparaison-non-constante.md)).
+([`bug-183`](../done/bug-183-auth-login-echecs-muets-et-comparaison-non-constante.md)).
 
 ## Notes pour agent
 - ⚠️ **Les trois défauts ont été VÉRIFIÉS, deux d'entre eux MESURÉS sur l'appareil réel.** ⛔ Ne pas les re-chercher ; les re-mesurer **après** correctif, oui.
-- ⚠️ **Ce lot passe AVANT [`bug-183`](../todo/bug-183-auth-login-echecs-muets-et-comparaison-non-constante.md)** (décision utilisateur, 2026-11-17). ⇒ `bug-183` traitera **ensuite** les deux autres comparaisons et la journalisation des échecs. ⛔ Ne pas les traiter ici sans arbitrage : les deux lots se recouvriraient.
+- ⚠️ **Ce lot passe AVANT [`bug-183`](../done/bug-183-auth-login-echecs-muets-et-comparaison-non-constante.md)** (décision utilisateur, 2026-11-17). ⇒ `bug-183` traitera **ensuite** les deux autres comparaisons et la journalisation des échecs. ⛔ Ne pas les traiter ici sans arbitrage : les deux lots se recouvriraient.
 - ⚠️ `bug-183` porte déjà un relevé à jour du code (section « ✅ RELEVÉ DANS LE CODE COURANT — 2026-11-17 ») : **le lire**, il évite de refaire le travail.
 
 ## Hors périmètre
-- Les comparaisons de `/auth/login` (`:58`) et de `/auth/change-password` (`:117`) → [`bug-183`](../todo/bug-183-auth-login-echecs-muets-et-comparaison-non-constante.md).
-- La journalisation des échecs de connexion → [`bug-183`](../todo/bug-183-auth-login-echecs-muets-et-comparaison-non-constante.md).
+- Les comparaisons de `/auth/login` (`:58`) et de `/auth/change-password` (`:117`) → [`bug-183`](../done/bug-183-auth-login-echecs-muets-et-comparaison-non-constante.md).
+- La journalisation des échecs de connexion → [`bug-183`](../done/bug-183-auth-login-echecs-muets-et-comparaison-non-constante.md).
 - Le chiffrement des échanges → ⛔ **tranché le 2026-11-17 : on reste en clair.**
 - `rateLimitMap` → `feature-131`. Routes `/debug/*` → [`feature-070`](../todo/feature-070-durcissement-routes-debug-et-cooldown-reset.md).

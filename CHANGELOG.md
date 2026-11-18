@@ -2,6 +2,20 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [2.93.3] - 2026-11-17
+
+### Firmware
+- **Sécurité — le journal dit désormais qui a essayé de se connecter, et qui a réussi (bug-183)**. Un échec sur `/auth/login` ou `/auth/change-password` laisse une ligne `[Auth] <route> : <nature> depuis <IP>` (nom inconnu, mot de passe incorrect, jeton invalide) ; une connexion réussie laisse `[Auth] Connexion réussie depuis <IP>`, avec le nombre d'échecs qui l'ont précédée. ⛔ Le mot de passe, sa longueur et le nom essayé ne sont jamais écrits. Le nombre de lignes reste borné (un site partagé par les deux routes ; les échecs en trop sont annoncés comme « non journalisés »).
+  - ⚠️ Le compteur d'échecs est **en mémoire** (remis à zéro au redémarrage et à chaque connexion réussie), regroupe les deux routes, et ne compte pas les refus par jeton des autres routes.
+  - La réponse HTTP ne change pas : 401 identique, que le nom ou le mot de passe soit faux.
+- **Sécurité — la vérification du mot de passe ne dépend plus de sa ressemblance avec le bon**. La comparaison s'arrêtait au premier caractère faux et son temps trahissait la longueur du début correct ; elle se fait maintenant sur deux empreintes de taille fixe, sans arrêt anticipé (vérifié dans le binaire : boucle de 32 tours, aucun branchement). ⚠️ Le mot de passe reste stocké en clair en NVS : ce lot n'y change rien.
+- **Interne** : `AuthManager::getPassword()` supprimée, remplacée par `passwordMatches()`.
+
+### Documentation
+- `docs/subsystems/auth.md` (nouvelle famille `[Auth] …`, `passwordMatches()`, **342 (9 × 38) / ~79 Ko corrigés en 380 (10 × 38) / ~87 Ko**), [ADR-0132](docs/adr/0132-le-mot-de-passe-se-compare-par-empreintes-en-temps-fixe.md) (nouveau), addendum daté à l'ADR-0127, `docs/API.md` (précision sur le 401 de `/auth/login`), `docs/BUILD.md` (job `secret-compare-guard`).
+
+---
+
 ## [2.93.2] - 2026-11-17
 
 ### Firmware

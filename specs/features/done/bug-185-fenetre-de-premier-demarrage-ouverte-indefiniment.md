@@ -8,7 +8,7 @@
 | Priorité | **CRITIQUE** — ⚠️ qualifiée **« bloquante pour la vente »** par `security-reviewer` (P2 de [`bug-184`](../done/bug-184-authentification-basic-accepte-un-mot-de-passe-qui-n-est-pas-le-bon.md)) |
 | Version cible | **2.93.0** (déployée le 2026-11-17) |
 | Relevé par | `security-reviewer`, 2026-11-17, passe P2 de `bug-184` — **vérifié dans le code** le même jour |
-| Specs liées | [`bug-184`](../done/bug-184-authentification-basic-accepte-un-mot-de-passe-qui-n-est-pas-le-bon.md) (⚠️ ce lot ne le corrige PAS) · [`bug-183`](../todo/bug-183-auth-login-echecs-muets-et-comparaison-non-constante.md) |
+| Specs liées | [`bug-184`](../done/bug-184-authentification-basic-accepte-un-mot-de-passe-qui-n-est-pas-le-bon.md) (⚠️ ce lot ne le corrige PAS) · [`bug-183`](../done/bug-183-auth-login-echecs-muets-et-comparaison-non-constante.md) |
 
 ## Domaines touchés
 - [x] **Web — routes HTTP** · [x] **Authentification** (`src/auth.{h,cpp}`, `src/web_routes_auth.cpp`)
@@ -349,5 +349,5 @@ client, ⛔ ne pas présenter ces points comme acquis :
 
 ## Hors périmètre
 - Le retrait de HTTP Basic → [`bug-184`](../done/bug-184-authentification-basic-accepte-un-mot-de-passe-qui-n-est-pas-le-bon.md).
-- Les comparaisons de mot de passe et le journal des échecs → [`bug-183`](../todo/bug-183-auth-login-echecs-muets-et-comparaison-non-constante.md).
+- Les comparaisons de mot de passe et le journal des échecs → [`bug-183`](../done/bug-183-auth-login-echecs-muets-et-comparaison-non-constante.md).
 - Le chiffrement des échanges → ⛔ tranché le 2026-11-17 : on reste en clair.

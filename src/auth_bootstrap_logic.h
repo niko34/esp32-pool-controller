@@ -76,6 +76,19 @@ inline LoginVerdict decideLogin(bool userMatches, bool passwordMatches, bool fac
   return LoginVerdict::kAllow;
 }
 
+// bug-183 : nature d'un échec de connexion, POUR LE TEXTE DU JOURNAL SEULEMENT.
+// ⛔ RÈGLE ABSOLUE : nom faux => kUnknownUser QUEL QUE SOIT passwordMatches. Aucune
+// sortie ne dépend du mot de passe quand le nom est faux : sinon le journal serait
+// un oracle du mot de passe. ⛔ Ne change JAMAIS un code HTTP : la réponse reste
+// unique (decideLogin -> kDenyCredentials dans les deux cas).
+enum class LoginLogKind { kNone, kUnknownUser, kBadPassword };
+
+inline LoginLogKind classifyLoginFailure(bool userMatches, bool passwordMatches) {
+  if (!userMatches) return LoginLogKind::kUnknownUser;
+  if (!passwordMatches) return LoginLogKind::kBadPassword;
+  return LoginLogKind::kNone;
+}
+
 // ----------------------------------------------------------------------------
 // /auth/change-password
 // ----------------------------------------------------------------------------

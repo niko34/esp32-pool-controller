@@ -155,6 +155,32 @@ void test_wizard_close_third_party_cannot_close(void) {
   TEST_ASSERT_EQUAL((int)WizardCloseVerdict::kDenyFactoryPassword, (int)decideWizardClose(true, true, true));
 }
 
+// bug-183 : nature d'un échec, 4 combinaisons.
+void test_classify_login_failure_4_combinaisons(void) {
+  TEST_ASSERT_EQUAL((int)LoginLogKind::kUnknownUser, (int)classifyLoginFailure(false, false));
+  TEST_ASSERT_EQUAL((int)LoginLogKind::kUnknownUser, (int)classifyLoginFailure(false, true));
+  TEST_ASSERT_EQUAL((int)LoginLogKind::kBadPassword, (int)classifyLoginFailure(true, false));
+  TEST_ASSERT_EQUAL((int)LoginLogKind::kNone, (int)classifyLoginFailure(true, true));
+}
+
+// INVARIANT DE SÉCURITÉ : le journal n'est jamais un oracle du mot de passe.
+// Nom faux => kUnknownUser QUELLE QUE SOIT la valeur de passwordMatches.
+void test_invariant_journal_pas_un_oracle_du_mot_de_passe(void) {
+  TEST_ASSERT_EQUAL((int)classifyLoginFailure(false, true), (int)classifyLoginFailure(false, false));
+  TEST_ASSERT_EQUAL((int)LoginLogKind::kUnknownUser, (int)classifyLoginFailure(false, true));
+  TEST_ASSERT_EQUAL((int)LoginLogKind::kUnknownUser, (int)classifyLoginFailure(false, false));
+}
+
+// INVARIANT CROISÉ : kNone exactement quand decideLogin ne refuse pas les identifiants.
+void test_invariant_croise_classify_et_decide_login(void) {
+  for (int b = 0; b < 8; b++) {
+    bool u = b & 1, p = b & 2, f = b & 4;
+    bool denied = decideLogin(u, p, f) == LoginVerdict::kDenyCredentials;
+    bool none = classifyLoginFailure(u, p) == LoginLogKind::kNone;
+    TEST_ASSERT_EQUAL(!denied, none);
+  }
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_factory_literal);
@@ -168,5 +194,8 @@ int main(int, char**) {
   RUN_TEST(test_effect_plan);
   RUN_TEST(test_wizard_close_all_combinations);
   RUN_TEST(test_wizard_close_third_party_cannot_close);
+  RUN_TEST(test_classify_login_failure_4_combinaisons);
+  RUN_TEST(test_invariant_journal_pas_un_oracle_du_mot_de_passe);
+  RUN_TEST(test_invariant_croise_classify_et_decide_login);
   return UNITY_END();
 }

@@ -139,6 +139,26 @@ jobs:
       - name: Contrôle des handlers de corps
         run: ./tools/check_unauth_log_guard.sh
 
+  # bug-183 — le mot de passe ne se compare qu'en TEMPS FIXE.
+  # ⭐ Ce job existe parce qu'aucun test ne peut le faire : remplacer
+  # fixedWidthEquals par un memcmp à sortie anticipée rend exactement la même
+  # valeur, donc la suite native ne voit rien passer (mutant M1, survivant
+  # assumé et consigné dans la spec).
+  # ⛔ CE QUE CE JOB NE PROUVE PAS : il lit le SOURCE. fixedWidthEquals est `inline`
+  # dans un en-tête, et transformer « OR des XOR » en sortie anticipée est une
+  # optimisation LÉGALE. Seul le désassemblage de l'ELF livré prouve la propriété
+  # sur le binaire — il est consigné dans la spec, avec le SHA256 de l'ELF.
+  # Ce job empêche la RÉGRESSION DÉLIBÉRÉE du source ; il ne remplace pas ce relevé.
+  secret-compare-guard:
+    name: Comparaison du mot de passe à temps fixe (bug-183)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Contrôle de la comparaison des secrets
+        run: ./tools/check_secret_compare_guard.sh
+
   # JOB 7 — diffusion WebSocket ciblée (bug-081). Les trois `textAll()` de
   # src/ws_manager.cpp diffusaient à TOUS les clients de /ws, authentifiés ou
   # non — la garde ne vérifiait qu'« au moins un client authentifié ». Sans ce

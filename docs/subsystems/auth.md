@@ -103,6 +103,10 @@ Deux consommateurs :
 
 Le code mort de debug (`maskedReceived` / `maskedExpected`) a été supprimé au passage ; seul le masquage volontaire des 8 premiers caractères pour les logs de génération subsiste (le token n'est **jamais** loggué en clair).
 
+### Mot de passe : `passwordMatches()` (bug-183)
+
+`AuthManager::getPassword()` est **supprimée**. `AuthManager::passwordMatches(const String& candidate) const` hache les deux côtés en SHA-256 (`OtaStreamHasher`, contexte sur la pile), compare les 32 octets avec `fixedWidthEquals` ([`secret_compare.h`](../../src/secret_compare.h), OU des XOR, sans sortie anticipée), puis efface les deux empreintes par `mbedtls_platform_zeroize`. Pourquoi deux primitives (jeton / mot de passe), la limite du zeroize (le mot de passe reste en clair) et la mesure du désassemblage : [ADR-0132](../adr/0132-le-mot-de-passe-se-compare-par-empreintes-en-temps-fixe.md). Garde CI : `tools/check_secret_compare_guard.sh` (job `secret-compare-guard`).
+
 ## Rate limiting
 
 ```cpp
@@ -118,16 +122,27 @@ Au-delà de 30 requêtes / minute par IP → `sendRateLimitExceeded()` (HTTP 429
 
 Les refus d'authentification journalisent en `WARNING`, mais **de façon bornée** : sans cela un client anonyme purgeait le journal persistant en ~27 requêtes (~13 s). Décision et alternatives : [ADR-0127](../adr/0127-le-bornage-du-journal-d-authentification-est-global-par-emetteur.md).
 
-- **Neuf sites bornés** : 401 (`sendAuthRequired`), 429 (`checkRateLimit`), les trois routes de calibration, l'upload OTA, `/save-config`, `/tune-ph-offset`, `/ws` (« Jeton rejeté », [ws-manager.md](ws-manager.md)). États **indépendants**.
+- **Dix sites bornés** (neuf à l'origine ; `gAuthFailSite` ajouté par bug-183, voir ci-dessous) : 401 (`sendAuthRequired`), 429 (`checkRateLimit`), les trois routes de calibration, l'upload OTA, `/save-config`, `/tune-ph-offset`, `/ws` (« Jeton rejeté », [ws-manager.md](ws-manager.md)). États **indépendants**.
 - ⭐ **Borner ≠ authentifier.** Un dixième émetteur, `POST /debug/sensor_trace_clear` (un INFO par requête, sans auth), n'est **pas borné** : il a été **retiré du chemin non authentifié** (`REQUIRE_AUTH(WRITE)`). Ce n'est pas un refus d'authentification (un site de throttle l'aurait annoncé comme tel) et l'action efface une fenêtre de diagnostic (décision A1 de `feature-070`).
 - **Clé globale par émetteur** — ni par route, ni par IP : le 401 est **un seul état** pour toutes les routes protégées. Conséquence : seule l'URL de la requête qui a pu parler est nommée ; les autres refus sont comptés dans « et N refus non journalisés », avec les drapeaux `(autres routes)` et `(autres IP)`. ⚠️ Entre clients **IPv6** le drapeau « autres IP » n'est jamais levé.
 - **Recul exponentiel** : fenêtre `kUnauthWarnThrottleMs << shift` (60 s de base), `shift` +1 par ligne émise sauf la première, plafond `kUnauthWarnMaxShift` (6 = 64 min), −1 par `kUnauthWarnDecayMs` (1 h) sans tentative. Lignes à t = 0, 1, 3, 7, 15, 31, 63 min.
 - **Drain** : `AuthManager::drainUnauthWarnLogs()` (appelé par `loop()`, ainsi que les drains calibration, OTA et config) annonce les occultés après `kUnauthWarnDrainQuietMs` (120 s) de silence, borné par la même fenêtre. Préfixes : `Accès non autorisé :`, `Rate limit dépassé :`, `[OTA] POST /update :`, `[Calibration] /calibrate_x :`, `[Config] /save-config :`, `[pH] /tune-ph-offset :`. Le drain ne remet pas à zéro la date de dernière tentative.
 - **Une tentative isolée reste journalisée.** Le 401/429 HTTP part toujours : seul le journal est borné.
 - **Contrat** : `sendRateLimitExceeded` ne journalise plus ; l'appelant (`checkRateLimit`) l'a déjà fait. `checkRateLimit` retourne `true` si `client()` est nul (non exploitable : sans connexion aucune réponse ne revient ; l'ancien code déréférençait nul).
-- **Chiffres** : pire cas **mesuré** 38 lignes/24 h par site, **342 (9 × 38)** pour neuf sites — somme de maxima mesurés, aucun scénario joint mesuré, aucun majorant établi (38 est le pire **trouvé**, un 39 reste possible) ⇒ le journal reste purgeable à vitesse lente, assumé.
+- **Chiffres** : pire cas **mesuré** 38 lignes/24 h par site, **380 (10 × 38)** pour dix sites — somme de maxima mesurés, aucun scénario joint mesuré, aucun majorant établi (38 est le pire **trouvé**, un 39 reste possible) ⇒ le journal reste purgeable à vitesse lente, assumé.
 - **`checkTokenAuth` comme prédicat de masquage** (2.93.1, `GET /wifi/status`) : employé seul, sans refus, pour décider si un champ (`ssid`) est rendu. ⚠️ Piège : `check_unauth_log_guard.sh` ne le reconnaît **pas** comme une garde (règle 3 : seuls `REQUIRE_AUTH`, `…Authorized(`, `checkAuth(`). Toute journalisation dans un handler qui l'emploie seul fait **tomber la CI** ; un tel handler doit rester muet (aussi : ni `checkAuth`, ni `sendAuthRequired`, ni `checkRateLimit`, qui journalisent).
 - **Garde CI** : `tools/check_unauth_log_guard.sh` (job `unauth-log-guard`), **cinq règles**, chacune validée par mutation : (1) aucun `systemLogger` dans la branche de refus d'une garde `if (!…Authorized(` de `web_routes_*.cpp` ; (2) aucun `systemLogger` entre l'en-tête d'un handler et sa garde ; (3) dans tout **lambda handler** de `web_routes_*.cpp`, un `systemLogger` ne vient qu'**après** un `REQUIRE_AUTH`, un `…Authorized(` ou un `checkAuth(` ; (4) aucun `systemLogger` dans `ws_manager.cpp::_onData` ni `_onClientConnect` ; (5) aucun `systemLogger` dans `checkAuth`, `checkTokenAuth`, `checkRateLimit`, `sendAuthRequired`, `sendRateLimitExceeded`. ⚠️ **Limite** : la règle 3 ne juge que les lambdas — un lambda sans garde qui appelle une **fonction nommée** contenant un `systemLogger` n'est pas vu (juger aussi les fonctions nommées donnait 48 faux positifs dans `web_routes_ota.cpp`). Exemption unique : `AUTH-LOG-EXEMPT` sur l'INFO de `/auth/complete-wizard` (écrit une seule fois : `clearFirstBootFlag()` rend `isFirstBootDetected()` faux). Code : `auth_log_throttle_logic.h` (pur), `auth_log_throttle_site.h` (coquille atomique).
+
+## Échecs d'authentification journalisés (`bug-183`, v2.93.3)
+
+Famille de lignes `[Auth] …`, bornée par **un seul** site (`gAuthFailSite`) partagé par `/auth/login` et `/auth/change-password` (deux sites doubleraient le budget de journal de qui choisit sa route).
+
+- WARNING `[Auth] <route> : <nature> depuis <IP>` — natures : nom d'utilisateur inconnu, mot de passe incorrect, jeton invalide. ⛔ Jamais le mot de passe, ni sa longueur, ni le nom d'utilisateur essayé.
+- Complément d'occultation : ` ; et N autres échecs non journalisés (route et nature non précisées)`, ou `(route, nature et IP non précisées)` quand les occultés viennent d'autres adresses.
+- INFO `[Auth] Connexion réussie depuis <IP>`, suivi de ` (N échecs d'authentification sur /auth/* depuis le démarrage ou la dernière connexion réussie)` s'il y en a eu.
+- ⚠️ **Trois limites du compteur** : (1) **en RAM**, remis à zéro au redémarrage et à chaque connexion réussie ; (2) il **agrège les deux routes** `/auth/login` et `/auth/change-password` ; (3) il **ne compte pas** les 401 par jeton des autres routes.
+- La réponse HTTP est **inchangée** : 401 identique que le nom ou le mot de passe soit faux ; le classement ne sert qu'au texte du journal.
+- `drainAuthRoutesWarnLogs()` est exporté et appelé depuis `main.cpp`.
 
 ## Premier démarrage
 

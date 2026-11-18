@@ -6,8 +6,98 @@
 #include "constants.h"            // bug-185 : kAdminPasswordMinLength
 #include "auth_bootstrap_logic.h"  // bug-185 : décisions pures
 #include "ws_manager.h"  // bug-081 : révocation WS à la rotation de token
+#include "auth_log_throttle_site.h"  // bug-183 : journal BORNÉ des échecs
 #include <ArduinoJson.h>
 #include <WiFi.h>
+#include <atomic>
+
+// ---------------------------------------------------------------------------
+// bug-183 : journal des échecs d'authentification des routes /auth/*
+// ---------------------------------------------------------------------------
+// ⛔ UN SEUL site borné pour les échecs des DEUX routes : la route est nommée dans
+// le TEXTE de la ligne, pas dans la clé du site. Deux sites doubleraient le budget
+// de journal de qui choisit la route (ou la nature) de ses essais. Clé fixe : le
+// hachage ne distingue donc aucune route.
+// Statiques PRIVÉES à l'unité ; seul drainAuthRoutesWarnLogs() est exporté.
+namespace {
+AuthLogThrottleSite gAuthFailSite;
+// Échecs depuis la dernière connexion RÉUSSIE. Compte TOUS les échecs, journalisés
+// ou occultés par le bornage : c'est ce que dit la ligne de réussite. Saturant.
+std::atomic<uint16_t> gFailuresSinceSuccess{0};
+}  // namespace
+
+// Journalise (borné) un échec. `what` = « /route : nature », texte FIXE choisi par
+// l'appelant. ⛔ Jamais le mot de passe, aucun fragment, aucune longueur, ni le nom
+// d'utilisateur essayé (attaquant-contrôlé, de longueur libre : le recopier
+// permettrait d'injecter du texte dans le journal). On dit le FAIT, pas la valeur.
+// MUET => aucune allocation (ADR-0082) : IP lue brute, sortie AVANT toute String.
+static void logAuthFailure(AsyncWebServerRequest* req, const char* what) {
+  // Incrément saturant via le helper PUR déjà testé en natif (ADR-0017) plutôt
+  // qu'une saturation réécrite à la main : une logique de moins hors couverture.
+  uint16_t cur = gFailuresSinceSuccess.load(std::memory_order_relaxed);
+  while (cur != UINT16_MAX &&
+         !gFailuresSinceSuccess.compare_exchange_weak(cur, authLogThrottleSatInc(cur),
+                                                      std::memory_order_relaxed)) {
+  }
+  const bool hasClient = (req != nullptr && req->client() != nullptr);
+  const uint32_t ip = hasClient ? static_cast<uint32_t>(req->client()->remoteIP()) : 0;
+  const AuthLogSiteReport r = authLogSiteAttempt(gAuthFailSite, millis(), authLogThrottleHash("/auth"), ip,
+                                                 kUnauthWarnThrottleMs, kUnauthWarnMaxShift, kUnauthWarnDecayMs);
+  if (!r.emit) return;  // MUET : zéro allocation
+  String msg = String("[Auth] ") + what + " depuis " +
+               (hasClient ? req->client()->remoteIP().toString() : String("IP inconnue"));
+  if (r.occulted > 0) {
+    // ⚠️ Les occultés ne portent ni la nature ni la route annoncées ci-dessus, et
+    // ⛔ PAS FORCÉMENT L'IP NOMMÉE. Sans le dire, on lit « et 12 autres essais DE
+    // CETTE ADRESSE » alors qu'ils peuvent venir de douze adresses : c'est très
+    // exactement la ligne sur laquelle on se trompe en cherchant qui a essayé
+    // d'entrer. (Relevé par security-reviewer en passe P2 ; même défaut que celui
+    // que auth.cpp/appendOcculted évitait déjà, lui, en affichant r.otherIps.)
+    // ℹ️ r.otherRoutes n'est PAS affiché : la clé du site est fixe (« /auth »),
+    //    donc il est toujours faux ici — l'afficher serait du code mort.
+    msg += String(" ; et ") + String(r.occulted) + " " +
+           authLogThrottlePlural(r.occulted, "autre échec non journalisé", "autres échecs non journalisés") +
+           (r.otherIps ? " (route, nature et IP non précisées)" : " (route et nature non précisées)");
+  }
+  systemLogger.warning(msg);
+}
+
+// Connexion RÉUSSIE : INFO, avec le nombre d'échecs depuis la précédente. Sans elle
+// le journal dit qu'on a essayé, jamais qu'on a réussi. Atteignable seulement avec
+// le bon mot de passe, et sous checkRateLimit() : pas un émetteur anonyme.
+static void logLoginSuccess(AsyncWebServerRequest* req) {
+  const uint16_t fails = gFailuresSinceSuccess.exchange(0, std::memory_order_relaxed);
+  String msg = String("[Auth] Connexion réussie depuis ") +
+               ((req != nullptr && req->client() != nullptr) ? req->client()->remoteIP().toString()
+                                                              : String("IP inconnue"));
+  if (fails > 0) {
+    // ⚠️ Le compte agrège les DEUX routes /auth/* (échecs d'identifiants de /auth/login
+    // ET essais de jeton de /auth/change-password) : le libellé doit le dire, sinon on
+    // lit « N mots de passe faux ». ⛔ Il est en RAM : un redémarrage le remet à zéro.
+    msg += String(" (") + (fails == UINT16_MAX ? String("65535 ou plus") : String(fails)) +
+           " " + authLogThrottlePlural(fails, "échec", "échecs") +
+           " d'authentification sur /auth/* depuis le démarrage ou la dernière connexion réussie)";
+  }
+  // AUTH-LOG-EXEMPT(bug-183) : NON borné, délibérément. Atteignable seulement après
+  // decideLogin() == kAllow — donc par qui détient déjà le bon mot de passe — et
+  // derrière checkRateLimit() (120 req/min/IP) : ce n'est pas un émetteur anonyme,
+  // et la garde check_unauth_log_guard.sh ne borne que le chemin NON authentifié.
+  // ⚠️ Résidu assumé : qui détient le mot de passe peut noyer ses traces en ~27
+  // connexions réussies (journal de 6 144 o conservés). Défaut déjà porté par
+  // bug-112 et renvoyé à feature-172 ; ce lot y ajoute une voie, il ne la crée pas.
+  systemLogger.info(msg);
+}
+
+// Drain (loop UNIQUEMENT), borné par le même recul que l'émission.
+void drainAuthRoutesWarnLogs() {
+  const AuthLogSiteReport r = authLogSiteDrain(gAuthFailSite, millis(), kUnauthWarnThrottleMs,
+                                               kUnauthWarnMaxShift, kUnauthWarnDrainQuietMs);
+  if (!r.emit) return;
+  systemLogger.warning(String("[Auth] ") + String(r.occulted) + " " +
+                       authLogThrottlePlural(r.occulted, "échec d'authentification non journalisé",
+                                             "échecs d'authentification non journalisés") +
+                       " (route et nature non précisées)");
+}
 
 void setupAuthRoutes(AsyncWebServer* server) {
   // Route: Statut d'authentification (PUBLIC - vérifier si premier démarrage)
@@ -43,6 +133,8 @@ void setupAuthRoutes(AsyncWebServer* server) {
     // issue était l'appui long, qui efface étalonnages, consignes et limites.
     // ⚠️ Ajout ADDITIF : aucune clé existante ne change, le contrat de
     // sondabilité de bug-177 (toujours répondre, sans auth ni quota) est intact.
+    // A5 : l'état vierge est PUBLIC PAR CONSTRUCTION — le droit anonyme de
+    // /auth/change-password le révèle à quiconque l'essaie, indépendamment de cette clé.
     doc["virgin"] = authManager.isFactoryPassword();
     doc["authEnabled"] = authManager.isEnabled();
     doc["forceWifiConfig"] = authCfg.forceWifiConfig;
@@ -75,20 +167,38 @@ void setupAuthRoutes(AsyncWebServer* server) {
       // APRÈS le choix du mot de passe laisse isFirstBoot vrai sur un appareil
       // déjà possédé — le tester ici enfermerait son propriétaire dehors, et
       // l'OTA est le SEUL canal de déploiement. Voir auth_bootstrap_logic.h.
-      switch (decideLogin(username == "admin", password == authManager.getPassword(),
-                          authManager.isFactoryPassword())) {
+      // bug-183 : `admin` est PUBLIC (== reste), le mot de passe se compare à temps fixe.
+      const bool userMatches = (username == "admin");
+      const bool pwMatches = authManager.passwordMatches(password);
+      switch (decideLogin(userMatches, pwMatches, authManager.isFactoryPassword())) {
         case LoginVerdict::kAllow:
           break;
         case LoginVerdict::kDenyMustChangePassword:
+          // A5 : 403 NON journalisé (bruit). Il est conservé, mais ce n'est pas la
+          // publication de `virgin` qui le justifie : l'état vierge est public PAR
+          // CONSTRUCTION (le droit anonyme de /auth/change-password le révèle).
           sendErrorResponse(req, 403, "Changement de mot de passe obligatoire au premier démarrage");
           return;
         case LoginVerdict::kDenyCredentials:
         default:
+          // Le classifieur ne sert QU'au texte du journal : la réponse reste unique.
+          switch (classifyLoginFailure(userMatches, pwMatches)) {
+            case LoginLogKind::kUnknownUser:
+              logAuthFailure(req, "/auth/login : nom d'utilisateur inconnu");
+              break;
+            case LoginLogKind::kBadPassword:
+              logAuthFailure(req, "/auth/login : mot de passe incorrect");
+              break;
+            case LoginLogKind::kNone:
+            default:
+              break;
+          }
           sendErrorResponse(req, 401, "Nom d'utilisateur ou mot de passe invalide");
           return;
       }
 
       // Authentification réussie - retourner le token API
+      logLoginSuccess(req);
       JsonDocument response;
       response["success"] = true;
       response["token"] = authManager.getApiToken();
@@ -128,8 +238,8 @@ void setupAuthRoutes(AsyncWebServer* server) {
       PwdChangeInput in;
       in.virginState = virginState;
       in.hasCurrentPassword = !currentPassword.isEmpty();
-      in.currentMatches = (currentPassword == authManager.getPassword());
-      in.currentIsFactoryLiteral = (currentPassword == "admin");
+      in.currentMatches = authManager.passwordMatches(currentPassword);  // bug-183 : temps fixe
+      in.currentIsFactoryLiteral = (currentPassword == "admin");  // valeur PUBLIQUE : == reste
       // checkTokenAuth : ne répond pas lui-même (le 401 est émis ici, une seule fois).
       in.tokenValid = (!virginState && !in.hasCurrentPassword) ? authManager.checkTokenAuth(req) : false;
       in.newLenOk = (newPassword.length() >= kAdminPasswordMinLength);  // constante partagée avec /save-config (bug-185)
@@ -139,9 +249,12 @@ void setupAuthRoutes(AsyncWebServer* server) {
         case PwdChangeVerdict::kAllow:
           break;
         case PwdChangeVerdict::kDenyUnauth:
+          // Essai de jeton, jusqu'ici invisible : même site borné que le mot de passe.
+          logAuthFailure(req, "/auth/change-password : jeton absent ou invalide");
           sendErrorResponse(req, 401, "Authentication required");
           return;
         case PwdChangeVerdict::kDenyBadCurrent:
+          logAuthFailure(req, "/auth/change-password : mot de passe actuel incorrect");
           sendErrorResponse(req, 401, "Current password incorrect");
           return;
         case PwdChangeVerdict::kDenyTooShort:

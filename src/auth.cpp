@@ -5,6 +5,9 @@
 #include "auth_log_throttle_site.h"
 #include "auth_admission_logic.h"
 #include "auth_bootstrap_logic.h"
+#include "secret_compare.h"   // bug-183 : fixedWidthEquals (pur)
+#include "ota_integrity.h"    // bug-183 : OtaStreamHasher (porte déjà le garde mbedtls 2/3)
+#include <mbedtls/platform_util.h>
 
 // ---------------------------------------------------------------------------
 // Bornage du journal des refus d'authentification (bug-112)
@@ -89,6 +92,42 @@ static bool constantTimeEquals(const String& a, const String& b) {
 
 bool AuthManager::secureTokenEquals(const String& candidate) const {
   return constantTimeEquals(candidate, apiToken);
+}
+
+// bug-183 : comparaison du mot de passe sans court-circuit. SHA-256 des DEUX côtés
+// (contextes et empreintes sur la pile), puis OR des XOR sur 32 octets : le temps
+// ne dépend plus de la relation entre candidat et secret. Il dépend encore de la
+// longueur de chacun, mais c'est un décalage constant, identique à chaque requête.
+// ⛔ Effacement par mbedtls_platform_zeroize : un memset nu en fin de portée est
+// supprimé par le compilateur.
+//
+// ⚠️ CE QUE CET EFFACEMENT NE PROTÈGE PAS — à lire avant de s'en croire couvert.
+// Il n'efface que les DEUX EMPREINTES de cette pile. Le mot de passe lui-même reste
+// en clair ailleurs, et ce lot n'y change rien : membre `adminPassword` (tas), copie
+// dans `authCfg.adminPassword`, NVS non chiffrée, et le corps HTTP reçu. ⇒ Un
+// attaquant qui lit la mémoire ou démonte la flash l'obtient malgré cet appel.
+// Le but est étroit et assumé : ne pas laisser traîner d'empreinte du secret dans
+// une pile réutilisée par la requête suivante. Le chiffrement de la NVS est un
+// chantier distinct, non ouvert.
+bool AuthManager::passwordMatches(const String& candidate) const {
+  uint8_t dCandidate[32];
+  uint8_t dSecret[32];
+  {
+    OtaStreamHasher h;  // le destructeur libère (et efface) le contexte
+    h.begin();
+    h.update(reinterpret_cast<const uint8_t*>(candidate.c_str()), candidate.length());
+    h.finish(dCandidate);
+  }
+  {
+    OtaStreamHasher h;
+    h.begin();
+    h.update(reinterpret_cast<const uint8_t*>(adminPassword.c_str()), adminPassword.length());
+    h.finish(dSecret);
+  }
+  const bool same = fixedWidthEquals(dCandidate, dSecret, sizeof(dCandidate));
+  mbedtls_platform_zeroize(dCandidate, sizeof(dCandidate));
+  mbedtls_platform_zeroize(dSecret, sizeof(dSecret));
+  return same;
 }
 
 AuthManager::AuthManager() {}

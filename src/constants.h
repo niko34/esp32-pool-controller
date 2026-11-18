@@ -252,9 +252,10 @@ constexpr unsigned long kRateLimitWindowMs = 60000;       // Fenêtre de rate li
 // conclusion en est renforcée, pas affaiblie (13 s au lieu de 70). Toute reprise de
 // ce calcul doit lire logger.h, jamais un commentaire.
 // bug-112 (v2.89.1) : le throttle est généralisé à TOUT refus d'authentification
-// atteignable sans identifiants : NEUF états INDÉPENDANTS, jamais fusionnés — 401
+// atteignable sans identifiants : DIX états INDÉPENDANTS, jamais fusionnés — 401
 // (sendAuthRequired), 429 (checkRateLimit), trois routes de calibration, upload OTA,
-// /save-config, /tune-ph-offset et le jeton WebSocket rejeté. Un dixième émetteur
+// /save-config, /tune-ph-offset, le jeton WebSocket rejeté et (bug-183) les échecs
+// de /auth/login + /auth/change-password (UN site pour les deux routes). Un onzième émetteur
 // anonyme, POST /debug/sensor_trace_clear, n'est pas borné mais SUPPRIMÉ du chemin
 // non authentifié (REQUIRE_AUTH posé). Renommé depuis kCalibrationAuthWarnThrottleMs
 // (valeur inchangée). Le 401 est UN SEUL état pour les 86 routes (clé globale,
@@ -270,9 +271,9 @@ constexpr unsigned long kRateLimitWindowMs = 60000;       // Fenêtre de rate li
 //  - par site : 38 lignes / 24 h (émissions + drains) au pire TROUVÉ ; un 39 reste
 //    possible, aucune recherche exacte n'a été faite. Des tentatives simples ne
 //    donnent que 28 (t = 0, 1, 3, 7, 15, 31, 63 min puis une / 64 min).
-//  - neuf sites cumulés : 342 lignes / 24 h (9 x 38). SOMME de maxima mesurés : les
+//  - dix sites cumulés : 380 lignes / 24 h (10 x 38). SOMME de maxima mesurés : les
 //    états sont indépendants donc elle est atteignable, mais aucun scénario joint
-//    n'a été mesuré. À ~230 o la ligne : ~79 Ko / 24 h, pour un journal de 8 Ko
+//    n'a été mesuré. À ~230 o la ligne : ~87 Ko / 24 h, pour un journal de 8 Ko
 //    (6 144 o conservés).
 //  - MÉCANISME du 38 : groupes de 5 tentatives espacées de 60 s, répétés toutes les
 //    3 841 s. Le drain n'est PAS une tentative : il ne remet pas à zéro la date de
