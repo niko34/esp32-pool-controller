@@ -92,7 +92,9 @@ inline LoginLogKind classifyLoginFailure(bool userMatches, bool passwordMatches)
 // ----------------------------------------------------------------------------
 // /auth/change-password
 // ----------------------------------------------------------------------------
-enum class PwdChangeVerdict { kAllow, kDenyUnauth, kDenyBadCurrent, kDenyTooShort, kDenySame };
+// bug-187 : kDenyWeak est DISTINCT de kDenyTooShort — l'interface doit pouvoir dire
+// CE QUI MANQUE (une majuscule ? un chiffre ?) au lieu de « mot de passe refusé ».
+enum class PwdChangeVerdict { kAllow, kDenyUnauth, kDenyBadCurrent, kDenyTooShort, kDenySame, kDenyWeak };
 
 struct PwdChangeInput {
   // ⛔ « VIERGE » = le mot de passe est encore celui d'usine, donc AUCUN mot de
@@ -106,6 +108,11 @@ struct PwdChangeInput {
   bool currentIsFactoryLiteral = false; // currentPassword fourni vaut "admin" (état vierge)
   bool tokenValid = false;              // X-Auth-Token valide
   bool newLenOk = false;                // nouveau mot de passe >= longueur minimale
+  // bug-187 : les quatre familles (minuscule, majuscule, chiffre, caractère spécial).
+  // ⚠️ Contrôlé À LA SAISIE SEULEMENT, jamais à la connexion : un mot de passe déjà
+  // en place qui ne respecte pas la règle continue d'ouvrir l'appareil. Sans cette
+  // asymétrie, la mise à jour enfermerait dehors qui a choisi « monpassword ».
+  bool newFamiliesOk = false;
   bool newEqualsCurrent = false;        // nouveau == currentPassword fourni
 };
 
@@ -123,6 +130,9 @@ inline PwdChangeVerdict decidePasswordChange(const PwdChangeInput& in) {
     if (!in.tokenValid) return PwdChangeVerdict::kDenyUnauth;
   }
   if (!in.newLenOk) return PwdChangeVerdict::kDenyTooShort;
+  // ⛔ LA LONGUEUR D'ABORD : annoncer « il manque un chiffre » sur un mot de passe de
+  // trois caractères envoie l'utilisateur corriger la mauvaise chose (bug-187).
+  if (!in.newFamiliesOk) return PwdChangeVerdict::kDenyWeak;
   if (in.hasCurrentPassword && in.newEqualsCurrent) return PwdChangeVerdict::kDenySame;
   return PwdChangeVerdict::kAllow;
 }

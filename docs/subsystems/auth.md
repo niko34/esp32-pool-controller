@@ -219,9 +219,37 @@ Pas de page `docs/features/` dédiée (un seul formulaire) : le comportement est
 - `clearFirstBootFlag()` — appelé après le premier changement de mot de passe réussi (et par `complete-wizard` si le mot de passe n'est plus celui d'usine).
 - ⚠️ `resetPasswordToDefault()` est du **code mort** (aucun appelant). Le bouton physique (maintien `kFactoryResetButtonHoldMs`) efface la NVS entière puis redémarre ; l'appareil revient donc à l'état vierge.
 
-## AP fallback password
+## Clé du point d'accès (`bug-187`, v2.95.0)
 
-`getApPassword()` retourne le mot de passe du point d'accès `PoolControllerAP`. ⚠️ Il n'est **pas** dérivé du chipID : il est **tiré au hasard** (8 caractères) au premier démarrage, stocké en NVS, **journalisé en clair à dessein** (« Notez-le sur une étiquette ») et **survit** à la remise à zéro.
+Décision : [ADR-0134](../adr/0134-la-cle-du-point-d-acces-est-modifiable-et-la-reinitialisation-ramene-l-etiquette.md). Logique pure : [`src/ap_password_logic.h`](../../src/ap_password_logic.h) (testée en natif, `test/test_native_ap_password/`).
+
+**Deux valeurs en NVS**
+
+| | Champ / clé NVS | Écrite | Rôle |
+|---|---|---|---|
+| Origine | `apPasswordOrigin` / `auth_ap_org` | **une seule fois**, à la mise en service ; jamais réécrite | celle de l'**étiquette** |
+| Courante | `apPassword` / `auth_ap_pwd` | mise en service, puis `setApPassword()` | celle que le point d'accès `PoolControllerAP` utilise |
+
+API : `getApPassword()` (courante), `getApPasswordOrigin()`, `setApPassword(pwd)` (écrit, **relit** via `reloadApPasswordFromNvs()` ; si la relecture diffère, l'ancienne valeur est remise et la route répond `500`).
+
+**Fabrication** (premier démarrage, une seule fois) : 12 caractères tirés de `esp_random()` dans un alphabet de **72 symboles** (sans `I l 1 O 0 o`, confusions de lecture, ni `^`, touche morte sur clavier français), au moins une minuscule, une majuscule, un chiffre et un caractère spécial. Les octets ≥ 216 sont rejetés (pas de biais de modulo). ≈ 74,0 bits nominaux, **≈ 73,5 bits réels** après la contrainte des quatre familles. Boucles bornées : en cas d'échec d'aléa, aucune clé vide n'est jamais posée (une phrase vide = point d'accès **ouvert**) ; message `critical` et ancienne valeur conservée. Journalisée en clair à cet instant (aucune étiquette ni écran n'existe encore).
+
+**Durée d'attaque, avec sa méthode (ADR-0073)** : WPA2-PSK = PBKDF2-HMAC-SHA1, 4096 tours ; carte graphique du commerce ≈ 2 millions d'essais/s. Ancienne clé (8 hexadécimaux, 2³²) : ≈ 36 minutes ; nouvelle : hors de portée. Ces débits augmentent avec le temps.
+
+**Réinitialisation d'usine** (`resetWiFiSettings()` dans `main.cpp`) : restaure l'**origine** (repli sur la courante si l'origine est vide, appareil jamais migré), réécrit `auth_ap_pwd` et `auth_ap_org`. L'étiquette reste donc vraie à vie.
+
+**Appareils déjà installés** : aucune régénération. Ils gardent leur clé à 32 bits ; `GET /auth/ap-password` renvoie `ap_password_legacy: true` et l'interface conseille d'en choisir une autre.
+
+### Règle des quatre familles et ses deux planchers
+
+`apPwdCheck(s, n, min, max)` rend un verdict nommé (`kOk`, `kTooShort`, `kTooLong`, `kBadCharacter`, `kMissingFamily`). Le **contrôle d'un mot de passe choisi** accepte tout l'ASCII imprimable (un gestionnaire de mots de passe peut produire `^`) ; un octet hors 32..126 (accent collé) est refusé, jamais compté comme « spécial ».
+
+| Objet | Plancher | Pourquoi |
+|---|---|---|
+| Mot de passe de l'**appareil** (`/auth/change-password`, `/save-config`) | **8** | attaque **en ligne** : le ralentissement de [bug-189](#ralentissement-des-échecs-de-mot-de-passe-bug-189-v2940) la limite (≈ 1 essai/min) |
+| Clé Wi-Fi du **point d'accès** (`POST /auth/ap-password`) | **12** | attaque **hors ligne** après capture d'une poignée de main : aucun ralentissement ne s'applique |
+
+⛔ La règle s'applique **à la saisie uniquement**, jamais à la connexion : un mot de passe existant qui ne la respecte pas reste valable (sinon la mise à jour enfermerait dehors son propriétaire). `/save-config` applique le même contrôle que `/auth/change-password` (sinon il serait la porte de contournement). `decidePasswordChange` porte `newFamiliesOk` (défaut `false`) et le verdict `kDenyWeak`.
 
 ## Endpoints d'auth
 
@@ -233,7 +261,8 @@ Pas de page `docs/features/` dédiée (un seul formulaire) : le comportement est
 | `POST /auth/change-password` | Change le mot de passe admin ; anonyme **seulement** à l'état vierge ; régénère le jeton et rend le nouveau |
 | `POST /auth/regenerate-token` | Génère un nouveau token (invalide l'ancien) |
 | `POST /auth/complete-wizard` | Filet idempotent de fin d'onboarding ; `WRITE` (jeton), `409` si mot de passe d'usine |
-| `POST /auth/ap-password` | Change le mot de passe AP (mode hors-ligne) |
+| `GET /auth/ap-password` | Lit la clé courante du point d'accès (`no-store`, `ap_password_legacy`) |
+| `POST /auth/ap-password` | Remplace la clé courante du point d'accès ; jeton obligatoire, 12 caractères et quatre familles ; l'origine n'est jamais touchée |
 
 ## Macro helper
 

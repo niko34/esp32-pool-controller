@@ -100,7 +100,7 @@ Ce n'est pas une dégradation de confort : ouvrir un fichier demande à la libc 
 | Toujours servi | Détail |
 |---|---|
 | Diagnostic / lecture | [`/data`](#get-data--write), [`/get-config`](#get-get-config--write), [`/get-logs`](#get-get-logs--write), [`/download-logs`](#get-download-logs--write), [`/get-history`](#get-get-history--write), [`/get-kpi`](#get-get-kpi--write), [`/get-system-info`](#get-get-system-info--write), [`/time-now`](#get-time-now--write) |
-| Authentification | [`/auth/status`](#get-authstatus--public), [`/auth/token`](#get-authtoken--critical), [`/auth/ap-password`](#get-authap-password--critical) |
+| Authentification | [`/auth/status`](#get-authstatus--public), [`/auth/token`](#get-authtoken--critical), [`/auth/ap-password`](#get-authap-password--critical) (GET et POST) |
 | Réseau | [`/wifi/status`](#get-wifistatus--public), [`/wifi/scan`](#get-wifiscan--public-mode-ap--write-mode-sta) |
 | Coredump | [`/coredump/info`](#get-coredumpinfo--write), [`/coredump/download`](#get-coredumpdownload--write) |
 | OTA | [`/check-update`](#get-check-update--write) et **`POST /update`** (méthode POST → hors de la garde) |
@@ -277,7 +277,7 @@ curl -X POST -H "Content-Type: application/json" \
 }
 ```
 
-Règles : minimum 8 caractères, différent du mot de passe actuel. Codes : `400` (trop court / identique), `401` (non authentifié ou `currentPassword` faux), `429` (ralentissement, même forme que pour `/auth/login` : `Retry-After` + `retryAfter`). ⚠️ Le ralentissement ne frappe que l'essai par `currentPassword` ; le chemin **par jeton** et l'appareil vierge ne sont jamais freinés.
+Règles : minimum 8 caractères **dont une minuscule, une majuscule, un chiffre et un caractère spécial** (ASCII imprimable uniquement), différent du mot de passe actuel. Le contrôle des quatre familles se fait **à la saisie** : un mot de passe existant qui ne le respecte pas continue de fonctionner à la connexion. Codes : `400` (trop court ; quatre familles non respectées, avec le message français « Le mot de passe doit contenir au moins une minuscule, une majuscule, un chiffre et un caractere special » ; identique à l'actuel), `401` (non authentifié ou `currentPassword` faux), `429` (ralentissement, même forme que pour `/auth/login` : `Retry-After` + `retryAfter`). ⚠️ Le ralentissement ne frappe que l'essai par `currentPassword` ; le chemin **par jeton** et l'appareil vierge ne sont jamais freinés.
 
 ⚠️ **Le jeton est régénéré** à chaque succès et la réponse contient le **nouveau** : les autres sessions et les connexions WebSocket authentifiées avec l'ancien sont révoquées. Un client qui garde l'ancien jeton reçoit `401`.
 
@@ -333,7 +333,7 @@ curl -H "X-Auth-Token: $TOKEN" -X POST http://poolcontroller.local/auth/regenera
 
 ### GET /auth/ap-password — CRITICAL
 
-Retourne le mot de passe WiFi du point d'accès `PoolControllerAP`. Utile si l'étiquette collée sur le boîtier est illisible ou perdue.
+Retourne la clé Wi-Fi **courante** du point d'accès `PoolControllerAP`. Utile si l'étiquette collée sur le boîtier est illisible ou perdue — sauf si l'utilisateur a choisi sa propre clé (voir ci-dessous).
 
 ```bash
 curl -H "X-Auth-Token: $TOKEN" http://poolcontroller.local/auth/ap-password
@@ -342,11 +342,44 @@ curl -H "X-Auth-Token: $TOKEN" http://poolcontroller.local/auth/ap-password
 ```json
 {
   "ap_ssid": "PoolControllerAP",
-  "ap_password": "XXXXXXXX"
+  "ap_password": "<clé courante, 12 caractères pour un appareil neuf>",
+  "ap_password_legacy": false
 }
 ```
 
-> Le mot de passe AP est généré aléatoirement au premier boot et ne change pas lors des mises à jour OTA ni des factory resets (bouton physique). Pour en générer un nouveau, utiliser `./deploy.sh factory`.
+- `ap_password_legacy` : `true` si la clé est encore de l'ancienne forme (8 hexadécimaux, 32 bits, fabriquée avant la v2.95.0). Sert à l'interface pour conseiller d'en choisir une autre ; l'appareil ne la régénère **jamais** tout seul.
+- En-tête de réponse `Cache-Control: no-store` : le secret ne doit pas rester dans un cache de navigateur.
+- ⛔ Cette route est le **seul** endroit où la clé sort de l'appareil (ni `/get-config`, ni `/data`, ni WebSocket, ni MQTT).
+
+> La clé d'origine est tirée au hasard **une seule fois**, à la mise en service ; elle ne change pas lors des mises à jour OTA. La clé **courante** peut être remplacée par l'utilisateur (`POST /auth/ap-password`). La **réinitialisation d'usine** (bouton physique ou page Système) ramène toujours la clé **d'origine**, celle de l'étiquette — [ADR-0134](adr/0134-la-cle-du-point-d-acces-est-modifiable-et-la-reinitialisation-ramene-l-etiquette.md).
+
+---
+
+### POST /auth/ap-password — CRITICAL
+
+Remplace la clé Wi-Fi courante du point d'accès. **Jeton obligatoire, aucun droit anonyme**, y compris sur un appareil vierge. La clé d'origine (étiquette) n'est jamais modifiée.
+
+```bash
+curl -X POST -H "X-Auth-Token: $TOKEN" -H "Content-Type: application/json" \
+  -d '{"apPassword":"<nouvelle clé>"}' \
+  http://poolcontroller.local/auth/ap-password
+```
+
+```json
+{ "success": true, "message": "Mot de passe du point d'acces enregistre" }
+```
+
+Règle : 12 à 63 caractères ASCII imprimables, avec au moins une minuscule, une majuscule, un chiffre et un caractère spécial. Le contrôle est refait côté appareil (la page n'est pas une garantie).
+
+**Erreurs**
+- `400` « …doit faire au moins 12 caracteres » : trop courte.
+- `400` « …ne peut pas depasser 63 caracteres » : plafond WPA2.
+- `400` « …n'accepte ni accent ni caractere invisible » : octet hors ASCII imprimable.
+- `400` « Le mot de passe doit contenir au moins une minuscule, une majuscule, un chiffre et un caractere special » : une famille manque. (`400 Invalid JSON` si le corps est illisible.)
+- `401` : jeton absent ou invalide.
+- `500` « Enregistrement refuse par la memoire de l'appareil » : l'écriture NVS n'a pas été confirmée par relecture ; **l'ancienne clé reste en service**.
+
+⚠️ Le changement ne prend effet qu'au **prochain démarrage du point d'accès** : l'appareil ne coupe pas un réseau de secours en service.
 
 ---
 
@@ -1383,7 +1416,7 @@ Depuis la v2.25.0, le handler de **corps** vérifie l'authentification **avant**
 | Code | Cas |
 |------|-----|
 | `200` | Configuration enregistrée |
-| `400` | Valeur invalide (**`ph_target` hors [7.20 ; 7.50]** — v2.25.0, `ph_offset` non sain (NaN/infini/\|valeur\| > 14, v2.82.0), débit de pesée hors plage, cible journalière > limite, JSON invalide…). **Aucun** champ n'est appliqué. |
+| `400` | Valeur invalide (**`ph_target` hors [7.20 ; 7.50]** — v2.25.0, `ph_offset` non sain (NaN/infini/\|valeur\| > 14, v2.82.0), débit de pesée hors plage, cible journalière > limite, JSON invalide, `auth_password` trop court ou ne respectant pas les quatre familles — v2.95.0, même règle que `/auth/change-password`, corps `{"error":"Mot de passe trop simple","message":"…"}`…). **Aucun** champ n'est appliqué. |
 | `401` | Non authentifié — **aucune** modification appliquée depuis la v2.25.0 |
 | `409` | **v2.25.0** — Bascule de sécurité pH non acquittée : la requête tente de sortir du mode `manual` alors qu'une trace existe, sans `ph_auto_manual_ack: true`. **Aucune** mutation n'est appliquée (le gate est le premier bloc du handler) et la trace **survit**. ⚠️ **v2.80.0** — même code pour un changement de mode **ou de consigne** pH/ORP pendant une session d'étalonnage ouverte (voir [verrou étalonnage](#payload-mixte--quel-code-sort)). |
 

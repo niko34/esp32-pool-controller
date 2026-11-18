@@ -312,7 +312,13 @@ struct AuthConfig {
   bool enabled = true;            // Authentification activée/désactivée
   String adminPassword = "admin"; // Mot de passe administrateur (POST /auth/login -> jeton ; HTTP Basic retiré, bug-184)
   String apiToken = "";           // Token API pour intégrations (généré au boot si vide)
-  String apPassword = "";         // Mot de passe réseau WiFi AP (généré au premier boot si vide)
+  String apPassword = "";         // Mot de passe réseau WiFi AP EN SERVICE (généré au premier boot si vide)
+  // bug-187 : le mot de passe D'ORIGINE, celui qui part sur l'ÉTIQUETTE du boîtier.
+  // ⛔ Écrit UNE SEULE FOIS, à la mise en service, et JAMAIS réécrit ensuite — c'est
+  // ce qui rend l'étiquette vraie À VIE. La réinitialisation d'usine le recopie dans
+  // apPassword : l'utilisateur qui a perdu le mot de passe qu'il avait choisi retrouve
+  // donc toujours l'accès avec l'étiquette, sans câble série.
+  String apPasswordOrigin = "";
   bool forceWifiConfig = false;   // Forcer l'affichage du bouton Wi-Fi sur l'écran login
   bool wizardCompleted = false;   // Wizard de configuration initiale complété (persiste au redémarrage)
   uint16_t authEpoch = 0;         // Époque d'auth appliquée (bug-185) ; < kAuthEpoch => le jeton est régénéré UNE fois au démarrage
@@ -686,6 +692,8 @@ extern SemaphoreHandle_t i2cMutex;
 // ==== Fonctions de gestion ====
 void initConfigMutexes();  // Initialise les mutex (à appeler dans setup())
 void saveMqttConfig();
+// bug-187 : relecture NVS du mot de passe du point d'accès (vérification d'écriture).
+String reloadApPasswordFromNvs();
 void loadMqttConfig();
 
 // feature-088 : restaure les 8 réglages de TUNING de la régulation aux valeurs

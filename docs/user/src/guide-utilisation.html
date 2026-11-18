@@ -201,9 +201,15 @@ enregistré.</p>
 <h3>Étape 1 — Le mot de passe administrateur</h3>
 
 <p>C'est le mot de passe qui protégera ensuite l'accès à l'interface.
-Il doit compter <strong>au moins 8&nbsp;caractères, dont un chiffre et un
-caractère spécial</strong>&nbsp;; une liste de contrôle et une jauge de
-force vous accompagnent pendant la saisie. Choisissez-le soigneusement
+Il doit compter <strong>au moins 8&nbsp;caractères, avec au moins une
+minuscule, une majuscule, un chiffre et un caractère spécial</strong>
+(<code>!</code>, <code>@</code>, <code>#</code>…), sans accent&nbsp;; la règle
+est écrite au-dessus du champ, et une liste de contrôle se coche au fur et à
+mesure de la saisie pour vous montrer ce qu'il manque encore. Cette règle ne
+s'applique qu'au moment où vous <em>choisissez</em> un mot de passe&nbsp;: un
+mot de passe déjà en place continue de fonctionner. Attention&nbsp;: ce mot de
+passe n'est <strong>pas</strong> la clé du réseau Wi-Fi de secours (celle de
+l'étiquette). Choisissez-le soigneusement
 et notez-le&nbsp;: c'est lui qui donne accès à tous les réglages.</p>
 
 <figure>
@@ -1390,6 +1396,32 @@ prêts à l'emploi pour le brancher depuis votre domotique.</p>
 c'est le plan B si «&nbsp;poolcontroller.local&nbsp;» ne répond pas) et
 l'accès à la reconfiguration du Wi-Fi.</p>
 
+<h4>Le réseau de secours de l'appareil</h4>
+
+<p>Si l'appareil perd votre Wi-Fi (box éteinte, mot de passe changé…), il crée
+de lui-même un petit réseau, <strong>PoolControllerAP</strong>, pour que vous
+puissiez le reconfigurer depuis votre téléphone. Ce réseau a sa propre clé,
+imprimée sur l'<strong>étiquette</strong> de l'appareil. La carte
+«&nbsp;Point d'accès de secours&nbsp;» de cet onglet vous permet de&nbsp;:</p>
+<ul>
+  <li><strong>lire la clé</strong>&nbsp;: elle est cachée par défaut&nbsp;; touchez
+  «&nbsp;Afficher&nbsp;» (elle se recache toute seule au bout d'une minute)&nbsp;;</li>
+  <li><strong>la remplacer par la vôtre</strong>&nbsp;: touchez «&nbsp;Modifier la
+  clé&nbsp;». Il faut <strong>12&nbsp;caractères minimum</strong>, avec une
+  minuscule, une majuscule, un chiffre et un caractère spécial, sans accent.
+  Une liste se coche pendant la frappe. Le changement s'applique la prochaine
+  fois que l'appareil crée son réseau de secours.</li>
+</ul>
+<p>Un gestionnaire de mots de passe peut fabriquer et conserver cette clé,
+mais il ne la saisit pas à votre place dans la fenêtre Wi-Fi du téléphone&nbsp;:
+il faudra la taper une fois.</p>
+<p>Si un message vous dit que votre clé est courte (8&nbsp;caractères), c'est
+qu'elle date d'une ancienne version de l'appareil&nbsp;: elle continue de
+fonctionner, mais mieux vaut en choisir une plus longue.</p>
+<p><strong>Un oubli n'est pas grave&nbsp;:</strong> la réinitialisation d'usine
+remet toujours la clé <strong>imprimée sur l'étiquette</strong>, même si vous
+en aviez choisi une autre. L'étiquette reste donc toujours exacte.</p>
+
 <h3>3 — MQTT</h3>
 
 <figure>
@@ -1421,8 +1453,9 @@ s'appliquer.</p>
 </figure>
 
 <p>Le changement du mot de passe administrateur — mêmes exigences qu'au
-premier démarrage (8&nbsp;caractères minimum, un chiffre, un caractère
-spécial).</p>
+premier démarrage (8&nbsp;caractères minimum, avec une minuscule, une
+majuscule, un chiffre et un caractère spécial, sans accent). La règle est
+écrite au-dessus du champ et une liste se coche pendant la frappe.</p>
 
 <p><strong>Les autres appareils sont déconnectés.</strong> Une fois le mot de
 passe changé, l'appareil que vous utilisez reste connecté, mais tous les autres
@@ -1592,7 +1625,8 @@ d'une release, prenez-les <strong>ensemble, dans la même release</strong>
   <p>Elle efface <strong>tout</strong>&nbsp;: Wi-Fi, mot de passe,
   calibrations, historique, réglages. L'appareil redémarre comme au premier
   jour, sur son propre réseau Wi-Fi, et l'assistant de mise en service
-  reprend du début. Une double confirmation est demandée — un refus à
+  reprend du début. La clé du réseau de secours redevient celle de
+  l'<strong>étiquette</strong>, même si vous l'aviez changée. Une double confirmation est demandée — un refus à
   n'importe quelle étape annule tout.</p>
 </div>
 

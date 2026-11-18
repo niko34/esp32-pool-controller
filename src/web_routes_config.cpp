@@ -1,6 +1,7 @@
 #include "web_routes_config.h"
 #include "web_helpers.h"
 #include "config.h"
+#include "ap_password_logic.h"  // bug-187 : règle des quatre familles
 #include "constants.h"
 #include "auth.h"
 #include "wifi_status_exposure_logic.h"  // bug-181 : qui voit le SSID de /wifi/status
@@ -1599,14 +1600,31 @@ static void handleSaveConfig(AsyncWebServerRequest* request, uint8_t* data, size
   // /auth/change-password à tout le réseau.
   if (!doc["auth_password"].isNull()) {
     const String candidate = doc["auth_password"].as<String>();
-    if (candidate != "******" && candidate.length() > 0 &&
-        candidate.length() < kAdminPasswordMinLength) {
+    // bug-187 : le MÊME contrôle qu'à /auth/change-password. ⛔ Sans lui, cette
+    // route serait la porte de contournement de la règle des quatre familles —
+    // exactement comme elle l'était pour la longueur minimale avant bug-185.
+    const bool aExaminer = (candidate != "******" && candidate.length() > 0);
+    const ApPwdVerdict verdictPwd =
+        aExaminer ? apPwdCheck(candidate.c_str(), candidate.length(), kAdminPasswordMinLength,
+                               kAdminPasswordMaxLength, /*allowNonAscii=*/true)
+                  : ApPwdVerdict::kOk;
+    if (verdictPwd != ApPwdVerdict::kOk) {
       // Drapeau + message + code : c'est la COMPLÉTION qui répond.
       (*g_configErrors)[request] = true;
       g_configErrorStatus[request] = 400;
       g_configErrorMessages[request] =
-        "{\"error\":\"Mot de passe trop court\","
-        "\"message\":\"Le mot de passe administrateur doit faire au moins 8 caract\\u00e8res.\"}";
+        (verdictPwd == ApPwdVerdict::kTooShort)
+          ? "{\"error\":\"Mot de passe trop court\","
+            "\"message\":\"Le mot de passe administrateur doit faire au moins 8 caract\\u00e8res.\"}"
+        : (verdictPwd == ApPwdVerdict::kTooLong)
+          ? "{\"error\":\"Mot de passe trop long\","
+            "\"message\":\"Le mot de passe administrateur ne peut pas d\\u00e9passer 128 caract\\u00e8res.\"}"
+        : (verdictPwd == ApPwdVerdict::kBadCharacter)
+          ? "{\"error\":\"Caract\\u00e8re refus\\u00e9\","
+            "\"message\":\"Le mot de passe n'accepte ni caract\\u00e8re invisible, ni espace en d\\u00e9but ou en fin.\"}"
+          : "{\"error\":\"Mot de passe trop simple\","
+            "\"message\":\"Le mot de passe doit contenir au moins une minuscule, une majuscule, "
+            "un chiffre et un caract\\u00e8re sp\\u00e9cial.\"}";
       xSemaphoreGiveRecursive(configMutex);  // ⛔ comme les onze autres sorties
       return;
     }

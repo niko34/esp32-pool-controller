@@ -294,7 +294,11 @@
         <button type="submit" id="loginBtn">Se connecter</button>
       </form>
 
-      <!-- Formulaire changement mot de passe (premier démarrage) -->
+      <!-- Formulaire changement mot de passe (premier démarrage)
+           ⛔ INATTEIGNABLE AUJOURD'HUI : showFirstBootForm() (plus bas) n'a AUCUN
+           appelant — vérifié le 2026-11-18. La prise de possession passe par
+           wizard.html. Son texte est tenu à jour malgré tout (une phrase fausse
+           dans le dépôt reste fausse), mais son RETRAIT est un sujet de suite. -->
       <form id="changePasswordForm" class="hidden" aria-label="Formulaire de changement de mot de passe">
         <div class="form-group">
           <label for="newPassword">Nouveau mot de passe</label>
@@ -302,14 +306,15 @@
             type="password"
             id="newPassword"
             name="new-password"
-            placeholder="Minimum 8 caractères"
+            placeholder="8 caractères minimum"
             required
             minlength="8"
             autocomplete="new-password"
             aria-required="true"
             aria-describedby="passwordHint" />
           <div class="password-requirements" id="passwordHint">
-            Minimum 8 caractères recommandé
+            8 caractères minimum, avec une minuscule, une majuscule, un chiffre
+            et un caractère spécial.
           </div>
         </div>
 

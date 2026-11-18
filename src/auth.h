@@ -61,6 +61,10 @@ public:
   // pour TOUTE vérification de token (HTTP et WebSocket), jamais == / !=.
   bool secureTokenEquals(const String& candidate) const;
   String getApPassword() const;
+  // bug-187 : le mot de passe du point d'accès est modifiable par l'utilisateur,
+  // et la réinitialisation d'usine ramène celui de l'ÉTIQUETTE (l'origine).
+  String getApPasswordOrigin() const;
+  bool setApPassword(const String& pwd);
 
   // Gestion premier démarrage
   bool isFirstBootDetected() const { return isFirstBoot; }

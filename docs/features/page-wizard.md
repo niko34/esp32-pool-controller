@@ -11,7 +11,7 @@ Assistant d'**onboarding** affiché au premier démarrage (ou après un factory 
 
 | # | Étape | Contenu / endpoint |
 |---|-------|--------------------|
-| 1 | **Mot de passe** | Mot de passe administrateur (≥ 8 caractères, 1 chiffre, 1 spécial — checklist temps réel + jauge de force) |
+| 1 | **Mot de passe** | Mot de passe administrateur (≥ 8 caractères avec une minuscule, une majuscule, un chiffre et un caractère spécial — règle énoncée dans le texte d'introduction, checklist temps réel de 6 critères + jauge de force ; le texte précise que la clé Wi-Fi du réseau de secours est une autre clé, celle de l'étiquette — bug-187, v2.95.0) |
 | 2 | **Wi-Fi** | Connexion au réseau (optionnelle — scan, saisie, ou rester en AP) |
 | 3 | **Installation et bassin** | Mode d'installation **+ taille du bassin** (voir ci-dessous) |
 | 4 | **Heure** | NTP (timezone, serveur) ou heure manuelle |

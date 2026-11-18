@@ -397,8 +397,13 @@ test, ni génération partagée.
 
 ### 5.19 `.password-checklist` / `.password-checklist-item`
 **Rôle** : lister les critères de validité d'un mot de passe et cocher ceux satisfaits, en direct.
-**Contexte déclaré, vérifié** : page de réglage Sécurité. ⛔ **Même duplication que §5.18** dans
-`wizard.html`.
+**Contexte déclaré, vérifié** : **trois contextes depuis bug-187 (v2.95.0)** — (1) page de réglage
+Sécurité (`#passwordChecklist`, seuil 8) ; (2) assistant de première configuration (`wizard.html`,
+seuil 8) ; (3) carte « Point d'accès de secours » de l'onglet Wi-Fi (`#apPwdChecklist`, seuil **12**).
+Six critères identiques partout : longueur, minuscule, majuscule, chiffre, spécial, ASCII imprimable.
+La liste est **visible dès l'ouverture** (la règle précède la frappe) et la même fonction JS
+(`pwdRules` / `pwdRenderChecklist`) la pilote. ⛔ **Même duplication que §5.18** dans
+`wizard.html` (le CSS y est recopié, pas partagé).
 **États** : masqué avant saisie · `.valid` colore le texte et remplit l'icône (`✓` injecté en CSS).
 ⚠️ **MANQUES constatés** : **aucun `aria-live`** — un critère qui devient satisfait pendant la
 frappe n'est annoncé à aucun lecteur d'écran ; et l'icône emploie une bordure **codée en dur**
@@ -559,6 +564,18 @@ Parcours : page **unique**, étapes révélées par `hidden`, **aucune redirecti
 - La **page de secours OTA** (§5.21) reprend le même mécanisme (`#msg.warn`, décompte dans `#b-login`), en copie figée locale.
 
 🔴 **RÉSIDU NON TRAITÉ — sous le seuil AA** : le **sous-titre de `wizard.html`** (14 px, poids 400, blanc sur le dégradé d'en-tête) reste à **3,92:1**, et c'est le **premier écran qu'un client voit à la livraison**. La **pastille d'étape** (`wizard.html:148`, chiffre blanc) est dans le même cas. L'en-tête de `wifi.html` (24 px) **passe**, lui, au titre du « grand texte ». Spec de suite à ouvrir ; non traité dans bug-189 (composant et écrans hors périmètre).
+
+### 5.23 `.field__help` et `.secret-value` (bug-187, v2.95.0)
+**`.field__help`** — **Rôle** : phrase de règle placée **entre le libellé et le champ**, avant la
+frappe (« Règle : 12 caractères minimum, avec… »). 12 px, couleur `--muted`. **Contexte** : page de
+réglage (Wi-Fi, Sécurité). ⚠️ À ne pas confondre avec `.field__hint` (§5.11), qui se place **sous**
+le champ ; relier au champ par `aria-describedby`.
+**`.secret-value`** — **Rôle** : afficher une valeur secrète à **recopier à la main** (clé Wi-Fi du
+réseau de secours). Monospace 24 px, ligatures coupées, `user-select: all`, passe à la ligne
+(`overflow-wrap: anywhere`) : 12 caractères tiennent à 390 px. **Contexte** : page de réglage
+uniquement. Masqué par défaut (puces), révélé sur geste explicite (60 s puis re-masqué, et masqué
+dès que la page passe en arrière-plan). Le bouton associé (`.ap-pwd-btn`) fait 44 px de haut et
+passe en pleine largeur sous 500 px.
 
 ## 6. Responsive — 390 px d'abord
 

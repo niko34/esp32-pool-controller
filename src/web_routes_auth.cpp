@@ -8,6 +8,7 @@
 #include "ws_manager.h"  // bug-081 : révocation WS à la rotation de token
 #include "auth_log_throttle_site.h"  // bug-183 : journal BORNÉ des échecs
 #include "auth_fail_backoff_logic.h"  // bug-189 : ralentissement progressif des échecs
+#include "ap_password_logic.h"        // bug-187 : règle des quatre familles
 #include <ArduinoJson.h>
 #include <WiFi.h>
 #include <atomic>
@@ -314,6 +315,17 @@ void setupAuthRoutes(AsyncWebServer* server) {
       // checkTokenAuth : ne répond pas lui-même (le 401 est émis ici, une seule fois).
       in.tokenValid = (!virginState && !in.hasCurrentPassword) ? authManager.checkTokenAuth(req) : false;
       in.newLenOk = (newPassword.length() >= kAdminPasswordMinLength);  // constante partagée avec /save-config (bug-185)
+      // bug-187 : les quatre familles. ⚠️ Le plancher de longueur du mot de passe de
+      // l'APPAREIL reste kAdminPasswordMinLength (8) et NON kApPwdMinLength (12) : il
+      // est protégé par le ralentissement de bug-189, alors que la clé Wi-Fi s'attaque
+      // HORS LIGNE après capture. Deux objets, deux menaces, deux planchers.
+      // ⚠️ Le verdict est CONSERVÉ, pas réduit à un booléen : replier « trop long » et
+      // « caractère interdit » sur « il manque une famille » afficherait un message FAUX
+      // (refus juste, explication fausse — relevé en revue P2).
+      const ApPwdVerdict verdictNouveau =
+          apPwdCheck(newPassword.c_str(), newPassword.length(), kAdminPasswordMinLength,
+                     kAdminPasswordMaxLength, /*allowNonAscii=*/true);
+      in.newFamiliesOk = (verdictNouveau == ApPwdVerdict::kOk);
       in.newEqualsCurrent = in.hasCurrentPassword && (newPassword == currentPassword);
 
       switch (decidePasswordChange(in)) {
@@ -332,6 +344,21 @@ void setupAuthRoutes(AsyncWebServer* server) {
           return;
         case PwdChangeVerdict::kDenyTooShort:
           sendErrorResponse(req, 400, "New password must be at least 8 characters");
+          return;
+        case PwdChangeVerdict::kDenyWeak:
+          // bug-187 : message EN FRANÇAIS et EXACT — l'utilisateur doit savoir ce qui
+          // manque VRAIMENT. ⛔ Ne jamais recopier le mot de passe reçu dans la réponse.
+          if (verdictNouveau == ApPwdVerdict::kTooLong) {
+            sendErrorResponse(req, 400, "Le mot de passe ne peut pas depasser 128 caracteres");
+          } else if (verdictNouveau == ApPwdVerdict::kBadCharacter) {
+            sendErrorResponse(req, 400,
+                              "Le mot de passe n'accepte ni caractere invisible, ni espace "
+                              "en debut ou en fin");
+          } else {
+            sendErrorResponse(req, 400,
+                              "Le mot de passe doit contenir au moins une minuscule, une majuscule, "
+                              "un chiffre et un caractere special");
+          }
           return;
         case PwdChangeVerdict::kDenySame:
         default:
@@ -429,14 +456,99 @@ void setupAuthRoutes(AsyncWebServer* server) {
   });
 
   // Route: Mot de passe AP WiFi (PROTÉGÉE - nécessite auth admin)
+  // ⚠️ bug-187, condition A5 de la revue P1 : `Cache-Control: no-store`. Un secret
+  // servi en JSON n'hérite d'aucun en-tête de cache — sans cette ligne il peut
+  // rester dans le cache du navigateur bien après la fermeture de la page.
+  // ⛔ Et il ne figure NI dans /get-config, NI dans /data, NI dans le WebSocket,
+  // NI dans MQTT : cette route est le SEUL endroit où il sort de l'appareil, et il
+  // n'en sort que sur un geste explicite de l'utilisateur.
   server->on("/auth/ap-password", HTTP_GET, [](AsyncWebServerRequest *req) {
     REQUIRE_AUTH(req, RouteProtection::CRITICAL);
 
     JsonDocument doc;
     doc["ap_password"] = authCfg.apPassword;
     doc["ap_ssid"] = "PoolControllerAP";
-    sendJsonResponse(req, doc);
+    // bug-187 : vrai si la clé est encore celle d'avant ce lot (8 hexadécimaux,
+    // 32 bits). ⛔ On ne régénère RIEN — l'étiquette doit rester vraie — mais
+    // l'interface doit pouvoir conseiller à son propriétaire d'en choisir une autre.
+    doc["ap_password_legacy"] =
+        apPwdIsLegacyForm(authCfg.apPassword.c_str(), authCfg.apPassword.length());
+    String body;
+    serializeJson(doc, body);
+    AsyncWebServerResponse* res = req->beginResponse(200, "application/json", body);
+    res->addHeader("Cache-Control", "no-store");
+    req->send(res);
   });
+
+  // ===========================================================================
+  // bug-187 — Route: l'utilisateur remplace le mot de passe du point d'accès
+  // ===========================================================================
+  // ⛔ PROTÉGÉE, sans aucun droit anonyme : contrairement à /auth/change-password,
+  // il n'y a ici AUCUNE fenêtre de prise de possession. Un appareil vierge n'a pas
+  // à voir son point d'accès reconfiguré par un inconnu — c'est précisément le
+  // réseau par lequel l'installateur arrive.
+  // ⚠️ L'ORIGINE N'EST JAMAIS TOUCHÉE : la réinitialisation d'usine ramènera
+  // toujours le mot de passe imprimé sur l'étiquette. C'est l'invariant du lot.
+  // ⚠️ Le handler de REQUÊTE s'exécute APRÈS le handler de corps. Si la requête n'a
+  // AUCUN corps, le handler de corps n'est jamais appelé et personne ne répond : le
+  // client reste pendu jusqu'à son propre délai. ⇒ On répond ici, et SEULEMENT dans ce
+  // cas (contentLength nul), pour ne pas répondre deux fois.
+  server->on("/auth/ap-password", HTTP_POST, [](AsyncWebServerRequest *req) {
+    if (req->contentLength() == 0) sendErrorResponse(req, 400, "Corps de requete absent");
+  }, nullptr,
+    [](AsyncWebServerRequest *req, uint8_t *data, size_t len, size_t index, size_t total) {
+      if (!authManager.checkAuth(req, RouteProtection::CRITICAL)) return;
+
+      JsonDocument doc;
+      if (deserializeJson(doc, data, len)) {
+        sendErrorResponse(req, 400, "Invalid JSON");
+        return;
+      }
+      String nouveau = doc["apPassword"] | "";
+
+      // ⛔ Le contrôle est fait ICI, pas seulement dans la page : une page peut être
+      // contournée, et une phrase trop courte ferait refuser softAP() — ou pire, une
+      // phrase vide créerait un réseau OUVERT.
+      // ⛔ `allowNonAscii = false` : WPA2 ne transporte que de l'ASCII imprimable.
+      switch (apPwdCheck(nouveau.c_str(), nouveau.length(), kApPwdMinLength, kApPwdMaxLength,
+                         /*allowNonAscii=*/false)) {
+        case ApPwdVerdict::kOk:
+          break;
+        case ApPwdVerdict::kTooShort:
+          sendErrorResponse(req, 400, "Le mot de passe du point d'acces doit faire au moins 12 caracteres");
+          return;
+        case ApPwdVerdict::kTooLong:
+          sendErrorResponse(req, 400, "Le mot de passe du point d'acces ne peut pas depasser 63 caracteres");
+          return;
+        case ApPwdVerdict::kBadCharacter:
+          // ⚠️ Cas très concret : un accent collé depuis un gestionnaire. WPA2 ne
+          // transporte que de l'ASCII imprimable.
+          sendErrorResponse(req, 400,
+                            "Le mot de passe du point d'acces n'accepte ni accent, ni caractere "
+                            "invisible, ni espace en debut ou en fin");
+          return;
+        case ApPwdVerdict::kMissingFamily:
+        default:
+          sendErrorResponse(req, 400,
+                            "Le mot de passe doit contenir au moins une minuscule, une majuscule, "
+                            "un chiffre et un caractere special");
+          return;
+      }
+
+      if (!authManager.setApPassword(nouveau)) {
+        // L'écriture n'a pas été confirmée par relecture : l'ancien reste en service.
+        sendErrorResponse(req, 500, "Enregistrement refuse par la memoire de l'appareil");
+        return;
+      }
+
+      JsonDocument out;
+      out["success"] = true;
+      // ⚠️ Le changement ne prend effet qu'au prochain démarrage du point d'accès :
+      // l'appareil ne coupe pas un réseau de secours en service pour appliquer un
+      // réglage — ce serait couper la branche sur laquelle l'utilisateur est assis.
+      out["message"] = "Mot de passe du point d'acces enregistre";
+      sendJsonResponse(req, out);
+    });
 
   // Route: Marquer le wizard comme complété (désactive le flag firstBoot)
   // bug-185 : n'est plus PUBLIQUE. Filet idempotent : exige le jeton (donc un mot

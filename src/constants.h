@@ -4318,5 +4318,9 @@ static const uint16_t kAuthEpoch = 1;
 // reposer "admin" et à ramener l'appareil à l'état VIERGE, donc à rouvrir le
 // droit anonyme à tout le réseau (bug-185).
 constexpr size_t kAdminPasswordMinLength = 8;
+// bug-187 : plafond du mot de passe de l'APPAREIL. ⛔ Rien à voir avec les 63 de
+// WPA2 : celui-ci voyage en JSON, pas dans une trame Wi-Fi. La borne existe pour
+// que le corps HTTP reste prévisible, pas pour contraindre l'utilisateur.
+constexpr size_t kAdminPasswordMaxLength = 128;
 
 #endif // CONSTANTS_H

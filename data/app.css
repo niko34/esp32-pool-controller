@@ -4701,3 +4701,30 @@ h1, h2, h3 {
 .pump-test__stop { grid-column: 1 / -1; }
 #pump_test_msg { overflow-wrap: anywhere; }
 #pump_test_msg[hidden] { display: none; }
+
+/* bug-187 : règle de mot de passe énoncée avant la frappe + clé du réseau de secours */
+.field__help {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.secret-value {
+  display: block;
+  padding: 12px 16px;
+  background: var(--input-bg, var(--panel));
+  border: 1px solid var(--stroke);
+  border-radius: var(--radius);
+  font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  font-size: 24px;
+  font-weight: 600;
+  letter-spacing: .06em;
+  font-variant-ligatures: none;
+  color: var(--text);
+  overflow-wrap: anywhere;
+  user-select: all;
+  -webkit-user-select: all;
+}
+.ap-pwd-btn { min-height: 44px; }
+@media (max-width: 499px) {
+  .ap-pwd-btn { width: 100%; }
+}

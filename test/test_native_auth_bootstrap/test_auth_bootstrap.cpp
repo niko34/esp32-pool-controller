@@ -66,10 +66,11 @@ static PwdChangeInput mk(int b) {
   in.tokenValid = b & 16;
   in.newLenOk = b & 32;
   in.newEqualsCurrent = b & 64;
+  in.newFamiliesOk = b & 128;  // bug-187 : les quatre familles
   return in;
 }
 
-// Modèle depuis la règle : (1) identité, (2) longueur, (3) différence.
+// Modèle depuis la règle : (1) identité, (2) longueur, (3) FAMILLES (bug-187), (4) différence.
 static PwdChangeVerdict model(const PwdChangeInput& i) {
   bool identityOk;
   bool badCurrent = false;
@@ -85,13 +86,14 @@ static PwdChangeVerdict model(const PwdChangeInput& i) {
   if (!identityOk) return badCurrent ? PwdChangeVerdict::kDenyBadCurrent : PwdChangeVerdict::kDenyUnauth;
   if (badCurrent) return PwdChangeVerdict::kDenyBadCurrent;
   if (!i.newLenOk) return PwdChangeVerdict::kDenyTooShort;
+  if (!i.newFamiliesOk) return PwdChangeVerdict::kDenyWeak;
   if (i.hasCurrentPassword && i.newEqualsCurrent) return PwdChangeVerdict::kDenySame;
   return PwdChangeVerdict::kAllow;
 }
 
-void test_change_password_128_combinations(void) {
+void test_change_password_256_combinations(void) {
   int allow = 0;
-  for (int b = 0; b < 128; b++) {
+  for (int b = 0; b < 256; b++) {
     PwdChangeInput in = mk(b);
     char msg[24];
     snprintf(msg, sizeof msg, "chg %d", b);
@@ -103,6 +105,10 @@ void test_change_password_128_combinations(void) {
   // ÉLARGISSEMENT du droit. 32 = (vierge : 16 sans currentPassword + 4 avec
   // "admin" et un nouveau différent) + (possédé : 8 par jeton + 4 par
   // currentPassword correct). Recalculé à la main par code-reviewer.
+  // ⭐ bug-187 : la table passe de 128 à 256 combinaisons (8ᵉ bit = les quatre
+  // familles) et le compte d'autorisations reste **32** — exactement les mêmes,
+  // chacune exigeant désormais un mot de passe conforme. Un compte qui aurait
+  // DOUBLÉ aurait signalé une règle non appliquée.
   TEST_ASSERT_EQUAL(32, allow);
 }
 
@@ -119,6 +125,7 @@ void test_anonymous_when_pristine_only(void) {
   PwdChangeInput in;
   in.virginState = true;
   in.newLenOk = true;
+  in.newFamiliesOk = true;  // bug-187
   TEST_ASSERT_EQUAL((int)PwdChangeVerdict::kAllow, (int)decidePasswordChange(in));
   in.virginState = false;  // possédé : plus de droit anonyme
   TEST_ASSERT_EQUAL((int)PwdChangeVerdict::kDenyUnauth, (int)decidePasswordChange(in));
@@ -188,7 +195,7 @@ int main(int, char**) {
   RUN_TEST(test_login_all_combinations);
   RUN_TEST(test_login_factory_never_allows);
   RUN_TEST(test_login_works_when_wizard_never_finished);
-  RUN_TEST(test_change_password_128_combinations);
+  RUN_TEST(test_change_password_256_combinations);
   RUN_TEST(test_authentication_before_length);
   RUN_TEST(test_anonymous_when_pristine_only);
   RUN_TEST(test_effect_plan);

@@ -7,6 +7,8 @@
 #include "auth_bootstrap_logic.h"
 #include "web_routes_auth.h"  // bug-189 : authFailBackoffClearExemptions
 #include "secret_compare.h"   // bug-183 : fixedWidthEquals (pur)
+#include "ap_password_logic.h" // bug-187 : fabrication et contrôle des mots de passe (pur)
+#include <bootloader_random.h>  // bug-187 : vraie entropie AVANT le démarrage de la radio
 #include "ota_integrity.h"    // bug-183 : OtaStreamHasher (porte déjà le garde mbedtls 2/3)
 #include <mbedtls/platform_util.h>
 
@@ -135,6 +137,13 @@ AuthManager::AuthManager() {}
 
 void AuthManager::begin() {
   // Générer un token API par défaut si vide
+  // ⛔ MÊME SOURCE D'ENTROPIE QUE LA CLÉ WI-FI (relevé en revue de code). Le jeton
+  // d'API est la preuve d'admission de TOUTES les routes protégées : le tirer hors de
+  // la fenêtre de vraie entropie, juste au-dessus d'une clé Wi-Fi qu'on y encadre
+  // soigneusement, serait une incohérence dans une seule et même fonction.
+  // ⛔ Sûr ICI seulement : la radio n'est pas démarrée, et aucun code de ce dépôt
+  // n'utilise l'ADC (vérifié : aucun analogRead, aucun adc1_*).
+  bootloader_random_enable();
   if (apiToken.isEmpty()) {
     apiToken = generateRandomToken();
     // SÉCURITÉ: Ne jamais logger le token complet
@@ -142,18 +151,73 @@ void AuthManager::begin() {
     systemLogger.info("API Token généré: " + maskedToken);
   }
 
-  // Générer le mot de passe AP WiFi si vide (premier boot ou factory reset)
-  // Loggué en clair volontairement : c'est le seul moyen de le récupérer sans écran.
+  // ===========================================================================
+  // bug-187 — MISE EN SERVICE : fabrication du mot de passe du point d'accès.
+  // ===========================================================================
+  // ⛔ N'ARRIVE QU'UNE FOIS dans la vie de l'appareil. Ce mot de passe part sur
+  // l'ÉTIQUETTE du boîtier, et il est conservé À PART (apPasswordOrigin) pour que
+  // la réinitialisation d'usine puisse toujours le ramener — c'est ce qui rend
+  // l'étiquette vraie à vie, même après que l'utilisateur a choisi le sien.
+  //
+  // ⚠️ Journalisé EN CLAIR, délibérément : à cet instant aucune étiquette n'existe
+  // encore et aucun écran n'est joignable. Le câble série est le seul chemin.
+  // Décision écrite dans la fiche bug-187, § « le sort de la journalisation ».
   if (authCfg.apPassword.isEmpty()) {
-    String apPwd = generateRandomToken().substring(0, 8);
-    apPwd.toUpperCase();
-    authCfg.apPassword = apPwd;
+    char fabrique[kApPwdGenLength + 1];
+    // ⛔ SOURCE D'ENTROPIE (condition A1 de la revue de sécurité). `esp_random()` n'est
+    // garanti VRAIMENT aléatoire que si la radio ou l'ADC alimente le générateur
+    // matériel — or begin() s'exécute bien AVANT setupWiFi(). Sans cet encadrement,
+    // les 73,5 bits annoncés ne seraient qu'une affirmation : la graine viendrait du
+    // bootloader, donc d'un état bien moins imprévisible.
+    // ⚠️ Et cette valeur est DÉFINITIVE : c'est l'origine, celle de l'étiquette, celle
+    // que la réinitialisation d'usine ramènera toujours. Un tirage faible ici ne se
+    // rattrape jamais.
+    // ⛔ Sûr ICI et nulle part ailleurs : la radio n'est pas démarrée (conflit interdit)
+    // et aucun code de ce dépôt n'utilise l'ADC (vérifié : aucun analogRead, aucun adc1_*).
+    const bool ok = apPwdGenerate([]() { return static_cast<uint8_t>(esp_random() & 0xFF); },
+                                  fabrique, sizeof(fabrique));
+    if (ok) {
+      authCfg.apPassword = fabrique;
+      authCfg.apPasswordOrigin = fabrique;
+      saveMqttConfig();
+      // ⛔ RELIRE AVANT DE DIRE « notez-le » (condition G3 de la revue P2).
+      // saveMqttConfig() est `void` et peut échouer en SILENCE. Sans cette relecture,
+      // l'installateur recopierait sur l'étiquette une valeur que le démarrage suivant
+      // ne retrouverait pas — il en fabriquerait une autre, et l'étiquette serait fausse
+      // DÈS LE PREMIER JOUR, sans aucun signal. C'est l'invariant même du lot.
+      if (reloadApPasswordFromNvs() == authCfg.apPassword) {
+        systemLogger.info("================================================");
+        systemLogger.info("=== MOT DE PASSE AP WIFI: " + authCfg.apPassword + " ===");
+        systemLogger.info("=== Notez-le sur une etiquette !            ===");
+        systemLogger.info("================================================");
+      } else {
+        systemLogger.critical("[AP] Le mot de passe du point d'acces n'a PAS ete enregistre "
+                              "en memoire persistante : NE PAS l'ecrire sur l'etiquette, "
+                              "il changera au prochain demarrage. Redemarrer l'appareil.");
+      }
+    } else {
+      // ⛔ LE PIRE CAS, ET IL EST SILENCIEUX SANS CETTE LIGNE : laisser le mot de
+      // passe VIDE ferait démarrer le point d'accès SANS CHIFFREMENT (AP.cpp ne
+      // pose WPA2 que si la phrase est non vide), et /wifi/connect est ouvert sans
+      // jeton en mode AP. On préfère un point d'accès qui ne démarre pas.
+      systemLogger.critical("[AP] Fabrication du mot de passe du point d'acces IMPOSSIBLE "
+                            "(source d'alea defaillante) : le point d'acces NE DEMARRERA PAS. "
+                            "Redemarrer l'appareil.");
+    }
+  } else if (authCfg.apPasswordOrigin.isEmpty()) {
+    // bug-187 — MIGRATION, une seule fois : un appareil mis en service avant ce lot
+    // n'a pas d'origine enregistrée. ⭐ Son mot de passe COURANT est forcément celui
+    // de l'étiquette, puisque RIEN ne permettait de le changer avant aujourd'hui.
+    // ⇒ On l'adopte comme origine. L'étiquette reste donc vraie, sans rien régénérer.
+    authCfg.apPasswordOrigin = authCfg.apPassword;
     saveMqttConfig();
-    systemLogger.info("================================================");
-    systemLogger.info("=== MOT DE PASSE AP WIFI: " + authCfg.apPassword + " ===");
-    systemLogger.info("=== Notez-le sur une etiquette !            ===");
-    systemLogger.info("================================================");
+    systemLogger.info("[AP] Mot de passe d'origine du point d'acces enregistre "
+                      "(reprise de la valeur en service, bug-187)");
   }
+  // ⛔ FERMER LA FENÊTRE. Laisser la source matérielle active consommerait l'ADC et
+  // entrerait en conflit avec le démarrage de la radio, quelques lignes plus loin dans
+  // setup(). Les deux tirages sensibles — jeton d'API et clé Wi-Fi — sont derrière.
+  bootloader_random_disable();
 
   // Détecter premier démarrage (bug-185) : l'état se déduit du MOT DE PASSE, pas
   // du seul drapeau wizardCompleted (qu'un inconnu pouvait poser). Migration
@@ -223,6 +287,65 @@ void AuthManager::setPassword(const String& pwd) {
 
 String AuthManager::getApPassword() const {
   return authCfg.apPassword;
+}
+
+// bug-187 — le mot de passe de l'ÉTIQUETTE. ⛔ Ne sert QU'à la réinitialisation
+// d'usine : il n'est exposé par aucune route, sans quoi afficher « l'ancien » à
+// côté du nouveau annulerait tout l'intérêt d'en avoir choisi un autre.
+String AuthManager::getApPasswordOrigin() const {
+  return authCfg.apPasswordOrigin;
+}
+
+// bug-187 — l'utilisateur remplace le mot de passe du point d'accès par le sien.
+// ⛔ NE TOUCHE JAMAIS À L'ORIGINE : c'est l'invariant de tout le lot. L'appelant a
+// déjà validé la valeur (apPwdCheck) ; cette fonction refuse quand même une valeur
+// trop courte, parce qu'une phrase de moins de 8 caractères fait refuser softAP()
+// et qu'une phrase VIDE crée un réseau OUVERT.
+// ⚠️ Écriture NVS puis RELECTURE (condition G3 de la revue P1) : si la NVS refuse
+// l'écriture en silence, la RAM et la NVS divergeraient et l'utilisateur recopierait
+// une valeur fausse qui disparaîtrait au redémarrage suivant.
+bool AuthManager::setApPassword(const String& pwd) {
+  if (pwd.length() < kApPwdMinLength || pwd.length() > kApPwdMaxLength) return false;
+
+  // ⛔ MUTEX OBLIGATOIRE (relevé en revue de code). Avant ce lot, `apPassword` n'était
+  // écrit qu'au démarrage, serveur arrêté. Il l'est désormais depuis la tâche HTTP,
+  // alors que la boucle principale le LIT pour démarrer le point d'accès de secours
+  // (`main.cpp`, repli après perte du Wi-Fi). Réaffecter un `String` libère son ancien
+  // tampon : sans verrou, le lecteur peut copier depuis une zone libérée — phrase WPA2
+  // corrompue, donc réseau de secours injoignable, précisément quand il sert.
+  // ⚠️ Mutex RÉCURSIF : les prises imbriquées de saveMqttConfig() et de
+  // reloadApPasswordFromNvs() restent valides depuis cette même tâche.
+  if (configMutex && xSemaphoreTakeRecursive(configMutex, pdMS_TO_TICKS(kConfigMutexTimeoutMs)) != pdTRUE) {
+    systemLogger.error("[AP] Changement du mot de passe du point d'acces abandonne : "
+                       "configuration occupee");
+    return false;
+  }
+
+  const String ancien = authCfg.apPassword;
+  authCfg.apPassword = pwd;
+  saveMqttConfig();
+  bool ok = (reloadApPasswordFromNvs() == pwd);
+  if (!ok) {
+    authCfg.apPassword = ancien;  // la NVS n'a pas pris : on ne ment pas à l'utilisateur
+    saveMqttConfig();
+    // ⚠️ RELIRE LA RESTAURATION AUSSI. Si la première écriture a pris mais que la
+    // relecture a échoué, puis que la restauration échoue à son tour, la NVS garderait
+    // le NOUVEAU mot de passe pendant que l'interface annonce que l'ancien reste en
+    // service — exactement le mensonge que ce lot combat.
+    if (reloadApPasswordFromNvs() == ancien) {
+      systemLogger.error("[AP] Enregistrement du mot de passe du point d'acces REFUSE "
+                         "par la memoire persistante : l'ancien reste en service");
+    } else {
+      systemLogger.critical("[AP] Etat INCERTAIN du mot de passe du point d'acces : ni le "
+                            "nouveau ni l'ancien n'ont pu etre confirmes en memoire. "
+                            "Verifier dans Parametres avant de se fier a l'etiquette.");
+    }
+  } else {
+    systemLogger.info("[AP] Mot de passe du point d'acces modifie par l'utilisateur "
+                      "(l'etiquette reste valable apres reinitialisation)");
+  }
+  if (configMutex) xSemaphoreGiveRecursive(configMutex);
+  return ok;
 }
 
 void AuthManager::setApiToken(const String& token) {

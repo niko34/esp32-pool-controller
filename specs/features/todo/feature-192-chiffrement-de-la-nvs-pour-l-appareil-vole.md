@@ -8,7 +8,7 @@
 | Priorité | basse — ⚠️ **exige un accès PHYSIQUE à l'appareil**, et il vit au bord d'un bassin privé |
 | Version cible | à définir |
 | Relevé par | `security-reviewer`, recommandé en P2 de [`bug-181`](../done/bug-181-get-config-expose-la-configuration-sans-authentification.md) puis **re-recommandé** en P2 de [`bug-183`](../done/bug-183-auth-login-echecs-muets-et-comparaison-non-constante.md) — ⛔ jamais ouvert jusqu'ici |
-| Specs liées | [`bug-183`](../done/bug-183-auth-login-echecs-muets-et-comparaison-non-constante.md) · [ADR-0132](../../../docs/adr/0132-le-mot-de-passe-se-compare-par-empreintes-en-temps-fixe.md) (stockage en clair **assumé**) · [`bug-187`](bug-187-mot-de-passe-du-point-d-acces-a-32-bits.md) |
+| Specs liées | [`bug-183`](../done/bug-183-auth-login-echecs-muets-et-comparaison-non-constante.md) · [ADR-0132](../../../docs/adr/0132-le-mot-de-passe-se-compare-par-empreintes-en-temps-fixe.md) (stockage en clair **assumé**) · [`bug-187`](../doing/bug-187-mot-de-passe-du-point-d-acces-a-32-bits.md) |
 
 ## Domaines touchés
 - [x] **Authentification** · [x] **Historique / persistance** (`src/config.cpp`, NVS)
@@ -129,4 +129,4 @@ NVS en clair, aucun chiffrement, aucun eFuse brûlé. Décision tracée dans [AD
 
 - Les essais en ligne → [`bug-189`](../done/bug-189-aucun-verrouillage-sur-les-essais-de-mot-de-passe-en-ligne.md).
 - Le HTTP clair sur le Wi-Fi — décision produit assumée, ⛔ pas de spec.
-- Le mot de passe du point d'accès → [`bug-187`](bug-187-mot-de-passe-du-point-d-acces-a-32-bits.md).
+- Le mot de passe du point d'accès → [`bug-187`](../doing/bug-187-mot-de-passe-du-point-d-acces-a-32-bits.md).

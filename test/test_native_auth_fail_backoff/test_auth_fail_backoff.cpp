@@ -94,6 +94,7 @@ static PwdChangeInput uiChange(bool currentOk, bool tokenValid = true) {
   in.currentMatches = currentOk;
   in.tokenValid = tokenValid;
   in.newLenOk = true;
+  in.newFamiliesOk = true;  // bug-187 : le modele represente un mot de passe CONFORME
   return in;
 }
 static PwdChangeInput passwordOnly(bool currentOk) { return uiChange(currentOk, false); }
@@ -101,6 +102,7 @@ static PwdChangeInput tokenOnly(bool tokenValid) {
   PwdChangeInput in;
   in.tokenValid = tokenValid;
   in.newLenOk = true;
+  in.newFamiliesOk = true;  // bug-187 : le modele represente un mot de passe CONFORME
   return in;
 }
 
@@ -416,6 +418,7 @@ void test_condition10_tout_kAllow_de_change_password_vide_puis_reinscrit_l_auteu
   PwdChangeInput paths[4] = {uiChange(true), tokenOnly(true), passwordOnly(true), PwdChangeInput()};
   paths[3].virginState = true;  // appareil vierge : droit anonyme
   paths[3].newLenOk = true;
+  paths[3].newFamiliesOk = true;  // bug-187
   for (int p = 0; p < 4; p++) {
     AuthFailBackoff s;
     authFailRecordPasswordProof(s, 0x30000010u);  // anciennes preuves
@@ -545,7 +548,7 @@ void test_condition4_ne_comptent_pas_les_403_les_400_et_l_etat_vierge(void) {
     // Etat vierge, mauvais « currentPassword » : ni freine ni compte.
     PwdChangeInput virginBad;
     virginBad.virginState = true; virginBad.hasCurrentPassword = true;
-    virginBad.currentIsFactoryLiteral = false; virginBad.newLenOk = true;
+    virginBad.currentIsFactoryLiteral = false; virginBad.newLenOk = true; virginBad.newFamiliesOk = true;
     TEST_ASSERT_EQUAL(401, changeModel(s, ip, 1000, virginBad));
   }
   TEST_ASSERT_TRUE(sameState(snap, s));
@@ -561,7 +564,7 @@ void test_prise_de_possession_sur_appareil_vierge_jamais_affamee(void) {
   saturateGlobal(s, 1000);
   PwdChangeInput takeover;
   takeover.virginState = true; takeover.hasCurrentPassword = true;
-  takeover.currentIsFactoryLiteral = true; takeover.newLenOk = true;
+  takeover.currentIsFactoryLiteral = true; takeover.newLenOk = true; takeover.newFamiliesOk = true;
   TEST_ASSERT_EQUAL(200, changeModel(s, 0x53000001u, 1000, takeover));
 }
 

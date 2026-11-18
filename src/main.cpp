@@ -25,6 +25,7 @@ extern "C" bool esp_psram_check_ptr_addr(const void* p);
 #include <atomic>  // bug-134 : netSelfRearmCount / netIcmpEchoCount, incrémentés depuis plusieurs tâches
 
 #include "config.h"
+#include "ap_password_logic.h"  // bug-187 : garde du site softAP
 #include "constants.h"
 #include "logger.h"
 #include "auth.h"
@@ -847,7 +848,19 @@ bool setupWiFi() {
     // WIFI_AP seul peut effacer les credentials sur certaines versions IDF.
     (void)keepSta;
     WiFi.mode(WIFI_AP_STA);
-    bool apStarted = WiFi.softAP("PoolControllerAP", authManager.getApPassword().c_str());
+    // ⛔ GARDE DU SITE D'APPEL (bug-187, condition G4 de la revue P2). softAP() ne pose
+    // WPA2 que si la phrase est NON VIDE : une phrase vide crée un réseau OUVERT, sans
+    // la moindre erreur. Et un point d'accès ouvert sur un appareil vierge offre à qui
+    // passe à portée radio le droit anonyme de choisir le mot de passe administrateur.
+    // ⚠️ Un message dans le journal ne garde rien : c'est ICI que ça se refuse.
+    const String apPwd = authManager.getApPassword();
+    if (!apPwdUsableAsWpaKey(apPwd.length())) {
+      systemLogger.critical("[AP] Mot de passe du point d'acces inutilisable : le point "
+                            "d'acces NE DEMARRE PAS (un reseau sans mot de passe serait "
+                            "OUVERT a tous). Redemarrer l'appareil.");
+      return;
+    }
+    bool apStarted = WiFi.softAP("PoolControllerAP", apPwd.c_str());
     if (apStarted) {
       systemLogger.info("AP démarré: PoolControllerAP");
       // Logger le mot de passe en clair uniquement si le wizard n'est pas encore complété
@@ -910,8 +923,16 @@ bool setupWiFi() {
 void resetWiFiSettings() {
   systemLogger.warning("Effacement complet de la partition NVS (factory reset)...");
 
-  // Préserver le mot de passe AP : identifiant matériel unique, doit survivre au factory reset
-  String savedApPassword = authCfg.apPassword;
+  // Préserver le mot de passe AP : identifiant matériel unique, doit survivre au factory reset.
+  // ⭐ bug-187 — C'EST L'ORIGINE QU'ON RESTAURE, PAS LE COURANT. L'utilisateur peut
+  // désormais remplacer le mot de passe du point d'accès par le sien ; si la
+  // réinitialisation gardait CE choix, l'étiquette du boîtier deviendrait fausse et
+  // il n'existerait plus aucun moyen de reprendre la main sans câble série.
+  // ⇒ Réinitialiser ramène TOUJOURS le mot de passe imprimé sur l'étiquette.
+  // Repli : une origine vide (appareil jamais migré) retombe sur le courant, qui EST
+  // alors celui de l'étiquette puisque rien ne permettait de le changer avant ce lot.
+  const String origine = authManager.getApPasswordOrigin();
+  String savedApPassword = origine.isEmpty() ? authManager.getApPassword() : origine;
 
   // Déconnecter le WiFi avant d'effacer
   WiFi.mode(WIFI_OFF);
@@ -931,10 +952,21 @@ void resetWiFiSettings() {
       // Restaurer le mot de passe AP immédiatement pour qu'il survive au redémarrage
       if (!savedApPassword.isEmpty()) {
         Preferences prefs;
-        if (prefs.begin("poolctrl", false)) {
+        if (!prefs.begin("poolctrl", false)) {
+          // bug-187, revue P2 : sans ce message, l'échec était MUET et l'appareil
+          // fabriquait une NOUVELLE clé au démarrage suivant — étiquette fausse,
+          // sans que personne ne puisse savoir pourquoi.
+          systemLogger.critical("[AP] Restauration du mot de passe de l'etiquette IMPOSSIBLE "
+                                "apres reinitialisation : une NOUVELLE cle sera fabriquee et "
+                                "l'etiquette du boitier deviendra fausse.");
+        } else {
           prefs.putString("auth_ap_pwd", savedApPassword);
+          // bug-187 : l'origine se réécrit à l'identique — sans elle, le démarrage
+          // suivant la reconstruirait depuis le courant, ce qui serait correct ici
+          // mais cesserait de l'être si un jour la restauration changeait.
+          prefs.putString("auth_ap_org", savedApPassword);
           prefs.end();
-          systemLogger.info("Mot de passe AP restauré après factory reset");
+          systemLogger.info("Mot de passe AP de l'etiquette restaure apres factory reset");
         }
       }
     } else {
@@ -1752,7 +1784,16 @@ void checkSystemHealth() {
       if (wifiReconnectAttempts >= 3 && mode == WIFI_MODE_STA) {
         systemLogger.error("Impossible de reconnecter le WiFi après 3 tentatives, activation du mode AP");
         WiFi.mode(WIFI_AP_STA);
-        bool apStarted = WiFi.softAP("PoolControllerAP", authManager.getApPassword().c_str());
+        // ⛔ Même garde qu'au premier site (bug-187, G4) : ⚠️ DEUX sites, et n'en garder
+        // qu'un laisserait la porte ouverte par l'autre.
+        const String apPwdSecours = authManager.getApPassword();
+        if (!apPwdUsableAsWpaKey(apPwdSecours.length())) {
+          systemLogger.critical("[AP] Mot de passe du point d'acces inutilisable : pas de "
+                                "reseau de secours (il serait OUVERT a tous).");
+          wifiReconnectAttempts = 0;
+          return;
+        }
+        bool apStarted = WiFi.softAP("PoolControllerAP", apPwdSecours.c_str());
         if (apStarted) {
           systemLogger.info("AP démarré en mode secours: PoolControllerAP");
           systemLogger.info("IP AP: " + WiFi.softAPIP().toString());

@@ -274,6 +274,28 @@ const char* phOffsetStaleCause() {
   return "expiration";
 }
 
+// bug-187 (condition G3 de la revue P1) — RELIT la clé du mot de passe du point
+// d'accès directement en NVS, pour vérifier qu'une écriture a bien PRIS.
+// ⛔ POURQUOI C'EST NÉCESSAIRE : saveMqttConfig() est `void` et peut échouer en
+// SILENCE (mutex non pris, NVS refusée). Sans relecture, la RAM porterait le
+// nouveau mot de passe et la NVS l'ancien : l'utilisateur recopierait sur son
+// étiquette une valeur qui disparaîtrait au redémarrage suivant.
+// Rend une chaîne VIDE si la lecture est impossible — jamais une valeur par défaut
+// qui ferait croire au succès.
+String reloadApPasswordFromNvs() {
+  if (configMutex && xSemaphoreTakeRecursive(configMutex, pdMS_TO_TICKS(kConfigMutexTimeoutMs)) != pdTRUE) {
+    return String("");
+  }
+  Preferences prefs;
+  String lu = "";
+  if (prefs.begin("poolctrl", true)) {
+    lu = prefs.getString("auth_ap_pwd", "");
+    prefs.end();
+  }
+  if (configMutex) xSemaphoreGiveRecursive(configMutex);
+  return lu;
+}
+
 void saveMqttConfig() {
   // feature-027 : prise bornée (miroir de saveDailyCounters). Timeout → config RAM
   // appliquée mais persistance NVS perdue — signalé en error (throttlé 1/min).
@@ -401,6 +423,9 @@ void saveMqttConfig() {
   // une coupure fait simplement rejouer la rotation au démarrage suivant.
   prefs.putUShort("auth_epoch", authCfg.authEpoch);
   prefs.putString("auth_ap_pwd", authCfg.apPassword);
+  // bug-187 : l'ORIGINE (étiquette). ⚠️ Écrite comme les autres, mais la seule
+  // affectation en RAM est la mise en service (auth.cpp) : rien d'autre ne la change.
+  prefs.putString("auth_ap_org", authCfg.apPasswordOrigin);
   prefs.putBool("sensor_logs", authCfg.sensorLogsEnabled);
   prefs.putBool("debug_logs", authCfg.debugLogsEnabled);
   // v2.17.1 : la clé NVS "screen_enabled" n'est plus écrite ni lue (support
@@ -871,6 +896,7 @@ void loadMqttConfig() {
   authCfg.adminPassword = prefs.getString("auth_password", authCfg.adminPassword);
   authCfg.apiToken = prefs.getString("auth_token", authCfg.apiToken);
   authCfg.apPassword = prefs.getString("auth_ap_pwd", authCfg.apPassword);
+  authCfg.apPasswordOrigin = prefs.getString("auth_ap_org", authCfg.apPasswordOrigin);
   authCfg.sensorLogsEnabled = prefs.getBool("sensor_logs", false);
   authCfg.debugLogsEnabled = prefs.getBool("debug_logs", false);
 

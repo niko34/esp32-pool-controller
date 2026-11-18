@@ -735,7 +735,7 @@
 
         <div class="info-box">
           <strong>🔒 Sécurité</strong>
-          <p>Ce mot de passe sera utilisé pour vous connecter à l'interface web et aux API. Choisissez un mot de passe fort d'au moins 8 caractères.</p>
+          <p>Ce mot de passe sera utilisé pour vous connecter à l'interface web et aux API. Règle : 8 caractères minimum, avec une minuscule, une majuscule, un chiffre et un caractère spécial. Ce mot de passe ouvre l'interface ; la clé Wi-Fi du réseau de secours est une autre clé, imprimée sur l'étiquette du boîtier.</p>
         </div>
 
         <div class="field required">
@@ -745,7 +745,7 @@
               type="password"
               id="adminPassword"
               name="password"
-              placeholder="Minimum 8 caractères"
+              placeholder="8 caractères minimum"
               aria-describedby="passwordChecklist passwordStrength"
               autocomplete="new-password">
             <button
@@ -760,19 +760,13 @@
           </div>
 
           <!-- 2026 Real-time validation checklist -->
-          <div class="password-checklist" id="passwordChecklist" style="display: none;">
-            <div class="password-checklist-item" data-rule="length">
-              <span class="icon"></span>
-              <span>Au moins 8 caractères</span>
-            </div>
-            <div class="password-checklist-item" data-rule="number">
-              <span class="icon"></span>
-              <span>Au moins 1 chiffre</span>
-            </div>
-            <div class="password-checklist-item" data-rule="special">
-              <span class="icon"></span>
-              <span>Au moins 1 caractère spécial (!@#$%^&*)</span>
-            </div>
+          <div class="password-checklist" id="passwordChecklist" aria-live="polite">
+            <div class="password-checklist-item" data-rule="length"><span class="icon"></span><span>Au moins 8 caractères</span></div>
+            <div class="password-checklist-item" data-rule="lower"><span class="icon"></span><span>Une minuscule</span></div>
+            <div class="password-checklist-item" data-rule="upper"><span class="icon"></span><span>Une majuscule</span></div>
+            <div class="password-checklist-item" data-rule="digit"><span class="icon"></span><span>Un chiffre</span></div>
+            <div class="password-checklist-item" data-rule="special"><span class="icon"></span><span>Un caractère spécial (! @ # $ % …)</span></div>
+            <div class="password-checklist-item" data-rule="ascii"><span class="icon"></span><span>Sans caractère invisible ni espace en début ou en fin</span></div>
           </div>
 
           <!-- Password strength indicator -->
@@ -1065,19 +1059,40 @@
     }
 
     // 2026 Real-time password validation
+    // bug-187 : mêmes familles que l'appareil (confort ; l'appareil refuse déjà)
     function checkPasswordStrength(password) {
       const rules = {
         length: password.length >= 8,
-        number: /\d/.test(password),
-        special: /[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?]/.test(password)
+        lower: /[a-z]/.test(password),
+        upper: /[A-Z]/.test(password),
+        digit: /[0-9]/.test(password),
+        special: /[\x20-\x2f\x3a-\x40\x5b-\x60\x7b-\x7e]/.test(password),
+        // bug-187 : ⭐ les ACCENTS sont acceptés ici — ce mot de passe voyage en JSON,
+        // pas dans une trame Wi-Fi. Seuls les caractères invisibles et les espaces de
+        // bord sont refusés, parce qu'ils produisent des pannes indiagnosticables.
+        ascii: password.length > 0 && !/[\x00-\x1f\x7f]/.test(password) && !/^ | $/.test(password)
       };
-
-      const validCount = Object.values(rules).filter(Boolean).length;
-      let strength = 'weak';
-      if (validCount === 3) strength = 'strong';
-      else if (validCount >= 2) strength = 'medium';
-
+      const n = Object.values(rules).filter(Boolean).length;
+      const strength = n === 6 ? 'strong' : (n >= 4 ? 'medium' : 'weak');
       return { rules, strength };
+    }
+
+    function pwdChecklistSync(checklist, rules) {
+      Object.keys(rules).forEach(rule => {
+        const item = checklist.querySelector(`[data-rule="${rule}"]`);
+        if (item) item.classList.toggle('valid', rules[rule]);
+      });
+    }
+
+    function missingPasswordText(rules) {
+      const m = [];
+      if (!rules.length) m.push('8 caractères minimum');
+      if (!rules.lower) m.push('une minuscule');
+      if (!rules.upper) m.push('une majuscule');
+      if (!rules.digit) m.push('un chiffre');
+      if (!rules.special) m.push('un caractère spécial');
+      if (!rules.ascii) m.push('sans caractère invisible ni espace en début ou en fin');
+      return m.join(', ');
     }
 
     // 2026 Machine d'états: JAMAIS rouge pendant typing
@@ -1088,8 +1103,10 @@
       const strengthLabel = document.getElementById('passwordStrengthLabel');
       const input = document.getElementById('adminPassword');
 
+      // La liste reste visible : la règle précède la frappe.
+      pwdChecklistSync(checklist, checkPasswordStrength(password).rules);
+
       if (password.length > 0) {
-        checklist.style.display = 'block';
         strengthBar.style.display = 'flex';
 
         const { rules, strength } = checkPasswordStrength(password);
@@ -1124,7 +1141,6 @@
           input.classList.remove('is-valid', 'is-error');
         }
       } else {
-        checklist.style.display = 'none';
         strengthBar.style.display = 'none';
         strengthLabel.classList.remove('visible');
         input.classList.remove('is-valid', 'is-error');
@@ -1156,10 +1172,7 @@
 
       if (!allValid) {
         // Message factuel, indique ce qu'il manque
-        const missing = [];
-        if (!rules.length) missing.push('8 caractères minimum');
-        if (!rules.number) missing.push('1 chiffre');
-        if (!rules.special) missing.push('1 caractère spécial');
+        const missing = [missingPasswordText(rules)];
         showError(`Mot de passe incomplet: ${missing.join(', ')}`);
         return false;
       }

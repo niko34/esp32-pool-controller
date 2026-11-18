@@ -1912,6 +1912,7 @@
 
   // ---------- Settings UI (segmented + panels) ----------
   function showSettingsPanel(panelKey) {
+    apPwdHide();
     if (!panelKey) {
       // Pas dans settings, masquer tout
       $$(".panel").forEach((p) => p.classList.remove("is-active"));
@@ -15110,60 +15111,168 @@
     });
   }
 
+  // ---------- bug-187 : règle de mot de passe (confort ; l'appareil refuse déjà) ----------
+  // Même classement que l'appareil : tout ASCII imprimable (espace compris) qui
+  // n'est ni lettre ni chiffre compte comme spécial ; hors ASCII = refus.
+  // bug-187 — ⛔ DEUX JEUX DE RÈGLES, et les confondre a déjà produit un défaut.
+  //   `wpa` vrai  : clé du réseau de secours. WPA2 ne transporte que de l'ASCII
+  //                 imprimable, 12 à 63 caractères.
+  //   `wpa` faux  : mot de passe de l'appareil. Il voyage en JSON : ⭐ les ACCENTS
+  //                 sont acceptés (« Été2024! » est un bon mot de passe), 8 à 128.
+  // ⚠️ Un accent est toléré mais ne compte pour AUCUNE famille, exactement comme
+  //    côté appareil : sans quoi la page promettrait ce que l'appareil refuse.
+  function pwdRules(pw, minLen, wpa) {
+    const maxLen = wpa ? 63 : 128;
+    const sansControle = pw.length > 0 && !/[\x00-\x1f\x7f]/.test(pw);
+    const sansEspaceDeBord = pw.length > 0 && !/^ | $/.test(pw);
+    const r = {
+      length: pw.length >= minLen && pw.length <= maxLen,
+      lower: /[a-z]/.test(pw),
+      upper: /[A-Z]/.test(pw),
+      digit: /[0-9]/.test(pw),
+      special: /[\x20-\x2f\x3a-\x40\x5b-\x60\x7b-\x7e]/.test(pw),
+      ascii: sansControle && sansEspaceDeBord
+    };
+    if (wpa) r.ascii = r.ascii && !/[^\x20-\x7e]/.test(pw);
+    return r;
+  }
+  function pwdAllValid(rules) { return Object.values(rules).every(Boolean); }
+  function pwdMissingText(rules, minLen) {
+    const m = [];
+    if (!rules.length) m.push(minLen + " caractères minimum");
+    if (!rules.lower) m.push("une minuscule");
+    if (!rules.upper) m.push("une majuscule");
+    if (!rules.digit) m.push("un chiffre");
+    if (!rules.special) m.push("un caractère spécial");
+    if (!rules.ascii) m.push("sans caractère invisible ni espace en début ou en fin");
+    return m.join(", ");
+  }
+  function pwdRenderChecklist(listEl, rules) {
+    if (!listEl) return;
+    Object.keys(rules).forEach((r) => {
+      const it = listEl.querySelector('[data-rule="' + r + '"]');
+      if (it) it.classList.toggle("valid", !!rules[r]);
+    });
+  }
+
+  // ---------- bug-187 : carte « Point d'accès de secours » ----------
+  const AP_PWD_REVEAL_MS = 60000;
+  let apPwdTimer = null;
+  function apPwdHide() {
+    if (apPwdTimer) { clearTimeout(apPwdTimer); apPwdTimer = null; }
+    const v = $("#ap_pwd_value"); const b = $("#ap_pwd_toggle");
+    if (v) v.textContent = "\u2022".repeat(12);
+    if (b) { b.textContent = "Afficher"; b.setAttribute("aria-pressed", "false"); }
+  }
+  function bindApPassword() {
+    const val = $("#ap_pwd_value"), tog = $("#ap_pwd_toggle");
+    if (!val || !tog) return;
+    const msg = $("#ap_pwd_msg");
+    const say = (text, isErr) => {
+      if (!msg) return;
+      msg.hidden = !text;
+      msg.textContent = text || "";
+      msg.style.color = isErr ? "var(--danger, #b91c1c)" : "";
+    };
+    tog.addEventListener("click", async () => {
+      if (tog.getAttribute("aria-pressed") === "true") { apPwdHide(); return; }
+      tog.disabled = true;
+      try {
+        const res = await authFetch("/auth/ap-password", { cache: "no-store" });
+        if (!res.ok) throw new Error("http " + res.status);
+        const d = await res.json();
+        val.textContent = String(d.ap_password || "");
+        const ssid = $("#ap_ssid"); if (ssid && d.ap_ssid) ssid.textContent = String(d.ap_ssid);
+        const leg = $("#ap_pwd_legacy"); if (leg) leg.hidden = !d.ap_password_legacy;
+        tog.textContent = "Masquer";
+        tog.setAttribute("aria-pressed", "true");
+        if (apPwdTimer) clearTimeout(apPwdTimer);
+        apPwdTimer = setTimeout(apPwdHide, AP_PWD_REVEAL_MS);
+      } catch (e) {
+        apPwdHide();
+        showToast("Impossible de lire la clé : l'appareil ne répond pas.", "error");
+      } finally {
+        tog.disabled = false;
+      }
+    });
+    document.addEventListener("visibilitychange", () => { if (document.hidden) apPwdHide(); });
+
+    const form = $("#ap_pwd_form"), editBtn = $("#ap_pwd_edit_btn");
+    const nw = $("#ap_pwd_new"), cf = $("#ap_pwd_confirm"), list = $("#apPwdChecklist");
+    // ⛔ Sans ce contrôle, une évolution du HTML casserait la liaison EN SILENCE :
+    // le bouton « Modifier la clé » resterait visible et sans effet, et rien ne le
+    // dirait. Mieux vaut ne pas lier que lier à moitié (relevé en revue de code).
+    if (!form || !editBtn || !nw || !cf) return;
+    const closeForm = () => {
+      form.hidden = true; editBtn.setAttribute("aria-expanded", "false");
+      nw.value = ""; cf.value = ""; pwdRenderChecklist(list, pwdRules("", 12, true)); say("", false);
+    };
+    editBtn.addEventListener("click", () => {
+      form.hidden = !form.hidden;
+      editBtn.setAttribute("aria-expanded", String(!form.hidden));
+      if (!form.hidden) nw.focus();
+    });
+    $("#ap_pwd_cancel_btn")?.addEventListener("click", closeForm);
+    nw.addEventListener("input", () => pwdRenderChecklist(list, pwdRules(nw.value, 12, true)));
+    $("#ap_pwd_save_btn")?.addEventListener("click", async () => {
+      const rules = pwdRules(nw.value, 12, true);   // clé WPA2 : ASCII strict
+      if (!pwdAllValid(rules)) { say("Il manque : " + pwdMissingText(rules, 12) + ".", true); return; }
+      if (nw.value !== cf.value) { say("Les deux saisies doivent être identiques.", true); return; }
+      const btn = $("#ap_pwd_save_btn"); btn.disabled = true; say("", false);
+      try {
+        const res = await authFetch("/auth/ap-password", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ apPassword: nw.value })
+        });
+        const d = await res.json().catch(() => ({}));
+        if (!res.ok || d.success === false) {
+          say(String(d.error || "L'appareil a refusé cette clé."), true);
+          return;
+        }
+        apPwdHide();
+        const leg = $("#ap_pwd_legacy"); if (leg) leg.hidden = true;
+        closeForm();
+        showToast("Clé enregistrée. Le changement prendra effet au prochain démarrage du réseau de secours. La réinitialisation d'usine ramènera la clé de l'étiquette.", "success");
+      } catch (e) {
+        say("L'appareil ne répond pas. Rien n'a été modifié.", true);
+      } finally {
+        btn.disabled = false;
+      }
+    });
+  }
+
   // ---------- Security bindings ----------
   function bindSecurity() {
-    // Password validation helper
     function checkPasswordStrength(password) {
-      const rules = {
-        length: password.length >= 8,
-        number: /\d/.test(password),
-        special: /[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?]/.test(password)
-      };
-      const validCount = Object.values(rules).filter(Boolean).length;
-      let strength = 'weak';
-      if (validCount === 3) strength = 'strong';
-      else if (validCount >= 2) strength = 'medium';
+      const rules = pwdRules(password, 8, false);   // appareil : accents acceptés
+      const n = Object.values(rules).filter(Boolean).length;
+      const strength = n === 6 ? 'strong' : (n >= 4 ? 'medium' : 'weak');
       return { rules, strength };
     }
 
-    // Update password feedback UI
+    // Update password feedback UI (la liste reste visible : la règle précède la frappe)
     function updatePasswordFeedback() {
       const password = $("#auth_password")?.value || "";
-      const checklist = $("#passwordChecklist");
       const strengthBar = $("#passwordStrength");
       const strengthLabel = $("#passwordStrengthLabel");
-
-      if (!checklist || !strengthBar) return;
-
+      const { rules, strength } = checkPasswordStrength(password);
+      pwdRenderChecklist($("#passwordChecklist"), rules);
+      if (!strengthBar) return;
       if (password.length > 0) {
-        checklist.style.display = 'block';
         strengthBar.style.display = 'flex';
-
-        const { rules, strength } = checkPasswordStrength(password);
-
-        // Update checklist items
-        Object.keys(rules).forEach(rule => {
-          const item = checklist.querySelector(`[data-rule="${rule}"]`);
-          if (item) {
-            item.classList.toggle('valid', rules[rule]);
-          }
-        });
-
-        // Update strength bar
         strengthBar.className = `password-strength ${strength}`;
-
-        // Update strength label
         const strengthText = { weak: 'Faible', medium: 'Moyen', strong: 'Fort' };
         if (strengthLabel) {
           strengthLabel.textContent = strengthText[strength];
           strengthLabel.classList.add('visible');
         }
       } else {
-        checklist.style.display = 'none';
         strengthBar.style.display = 'none';
         if (strengthLabel) strengthLabel.classList.remove('visible');
       }
     }
+    updatePasswordFeedback();
 
     // Password validation event listeners
     $("#auth_password")?.addEventListener("input", updatePasswordFeedback);
@@ -15203,10 +15312,7 @@
       const { rules } = checkPasswordStrength(newPassword);
       const allValid = Object.values(rules).every(Boolean);
       if (!allValid) {
-        const missing = [];
-        if (!rules.length) missing.push('8 caractères minimum');
-        if (!rules.number) missing.push('1 chiffre');
-        if (!rules.special) missing.push('1 caractère spécial');
+        const missing = [pwdMissingText(rules, 8)];
         showToast(`Le nouveau mot de passe doit contenir : ${missing.join(', ')}`, "error");
         return;
       }
@@ -15362,6 +15468,7 @@
     bindFlowWizard();
     bindTimeManualSave();
     bindSecurity();
+    bindApPassword();
     bindGithubUpdate();
     bindManualUpdate();
     bindLogs();

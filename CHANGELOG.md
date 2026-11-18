@@ -2,9 +2,25 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
-## [2.94.0] - 2026-11-18
+## [2.95.0] - 2026-11-18
 
-> Version **proposée** : `src/version.h` est encore à 2.93.3 et n'a pas été modifié par la documentation.
+### Firmware
+- **Sécurité — la clé du réseau Wi-Fi de secours est désormais solide (bug-187)**. Elle ne faisait que 8 caractères hexadécimaux (32 bits) : une carte graphique du commerce en venait à bout en **≈ 36 minutes** après capture d'une poignée de main (PBKDF2-HMAC-SHA1, 4096 tours, ≈ 2 millions d'essais/s). Un appareil neuf fabrique maintenant **12 caractères** tirés dans 72 symboles, avec une minuscule, une majuscule, un chiffre et un caractère spécial (≈ 73,5 bits réels). Les caractères qui se confondent (`I l 1 O 0 o`) et `^` (touche morte au clavier français) sont exclus, pour que l'étiquette se recopie et se tape sans piège.
+- **Vous pouvez remplacer cette clé par la vôtre** (Paramètres ▸ Wi-Fi ▸ Point d'accès de secours). ⭐ **La réinitialisation d'usine ramène toujours la clé imprimée sur l'étiquette** : l'étiquette ne ment jamais, et une clé oubliée ne bloque jamais l'accès.
+- ⚠️ **Les appareils déjà installés ne changent pas de clé** : leur étiquette reste exacte. S'ils ont encore l'ancienne clé courte, l'interface le signale et conseille d'en choisir une autre ; rien n'est régénéré automatiquement.
+- **Mot de passe de l'appareil** : mêmes quatre familles exigées (8 caractères minimum, sans accent), **à la saisie seulement** — un mot de passe déjà en place continue de fonctionner. Contrôlé aussi côté appareil, sur `/auth/change-password` et `/save-config` (refus `400` en français).
+- **API** : nouvelle route `POST /auth/ap-password` (jeton obligatoire) ; `GET /auth/ap-password` ajoute `ap_password_legacy` et l'en-tête `Cache-Control: no-store`.
+  - ⚠️ Le changement de clé ne prend effet qu'au prochain démarrage du réseau de secours.
+
+### Fonctionnalités
+- **Paramètres ▸ Wi-Fi** : carte « Point d'accès de secours » (clé masquée, affichage 60 s, modification avec liste de contrôle en direct). **Assistant et Paramètres ▸ Sécurité** : la règle du mot de passe est énoncée avant la frappe, avec une liste qui se coche.
+
+### Documentation
+- [ADR-0134](docs/adr/0134-la-cle-du-point-d-acces-est-modifiable-et-la-reinitialisation-ramene-l-etiquette.md) (nouveau), `docs/API.md`, `docs/subsystems/auth.md`, `docs/DESIGN_SYSTEM.md` (§5.19 réemployé dans trois contextes, §5.23 `.field__help` / `.secret-value`), `docs/features/page-settings.md`, `docs/features/page-wizard.md`, `docs/user/src/guide-utilisation.html`.
+
+---
+
+## [2.94.0] - 2026-11-18
 
 ### Firmware
 - **Sécurité — les essais de mot de passe ratés sont ralentis (bug-189)**. Avant, l'appareil acceptait 172 800 essais par jour et par adresse sans jamais fatiguer : un dictionnaire d'un million de mots s'épuisait en 6 jours. Désormais, après quelques échecs (3 par adresse, 10 en tout), il refuse immédiatement les essais suivants pendant un délai croissant (jusqu'à 60 s par adresse, 10 s en tout), annoncé par `Retry-After`. Mesuré par simulation : au plus **8 642 essais/jour** pour un attaquant sur plusieurs adresses (facteur 20×, et 1 000× face à 50 adresses).
