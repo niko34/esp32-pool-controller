@@ -265,6 +265,26 @@ jobs:
   # bornes de fenêtre, `null` ignorés sans être comptés, et la dépendance de
   # la durée annoncée à la cadence réelle. Node est préinstallé sur
   # ubuntu-latest : aucun actions/setup-node nécessaire.
+  # JOB — la grammaire de pastille du tableau de bord tient (feature-195).
+  # ⛔ RAISON D'ÊTRE : la condition B1 de l'avis `pool-chemistry` veut que
+  # l'ambre ne s'allume QUE pour une panne (tones fault/unknown). La règle
+  # naïve « ambre si dosage bloqué » rallumerait l'orange TOUTES LES NUITS
+  # (code 2 « Filtration arrêtée », tone normal) — ce qu'un avis antérieur a
+  # explicitement refusé : « les passer orange viderait l'orange de son sens ».
+  # Le harnais EXTRAIT le code livré de `data/app.js` (ADR-0099), il ne le
+  # recopie pas. Sans ce job, la mutation qui protège B1 ne meurt qu'en local
+  # et un futur lot repassant le code 2 en `fault` passerait la CI en vert.
+  dash-pill-vectors:
+    name: Vecteurs de la pastille du tableau de bord (feature-195)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # Même script en local (`./tools/check_dash_pill_vectors.sh`) et en CI.
+      - name: Contrôle des vecteurs de pastille
+        run: ./tools/check_dash_pill_vectors.sh
+
   trace-logic-vectors:
     name: Vecteurs de la logique « Signaux capteurs » (feature-153)
     runs-on: ubuntu-latest

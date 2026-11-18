@@ -163,7 +163,6 @@
         <section class="view" id="view-dashboard" data-view="/dashboard" aria-labelledby="heading-dashboard">
           <div class="settingsHead">
             <h1 class="settingsHead__title" id="heading-dashboard">Tableau de bord</h1>
-            <p class="settingsHead__sub">Vue d'ensemble de votre piscine</p>
           </div>
 
           <div class="chip" id="calib-chip" style="display:none;">
@@ -202,145 +201,125 @@
 
           <!-- Cartes principales -->
           <div class="grid grid--status-cards">
+            <!-- feature-195 : « L'accueil montre · un volet règle · les pages de
+                 réglage configurent ». Chaque carte : titre + UNE pastille d'état
+                 (grammaire unique : .dash-pill, la couleur ne vit que dans la
+                 puce, le texte est toujours --text), mesure héros, jauge, bandes
+                 d'exception, puis — pH/ORP/Filtration — un volet « Modifier »
+                 replié. ⛔ Le volet est piloté par le CLIC SEUL (bindDashFolds) :
+                 aucune fonction render* n'y touche (B3). ⛔ Les alertes (bandes
+                 capteur, textes C7, bandeaux d'étalonnage/escalade) restent
+                 HORS volet : une alerte repliable n'est plus une alerte (B2). -->
+
             <!-- Carte Filtration -->
-            <div class="card card--status card--filtration" id="dashboard-filtration-card">
-              <div class="card__status-header">
-                <div class="card__status-icon card__status-icon--transparent">
-                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <section class="card card--status card--filtration" id="dashboard-filtration-card" aria-labelledby="dash-filtration-title">
+              <div class="dash-head">
+                <span class="dash-head__icon" aria-hidden="true">
+                  <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                     <rect x="7" y="9" width="10" height="8" rx="2"/>
                     <rect x="3" y="10" width="4" height="6" rx="1.5"/>
                     <circle cx="12" cy="13" r="1.5"/>
                     <path d="M17 11h3v4h-3"/>
                     <path d="M6 18h12"/>
                   </svg>
-                </div>
-                <div class="card__status-info">
-                  <div class="card__status-label">Filtration</div>
-                  <!-- Badge d'ÉTAT réel de la pompe (ce qu'elle FAIT) — restauré
-                       à l'identique (id/classes inchangés) suite à la revue
-                       coordinateur du 2026-10-09 : le mode seul ne distingue
-                       pas « Auto hors créneau » (normal, pompe arrêtée) d'une
-                       panne. Mis à jour par updateFiltrationBadges(), en même
-                       temps que #filtration-current-status (page détail). -->
-                  <div class="card__status-state">
-                    <span class="state-badge state-badge--ok" id="detail-filtration-status">En marche</span>
-                  </div>
-                  <!-- Texte de MODE (ce qui est DEMANDÉ) — distinct de l'état
-                       ci-dessus. Rappel discret (revue code-reviewer) : classe
-                       dédiée .card__status-mode, pas .card__status-label — ce
-                       texte ne doit pas rivaliser visuellement avec le titre
-                       ni avec le bouton de mode déjà en évidence
-                       (btn--primary + aria-pressed). -->
-                  <div class="card__status-mode" id="detail-filtration-mode">Mode Auto</div>
-                </div>
-                <a href="#/filtration" class="card__settings-btn" aria-label="Configurer la filtration"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></a>
+                </span>
+                <h2 class="dash-head__title" id="dash-filtration-title">Filtration</h2>
+                <!-- État RÉEL de la pompe (ce qu'elle FAIT), id inchangé. Écrit par
+                     updateFiltrationBadges() SEULE, via setDashPill(). -->
+                <span class="dash-pill" id="detail-filtration-status" data-tone="off">Chargement…</span>
               </div>
               <div class="card__body">
-                <!-- feature-147 : quatre boutons de mode remplacent la ligne
-                     « Mode » + les boutons Démarrer/Arrêter. Même chemin
-                     setFiltrationRunMode() existant (aucun second chemin).
-                     Aucun bouton n'est jamais désactivé : en Arrêt, « Auto »
-                     est la sortie. -->
-                <div class="grid grid--2 filtration-modes" role="group" aria-label="Mode de filtration" id="detail-filtration-modes">
-                  <button type="button" class="btn btn--ghost" id="filtration-mode-btn-auto" data-mode="auto" aria-pressed="false">Auto</button>
-                  <button type="button" class="btn btn--ghost" id="filtration-mode-btn-manual" data-mode="manual" aria-pressed="false">Programme</button>
-                  <button type="button" class="btn btn--ghost" id="filtration-mode-btn-force" data-mode="force" aria-pressed="false">Marche</button>
-                  <button type="button" class="btn btn--ghost" id="filtration-mode-btn-off" data-mode="off" aria-pressed="false">Arrêt</button>
+                <!-- Ligne héros : horaire en Auto/Programme ; « Arrêt forcé » /
+                     « Marche forcée » en mode forcé. Écrit par
+                     renderFiltrationFace() (app.js), jamais ailleurs. -->
+                <div class="dash-hero dash-hero--schedule" id="detail-filtration-schedule-row">
+                  <div class="dash-hero__value dash-hero__value--sm" id="detail-filtration-schedule">08:00 – 20:00</div>
                 </div>
-                <!-- feature-161 (lot B), RESTREINT à Auto par feature-164 : en
-                     Programme les horaires deviennent ÉDITABLES juste en
-                     dessous (#dashboard-filtration-schedule-edit) — cette ligne
-                     EN LECTURE SEULE n'a donc plus de raison d'y apparaître
-                     aussi (double affichage de la même valeur, DESIGN_SYSTEM.md
-                     §5.20 « l'information vit à un seul endroit »). En
-                     Marche/Arrêt aucun créneau n'est suivi, l'afficher serait
-                     trompeur. Bascule sur `[hidden]` (propriété .hidden, pas
-                     style.display) — .detail-row[hidden]{display:none!important}
-                     existe déjà (app.css:3255, posé par le lot A) et l'emporte
-                     sur `.detail-row{display:flex}`. Visibilité pilotée par
-                     updateDetailSections() dans app.js. -->
-                <div class="detail-row" id="detail-filtration-schedule-row">
-                  <div class="detail-label">Horaires</div>
-                  <div class="detail-value" id="detail-filtration-schedule">08:00 - 20:00</div>
-                </div>
+                <!-- Contexte : « Mode Auto » / « Mode Programme » / « Horaires suspendus ». -->
+                <div class="dash-context" id="detail-filtration-mode">Mode Auto</div>
 
-                <!-- feature-164 : DESIGN_SYSTEM.md §5.20 — gabarit IDENTIQUE à
-                     l'Éclairage (feature-162, #dashboard-lighting-schedule-edit),
-                     visible UNIQUEMENT en mode Programme (filtration_mode ===
-                     "manual"). ⛔ En Auto les horaires sont CALCULÉS d'après la
-                     température — jamais saisissables, ce bloc reste masqué.
-                     C12 (gate pool-chemistry, non bloquant) : avertissement si
-                     la durée programmée est sous le seuil SERVI (ADR-0100 —
-                     `filtration_short_duration_warn_min`, 120 min par défaut,
-                     ⛔ plus en dur côté client, cf. renderFiltrationDurationWarning). -->
-                <div id="dashboard-filtration-schedule-edit" hidden>
-                  <div class="grid grid--2 schedule-fields" style="margin-top:12px">
-                    <label class="field">
-                      <span class="field__label">Début</span>
-                      <input type="time" id="dashboard-filtration-start" aria-describedby="dashboard-filtration-schedule-error" />
-                    </label>
-                    <label class="field">
-                      <span class="field__label">Fin</span>
-                      <input type="time" id="dashboard-filtration-end" aria-describedby="dashboard-filtration-schedule-error" />
-                    </label>
+                <!-- Deux DÉROGATIONS sur la face (autre geste que le choix du mode),
+                     même chemin setFiltrationRunMode() que le sélecteur à 4 modes
+                     du volet. Parité : updateFiltrationModeButtons() met à jour les
+                     DEUX jeux de boutons dans la même fonction. -->
+                <div class="dash-acts" role="group" aria-label="Forcer la filtration">
+                  <button type="button" class="dash-act" id="filtration-force-btn-force" data-mode="force" aria-pressed="false">Forcer marche</button>
+                  <button type="button" class="dash-act" id="filtration-force-btn-off" data-mode="off" aria-pressed="false">Forcer arrêt</button>
+                </div>
+                <button type="button" class="dash-act dash-act--wide" id="filtration-back-auto" hidden>Revenir en Auto</button>
+
+                <button type="button" class="card__fold" id="dash-filtration-fold-btn" aria-expanded="false" aria-controls="dash-filtration-fold">
+                  <span>Modifier</span><span class="card__fold-chev" aria-hidden="true">▾</span>
+                </button>
+                <div class="card__fold-panel" id="dash-filtration-fold" hidden>
+                  <!-- feature-147 : le sélecteur à 4 modes reste ENTIER (jamais
+                       coupé). Aucun bouton jamais désactivé : en Arrêt, « Auto »
+                       est la sortie. -->
+                  <div class="grid grid--2 filtration-modes" role="group" aria-label="Mode de filtration" id="detail-filtration-modes">
+                    <button type="button" class="btn btn--ghost" id="filtration-mode-btn-auto" data-mode="auto" aria-pressed="false">Auto</button>
+                    <button type="button" class="btn btn--ghost" id="filtration-mode-btn-manual" data-mode="manual" aria-pressed="false">Programme</button>
+                    <button type="button" class="btn btn--ghost" id="filtration-mode-btn-force" data-mode="force" aria-pressed="false">Marche</button>
+                    <button type="button" class="btn btn--ghost" id="filtration-mode-btn-off" data-mode="off" aria-pressed="false">Arrêt</button>
                   </div>
-                  <p class="field__error" id="dashboard-filtration-schedule-error" hidden></p>
-                  <div class="callout callout--warn" id="dashboard-filtration-duration-warning" role="status" aria-live="polite" hidden></div>
-                  <div class="detail-actions">
-                    <button class="btn btn--primary" type="button" id="dashboard-filtration-schedule-save">Sauvegarder</button>
-                  </div>
-                </div>
 
-                <!-- feature-147 : Boost déménagé depuis la carte séparée
-                     #dashboard-temp-modes-card (supprimée) — simple option de
-                     la carte Filtration désormais. Séparateur réutilisant la
-                     classe .temp-mode__sep (déjà définie dans app.css pour ce
-                     même besoin, mais jusqu'ici sans aucun appel dans le
-                     HTML — revue code-reviewer : ne pas prétendre qu'elle
-                     était déjà utilisée ailleurs). -->
-                <hr class="temp-mode__sep">
-
-                <!-- feature-161 (lot B) : Boost rétrogradé en OPTION mineure
-                     (ux-ui-designer, 2026-10-13) — le défaut diagnostiqué était
-                     que ce sous-bloc répétait le gabarit COMPLET de la carte
-                     (icône 34px, libellé en majuscules, badge) alors qu'il n'est
-                     qu'une option de la filtration. .card__option : fond
-                     légèrement teinté, pas d'icône dupliquée, titre 14px sans
-                     majuscules forcées, badge d'état EN LIGNE avec le titre.
-                     ⛔ Mécanique JS INCHANGÉE : tous les ids (#temp-mode-boost,
-                     #detail-boost-*) gardent leur nom et leur comportement
-                     (feature-140/147) — seul le poids visuel change. -->
-                <div class="card__option" id="temp-mode-boost">
-                  <div class="card__option-head">
-                    <div class="card__option-heading">
-                      <span class="card__option-eyebrow">Option</span>
-                      <span class="card__option-title">Boost</span>
+                  <!-- feature-164 : horaires éditables, Programme SEULEMENT (en Auto
+                       ils sont CALCULÉS). C12 : avertissement durée courte. -->
+                  <div id="dashboard-filtration-schedule-edit" hidden>
+                    <div class="grid grid--2 schedule-fields" style="margin-top:12px">
+                      <label class="field">
+                        <span class="field__label">Début</span>
+                        <input type="time" id="dashboard-filtration-start" aria-describedby="dashboard-filtration-schedule-error" />
+                      </label>
+                      <label class="field">
+                        <span class="field__label">Fin</span>
+                        <input type="time" id="dashboard-filtration-end" aria-describedby="dashboard-filtration-schedule-error" />
+                      </label>
                     </div>
-                    <span class="state-badge state-badge--off" id="detail-boost-status">Inactif</span>
+                    <p class="field__error" id="dashboard-filtration-schedule-error" hidden></p>
+                    <div class="callout callout--warn" id="dashboard-filtration-duration-warning" role="status" aria-live="polite" hidden></div>
+                    <div class="detail-actions">
+                      <button class="btn btn--primary" type="button" id="dashboard-filtration-schedule-save">Sauvegarder</button>
+                    </div>
                   </div>
-                  <div class="detail-row">
-                    <div class="detail-label">Expiration</div>
-                    <div class="detail-value" id="detail-boost-until">—</div>
-                  </div>
-                  <div class="detail-row" id="detail-boost-effect-row" style="display:none;">
-                    <div class="detail-label">Effet</div>
-                    <div class="detail-value" id="detail-boost-effect">—</div>
-                  </div>
-                  <p class="field__hint" id="detail-boost-hint" style="margin:0 0 10px;">Surchloration renforcée jusqu'à minuit (filtration prolongée + cible ORP relevée).</p>
-                  <div class="detail-actions">
-                    <button class="btn btn--primary" id="detail-boost-start">Activer</button>
-                    <button class="btn btn--danger" id="detail-boost-stop" style="display:none;">Arrêter</button>
-                  </div>
-                </div>
 
+                  <hr class="temp-mode__sep">
+
+                  <!-- Boost : option mineure (feature-161/147). ⛔ Mécanique JS
+                       INCHANGÉE, ids conservés. « Activer » est NEUTRE (au plus une
+                       action bleue par carte : Sauvegarder). -->
+                  <div class="card__option" id="temp-mode-boost">
+                    <div class="card__option-head">
+                      <div class="card__option-heading">
+                        <span class="card__option-eyebrow">Option</span>
+                        <span class="card__option-title">Boost</span>
+                      </div>
+                      <span class="state-badge state-badge--off" id="detail-boost-status">Inactif</span>
+                    </div>
+                    <div class="detail-row">
+                      <div class="detail-label">Expiration</div>
+                      <div class="detail-value" id="detail-boost-until">—</div>
+                    </div>
+                    <div class="detail-row" id="detail-boost-effect-row" style="display:none;">
+                      <div class="detail-label">Effet</div>
+                      <div class="detail-value" id="detail-boost-effect">—</div>
+                    </div>
+                    <p class="field__hint" id="detail-boost-hint" style="margin:0 0 10px;">Surchloration renforcée jusqu'à minuit (filtration prolongée + cible ORP relevée).</p>
+                    <div class="detail-actions">
+                      <button class="btn btn--ghost" id="detail-boost-start">Activer</button>
+                      <button class="btn btn--danger" id="detail-boost-stop" style="display:none;">Arrêter</button>
+                    </div>
+                  </div>
+
+                  <a href="#/filtration" class="card__link">Tous les réglages <span aria-hidden="true">›</span></a>
+                </div>
               </div>
-            </div>
+            </section>
 
             <!-- Carte Éclairage -->
-            <div class="card card--status" id="dashboard-lighting-card">
-              <div class="card__status-header">
-                <div class="card__status-icon card__status-icon--transparent">
-                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <section class="card card--status" id="dashboard-lighting-card" aria-labelledby="dash-lighting-title">
+              <div class="dash-head">
+                <span class="dash-head__icon" aria-hidden="true">
+                  <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                     <circle cx="12" cy="12" r="5"/>
                     <line x1="12" y1="1" x2="12" y2="3"/>
                     <line x1="12" y1="21" x2="12" y2="23"/>
@@ -351,35 +330,24 @@
                     <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/>
                     <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
                   </svg>
-                </div>
-                <div class="card__status-info">
-                  <div class="card__status-label">Éclairage</div>
-                  <div class="card__status-state">
-                    <!-- feature-162 : badge visible UNIQUEMENT en mode Programme — en
-                         Allumé/Éteint le segment actif du sélecteur dit déjà l'état
-                         (DESIGN_SYSTEM.md §5.7, « un badge AU MAXIMUM par en-tête »).
-                         Reste dans le DOM avec [hidden] (⛔ jamais style.display),
-                         basculé par renderLightingModeCard() (app.js). -->
-                    <span class="state-badge state-badge--off" id="detail-lighting-status" hidden>Lampe éteinte</span>
-                  </div>
-                </div>
-                <a href="#/lighting" class="card__settings-btn" aria-label="Configurer l'éclairage"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></a>
+                </span>
+                <h2 class="dash-head__title" id="dash-lighting-title">Éclairage</h2>
+                <!-- État réel du relais, TOUJOURS visible (feature-195) : Allumée /
+                     Éteinte. Écrit par renderLightingModeCard() SEULE. -->
+                <span class="dash-pill" id="detail-lighting-status" data-tone="off">Chargement…</span>
               </div>
               <div class="card__body">
-                <!-- feature-162 : DESIGN_SYSTEM.md §5.2 — .mode-select, « Allumé /
-                     Éteint / Programme » (décision utilisateur 2026-10-14). Allumer
-                     à la main EST un mode désormais (ADR-0107/ADR-0108) : plus de
-                     manualOverride caché à publier. Jeton "schedule" (firmware). -->
+                <!-- Pas de mesure à mettre en avant : les 3 segments restent sur la
+                     face, jamais coupés (décision utilisateur 2026-11-18). -->
                 <div class="grid mode-select" id="dashboard-lighting-mode" role="group" aria-label="Mode d'éclairage">
                   <button type="button" class="btn btn--ghost" data-value="on" aria-pressed="false">Allumé</button>
                   <button type="button" class="btn btn--ghost" data-value="off" aria-pressed="false">Éteint</button>
                   <button type="button" class="btn btn--ghost" data-value="schedule" aria-pressed="false">Programme</button>
                 </div>
+                <!-- « Programme suspendu » : Allumé/Éteint sortent de Programme sans
+                     minuterie. Hors Programme ET horaire existant seulement. -->
+                <div class="dash-context" id="dashboard-lighting-suspended" hidden>Programme suspendu</div>
 
-                <!-- feature-162 : DESIGN_SYSTEM.md §5.20 — modifier une valeur dans
-                     une carte (composition .field + .detail-actions, zéro CSS
-                     nouveau). Visible UNIQUEMENT en mode Programme ; bouton Sauvegarder
-                     JAMAIS à côté d'un champ, toujours sur sa propre ligne. -->
                 <div id="dashboard-lighting-schedule-edit" hidden>
                   <div class="grid grid--2 schedule-fields" style="margin-top:12px">
                     <label class="field">
@@ -391,55 +359,40 @@
                       <input type="time" id="dashboard-lighting-end" aria-describedby="dashboard-lighting-schedule-error" />
                     </label>
                   </div>
-                  <!-- feature-164 : correctif de la dérive livrée en feature-162 —
-                       `.field__error` (rouge), ⛔ PAS `.field__hint` (gris), pour un
-                       texte d'ÉCHEC D'ENREGISTREMENT (DESIGN_SYSTEM.md §5.20). -->
                   <p class="field__error" id="dashboard-lighting-schedule-error" hidden></p>
                   <div class="detail-actions">
                     <button class="btn btn--primary" type="button" id="dashboard-lighting-schedule-save">Sauvegarder</button>
                   </div>
                 </div>
+                <a href="#/lighting" class="card__link">Réglages <span aria-hidden="true">›</span></a>
               </div>
-            </div>
+            </section>
 
             <!-- Carte pH -->
-            <div class="card card--status" id="dashboard-ph-card">
-              <div class="card__status-header">
-                <div class="card__status-icon"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2.69l5.66 5.66a8 8 0 1 1-11.31 0z"/><text x="12" y="16" text-anchor="middle" font-size="6" font-weight="600" fill="currentColor" stroke="none">PH</text></svg></div>
-                <div class="card__status-info">
-                  <div class="card__status-label">pH</div>
-                  <!-- feature-161 (lot A) : LE CŒUR DU LOT — texte de MODE dans
-                       l'en-tête, même motif que #detail-filtration-mode.
-                       Redondance VOLONTAIRE avec l'état actif du sélecteur
-                       plus bas dans la carte : le gate pool-chemistry a
-                       refusé toute confirmation de clic en répondant que
-                       CETTE visibilité PERMANENTE est la protection contre un
-                       arrêt accidentel du dosage — pas un modal. Ne jamais la
-                       retirer en croyant simplifier (C5). -->
-                  <div class="card__status-mode" id="detail-ph-mode">Mode Auto</div>
-                </div>
-                <a href="#/ph" class="card__settings-btn" aria-label="Configurer le pH"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></a>
+            <section class="card card--status" id="dashboard-ph-card" aria-labelledby="dash-ph-title">
+              <div class="dash-head">
+                <span class="dash-head__icon" aria-hidden="true"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2.69l5.66 5.66a8 8 0 1 1-11.31 0z"/><text x="12" y="16" text-anchor="middle" font-size="6" font-weight="600" fill="currentColor" stroke="none">PH</text></svg></span>
+                <h2 class="dash-head__title" id="dash-ph-title">pH</h2>
+                <!-- C5 (gate pool-chemistry feature-161) : le TEXTE du mode reste
+                     PERMANENT, mots identiques, sur la face de la carte — c'est la
+                     contrepartie du renoncement à toute confirmation de clic.
+                     ⛔ Jamais tronqué, ellipsé, ni réduit à la seule puce.
+                     B5 : écrit par renderDashboardModeCard() SEULE (id inchangé).
+                     Puce AMBRE ⟺ doseBlockVariant(...) === 'danger' seulement (B1). -->
+                <span class="dash-pill" id="detail-ph-mode" data-tone="ok">Mode Auto</span>
               </div>
               <div class="card__body">
-                <div class="card__status-compact">
-                  <div class="compact-value" id="compact-ph">--</div>
+                <div class="dash-hero">
+                  <div class="dash-hero__value compact-value" id="compact-ph">--</div>
+                  <!-- B6 : lecture seule, même source que la jauge (config.ph_target),
+                       mode AUTO seulement (rien n'est poursuivi ailleurs). -->
+                  <div class="dash-hero__target" id="dash-ph-target-ro" hidden></div>
                 </div>
-                <!-- feature-147 : position du pH corrigé (déjà affiché ci-dessus)
-                     sur une échelle. Bornes de DESSIN UNIQUEMENT (jamais
-                     légendées) — voir phGaugePosition() dans app.js.
-                     Chantier simplification (gate pool-chemistry GO) : le mot
-                     d'état normal (« Trop bas »/« Idéal »/« Trop haut ») a été
-                     retiré — la valeur chiffrée, la cible chiffrée et les deux
-                     repères ci-dessous disent déjà ce que la couleur montre.
-                     #ph-gauge-state reste dans le DOM et se remplit UNIQUEMENT
-                     en mode .gauge--stale (« Mesures non représentatives ») :
-                     c'est le seul cas où la couleur grisée de la piste ne
-                     porterait pas seule l'information (exception bloquante du
-                     gate) — même motif que #temp-gauge-state. -->
+                <!-- Jauge : bornes de DESSIN uniquement. #ph-gauge-state ne se remplit
+                     qu'en .gauge--stale (exception bloquante du gate : le mot d'état
+                     ne peut pas être supprimé dans ce cas). -->
                 <div class="gauge" id="ph-gauge">
                   <div class="gauge__track" id="ph-gauge-track">
-                    <!-- Positions posées par updatePhGauge() via phGaugePosition(7.00)/(7.60)
-                         — jamais recopiées en dur (revue code-reviewer : une valeur, un seul endroit). -->
                     <span class="gauge__tick" id="ph-gauge-tick-low" aria-hidden="true"></span>
                     <span class="gauge__tick" id="ph-gauge-tick-high" aria-hidden="true"></span>
                     <span class="gauge__cursor" id="ph-gauge-cursor" hidden></span>
@@ -451,15 +404,9 @@
                 </div>
                 <div class="sensor-badge" id="ph-sensor-badge" style="display:none;" role="status" aria-live="polite"></div>
 
-                <!-- DESIGN_SYSTEM.md §5.11 (correctif du 14/10) : déplacé ICI,
-                     juste après le bandeau de mesure et AVANT le sélecteur —
-                     cause (bandeau ci-dessus, ex. « Filtration arrêtée ») et
-                     conséquence (ce texte) se lisent désormais ensemble,
-                     plutôt qu'après le sélecteur où il passait inaperçu. Fond
-                     perceptible (`field__hint--panel`) ⚠️ PAS une couleur
-                     d'alerte : ce n'est pas une alerte (C7). ⛔ Texte IMPOSÉ
-                     mot pour mot (gate pool-chemistry) — INCHANGÉ, seuls la
-                     position et l'habillage bougent. -->
+                <!-- B2 / C7 : HORS volet, AU-DESSUS du bouton « Modifier ». Texte
+                     IMPOSÉ mot pour mot (gate pool-chemistry) — cause et conséquence
+                     se lisent ensemble. Fond perceptible, PAS une couleur d'alerte. -->
                 <p class="field__hint field__hint--panel" id="dashboard-ph-stopped-hint" hidden>La régulation automatique ne dose plus. L'injection manuelle reste possible depuis les réglages.</p>
 
                 <div class="calibration-alert" id="ph-calibration-alert" style="display:none;">
@@ -467,12 +414,9 @@
                   <a href="#/ph" class="calibration-alert__btn">Configurer</a>
                 </div>
 
-                <!-- feature-161 (lot A) — C3/C2 : bandeau d'exception, AU-DESSUS
-                     du sélecteur. Réutilise .regul-alert--inline tel quel (ux-ui-
-                     designer : aucun composant neuf). Un seul des deux visible à
-                     la fois (renderDashboardModeCard(), app.js) : l'escalade de
-                     sécurité pH prime sur l'étalonnage. ⛔ Jamais d'acquittement
-                     depuis l'accueil — le lien renvoie vers la page pH. -->
+                <!-- C2/C3 : bandeaux d'exception, HORS volet. Un seul visible à la
+                     fois (renderDashboardModeCard) : l'escalade prime sur l'étalonnage.
+                     ⛔ Jamais d'acquittement depuis l'accueil. -->
                 <div class="regul-alert regul-alert--inline" id="dashboard-ph-escalation-banner" role="alert" hidden>
                   <span class="regul-alert__dot" aria-hidden="true"></span>
                   <div class="regul-alert__body">
@@ -486,117 +430,74 @@
                   </div>
                 </div>
 
-                <!-- DESIGN_SYSTEM.md §5.2 : .mode-select (correctif du défaut
-                     du 14/10 — « on ne voit pas que ce sont des boutons » +
-                     « 2+1 » sur 3 options). Remplace .segmented, qui portait
-                     un cadre pensé pour une page de réglage (bordure + fond +
-                     ombre), créant un second niveau de boîte dans la carte,
-                     et dont la règle responsive à 640px (taillée pour les 9
-                     onglets de #settings-segmented) forçait deux boutons par
-                     ligne sur un sélecteur à 3 options. « Auto/Programme/
-                     Arrêt » (4+9+5 caractères), MÊMES libellés courts que la
-                     page de réglage (même composant, §5.2 déclare les deux
-                     contextes). ⛔ Valeur interne INCHANGÉE : "manual" reste
-                     persistée en NVS/MQTT, "Arrêt" n'est qu'un libellé. Même
-                     chemin d'écriture ET de DÉCISION que la page de réglage
-                     (sendConfigDetailed → /save-config, applyRegulationMode()
-                     dans app.js) — aucun second chemin. JS : setModeSelect()/
-                     getModeSelect() (app.js), miroir de
-                     updateFiltrationModeButtons (référence du projet). -->
-                <div class="grid mode-select" id="dashboard-ph-mode" role="group" aria-label="Mode de régulation pH">
-                  <button type="button" class="btn btn--ghost" data-value="automatic" aria-pressed="false">Auto</button>
-                  <button type="button" class="btn btn--ghost" data-value="scheduled" aria-pressed="false">Programme</button>
-                  <button type="button" class="btn btn--ghost" data-value="manual" aria-pressed="false">Arrêt</button>
-                </div>
-
-                <!-- feature-164 : DESIGN_SYSTEM.md §5.20/§5.3 — consigne pH
-                     modifiable DEPUIS LA CARTE, en mode Auto seulement (le
-                     bloc est masqué dans les deux autres modes, rien à régler
-                     n'y est pertinent). Même geste que la page de réglage
-                     (#ph_target_group) — contrôle GÉNÉRÉ depuis les bornes
-                     serveur par buildPhTargetSegments(group, input), ⛔ aucune
-                     valeur en dur. `class="segmented--num"` SEUL (⛔ PAS
-                     `"segmented segmented--num"`) : la carte a déjà un
-                     en-tête, le cadre y créerait une boîte dans la boîte
-                     (raison de .mode-select). C10 (gate pool-chemistry) :
-                     désactivé (⛔ jamais masqué) pendant un étalonnage —
-                     `calActive` SEUL, PAS l'escalade de sécurité (elle force
-                     déjà Arrêt). -->
-                <div id="dashboard-ph-target-edit" hidden>
-                  <div class="field" style="margin-top:12px">
-                    <span class="field__label" id="dashboard-ph-target-label">Consigne pH</span>
-                    <div class="segmented--num" id="dashboard-ph-target-group"
-                         role="radiogroup" aria-labelledby="dashboard-ph-target-label"
-                         aria-describedby="dashboard-ph-target-error dashboard-ph-target-lock-hint"></div>
-                    <input type="hidden" id="dashboard-ph-target" />
+                <!-- B3 : « Modifier » n'est JAMAIS disabled (même sous escalade ou
+                     étalonnage : sinon « Arrêt » serait inatteignable, C3). -->
+                <button type="button" class="card__fold" id="dash-ph-fold-btn" aria-expanded="false" aria-controls="dash-ph-fold">
+                  <span>Modifier</span><span class="card__fold-chev" aria-hidden="true">▾</span>
+                </button>
+                <div class="card__fold-panel" id="dash-ph-fold" hidden>
+                  <!-- DESIGN_SYSTEM §5.2 : .mode-select. ⛔ Valeur interne "manual"
+                       INCHANGÉE (« Arrêt » n'est qu'un libellé). Même chemin
+                       d'écriture ET de décision que la page de réglage
+                       (applyRegulationMode). Verrouillé (⛔ jamais masqué) sous
+                       étalonnage/escalade, « Arrêt » reste cliquable (C3). -->
+                  <div class="grid mode-select" id="dashboard-ph-mode" role="group" aria-label="Mode de régulation pH">
+                    <button type="button" class="btn btn--ghost" data-value="automatic" aria-pressed="false">Auto</button>
+                    <button type="button" class="btn btn--ghost" data-value="scheduled" aria-pressed="false">Programme</button>
+                    <button type="button" class="btn btn--ghost" data-value="manual" aria-pressed="false">Arrêt</button>
                   </div>
-                  <!-- ux-ui-designer (correctif §5.20/§7) : adjacence AU CONTRÔLE —
-                       le bandeau d'étalonnage du haut est juxtaposé au SÉLECTEUR DE
-                       MODE, pas à ce bloc (le sélecteur entier s'intercale). Même
-                       condition que le verrou (`calActive` SEUL), ⛔ pas une 2e
-                       condition qui pourrait diverger. Relié par aria-describedby
-                       ci-dessus : le lecteur d'écran porte la MÊME explication que
-                       la couleur --warn (§7, jamais la couleur seule). -->
-                  <p class="field__hint" id="dashboard-ph-target-lock-hint" hidden>Modification désactivée pendant l'étalonnage.</p>
-                  <!-- C9 : texte IMPOSÉ, déjà écrit pour la page de réglage
-                       (renderPhTargetWarning(), généralisée pour accepter
-                       cette cible en second paramètre) — ⛔ pas de second texte. -->
-                  <div class="callout callout--warn" id="dashboard-ph-target-warning"
-                       role="status" aria-live="polite" hidden></div>
-                  <p class="field__error" id="dashboard-ph-target-error" hidden></p>
-                  <div class="detail-actions">
-                    <button class="btn btn--primary" type="button" id="dashboard-ph-target-save">Sauvegarder</button>
-                  </div>
-                </div>
 
-                <!-- feature-161 (lot A) — C9 : mode Programme, deux lignes en
-                     LECTURE SEULE, valeurs DÉJÀ servies par /get-config
-                     (ph_daily_target_ml, max_ph_ml_per_day) — rien recalculé
-                     côté client. ⛔ Aucun champ éditable sur la carte. -->
-                <div class="detail-row" id="dashboard-ph-daily-row" hidden>
-                  <div class="detail-label">Volume quotidien</div>
-                  <div class="detail-value" id="dashboard-ph-daily-value">0 mL</div>
-                </div>
-                <div class="detail-row" id="dashboard-ph-limit-row" hidden>
-                  <div class="detail-label">Limite de sécurité</div>
-                  <div class="detail-value" id="dashboard-ph-limit-value">— mL</div>
+                  <!-- feature-164 : consigne, mode Auto seulement. Contrôle GÉNÉRÉ
+                       depuis les bornes serveur (buildPhTargetSegments). C10 :
+                       désactivé (⛔ jamais masqué) pendant un étalonnage. -->
+                  <div id="dashboard-ph-target-edit" hidden>
+                    <div class="field" style="margin-top:12px">
+                      <span class="field__label" id="dashboard-ph-target-label">Consigne pH</span>
+                      <div class="segmented--num" id="dashboard-ph-target-group"
+                           role="radiogroup" aria-labelledby="dashboard-ph-target-label"
+                           aria-describedby="dashboard-ph-target-error dashboard-ph-target-lock-hint"></div>
+                      <input type="hidden" id="dashboard-ph-target" />
+                    </div>
+                    <p class="field__hint" id="dashboard-ph-target-lock-hint" hidden>Modification désactivée pendant l'étalonnage.</p>
+                    <!-- C9 : texte IMPOSÉ (renderPhTargetWarning). R1 : il s'exécute
+                         volet replié, mais n'est plus visible en permanence. -->
+                    <div class="callout callout--warn" id="dashboard-ph-target-warning"
+                         role="status" aria-live="polite" hidden></div>
+                    <p class="field__error" id="dashboard-ph-target-error" hidden></p>
+                    <div class="detail-actions">
+                      <button class="btn btn--primary" type="button" id="dashboard-ph-target-save">Sauvegarder</button>
+                    </div>
+                  </div>
+
+                  <!-- C9 : mode Programme, lecture seule (valeurs déjà servies). -->
+                  <div class="detail-row" id="dashboard-ph-daily-row" hidden>
+                    <div class="detail-label">Volume quotidien</div>
+                    <div class="detail-value" id="dashboard-ph-daily-value">0 mL</div>
+                  </div>
+                  <div class="detail-row" id="dashboard-ph-limit-row" hidden>
+                    <div class="detail-label">Limite de sécurité</div>
+                    <div class="detail-value" id="dashboard-ph-limit-value">— mL</div>
+                  </div>
+                  <a href="#/ph" class="card__link">Tous les réglages <span aria-hidden="true">›</span></a>
                 </div>
               </div>
-            </div>
+            </section>
 
             <!-- Carte ORP -->
-            <div class="card card--status" id="dashboard-orp-card">
-              <div class="card__status-header">
-                <div class="card__status-icon"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L3 14h8l-1 8 10-12h-8l1-8z"/></svg></div>
-                <div class="card__status-info">
-                  <div class="card__status-label">ORP</div>
-                  <!-- feature-161 (lot A) : miroir EXACT du texte de mode pH
-                       ci-dessus (symétrie pH/ORP voulue — cf. piège récurrent
-                       « parité pH/ORP » de ce projet). Même motif que
-                       #detail-filtration-mode / #detail-ph-mode. -->
-                  <div class="card__status-mode" id="detail-orp-mode">Mode Auto</div>
-                </div>
-                <a href="#/orp" class="card__settings-btn" aria-label="Configurer l'ORP"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></a>
+            <section class="card card--status" id="dashboard-orp-card" aria-labelledby="dash-orp-title">
+              <div class="dash-head">
+                <span class="dash-head__icon" aria-hidden="true"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L3 14h8l-1 8 10-12h-8l1-8z"/></svg></span>
+                <h2 class="dash-head__title" id="dash-orp-title">ORP</h2>
+                <!-- Miroir EXACT de la pastille pH (C5, B1, B5). -->
+                <span class="dash-pill" id="detail-orp-mode" data-tone="ok">Mode Auto</span>
               </div>
               <div class="card__body">
-                <div class="card__status-compact">
-                  <div class="compact-value" id="compact-orp">--<span class="compact-unit">mV</span></div>
+                <div class="dash-hero">
+                  <div class="dash-hero__value compact-value" id="compact-orp">--<span class="compact-unit">mV</span></div>
+                  <div class="dash-hero__target" id="dash-orp-target-ro" hidden></div>
                 </div>
-                <!-- feature-147 : gate pool-chemistry (2e passage, GO SOUS
-                     CONDITIONS) — dégradé ÉVALUATIF mais ASYMÉTRIQUE, posé par
-                     updateOrpGauge() : rouge en dessous de la consigne (aucun
-                     stabilisant n'explique un ORP très bas), vert sur
-                     target ± ORP_GAUGE_BAND_MV, NEUTRE au-dessus (la chimie
-                     est asymétrique : un ORP élevé n'est pas dangereux dans la
-                     plage affichable). Deux marqueurs (mesure, consigne).
-                     Chantier simplification (gate GO) : le mot d'état normal
-                     (« Sous consigne »/« Dans la plage »/« Au-dessus ») a été
-                     retiré — perte actée et non compensée (l'étendue
-                     ± ORP_GAUGE_BAND_MV n'est plus écrite nulle part, c'est
-                     une tolérance d'affichage, pas un seuil chimique).
-                     #orp-gauge-state reste dans le DOM, rempli UNIQUEMENT en
-                     mode .gauge--stale (exception bloquante du gate, même
-                     motif que #ph-gauge-state/#temp-gauge-state). -->
+                <!-- Dégradé ÉVALUATIF mais ASYMÉTRIQUE (gate pool-chemistry
+                     feature-147). #orp-gauge-state : rempli UNIQUEMENT en .gauge--stale. -->
                 <div class="gauge" id="orp-gauge">
                   <div class="gauge__track" id="orp-gauge-track">
                     <span class="gauge__marker" id="orp-gauge-target" hidden aria-hidden="true"></span>
@@ -608,10 +509,8 @@
                 </div>
                 <div class="sensor-badge" id="orp-sensor-badge" style="display:none;" role="status" aria-live="polite"></div>
 
-                <!-- DESIGN_SYSTEM.md §5.11 (correctif du 14/10) : miroir pH —
-                     déplacé juste après le bandeau de mesure, AVANT le
-                     sélecteur. ⛔ Texte IMPOSÉ mot pour mot (gate
-                     pool-chemistry) — INCHANGÉ. -->
+                <!-- B2 / C7 : miroir pH — HORS volet, AU-DESSUS de « Modifier ».
+                     ⛔ Texte IMPOSÉ mot pour mot. -->
                 <p class="field__hint field__hint--panel" id="dashboard-orp-stopped-hint" hidden>La régulation automatique ne dose plus. L'injection manuelle reste possible depuis les réglages.</p>
 
                 <div class="calibration-alert" id="orp-calibration-alert" style="display:none;">
@@ -619,9 +518,7 @@
                   <a href="#/orp" class="calibration-alert__btn">Configurer</a>
                 </div>
 
-                <!-- feature-161 (lot A) — C2 : étalonnage en cours. Pas de
-                     bannière d'escalade côté ORP (pas de symétrique de
-                     phAutoManual* pour le chlore — vérifié, cf. spec). -->
+                <!-- C2 : étalonnage en cours (pas de bannière d'escalade côté ORP). -->
                 <div class="regul-alert regul-alert--inline" id="dashboard-orp-cal-banner" role="status" aria-live="polite" hidden>
                   <span class="regul-alert__dot" aria-hidden="true"></span>
                   <div class="regul-alert__body">
@@ -629,99 +526,63 @@
                   </div>
                 </div>
 
-                <!-- DESIGN_SYSTEM.md §5.2 : .mode-select, miroir EXACT du
-                     sélecteur pH ci-dessus (symétrie pH/ORP) — cf. commentaire
-                     jumeau pour le détail du correctif du 14/10. C4 (gate
-                     pool-chemistry) : la bascule vers Arrêt pendant une
-                     chloration de secours ouvre une confirmation — vit
-                     désormais DANS applyRegulationMode (app.js), valable sur
-                     les DEUX surfaces (carte et page de réglage). -->
-                <div class="grid mode-select" id="dashboard-orp-mode" role="group" aria-label="Mode de régulation ORP">
-                  <button type="button" class="btn btn--ghost" data-value="automatic" aria-pressed="false">Auto</button>
-                  <button type="button" class="btn btn--ghost" data-value="scheduled" aria-pressed="false">Programme</button>
-                  <button type="button" class="btn btn--ghost" data-value="manual" aria-pressed="false">Arrêt</button>
-                </div>
-
-                <!-- feature-164 : consigne ORP (mV) modifiable DEPUIS LA
-                     CARTE, en mode Auto seulement — plage CONTINUE (⛔ pas une
-                     grille comme le pH) : `.field` + `<input type="number">`,
-                     DESIGN_SYSTEM.md §5.20. `min`/`max` posés par
-                     applyOrpTargetBounds() (app.js) depuis les bornes SERVIES
-                     par /get-config (orp_target_min/_max, ADR-0100 — ⛔ plus
-                     de miroir en dur ni des 0/1000 d'origine), repli de
-                     secours sinon. C7 (gate pool-chemistry) : secours actif ET
-                     baisse de consigne ⇒ confirmation mutualisée avec le
-                     passage en Arrêt (confirmOrpRescueInterruption). C10 :
-                     désactivé (⛔ jamais masqué) pendant un étalonnage,
-                     `calActive` SEUL. -->
-                <div id="dashboard-orp-target-edit" hidden>
-                  <div class="field" style="margin-top:12px">
-                    <span class="field__label">Consigne ORP <span class="unit">(mV)</span></span>
-                    <input type="number" id="dashboard-orp-target" step="1"
-                           aria-describedby="dashboard-orp-target-error dashboard-orp-target-lock-hint dashboard-orp-target-hint" />
+                <button type="button" class="card__fold" id="dash-orp-fold-btn" aria-expanded="false" aria-controls="dash-orp-fold">
+                  <span>Modifier</span><span class="card__fold-chev" aria-hidden="true">▾</span>
+                </button>
+                <div class="card__fold-panel" id="dash-orp-fold" hidden>
+                  <!-- Miroir EXACT du sélecteur pH. C4 (gate pool-chemistry) : la
+                       bascule vers Arrêt pendant une chloration de secours ouvre
+                       une confirmation, dans applyRegulationMode (les DEUX surfaces). -->
+                  <div class="grid mode-select" id="dashboard-orp-mode" role="group" aria-label="Mode de régulation ORP">
+                    <button type="button" class="btn btn--ghost" data-value="automatic" aria-pressed="false">Auto</button>
+                    <button type="button" class="btn btn--ghost" data-value="scheduled" aria-pressed="false">Programme</button>
+                    <button type="button" class="btn btn--ghost" data-value="manual" aria-pressed="false">Arrêt</button>
                   </div>
-                  <!-- ux-ui-designer (correctif §5.20, asymétrie remontée par
-                       test-engineer) : le pH montre sa plage PAR CONSTRUCTION
-                       (4 positions visibles) — un champ libre n'a AUCUN moyen de
-                       le faire. Texte REQUIS, ⛔ pas de mention de pas (1 mV, non
-                       contraignant). Valeurs LUES sur _orpBounds (orp_target_min/
-                       _max servis par /get-config si présents, repli de secours
-                       sinon — JAMAIS en dur, ADR-0100) ; peuplé UNIQUEMENT par
-                       loadConfig() (renderOrpTargetHint()), ⛔ jamais au bind
-                       initial : `hidden` tant que la configuration n'est pas
-                       chargée, pour ne jamais afficher une plage devinée. -->
-                  <p class="field__hint" id="dashboard-orp-target-hint" hidden></p>
-                  <!-- ux-ui-designer (correctif §5.20/§7) : miroir EXACT du pH —
-                       même texte, même condition (`calActive` SEUL). -->
-                  <p class="field__hint" id="dashboard-orp-target-lock-hint" hidden>Modification désactivée pendant l'étalonnage.</p>
-                  <p class="field__error" id="dashboard-orp-target-error" hidden></p>
-                  <div class="detail-actions">
-                    <button class="btn btn--primary" type="button" id="dashboard-orp-target-save">Sauvegarder</button>
-                  </div>
-                </div>
 
-                <!-- feature-161 (lot A) — C9 : miroir pH, valeurs DÉJÀ servies
-                     (orp_daily_target_ml, max_orp_ml_per_day). -->
-                <div class="detail-row" id="dashboard-orp-daily-row" hidden>
-                  <div class="detail-label">Volume quotidien</div>
-                  <div class="detail-value" id="dashboard-orp-daily-value">0 mL</div>
-                </div>
-                <div class="detail-row" id="dashboard-orp-limit-row" hidden>
-                  <div class="detail-label">Limite de sécurité</div>
-                  <div class="detail-value" id="dashboard-orp-limit-value">— mL</div>
+                  <!-- feature-164 : consigne ORP (mV), plage CONTINUE, mode Auto
+                       seulement. Bornes posées par applyOrpTargetBounds(). C7 : secours
+                       actif ET baisse ⇒ confirmation. C10 : désactivé (jamais masqué)
+                       pendant un étalonnage. -->
+                  <div id="dashboard-orp-target-edit" hidden>
+                    <div class="field" style="margin-top:12px">
+                      <span class="field__label">Consigne ORP <span class="unit">(mV)</span></span>
+                      <input type="number" id="dashboard-orp-target" step="1"
+                             aria-describedby="dashboard-orp-target-error dashboard-orp-target-lock-hint dashboard-orp-target-hint" />
+                    </div>
+                    <p class="field__hint" id="dashboard-orp-target-hint" hidden></p>
+                    <p class="field__hint" id="dashboard-orp-target-lock-hint" hidden>Modification désactivée pendant l'étalonnage.</p>
+                    <p class="field__error" id="dashboard-orp-target-error" hidden></p>
+                    <div class="detail-actions">
+                      <button class="btn btn--primary" type="button" id="dashboard-orp-target-save">Sauvegarder</button>
+                    </div>
+                  </div>
+
+                  <div class="detail-row" id="dashboard-orp-daily-row" hidden>
+                    <div class="detail-label">Volume quotidien</div>
+                    <div class="detail-value" id="dashboard-orp-daily-value">0 mL</div>
+                  </div>
+                  <div class="detail-row" id="dashboard-orp-limit-row" hidden>
+                    <div class="detail-label">Limite de sécurité</div>
+                    <div class="detail-value" id="dashboard-orp-limit-value">— mL</div>
+                  </div>
+                  <a href="#/orp" class="card__link">Tous les réglages <span aria-hidden="true">›</span></a>
                 </div>
               </div>
-            </div>
+            </section>
 
             <!-- Carte Température -->
-            <div class="card card--status" id="dashboard-temperature-card">
-              <div class="card__status-header">
-                <div class="card__status-icon"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 14.76V3.5a2.5 2.5 0 0 0-5 0v11.26a4.5 4.5 0 1 0 5 0z"/></svg></div>
-                <div class="card__status-info">
-                  <div class="card__status-label">Température</div>
-                </div>
-                <a href="#/temperature" class="card__settings-btn" aria-label="Configurer la température"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></a>
+            <section class="card card--status" id="dashboard-temperature-card" aria-labelledby="dash-temperature-title">
+              <div class="dash-head">
+                <span class="dash-head__icon" aria-hidden="true"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 14.76V3.5a2.5 2.5 0 0 0-5 0v11.26a4.5 4.5 0 1 0 5 0z"/></svg></span>
+                <h2 class="dash-head__title" id="dash-temperature-title">Température</h2>
+                <span class="dash-pill" id="detail-temperature-status" data-tone="off">Chargement…</span>
               </div>
               <div class="card__body">
-                <div class="card__status-compact">
-                  <div class="compact-value" id="compact-temperature">--<span class="compact-unit">°C</span></div>
-                  <div class="compact-target">Mesure actuelle</div>
+                <div class="dash-hero">
+                  <div class="dash-hero__value compact-value" id="compact-temperature">--<span class="compact-unit">°C</span></div>
                 </div>
-                <!-- feature-147 (correctif, parité « ça suit » puis demande
-                     « un dégradé pour la température ») : jauge de position,
-                     même composant que pH/ORP. Échelle 0-40°C :
-                     kFiltrationRefTempMaxC = 40 (src/constants.h:2762) est la
-                     borne au-delà de laquelle le firmware considère une PANNE
-                     DE SONDE — jamais légendée comme telle (bornes de DESSIN
-                     uniquement). Un seul repère, à 4°C = kFiltrationRefTempMinC
-                     (src/constants.h:2761) : sous ce seuil, le planning auto
-                     s'arrête (hivernage). Dégradé DESCRIPTIF (convention du
-                     thermomètre, froid→chaud, posé par updateTempGauge()) —
-                     AUCUNE zone NOMMÉE : une température d'eau « correcte »
-                     n'existe pas dans l'absolu (confort, pas physique/chimie),
-                     d'où l'absence de vert. À la différence du pH (dégradé
-                     ÉVALUATIF), ce dégradé n'affirme rien, il illustre une
-                     grandeur physique. -->
+                <!-- Dégradé DESCRIPTIF (thermomètre) : aucune zone nommée, aucun vert
+                     (feature-147). Échelle 0-40 °C, repère à 4 °C (hivernage). -->
                 <div class="gauge" id="temp-gauge">
                   <div class="gauge__track" id="temp-gauge-track">
                     <span class="gauge__tick" id="temp-gauge-tick-low" aria-hidden="true"></span>
@@ -733,8 +594,9 @@
                   </div>
                 </div>
                 <div class="sensor-badge" id="temperature-sensor-badge" style="display:none;" role="status" aria-live="polite"></div>
+                <a href="#/temperature" class="card__link">Réglages <span aria-hidden="true">›</span></a>
               </div>
-            </div>
+            </section>
           </div>
 
 

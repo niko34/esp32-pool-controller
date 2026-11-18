@@ -872,6 +872,8 @@
       }
     }
 
+    refreshDashPills();  // feature-195 : pastilles « Hors ligne » / retour
+
     if (state === "bad") {
       const dash = "–";
       const els = {
@@ -3650,6 +3652,96 @@
   }
 
   // ===========================================================================
+  // feature-195 — PASTILLES D'ÉTAT du tableau de bord : une grammaire, cinq
+  // cartes. Les décisions de TON sont des fonctions PURES (testées par
+  // test/dash_pill_vectors.js, extraites de ce fichier — ADR-0099).
+  //   vert = fonctionnement attendu · gris = repos / information normale ·
+  //   ambre = l'appareil s'écarte de son fonctionnement automatique attendu.
+  // ===========================================================================
+
+  // pH/ORP — B1 (gate pool-chemistry) : ambre ⟺ doseBlockVariant === 'danger'
+  // (tones fault/unknown SEULEMENT), en RÉUTILISANT la table DOSE_BLOCK_CODES
+  // via _doseBlockInfo() — ⛔ pas de seconde table de codes. « Filtration
+  // arrêtée » (2), stabilisation (7/8), limites (10-12), anti-rafale (13/14)
+  // sont des marches attendues : JAMAIS ambre (sinon l'ambre s'allumerait
+  // toutes les nuits sur les deux cartes).
+  function dashModePillTone(mode, doseTone, doseCode) {
+    if (doseBlockVariant(doseTone, doseCode) === "danger") return "warn";
+    return mode === "manual" ? "off" : "ok";
+  }
+
+  // Filtration : ambre = état IMPOSÉ par l'utilisateur (Marche/Arrêt forcé) ;
+  // « Hors gel » = gris (le libellé décrit, il ne commande rien — bug-197).
+  function dashFiltrationTone(forced, frost, running) {
+    if (frost) return "off";
+    if (forced) return "warn";
+    return running ? "ok" : "off";
+  }
+
+  // Nombre à la française (virgule), UN SEUL formateur pour /data et WebSocket
+  // (les deux chemins passent par updateStatusCards()).
+  function fmtFr(value, decimals) {
+    return Number(value).toFixed(decimals).replace(".", ",");
+  }
+
+  function isAppOffline() {
+    return !!document.querySelector(".app.app--offline");
+  }
+
+  // ÉCRIVAIN UNIQUE des pastilles. Hors ligne : puce grise ; le texte devient
+  // « Hors ligne » sauf pH/ORP (keepTextOffline) qui GARDENT « Mode … » — texte
+  // gaté C5, la mesure « – » dit déjà que la carte n'est pas fraîche.
+  function setDashPill(id, text, tone, keepTextOffline) {
+    const el = $(`#${id}`);
+    if (!el) return;
+    if (isAppOffline()) {
+      tone = "off";
+      if (!keepTextOffline) text = "Hors ligne";
+    }
+    el.textContent = text;
+    el.dataset.tone = tone;
+  }
+
+  // Température : À jour / En attente / Sonde absente / Chargement…
+  function renderTemperaturePill() {
+    const d = latestSensorData;
+    if (!d) { setDashPill("detail-temperature-status", "Chargement…", "off"); return; }
+    if (!measuresAreValid(d)) { setDashPill("detail-temperature-status", "En attente", "off"); return; }
+    if (d.temperature == null || isNaN(d.temperature)) {
+      setDashPill("detail-temperature-status", "Sonde absente", "warn");
+      return;
+    }
+    setDashPill("detail-temperature-status", "À jour", "ok");
+  }
+
+  // Les pastilles dépendent de l'état hors ligne : à chaque bascule, on les
+  // réécrit depuis les MÊMES fonctions (pas de second calcul).
+  function refreshDashPills() {
+    try { updateFiltrationBadges(); } catch (e) { console.error("[dash-pill] filtration:", e); }
+    try { renderLightingModeCard(); } catch (e) { console.error("[dash-pill] éclairage:", e); }
+    try { renderTemperaturePill(); } catch (e) { console.error("[dash-pill] température:", e); }
+    try { renderDashboardModeCard("ph"); renderDashboardModeCard("orp"); } catch (e) { console.error("[dash-pill] mode:", e); }
+  }
+
+  // Volets « Modifier » : piloté par le CLIC SEUL (B3). ⛔ Aucune fonction
+  // render* ne lit ni n'écrit cet état — un rendu qui refermerait le volet
+  // pendant une saisie, ou l'ouvrirait de lui-même, est exactement le défaut
+  // que ce découpage interdit.
+  function bindDashFolds() {
+    $$(".card__fold").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const panel = $(`#${btn.getAttribute("aria-controls")}`);
+        if (!panel) return;
+        const opening = panel.hidden;
+        panel.hidden = !opening;
+        btn.setAttribute("aria-expanded", opening ? "true" : "false");
+        const chev = btn.querySelector(".card__fold-chev");
+        if (chev) chev.textContent = opening ? "▴" : "▾";
+      });
+    });
+  }
+
+  // ===========================================================================
   // feature-161 — C4 (gate pool-chemistry, ÉTENDU le 2026-10-13) : confirmation
   // de désarmement de la chloration de secours. « La friction protège
   // l'ACTION (interrompre un secours en cours), pas la SURFACE d'où part le
@@ -3780,8 +3872,33 @@
     const modeLabels = { automatic: "Auto", scheduled: "Programme", manual: "Arrêt" };
 
     // Texte de mode en en-tête — même motif que #detail-filtration-mode.
-    const modeLabel = $(`#detail-${kind}-mode`);
-    if (modeLabel) modeLabel.textContent = "Mode " + (modeLabels[mode] || "Auto");
+    // feature-195 : c'est la PASTILLE (id inchangé), écrite ICI SEULE (B5) —
+    // ni updateStatusCards ni le chemin WebSocket ne la recalculent.
+    const doseInfo = _doseBlockInfo(latestSensorData, kind);
+    setDashPill(`detail-${kind}-mode`, "Mode " + (modeLabels[mode] || "Auto"),
+                dashModePillTone(mode, doseInfo.tone, doseInfo.code), true);
+
+    // B6 : consigne en LECTURE SEULE à droite de la mesure — même source que la
+    // jauge (config.*_target), mode AUTO seulement : hors Auto rien n'est
+    // poursuivi, la carte n'affirme donc aucune cible.
+    const targetRo = $(`#dash-${kind}-target-ro`);
+    if (targetRo) {
+      const tv = cfg[`${kind}_target`];
+      const showTarget = mode === "automatic" && typeof tv === "number" && isFinite(tv);
+      targetRo.hidden = !showTarget;
+      if (showTarget) {
+        // B6 + parité : _fmtPh() est LE formateur pH partagé (voir
+        // buildPhTargetSegments, qui écrit le MÊME nombre de l'autre côté du
+        // volet). Une seconde expression divergeait sur une consigne hors
+        // grille — 7,35 hérité d'une configuration antérieure (cf. setPhTarget)
+        // donnait « consigne 7,35 » au héros et « 7,4 » au segment choisi.
+        // C'est la 4e forme du piège de parité : même clé, expressions
+        // divergentes. ⛔ Ne jamais reformater le pH ailleurs qu'ici.
+        targetRo.textContent = isPh
+          ? "consigne " + _fmtPh(tv, false)
+          : "consigne " + Math.round(tv) + " mV";
+      }
+    }
 
     // Sélecteur — toujours resynchronisé sur l'état RÉEL de window._config,
     // jamais figé sur ce qui a été cliqué (ADR-0100 : l'écran répète ce que
@@ -3954,33 +4071,34 @@
     setModeSelect("dashboard-lighting-mode", mode);
     setModeSelect("lighting_regulation_mode", mode);
 
-    // DESIGN_SYSTEM.md §5.7 : badge visible UNIQUEMENT en Programme — en
-    // Allumé/Éteint le segment actif dit déjà l'état (pas de redite).
-    const badge = $("#detail-lighting-status");
-    if (badge) {
-      // feature-162 (revue, suite mineure 2) : le badge est masqué TANT QUE
-      // l'état réel du relais est inconnu — il ne vient que des trames
-      // sensor_data, et /data (HTTP) ne le porte pas. Avant ce correctif, il
-      // affichait la valeur écrite en dur dans le HTML, donc potentiellement
-      // FAUSSE pendant les premières secondes. ⚠️ Constaté sur capture : la
-      // relecture du code ne l'avait pas vu, parce que le chemin JS est correct
-      // — c'est son point de DÉPART qui mentait. Règle DESIGN_SYSTEM §4 :
-      // donnée absente ⇒ on n'affiche rien, jamais une valeur par défaut.
-      const inSchedule = mode === "schedule";
-      const stateKnown = latestSensorData?.lighting_enabled != null;
-      badge.hidden = !inSchedule || !stateKnown;
-      // lighting_enabled vient exclusivement des push sensor_data (état réel
-      // du relais) — pas de config.lighting_enabled (dérivé du mode, pas du relais).
-      if (inSchedule && stateKnown) {
-        const isOn = latestSensorData.lighting_enabled;
-        // feature-162 (revue, mineure 2) : « Lampe allumée/éteinte », PAS
-        // « Allumé/Éteint » — ces deux mots sont ceux des BOUTONS de mode juste
-        // en dessous, et le badge dit autre chose : l'état RÉEL du relais à cet
-        // instant. Collision repérée sur capture, pas en relisant le code.
-        badge.textContent = isOn ? "Lampe allumée" : "Lampe éteinte";
-        badge.className = "state-badge " + (isOn ? "state-badge--ok" : "state-badge--off");
-      }
+    // feature-195 : pastille TOUJOURS visible (Allumée / Éteinte), écrite ICI
+    // SEULE. L'état vient du relais réel (push WS sensor_data) ; /data ne le
+    // porte pas — en son absence, Allumé/Éteint se déduisent du MODE (le relais
+    // le suit, ADR-0107/0108), SAUF fonction éclairage désactivée (voir la
+    // garde ci-dessous), et Programme reste « Programme » (jamais un état
+    // deviné). Pas d'ambre : Allumé/Éteint est le geste principal, pas une dérogation.
+    const relay = latestSensorData?.lighting_enabled;
+    if (relay != null) {
+      setDashPill("detail-lighting-status", relay ? "Allumée" : "Éteinte", relay ? "ok" : "off");
+    } else if (cfg.lighting_feature_enabled === false) {
+      // ⛔ BORNE DE LA DÉDUCTION (revue code-reviewer, 2026-11-18).
+      // Le relais ne suit PAS le mode quand la fonction éclairage est
+      // désactivée : src/lighting.cpp force la broche à LOW et sort AVANT
+      // decideLightingOn(). Sans cette garde, « Mode Allumé » + fonction
+      // désactivée affichait « Allumée · puce verte » lampe éteinte — et le
+      // chemin est atteignable en marche normale, car lighting_enabled
+      // n'existe QUE dans la trame WebSocket : toute la cadence HTTP de 30 s
+      // passe par la déduction. C'est le retour du défaut corrigé en revue de
+      // feature-162. Ici le fait est CERTAIN, ce n'est pas une déduction.
+      setDashPill("detail-lighting-status", "Éteinte", "off");
+    } else if (mode === "on" || mode === "off") {
+      setDashPill("detail-lighting-status", mode === "on" ? "Allumée" : "Éteinte", mode === "on" ? "ok" : "off");
+    } else {
+      setDashPill("detail-lighting-status", "Programme", "off");
     }
+    // « Programme suspendu » : Allumé/Éteint sortent de Programme sans minuterie.
+    const suspended = $("#dashboard-lighting-suspended");
+    if (suspended) suspended.hidden = !(mode !== "schedule" && cfg.lighting_start_time && cfg.lighting_end_time);
 
     // DESIGN_SYSTEM.md §5.20 : horaires modifiables UNIQUEMENT en Programme,
     // sur les deux surfaces — jamais affichés en Allumé/Éteint (aucun effet).
@@ -5330,7 +5448,6 @@
   function updateFiltrationBadges() {
     const config = window._config || {};
     const state = getFiltrationState(config, latestSensorData || {});
-    const modeLabels = { auto: 'Auto', manual: 'Programme', force: 'Marche', off: 'Arrêt' };
 
     // Revue coordinateur 2026-10-09 : le mode dit ce qui est DEMANDÉ, l'état
     // dit ce que la pompe FAIT — les deux divergent légitimement (ex. Auto
@@ -5338,20 +5455,12 @@
     // badge d'état (id/classes INCHANGÉS) est restauré dans l'en-tête, à côté
     // du texte de mode — les 4 boutons ne remplacent que les anciens
     // Démarrer/Arrêter, pas cette information.
-    const dashBadge = $("#detail-filtration-status");
-    if (dashBadge) {
-      dashBadge.textContent = state.text;
-      dashBadge.className = 'state-badge ' + state.class;
-    }
-    // Texte de MODE, toujours "Mode X" (jamais remplacé par l'état : le badge
-    // ci-dessus porte déjà "Hors gel"). L'exception --warn est conservée en
-    // renfort visuel sur ce texte pendant la pause anti-gel, sans dupliquer le
-    // mot "Hors gel" une seconde fois.
-    const dashLabel = $("#detail-filtration-mode");
-    if (dashLabel) {
-      dashLabel.textContent = 'Mode ' + (modeLabels[config.filtration_mode] || 'Auto');
-      dashLabel.classList.toggle('card__status-mode--warn', state.frost);
-    }
+    // feature-195 : pastille d'état unique (écrite ICI SEULE) + face de la carte.
+    // Ambre = mode FORCÉ (Marche/Arrêt : état imposé) ; « Hors gel » = gris.
+    const modeNow = String(config.filtration_mode || 'auto').toLowerCase();
+    const forced = modeNow === 'force' || modeNow === 'off';
+    setDashPill("detail-filtration-status", state.text, dashFiltrationTone(forced, state.frost, state.running));
+    renderFiltrationFace(config, modeNow, forced);
     // Card "Contrôle manuel" (page Filtration, hors périmètre feature-147) :
     // badge .pill placé dans .card__head — INCHANGÉ, mis à jour depuis le
     // MÊME `state` que le badge du tableau de bord ci-dessus (synchronisés).
@@ -5361,6 +5470,31 @@
       headBadge.className = 'pill ' + state.pillClass;
     }
     updateFiltrationModeButtons(config.filtration_mode);
+  }
+
+  // feature-195 : face de la carte Filtration — ÉCRIVAIN UNIQUE du héros, du
+  // contexte et de « Revenir en Auto ». Même condition (forced) pour les trois :
+  // sans « Revenir en Auto » en mode forcé, Auto n'étant plus sur la face,
+  // l'utilisateur n'aurait AUCUN chemin de retour. ⚠️ « Revenir » ramène en Auto,
+  // jamais en Programme (les horaires enregistrés ne sont pas effacés).
+  function renderFiltrationFace(config, mode, forced) {
+    const hero = $("#detail-filtration-schedule");
+    const ctx = $("#detail-filtration-mode");
+    const back = $("#filtration-back-auto");
+    if (hero) {
+      if (forced) {
+        hero.textContent = mode === 'off' ? 'Arrêt forcé' : 'Marche forcée';
+        hero.className = 'dash-hero__value dash-hero__value--warn';
+      } else {
+        hero.textContent = `${config.filtration_start || '08:00'} – ${config.filtration_end || '20:00'}`;
+        hero.className = 'dash-hero__value dash-hero__value--sm';
+      }
+    }
+    if (ctx) {
+      ctx.textContent = forced ? 'Horaires suspendus' : 'Mode ' + (mode === 'manual' ? 'Programme' : 'Auto');
+      ctx.classList.toggle('dash-context--warn', forced);
+    }
+    if (back) back.hidden = !forced;
   }
 
   // feature-147 : grille 2x2 de la carte Filtration (tableau de bord). Bouton
@@ -5376,26 +5510,33 @@
       btn.classList.toggle('btn--ghost', !active);
       btn.setAttribute('aria-pressed', active ? 'true' : 'false');
     });
+    // feature-195 : les deux dérogations de la FACE, mêmes données, MÊME fonction
+    // (jamais deux sources). Auto/Programme : aucune des deux n'est pressée.
+    ['force', 'off'].forEach((m) => {
+      const b = $(`#filtration-force-btn-${m}`);
+      if (b) b.setAttribute('aria-pressed', m === activeMode ? 'true' : 'false');
+    });
   }
 
   function getFiltrationState(config, data) {
     const isRunning = filtrationRunningOverride !== null ? filtrationRunningOverride : (data && data.filtration_running);
     const temp = data && data.temperature;
 
-    if (!config) return { text: 'Chargement...', class: 'state-badge--off', pillClass: '', frost: false };
+    if (!config) return { text: 'Chargement…', class: 'state-badge--off', pillClass: '', frost: false, running: false };
 
     // Température hors gel — `frost` est l'ÉTAT testé par les appelants (pas
     // le texte affiché, revue code-reviewer : un libellé reformulé un jour ne
     // doit pas casser silencieusement la logique qui en dépend).
     if (temp != null && temp < 5.0 && isRunning) {
-      return { text: 'Hors gel', class: 'state-badge--warn', pillClass: 'mid', frost: true };
+      return { text: 'Hors gel', class: 'state-badge--warn', pillClass: 'mid', frost: true, running: true };
     }
 
     return {
       text: isRunning ? 'En marche' : 'Arrêtée',
       class: isRunning ? 'state-badge--ok' : 'state-badge--off',
       pillClass: isRunning ? 'ok' : 'bad',
-      frost: false
+      frost: false,
+      running: !!isRunning
     };
   }
 
@@ -5970,7 +6111,7 @@
     const compactPh = $("#compact-ph");
     if (compactPh) {
       compactPh.textContent = (measuresOk && data.ph != null && !isNaN(data.ph))
-        ? (Math.round(data.ph * 10) / 10).toFixed(1)
+        ? fmtFr(Math.round(data.ph * 10) / 10, 1)
         : "--";
     }
 
@@ -6008,7 +6149,7 @@
     const compactTemperature = $("#compact-temperature");
     if (compactTemperature) {
       const tempText = (measuresOk && data.temperature != null && !isNaN(data.temperature))
-        ? (Math.round(data.temperature * 10) / 10).toFixed(1)
+        ? fmtFr(Math.round(data.temperature * 10) / 10, 1)
         : "--";
       compactTemperature.innerHTML = tempText + '<span class="compact-unit">°C</span>';
     }
@@ -6016,6 +6157,7 @@
     // feature-147 (correctif) : jauge Température — même garde measuresOk que
     // la valeur compacte ci-dessus (filtration arrêtée ⇒ non représentative).
     updateTempGauge((data.temperature != null && !isNaN(data.temperature)) ? data.temperature : NaN, measuresOk);
+    renderTemperaturePill();
   }
 
   function updateClockBadge(isSynced) {
@@ -7685,17 +7827,10 @@
     // `.hidden` (propriété DOM, reflète l'attribut [hidden]) — même patron que
     // renderDashboardModeCard() (lot A) : .detail-row[hidden]{display:none!important}
     // (app.css:3255) l'emporte sur `.detail-row{display:flex}`.
-    const detailFiltrationSchedule = $("#detail-filtration-schedule");
-    const detailFiltrationScheduleRow = $("#detail-filtration-schedule-row");
+    // feature-195 : le héros (horaire / « Arrêt forcé »), le contexte et « Revenir
+    // en Auto » sont écrits par renderFiltrationFace() SEULE (via
+    // updateFiltrationBadges() ci-dessous) — un seul écrivain.
     const fMode = (config.filtration_mode || 'auto').toLowerCase();
-    if (detailFiltrationSchedule) {
-      const start = config.filtration_start || '08:00';
-      const end = config.filtration_end || '20:00';
-      detailFiltrationSchedule.textContent = `${start} - ${end}`;
-    }
-    if (detailFiltrationScheduleRow) {
-      detailFiltrationScheduleRow.hidden = (fMode !== 'auto');
-    }
 
     // feature-164 : bloc ÉDITABLE, visible UNIQUEMENT en Programme (⛔ en Auto
     // les horaires sont CALCULÉS d'après la température — jamais saisissables,
@@ -7789,6 +7924,11 @@
     ['auto', 'manual', 'force', 'off'].forEach((m) => {
       const btn = $(`#filtration-mode-btn-${m}`);
       if (btn) btn.addEventListener('click', () => setFiltrationRunMode(m));
+    });
+    // feature-195 : dérogations de la face + sortie du mode forcé (même chemin).
+    [['#filtration-force-btn-force', 'force'], ['#filtration-force-btn-off', 'off'], ['#filtration-back-auto', 'auto']].forEach(([sel, m]) => {
+      const b = $(sel);
+      if (b) b.addEventListener('click', () => setFiltrationRunMode(m));
     });
 
     // feature-162 : les boutons Allumer/Éteindre dédiés ont disparu — allumer
@@ -15452,6 +15592,7 @@
     bindFilePicks();
     bindHistoryBackup();
     bindDetailActions();
+    bindDashFolds();               // feature-195 : volets « Modifier » (clic seul)
     bindDashboardModeSelectors();  // feature-161 (lot A) : sélecteurs pH/ORP du tableau de bord
     bindAutosave();
     bindPhCalibration();

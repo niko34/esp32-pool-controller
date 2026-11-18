@@ -7,7 +7,65 @@
 
 Vue d'ensemble de la piscine en temps réel. C'est la page que l'utilisateur voit en arrivant sur l'interface. Elle doit donner **en un coup d'œil** l'état de l'installation et permettre les actions fréquentes (allumer/éteindre filtration et éclairage) sans navigation.
 
-## Structure
+## Refonte du langage visuel — « l'accueil montre, les réglages règlent » (feature-195, v2.96.0)
+
+> ⚠️ **Cette section fait foi.** Les sections plus bas (Structure, Carte Filtration feature-147, sélecteurs feature-161, consignes feature-164, Carte Éclairage feature-162) décrivent l'**histoire** et la logique de chaque fonction ; leur **disposition** (engrenages, « Mode Auto » sous le titre, badge d'en-tête, sélecteurs et consignes toujours visibles) est **périmée** par ce lot. Les ids, les chemins d'écriture (`applyRegulationMode`, `setFiltrationRunMode`, `/save-config`) et les gardes de sécurité sont **inchangés**. De même, les **mini-graphiques** décrits plus bas ont été retirés du tableau de bord **avant** ce lot (commits `cf5fe33`, `4dd8071`) : ces sections sont historiques.
+
+Décision structurante : [ADR-0135](../adr/0135-l-accueil-montre-les-reglages-reglent-la-couleur-n-est-que-sur-la-donnee.md). Composants : [DESIGN_SYSTEM §5.24](../DESIGN_SYSTEM.md#524-langage-visuel-du-tableau-de-bord-feature-195-v2960-adr-0135).
+
+**Ce qui change pour l'utilisateur** : la **mesure** est l'élément dominant de chaque carte (48 px, virgule française, chiffres de largeur fixe) ; chaque carte porte **une pastille d'état** ; les commandes rares passent derrière un bouton **« Modifier »** replié ; les roues dentées (34 px) laissent place à des liens « Réglages › » de 44 px ; fond de page plus bleuté, cartes plus arrondies (22 px) et sans bordure ; titres en casse normale ; plus aucun effet de survol (les cartes ne se cliquent pas). **Aucune fonction n'est supprimée** et **aucun nouveau champ `/data`, WebSocket, endpoint ou topic MQTT** n'est introduit.
+
+### Pastille d'état (`.dash-pill`) — une par carte, un seul écrivain
+Écrite par `setDashPill(id, texte, teinte, garderTexteHorsLigne)` seule. Teintes : **vert** = fonctionnement attendu, **gris** = repos ou information normale, **ambre** = écart à regarder. Le texte est toujours `--text` : le sens ne dépend jamais de la couleur seule.
+
+| Carte | Id | Textes → teinte |
+|---|---|---|
+| Filtration | `#detail-filtration-status` | En marche (vert) · Arrêtée (gris) · Hors gel (**gris**) · forcée Marche/Arrêt (**ambre**) |
+| Éclairage | `#detail-lighting-status` | Allumée (vert) · Éteinte (gris) · « Programme » (gris) — **toujours visible**, jamais ambre |
+| pH / ORP | `#detail-ph-mode` / `#detail-orp-mode` | Mode Auto, Mode Programme (vert) · Mode Arrêt (gris) · **ambre** ⟺ `doseBlockVariant(...) === 'danger'` |
+| Température | `#detail-temperature-status` | À jour (vert) · En attente (gris) · Sonde absente (**ambre**) · Chargement… (gris) |
+
+- ⛔ **Pas d'ambre pour « dosage bloqué » au sens large** (condition B1 de `pool-chemistry`) : « Filtration arrêtée » (code 2), stabilisation (7, 8), limites (10-12), anti-rafale (13, 14) sont des marches attendues, `tone: 'normal'` — sinon l'ambre s'allumerait toutes les nuits sur les deux cartes. Seuls les tones `fault` / `unknown` allument l'ambre, en réutilisant `DOSE_BLOCK_CODES` / `_doseBlockInfo` / `doseBlockVariant` (pas de seconde table). Décision pure `dashModePillTone()`, couverte par `./tools/check_dash_pill_vectors.sh` (CI `hygiene-specs.yml`) — **mutation exigée** : passer un `tone: 'normal'` en `fault` doit tuer un vecteur.
+- **Texte de mode pH/ORP permanent** (gate C5 de feature-161) : mêmes mots qu'avant (« Mode Auto / Programme / Arrêt »), déplacés de la ligne sous le titre vers la pastille ; jamais tronqué ni réduit à la puce. Écrivain unique `renderDashboardModeCard()` (ids `detail-ph-mode` / `detail-orp-mode` conservés).
+- ⚠️ **« Hors gel » passe de l'ambre au gris, texte inchangé.** Ce **n'est pas un correctif** : le libellé (`temperature < 5,0` **et** filtration en marche, calculé dans le navigateur) annonce toujours une protection qui n'existe pas côté firmware — [bug-197](../../specs/features/todo/bug-197-le-libelle-hors-gel-annonce-une-protection-qui-n-existe-pas.md).
+- Nombres : `fmtFr()` (virgule), formateur **unique** pour `/data` et WebSocket (les deux passent par `updateStatusCards()`).
+
+### Volet « Modifier » (`.card__fold`)
+Bouton pleine largeur de 44 px, `aria-expanded` / `aria-controls`, chevron ▾ / ▴. **Piloté par le clic seul** (`bindDashFolds`) : aucune fonction `render*` ne l'ouvre ni ne le ferme ; le bouton n'est **jamais** `disabled`. Sous escalade pH ou étalonnage, à l'ouverture : Auto/Programme `disabled` + `aria-disabled` (jamais `hidden`), « Arrêt » cliquable, consigne `disabled` (jamais masquée). Un volet ouvert le reste après un changement de mode.
+
+**Reste visible en permanence, hors volet** : `#dose-block-banner` et `#rescue-active-banner` (niveau de la vue, ni masquables ni repliables), `#calib-chip`, bandeaux d'étalonnage et d'escalade, `.calibration-alert`, `.sensor-badge`, `dashboard-*-stopped-hint` (texte C7 « La régulation automatique ne dose plus. L'injection manuelle reste possible depuis les réglages. », **au-dessus** du bouton « Modifier »).
+
+### Carte par carte
+1. **Filtration** (`#dashboard-filtration-card`) — pastille d'état réel ; **ligne héros** = horaire (`#detail-filtration-schedule`, Auto/Programme) ou « Marche forcée » / « Arrêt forcé » + « Horaires suspendus » ; ligne de contexte `#detail-filtration-mode` ; **deux boutons de dérogation sur la face**, « Forcer marche » (`#filtration-force-btn-force`) et « Forcer arrêt » (`#filtration-force-btn-off`), et **« Revenir en Auto »** (`#filtration-back-auto`) **uniquement quand la filtration est forcée**. Le volet « Modifier » contient le **sélecteur à 4 modes entier** (Auto · Programme · Marche · Arrêt), l'édition des horaires (Programme) et le Boost (bouton « Activer » neutre). Même chemin d'écriture `setFiltrationRunMode()` partout ; `updateFiltrationModeButtons()` met à jour **les deux jeux de boutons** dans la même fonction, et `renderFiltrationFace()` pilote le héros forcé et « Revenir en Auto » avec **la même condition** (`mode === "force" || mode === "off"`).
+   - ⚠️ **Forcer sort d'Auto ou de Programme et rien n'y ramène seul** (pas de minuterie). **Arrêt forcé ⇒ dosage pH/ORP bloqué** et mesures non représentatives. **« Revenir en Auto » ramène en Auto, jamais en Programme** (les horaires enregistrés ne sont pas effacés ; aucun mode précédent mémorisé côté navigateur).
+   - ⛔ Aucun nouveau chemin vers `pump_controller` : même appel qu'avant (le bouton « Arrêt » était déjà à un tap).
+2. **Éclairage** (`#dashboard-lighting-card`) — garde ses **trois segments** Allumé / Éteint / Programme sur la face (pas de mesure à mettre en avant, pas de volet) ; pastille Allumée/Éteinte toujours visible ; ligne « Programme suspendu » (`#dashboard-lighting-suspended`) **uniquement** si le mode n'est pas Programme **et** qu'un horaire existe ; édition des horaires en Programme. Jamais ambre.
+3. **pH** (`#dashboard-ph-card`) — héros `#compact-ph` ; **consigne en lecture seule** à droite (`#dash-ph-target-ro`, **mode Auto seulement**, même source `window._config`) ; jauge `#ph-gauge` ; bandeaux ; texte C7 ; volet « Modifier » : mode (Auto · Programme · Arrêt), consigne (`.segmented--num`) + « Sauvegarder », « Volume quotidien » et « Limite de sécurité », lien « Tous les réglages › ».
+4. **ORP** (`#dashboard-orp-card`) — miroir du pH ; consigne en champ libre avec plage affichée ; confirmation C4 d'interruption d'une chloration de secours conservée dans le chemin partagé.
+5. **Température** (`#dashboard-temperature-card`) — héros `#compact-temperature`, jauge descriptive, `#temperature-sensor-badge`, pastille ; **pas de volet**, juste le lien « Réglages › » (44 px).
+
+La jauge pH (évaluative) et la jauge température (descriptive) gardent leurs deux dégradés ; le curseur est bordé `--text` ; piste de 8 px.
+
+### États limites
+- **Hors ligne** : héros « – », pastilles « Hors ligne » (puce grise) — **sauf pH/ORP** qui conservent « Mode … » (texte gaté C5) ; commandes désactivées ; jauge `.gauge--stale`. Une carte dont la mesure est un tiret ne se lit pas « tout va bien ».
+- **Mesures non représentatives** (filtration arrêtée, stabilisation) : héros « – », pastille « En attente », jauge `--stale` **et mot d'état conservé** (`#ph-gauge-state`, exception bloquante d'un gate `pool-chemistry` — il ne peut pas être supprimé).
+- **Sonde absente / valeur nulle** : « – », **jamais** une valeur figée ; pastille « Sonde absente » (ambre) ; `.sensor-badge` porte le lien de réparation.
+- **Chargement initial** : « Chargement… » (gris), héros « – ».
+- **Forcée** (filtration) : voir carte 1.
+
+### Responsive
+390 px d'abord ; ≤ 360 px héros à 40 px ; grille ≥ 900 px **inchangée** (`repeat(auto-fit, minmax(320px, 1fr))`) ; pas de défilement horizontal à 320 px (titre en ellipse, pastille `nowrap`). Libellés comptés : « Forcer marche » 13, « Forcer arrêt » 12, « Revenir en Auto » 16 caractères.
+
+### Pertes assumées et choses non faites
+- ⚠️ **R1 — perte assumée** : l'avertissement « consigne à la borne haute » du pH (`#dashboard-ph-target-warning`, texte C9 : « à ce pH le chlore est nettement moins actif ») n'est **plus visible en permanence** sur l'accueil, il est dans le volet. Il **informe**, il ne protège pas (la protection réelle est le plafond du firmware) ; `renderPhTargetWarning` continue de s'exécuter volet replié.
+- ⚠️ **R2 — non fait** : « Volume quotidien » et « Limite de sécurité » partent dans le volet alors qu'en mode Programme ils disent ce que l'appareil va faire.
+- Un tap de plus pour régler le mode ou la consigne pH/ORP (arbitrage de l'utilisateur : « Cacher celles qu'on règle rarement »).
+- **Ce lot ne touche que le tableau de bord.** Les pages de réglage gardent l'apparence bleue de leurs composants (contexte d'emploi déclaré) ; `login.html`, `wifi.html` et `wizard.html` gardent leur ancien fond.
+- Bug indépendant, non traité ici : [bug-196](../../specs/features/todo/bug-196-le-bandeau-hors-ligne-passe-sous-le-bouton-menu.md) (le bandeau hors ligne passe sous le bouton de menu à 390 px).
+
+**Fichiers** : `data/index.html`, `data/app.css` (jetons `--dash-*`, `.dash-*`, `.card__fold*`, `.card__link`), `data/app.js` (`setDashPill`, `dashModePillTone`, `dashFiltrationTone`, `fmtFr`, `renderTemperaturePill`, `refreshDashPills`, `bindDashFolds`, `renderFiltrationFace`) · `test/dash_pill_vectors.js` + `tools/check_dash_pill_vectors.sh`.
+
+## Structure (historique — disposition périmée par la refonte ci-dessus)
 
 La page est une **grille de cinq cartes** (classe `grid--status-cards`) — **était six** jusqu'à la v2.63.x : la carte « Modes temporaires » séparée a été **supprimée** en feature-147/v2.63.0, son unique contenu (le Boost) devenant un sous-bloc de la carte Filtration (voir [Carte Filtration — quatre boutons, mode vs état, Boost intégré](#carte-filtration--quatre-boutons-mode-vs-état-boost-intégré-feature-147-v2630)) :
 

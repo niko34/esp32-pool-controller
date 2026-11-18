@@ -23,6 +23,17 @@ API = sys.argv[3]
 # partait sans image.
 CLICKS = [c for c in os.environ.get('UI_SHOT_CLICK', '').splitlines() if c.strip()]
 
+# Faux WebSocket (option -n de ui_shot.sh). Sans lui, l'application ne voit
+# AUCUN socket s'ouvrir, se declare « Deconnecte » et REMPLACE les trois
+# mesures du tableau de bord par « - » (app.js, setNetState('bad')).
+# ⛔ Consequence mesuree le 2026-11-18 : une capture du tableau de bord ne
+# montrait AUCUN chiffre -- or les mesures sont tout le sujet d'un dossier
+# d'ergonomie sur cette page. Le stub ouvre un socket qui ne dit rien, ce qui
+# est exactement l'etat d'un appareil connecte et silencieux.
+# ⚠️ Reste OPTIONNEL : l'ecran hors ligne est lui aussi a photographier, et il
+# l'est par defaut.
+WS_STUB = os.environ.get('UI_SHOT_WS') == '1'
+
 CANNED = {'/data': 'data.json',
           '/get-config': 'get-config.json',
           '/get-system-info': 'get-system-info.json'}
@@ -58,16 +69,38 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         path = self.path.split('?')[0]
         if path == '/__boot.html':
             return self._send(BOOT, 'text/html')
-        if CLICKS and path in ('/', '/index.html'):
+        if (CLICKS or WS_STUB) and path in ('/', '/index.html'):
             with open(os.path.join(ROOT, 'index.html'), 'rb') as fh:
                 page = fh.read()
-            return self._send(page + self._click_script(), 'text/html')
+            return self._send(page + self._ws_script() + self._click_script(),
+                              'text/html')
         if path in CANNED:
             with open(os.path.join(API, CANNED[path]), 'rb') as fh:
                 return self._send(fh.read())
         if path.startswith('/get-history') or path == '/get-logs':
             return self._send(b'{"entries":[],"data":[]}')
         return super().do_GET()
+
+    @staticmethod
+    def _ws_script():
+        """Remplace window.WebSocket par un socket qui s'ouvre et se tait.
+
+        L'application branche ses propres gestionnaires APRES construction :
+        on appelle donc onopen au tour de boucle suivant, jamais dans le
+        constructeur (sinon le gestionnaire n'est pas encore pose)."""
+        if not WS_STUB:
+            return b''
+        return (b"<script>(function(){function F(u){this.url=u;this.readyState=1;"
+                b"var s=this;setTimeout(function(){s.readyState=1;"
+                b"if(typeof s.onopen==='function')s.onopen({target:s});},0);}"
+                b"F.prototype.send=function(){};"
+                b"F.prototype.close=function(){this.readyState=3;};"
+                b"F.prototype.addEventListener=function(t,f){"
+                b"if(t==='open')this.onopen=f;else if(t==='message')this.onmessage=f;"
+                b"else if(t==='close')this.onclose=f;else if(t==='error')this.onerror=f;};"
+                b"F.prototype.removeEventListener=function(){};"
+                b"F.CONNECTING=0;F.OPEN=1;F.CLOSING=2;F.CLOSED=3;"
+                b"window.WebSocket=F;})()</script>")
 
     @staticmethod
     def _click_script():

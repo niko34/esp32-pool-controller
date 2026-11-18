@@ -295,7 +295,8 @@ de laisser la régulation automatique prendre la main.</p>
 <p>L'interface s'organise autour d'un <strong>tableau de bord</strong> —
 la vue d'ensemble — et de pages dédiées, une par fonction. La navigation
 se fait par le menu&nbsp;; chaque carte du tableau de bord porte aussi un
-petit engrenage qui mène directement à sa page de détail.</p>
+lien «&nbsp;Réglages&nbsp;» (ou «&nbsp;Tous les réglages&nbsp;») qui mène
+directement à sa page de détail.</p>
 
 <h3>Le tableau de bord</h3>
 
@@ -307,11 +308,47 @@ petit engrenage qui mène directement à sa page de détail.</p>
 <p><strong>Ce que vous voyez</strong> — cinq cartes&nbsp;: Filtration,
 Éclairage, pH, Chlore (ORP) et Température. Depuis la version&nbsp;2.63, le
 Mode Boost n'a plus de carte à lui&nbsp;: il vit dans une section de la
-carte Filtration (voir plus bas). Les cartes de
-mesure affichent la valeur courante, la cible, et un mini-graphique de la
-<strong>journée en cours</strong> (depuis minuit — les courbes sont donc
-courtes le matin, c'est normal). Sous chaque valeur, un petit badge résume
-l'état&nbsp;:</p>
+carte Filtration (voir plus bas).</p>
+
+<p><strong>La mesure d'abord</strong> <em>(depuis la version&nbsp;2.96)</em> —
+sur les cartes pH, Chlore et Température, la valeur courante est le plus gros
+élément de la carte, avec une jauge dessous. Quand l'appareil poursuit une
+consigne (mode Auto seulement), elle s'affiche en lecture seule à côté de la
+mesure. Hors ligne, ou quand la mesure n'est pas représentative (filtration
+arrêtée, stabilisation), la valeur est remplacée par un tiret.</p>
+
+<p><strong>Une pastille d'état par carte</strong> — en haut à droite de
+chaque carte, un petit point de couleur suivi d'un mot. <strong>Le mot dit
+l'état, la couleur ne fait que l'appuyer</strong>&nbsp;:</p>
+<ul>
+  <li><strong>point vert</strong> — l'appareil fait ce qu'on attend de lui
+  («&nbsp;En marche&nbsp;», «&nbsp;Mode Auto&nbsp;», «&nbsp;À jour&nbsp;»,
+  «&nbsp;Allumée&nbsp;»)&nbsp;;</li>
+  <li><strong>point gris</strong> — repos ou information normale
+  («&nbsp;Arrêtée&nbsp;», «&nbsp;Mode Arrêt&nbsp;», «&nbsp;En attente&nbsp;»,
+  «&nbsp;Éteinte&nbsp;»)&nbsp;;</li>
+  <li><strong>point ambre</strong> — l'appareil s'écarte de son
+  fonctionnement automatique et cela mérite un regard&nbsp;: filtration
+  <em>forcée</em>, sonde de température absente, dosage pH/chlore en défaut
+  de l'appareil.</li>
+</ul>
+<p>Sur les cartes pH et Chlore, la pastille garde toujours le texte du mode
+(«&nbsp;Mode Auto&nbsp;», «&nbsp;Mode Programme&nbsp;», «&nbsp;Mode
+Arrêt&nbsp;») : c'est ce qui vous permet de voir d'un coup d'œil que la
+régulation a été arrêtée. Un dosage simplement <em>en attente</em>
+(filtration arrêtée la nuit, par exemple) <strong>n'est pas</strong> ambre.</p>
+
+<p><strong>Le bouton «&nbsp;Modifier&nbsp;»</strong> — sur les cartes pH, Chlore
+et Filtration, les réglages qu'on touche rarement (mode de régulation,
+consigne, bouton «&nbsp;Sauvegarder&nbsp;», horaires) sont repliés derrière
+un bouton «&nbsp;Modifier&nbsp;». Un appui l'ouvre, un second le referme&nbsp;;
+la carte ne se replie jamais toute seule, même quand les mesures se
+rafraîchissent. Les bandeaux d'alerte, eux, restent toujours visibles. La
+carte Éclairage garde ses trois boutons sur la face, et la carte Température
+n'a rien à régler (simple lien «&nbsp;Réglages&nbsp;»).</p>
+
+<p><strong>Sous la valeur</strong>, un petit badge peut résumer une situation
+particulière&nbsp;:</p>
 
 <p>Si le dosage automatique pH ou chlore est refusé, un <strong>bandeau</strong>
 apparaît en haut de page, au-dessus des cartes&nbsp;: la voie concernée, la
@@ -528,16 +565,25 @@ exactement ce que son nom annonce&nbsp;:</p>
 
 <p><strong>Marche</strong> et <strong>Arrêt</strong> durent jusqu'à ce que
 vous changiez de mode&nbsp;: pas de retour automatique au bout de quelques
-heures, pas de réinitialisation au redémarrage de l'appareil. Les boutons
-<strong>Démarrer</strong> / <strong>Arrêter</strong> sont un raccourci pour
-passer directement en mode Marche ou Arrêt.</p>
+heures, pas de réinitialisation au redémarrage de l'appareil.</p>
+
+<p><em>Depuis la version&nbsp;2.96, sur le tableau de bord.</em> La carte Filtration
+garde sur sa face deux boutons, <strong>Forcer marche</strong> et
+<strong>Forcer arrêt</strong>, pour agir sans rien ouvrir. Dès qu'un forçage est actif, la
+pastille passe à l'ambre, la carte annonce «&nbsp;Marche forcée&nbsp;» ou
+«&nbsp;Arrêt forcé&nbsp;» avec la mention «&nbsp;Horaires suspendus&nbsp;», et un bouton
+<strong>Revenir en Auto</strong> apparaît. ⚠️ Ce bouton ramène toujours en mode
+<strong>Auto</strong>, jamais en Programme&nbsp;: si vous utilisiez le mode Programme, choisissez-le
+à nouveau dans «&nbsp;Modifier&nbsp;» — vos horaires enregistrés ne sont pas effacés. Le choix
+entre les quatre modes se trouve dans «&nbsp;Modifier&nbsp;».
+⚠️ Un arrêt forcé <strong>bloque aussi le dosage pH et chlore</strong>&nbsp;: ne l'oubliez pas.</p>
 
 <p>⚠️ Pensez-y en hivernage ou pendant un entretien&nbsp;: un appareil
 laissé en mode Arrêt le reste tant que vous n'avez pas changé le mode vous-même.</p>
 
 <p><em>Depuis la version&nbsp;2.80.</em> En mode <strong>Programme</strong>, les heures de début
 et de fin se règlent aussi <strong>directement depuis la carte Filtration du tableau de bord</strong>
-(un bouton «&nbsp;Sauvegarder&nbsp;» dédié valide la saisie). Deux garde-fous&nbsp;:</p>
+(dans le volet «&nbsp;Modifier&nbsp;», avec un bouton «&nbsp;Sauvegarder&nbsp;» dédié qui valide la saisie). Deux garde-fous&nbsp;:</p>
 <ul>
   <li>une heure de début <strong>identique</strong> à l'heure de fin est <strong>refusée</strong>
   — ce réglage ferait tourner la filtration zéro heure par jour, sans qu'auparavant rien ne
@@ -736,8 +782,9 @@ n'est plus un mode, c'est un geste décrit plus bas)</em>&nbsp;:</p>
 </ul>
 
 <p><em>Depuis la version&nbsp;2.80.</em> En mode <strong>Auto</strong>, ces quatre positions sont
-aussi accessibles <strong>directement depuis la carte pH du tableau de bord</strong> — la ligne
-«&nbsp;Cible&nbsp;» a disparu, la consigne se règle au même endroit qu'elle s'affiche. ⚠️
+aussi accessibles <strong>directement depuis la carte pH du tableau de bord</strong>, derrière le
+bouton «&nbsp;Modifier&nbsp;» (depuis la version&nbsp;2.96)&nbsp;; en mode Auto, la consigne
+reste affichée en lecture seule à côté de la mesure. ⚠️
 Différence avec cette page&nbsp;: sur la carte, un clic <strong>ne suffit pas</strong> — un bouton
 «&nbsp;Sauvegarder&nbsp;» dédié valide le choix, pour éviter qu'un effleurement change une
 consigne par erreur. Si un étalonnage de sonde est en cours (pH <strong>ou</strong> chlore), la
@@ -944,7 +991,7 @@ sur la filtration, sans regarder la mesure) et <strong>Arrêt</strong>
 disponible dans les trois modes, voir plus haut).</p>
 
 <p><em>Depuis la version&nbsp;2.80.</em> En mode Auto, la consigne en millivolts se règle
-<strong>directement depuis la carte Chlore du tableau de bord</strong> (champ libre, avec sa
+<strong>directement depuis la carte Chlore du tableau de bord</strong> (derrière «&nbsp;Modifier&nbsp;» ; champ libre, avec sa
 plage autorisée affichée juste en dessous) ou sur cette page — la ligne «&nbsp;Cible&nbsp;» a
 disparu des deux. Un bouton «&nbsp;Sauvegarder&nbsp;» valide le changement, il n'est jamais
 appliqué au simple survol ou à la frappe. <strong>Si une chloration de secours est en cours et

@@ -46,6 +46,9 @@ contexte d'origine.
 | Incrémenter/décrémenter une valeur (offset) | `.stepper` | Page de réglage uniquement |
 | Déclencher une action immédiate (Allumer, Activer, Arrêter une injection) | `.btn` + variante (§5.4) | Les deux |
 | Afficher une option secondaire dans une carte (Boost) | `.card__option` (§5.5) | Carte d'accueil |
+| Dire l'état d'une carte d'accueil, d'un coup d'œil (feature-195) | `.dash-pill` (§5.24) | **Carte d'accueil uniquement** |
+| Replier les réglages rares d'une carte d'accueil (feature-195) | `.card__fold` + `.card__fold-panel` (§5.24) | **Carte d'accueil uniquement** |
+| Déroger au mode d'une carte d'accueil d'un seul geste (Forcer marche / Forcer arrêt, Revenir en Auto) | `.dash-act` — « bouton de dérogation » (§5.24) | **Carte d'accueil uniquement** |
 | Afficher une paire libellé/valeur en lecture seule | `.detail-row` (§5.6) | Les deux |
 | Indiquer un état ponctuel (En marche / Inactif / Calibration requise) | `.state-badge` (§5.7) | Les deux |
 | Visualiser une mesure sur une échelle | `.gauge` (§5.8) | Carte d'accueil |
@@ -92,6 +95,26 @@ changement d'état standard), `--transition-slow` (300ms, apparition de bloc).
 
 ## 4. États obligatoires
 
+### ⚠️ « Donnée absente ⇒ on n'affiche rien » — et l'unique exception, bornée
+
+Règle du projet : **une donnée absente ne s'affiche pas**, ⛔ jamais une valeur par défaut.
+Elle vient d'un défaut réel, corrigé en revue de feature-162, qu'on n'avait vu **que sur
+capture** parce que le code JS était juste et que c'était sa *source* qui mentait.
+
+**feature-195 introduit une exception, et la voici déclarée avec sa borne.** La pastille
+d'éclairage de la carte d'accueil **déduit** « Allumée / Éteinte » du **mode** quand l'état
+réel du relais est absent — c'est le cas sur toute la cadence HTTP de 30 s, car
+`lighting_enabled` n'existe **que** dans la trame WebSocket.
+
+⛔ **La borne, et elle n'est pas négociable** : le relais ne suit le mode que si la
+**fonction éclairage est activée**. Quand `lighting_feature_enabled` est faux,
+`src/lighting.cpp` force la broche à LOW et sort **avant** `decideLightingOn()` — « Mode
+Allumé » afficherait alors « Allumée » **lampe éteinte**. ⇒ Ce cas est traité **avant** la
+déduction, et il est **certain**, pas déduit.
+⇒ **Toute autre déduction d'un état à partir d'un mode doit être déclarée ici, avec la
+preuve, côté firmware, que le mode entraîne bien l'état.**
+
+
 Tout élément interactif (bouton, segment, badge cliquable) déclare au minimum :
 
 | État | Attendu |
@@ -110,8 +133,10 @@ Tout élément interactif (bouton, segment, badge cliquable) déclare au minimum
 **Rôle** : une tuile du tableau de bord (Filtration, Éclairage, pH, ORP, Température).
 **Contexte** : carte d'accueil uniquement (la page de réglage utilise `.card--detail`,
 colonne unique, pas d'en-tête icône+badge).
-**Structure** : `.card__status-header` (icône, libellé, **un seul** badge d'état, bouton
-réglages) → `.card__body` (contenu propre à la carte, voir composants ci-dessous).
+**Structure** : ⚠️ **refondue par feature-195 (v2.96.0)** — voir §5.24. `.dash-head` (icône, titre en
+casse normale, **une seule** pastille `.dash-pill`) → `.card__body` (mesure `.dash-hero`, jauge,
+bandeaux d'exception, volet `.card__fold`, lien « Réglages › »). Les anciens `.card__status-header`,
+`.card__status-label` et la roue dentée de 34 px ne servent plus sur l'accueil.
 ⚠️ `.card--status .card__body` n'a **pas de `gap`** — c'est une dette (§10). En attendant,
 tout nouveau bloc ajoute sa propre marge, toujours une valeur du jeton d'espacement (§3),
 **jamais 0** sauf si le bloc précédent porte déjà la marge.
@@ -125,6 +150,11 @@ quand le même choix y est dupliqué (`#ph_regulation_mode`, `#orp_regulation_mo
 `dashboard-orp-mode`, `ph_regulation_mode`, `orp_regulation_mode`), **6** après.
 ⚠️ La carte **Filtration n'emploie pas** `.mode-select` : 4 options en grille 2×2 dédiée
 (`.filtration-modes`), parce que 4 colonnes ne tiennent pas à 390 px (calcul §6).
+⚠️ **Deux apparences selon le contexte (feature-195, v2.96.0)** : sur la carte d'accueil
+(`.card--status .mode-select`), le segment sélectionné est à l'**encre** (fond `--text`, texte blanc),
+boutons de 44 px ; sur les pages de réglage, il reste **bleu** (`btn--primary`). C'est un
+**contexte d'emploi déclaré**, pas une troisième forme. ⚠️ Les pages de réglage s'aligneront dans un
+lot ultérieur **si la direction est validée** — d'ici là, l'écart est connu et voulu.
 **Base** : ce que Filtration fait déjà — ne pas réinventer.
 **Balisage** :
 
@@ -204,6 +234,9 @@ l'appareil.
 **Contexte** : carte d'accueil uniquement. Fond `--panel2`, liseré `--stroke`, titre 14px
 sans majuscules forcées (contraste voulu avec `.card__status-label`, qui lui capitalise).
 Un seul gabarit « option » pour tout le projet — ne pas en créer un second par carte.
+⚠️ Depuis feature-195, sur l'accueil (`.card--status .card__option`) : sans surlignage en capitales ;
+le bouton « Activer » du Boost est **neutre** (au plus une action bleue par carte, §5.24). Dans le
+volet « Modifier » de la Filtration.
 
 ### 5.6 `.detail-row`
 Paire libellé/valeur en lecture seule, `justify-content:space-between`. Piloté par
@@ -218,6 +251,10 @@ Pastille d'état : `--ok` (vert, fonctionnement normal), `--off` (gris neutre, �
 en-tête peut n'en afficher **aucun** quand le mode actif décrit déjà entièrement l'état (carte
 Éclairage en Allumé ou Éteint). Le badge ne réapparaît que lorsque **l'état réel peut différer du
 mode demandé** (Éclairage en Programme, Filtration dans tous ses modes).
+⚠️ **Sur la carte d'accueil, `.state-badge` n'est plus employé pour l'état de la carte** : c'est la
+pastille `.dash-pill` (§5.24) qui le dit, dans une grammaire unique. `.state-badge` garde son rôle
+ailleurs, et son apparence est **scopée** (`.card--status`) pour les emplois restants — même
+contexte d'emploi à deux apparences que `.mode-select`.
 ⛔ Ne pas empiler deux pastilles qui décrivent la même chose sous deux angles (motif déjà choisi pour Filtration : `état réel` dans le
 badge, `mode demandé` dans `.card__status-mode`, jamais les deux dans un badge).
 
@@ -442,6 +479,22 @@ Dans les trois cas : un `.detail-actions` avec **un seul** `.btn--primary` « Sa
 contrôle libre ⇒ plage invisible ⇒ texte requis.* La parité pH/ORP porte sur la **PRÉSENCE de
 l'information** quelque part dans l'interface, ⛔ **pas** sur la forme du composant qui la porte.
 
+### ⚠️ AMENDEMENT feature-195 (v2.96.0) — la consigne reste affichée en lecture seule, en mode Auto seulement
+La règle ci-dessous (« toute mention statique disparaît quand la valeur devient éditable ») est
+**amendée** : l'édition passe désormais derrière un volet « Modifier » **replié** (§5.24), donc la
+valeur n'est plus visible *dans* la zone d'édition. La **consigne pH / ORP** s'affiche en **lecture
+seule à droite de la mesure** (`#dash-ph-target-ro`, `#dash-orp-target-ro`), **en mode Auto
+seulement** — même règle de visibilité que la jauge : en Programme ou en Arrêt rien n'est poursuivi,
+donc la carte **n'affirme aucune cible**. Même source (`window._config`), un seul formateur partagé.
+⇒ La règle « l'information vit à UN SEUL endroit » reste vraie : la valeur éditable est dans le volet,
+la valeur lue est à côté de la mesure — jamais deux lignes de lecture.
+
+### ⚠️ AMENDEMENT feature-195 — Filtration : l'horaire devient un titre, pas une ligne de formulaire
+Sur la face de la carte Filtration, l'horaire (Auto, Programme) est la **ligne héros** (32 px / 800,
+`#detail-filtration-schedule`) — il n'y a **plus de** ligne `.detail-row` étiquetée « Horaires ». En mode forcé, la
+ligne héros dit « Marche forcée » / « Arrêt forcé » avec « Horaires suspendus ». L'**édition** de
+l'intervalle horaire (deux `.field`) est dans le volet « Modifier », en mode Programme.
+
 ### ⚠️ RETRAIT ASSOCIÉ — la règle qui empêche l'empilement
 Quand une valeur devient **éditable** dans le corps d'une carte, **toute mention STATIQUE de cette
 même valeur ailleurs dans la carte DISPARAÎT** — retirée du DOM, ⛔ pas seulement masquée.
@@ -577,6 +630,95 @@ uniquement. Masqué par défaut (puces), révélé sur geste explicite (60 s pui
 dès que la page passe en arrière-plan). Le bouton associé (`.ap-pwd-btn`) fait 44 px de haut et
 passe en pleine largeur sous 500 px.
 
+### 5.24 Langage visuel du tableau de bord (feature-195, v2.96.0, [ADR-0135](adr/0135-l-accueil-montre-les-reglages-reglent-la-couleur-n-est-que-sur-la-donnee.md))
+**Principe** : **l'accueil montre, un volet règle, les pages de réglage configurent. La couleur n'est
+que sur la donnée.** Portée : **tableau de bord uniquement**. Les jetons sont **scopés** `.card--status` :
+`--card-radius`, `--shadow` et `--card-border` (43 cartes de l'application) **ne bougent pas**.
+Fond de page plus bleuté (`--bg-gradient-start/end`, global) ; `login.html`, `wifi.html` et `wizard.html`
+gardent leur ancien fond.
+
+**Jetons (scopés `.card--status`)** : `--dash-radius: 22px` · `--dash-shadow` (diffuse, sans bordure) ·
+`--dash-pad: 18px` · `--dash-chip-bg: #f1f3f7` · `--dash-dot-ok #15803d` / `--dash-dot-off #6b7280` /
+`--dash-dot-warn #b45309` · `--hero-size: 48px` (40 px ≤ 360 px) · `--hero-weight: 800`.
+Aucun survol sur ces cartes (elles ne se cliquent pas) ; `prefers-reduced-motion` respecté.
+
+#### `.dash-pill` — pastille d'état
+**Contexte d'emploi** : **carte d'accueil uniquement**. **Une par carte**, écrite par `setDashPill()` seule.
+**Grammaire unique** (la couleur est dans la **puce de 8 px**, le texte est toujours `--text` : aucun
+verdict porté par la couleur seule, §7) :
+
+| Puce | Sens | Exemples |
+|---|---|---|
+| **Verte** (`data-tone="ok"`) | fonctionnement attendu en cours | En marche · Mode Auto · Mode Programme · À jour · Allumée |
+| **Grise** (`off`, défaut) | repos ou information normale | Arrêtée · Mode Arrêt · En attente · Éteinte · Hors ligne · **Hors gel** |
+| **Ambre** (`warn`) | l'appareil s'écarte de son fonctionnement automatique attendu, **et ça demande un regard** | pH/ORP : `doseBlockVariant === 'danger'` · Filtration : mode **forcé** · Température : sonde absente |
+
+⛔ **Pas d'ambre** pour : filtration arrêtée sur pH/ORP (codes 2, 7, 8, 10-14, marches attendues),
+étalonnage en cours (il a son bandeau), « En attente », arrêt normal d'Auto hors créneau, Éclairage
+(jamais). Aucune autre teinte, **pas de rouge**. Une exception (stock faible, étalonnage, sonde) est une
+**bande** sous la mesure (`.sensor-badge`), jamais une seconde pastille. Libellés ≤ 14 caractères
+(« Température » + « Sonde absente » = 272 px sur 326 utiles à 390 px).
+⚠️ **« Hors gel » passe de l'ambre au gris, texte inchangé** — ce n'est pas un correctif : le libellé
+annonce toujours une protection qui n'existe pas ([bug-197](../specs/features/todo/bug-197-le-libelle-hors-gel-annonce-une-protection-qui-n-existe-pas.md)).
+**Sur pH/ORP**, la pastille porte le **texte du mode** (« Mode Auto / Programme / Arrêt ») — texte gaté
+C5, jamais tronqué ni réduit à la puce ; hors ligne il est conservé (puce grise), les autres cartes
+disent « Hors ligne ».
+
+**Sur Éclairage**, la pastille a **quatre** libellés, pas deux : « Allumée », « Éteinte »,
+**« Programme »** et « Hors ligne ». « Programme » est le cas où l'état réel du relais est inconnu
+**et** où le mode ne permet pas de le déduire : ⇒ la pastille **refuse de deviner** et nomme le mode.
+⛔ Ne jamais la faire basculer sur « Allumée » ou « Éteinte » par défaut dans ce cas (règle §4).
+
+⚠️ **Priorité des teintes sur la Filtration, arbitrage à connaître** : « Hors gel » **l'emporte** sur
+« forcé ». Une **Marche forcée** sous 5 °C affiche donc « Hors gel · puce grise », et le signal
+« état imposé par l'utilisateur » **disparaît**. Le cas est atteignable (« Hors gel » exige que la
+pompe tourne, ce qu'une marche forcée garantit). Ça ne **ment** pas — les deux textes diffèrent — mais
+c'est un choix, pas un hasard : le **fait météo** prime sur l'**origine de la commande**.
+⇒ Si [bug-197](../specs/features/todo/bug-197-le-libelle-hors-gel-annonce-une-protection-qui-n-existe-pas.md)
+retire ou renomme « Hors gel », **rejuger cette priorité** au lieu de la reconduire par inertie.
+
+#### `.dash-act` — « bouton de dérogation » (Forcer marche / Forcer arrêt / Revenir en Auto)
+**Contexte d'emploi** : **carte d'accueil uniquement** (carte Filtration). Autre geste que le choix du
+mode : une **dérogation** par-dessus lui, qui passe par le **même** `setFiltrationRunMode()` que le
+sélecteur à 4 modes du volet. 44 px, neutre ; sélectionné (`aria-pressed="true"`) = encre. En Auto et
+Programme, aucun n'est sélectionné. « Revenir en Auto » (`.dash-act--wide`) n'apparaît **que** forcé et
+ramène **toujours en Auto** (jamais en Programme). ⚠️ Marche/Arrêt existent à deux endroits : la parité est
+tenue par `updateFiltrationModeButtons()` qui met à jour **les deux jeux** dans la même fonction.
+**Règle de teinte** : puce grise = arrêt normal du mode ; puce **ambre = état imposé par l'utilisateur**.
+
+#### `.card__fold` / `.card__fold-panel` — volet « Modifier »
+**Contexte d'emploi** : **carte d'accueil uniquement** (pH, ORP, Filtration). Bouton pleine largeur de
+44 px, chevron en **caractère de texte** (▾ / ▴), `aria-expanded` + `aria-controls`. **Piloté par le clic
+seul** (`bindDashFolds`) : ⛔ aucune fonction `render*` ne l'ouvre ni ne le ferme, et le bouton n'est
+**jamais** `disabled` (sinon l'escalade rendrait « Arrêt » inatteignable). Les bandeaux
+(`#dose-block-banner`, `#rescue-active-banner`) et le texte C7 « La régulation automatique ne dose plus… »
+restent **hors** du volet. Le lien « Tous les réglages › » (`.card__link`, 44 px) en est la dernière ligne ;
+la carte Température, sans volet, n'a que ce lien. Les roues dentées de 34 px disparaissent.
+
+#### Qui a deux apparences — contexte d'emploi déclaré, pas une troisième forme
+`.mode-select`, `.state-badge`, `.segmented--num` et `.card__option` ont **deux apparences selon le
+contexte** : **encre** sur la carte d'accueil (scopées `.card--status`), **bleu** sur les pages de
+réglage. Les pages de réglage **s'aligneront dans un lot ultérieur si la direction est validée** ; ce
+lot ne touche que le tableau de bord. ⚠️ Ne pas « corriger » un emploi hors accueil dans l'intervalle :
+ce serait une application partielle.
+**Règle de couleur des commandes (accueil)** : sélection = encre ; action = `--accent`, **au plus une
+action bleue par carte** ; verrou d'étalonnage : garde son fond `--warn`.
+
+#### Cas limites
+Hors ligne : héros « – », pastilles « Hors ligne » (sauf pH/ORP), commandes désactivées, jauge `--stale`.
+Mesures non représentatives : héros « – », pastille « En attente », jauge `--stale` **+ le mot d'état
+conservé** (`#ph-gauge-state`, exception bloquante d'un gate `pool-chemistry`). Sonde absente : « – »,
+**jamais une valeur figée**, pastille « Sonde absente » (ambre). Chargement : « Chargement… » grise.
+Nombres à la française (virgule), **un seul formateur** `fmtFr` pour `/data` et WebSocket, chiffres de
+largeur fixe.
+
+#### Choses connues et non faites
+- **R1 — perte assumée** : l'avertissement « consigne pH à la borne haute » n'est plus visible en
+  permanence sur l'accueil (dans le volet). Il informe, il ne protège pas.
+- **R2 — non fait** : « Volume quotidien » et « Limite de sécurité » sont dans le volet alors qu'en mode
+  Programme ils disent ce que l'appareil va faire.
+- **Mode sombre** : toujours inexistant (§8).
+
 ## 6. Responsive — 390 px d'abord
 
 Référence de calcul pour toute nouvelle rangée de boutons dans une carte d'accueil :
@@ -649,6 +791,7 @@ le rendu au lieu de le déduire d'une feuille de style.
 ./tools/ui_shot.sh -r '#/ph' -o /tmp/ph.png     # une autre page
 ./tools/ui_shot.sh -f cal_switch_active=true    # forcer un état rare
 ./tools/ui_shot.sh -k '#ph_cal_trigger_btn'      # cliquer avant la capture (v2.82.0)
+./tools/ui_shot.sh -n                           # faux WebSocket : PAS de bandeau hors ligne (v2.96.0)
 ```
 
 ⚠️ **`-k SELECTEUR` (v2.82.0)** : clique sur l'élément désigné **avant** la capture — indispensable pour
@@ -657,6 +800,19 @@ repliable, modale). Sans elle, ces écrans étaient **invisibles à l'outil**, e
 d'ergonomie les concernant partait **sans image jointe** — ce que `CLAUDE.md` qualifie de brief
 incomplet (voir « L'UX n'est pas optionnel »). Plusieurs `-k` s'enchaînent dans l'ordre donné
 (ex. ouvrir le mode réglage **puis** cliquer sur un onglet à l'intérieur).
+
+⚠️ **`-n` (2026-11-18) — sans elle, une capture du TABLEAU DE BORD ne montre AUCUNE mesure.**
+L'outil sert `data/` et les réponses figées, mais **aucun WebSocket** : l'application ne voit
+jamais de socket s'ouvrir, se déclare « Déconnecté », et `setNetState('bad')` **remplace les
+valeurs pH, ORP et température par « – »**. ⇒ L'image ne porte alors pas le sujet même de la
+page. `-n` installe un faux WebSocket qui s'ouvre et se tait — exactement l'état d'un appareil
+connecté et silencieux.
+⛔ **Elle reste optionnelle, et ce n'est pas un oubli** : l'écran **hors ligne** est lui aussi à
+photographier, et il l'est **par défaut**. C'est d'ailleurs sur une capture prise **sans** `-n`
+qu'a été trouvé [bug-196](../specs/features/todo/bug-196-le-bandeau-hors-ligne-passe-sous-le-bouton-menu.md)
+(le bandeau d'état passe sous le bouton de menu à 390 px).
+⇒ **Règle** : capture du tableau de bord pour un brief d'ergonomie ⇒ **avec `-n`** ; capture de
+l'état hors ligne ⇒ **sans**.
 
 ⚠️ **`-f` est le plus utile et le moins évident** : il force un champ de `/data` pour atteindre un
 état qu'on ne peut pas provoquer à la demande. C'est ainsi qu'a été vérifié le rendu **verrouillé**

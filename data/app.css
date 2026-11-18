@@ -1,7 +1,7 @@
 :root {
   /* 2026 Ambient Gradient Background */
-  --bg-gradient-start: #e8ecf4;
-  --bg-gradient-end: #dfe5f0;
+  --bg-gradient-start: #d9e2fb;
+  --bg-gradient-end: #e6e3f8;
   --bg: linear-gradient(135deg, var(--bg-gradient-start) 0%, var(--bg-gradient-end) 100%);
 
   /* Panels & Cards */
@@ -117,7 +117,7 @@ body {
 body {
   margin: 0;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-  background: linear-gradient(135deg, #e8ecf4 0%, #dfe5f0 100%);
+  background: var(--bg);
   background-attachment: fixed;
   color: var(--text);
   -webkit-font-smoothing: antialiased;
@@ -2409,141 +2409,269 @@ input.is-computed:disabled {
   align-items: start;
 }
 
-/* 2026 Status cards - enhanced hover states */
+/* ============================================================================
+   feature-195 — LANGAGE VISUEL DU TABLEAU DE BORD (carte d'accueil UNIQUEMENT).
+   « L'accueil montre · un volet règle · les pages de réglage configurent. »
+   ⛔ Tous les jetons sont SCOPÉS `.card--status` : --card-radius/--shadow/
+   --card-border servent aux 43 cartes du reste de l'application et ne bougent
+   pas. Même règle pour .mode-select, .segmented--num, .card__option,
+   .state-badge : restyle scopé, les emplois hors accueil restent inchangés.
+   La couleur ne vit que sur la DONNÉE (jauges, puce) : le chrome est neutre,
+   la sélection est à l'ENCRE (--text), au plus UNE action bleue par carte.
+   ========================================================================== */
 .card--status {
+  --dash-radius: 22px;
+  --dash-shadow: 0 10px 30px rgba(31, 41, 90, 0.10), 0 2px 6px rgba(31, 41, 90, 0.06);
+  --dash-pad: 18px;
+  --dash-chip-bg: #f1f3f7;
+  --dash-dot-ok: #15803d;
+  --dash-dot-off: #6b7280;
+  --dash-dot-warn: #b45309;
+  --hero-size: 48px;
+  --hero-size-sm: 40px;
+  --hero-weight: 800;
+
   position: relative;
   overflow: hidden;
   display: flex;
   flex-direction: column;
-  transition: all var(--transition-base);
+  border: none;
+  border-radius: var(--dash-radius);
+  box-shadow: var(--dash-shadow);
 }
 
+/* Aucun survol sur ces cartes : elles ne se cliquent pas (fausse affordance),
+   et le survol « colle » sur tactile. Neutralise aussi le lift générique .card:hover. */
 .card--status:hover {
-  transform: translateY(-2px);
-}
-
-/* feature-164 : correctif « survol imbriqué » (DESIGN_SYSTEM.md §5.20) — un
-   .callout placé DANS une .card--status hérite de
-   .callout:hover{transform:translateY(-1px)} EN PLUS du -2px ci-dessus,
-   et sautille. Même correctif déjà appliqué à .product-card .callout
-   (ligne ~3305) ; ce n'est pas un composant neuf. */
-.card--status .callout:hover {
   transform: none;
+  box-shadow: var(--dash-shadow);
 }
+.card--status .callout:hover,
+.card--status .state-badge:hover { transform: none; }
 
 .card--status .card__body {
   display: flex;
   flex-direction: column;
   flex: 1;
+  min-width: 0;
+  padding: 2px var(--dash-pad) var(--dash-pad);
 }
 
-.card__status-header {
+/* En-tête : icône · titre (casse normale) · pastille d'état. min-width:0 +
+   ellipse sur le titre, pastille nowrap : pas de défilement horizontal à 320 px. */
+.dash-head {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 16px;
-  border-bottom: 1px solid var(--stroke);
+  gap: 10px;
+  padding: var(--dash-pad) var(--dash-pad) 6px;
+  min-width: 0;
 }
-
-.card__status-icon {
-  width: 34px;
-  height: 34px;
-  border-radius: 8px;
-  background: var(--panel2);
+.dash-head__icon {
   display: grid;
   place-items: center;
-  color: var(--accent);
   flex-shrink: 0;
-  transition: all var(--transition-base);
-}
-
-.card--status:hover .card__status-icon {
-  background: var(--accent-light);
-  transform: scale(1.05);
-}
-
-.card__status-icon--transparent {
-  background: transparent;
-}
-
-.card__status-info {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-/* 2026 Typography refinement */
-.card__status-label {
-  font-size: 16px;
   color: var(--muted);
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
+}
+.dash-head__title {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-/* feature-147 : rappel du MODE dans l'en-tête de la carte Filtration — texte
-   discret (≈ moitié du titre, non capitalisé), pour ne pas rivaliser avec le
-   titre « FILTRATION » ni avec le bouton de mode déjà en évidence
-   (btn--primary + aria-pressed). Classe dédiée, distincte de
-   .card__status-label (revue code-reviewer feature-147). */
-.card__status-mode {
-  font-size: 12px;
+/* Pastille d'état — GRAMMAIRE UNIQUE des cinq cartes. La couleur est dans la
+   puce de 8 px ; le texte est toujours --text : aucun verdict porté par la
+   couleur seule. Vert = attendu, gris = repos/info, ambre = écart à regarder
+   (puce grise = arrêt normal du mode ; ambre = état imposé / panne). */
+.dash-pill {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: var(--dash-chip-bg);
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+.dash-pill::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--dash-dot-off);
+}
+.dash-pill[data-tone="ok"]::before { background: var(--dash-dot-ok); }
+.dash-pill[data-tone="warn"]::before { background: var(--dash-dot-warn); }
+
+/* Mesure : l'élément le plus grand de la carte. Chiffres de largeur fixe pour
+   ne pas « sauter » à chaque rafraîchissement ; alignée à gauche. */
+.dash-hero {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+  margin-top: 4px;
+}
+.compact-value,
+.dash-hero__value {
+  font-size: var(--hero-size);
+  font-weight: var(--hero-weight);
+  line-height: 1.05;
+  letter-spacing: -0.02em;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  min-width: 0;
+}
+.dash-hero__value--sm { font-size: 32px; letter-spacing: -0.01em; }
+.dash-hero__value--warn { font-size: 28px; color: var(--warn); }
+.compact-unit {
+  font-size: 16px;
   font-weight: 600;
   color: var(--muted);
+  margin-left: 4px;
+}
+.dash-hero__target {
+  flex: 0 1 auto;
+  min-width: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  text-align: right;
+}
+.dash-hero__target[hidden] { display: none; }
+
+.dash-context {
+  margin-top: 2px;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+.dash-context[hidden] { display: none; }
+.dash-context.dash-context--warn { color: var(--warn); font-weight: 600; }
+
+/* Jauge : piste fine, sans liseré ; curseur bordé d'encre (corrige le
+   bleu-sur-bleu en haut d'échelle du pH). Les dégradés ne bougent pas. */
+.card--status .gauge { margin: 14px 0 4px; }
+.card--status .gauge__track { height: 8px; border: none; }
+.card--status .gauge__cursor { border-color: var(--text); }
+.card--status .gauge__legend-state { font-size: 13px; font-weight: 700; }
+@media (prefers-reduced-motion: reduce) {
+  .card--status .gauge__cursor { transition: none; }
 }
 
-/* Pause anti-gel (sécurité) : le texte de mode n'est JAMAIS remplacé (le
-   badge d'état affiche déjà « Hors gel ») — seule sa couleur est teintée en
-   renfort visuel, pendant que la pompe est en pause malgré le mode actif.
-   Réutilise --warn, aucune nouvelle couleur. */
-.card__status-mode--warn {
-  color: var(--warn);
-}
-
-.card__status-info .card__status-state {
-  margin-top: 0;
-}
-
-.card__status-value {
-  font-size: 28px;
-  font-weight: 700;
-  margin-top: 4px;
-  color: var(--text);
-  line-height: 1;
-  letter-spacing: -0.02em;
-}
-
-.card__status-body {
-  padding: 14px 16px;
+/* Dérogations de la carte Filtration : « bouton de dérogation » — carte
+   d'accueil UNIQUEMENT (DESIGN_SYSTEM). Neutre ; pressé = encre. */
+.dash-acts {
   display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
+  margin-top: 14px;
 }
+.dash-act {
+  min-height: 44px;
+  padding: 10px 8px;
+  border: none;
+  border-radius: 12px;
+  background: var(--dash-chip-bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+  min-width: 0;
+}
+.dash-act:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
+.dash-act[aria-pressed="true"] { background: var(--text); color: #fff; }
+.dash-act--wide { width: 100%; margin-top: 8px; }
+.dash-act[hidden] { display: none; }
 
-.card__status-trend {
+/* Volet « Modifier » : bouton pleine largeur de 44 px, chevron en CARACTÈRE de
+   texte. Piloté par le clic SEUL (bindDashFolds). */
+.card__fold {
   display: flex;
   align-items: center;
-  gap: 8px;
-  font-size: 13px;
-  color: var(--muted);
+  justify-content: space-between;
+  width: 100%;
+  min-height: 44px;
+  margin-top: 12px;
+  padding: 10px 14px;
+  border: none;
+  border-radius: 12px;
+  background: var(--dash-chip-bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
 }
+.card__fold:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
+.card__fold-panel { padding-top: 4px; }
+.card__fold-panel[hidden] { display: none; }
 
-.trend-arrow {
-  font-size: 18px;
-}
-
-.trend-arrow--up { color: var(--danger); }
-.trend-arrow--down { color: var(--ok); }
-
-.card__status-state {
+/* Lien vers la page de réglage : 44 px, remplace la roue dentée de 34 px. */
+.card__link {
   display: flex;
+  align-items: center;
+  justify-content: flex-end;
   gap: 6px;
-  flex-wrap: wrap;
+  min-height: 44px;
+  margin-top: 8px;
+  color: var(--text-secondary);
+  font-size: 14px;
+  font-weight: 600;
+  text-decoration: none;
+}
+.card__link:hover { color: var(--accent); }
+.card__link:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
+
+/* Commandes de l'accueil : sélection à l'ENCRE, chrome neutre. Les emplois
+   hors accueil (.mode-select des pages de réglage, #ph_target_group)
+   restent bleus. `:not(:disabled)` : le verrou --warn (étalonnage/escalade)
+   garde son fond. */
+.card--status .mode-select .btn--ghost,
+.card--status .filtration-modes .btn--ghost {
+  border-color: transparent;
+  background: var(--dash-chip-bg);
+  box-shadow: none;
+}
+.card--status .mode-select .btn--primary:not(:disabled),
+.card--status .filtration-modes .btn--primary:not(:disabled),
+.card--status .segmented--num .segmented__btn.is-active:not(:disabled) {
+  background: var(--text);
+  border-color: var(--text);
+  color: #fff;
+  box-shadow: none;
+}
+.card--status .mode-select .btn { min-height: 44px; }
+.card--status .segmented--num .segmented__btn:not(.is-active) {
+  background: var(--dash-chip-bg);
+  border-color: transparent;
 }
 
-/* 2026 State badges - softer, cohérent */
+/* Boost : option mineure, sans liseré ni capitales. */
+.card--status .card__option {
+  background: var(--dash-chip-bg);
+  border: none;
+}
+.card--status .card__option-eyebrow { text-transform: none; letter-spacing: 0; }
+
+@media (max-width: 360px) {
+  .card--status { --hero-size: var(--hero-size-sm); }
+}
+
+/* 2026 State badges (hors accueil : Boost, pompes, circuits) */
 .state-badge {
   display: inline-flex;
   padding: 5px 11px;
@@ -2580,67 +2708,6 @@ input.is-computed:disabled {
   background: rgba(255, 204, 0, 0.08);
   border-color: rgba(255, 204, 0, 0.25);
   color: var(--warn);
-}
-
-.card__status-updated {
-  font-size: 12px;
-  color: var(--muted);
-}
-
-
-.card__settings-btn {
-  flex-shrink: 0;
-  margin-left: auto;
-  width: 34px;
-  height: 34px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--muted);
-  border-radius: 6px;
-  text-decoration: none;
-  transition: color var(--transition-fast), background var(--transition-fast);
-}
-.card__settings-btn:hover {
-  color: var(--accent);
-  background: var(--accent-light);
-}
-.card__settings-btn svg {
-  width: 20px;
-  height: 20px;
-}
-
-.card__status-compact {
-  text-align: center;
-  width: 100%;
-}
-
-
-.compact-value {
-  font-size: 32px;
-  font-weight: 900;
-  color: var(--text);
-  margin-bottom: 6px;
-  line-height: 1;
-  transition: color var(--transition-base);
-}
-
-.card--status:hover .compact-value {
-  color: var(--accent);
-}
-
-.compact-unit {
-  font-size: 14px;
-  color: var(--muted);
-  margin-left: 4px;
-}
-
-.compact-target {
-  font-size: 13px;
-  color: var(--text-secondary);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 
@@ -3516,15 +3583,6 @@ input.is-computed:disabled {
   margin-left: auto;
 }
 
-/* feature-140 : en-tête interne du sous-bloc « Chloration de secours »
-   (#temp-mode-rescue, hors périmètre feature-161) — sans le padding latéral
-   du card__status-header top-level (déjà fourni par le card__body englobant).
-   feature-161 (lot B) : le Boost (#temp-mode-boost) n'utilise plus ce
-   gabarit — voir .card__option ci-dessous. */
-#temp-mode-rescue .card__status-header {
-  padding: 0 0 12px;
-  margin-bottom: 12px;
-}
 .temp-mode__sep {
   border: none;
   border-top: 1px solid var(--border);
@@ -3558,8 +3616,9 @@ input.is-computed:disabled {
   min-width: 0;
 }
 
-/* Discret et en retrait — PAS de majuscules forcées sur le titre (contraste
-   voulu avec .card__status-label qui, lui, capitalise). */
+/* Discret et en retrait — PAS de majuscules forcées sur le titre.
+   (La comparaison portait sur .card__status-label, supprimée par feature-195 :
+   les titres de carte sont désormais en casse normale partout.) */
 .card__option-eyebrow {
   font-size: 11px;
   font-weight: 700;

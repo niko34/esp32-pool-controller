@@ -2,6 +2,28 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [2.96.0] - 2026-11-18
+
+### Fonctionnalités
+- **Tableau de bord refondu — la mesure d'abord (feature-195)**. Sur chaque carte, la mesure est désormais l'élément dominant (48 px, virgule française) ; chaque carte porte **une pastille d'état** unique : point **vert** = fonctionnement attendu, **gris** = repos ou information normale, **ambre** = écart à regarder. Le texte de la pastille dit l'état, la couleur ne fait que l'appuyer.
+- **Bouton « Modifier »** sur les cartes pH, ORP et Filtration : le mode de régulation, la consigne, « Sauvegarder », les horaires et le Boost sont repliés derrière lui (le volet ne se replie jamais tout seul). Le texte du mode pH/ORP reste toujours visible dans la pastille ; les bandeaux d'alerte et le message « La régulation automatique ne dose plus… » restent hors du volet.
+- **Filtration** : « Forcer marche » et « Forcer arrêt » restent sur la face de la carte ; quand elle est forcée, la carte l'annonce (pastille ambre, « Marche forcée » / « Arrêt forcé », « Horaires suspendus ») et un bouton **« Revenir en Auto »** apparaît. ⚠️ Il ramène toujours en Auto, jamais en Programme. Le choix entre les quatre modes est dans « Modifier ». **Éclairage** : garde ses trois boutons sur la face. **Température** : un simple lien « Réglages ».
+- Les roues dentées laissent place à des liens « Réglages › » de 44 px ; fond de page plus bleuté, cartes plus arrondies et sans bordure, titres en casse normale, plus de survol.
+- La consigne pH/ORP s'affiche en lecture seule à côté de la mesure, **en mode Auto seulement**.
+- ⚠️ **Pertes assumées** : l'avertissement « consigne pH à la borne haute » n'est plus visible en permanence sur l'accueil (il est dans le volet ; il informe, la protection réelle est le plafond du firmware) ; « Volume quotidien » et « Limite de sécurité » sont dans le volet, y compris en mode Programme (non traité). Un tap de plus pour changer un mode ou une consigne pH/ORP.
+- La pastille « Hors gel » passe de l'ambre au **gris**, texte inchangé — ce n'est **pas** un correctif : le libellé annonce toujours une protection qui n'existe pas (bug-197).
+- **Ce lot ne touche que le tableau de bord** : les pages de réglage gardent leur apparence, ainsi que `login.html`, `wifi.html` et `wizard.html` (ancien fond).
+
+### Firmware
+- Aucun changement côté ESP32 : interface (`data/`) seulement, aucun nouveau champ `/data`, WebSocket, endpoint ni topic MQTT. Le firmware sert simplement un système de fichiers mis à jour.
+
+### Documentation
+- [ADR-0135](docs/adr/0135-l-accueil-montre-les-reglages-reglent-la-couleur-n-est-que-sur-la-donnee.md) (nouveau) : « l'accueil montre, les réglages règlent » et « la couleur n'est que sur la donnée ».
+- `docs/DESIGN_SYSTEM.md` : §5.24 (pastille d'état, bouton de dérogation, volet « Modifier »), amendements de §5.20, deux apparences déclarées pour `.mode-select` / `.state-badge` / `.segmented--num` / `.card__option` ; `docs/features/page-dashboard.md` ; `docs/user/src/guide-utilisation.html`.
+- Outillage : `./tools/check_dash_pill_vectors.sh` (teinte des pastilles, condition B1 du gate chimique) ; `tools/ui_shot.sh -n` (faux WebSocket pour photographier le tableau de bord avec ses mesures).
+
+---
+
 ## [2.95.0] - 2026-11-18
 
 ### Firmware

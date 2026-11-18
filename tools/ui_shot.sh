@@ -15,6 +15,13 @@
 #   ./tools/ui_shot.sh -f cal_switch_active=true    # forcer un champ de /data
 #   ./tools/ui_shot.sh -c lighting_mode=scheduled   # forcer un champ de /get-config
 #   ./tools/ui_shot.sh -k '#ph_cal_trigger_btn'     # cliquer avant la capture
+#   ./tools/ui_shot.sh -n                           # faux WebSocket : PAS de bandeau hors ligne
+#
+# ⚠️ SANS -n, l'application ne voit aucun socket s'ouvrir, affiche « Deconnecte »
+#    et REMPLACE les mesures pH/ORP/temperature par « - » (constate le 2026-11-18).
+#    ⇒ Toute capture du TABLEAU DE BORD destinee a un brief d'ergonomie se prend
+#      avec -n, sinon le sujet meme de la page est absent de l'image.
+#      L'ecran hors ligne, lui, se photographie SANS -n : c'est le defaut.
 #
 # L'option -k photographie un ecran situe DERRIERE un bouton (sous-vue ouverte
 # par JavaScript, panneau repliable, modale). Sans elle, ces ecrans etaient
@@ -51,8 +58,9 @@ OUT=""
 declare -a FORCE=()
 declare -a FORCE_CFG=()
 declare -a CLICKS=()
+WS_STUB=0
 
-while getopts "w:h:r:p:o:f:c:k:" opt; do
+while getopts "w:h:r:p:o:f:c:k:n" opt; do
   case "$opt" in
     w) WIDTH="$OPTARG" ;;
     h) HEIGHT="$OPTARG" ;;
@@ -62,6 +70,7 @@ while getopts "w:h:r:p:o:f:c:k:" opt; do
     f) FORCE+=("$OPTARG") ;;
     c) FORCE_CFG+=("$OPTARG") ;;
     k) CLICKS+=("$OPTARG") ;;
+    n) WS_STUB=1 ;;
     *) grep '^#' "$0" | sed 's/^# \?//' >&2; exit 2 ;;
   esac
 done
@@ -155,6 +164,8 @@ for k in "${CLICKS[@]:-}"; do
   echo "   clic programmé : $k"
 done
 export UI_SHOT_CLICK
+export UI_SHOT_WS="$WS_STUB"
+[[ "$WS_STUB" == 1 ]] && echo "   faux WebSocket : l'application se croit connectee"
 python3 "$REPO/tools/ui_shot_server.py" "$PORT" "$REPO/data" "$TMP/api" &
 SRV=$!
 for _ in $(seq 1 40); do
