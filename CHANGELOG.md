@@ -2,6 +2,22 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [2.96.1] - 2026-11-20
+
+### Fonctionnalités
+- **Fond du tableau de bord moins saturé** : l'ancien fond était environ deux fois trop saturé et dérivait vers le violet. Il passe à un bleu-gris plus calme, identique à celui des pages de connexion, Wi-Fi et assistant de premier démarrage. Les cartes blanches s'en détachent un peu mieux.
+- **Deux bandeaux du tableau de bord** (secours actif, dosage bloqué) prennent désormais les mêmes coins arrondis que les cartes qui les entourent.
+- **Pied de page** : texte légèrement plus foncé pour rester bien lisible sur le nouveau fond.
+
+### Firmware
+- Aucun changement côté ESP32 : interface (`data/`) seulement, aucun nouveau champ `/data`, WebSocket, endpoint ni topic MQTT. Le firmware sert simplement un système de fichiers mis à jour.
+
+### Documentation
+- `docs/DESIGN_SYSTEM.md` §5.24 : valeurs réelles du fond, bandeaux au rayon `--dash-radius`, exception de couleur du pied de page.
+- Spec feature-195 : entrée du 2026-11-20 (retouches et mesures de contraste).
+
+---
+
 ## [2.96.0] - 2026-11-18
 
 ### Fonctionnalités

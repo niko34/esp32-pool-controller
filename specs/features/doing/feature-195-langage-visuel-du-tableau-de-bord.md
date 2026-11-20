@@ -707,9 +707,33 @@ est le **tap supplémentaire**. Son affirmation initiale était une déduction s
   `data/index.html`. ⇒ [bug-198](../todo/bug-198-le-guide-client-decrit-des-graphiques-absents-du-tableau-de-bord.md),
   ⚠️ dérive **antérieure** à ce lot (commits `cf5fe33`, `4dd8071`).
 
+### Déploiement du 2026-11-18 — fait et vérifié
+
+⚠️ **`./deploy.sh ota-all` N'A PAS été employé** : il **reconstruit** le firmware **et** le
+système de fichiers avant d'envoyer (`deploy.sh:297-301`). Les deux binaires étaient **déjà
+signés** — une reconstruction aurait changé leur empreinte et **invalidé les signatures**,
+exactement l'incident du 2026-11-14 qui a détruit l'interface.
+⇒ Commande réellement passée : **`./ota_update.sh --use-sig both 192.168.1.48`**, qui envoie
+sans recompiler et **relit** les `.sig` au lieu de re-signer.
+
+| Contrôle | Résultat |
+|---|---|
+| `check_release_artefacts.sh` | signatures vérifiées contre la clé **embarquée dans `src/constants.h`** |
+| Empreintes des manifestes | identiques aux `sha256sum` réels des deux binaires |
+| Envoi firmware + système de fichiers | ✅ les deux acceptés |
+| Version annoncée par l'appareil | **2.96.0** (`/get-system-info`), plus de décalage |
+| Interface réellement servie | `card--status` ×5, `dash-` ×60, `--bg-gradient-start:#d9e2fb`, `_fmtPh` ×17 |
+| Journal après redémarrage | 29 INFO, **0 erreur**, 0 avertissement |
+
+⚠️ **Une ligne CRITIQUE au démarrage, SANS rapport avec ce lot** : « Correction de mesure pH de
+**+1,20** relue en mémoire (au-delà de 0,50) ». C'est l'alerte voulue depuis la v2.82.0, et la
+valeur **a dérivé** — elle était mesurée à ~1,0 le 2026-10-16. À rapprocher de l'usure connue de
+la sonde, pas du tableau de bord.
+
 ### Reste à faire
-- [ ] Verdict `code-reviewer`
-- [ ] **D2 — Essai réel sur l'appareil** après déploiement
+- [x] Verdict `code-reviewer` — *Request changes*, 3 points, **tous traités**
+- [ ] **D2 — Essai réel sur l'appareil** : l'appareil tourne en 2.96.0, reste à **juger
+      l'écran sur le téléphone, au bord du bassin** — c'est le seul juge prévu par ce lot
 - [ ] 📸 **Étape humaine** : `screenshots/03_Tableau_de_bord.jpg` est **entièrement périmée**
       (obligatoire). À juger : 04 à 08 montrent les pages de réglage, non touchées, mais le
       fond de page a changé sur **tous** les écrans — un écart de teinte est possible.
@@ -812,3 +836,9 @@ instant, et elle est appelée sur un **surensemble** des occasions.
 `pio run` SUCCESS · `build_fs.sh` SUCCESS 512 Ko · **27 gardes vertes** dont
 `check_dash_pill_vectors.sh` (46/46) · la seule garde rouge est
 `check_release_artefacts.sh`, qui exige une **signature de release** — normal hors release.
+
+### 2026-11-20 — trois retouches CSS postérieures à la v2.96.0 (v2.96.1, `data/app.css` seul)
+Non présentes sur l'appareil déployé en v2.96.0. Statut inchangé : la condition D2 (jugement sur téléphone au bord du bassin) reste à remplir.
+- **Fond de page** : `--bg-gradient-start` `#d9e2fb` → `#c8d3e4`, `--bg-gradient-end` `#e6e3f8` → `#d2d9ea` (ancien fond ~2× trop saturé, teinte 249 vers le violet ; `login/wifi/wizard` déjà corrects). Séparation des cartes blanches : 1,29 → 1,51 (haut), 1,33 → 1,41 (bas).
+- **Bandeaux** `.rescue-active-banner` et `.dose-block-banner__row` : `--card-radius` → `--dash-radius`.
+- **Pied de page** : `.footer .muted` en `--text-secondary` — contraste 4,54:1 → 5,35:1 sur `#d2d9ea` ; portée limitée (les 53 autres `.muted`, en carte blanche, sont à 7,4:1).

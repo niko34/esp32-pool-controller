@@ -1,7 +1,7 @@
 :root {
   /* 2026 Ambient Gradient Background */
-  --bg-gradient-start: #d9e2fb;
-  --bg-gradient-end: #e6e3f8;
+  --bg-gradient-start: #c8d3e4;
+  --bg-gradient-end: #d2d9ea;
   --bg: linear-gradient(135deg, var(--bg-gradient-start) 0%, var(--bg-gradient-end) 100%);
 
   /* Panels & Cards */
@@ -682,6 +682,12 @@ select:focus-visible {
 }
 
 .footer { padding: 2px 6px; }
+/* feature-195 : le pied de page est le SEUL texte .muted pose directement sur
+   le fond degrade. A #d2d9ea, var(--muted) tombe a 4,54:1 — AA, mais sur la
+   limite. var(--text-secondary) remonte a 5,35:1. Portee volontairement
+   limitee au pied de page : .muted compte 53 emplois, tous dans des cartes
+   blanches ou le contraste est de 7,4:1 et n'a aucun besoin d'etre touche. */
+.footer .muted { color: var(--text-secondary); }
 
 /* 2026 View - refined animations */
 .view {
@@ -4315,7 +4321,7 @@ h1, h2, h3 {
   gap: 10px;
   padding: 12px 14px;
   margin-bottom: 14px;
-  border-radius: var(--card-radius);
+  border-radius: var(--dash-radius);
   border: 1px solid var(--border);
   background: var(--panel2);
   box-shadow: var(--shadow-sm);
@@ -4375,7 +4381,7 @@ h1, h2, h3 {
   align-items: flex-start;
   gap: 10px;
   padding: 12px 14px;
-  border-radius: var(--card-radius);
+  border-radius: var(--dash-radius);
   border: 1px solid var(--border);
   background: var(--panel2);
   box-shadow: var(--shadow-sm);

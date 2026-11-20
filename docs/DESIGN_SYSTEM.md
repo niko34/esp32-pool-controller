@@ -635,7 +635,20 @@ passe en pleine largeur sous 500 px.
 que sur la donnée.** Portée : **tableau de bord uniquement**. Les jetons sont **scopés** `.card--status` :
 `--card-radius`, `--shadow` et `--card-border` (43 cartes de l'application) **ne bougent pas**.
 Fond de page plus bleuté (`--bg-gradient-start/end`, global) ; `login.html`, `wifi.html` et `wizard.html`
-gardent leur ancien fond.
+gardent leur propre fond.
+**Retouches v2.96.1 (2026-11-20)** :
+- **Fond** : `--bg-gradient-start` `#c8d3e4`, `--bg-gradient-end` `#d2d9ea` (étaient `#d9e2fb` / `#e6e3f8`,
+  environ deux fois trop saturés, teinte 249 dérivant vers le violet). Aligné sur les trois pages autonomes
+  (`#e8ecf4` / `#dfe5f0`, teinte 219-220), qui étaient déjà correctes. Séparation carte blanche / fond :
+  1,29 → 1,51 (haut), 1,33 → 1,41 (bas).
+- **Rayon** : `--card-radius` garde sa valeur, mais `.rescue-active-banner` et `.dose-block-banner__row`
+  (bandeaux posés sur le tableau de bord, composant réemployé dans un contexte nouveau) prennent
+  `--dash-radius` (22 px) au lieu de 16 px. La phrase « ne bougent pas » vaut pour la valeur du jeton, **pas**
+  pour ces deux emplois.
+- **Exception de couleur documentée** : `.footer .muted { color: var(--text-secondary); }`. Le pied de page est
+  le seul `.muted` posé directement sur le fond dégradé : `var(--muted)` y tombe à 4,54:1 (AA, sur la limite),
+  `--text-secondary` donne 5,35:1. Les 53 autres emplois de `.muted` sont dans des cartes blanches (7,4:1) et
+  ne doivent pas être modifiés : **ne pas généraliser cette exception « par cohérence ».**
 
 **Jetons (scopés `.card--status`)** : `--dash-radius: 22px` · `--dash-shadow` (diffuse, sans bordure) ·
 `--dash-pad: 18px` · `--dash-chip-bg: #f1f3f7` · `--dash-dot-ok #15803d` / `--dash-dot-off #6b7280` /
