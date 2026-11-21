@@ -4,9 +4,9 @@
 | | |
 |---|---|
 | Type | bug — 🔴 **sécurité, provisionnement Wi-Fi** |
-| Statut | **doing** — étude faite, arbitrage en attente de l'utilisateur |
+| Statut | **done** — close le **2026-11-21**. Code livré en **2.95.0**, mesuré sur l'appareil réel le 2026-11-21. Restes portés par bug-186 (2 essais) et bug-200 (2 messages) |
 | Priorité | normale — ⚠️ **touche la livraison client**, pas l'appareil de l'utilisateur en service |
-| Version cible | à définir |
+| Version cible | **2.95.0** — livrée (commit `486bd85`) |
 | Relevé par | `security-reviewer` (P2 de [`bug-181`](../done/bug-181-get-config-expose-la-configuration-sans-authentification.md)), 2026-11-17 — ⭐ **vérifié dans le code** le même jour |
 | Décision | l'utilisateur a demandé le 2026-11-17 de **garder le sujet en attente**, plutôt que de l'abandonner |
 
@@ -397,10 +397,114 @@ mutation             13 sur 13 tuées
 9 gardes d'hygiène   vertes
 ```
 
-### Reste à faire
-- [ ] **Essai réel sur l'appareil** : lire la clé, en choisir une autre, vérifier qu'un mot de
-      passe d'appareil **accentué** est accepté, et qu'un mot de passe sans majuscule est refusé
-      **avec le bon message**.
+---
+
+## ✅ ESSAI RÉEL SUR L'APPAREIL — 2026-11-21, NON DESTRUCTIF
+
+⛔ **Aucune écriture NVS n'a eu lieu** : tous les envois sont des **refus**, et le mot de passe
+actuel était **correct** à chaque essai — donc ⛔ aucun comptage par le ralentissement de
+bug-189 (qui ne compte que `kDenyBadCurrent`). Vérifié en fin de campagne : reconnexion avec le
+mot de passe d'origine, **HTTP 200**.
+
+### A — Lecture de la clé du point d'accès (`GET /auth/ap-password`)
+
+| Champ | Relevé |
+|---|---|
+| HTTP | **200** |
+| `ap_ssid` | `PoolControllerAP` |
+| longueur de la clé | **8 caractères**, **hexadécimal majuscule** |
+| `ap_password_legacy` | **`true`** |
+
+⭐ **L'INVARIANT DU LOT EST VÉRIFIÉ SUR MATÉRIEL, et c'est le résultat le plus important de la
+journée** : l'appareil de production, monté en 2.95.0 puis 2.96.1, porte **toujours sa clé
+d'origine à 32 bits**. ⛔ Le lot n'a **rien régénéré** — **l'étiquette du boîtier reste vraie**.
+C'est le chemin `auth.cpp:207-214` : une clé héritée est **adoptée comme origine**, elle n'est pas
+remplacée. ⇒ Le drapeau `legacy` fait exactement son travail : il dit « conseille à ton
+propriétaire d'en choisir une autre », ⛔ il ne la change pas dans son dos.
+
+### B — Les cinq refus de la clé Wi-Fi, chacun avec SON message
+
+| Essai | HTTP | Message rendu |
+|---|---|---|
+| 11 caractères | 400 | « … doit faire au moins **12** caractères » |
+| accentuée | 400 | « … n'accepte ni accent, ni caractère invisible, ni espace… » |
+| sans majuscule | 400 | « … au moins une minuscule, une majuscule, un chiffre et un caractère spécial » |
+| espace final | 400 | « … ni caractère invisible, ni espace en début ou en fin » |
+| 64 caractères | 400 | « … ne peut pas dépasser **63** caractères » |
+
+⭐ **Les quatre verdicts restent distincts jusqu'à l'écran.** C'était l'objet de la correction de
+`security-reviewer` P2 (« refus juste, explication fausse ») : il est **mesuré**, plus seulement
+testé en natif.
+
+### C — L'accent sur le mot de passe de l'APPAREIL (le défaut que la revue avait attrapé)
+
+| Essai | HTTP | Verdict rendu |
+|---|---|---|
+| `motdepasse2024!` (pas de majuscule) | 400 | famille manquante |
+| `Été2024!` | 400 | **famille manquante** — ⛔ **PAS** « caractère interdit » |
+| `ééééé2024!A` | 400 | **famille manquante** |
+| 7 caractères | 400 | trop court |
+
+⭐ **Les deux moitiés de la correction sont prouvées sur matériel** : l'accent est **toléré**
+(sinon le verdict serait « caractère interdit ») **et** il ne **compte pour aucune famille**
+(sinon `ééééé2024!A` passerait, l'accent tenant lieu de minuscule). ⚠️ C'est la mutation du
+test natif n° 2, rejouée de bout en bout à travers JSON → HTTP → `apPwdCheck`.
+
+### 🔴 DEUX DÉFAUTS DE MESSAGE TROUVÉS PAR CET ESSAI
+
+**1. Un message en ANGLAIS au milieu de messages français.** Un mot de passe d'appareil trop
+court rend :
+
+> `New password must be at least 8 characters`
+
+⚠️ Toute l'interface est en français, et les **quatre** autres verdicts de cette même route le
+sont (c'est bug-187 qui les a traduits). Ce message-là est **antérieur** au lot et n'a pas été
+revu avec les autres — `web_routes_auth.cpp`, branche `kDenyTooShort`. ⛔ Il n'a pas été vu en
+natif : les suites comparent le **verdict**, pas la **phrase**.
+
+**2. La clé Wi-Fi emprunte un message qui ne dit pas de quoi il parle.** Quatre des cinq refus
+commencent par « Le mot de passe **du point d'accès**… » ; celui de la famille manquante dit
+seulement « Le mot de passe doit contenir… » — **mot pour mot celui du mot de passe de
+l'appareil**. ⚠️ Sur un écran où les deux objets coexistent, l'utilisateur ne sait pas lequel on
+lui reproche.
+
+⛔ Ces deux points **ne remettent en cause aucune garde** : les refus sont justes, c'est leur
+**formulation** qui cloche.
+
+### ⛔ CE QUI NE PEUT PAS ÊTRE ESSAYÉ SUR L'APPAREIL DE PRODUCTION
+
+⭐ **« En choisir une autre » est un aller SANS RETOUR sur cet appareil**, et c'est une découverte
+de l'essai : aucune route ne restaure l'origine (`getApPasswordOrigin()` ne sert qu'à la
+réinitialisation d'usine). ⚠️ Et la clé actuelle — **8 hexadécimaux** — ne pourrait **pas être
+ressaisie** : elle est en dessous du plancher de 12 **et** elle échoue à la règle des quatre
+familles. ⇒ La seule marche arrière serait une **réinitialisation d'usine**, ⛔ interdite sur
+l'appareil de production.
+
+| Essai restant | Pourquoi il ne peut pas se faire ici |
+|---|---|
+| Choisir une autre clé de point d'accès | Irréversible sans réinitialisation d'usine (ci-dessus) |
+| Mot de passe d'appareil accentué **accepté** de bout en bout | Changerait le mot de passe de l'appareil en service, ferait tourner le jeton d'API et révoquerait les sessions ouvertes |
+
+⇒ Les deux rejoignent l'appareil **dédié** de
+[bug-186](../todo/bug-186-cinq-essais-de-premier-demarrage-non-prouves-sur-materiel.md), où la
+réinitialisation est justement le point de départ.
+
+### ✅ CLÔTURE — où part chaque reste (décisions du 2026-11-21)
+
+- [x] ~~Lire la clé~~ — **fait** : legacy, 8 hexadécimaux, étiquette intacte
+- [x] ~~Mot de passe sans majuscule refusé avec le bon message~~ — **fait**, 9 messages relevés
+- [x] ~~Accent toléré et ne comptant pour aucune famille~~ — **fait sur matériel**
+- [→] **Choisir une autre clé** — porté par [bug-186](../todo/bug-186-cinq-essais-de-premier-demarrage-non-prouves-sur-materiel.md), avec son critère d'acceptation propre
+- [→] **Accentué accepté de bout en bout** (persistance NVS d'un UTF-8 multi-octets) — porté par bug-186
+- [→] **M1 / M2, les deux défauts de message** — portés par [bug-200](../todo/bug-200-le-mode-maintenance-suspend-tout-le-dosage-sans-que-l-ecran-le-dise.md), qui recompile déjà le firmware ⇒ ⭐ pas de seconde cérémonie de signature, pas de second redémarrage
+- [ ] 📸 Captures à refaire (étape **humaine**) : `10_Paramètres_2_Wifi.jpg` (obligatoire), `10_Paramètres_5_Sécurité.jpg`, `01_Assistant_Etape_1_Mot_de_passe.jpg`
+
+⚠️ **Pourquoi la fiche se ferme avec des restes** : ⛔ aucun d'eux ne porte sur un **comportement
+non livré**. Le code est en service depuis la **2.95.0**, revu par `security-reviewer` (P1 + P2)
+et `code-reviewer`, 2 696 cas natifs, 13 mutants sur 13 tués, et la campagne du 2026-11-21 l'a
+mesuré sur l'appareil réel. Ce qui reste, ce sont **deux essais qui exigent un appareil que l'on
+peut réinitialiser**, et **deux phrases à réécrire**. Chacun a désormais un foyer **nommé**, avec
+sa propre case à cocher — ⛔ rien ne meurt avec cette fiche.
 - [ ] 📸 Captures à refaire (étape humaine) : `10_Paramètres_2_Wifi.jpg` (obligatoire),
       `10_Paramètres_5_Sécurité.jpg`, `01_Assistant_Etape_1_Mot_de_passe.jpg`.
 

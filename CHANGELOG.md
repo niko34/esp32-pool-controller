@@ -2,6 +2,20 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [2.96.2] - 2026-11-21
+
+### Fonctionnalités
+- **Mesures du tableau de bord un peu moins grandes** : le pH, l'ORP et la température passent de 48 à 32 px et prennent exactement la taille de la plage horaire de la Filtration. Les cinq cartes n'ont plus qu'**un seul étage de grande taille**. C'est la suite de l'essai sur téléphone des 2.96.0 et 2.96.1, pas une correction de défaut. Plus de repli à 40 px sur écran étroit.
+
+### Firmware
+- Aucun changement côté ESP32 : interface (`data/`) seulement.
+
+### Documentation
+- `docs/DESIGN_SYSTEM.md` : `--hero-size` 32 px valeur unique, variantes `--warn`/`--sm`, corps des satellites et motif de la hiérarchie.
+- `docs/features/page-dashboard.md` : corps des mesures mis à jour.
+
+---
+
 ## [2.96.1] - 2026-11-20
 
 ### Fonctionnalités

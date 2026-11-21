@@ -314,6 +314,11 @@ Globaux (fond de page seul, tous écrans) :
 `--dash-pad: 18px` · `--dash-chip-bg: #f1f3f7` · `--dash-dot-ok: #15803d`
 `--dash-dot-off: #6b7280` · `--dash-dot-warn: #b45309`
 `--hero-size: 48px` · `--hero-size-sm: 40px` (≤ 360 px) · `--hero-weight: 800`
+⚠️ **PÉRIMÉ depuis la v2.96.2** — ces deux chiffres sont ceux proposés par l'étude du
+2026-11-18. Le verdict D2 du 2026-11-21 les a ramenés à **`--hero-size: 32px`, valeur
+unique**, et `--hero-size-sm` **n'existe plus** (voir « Verdict D2 » en fin de fiche).
+⛔ Ce bloc est conservé tel quel comme **trace datée de l'étude**, pas comme état courant.
+Le document vivant qui dit le vrai est `docs/DESIGN_SYSTEM.md`.
 
 Mesure : `tabular-nums`, **alignée à gauche**, unité 16 px/600. Jauge : piste 8 px, liseré
 supprimé, **curseur bordé `--text`** (corrige le bleu-sur-bleu en haut d'échelle du pH).
@@ -732,16 +737,19 @@ la sonde, pas du tableau de bord.
 
 ### Reste à faire
 - [x] Verdict `code-reviewer` — *Request changes*, 3 points, **tous traités**
-- [ ] **D2 — Essai réel sur l'appareil** : l'appareil tourne en 2.96.0, reste à **juger
-      l'écran sur le téléphone, au bord du bassin** — c'est le seul juge prévu par ce lot
+- [x] **D2 — Essai réel sur l'appareil** : jugé le **2026-11-21** sur le téléphone ET sur
+      l'ordinateur. ⇒ **Un seul reproche, et il est traité** (voir « Verdict D2 » plus bas).
+      ⏳ Reste à **déployer la 2.96.2** qui porte le correctif, puis à reconfirmer d'un coup d'œil.
 - [ ] 📸 **Étape humaine** : `screenshots/03_Tableau_de_bord.jpg` est **entièrement périmée**
       (obligatoire). À juger : 04 à 08 montrent les pages de réglage, non touchées, mais le
       fond de page a changé sur **tous** les écrans — un écart de teinte est possible.
       `login.html`, `wifi.html` et `wizard.html` gardent l'ancien fond (captures 01 et 02
       inchangées).
-- [ ] Point mineur relevé sur capture, confié à la revue : la bande « Stock faible (0.7 L) »
-      garde un **point** décimal alors que les mesures passent à la **virgule** — deux
-      conventions sur la même carte. ⛔ Ne pas élargir le périmètre sans arbitrage.
+- [x] Point mineur relevé sur capture : le point décimal de « Stock faible (0.7 L) ». ⇒ **Sorti
+      du périmètre et doté de sa propre fiche** par la revue de code :
+      [bug-199](../todo/bug-199-deux-conventions-decimales-sur-le-meme-ecran.md). ⚠️ La capture
+      du 2026-11-21 le montre **deux fois sur le même écran** (pH « Stock faible (0.3 L) » et
+      ORP « (0.0 L) ») — à verser à bug-199, qui avait déjà relevé que le cas n'est pas isolé.
 - [ ] R1 (perte de visibilité permanente de l'avertissement C9) et R2 (volume quotidien)
       **actés comme non traités**, écrits dans le CHANGELOG.
 
@@ -838,7 +846,121 @@ instant, et elle est appelée sur un **surensemble** des occasions.
 `check_release_artefacts.sh`, qui exige une **signature de release** — normal hors release.
 
 ### 2026-11-20 — trois retouches CSS postérieures à la v2.96.0 (v2.96.1, `data/app.css` seul)
-Non présentes sur l'appareil déployé en v2.96.0. Statut inchangé : la condition D2 (jugement sur téléphone au bord du bassin) reste à remplir.
+⚠️ **Mise à jour du 2026-11-21** : la 2.96.1 **a été déployée** le 2026-11-20 (20:23-20:25) par
+`./ota_update.sh --use-sig both`, puis renvoyée par la page le 2026-11-21 — c'est elle qui a servi
+d'essai d'acceptation à [feature-151](../done/feature-151-signature-de-l-image-ota.md). ⇒ La phrase
+« non présentes sur l'appareil » qui figurait ici est **périmée** : ces trois retouches étaient bien
+à l'écran lors du jugement D2.
 - **Fond de page** : `--bg-gradient-start` `#d9e2fb` → `#c8d3e4`, `--bg-gradient-end` `#e6e3f8` → `#d2d9ea` (ancien fond ~2× trop saturé, teinte 249 vers le violet ; `login/wifi/wizard` déjà corrects). Séparation des cartes blanches : 1,29 → 1,51 (haut), 1,33 → 1,41 (bas).
 - **Bandeaux** `.rescue-active-banner` et `.dose-block-banner__row` : `--card-radius` → `--dash-radius`.
 - **Pied de page** : `.footer .muted` en `--text-secondary` — contraste 4,54:1 → 5,35:1 sur `#d2d9ea` ; portée limitée (les 53 autres `.muted`, en carte blanche, sont à 7,4:1).
+
+---
+
+## ⭐ VERDICT D2 — 2026-11-21, L'ÉCRAN JUGÉ SUR LE TÉLÉPHONE
+
+L'utilisateur a regardé le tableau de bord **sur son téléphone** et sur l'ordinateur, avec la
+2.96.1 à l'écran. ⭐ **Le lot passe.** Un seul reproche, et il porte sur ce que le lot a
+délibérément grossi :
+
+> « La taille de la police pour la valeur de pH, température et ORP est même un peu grande.
+> On pourrait adopter la taille de la plage horaire de la filtration. »
+
+⭐ **À lire pour ce qu'il dit** : la règle fondatrice de la fiche — *« la mesure est l'élément le
+plus grand de la carte, sans concurrence »* — est **atteinte**, et même **dépassée**. Le reproche
+n'est pas « on ne voit pas la mesure », c'est « on ne voit qu'elle ». ⇒ Ce n'est pas un défaut
+d'exécution, c'est un réglage de curseur rendu possible par le fait que le reste a été calmé.
+
+⚠️ **Et la référence qu'il donne est interne au lot** : la plage horaire de la Filtration, posée
+par ce même lot à 32 px (`.dash-hero__value--sm`). ⇒ Il ne demande pas une taille, il demande
+**un seul étage de grande taille sur les cinq cartes**.
+
+### Ce qui a changé — v2.96.2, `data/` seul
+
+| Avant | Après | Motif |
+|---|---|---|
+| `--hero-size: 48px` | **`32px`** | le corps de la plage horaire, demandé par l'utilisateur |
+| `--hero-size-sm: 40px` + `@media (max-width: 360px)` | **supprimés** | ⭐ à 32 px, un repli à 40 px rendrait la mesure **PLUS GRANDE** sur écran étroit que sur écran large |
+| `.dash-hero__value--sm { 32px; letter-spacing: -0.01em }` | **supprimée** | à taille égale elle n'a plus d'objet ; la plage horaire hérite du `-0.02em` commun (~4 px sur 13 caractères) |
+| classe `dash-hero__value--sm` dans `index.html:236` et `app.js:5490` | **retirée** | ⛔ ne pas laisser une classe morte derrière une règle supprimée |
+
+⛔ **Rien d'autre n'a bougé** : `--hero-weight: 800`, `.dash-hero__value--warn` (28 px),
+`.compact-unit` (16 px), `.dash-hero__target` (14 px), `--dash-pad`, marges de jauge, pastilles,
+couleurs — **intacts**.
+
+### Avis `ux-ui-designer` — captures AVANT/APRÈS jointes au brief, mandat NON découpé
+
+Le brief ne lui a pas demandé que le chiffre : il lui a demandé **ce que la réduction entraîne
+mécaniquement**. Ses tranchés :
+
+- **32 px confirmé.** ⛔ Pas de contre-proposition : l'utilisateur a jugé sur son vrai téléphone,
+  l'agent n'avait aucune mesure à lui opposer.
+- **`.compact-unit` reste à 16 px.** Le rapport unité/valeur passe de 1:3 à 1:2, mais « mV » reste
+  **plus petit, plus clair et moins gras** que la mesure. La passer à 14 px ferait un **quatrième
+  corps de texte** pour un gain nul.
+- **`.dash-hero__target` reste à 14 px.** ⭐ Le rapport avec la mesure tombe à **2,3**, et la
+  hiérarchie tient quand même — **parce que la taille n'est pas seule à la porter** : la mesure est
+  en 800 et en `--text` (encre), la consigne en 600 et en `--text-secondary`, alignée à droite sur
+  la même ligne de base. ⚠️ C'est ce motif qu'il faut écrire dans le design system, pas le chiffre
+  seul : sinon un futur lecteur croira la règle violée.
+- **`--hero-weight: 800` inchangé.** La plage horaire est déjà en 800 à 32 px — descendre à 700
+  romprait l'alignement que l'utilisateur demande. Et le gras relatif d'un corps plus petit est
+  **plus** lisible, pas moins.
+- **`--warn` gardé à 28 px.** Texte plus long que « 7,3 » (« Marche forcée ») : le réaligner sur
+  32 px risquerait un débordement à 320 px sans bénéfice.
+- **Espacements inchangés.** Chaque carte perd ~16 px de hauteur, l'espace valeur→jauge reste à
+  ~20 px. ⛔ « Retoucher les marges sur une impression visuelle, sans mesure, rouvrirait ce qui
+  vient d'être validé. »
+- **Réserve honnête, écrite telle quelle** : à 32 px la mesure est *« un peu moins spectaculaire »*
+  qu'à 48. ⇒ C'est le prix assumé du verdict de l'utilisateur, pas un angle mort.
+
+### Inventaire d'impact — réel, pas « quelques pages »
+
+| Jeton / classe | Emplois | Hors accueil ? |
+|---|---|---|
+| `--hero-size`, `--hero-weight` | définis `app.css:2436-2437` (scopés `.card--status`), lus `app.css:2533-2534` | **aucun** |
+| `.compact-value` | `index.html:386` (pH), `:496` (ORP), `:582` (température) | aucun |
+| `.compact-unit` | `index.html:496`, `:582` + injections `app.js:6130`, `:6154` | aucun |
+| `.dash-hero__value--warn` | `app.js:5487` | aucun |
+| mention doc | `docs/DESIGN_SYSTEM.md:655` | — |
+
+⇒ Les **43 autres cartes** de l'application ne bougent pas.
+
+### Contrôles
+
+`pio run` **SUCCESS** · `./build_fs.sh` **SUCCESS, 512 Ko** · `pio test -e native`
+**2696 cas, 2696 réussis** · toutes les gardes `tools/check_*.sh` **vertes**, sauf
+`check_release_artefacts.sh` qui exige une signature de release — ⛔ normal hors release.
+
+### ⚠️ À ne pas oublier au déploiement
+
+`src/version.h` passe à **2.96.2** alors que **seul `data/` change** — même piège qu'en 2.96.0.
+⇒ Un envoi du système de fichiers **seul** laisserait l'appareil annoncer **2.96.1** avec
+l'interface 2.96.2. **Envoyer les deux binaires**, et ⛔ par `./ota_update.sh --use-sig both`,
+jamais `./deploy.sh ota-all` qui **reconstruit** et invalide les signatures.
+
+### ✅ DÉPLOIEMENT DE LA 2.96.2 — 2026-11-21, LES DEUX BINAIRES ACCEPTÉS
+
+Envoi par `./ota_update.sh --use-sig <genre> 192.168.1.48`, **un binaire à la fois**.
+⛔ Pas de `./deploy.sh ota-all` : il reconstruit et invaliderait les signatures.
+
+| Envoi | authenticité | liaison manifeste↔image (paramètre) | liaison (empreinte calculée) | empreinte upload |
+|---|---|---|---|---|
+| **firmware** 13:45:19 | ✅ valide — refusé : **non** | ✅ liée — divergente : **non** | ✅ liée — divergente : **non** | ✅ conforme — refusée : **non** |
+| **filesystem** 13:46:21 | ✅ valide — refusé : **non** | ✅ liée — divergente : **non** | ✅ liée — divergente : **non** | ✅ conforme — refusée : **non** |
+
+Appareil relu après chaque redémarrage : `firmware_version` = **2.96.2**.
+Empreinte de la clé publique rejournalisée aux deux démarrages :
+`844449550704da06b085d24a8ae2b079a349730d520e61824dc2816956a57ebb`.
+
+#### ⭐ Un acquis d'outillage qui corrige feature-151
+[feature-151](../done/feature-151-signature-de-l-image-ota.md) a conclu que l'acceptation du
+**firmware** ne pouvait pas être *relevée* — seulement déduite du résultat — parce que le
+redémarrage chasse les lignes de verdict du journal volatil de 8 Ko. ⚠️ **C'est vrai du journal
+volatil, et FAUX du journal persistant** : `/download-logs` a rendu ici les **quatre** lignes de
+verdict du firmware, horodatées, **après** le redémarrage.
+
+⇒ La parade écrite dans `docs/UPDATE_GUIDE.md` (« envoyez les deux binaires séparément pour
+relever un verdict ») reste utile pour une lecture immédiate, mais elle n'est **pas** la seule :
+⭐ **le journal persistant garde les verdicts en travers des redémarrages.** Corrigé dans le guide
+le 2026-11-21.

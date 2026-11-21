@@ -3,7 +3,7 @@
 - **Statut** : Accepté
 - **Date** : 2026-11-18
 - **Décideurs** : Nicolas + Claude (`architect`, `security-reviewer`, `code-reviewer`)
-- **Spec(s) liée(s)** : [bug-187](../../specs/features/doing/bug-187-mot-de-passe-du-point-d-acces-a-32-bits.md) · [ADR-0131](0131-l-etat-de-premier-demarrage-se-deduit-du-mot-de-passe.md) · [ADR-0133](0133-le-ralentissement-des-echecs-de-mot-de-passe-est-global-avec-exemption.md)
+- **Spec(s) liée(s)** : [bug-187](../../specs/features/done/bug-187-mot-de-passe-du-point-d-acces-a-32-bits.md) · [ADR-0131](0131-l-etat-de-premier-demarrage-se-deduit-du-mot-de-passe.md) · [ADR-0133](0133-le-ralentissement-des-echecs-de-mot-de-passe-est-global-avec-exemption.md)
 
 ## Contexte
 
@@ -52,4 +52,4 @@ Contrainte du parc : des appareils sont déjà installés, avec une clé à 32 b
 
 - Code : `src/ap_password_logic.h`, `src/auth.cpp` (`setApPassword`, `getApPasswordOrigin`), `src/config.cpp` (`reloadApPasswordFromNvs`), `src/web_routes_auth.cpp`, `src/main.cpp` (`resetWiFiSettings`)
 - Tests : `test/test_native_ap_password/`
-- Spec : `specs/features/doing/bug-187-mot-de-passe-du-point-d-acces-a-32-bits.md`
+- Spec : `specs/features/done/bug-187-mot-de-passe-du-point-d-acces-a-32-bits.md`

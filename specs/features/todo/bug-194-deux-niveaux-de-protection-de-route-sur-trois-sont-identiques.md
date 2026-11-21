@@ -7,7 +7,7 @@
 | Statut | todo |
 | Priorité | normale |
 | Version cible | à définir |
-| Relevé par | agent principal, pendant l'étude de [`bug-187`](../doing/bug-187-mot-de-passe-du-point-d-acces-a-32-bits.md), 2026-11-18 — ⭐ **vérifié dans le code le jour même** |
+| Relevé par | agent principal, pendant l'étude de [`bug-187`](../done/bug-187-mot-de-passe-du-point-d-acces-a-32-bits.md), 2026-11-18 — ⭐ **vérifié dans le code le jour même** |
 | Specs liées | [`bug-184`](../done/bug-184-authentification-basic-accepte-un-mot-de-passe-qui-n-est-pas-le-bon.md) (source unique d'admission) · [`bug-185`](../done/bug-185-fenetre-de-premier-demarrage-ouverte-indefiniment.md) |
 
 ## Domaines touchés

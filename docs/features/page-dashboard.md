@@ -13,7 +13,7 @@ Vue d'ensemble de la piscine en temps réel. C'est la page que l'utilisateur voi
 
 Décision structurante : [ADR-0135](../adr/0135-l-accueil-montre-les-reglages-reglent-la-couleur-n-est-que-sur-la-donnee.md). Composants : [DESIGN_SYSTEM §5.24](../DESIGN_SYSTEM.md#524-langage-visuel-du-tableau-de-bord-feature-195-v2960-adr-0135).
 
-**Ce qui change pour l'utilisateur** : la **mesure** est l'élément dominant de chaque carte (48 px, virgule française, chiffres de largeur fixe) ; chaque carte porte **une pastille d'état** ; les commandes rares passent derrière un bouton **« Modifier »** replié ; les roues dentées (34 px) laissent place à des liens « Réglages › » de 44 px ; fond de page plus bleuté, cartes plus arrondies (22 px) et sans bordure ; titres en casse normale ; plus aucun effet de survol (les cartes ne se cliquent pas). **Aucune fonction n'est supprimée** et **aucun nouveau champ `/data`, WebSocket, endpoint ou topic MQTT** n'est introduit.
+**Ce qui change pour l'utilisateur** : la **mesure** est l'élément dominant de chaque carte (32 px depuis la 2.96.2, virgule française, chiffres de largeur fixe) ; chaque carte porte **une pastille d'état** ; les commandes rares passent derrière un bouton **« Modifier »** replié ; les roues dentées (34 px) laissent place à des liens « Réglages › » de 44 px ; fond de page plus bleuté, cartes plus arrondies (22 px) et sans bordure ; titres en casse normale ; plus aucun effet de survol (les cartes ne se cliquent pas). **Aucune fonction n'est supprimée** et **aucun nouveau champ `/data`, WebSocket, endpoint ou topic MQTT** n'est introduit.
 
 ### Pastille d'état (`.dash-pill`) — une par carte, un seul écrivain
 Écrite par `setDashPill(id, texte, teinte, garderTexteHorsLigne)` seule. Teintes : **vert** = fonctionnement attendu, **gris** = repos ou information normale, **ambre** = écart à regarder. Le texte est toujours `--text` : le sens ne dépend jamais de la couleur seule.
@@ -54,7 +54,7 @@ La jauge pH (évaluative) et la jauge température (descriptive) gardent leurs d
 - **Forcée** (filtration) : voir carte 1.
 
 ### Responsive
-390 px d'abord ; ≤ 360 px héros à 40 px ; grille ≥ 900 px **inchangée** (`repeat(auto-fit, minmax(320px, 1fr))`) ; pas de défilement horizontal à 320 px (titre en ellipse, pastille `nowrap`). Libellés comptés : « Forcer marche » 13, « Forcer arrêt » 12, « Revenir en Auto » 16 caractères.
+390 px d'abord ; héros à 32 px, valeur unique (pas de repli ≤ 360 px) ; grille ≥ 900 px **inchangée** (`repeat(auto-fit, minmax(320px, 1fr))`) ; pas de défilement horizontal à 320 px (titre en ellipse, pastille `nowrap`). Libellés comptés : « Forcer marche » 13, « Forcer arrêt » 12, « Revenir en Auto » 16 caractères.
 
 ### Pertes assumées et choses non faites
 - ⚠️ **R1 — perte assumée** : l'avertissement « consigne à la borne haute » du pH (`#dashboard-ph-target-warning`, texte C9 : « à ce pH le chlore est nettement moins actif ») n'est **plus visible en permanence** sur l'accueil, il est dans le volet. Il **informe**, il ne protège pas (la protection réelle est le plafond du firmware) ; `renderPhTargetWarning` continue de s'exécuter volet replié.

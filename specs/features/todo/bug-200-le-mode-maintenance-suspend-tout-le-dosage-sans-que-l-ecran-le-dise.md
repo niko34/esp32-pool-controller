@@ -110,6 +110,30 @@ d'une injection manuelle, que personne ne tente sans raison.
 - [ ] D2 — ⭐ **Mutation exigée** : retirer le champ d'**un seul** des deux chemins doit **tuer** un test. Sinon la parité n'est pas protégée.
 - [ ] D3 — Essai réel : provoquer le mode sur l'appareil **dédié** (⛔ jamais celui de production), vérifier l'écran
 
+## 📦 Passager embarqué — deux messages à corriger (ajouté le 2026-11-21, vient de bug-187)
+
+⚠️ **Ce n'est pas un élargissement de périmètre** : ce lot recompile déjà le firmware, et ces
+deux corrections sont **deux chaînes de caractères**. Les faire voyager ici évite à l'utilisateur
+une seconde cérémonie de signature OTA et un second redémarrage — décision du 2026-11-21.
+⇒ Relevés sur l'appareil réel, voir [bug-187](../done/bug-187-mot-de-passe-du-point-d-acces-a-32-bits.md), section « ESSAI RÉEL ».
+
+| # | Défaut mesuré | Où |
+|---|---|---|
+| **M1** | Un mot de passe d'appareil trop court rend **`New password must be at least 8 characters`** — ⚠️ **en anglais**, alors que les quatre autres verdicts de la même route sont en français (c'est bug-187 qui les a traduits ; celui-ci lui est **antérieur** et n'a pas été revu avec eux). | `src/web_routes_auth.cpp`, branche `kDenyTooShort` |
+| **M2** | Le refus « famille manquante » de la **clé Wi-Fi** dit seulement « Le mot de passe doit contenir… » — **mot pour mot** celui du mot de passe de l'appareil, alors que ses **quatre** frères précisent « du point d'accès ». ⚠️ Sur un écran où les deux objets coexistent, on ne sait pas lequel est reproché. | `src/web_routes_auth.cpp`, branche `kMissingFamily` de `/auth/ap-password` |
+
+⛔ **Aucune garde n'est en cause** : les refus sont **justes**, c'est leur **formulation** qui
+cloche. ⛔ Ne pas en profiter pour changer un seuil ou un verdict.
+
+⚠️ **Pourquoi aucun test natif ne les a vus** : les suites comparent le **verdict** rendu par
+`apPwdCheck` / `decidePasswordChange`, ⛔ jamais la **phrase** envoyée au navigateur. ⇒ La
+correction doit venir avec un test qui regarde la **phrase**, sinon le troisième message anglais
+passera aussi.
+
+- [ ] **M1** — message de longueur minimale en français
+- [ ] **M2** — le refus de la clé Wi-Fi dit « du point d'accès » comme ses quatre frères
+- [ ] **M3** — un test tue un mutant qui remet l'anglais, ou qui aligne les deux messages
+
 ## Sécurité chimique
 - Dosage impliqué : **oui** — le mode le suspend **entièrement**
 - Limites concernées : aucune n'est modifiée

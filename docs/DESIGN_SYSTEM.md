@@ -652,7 +652,15 @@ gardent leur propre fond.
 
 **Jetons (scopés `.card--status`)** : `--dash-radius: 22px` · `--dash-shadow` (diffuse, sans bordure) ·
 `--dash-pad: 18px` · `--dash-chip-bg: #f1f3f7` · `--dash-dot-ok #15803d` / `--dash-dot-off #6b7280` /
-`--dash-dot-warn #b45309` · `--hero-size: 48px` (40 px ≤ 360 px) · `--hero-weight: 800`.
+`--dash-dot-warn #b45309` · `--hero-size: 32px` — **valeur unique, pas de repli en petit écran** (à 32 px, un
+repli à 40 px rendrait la mesure plus grande sur écran étroit que sur écran large), même corps que la plage
+horaire de Filtration · `--hero-weight: 800`.
+**Variantes du héros** : `--warn` = 28 px (hero de Filtration en alerte : texte plus long que « 7,3 », gardé plus
+petit pour ne pas déborder à 320 px). La variante `--sm` est **supprimée** : la plage horaire utilise la taille standard.
+**Corps des satellites** (pour que la règle « la mesure est l'élément le plus grand de la carte, sans concurrence »
+reste vérifiable) : `.compact-unit` 16 px, `.dash-hero__target` 14 px. À 32 px le rapport avec la consigne tombe à 2,3 ;
+la hiérarchie tient parce que la taille n'est pas seule à la porter : la mesure est en **800** et en `--text` (encre),
+la consigne en **600** et en `--text-secondary`, alignée à droite sur la même ligne de base.
 Aucun survol sur ces cartes (elles ne se cliquent pas) ; `prefers-reduced-motion` respecté.
 
 #### `.dash-pill` — pastille d'état

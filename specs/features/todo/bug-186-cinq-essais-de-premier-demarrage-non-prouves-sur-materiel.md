@@ -67,11 +67,30 @@ casser. Ils atterrissent donc ici.
 ⚠️ **Ces deux essais ne remettent rien en cause** : ils éprouvent des chemins **livrés et
 revus**, pas des comportements inconnus. ⛔ Ne pas les lire comme une réserve sur la signature OTA.
 
+## 📦 Deux essais d'identifiants portés ici par bug-187 (ajoutés le 2026-11-21)
+
+[bug-187](../done/bug-187-mot-de-passe-du-point-d-acces-a-32-bits.md) est **close** : le code est
+livré depuis la **2.95.0**, revu deux fois, et la campagne du 2026-11-21 a mesuré sur l'appareil
+réel les **neuf** messages de refus ainsi que l'invariant de l'étiquette. ⚠️ **Deux essais ne
+peuvent pas se faire sur l'appareil de production**, et c'est la campagne elle-même qui l'a
+établi.
+
+| Essai | Ce qu'il faut observer | Pourquoi pas sur la production |
+|---|---|---|
+| **Choisir une autre clé de point d'accès** | `POST /auth/ap-password` avec une clé valide ⇒ acceptée, relue après **redémarrage**, et le point d'accès démarre bien en **WPA2** avec elle. Puis réinitialisation d'usine ⇒ la clé de **l'étiquette** revient. | ⭐ **Aller sans retour** : aucune route ne restaure l'origine, et la clé actuelle (**8 hexadécimaux**) ne peut pas être ressaisie — elle est sous le plancher de 12 **et** échoue à la règle des quatre familles. Seule marche arrière : réinitialisation d'usine. |
+| **Mot de passe d'appareil ACCENTUÉ accepté de bout en bout** | `Été2024!Aa` accepté, **puis reconnexion réussie avec lui après redémarrage** — c'est la persistance NVS d'un UTF-8 multi-octets qui est en jeu, qu'aucun test natif ne couvre. | Changerait le mot de passe d'un appareil **en service**, ferait tourner le jeton d'API et révoquerait les sessions ouvertes. |
+
+⭐ **Ce qui est DÉJÀ prouvé sur matériel** (⛔ ne pas le refaire) : l'accent est **toléré** par le
+contrôle et ne **compte pour aucune famille** — les deux moitiés de la correction de
+`code-reviewer`, mesurées à travers JSON → HTTP → `apPwdCheck` le 2026-11-21.
+
 ## Critères d'acceptation
 - [ ] Les 5 essais sont **mesurés** sur un appareil réinitialisé, et le relevé est écrit ici
 - [ ] ⛔ Tout écart ouvre une fiche de correction — ⚠️ ne pas corriger à la volée dans celle-ci
 - [ ] **F9** — expiration naturelle de l'autorisation à 60 min, relevée au journal (porté par feature-151)
 - [ ] **Refus tardifs** — liaison image↔manifeste divergente refusée en fin de flux (porté par feature-151)
+- [ ] **Clé de point d'accès remplacée** puis **réinitialisation d'usine** ⇒ l'étiquette revient (porté par bug-187)
+- [ ] **Mot de passe accentué** accepté **et** reconnexion réussie après redémarrage (porté par bug-187)
 
 ## Notes pour agent
 - ⛔ **Ne jamais réinitialiser l'appareil de production** pour cette fiche : l'utilisateur a

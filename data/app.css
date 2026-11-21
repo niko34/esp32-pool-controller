@@ -2433,8 +2433,7 @@ input.is-computed:disabled {
   --dash-dot-ok: #15803d;
   --dash-dot-off: #6b7280;
   --dash-dot-warn: #b45309;
-  --hero-size: 48px;
-  --hero-size-sm: 40px;
+  --hero-size: 32px;
   --hero-weight: 800;
 
   position: relative;
@@ -2539,7 +2538,6 @@ input.is-computed:disabled {
   font-variant-numeric: tabular-nums;
   min-width: 0;
 }
-.dash-hero__value--sm { font-size: 32px; letter-spacing: -0.01em; }
 .dash-hero__value--warn { font-size: 28px; color: var(--warn); }
 .compact-unit {
   font-size: 16px;
@@ -2672,10 +2670,6 @@ input.is-computed:disabled {
   border: none;
 }
 .card--status .card__option-eyebrow { text-transform: none; letter-spacing: 0; }
-
-@media (max-width: 360px) {
-  .card--status { --hero-size: var(--hero-size-sm); }
-}
 
 /* 2026 State badges (hors accueil : Boost, pompes, circuits) */
 .state-badge {

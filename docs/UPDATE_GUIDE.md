@@ -343,19 +343,29 @@ versionnée). Concrètement :
 — le refus est actif **depuis la v2.90.0**. Conservez **deux copies hors-ligne** de la clé
 chiffrée, en plus de la phrase de passe mémorisée.
 
-### ⚠️ Relever le verdict d'un envoi : envoyez les deux binaires SÉPARÉMENT
+### ⚠️ Relever le verdict d'un envoi
 
-Le journal de l'appareil tient **8 Ko, soit environ une minute**. `ota_update.sh --use-sig both`
-envoie le **firmware puis le filesystem**, chacun suivi d'un redémarrage ⇒ ⛔ **les lignes de
-verdict du premier envoi sont chassées** du journal avant que vous puissiez les lire. C'est
-exactement ce qui s'est produit le 2026-11-20 : l'acceptation du filesystem est journalisée,
-celle du firmware a tourné.
+⭐ **La réponse courte : lisez `/download-logs`, pas `/get-logs`.** Le journal **persistant**
+garde les verdicts **en travers des redémarrages** — mesuré le 2026-11-21, où les quatre lignes
+du firmware ont été relues **après** le redémarrage qui suit son installation.
 
-⇒ Pour **relever** un verdict (et non simplement constater que l'appareil a redémarré) :
+```bash
+curl -s -H "X-Auth-Token: $TOK" http://192.168.1.48/download-logs | grep -i 'authenticité\|liaison'
+```
+
+**Pourquoi cette section existe quand même.** Le journal **volatil** (`/get-logs`, celui de la
+page Journal) tient **8 Ko, soit environ une minute**. `ota_update.sh --use-sig both` envoie le
+**firmware puis le filesystem**, chacun suivi d'un redémarrage ⇒ ⛔ **les lignes de verdict du
+premier envoi en sont chassées**. C'est ce qui s'est produit le 2026-11-20, et c'est de là que
+venait la conclusion — ⚠️ **trop large, corrigée le 2026-11-21** — que l'acceptation du firmware
+« ne pouvait pas être relevée ».
+
+⇒ Si vous tenez à lire le verdict **à l'écran, sur le moment**, envoyez alors les deux binaires
+séparément :
 
 ```bash
 ./ota_update.sh --use-sig firmware 192.168.1.48
-# puis, IMMÉDIATEMENT, lire le journal — guetter LA LIGNE, jamais un redémarrage :
+# puis, IMMÉDIATEMENT, lire le journal volatil — guetter LA LIGNE, jamais un redémarrage :
 curl -s -H "X-Auth-Token: $TOK" http://192.168.1.48/get-logs | grep -i 'authenticité\|liaison'
 ./ota_update.sh --use-sig filesystem 192.168.1.48
 ```

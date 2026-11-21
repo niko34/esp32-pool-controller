@@ -5487,7 +5487,7 @@
         hero.className = 'dash-hero__value dash-hero__value--warn';
       } else {
         hero.textContent = `${config.filtration_start || '08:00'} – ${config.filtration_end || '20:00'}`;
-        hero.className = 'dash-hero__value dash-hero__value--sm';
+        hero.className = 'dash-hero__value';
       }
     }
     if (ctx) {
