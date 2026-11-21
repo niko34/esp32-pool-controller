@@ -99,6 +99,25 @@ Fonction libre (`logger.h`, v2.43.0, bug-100) :
 uint32_t loggerFopenDeferralCount();
 ```
 
+## Texte externe : assaini à la source (bug-179, v2.97.0, [ADR-0136](../adr/0136-assainir-le-texte-externe-a-la-source-jamais-dans-le-journal.md))
+
+Tout texte choisi par un tiers (URL d'une requête refusée, charge MQTT, SSID, nom de fichier d'une mise à jour) passe par `logSanitizeExternalText()` ([`src/log_text_sanitize_logic.h`](../../src/log_text_sanitize_logic.h), module pur, testé en natif) **avant** d'être confié à `systemLogger`. Le journal lui-même ne nettoie rien.
+
+**Ce que le nettoyage garantit**
+- Liste blanche positive : `A-Z a-z 0-9` et `espace - . _ ~ / : ? = @ , ; + ( ) *` passent tels quels ; tout le reste (dont `<` `>` `&` `"` `'` `\`, octets de contrôle, tout octet >= 0x80) devient `%XX` majuscule.
+- `%` devient `%25` : la transformation est **réversible**, le texte d'origine se reconstitue depuis le journal.
+- Borne `kLogExternalTextMax = 96` octets de sortie, coupe sur une frontière d'échappement, suffixe `~<longueur d'origine>o`.
+- Aucune allocation (tampon de pile de `kLogExternalTextBufBytes` = 97 o), conforme à ADR-0082.
+
+**Ce qu'il NE garantit PAS**
+- Il ne protège que les sites qui l'appellent. Un nouveau `systemLogger` qui reçoit du texte externe brut n'est pas protégé : la règle 6 de `tools/check_unauth_log_guard.sh` le détecte seulement quand la valeur est écrite dans l'appel (pas via une variable intermédiaire).
+- Il ne prouve pas que le texte est honnête : une fausse ligne d'apparence authentique reste possible, seule l'exécution est fermée. Suivi : fiche « assainir les valeurs journalisées exigeant des identifiants ».
+- Il ne remplace pas le rendu DOM de l'interface ; les deux sont indépendants.
+
+⚠️ **Régression de lisibilité assumée** : un réseau « Livebox-Café » s'écrit `Livebox-Caf%C3%A9` **dans le journal**. L'écran de la liste des réseaux Wi-Fi, lui, affiche le nom d'origine.
+
+Sites couverts : refus 401 (`auth.cpp`), 21 sites MQTT + 3 messages multi-lignes (`mqtt_manager.cpp`, un seul `safePayload` pris après `trim()`), 5 sites SSID (`main.cpp`, `web_routes_config.cpp`), nom de fichier d'une mise à jour manuelle (`web_routes_ota.cpp`).
+
 ## Toggle DEBUG runtime
 
 `Logger::debug(const String&)` est conditionné par le booléen `authCfg.debugLogsEnabled` (default `false`, persisté en NVS sous la clé `debug_logs`). Le check est posé en **toute première ligne** de la fonction (early return) — aucune allocation `String`, aucun lock mutex, aucun push WS, aucune écriture fichier n'a lieu quand le toggle est désactivé.

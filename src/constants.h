@@ -357,6 +357,13 @@ constexpr size_t kLogArenaBytes      = 16384;      // 82 o/entrée pour 200 entr
 // rendre traçable était perdue. Plafonner à 256 réinfligerait ce défaut à tous
 // les sites de garde à la fois (feature-129, condition bloquante C1).
 constexpr size_t kLogMessageMaxBytes = 768;
+// bug-179 : borne de la SORTIE d'un texte externe assaini (URL, charge MQTT, SSID),
+// NUL exclu. La route réelle la plus longue fait 26 caractères, tous en liste
+// blanche => sortie IDENTIQUE ; 96 laisse voir le préfixe de route ET ~23 octets
+// échappés de charge. 96 + « Accès non autorisé depuis 255.255.255.255 vers »
+// ~ 145 o, très en dessous de kLogMessageMaxBytes.
+constexpr size_t kLogExternalTextMax = 96;
+constexpr size_t kLogExternalTextBufBytes = kLogExternalTextMax + 1;
 // Marqueur de troncature ASCII STRICT (feature-129, condition bloquante C2) —
 // jamais de « … » (3 o) : il faudrait le compter en octets et non en
 // caractères, un piège de plus. Réservé AVANT le clamp UTF-8, jamais après

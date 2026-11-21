@@ -3,6 +3,7 @@
 #include "config.h"
 #include "constants.h"
 #include "logger.h"
+#include "log_text_sanitize_logic.h"  // bug-179
 #include "sensors.h"
 #include "filtration.h"
 #include "lighting.h"
@@ -1686,6 +1687,13 @@ void MqttManager::drainCommandQueue() {
     String payloadStr(cmd.payload);
     payloadStr.trim();
 
+    // bug-179 : la charge est du texte EXTERNE. UN seul assainissement pour les 21
+    // sites de journal ci-dessous ; l'ANALYSE continue de lire payloadStr (aucun
+    // changement sémantique). Pris après trim() et AVANT toLowerCase/toUpperCase :
+    // les journaux montrent la casse d'origine (gain forensique, pas un oubli).
+    char safePayload[kLogExternalTextBufBytes];
+    logSanitizeExternalText(payloadStr.c_str(), payloadStr.length(), safePayload, sizeof(safePayload));
+
     switch (cmd.type) {
       case InboundCmdType::FiltrationMode: {
         // feature-146 : validation via parseFiltrationMode (UNIQUE site de
@@ -1705,7 +1713,7 @@ void MqttManager::drainCommandQueue() {
             filtration.ensureTimesValid();
             filtration.computeAutoSchedule();  // no-op si le mode n'est pas Auto
             saveMqttConfig();
-            systemLogger.info("Mode filtration changé: " + payloadStr);
+            systemLogger.info("Mode filtration changé: " + String(safePayload));
           }
           xSemaphoreGiveRecursive(configMutex);
           // feature-146 : correctif du défaut de production du 2026-10-09 — le
@@ -1728,7 +1736,7 @@ void MqttManager::drainCommandQueue() {
         if (payloadStr == "ON") newMode = "force";
         else if (payloadStr == "OFF") newMode = "off";
         if (newMode == nullptr) {
-          systemLogger.warning("Commande filtration ON/OFF invalide (MQTT): " + payloadStr);
+          systemLogger.warning("Commande filtration ON/OFF invalide (MQTT): " + String(safePayload));
           publishFiltrationState();
           break;
         }
@@ -1852,7 +1860,7 @@ void MqttManager::drainCommandQueue() {
         } else {
           String minStr(kPhTargetMin, 2); minStr.replace('.', ',');
           String maxStr(kPhTargetMax, 2); maxStr.replace('.', ',');
-          systemLogger.warning("Consigne pH REFUSÉE (MQTT) : " + payloadStr +
+          systemLogger.warning("Consigne pH REFUSÉE (MQTT) : " + String(safePayload) +
                                " hors plage autorisée " + minStr + " à " + maxStr +
                                " — en dessous l'eau devient agressive, au-dessus la "
                                "régulation du chlore serait inhibée en permanence.");
@@ -1907,7 +1915,7 @@ void MqttManager::drainCommandQueue() {
           publishTargetState();
           systemLogger.info("Consigne ORP changée via MQTT: " + String(value, 0));
         } else {
-          systemLogger.warning("Consigne ORP invalide (MQTT) : " + payloadStr +
+          systemLogger.warning("Consigne ORP invalide (MQTT) : " + String(safePayload) +
                                " hors plage autorisée " + String(kOrpTargetPlausibleMin, 0) +
                                " à " + String(kOrpTargetPlausibleMax, 0) + " mV");
           publishTargetState();  // resync HA sur la consigne RÉELLE (inchangée)
@@ -1945,7 +1953,7 @@ void MqttManager::drainCommandQueue() {
             const String reason = mqttCfg.phAutoManualReason;  // copie AVANT le give
             xSemaphoreGiveRecursive(configMutex);
             systemLogger.warning(
-                "Mode régulation pH REFUSÉ (MQTT → " + payloadStr +
+                "Mode régulation pH REFUSÉ (MQTT → " + String(safePayload) +
                 ") : bascule de sécurité pH non acquittée — acquittez l'alerte sur "
                 "la page pH de l'interface web avant de réactiver la régulation. "
                 "Trace active : " + reason);
@@ -1971,7 +1979,7 @@ void MqttManager::drainCommandQueue() {
             // identique partout où ce refus apparaît (HTTP web_routes_config.cpp,
             // MQTT pH/ORP) — ne pas reformuler sans nouveau passage du gate.
             systemLogger.warning(
-                "Mode régulation pH REFUSÉ (MQTT → " + payloadStr +
+                "Mode régulation pH REFUSÉ (MQTT → " + String(safePayload) +
                 ") : Étalonnage en cours — le mode et les consignes sont "
                 "verrouillés. Le mode est rétabli à la fin de l'étalonnage, et "
                 "les consignes redeviennent modifiables au même moment.");
@@ -1989,10 +1997,10 @@ void MqttManager::drainCommandQueue() {
           xSemaphoreGiveRecursive(configMutex);
           publishTargetState();
           if (changed) {
-            systemLogger.info("Mode régulation pH changé (MQTT): " + payloadStr);
+            systemLogger.info("Mode régulation pH changé (MQTT): " + String(safePayload));
           }
         } else {
-          systemLogger.warning("Mode régulation pH invalide (MQTT): " + payloadStr);
+          systemLogger.warning("Mode régulation pH invalide (MQTT): " + String(safePayload));
           // feature-161 (revue, mineure 2) : resync HA aussi sur une charge
           // invalide, pour que C-4 « aucun refus muet » soit SANS exception.
           // Inoffensif en pratique (un select HA ne peut pas émettre hors
@@ -2026,7 +2034,7 @@ void MqttManager::drainCommandQueue() {
             // identique partout où ce refus apparaît (HTTP web_routes_config.cpp,
             // MQTT pH/ORP) — ne pas reformuler sans nouveau passage du gate.
             systemLogger.warning(
-                "Mode régulation ORP REFUSÉ (MQTT → " + payloadStr +
+                "Mode régulation ORP REFUSÉ (MQTT → " + String(safePayload) +
                 ") : Étalonnage en cours — le mode et les consignes sont "
                 "verrouillés. Le mode est rétabli à la fin de l'étalonnage, et "
                 "les consignes redeviennent modifiables au même moment.");
@@ -2041,7 +2049,7 @@ void MqttManager::drainCommandQueue() {
           xSemaphoreGiveRecursive(configMutex);
           publishTargetState();
           if (changed) {
-            systemLogger.info("Mode régulation ORP changé (MQTT): " + payloadStr);
+            systemLogger.info("Mode régulation ORP changé (MQTT): " + String(safePayload));
           }
           // feature-140 (condition #5 du gate pool-chemistry) : bascule en
           // Manuel pendant la chloration de secours => désarmement AUTOMATIQUE.
@@ -2051,7 +2059,7 @@ void MqttManager::drainCommandQueue() {
             systemLogger.warning("[Secours] Désarmée : bascule en mode Manuel (MQTT)");
           }
         } else {
-          systemLogger.warning("Mode régulation ORP invalide (MQTT): " + payloadStr);
+          systemLogger.warning("Mode régulation ORP invalide (MQTT): " + String(safePayload));
           // feature-161 (revue, mineure 2) : resync HA aussi sur une charge
           // invalide, pour que C-4 « aucun refus muet » soit SANS exception.
           // Inoffensif en pratique (un select HA ne peut pas émettre hors
@@ -2063,7 +2071,7 @@ void MqttManager::drainCommandQueue() {
       case InboundCmdType::PhDailyTarget: {
         // feature-050 : volume quotidien pH (mode programmée) — pattern PhTarget.
         if (!isNumericPayload(payloadStr)) {
-          systemLogger.warning("Volume quotidien pH invalide (MQTT): " + payloadStr);
+          systemLogger.warning("Volume quotidien pH invalide (MQTT): " + String(safePayload));
           break;
         }
         int value = payloadStr.toInt();
@@ -2102,7 +2110,7 @@ void MqttManager::drainCommandQueue() {
       case InboundCmdType::OrpDailyTarget: {
         // feature-050 : volume quotidien ORP (mode programmée) — symétrique pH.
         if (!isNumericPayload(payloadStr)) {
-          systemLogger.warning("Volume quotidien Chlore invalide (MQTT): " + payloadStr);
+          systemLogger.warning("Volume quotidien Chlore invalide (MQTT): " + String(safePayload));
           break;
         }
         int value = payloadStr.toInt();
@@ -2156,7 +2164,7 @@ void MqttManager::drainCommandQueue() {
         const bool isStart = (cmd.type == InboundCmdType::FiltrationStart);
         const char* label = isStart ? "début" : "fin";
         if (timeStringToMinutes(payloadStr.c_str()) < 0) {
-          systemLogger.warning(String("Heure filtration ") + label + " invalide (MQTT): " + payloadStr);
+          systemLogger.warning(String("Heure filtration ") + label + " invalide (MQTT): " + String(safePayload));
           publishFiltrationState();  // resync HA sur la valeur réelle
           break;
         }
@@ -2170,7 +2178,7 @@ void MqttManager::drainCommandQueue() {
         if (target != payloadStr) {
           target = payloadStr;
           saveMqttConfig();
-          systemLogger.info(String("Heure filtration ") + label + " changée (MQTT): " + payloadStr);
+          systemLogger.info(String("Heure filtration ") + label + " changée (MQTT): " + String(safePayload));
         }
         xSemaphoreGiveRecursive(configMutex);
         filtration.update();          // applique le nouveau planning (recalcul si mode auto)
@@ -2185,7 +2193,7 @@ void MqttManager::drainCommandQueue() {
         // la SEULE autorité.
         payloadStr.toLowerCase();
         if (parseLightingMode(payloadStr.c_str()) == LightingMode::Inconnu) {
-          systemLogger.warning("Mode éclairage invalide (MQTT): " + payloadStr);
+          systemLogger.warning("Mode éclairage invalide (MQTT): " + String(safePayload));
           publishLightingState();  // resync HA sur la valeur réelle
           break;
         }
@@ -2200,7 +2208,7 @@ void MqttManager::drainCommandQueue() {
         if (lightingCfg.mode != payloadStr) {
           lightingCfg.mode = payloadStr;
           saveMqttConfig();
-          systemLogger.info("Mode éclairage changé (MQTT): " + payloadStr);
+          systemLogger.info("Mode éclairage changé (MQTT): " + String(safePayload));
         }
         xSemaphoreGiveRecursive(configMutex);
         lighting.update();
@@ -2215,7 +2223,7 @@ void MqttManager::drainCommandQueue() {
         const bool isStart = (cmd.type == InboundCmdType::LightingStart);
         const char* label = isStart ? "début" : "fin";
         if (timeStringToMinutes(payloadStr.c_str()) < 0) {
-          systemLogger.warning(String("Heure éclairage ") + label + " invalide (MQTT): " + payloadStr);
+          systemLogger.warning(String("Heure éclairage ") + label + " invalide (MQTT): " + String(safePayload));
           publishLightingState();  // resync HA sur la valeur réelle
           break;
         }
@@ -2229,7 +2237,7 @@ void MqttManager::drainCommandQueue() {
         if (target != payloadStr) {
           target = payloadStr;
           saveMqttConfig();
-          systemLogger.info(String("Heure éclairage ") + label + " changée (MQTT): " + payloadStr);
+          systemLogger.info(String("Heure éclairage ") + label + " changée (MQTT): " + String(safePayload));
         }
         xSemaphoreGiveRecursive(configMutex);
         lighting.update();
@@ -2250,7 +2258,7 @@ void MqttManager::drainCommandQueue() {
           stopBoost();
           systemLogger.info("[Boost] Désactivé via MQTT/HA");
         } else {
-          systemLogger.warning("Commande Boost invalide (MQTT): " + payloadStr);
+          systemLogger.warning("Commande Boost invalide (MQTT): " + String(safePayload));
         }
         publishBoostState();
         break;
@@ -2287,7 +2295,7 @@ void MqttManager::drainCommandQueue() {
           stopRescueChlorine(RescueLiftReason::Manual);  // arrêt manuel (HA/MQTT)
           systemLogger.info("[Secours] Chloration de secours désactivée via MQTT/HA");
         } else {
-          systemLogger.warning("Commande Chloration de secours invalide (MQTT): " + payloadStr);
+          systemLogger.warning("Commande Chloration de secours invalide (MQTT): " + String(safePayload));
         }
         publishRescueState();
         break;
@@ -2298,7 +2306,7 @@ void MqttManager::drainCommandQueue() {
         payloadStr.toLowerCase();
         InstallMode parsed = installModeFromString(payloadStr.c_str(), mqttCfg.installMode);
         if (payloadStr != installModeToString(parsed)) {
-          systemLogger.warning("Mode d'installation invalide (MQTT): " + payloadStr);
+          systemLogger.warning("Mode d'installation invalide (MQTT): " + String(safePayload));
           enqueueOutbound(topics.installModeState, installModeToString(mqttCfg.installMode), true);
           break;
         }
@@ -2316,7 +2324,7 @@ void MqttManager::drainCommandQueue() {
         xSemaphoreGiveRecursive(configMutex);
         if (changed) {
           filtration.update();  // applique l'inertie du relais selon le nouveau mode
-          systemLogger.info("Mode d'installation changé (MQTT): " + payloadStr);
+          systemLogger.info("Mode d'installation changé (MQTT): " + String(safePayload));
         }
         enqueueOutbound(topics.installModeState, installModeToString(mqttCfg.installMode), true);
         break;
@@ -2331,7 +2339,7 @@ void MqttManager::drainCommandQueue() {
         } else if (payloadStr == "OFF") {
           filtration.setExternalState(false);
         } else {
-          systemLogger.warning("Signal filtration externe invalide (MQTT): " + payloadStr);
+          systemLogger.warning("Signal filtration externe invalide (MQTT): " + String(safePayload));
         }
         break;
       }

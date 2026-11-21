@@ -77,7 +77,18 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if path in CANNED:
             with open(os.path.join(API, CANNED[path]), 'rb') as fh:
                 return self._send(fh.read())
-        if path.startswith('/get-history') or path == '/get-logs':
+        if path == '/get-logs':
+            # bug-179 : si le journal a ete recopie depuis l'appareil (ou fabrique
+            # a la main dans $TMP/api/get-logs.json), on le SERT — sinon le panneau
+            # Journal est toujours vide et personne ne peut voir son rendu avant
+            # de deployer. C'est exactement l'angle mort qui a laisse passer un
+            # rendu en innerHTML pendant des mois.
+            cached = os.path.join(API, 'get-logs.json')
+            if os.path.exists(cached):
+                with open(cached, 'rb') as fh:
+                    return self._send(fh.read())
+            return self._send(b'{"logs":[],"uptime_ms":0,"truncated":false}')
+        if path.startswith('/get-history'):
             return self._send(b'{"entries":[],"data":[]}')
         return super().do_GET()
 

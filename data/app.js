@@ -208,25 +208,150 @@
     if (level === 'INFO')     return $("#log_level_info")?.checked !== false;
     if (level === 'WARN' || level === 'WARNING') return $("#log_level_warn")?.checked !== false;
     if (level === 'ERROR')    return $("#log_level_error")?.checked !== false;
-    if (level === 'CRITICAL') return $("#log_level_critical")?.checked !== false;
+    // ⭐ Le firmware écrit « CRIT », PAS « CRITICAL » (src/log_arena_logic.cpp:127).
+    // ⚠️ DÉFAUT PRÉEXISTANT trouvé pendant l'essai de terrain de bug-179 : la case
+    // CRITICAL n'a JAMAIS rien filtré — les lignes tombaient dans « niveaux inconnus,
+    // affichés par défaut ». Décocher la case ne les masquait pas.
+    if (level === 'CRITICAL' || level === 'CRIT') return $("#log_level_critical")?.checked !== false;
     if (level === 'DEBUG')    return $("#log_level_debug")?.checked !== false;
     return true; // niveaux inconnus : affichés par défaut
+  }
+
+  // Bouton « en cours » : pastille + libellé posés en DOM (jamais de balisage).
+  function setBtnSpinnerContent(btn, label) {
+    const sp = document.createElement('span');
+    sp.className = 'btn__spinner';
+    const tx = document.createElement('span');
+    tx.textContent = label;
+    btn.replaceChildren(sp, tx);
+  }
+
+  // Valeur + unité (<span class="compact-unit">) en DOM.
+  function setValueWithUnit(el, valueText, unit) {
+    const u = document.createElement('span');
+    u.className = 'compact-unit';
+    u.textContent = unit;
+    el.replaceChildren(document.createTextNode(String(valueText)), u);
+  }
+
+  // bug-179 : le journal contient des textes qui peuvent venir de l'extérieur
+  // (URL d'une requête refusée, etc.). Il est rendu en TEXTE UNIQUEMENT :
+  // formatLogLine() renvoie une chaîne, jamais de balisage, et les nœuds sont
+  // posés avec textContent. Une seule fonction sert renderLogs() ET _onWsLog().
+  // ⚠️ Les clés sont les chaînes RÉELLEMENT émises par le firmware
+  // (src/log_arena_logic.cpp:121-130) : DEBUG · INFO · WARN · ERROR · CRIT.
+  // ⛔ « CRITICAL » n'est jamais envoyé — il est gardé par tolérance seulement.
+  const LOG_LEVEL_CLASS = { WARN: 'warn', WARNING: 'warn', ERROR: 'error', CRIT: 'critical', CRITICAL: 'critical', DEBUG: 'debug' };
+
+  function formatLogLine(entry) {
+    if (typeof entry === 'string') return entry;
+    const hasTs = entry.timestamp != null;
+    const level = entry.level ? String(entry.level) : '';
+    const msg = entry.message == null ? '' : String(entry.message);
+    let out = hasTs ? `[${formatLogTimestamp(entry.timestamp)}] ` : '';
+    out += level ? `${level}: ${msg}` : msg;
+    return out;
+  }
+
+  function buildLogLine(entry) {
+    const div = document.createElement('div');
+    div.className = 'log-line';
+    const text = formatLogLine(entry);
+    if (typeof entry === 'string') {
+      div.textContent = text;
+      return div;
+    }
+    const cls = LOG_LEVEL_CLASS[String(entry.level || '').toUpperCase()];
+    if (cls) div.classList.add('log-line--' + cls);
+    if (entry.timestamp != null) {
+      const tsText = `[${formatLogTimestamp(entry.timestamp)}]`;
+      const ts = document.createElement('span');
+      ts.className = 'log-line__ts';
+      ts.textContent = tsText;
+      div.appendChild(ts);
+      div.appendChild(document.createTextNode(text.slice(tsText.length)));
+    } else {
+      div.textContent = text;
+    }
+    return div;
+  }
+
+  // Signature du dernier rendu : permet de n'ajouter que la queue (renderLogs
+  // est rappelée toutes les 5 s). null = le conteneur ne montre pas de lignes.
+  let _logRender = null;
+
+  function _logStateMessage(content, text) {
+    const p = document.createElement('p');
+    p.className = 'log-state';
+    p.textContent = text;
+    content.replaceChildren(p);
+    _logRender = null;
   }
 
   function renderLogs(scroll = true) {
     const content = $("#logs_content");
     if (!content) return;
+    const container = $("#logs_container");
     const filtered = allLogEntries.filter(isLogEntryVisible);
     if (filtered.length === 0) {
-      content.textContent = "(vide)";
+      _logStateMessage(content, allLogEntries.length === 0
+        ? "Aucun message dans le journal."
+        : `Aucun message à ce niveau. ${allLogEntries.length} masqué${allLogEntries.length > 1 ? 's' : ''}.`);
     } else {
-      content.innerHTML = filtered.map(entry => {
-        if (typeof entry === 'string') return `<div>${entry}</div>`;
-        return `<div>[${formatLogTimestamp(entry.timestamp)}] ${entry.level || ''}: ${entry.message || ''}</div>`;
-      }).join('');
+      const sig = ["info", "warn", "error", "critical", "debug"]
+        .map(l => ($(`#log_level_${l}`)?.checked !== false ? '1' : '0')).join('');
+      const r = _logRender;
+      let incremental = false, startAt = 0, dropFromFront = 0;
+      if (r && r.sig === sig) {
+        if (filtered.length >= r.len && filtered[0] === r.first && filtered[r.len - 1] === r.last) {
+          // Cas simple : rien n'a été chassé par le bas, on ajoute la queue.
+          incremental = true; startAt = r.len;
+        } else if (r.last !== null && typeof r.last === 'object') {
+          // ⭐ Le tampon est PLEIN (500, cf. _onWsLog et loadLogs) : chaque ligne
+          // neuve en chasse une ancienne (push + shift), donc filtered[0] CHANGE
+          // à chaque cycle. Comparer le premier élément imposait alors une
+          // reconstruction complète toutes les 5 s — 1000 createElement par ligne
+          // neuve, MESURÉ (bug-179, B3). Et c'est le régime NORMAL : l'anneau de
+          // l'appareil est plein en permanence.
+          // ⇒ On retrouve l'ancre (la dernière ligne déjà rendue) et on ne touche
+          //   qu'aux DEUX BOUTS : on retire par le haut ce qui est sorti, on ajoute
+          //   par le bas ce qui est entré.
+          // ⛔ Réservé aux entrées OBJET : les entrées chaîne se comparent par
+          //   VALEUR, lastIndexOf pourrait retomber sur un homonyme.
+          const k = filtered.lastIndexOf(r.last);
+          const dropped = (r.len - 1) - k;
+          if (k >= 0 && dropped >= 0 && dropped <= r.len) {
+            incremental = true; startAt = k + 1; dropFromFront = dropped;
+          }
+        }
+      }
+      if (incremental) {
+        // ⚠️ Retirer des lignes PAR LE HAUT raccourcit le contenu : sans compenser,
+        // la vue saute vers le bas sous les yeux de qui a remonté le journal
+        // (auto-scroll décoché). On mesure ce qui part et on décale d'autant.
+        let shrink = 0;
+        for (let i = 0; i < dropFromFront && content.firstChild; i++) {
+          shrink += content.firstChild.offsetHeight || 0;
+          content.removeChild(content.firstChild);
+        }
+        if (container && shrink > 0 && container.scrollTop > 0) {
+          container.scrollTop = Math.max(0, container.scrollTop - shrink);
+        }
+        if (filtered.length > startAt) {
+          const frag = document.createDocumentFragment();
+          for (let i = startAt; i < filtered.length; i++) frag.appendChild(buildLogLine(filtered[i]));
+          content.appendChild(frag);
+        }
+      } else {
+        const keep = container ? container.scrollTop : 0;
+        const frag = document.createDocumentFragment();
+        for (let i = 0; i < filtered.length; i++) frag.appendChild(buildLogLine(filtered[i]));
+        content.replaceChildren(frag);
+        if (container) container.scrollTop = keep;
+      }
+      _logRender = { sig, len: filtered.length, first: filtered[0], last: filtered[filtered.length - 1] };
     }
     const autoScroll = $("#logs_auto_scroll")?.checked !== false;
-    const container = $("#logs_container");
     if ((scroll || autoScroll) && container) requestAnimationFrame(() => { container.scrollTop = container.scrollHeight; });
   }
 
@@ -248,18 +373,11 @@
       );
     }
 
-    // Mettre à jour l'affichage si le panneau logs est visible
+    // Mettre à jour l'affichage si le panneau logs est visible (rendu incrémental :
+    // même chemin de rendu que renderLogs, donc même texte et mêmes classes).
     const content = $("#logs_content");
     if (!content || content.children.length === 0) return;
-    if (!isLogEntryVisible(entry)) return;
-    const div = document.createElement('div');
-    div.textContent = `[${formatLogTimestamp(entry.timestamp)}] ${entry.level || ''}: ${entry.message || ''}`;
-    content.appendChild(div);
-    // Auto-scroll si activé
-    if ($("#logs_auto_scroll")?.checked !== false) {
-      const container = $("#logs_container");
-      if (container) requestAnimationFrame(() => { container.scrollTop = container.scrollHeight; });
-    }
+    renderLogs(false);
   }
 
   function debugLog(msg) {
@@ -1938,7 +2056,6 @@
     // Update WiFi display when WiFi panel is shown
     if (panelKey === "wifi") {
       updateWiFiDisplay();
-      checkWiFiNotification();
     }
 
     // Re-render du badge MQTT à l'activation du panel : garantit l'affichage
@@ -1949,58 +2066,6 @@
       updateMqttStatusIndicator(window._config?.enabled, connected);
     }
   }
-
-  // Vérifier et afficher une notification WiFi basée sur les paramètres URL
-  function checkWiFiNotification() {
-    const urlParams = new URLSearchParams(window.location.search);
-    const wifiStatus = urlParams.get('wifi');
-    const ssid = urlParams.get('ssid');
-
-    if (!wifiStatus) return;
-
-    const notifEl = $("#wifi-notification");
-    if (!notifEl) return;
-
-    // Nettoyer l'URL sans recharger la page
-    const cleanUrl = window.location.pathname + window.location.hash.split('?')[0];
-    window.history.replaceState({}, document.title, cleanUrl);
-
-    // Afficher la notification
-    notifEl.classList.remove('hidden', 'success', 'error');
-
-    if (wifiStatus === 'success') {
-      notifEl.classList.add('success');
-      notifEl.setAttribute('role', 'status');
-      notifEl.setAttribute('aria-live', 'polite');
-      notifEl.innerHTML = `
-        <span class="wifi-notification__icon" aria-hidden="true">✓</span>
-        <span class="wifi-notification__text">Connexion au réseau "${ssid || 'WiFi'}" réussie</span>
-        <button class="wifi-notification__close" type="button" aria-label="Fermer la notification" onclick="hideWifiNotification()">×</button>
-      `;
-    } else if (wifiStatus === 'failed') {
-      notifEl.classList.add('error');
-      notifEl.setAttribute('role', 'alert');
-      notifEl.setAttribute('aria-live', 'assertive');
-      notifEl.innerHTML = `
-        <span class="wifi-notification__icon" aria-hidden="true">✕</span>
-        <span class="wifi-notification__text">Échec de la connexion au réseau "${ssid || 'WiFi'}"</span>
-        <button class="wifi-notification__close" type="button" aria-label="Fermer la notification" onclick="hideWifiNotification()">×</button>
-      `;
-    }
-
-    // Masquer automatiquement après 8 secondes
-    setTimeout(() => {
-      hideWifiNotification();
-    }, 8000);
-  }
-
-  // Fonction globale pour fermer la notification
-  window.hideWifiNotification = function() {
-    const notifEl = $("#wifi-notification");
-    if (notifEl) {
-      notifEl.classList.add('hidden');
-    }
-  };
 
   function goSettings(panelKey) {
     window.location.hash = `#/settings/${panelKey}`;
@@ -3025,7 +3090,7 @@
       btn.disabled = disabled;
       btn.classList.remove("btn--primary", "btn--ok", "btn--danger");
       btn.classList.add(status === "success" ? "btn--ok" : status === "error" ? "btn--danger" : "btn--primary");
-      btn.innerHTML = spinner ? `<span class="btn__spinner"></span><span>${label}</span>` : label;
+      if (spinner) setBtnSpinnerContent(btn, label); else btn.textContent = label;
     };
     const showErr = (msg) => {
       if (!errEl) return;
@@ -6127,7 +6192,7 @@
     const compactOrp = $("#compact-orp");
     if (compactOrp) {
       const orpText = (measuresOk && data.orp != null && !isNaN(data.orp)) ? String(Math.round(data.orp)) : "--";
-      compactOrp.innerHTML = orpText + '<span class="compact-unit">mV</span>';
+      setValueWithUnit(compactOrp, orpText, 'mV');
     }
 
     // feature-164 : la ligne « Cible : X mV » (#compact-orp-target) a été
@@ -6151,7 +6216,7 @@
       const tempText = (measuresOk && data.temperature != null && !isNaN(data.temperature))
         ? fmtFr(Math.round(data.temperature * 10) / 10, 1)
         : "--";
-      compactTemperature.innerHTML = tempText + '<span class="compact-unit">°C</span>';
+      setValueWithUnit(compactTemperature, tempText, '°C');
     }
 
     // feature-147 (correctif) : jauge Température — même garde measuresOk que
@@ -8227,7 +8292,13 @@
     }
     el.hidden = false;
     el.className = `probe-pastille probe-pastille--${state}`;
-    el.innerHTML = `<span aria-hidden="true">${PH_PASTILLE_GLYPH[state]}</span><span class="sr-only">${PH_PASTILLE_SR[state]}</span>`;
+    const g = document.createElement('span');
+    g.setAttribute('aria-hidden', 'true');
+    g.textContent = PH_PASTILLE_GLYPH[state];
+    const sr = document.createElement('span');
+    sr.className = 'sr-only';
+    sr.textContent = PH_PASTILLE_SR[state];
+    el.replaceChildren(g, sr);
   }
 
   function _renderPhProbeModalValues(json) {
@@ -12557,7 +12628,7 @@
       renderLogs(scroll);
     } catch (e) {
       const content = $("#logs_content");
-      if (content) content.textContent = "Erreur chargement logs.";
+      if (content) _logStateMessage(content, "Journal indisponible. Vérifiez la connexion puis actualisez.");
     }
   }
 
@@ -12645,58 +12716,74 @@
 
     // --- Liste des sondes ---
     if (sondes.length === 0) {
-      list.innerHTML = `<div class="muted small" style="padding:12px 0;">Aucune sonde 1-Wire détectée.</div>`;
+      const empty = document.createElement("div");
+      empty.className = "muted small";
+      empty.style.padding = "12px 0";
+      empty.textContent = "Aucune sonde 1-Wire détectée.";
+      list.replaceChildren(empty);
     } else {
       // Identifier les rôles déjà assignés
       const hasWater = sondes.some(s => s.role === "water");
       const hasCircuit = sondes.some(s => s.role === "circuit");
 
-      list.innerHTML = sondes.map((s, idx) => {
+      // bug-179 : l'adresse 1-Wire vient du bus -> construction DOM, textContent.
+      const mkBadge = (txt) => {
+        const sp = document.createElement("span");
+        sp.className = "state-badge state-badge--ok";
+        sp.textContent = txt;
+        return sp;
+      };
+      const mkBtn = (roleKey, addr, txt) => {
+        const bt = document.createElement("button");
+        bt.className = "btn btn--secondary";
+        bt.setAttribute("data-role", roleKey);
+        bt.setAttribute("data-address", addr);
+        bt.textContent = txt;
+        return bt;
+      };
+      const rows = sondes.map((s, idx) => {
         const addr = String(s.address || "").toUpperCase();
         const tempStr = (typeof s.temperature === "number" && !isNaN(s.temperature))
           ? `${s.temperature.toFixed(1)} °C`
           : "—";
         const role = s.role || "unknown";
 
-        let badgeHtml = "";
-        let actionsHtml = "";
-        if (role === "water") {
-          badgeHtml = `<span class="state-badge state-badge--ok">✓ Eau</span>`;
-        } else if (role === "circuit") {
-          badgeHtml = `<span class="state-badge state-badge--ok">✓ Circuit</span>`;
-        } else {
-          // Sonde non identifiée : afficher les boutons pour les rôles encore libres
-          const buttons = [];
-          if (!hasWater) {
-            buttons.push(`<button class="btn btn--secondary" data-role="water" data-address="${addr}">C'est l'eau de la piscine</button>`);
-          }
-          if (!hasCircuit) {
-            buttons.push(`<button class="btn btn--secondary" data-role="circuit" data-address="${addr}">C'est le circuit interne</button>`);
-          }
-          // Si les deux rôles sont déjà pris (ne devrait pas arriver mais safety net),
-          // proposer les deux quand même (auto-permutation côté firmware).
-          if (buttons.length === 0) {
-            buttons.push(`<button class="btn btn--secondary" data-role="water" data-address="${addr}">C'est l'eau de la piscine</button>`);
-            buttons.push(`<button class="btn btn--secondary" data-role="circuit" data-address="${addr}">C'est le circuit interne</button>`);
-          }
-          actionsHtml = `<div class="detail-actions">${buttons.join("")}</div>`;
-        }
+        const row = document.createElement("div");
+        row.className = "detail-row sonde-row";
+        row.setAttribute("data-address", addr);
+        const left = document.createElement("div");
+        const title = document.createElement("div");
+        title.className = "row__title";
+        title.appendChild(document.createTextNode(`Sonde ${idx + 1} `));
+        const info = document.createElement("div");
+        info.className = "muted small";
+        const code = document.createElement("code");
+        code.textContent = addr;
+        const tempSpan = document.createElement("span");
+        tempSpan.className = "sonde-temp";
+        tempSpan.textContent = tempStr;
+        info.append(code, " — ", tempSpan);
+        left.append(title, info);
+        row.appendChild(left);
 
-        return `
-          <div class="detail-row sonde-row" data-address="${addr}">
-            <div>
-              <div class="row__title">
-                Sonde ${idx + 1}
-                ${badgeHtml}
-              </div>
-              <div class="muted small">
-                <code>${addr}</code> — <span class="sonde-temp">${tempStr}</span>
-              </div>
-            </div>
-            ${actionsHtml}
-          </div>
-        `;
-      }).join("");
+        if (role === "water") {
+          title.appendChild(mkBadge("✓ Eau"));
+        } else if (role === "circuit") {
+          title.appendChild(mkBadge("✓ Circuit"));
+        } else {
+          // Sonde non identifiée : boutons pour les rôles encore libres. Si les
+          // deux rôles sont déjà pris (safety net), proposer les deux quand même
+          // (auto-permutation côté firmware).
+          const actions = document.createElement("div");
+          actions.className = "detail-actions";
+          const both = hasWater && hasCircuit;
+          if (!hasWater || both) actions.appendChild(mkBtn("water", addr, "C'est l'eau de la piscine"));
+          if (!hasCircuit || both) actions.appendChild(mkBtn("circuit", addr, "C'est le circuit interne"));
+          row.appendChild(actions);
+        }
+        return row;
+      });
+      list.replaceChildren(...rows);
 
       // Brancher les handlers d'identification
       list.querySelectorAll("button[data-role]").forEach(btn => {
@@ -13265,27 +13352,25 @@
     $("#refresh_logs_btn")?.addEventListener("click", () => loadLogs(true, false));
 
     $("#clear_logs_display_btn")?.addEventListener("click", () => {
-      const content = $("#logs_content");
-      if (content) content.textContent = "";
       allLogEntries = [];
       lastLogTimestamp = 0;
+      renderLogs(false);
     });
 
     $("#clear_logs_firmware_btn")?.addEventListener("click", async () => {
       if (!(await confirmDialog({
-        title: "Effacer les logs",
-        message: "Effacer tous les logs côté ESP32 ?\n\nLa mémoire RAM ET le fichier persistant seront vidés.\nCette action est irréversible.",
+        title: "Effacer le journal de l'appareil",
+        message: "Effacer tout le journal de l'appareil ?\n\nLa mémoire ET le fichier persistant seront vidés.\nCette action est irréversible.",
         confirmLabel: "Effacer",
         danger: true
       }))) return;
       try {
         const resp = await authFetch("/logs", { method: "DELETE" });
         if (!resp.ok) { showToast("Erreur lors de l'effacement", "error"); return; }
-        const content = $("#logs_content");
-        if (content) content.textContent = "";
         allLogEntries = [];
         lastLogTimestamp = 0;
-        showToast("Logs effacés (RAM + fichier)", "success");
+        renderLogs(false);
+        showToast("Journal de l'appareil effacé (mémoire + fichier)", "success");
       } catch (e) {
         showToast("Erreur lors de l'effacement", "error");
       }
@@ -13356,7 +13441,7 @@
         saveBtn.classList.add("btn--primary");
       }
       if (showSpinner) {
-        saveBtn.innerHTML = `<span class="btn__spinner"></span><span>${label}</span>`;
+        setBtnSpinnerContent(saveBtn, label);
       } else {
         saveBtn.textContent = label;
       }
@@ -13401,7 +13486,7 @@
       else if (status === "error") saveBtn.classList.add("btn--danger");
       else saveBtn.classList.add("btn--primary");
       if (showSpinner) {
-        saveBtn.innerHTML = `<span class="btn__spinner"></span><span>${label}</span>`;
+        setBtnSpinnerContent(saveBtn, label);
       } else {
         saveBtn.textContent = label;
       }
@@ -13512,7 +13597,7 @@
       else if (status === "error") saveBtn.classList.add("btn--danger");
       else saveBtn.classList.add("btn--primary");
       if (showSpinner) {
-        saveBtn.innerHTML = `<span class="btn__spinner"></span><span>${label}</span>`;
+        setBtnSpinnerContent(saveBtn, label);
       } else {
         saveBtn.textContent = label;
       }
@@ -14620,7 +14705,7 @@
         saveBtn.classList.add("btn--primary");
       }
       if (showSpinner) {
-        saveBtn.innerHTML = `<span class="btn__spinner"></span><span>${label}</span>`;
+        setBtnSpinnerContent(saveBtn, label);
       } else {
         saveBtn.textContent = label;
       }
@@ -14703,7 +14788,7 @@
       saveBtn.disabled = disabled;
       saveBtn.classList.remove("btn--primary", "btn--ok", "btn--danger");
       saveBtn.classList.add(status === "success" ? "btn--ok" : status === "error" ? "btn--danger" : "btn--primary");
-      saveBtn.innerHTML = spinner ? `<span class="btn__spinner"></span><span>${label}</span>` : label;
+      if (spinner) setBtnSpinnerContent(saveBtn, label); else saveBtn.textContent = label;
     };
     saveBtn.addEventListener("click", async () => {
       if (saveBtn.disabled) return;
@@ -14937,7 +15022,7 @@
         schedBtn.disabled = disabled;
         schedBtn.classList.remove("btn--primary", "btn--ok", "btn--danger");
         schedBtn.classList.add(status === "success" ? "btn--ok" : status === "error" ? "btn--danger" : "btn--primary");
-        schedBtn.innerHTML = spinner ? `<span class="btn__spinner"></span><span>${label}</span>` : label;
+        if (spinner) setBtnSpinnerContent(schedBtn, label); else schedBtn.textContent = label;
       };
       schedBtn.addEventListener("click", async () => {
         if (schedBtn.disabled) return;
@@ -14968,7 +15053,7 @@
         orpSchedBtn.disabled = disabled;
         orpSchedBtn.classList.remove("btn--primary", "btn--ok", "btn--danger");
         orpSchedBtn.classList.add(status === "success" ? "btn--ok" : status === "error" ? "btn--danger" : "btn--primary");
-        orpSchedBtn.innerHTML = spinner ? `<span class="btn__spinner"></span><span>${label}</span>` : label;
+        if (spinner) setBtnSpinnerContent(orpSchedBtn, label); else orpSchedBtn.textContent = label;
       };
       orpSchedBtn.addEventListener("click", async () => {
         if (orpSchedBtn.disabled) return;

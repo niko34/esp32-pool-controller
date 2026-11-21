@@ -1,3 +1,4 @@
+#include "log_text_sanitize_logic.h"  // bug-179
 #include "web_routes_ota.h"
 #include "web_helpers.h"
 #include "ota_recovery_marker.h"  // feature-151 D3-b1 : pose/levée du marqueur FS (écriture seule)
@@ -989,7 +990,9 @@ static void handleOtaUpdate(AsyncWebServerRequest* request, const String& filena
     g_uploadIsFilesystem = (cmd == U_SPIFFS);
     g_uploadHasher.begin();
 
-    systemLogger.info("Début mise à jour OTA: " + filename);
+    char safeFilename[kLogExternalTextBufBytes];  // bug-179 : nom de fichier = texte externe
+    logSanitizeExternalText(filename.c_str(), filename.length(), safeFilename, sizeof(safeFilename));
+    systemLogger.info("Début mise à jour OTA: " + String(safeFilename));
     PumpController.setOtaInProgress(true);
 
     // Param POST `sha256` OBLIGATOIRE depuis feature-118 lot B. Déjà tranché
@@ -2094,12 +2097,16 @@ static void handleCheckUpdate(AsyncWebServerRequest* request) {
   serializeJson(response, json);
 
   // ⚠️ `latestVersion` vient de `tag_name`, donc de GITHUB — chaîne NON MAÎTRISÉE.
-  // Le journal est rendu par innerHTML côté page (data/app.js) sous une CSP qui
-  // autorise l'inline : un tag porteur de balisage s'exécuterait dans la session
-  // admin à l'ouverture du journal. ⛔ On ne journalise donc la version QUE si
-  // l'analyseur l'a acceptée — auquel cas elle ne contient que des chiffres et des
-  // points, inertes en HTML. Sinon, libellé FIXE. (Condition de la revue de
-  // sécurité bug-178 ; le durcissement de renderLogs fait l'objet d'une spec à part.)
+  // ⇒ On ne journalise la version QUE si l'analyseur l'a acceptée (chiffres et
+  // points uniquement). Sinon, libellé FIXE. (Condition de la revue de sécurité
+  // bug-178.)
+  // ⚠️ MISE À JOUR bug-179 (2026-11-21) : le motif d'origine disait « le journal
+  // est rendu par innerHTML » — ⛔ CE N'EST PLUS VRAI. `renderLogs()` construit le
+  // DOM en textContent et `tools/check_no_html_interpolation.sh` l'empêche de
+  // revenir. ⭐ La garde ci-dessous reste utile pour autant : elle borne ce qui
+  // ENTRE dans le journal, et le journal se lit aussi hors de la page (fichier
+  // téléchargé, copie vers un autre outil). C'est la même règle que bug-179 :
+  // fermer le rendu ne dispense pas de fermer le dépôt.
   const String versionPourJournal =
       (st == OtaUpdateState::kUnknownVersion) ? String("(non analysable)") : latestVersion;
   systemLogger.info("Version actuelle: " + currentVersion + ", Dernière version: " +

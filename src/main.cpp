@@ -58,6 +58,7 @@ extern "C" bool esp_psram_check_ptr_addr(const void* p);
 #include "mbedtls_psram_alloc.h"  // bug-165/bug-108 : mbedtls obéit à la politique PSRAM (v2.81.0)
 #include "heap_census.h"  // feature-128 : recensement du tas (R2) + lecture de contenu (R3, sous POOL_HEAP_PEEK)
 #include "oom_guard.h"
+#include "log_text_sanitize_logic.h"  // bug-179
 #include "ping/ping_sock.h"  // esp_ping : sonde ICMP passerelle (watchdog connectivité v2.9.2)
 
 // Variables globales
@@ -878,7 +879,12 @@ bool setupWiFi() {
   };
 
   if (WiFi.status() == WL_CONNECTED) {
-    systemLogger.info("WiFi connecté: " + WiFi.SSID());
+    {
+      const String connectedSsid = WiFi.SSID();
+      char safeSsid[kLogExternalTextBufBytes];  // bug-179 : SSID = texte externe
+      logSanitizeExternalText(connectedSsid.c_str(), connectedSsid.length(), safeSsid, sizeof(safeSsid));
+      systemLogger.info("WiFi connecté: " + String(safeSsid));
+    }
     systemLogger.info("IP: " + WiFi.localIP().toString());
     currentWifiMode = WiFi.getMode();
 

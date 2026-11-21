@@ -31,6 +31,7 @@
 #include <LittleFS.h>
 #include <AsyncJson.h>
 #include <esp_ota_ops.h>
+#include "log_text_sanitize_logic.h"  // bug-179
 
 // Fonctions externes déclarées dans main.cpp
 extern void resetWiFiSettings();
@@ -2571,7 +2572,11 @@ void setupConfigRoutes(AsyncWebServer* server, bool* restartApRequested, unsigne
       }
 
       // Enregistrer les credentials pour reconnexion asynchrone
-      systemLogger.info("Configuration WiFi demandée depuis l'UI: " + ssid);
+      {
+        char safeSsid[kLogExternalTextBufBytes];  // bug-179 : SSID = texte externe
+        logSanitizeExternalText(ssid.c_str(), ssid.length(), safeSsid, sizeof(safeSsid));
+        systemLogger.info("Configuration WiFi demandée depuis l'UI: " + String(safeSsid));
+      }
       g_wifiReconnectSsid = ssid;
       g_wifiReconnectPassword = password;
       g_wifiReconnectRequested = true;
@@ -2827,7 +2832,11 @@ void processWifiReconnectIfNeeded() {
   // Marquer comme traité pour éviter de refaire plusieurs fois
   g_wifiReconnectRequested = false;
 
-  systemLogger.info("Démarrage reconnexion WiFi asynchrone: " + g_wifiReconnectSsid);
+  {
+    char safeSsid[kLogExternalTextBufBytes];  // bug-179 : SSID = texte externe
+    logSanitizeExternalText(g_wifiReconnectSsid.c_str(), g_wifiReconnectSsid.length(), safeSsid, sizeof(safeSsid));
+    systemLogger.info("Démarrage reconnexion WiFi asynchrone: " + String(safeSsid));
+  }
 
   // Déterminer le mode WiFi actuel
   wifi_mode_t mode = WiFi.getMode();
@@ -2881,7 +2890,12 @@ void processWifiReconnectIfNeeded() {
 
   // Lancer la connexion WiFi (en mode STA ou APSTA selon le cas)
   systemLogger.info("=== DEBUG Reconnexion WiFi ===");
-  systemLogger.info("SSID: '" + g_wifiReconnectSsid + "' (longueur: " + String(g_wifiReconnectSsid.length()) + ")");
+  {
+    char safeSsid[kLogExternalTextBufBytes];  // bug-179 : SSID = texte externe
+    logSanitizeExternalText(g_wifiReconnectSsid.c_str(), g_wifiReconnectSsid.length(), safeSsid, sizeof(safeSsid));
+    const size_t ssidLen = g_wifiReconnectSsid.length();
+    systemLogger.info("SSID: '" + String(safeSsid) + "' (longueur: " + String(ssidLen) + ")");
+  }
   systemLogger.info("Password: (longueur: " + String(g_wifiReconnectPassword.length()) + ")");
   systemLogger.info("==============================");
 
@@ -2891,7 +2905,9 @@ void processWifiReconnectIfNeeded() {
   memset(&old_wifi_config, 0, sizeof(wifi_config_t));
   esp_wifi_get_config(WIFI_IF_STA, &old_wifi_config);
   String oldSsid = String((char*)old_wifi_config.sta.ssid);
-  systemLogger.info("Anciens credentials sauvegardés: SSID='" + oldSsid + "'");
+  char safeOldSsid[kLogExternalTextBufBytes];  // bug-179 : SSID = texte externe
+  logSanitizeExternalText(oldSsid.c_str(), oldSsid.length(), safeOldSsid, sizeof(safeOldSsid));
+  systemLogger.info("Anciens credentials sauvegardés: SSID='" + String(safeOldSsid) + "'");
 
   // Démarrer la connexion WiFi SANS persistence automatique
   // On sauvegarde manuellement dans la NVS seulement si la connexion réussit
@@ -2930,7 +2946,7 @@ void processWifiReconnectIfNeeded() {
     // Restaurer les anciens credentials dans la NVS
     esp_err_t err = esp_wifi_set_config(WIFI_IF_STA, &old_wifi_config);
     if (err == ESP_OK) {
-      systemLogger.info("Anciens credentials restaurés: SSID='" + oldSsid + "'");
+      systemLogger.info("Anciens credentials restaurés: SSID='" + String(safeOldSsid) + "'");
     } else {
       systemLogger.error("Erreur restauration NVS: " + String(esp_err_to_name(err)));
     }

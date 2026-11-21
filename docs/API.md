@@ -1004,6 +1004,8 @@ tiers doit faire de même.
 
 Retourne les logs système par **pages bornées** (v2.10.4, [ADR-0032](adr/0032-reponses-http-bornees.md)). Paramètre optionnel `?since=TIMESTAMP` : ne retourne que les entrées dont le timestamp est **strictement supérieur** — c'est à la fois le curseur de pagination et le mécanisme de récupération incrémentale.
 
+> ⚠️ **Contenu ré-encodé (v2.97.0, bug-179)** : les textes venus de l'extérieur (URL refusée, charge MQTT, SSID, nom de fichier de mise à jour) y figurent sous forme `%XX`, tronqués à 96 o avec suffixe `~<n>o`. Voir [logger.md](subsystems/logger.md#texte-externe--assaini-à-la-source-bug-179-v2970-adr-0136).
+
 ```bash
 curl -H "X-Auth-Token: $TOKEN" http://poolcontroller.local/get-logs
 curl -H "X-Auth-Token: $TOKEN" "http://poolcontroller.local/get-logs?since=14400000"
@@ -1045,7 +1047,7 @@ curl -H "X-Auth-Token: $TOKEN" "http://poolcontroller.local/get-logs?since=14400
 
 ### GET /download-logs — WRITE
 
-Télécharge les logs système sous forme de fichier texte (`pool_logs.txt`).
+Télécharge les logs système sous forme de fichier texte (`pool_logs.txt`). ⚠️ Depuis la v2.97.0 les textes externes y sont **ré-encodés** (`%XX`) comme dans `/get-logs` : un outil qui relisait ce fichier verra une forme différente.
 
 ```bash
 curl -H "X-Auth-Token: $TOKEN" http://poolcontroller.local/download-logs -o pool_logs.txt

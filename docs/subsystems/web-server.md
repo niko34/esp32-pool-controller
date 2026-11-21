@@ -304,6 +304,8 @@ En-têtes de sécurité **globaux** posés dans `setupRoutes()` via `DefaultHead
 - `X-Content-Type-Options: nosniff`
 - `X-Frame-Options: SAMEORIGIN`
 
+⛔ **`'unsafe-inline'` reste dans `script-src` (vérifié à l'identique en v2.97.0).** Il est nécessaire : 4 blocs `<script>` en ligne et 3 `onclick=` subsistent dans `data/`. **Ne pas le retirer au fil d'une tâche** : une externalisation fautive de `login.html` rendrait l'appareil inatteignable (aucun port série). La défense de bug-179 est ailleurs (rendu DOM + assainissement à la source). Retrait : fiche de suivi dédiée.
+
 Toute intégration cross-origin future passe par un reverse proxy ou rouvre l'[ADR-0023](../adr/0023-politique-cors-retrait.md).
 
 ## Reboot différé

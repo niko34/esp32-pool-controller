@@ -3,6 +3,7 @@
 #include "config.h"
 #include <esp_random.h>
 #include "auth_log_throttle_site.h"
+#include "log_text_sanitize_logic.h"  // bug-179
 #include "auth_admission_logic.h"
 #include "auth_bootstrap_logic.h"
 #include "web_routes_auth.h"  // bug-189 : authFailBackoffClearExemptions
@@ -48,7 +49,16 @@ void logUnauthWarn(AuthLogThrottleSite& site, AsyncWebServerRequest* req, uint8_
   String msg;
   const String clientIp = hasClient ? req->client()->remoteIP().toString() : String("IP inconnue");
   if (kind == 0) {
-    msg = "Accès non autorisé depuis " + clientIp + " vers " + (req != nullptr ? req->url() : String("?"));
+    // bug-179 : l'URL est du texte externe (déjà décodée pourcent par la
+    // bibliothèque) -> assainie sur la pile, APRÈS la sortie muette. L'IP n'en est pas.
+    char safeUrl[kLogExternalTextBufBytes];
+    if (req != nullptr) {
+      const String& u = req->url();
+      logSanitizeExternalText(u.c_str(), u.length(), safeUrl, sizeof(safeUrl));
+    } else {
+      safeUrl[0] = '?'; safeUrl[1] = '\0';
+    }
+    msg = "Accès non autorisé depuis " + clientIp + " vers " + safeUrl;
   } else {
     msg = "Rate limit dépassé pour " + clientIp + " (" + String(reqCount) + " req/min)";
   }

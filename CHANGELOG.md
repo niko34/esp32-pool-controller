@@ -2,6 +2,23 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [2.97.0] - 2026-11-21
+
+### Firmware
+- **Sécurité (bug-179)** : n'importe qui sur le réseau local, **sans identifiant**, pouvait faire écrire le texte de son choix dans le journal de l'appareil, puis ce texte s'affichait comme du balisage dans la session de l'administrateur. Constaté sur l'appareil réel. Corrigé à deux niveaux : l'interface n'interprète plus jamais le contenu du journal, et les messages venus de l'extérieur (adresse refusée, messages MQTT, noms de réseaux Wi-Fi, nom d'un fichier de mise à jour) sont **réécrits dans une forme inoffensive** avant d'être enregistrés.
+- ⚠️ **Rupture possible** : cette forme réécrite se retrouve aussi dans le fichier **Télécharger** du journal. Un nom comme « Livebox-Café » y apparaît `Livebox-Caf%C3%A9` (l'écran de la liste des réseaux, lui, reste lisible). Un outil qui relisait ce fichier verra donc une forme différente.
+
+### Fonctionnalités
+- Listes de réseaux Wi-Fi (page Wi-Fi et assistant de premier démarrage) : un nom de réseau ne peut plus être interprété ; les caractères invisibles s'affichent `·`.
+- La notification « Connexion au réseau X » est supprimée : elle ne s'affichait jamais réellement.
+- Libellés du panneau Journal : « Logs » devient « Journal de l'appareil », « Logs des sondes » devient « Détail des mesures », « Logs DEBUG activés » devient « Mode diagnostic détaillé », « Effacer (firmware) » devient « Effacer le journal de l'appareil », « Auto (5s) » devient « Actualiser toutes les 5 s ». « Effacer (écran) » est inchangé. Les lignes passent à la ligne au lieu d'être coupées.
+
+### Documentation
+- ADR-0136 ; `docs/subsystems/logger.md`, `auth.md`, `web-server.md` (la CSP garde `'unsafe-inline'`), `docs/features/page-settings.md`, `docs/API.md`.
+- Nouvelles gardes CI : `check_no_html_interpolation.sh`, règles 6 et 6b de `check_unauth_log_guard.sh`, `check_log_line_vectors.sh`. Les captures (`ui_shot`) recopient désormais `/get-logs`.
+
+---
+
 ## [2.96.2] - 2026-11-21
 
 ### Fonctionnalités

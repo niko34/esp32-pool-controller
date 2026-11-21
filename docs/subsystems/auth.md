@@ -129,6 +129,14 @@ débit sans jamais sanctionner un échec. C'est précisément ce que bug-189 ajo
 et sans y toucher (voir plus bas). ⚠️ Les deux 429 se distinguent par le champ `retryAfter`,
 présent seulement sur celui de bug-189.
 
+## Adresse du refus 401 assainie (bug-179, v2.97.0, [ADR-0136](../adr/0136-assainir-le-texte-externe-a-la-source-jamais-dans-le-journal.md))
+
+⚠️ **Défaut corrigé** : `GET /get-config/<charge>` rend **401** (correspondance de préfixe, pas 404) et le message de refus recopiait l'URL brute. Un client anonyme déposait donc du texte dans le journal, rendu en HTML chez l'administrateur.
+
+Forme du message : `Accès non autorisé depuis <IP> vers <URL assainie>`. L'URL passe par `logSanitizeExternalText` (voir [logger.md](logger.md#texte-externe--assaini-à-la-source-bug-179-v2970-adr-0136)) **après** la sortie muette du bornage. Conservé : le préfixe de route lisible (`/get-config/`), la casse d'origine, la longueur réelle (suffixe `~<n>o` si > 96 o) et la **réversibilité** (`%` -> `%25`) : tout cela garde sa valeur d'enquête. L'IP n'est pas du texte externe et reste brute.
+
+Garde : règle 6b de `tools/check_unauth_log_guard.sh`. ⚠️ **Limite** : elle ne couvre que `auth.cpp` (seul chemin atteignable sans identifiants) ; le même contournement par variable intermédiaire reste possible ailleurs.
+
 ## Bornage du journal des refus (`bug-112`, v2.89.1)
 
 Les refus d'authentification journalisent en `WARNING`, mais **de façon bornée** : sans cela un client anonyme purgeait le journal persistant en ~27 requêtes (~13 s). Décision et alternatives : [ADR-0127](../adr/0127-le-bornage-du-journal-d-authentification-est-global-par-emetteur.md).

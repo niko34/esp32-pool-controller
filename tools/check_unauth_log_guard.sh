@@ -7,7 +7,7 @@
 # manuel a raté 2 sites sur 8, puis 2 de plus : ce contrôle cherche aussi les sites
 # qu'on n'a pas encore vus.
 #
-# Cinq règles (exemption : commentaire `AUTH-LOG-EXEMPT(raison)` sur la ligne ou la
+# Six règles (exemption : commentaire `AUTH-LOG-EXEMPT(raison)` sur la ligne ou la
 # précédente — la raison doit être VRAIE, jamais posée pour faire taire la garde) :
 #  (1) web_routes_*.cpp : AUCUN systemLogger dans la branche de refus d'un
 #      `if (!…Authorized(` ;
@@ -22,6 +22,12 @@
 #      checkRateLimit, sendAuthRequired, sendRateLimitExceeded.
 #      (checkBasicAuth RETIRÉE du firmware par bug-184 : la voie HTTP Basic
 #       n'existe plus, donc plus rien à garder de ce côté.)
+#  (6) ⭐ bug-179 : AUCUN texte EXTERNE brut dans un systemLogger.*( de src/**.cpp
+#      (->url(), ->value(), ->arg(, ->pathArg(, ->header(, ->filename, filename,
+#      payloadStr, cmd.payload, WiFi.SSID(), g_wifiReconnectSsid, oldSsid), sauf
+#      passage par un tampon assaini (identifiant préfixé `safe`, rempli par
+#      logSanitizeExternalText) ou `LOG-TEXT-EXEMPT(raison)` en ligne. ROUGE si
+#      src/log_text_sanitize_logic.h est introuvable (pas de faux vert).
 # La journalisation passe par la coquille AuthLogThrottleSite (helpers dédiés).
 # Sortie 0 = sain, 1 = violation.
 # =============================================================================
@@ -115,6 +121,47 @@ for name in ('AuthManager::checkAuth', 'AuthManager::checkTokenAuth',
     if r is None: err('src/auth.cpp', 1, f'fonction {name} introuvable (garde à mettre à jour)'); continue
     for j in range(r[0], r[1] + 1):
         if logs(L, j): err('src/auth.cpp', j+1, f'systemLogger dans {name} (non borné)')
+
+# --- règle (6) : texte externe dans le journal (bug-179)
+import os
+if not os.path.isfile('src/log_text_sanitize_logic.h'):
+    err('src/log_text_sanitize_logic.h', 1, 'helper d\'assainissement INTROUVABLE (règle 6 sans objet = faux vert interdit)')
+ext = re.compile(r'->url\(\)|->value\(\)|->arg\(|->pathArg\(|->header\(|->filename|\bfilename\b|\bpayloadStr\b|\bcmd\.payload\b|WiFi\.SSID\(\)|\bg_wifiReconnectSsid\b|\boldSsid\b')
+for f in sorted(glob.glob('src/**/*.cpp', recursive=True)):
+    L = load(f)
+    i = 0
+    while i < len(L):
+        if re.search(r'systemLogger\s*\.\s*\w+\s*\(', L[i]) and not L[i].lstrip().startswith('//'):
+            j = i
+            while j < len(L) - 1 and ';' not in re.sub(r'"(\\.|[^"\\])*"', '""', L[j]): j += 1
+            stmt = ' '.join(re.sub(r'//.*$', '', re.sub(r'"(\\.|[^"\\])*"', '""', x)) for x in L[i:j+1])
+            raw = ' '.join(L[i:j+1])
+            if ext.search(stmt) and 'LOG-TEXT-EXEMPT(' not in raw:
+                err(f, i+1, "texte externe brut dans systemLogger (bug-179) : passer par logSanitizeExternalText -> tampon 'safe*'")
+            i = j + 1
+        else:
+            i += 1
+
+# --- règle (6b) : auth.cpp ne peut pas contourner le helper par une variable intermédiaire.
+# ⚠️ LIMITE ASSUMÉE, écrite pour ne pas se croire protégé : 6b ne couvre que auth.cpp.
+# Le même contournement reste possible dans mqtt_manager.cpp, main.cpp et les routes web.
+# Généraliser demanderait de SUIVRE LE FLOT DE DONNÉES — hors de portée d'une sentinelle
+# textuelle, et un « toute ligne citant payloadStr doit être assainie » noierait la garde
+# sous les usages d'ANALYSE, qui sont légitimes et majoritaires.
+# ⇒ auth.cpp est couvert parce que c'est le SEUL chemin atteignable SANS identifiants.
+# (Mutation M6 de bug-179 : `msg = "..." + req->url()` puis systemLogger(msg) échappait à la
+# règle 6, qui ne regarde que l'intérieur de l'appel.) Tout `->url()` de auth.cpp doit être
+# soit dans authLogThrottleHash(...), soit lié à une référence aussitôt confiée à
+# logSanitizeExternalText(<ref>.c_str() ...).
+L = load('src/auth.cpp')
+for i, line in enumerate(L):
+    code = re.sub(r'//.*$', '', line)
+    if '->url()' not in code or 'LOG-TEXT-EXEMPT(' in line: continue
+    if 'authLogThrottleHash(' in code: continue
+    m = re.search(r'const\s+String&\s+(\w+)\s*=\s*[^;]*->url\(\)\s*;', code)
+    if m and any(re.search(r'logSanitizeExternalText\(\s*' + re.escape(m.group(1)) + r'\.', x) for x in L[i+1:i+4]):
+        continue
+    err('src/auth.cpp', i+1, "->url() hors authLogThrottleHash/logSanitizeExternalText (bug-179 règle 6b)")
 
 if bad:
     print(f'ECHEC : {bad} violation(s) — passer par AuthLogThrottleSite (bug-112).')

@@ -449,7 +449,17 @@ Le script utilise `xtensa-esp32-elf-gdb` et `esp_coredump` du penv PlatformIO po
 
 Voir [`docs/API.md#diagnostic-crash-coredump`](../API.md#diagnostic-crash-coredump) pour les détails des endpoints.
 
-#### Card Logs
+#### Card Journal de l'appareil
+
+> bug-179 (v2.97.0) : carte renommée « Journal de l'appareil » (ex-« Logs »). Le rendu est construit **en DOM** (`createElement` + `textContent`), jamais en `innerHTML` : un texte venu de l'extérieur ne peut plus être interprété comme du HTML. La fonction pure `formatLogLine()` est partagée entre le chargement HTTP et le temps réel WebSocket. Retour à la ligne forcé (`pre-wrap`, `overflow-wrap: anywhere`) : ni défilement horizontal ni troncature. Couleurs par niveau (DEBUG gris, WARN ambre, ERROR rouge gras, CRITICAL fond rouge) **jamais seules** : le mot du niveau et une barre latérale d'épaisseur croissante (2/3/4 px) les doublent. Nouveaux états : « Aucun message dans le journal. », « Aucun message à ce niveau. N masqués. », « Journal indisponible. Vérifiez la connexion puis actualisez. » Performance mesurée : médiane 10,35-10,80 ms contre 8,70 ms avant, soit 1,19-1,24x (seuil 1,5x).
+
+| Ancien libellé | Nouveau libellé |
+|---|---|
+| Logs des sondes | Détail des mesures |
+| Logs DEBUG activés | Mode diagnostic détaillé |
+| Effacer (firmware) | Effacer le journal de l'appareil |
+| Auto (5s) | Actualiser toutes les 5 s |
+| Effacer (écran) | **inchangé** |
 
 Liste défilante des derniers logs poussés via WebSocket + filtres par niveau (DEBUG/INFO/WARN/ERROR/CRITICAL). Quatre boutons dans la barre d'action :
 
@@ -460,13 +470,13 @@ Liste défilante des derniers logs poussés via WebSocket + filtres par niveau (
 | Actualiser | ghost | Force un rechargement complet via `GET /get-logs` (boucle de pagination ci-dessus) |
 | Effacer (écran) | ghost | Vide **uniquement la vue navigateur locale** (`#logs_content`, `allLogEntries`, `lastLogTimestamp`). Les logs côté ESP32 sont intacts ; un rechargement les fait réapparaître. Tooltip : *« Vide uniquement la vue actuelle, les logs restent côté ESP32 »*. |
 | Télécharger | ghost | Téléchargement de `pool_logs.txt` via `GET /download-logs` (flux chunked v2.10.4 — lignes > 256 o tronquées « … », cf. [`docs/API.md`](../API.md#get-download-logs--write)) |
-| Effacer (firmware) | **danger (rouge)** | Confirmation via `confirmDialog` (variante danger) puis `DELETE /logs` (cf. [`docs/API.md`](../API.md#delete-logs--write)). Vide RAM + buffer pending + supprime `/system.log` côté ESP32, vide aussi la vue locale, toast de succès `Logs effacés (RAM + fichier)`. Tooltip : *« Vide la mémoire et supprime le fichier persistant côté ESP32 »*. |
+| Effacer le journal de l'appareil | **danger (rouge)** | Confirmation via `confirmDialog` (variante danger) puis `DELETE /logs` (cf. [`docs/API.md`](../API.md#delete-logs--write)). Vide RAM + buffer pending + supprime `/system.log` côté ESP32, vide aussi la vue locale, toast de succès `Logs effacés (RAM + fichier)`. Tooltip : *« Vide la mémoire et supprime le fichier persistant côté ESP32 »*. |
 
 Toggles complémentaires :
-- `Auto (5s)` — rafraîchissement automatique
+- `Actualiser toutes les 5 s` (ex-« Auto (5s) ») — rafraîchissement automatique
 - `Scroll auto` — suivi de fin
-- `sensor_logs_enabled` — verbosité capteurs (« Log des sondes »)
-- `debug_logs_enabled` — switch **« Logs DEBUG activés »** placé immédiatement sous « Log des sondes ». Default `false`. Quand le switch est désactivé, `Logger::debug()` court-circuite immédiatement côté firmware (early return, aucune allocation, aucun push WS, aucune écriture buffer). Effet immédiat (pas de redémarrage requis), persistance NVS sous la clé `debug_logs`. Les niveaux `INFO`/`WARNING`/`ERROR`/`CRITICAL` ne sont **pas** affectés. Le filtre UI `#log_level_debug` (case « DEBUG » de la barre de filtres) reste indépendant : il pilote uniquement l'affichage côté navigateur des entrées DEBUG déjà produites.
+- `sensor_logs_enabled` — verbosité capteurs (« Détail des mesures »)
+- `debug_logs_enabled` — switch **« Mode diagnostic détaillé »** (ex-« Logs DEBUG activés ») placé immédiatement sous « Détail des mesures ». Default `false`. Quand le switch est désactivé, `Logger::debug()` court-circuite immédiatement côté firmware (early return, aucune allocation, aucun push WS, aucune écriture buffer). Effet immédiat (pas de redémarrage requis), persistance NVS sous la clé `debug_logs`. Les niveaux `INFO`/`WARNING`/`ERROR`/`CRITICAL` ne sont **pas** affectés. Le filtre UI `#log_level_debug` (case « DEBUG » de la barre de filtres) reste indépendant : il pilote uniquement l'affichage côté navigateur des entrées DEBUG déjà produites.
 
 ## Actions
 

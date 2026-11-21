@@ -2172,9 +2172,6 @@ action:
 
             <!-- Wi-Fi Panel -->
             <section class="panel" data-settings-panel="wifi" id="panel-wifi" role="tabpanel" aria-labelledby="tab-wifi">
-              <!-- Zone de notification WiFi -->
-              <div id="wifi-notification" class="wifi-notification hidden"></div>
-
               <div class="card">
                 <div class="card__head">
                   <h2 class="card__title">Wi-Fi</h2>
@@ -2939,13 +2936,13 @@ action:
 
               <div class="card">
                 <div class="card__head">
-                  <h2 class="card__title">Logs</h2>
+                  <h2 class="card__title">Journal de l'appareil</h2>
                 </div>
                 <div class="card__body">
                   <div class="row row--between" style="margin-bottom: 12px;">
                     <div>
-                      <p class="row__title" id="label-sensor-logs-enabled">Logs des sondes</p>
-                      <div class="muted small">Logs détaillés pH, ORP, température</div>
+                      <p class="row__title" id="label-sensor-logs-enabled">Détail des mesures</p>
+                      <div class="muted small">Inscrit au journal chaque mesure de pH, d'ORP et de température.</div>
                     </div>
                     <label class="switch">
                       <input type="checkbox" id="sensor_logs_enabled" aria-labelledby="label-sensor-logs-enabled" />
@@ -2955,8 +2952,8 @@ action:
 
                   <div class="row row--between" style="margin-bottom: 12px;">
                     <div>
-                      <p class="row__title" id="label-debug-logs-enabled">Logs DEBUG activés</p>
-                      <div class="muted small">Active les messages de diagnostic détaillé. À activer uniquement pour le diagnostic.</div>
+                      <p class="row__title" id="label-debug-logs-enabled">Mode diagnostic détaillé</p>
+                      <div class="muted small">Ajoute les messages techniques. À laisser éteint en usage normal : le journal se renouvelle plus vite.</div>
                     </div>
                     <label class="switch">
                       <input type="checkbox" id="debug_logs_enabled" aria-labelledby="label-debug-logs-enabled" />
@@ -2967,10 +2964,10 @@ action:
                   <div class="row row--gap row--between" style="flex-wrap:wrap;gap:8px">
                     <div class="row row--gap">
                       <button class="btn btn--ghost" type="button" id="refresh_logs_btn">Actualiser</button>
-                      <button class="btn btn--ghost" type="button" id="clear_logs_display_btn" title="Vide uniquement la vue actuelle, les logs restent côté ESP32">Effacer (écran)</button>
+                      <button class="btn btn--ghost" type="button" id="clear_logs_display_btn" title="Vide uniquement la vue actuelle, le journal reste dans l'appareil">Effacer (écran)</button>
                       <button class="btn btn--ghost" type="button" id="download_logs_btn">Télécharger</button>
-                      <button class="btn btn--danger" type="button" id="clear_logs_firmware_btn" title="Vide la mémoire et supprime le fichier persistant côté ESP32">Effacer (firmware)</button>
-                      <label class="field field--inline" style="margin:0"><input type="checkbox" id="logs_auto_refresh" /><span class="field__label">Auto (5s)</span></label>
+                      <button class="btn btn--danger" type="button" id="clear_logs_firmware_btn" title="Vide la mémoire et supprime le fichier persistant de l'appareil">Effacer le journal de l'appareil</button>
+                      <label class="field field--inline" style="margin:0"><input type="checkbox" id="logs_auto_refresh" /><span class="field__label">Actualiser toutes les 5 s</span></label>
                       <label class="field field--inline" style="margin:0"><input type="checkbox" id="logs_auto_scroll" checked /><span class="field__label">Scroll auto</span></label>
                     </div>
                     <div class="row row--gap" style="align-items:center;flex-wrap:wrap">
@@ -2983,8 +2980,8 @@ action:
                     </div>
                   </div>
 
-                  <div class="terminal" id="logs_container" tabindex="0" aria-label="Journal système" aria-live="polite" aria-atomic="false">
-                    <div id="logs_content">Chargement…</div>
+                  <div class="terminal" id="logs_container" role="log" tabindex="0" aria-label="Journal de l'appareil" aria-live="off">
+                    <div id="logs_content"><p class="log-state">Chargement du journal…</p></div>
                   </div>
                 </div>
               </div>

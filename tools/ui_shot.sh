@@ -118,6 +118,19 @@ for ep in data get-config get-system-info; do
   curl -s -m 15 "http://$HOST/$ep" -H "X-Auth-Token: $TOKEN" -o "$TMP/api/$ep.json"
   [[ -s "$TMP/api/$ep.json" ]] || { echo "ERREUR : /$ep vide." >&2; exit 1; }
 done
+# bug-179 : le JOURNAL, recopie en PLUS — sans lui le panneau Journal s'affichait
+# toujours « (vide) » en capture, donc personne ne pouvait voir son rendu avant de
+# deployer. C'est l'angle mort qui a laisse un rendu en innerHTML passer des mois.
+# ⚠️ FACULTATIF a dessein : un firmware anterieur peut ne pas servir /get-logs, et
+#    l'outil doit continuer de marcher contre lui. Vide = le serveur local rendra
+#    un journal vide, comme avant.
+curl -s -m 15 "http://$HOST/get-logs" -H "X-Auth-Token: $TOKEN" -o "$TMP/api/get-logs.json" || true
+if [[ -s "$TMP/api/get-logs.json" ]]; then
+  echo "   journal recopie ($(wc -c < "$TMP/api/get-logs.json") octets)"
+else
+  rm -f "$TMP/api/get-logs.json"
+  echo "   journal indisponible : le panneau Journal sera vide (sans gravite)"
+fi
 
 # Forçage d'état : -f sur /data (mesures), -c sur /get-config (réglages).
 force_field() {  # $1 = fichier, $2 = cle=valeur

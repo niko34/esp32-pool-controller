@@ -237,6 +237,7 @@
 
     .network-item {
       padding: 12px;
+      border-left: 4px solid transparent;
       border-bottom: 1px solid #eee;
       cursor: pointer;
       transition: background 0.2s ease;
@@ -252,11 +253,18 @@
 
     .network-item.selected {
       background: #e3f2fd;
+      border-left-color: #5c7cdb;
     }
 
     .network-item strong {
       display: block;
       margin-bottom: 4px;
+      overflow-wrap: anywhere;
+    }
+
+    .network-item strong .ssid-hidden {
+      font-style: italic;
+      font-weight: 400;
     }
 
     .network-item small {
@@ -451,12 +459,44 @@
     function setButtonLoading(button, loading, originalText) {
       if (loading) {
         button.disabled = true;
-        button.dataset.originalText = button.innerHTML;
-        button.innerHTML = `<span class="spinner"></span><span>${originalText || 'Traitement...'}</span>`;
+        button.dataset.originalText = button.textContent.trim();
+        const spin = document.createElement('span');
+        spin.className = 'spinner';
+        const lbl = document.createElement('span');
+        lbl.textContent = originalText || 'Traitement...';
+        button.replaceChildren(spin, lbl);
       } else {
         button.disabled = false;
-        button.innerHTML = button.dataset.originalText || originalText || 'Se connecter';
+        button.textContent = button.dataset.originalText || originalText || 'Se connecter';
       }
+    }
+
+    // bug-179 : un SSID est une donnee diffusee a portee radio. Affichage en
+    // texte uniquement ; les caracteres de controle ou invisibles sont remplaces
+    // par « · » pour qu'un faux reseau ne se fasse pas passer pour le vrai.
+    // La valeur envoyee dans le champ SSID reste le nom BRUT.
+    const SSID_SPECIAL_RE = /[\u0000-\u001F\u007F-\u009F\u200B-\u200F\u202A-\u202E\u2066-\u2069]/g;
+    function buildNetworkItemContent(item, network, secureLabel) {
+      const raw = network.ssid == null ? '' : String(network.ssid);
+      const shown = raw.replace(SSID_SPECIAL_RE, '\u00B7');
+      const special = shown !== raw;
+      const strong = document.createElement('strong');
+      if (raw === '') {
+        const em = document.createElement('span');
+        em.className = 'ssid-hidden';
+        em.textContent = '(r\u00E9seau masqu\u00E9)';
+        strong.appendChild(em);
+      } else {
+        const bdi = document.createElement('bdi');
+        bdi.textContent = shown;
+        strong.appendChild(bdi);
+      }
+      const small = document.createElement('small');
+      let info = 'Signal: ' + String(Number(network.rssi)) + ' dBm | ' + secureLabel;
+      if (special) info += ' | caract\u00E8res sp\u00E9ciaux dans le nom';
+      small.textContent = info;
+      item.appendChild(strong);
+      item.appendChild(small);
     }
 
     async function scanWifi() {
@@ -479,10 +519,7 @@
             item.setAttribute('role', 'option');
             item.setAttribute('aria-selected', 'false');
             item.setAttribute('tabindex', '0');
-            item.innerHTML = `
-              <strong>${network.ssid}</strong>
-              <small>Signal: ${network.rssi} dBm | ${network.secure ? 'Sécurisé' : 'Ouvert'}</small>
-            `;
+            buildNetworkItemContent(item, network, network.secure ? 'Sécurisé' : 'Ouvert');
             const selectNetwork = () => {
               document.querySelectorAll('.network-item').forEach(i => {
                 i.classList.remove('selected');
@@ -569,13 +606,13 @@
         if (connected) {
           showSuccess('Connexion Wi-Fi réussie !');
           await new Promise(resolve => setTimeout(resolve, 1500));
-          window.location.href = '/#/settings/wifi?wifi=success&ssid=' + encodeURIComponent(connectedSsid);
+          window.location.href = '/#/settings/wifi';
         } else {
           showError('Échec de la connexion au réseau "' + ssid + '"');
           setButtonLoading(connectBtn, false, 'Se connecter');
           // Attendre un peu puis rediriger avec le statut d'échec
           await new Promise(resolve => setTimeout(resolve, 2000));
-          window.location.href = '/#/settings/wifi?wifi=failed&ssid=' + encodeURIComponent(ssid);
+          window.location.href = '/#/settings/wifi';
         }
 
       } catch (error) {

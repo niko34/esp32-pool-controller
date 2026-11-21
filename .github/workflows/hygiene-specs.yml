@@ -285,6 +285,16 @@ jobs:
       - name: Contrôle des vecteurs de pastille
         run: ./tools/check_dash_pill_vectors.sh
 
+  log-line-vectors:
+    name: Vecteurs du rendu du journal (bug-179)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Contrôle des vecteurs du journal
+        run: ./tools/check_log_line_vectors.sh
+
   trace-logic-vectors:
     name: Vecteurs de la logique « Signaux capteurs » (feature-153)
     runs-on: ubuntu-latest
@@ -568,6 +578,18 @@ jobs:
       # D3-c y affichera un message relayé depuis GitHub.
       - name: Contrôle de la carte de mise à jour
         run: ./tools/check_update_card_no_html.sh
+
+  no-html-interpolation:
+    name: Aucune ecriture HTML non litterale dans data/ (bug-179)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # script-src 'unsafe-inline' reste en place : le rendu en texte est la seule
+      # barriere contre un XSS stocke (journal, SSID, adresse 1-Wire).
+      - name: Controle des ecritures innerHTML / outerHTML / insertAdjacentHTML / document.write
+        run: ./tools/check_no_html_interpolation.sh
 
   ota-signature-switch:
     name: Interrupteur de signature OTA - appelant, routes exactes, surface (feature-151 D3-b2, C2/C5/C6/C12)
