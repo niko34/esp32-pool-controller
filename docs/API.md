@@ -516,7 +516,8 @@ curl -H "X-Auth-Token: $TOKEN" http://poolcontroller.local/data
 | Champ | Type | Description |
 |-------|------|-------------|
 | `rescue_until` | integer (epoch) | Instant d'expiration de la **Chloration de secours** (48 h glissantes depuis l'activation — **pas** un ancrage sur minuit local, voir [ADR-0087](adr/0087-ce-qu-un-mode-temporaire-a-le-droit-de-faire.md)). `0` si le mode est inactif. Piloté par [`POST /rescue/start`](#post-rescuestart--write) \| [`/rescue/stop`](#post-rescuestop--write), jamais par `/save-config`. Persisté en NVS (survit à un reboot). |
-| `rescue_dosing` | boolean | Verdict **dérivé** « le secours dose-t-il réellement maintenant ? » = actif **et** pas suspendu par l'inhibition ORP-sur-pH (pH connu et > 7,60). **Pas** un simple miroir de `rescue_until > 0` : une activation armée peut être suspendue sans que `rescue_until` le dise (filtration à l'arrêt, pH haut, plafond journalier atteint — ces trois causes sont dérivées côté client d'autres champs `/data` déjà existants, voir [page-dashboard.md](features/page-dashboard.md#carte-modes-temporaires-feature-140)). |
+| `maintenance_mode` | boolean | **v2.98.0 (bug-200)** : `true` si l'appareil a arrêté par sécurité **tout** ajout de produit (trop de redémarrages automatiques ; ne se lève qu'au redémarrage). Même expression sur la trame WebSocket. Ne pilote pas l'affichage des pastilles, qui suit le code de refus `phDoseBlockedCode` / `orpDoseBlockedCode` (valeur **26**, émise par le firmware seul). |
+| `rescue_dosing` | boolean | Verdict **dérivé** « le secours dose-t-il réellement maintenant ? » = actif **et** pas suspendu par l'inhibition ORP-sur-pH (pH connu et > 7,60) **et** pas sous l'arrêt de sécurité (`maintenance_mode`). ⚠️ **Changement de contrat v2.98.0** : jusqu'en 2.97, il restait `true` sous l'arrêt alors qu'aucun chlore n'était injecté. **Pas** un simple miroir de `rescue_until > 0` : une activation armée peut être suspendue sans que `rescue_until` le dise (filtration à l'arrêt, pH haut, plafond journalier atteint — ces trois causes sont dérivées côté client d'autres champs `/data` déjà existants, voir [page-dashboard.md](features/page-dashboard.md#carte-modes-temporaires-feature-140)). |
 | `rescue_lift` | integer (0-3) | Raison de **fin récente** du mode, fenêtre de visibilité glissante de 90 s (`kRescueLiftReasonVisibleMs`) : `0` = aucune fin récente, `1` = levée automatique (30 min de mesures ORP de nouveau fiables — **seul** cas où l'annonce « les mesures sont redevenues fiables » est vraie), `2` = expiration naturelle des 48 h (la régulation automatique a déjà repris, rien ne prouve que l'eau est fiable — contrôle au réactif DPD recommandé), `3` = arrêt manuel. Retombe à `0` de lui-même, **pas** un événement à acquitter. |
 
 **Le pH n'est jamais dosé par ce mode** (condition #11 du gate `pool-chemistry`) : aucun champ pH n'est affecté par la Chloration de secours. Voir [MQTT.md](MQTT.md#topic-et-entité-ajoutés-en-feature-140-chloration-de-secours-v2550) pour les topics MQTT équivalents, et [pump-controller.md](subsystems/pump-controller.md#chloration-de-secours-feature-140) pour le détail firmware. Buffer `/data` porté à **3200** octets (chemin sans plafond dur, gabarit purement documentaire — le seul plafond dur du projet reste `kWsFrameBufBytes` côté WebSocket, voir [ws-manager.md](subsystems/ws-manager.md#champs-sensor_data-ajoutés-en-v2550--chloration-de-secours-feature-140-et-migration-de-filtration_state_sourcefiltration_ext_on-vers-data-seul)).
@@ -2864,6 +2865,12 @@ curl -H "X-Auth-Token: $TOKEN" -X POST "http://poolcontroller.local/rescue/start
 
 ```json
 { "error": "mode_manual", "message": "Chloration de secours indisponible : la régulation du chlore est en mode Manuel. Repassez en Automatique ou Programmée pour l'utiliser." }
+```
+
+**Erreur 409** — arrêt de sécurité (v2.98.0, bug-200 ; testé **avant** le mode Manuel) : aucun chlore ne serait injecté, le mode n'est donc pas armé :
+
+```json
+{ "error": "maintenance_mode", "message": "Chloration de secours indisponible : l'appareil a arrêté par sécurité tout ajout de produit. Redémarrez-le (coupez son alimentation 10 secondes, puis rallumez), puis réessayez." }
 ```
 
 **Erreur 409** — heure non synchronisée (l'échéance 48 h serait indéterminable, même politique de sécurité que `POST /boost/start`) :

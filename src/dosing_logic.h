@@ -181,15 +181,19 @@ enum class DoseRefusal : uint8_t {
   // evaluateSuspendCause() ci-dessous, évaluée en DERNIER (après l'eau, la
   // session d'étalonnage et la stabilisation) — faute de rang dans canDose(),
   // elle ne peut jamais passer devant une garde rangée.
-  FlowAssistSuspend = 25       // assistant de mesure du débit en cours (dosage suspendu)
+  FlowAssistSuspend = 25,      // assistant de mesure du débit en cours (dosage suspendu)
+  // bug-200 : AJOUTÉ EN FIN (valeur 26) — même patron que FlowAssistSuspend :
+  // JAMAIS retourné par evaluateDose(), ne qualifie que la cause publiée quand
+  // l'appareil a coupé tout dosage par sécurité (maintenanceInhibit).
+  MaintenanceMode = 26         // arrêt de sécurité : tout dosage coupé (bug-200)
 };
 
 // pool-chemistry (bug-172, gate H3) : complétude de l'énum verrouillée par
 // cette sentinelle — relevée en MÊME temps que kDoseBlockedCodeGuard
 // (constants.h) si une future valeur venait à s'en approcher.
-constexpr int kDoseRefusalMaxValue = 25;
-static_assert(static_cast<int>(DoseRefusal::FlowAssistSuspend) == kDoseRefusalMaxValue,
-              "DoseRefusal::FlowAssistSuspend renuméroté — kDoseRefusalMaxValue doit suivre");
+constexpr int kDoseRefusalMaxValue = 26;
+static_assert(static_cast<int>(DoseRefusal::MaintenanceMode) == kDoseRefusalMaxValue,
+              "DoseRefusal::MaintenanceMode renuméroté — kDoseRefusalMaxValue doit suivre");
 
 // Entrées POD de la décision de dosage. Tous les champs sont collectés par la
 // coquille canDose() depuis les globals AVANT l'appel à evaluateDose().

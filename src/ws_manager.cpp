@@ -1435,8 +1435,12 @@ size_t WsManager::_buildSensorJson(char* buf, size_t cap) const {
   // de la suspension pH, condition #8 du gate) — PAS un simple miroir de
   // rescue_until > 0 : une activation suspendue par un pH > 7,60 ne dose rien,
   // et la ligne d'effet du widget « Modes temporaires » doit pouvoir le dire.
+  // bug-200 (v2.98.0) : arrêt de sécurité (trop de redémarrages auto). Servi aux consommateurs
+  // non-web et à la parité ; ne pilote JAMAIS la pastille (c'est le code 26). Parité /data <-> WS.
+  // Budget WS : +25 o au pire, total retenu 3598 o, marge 498 o sur kWsFrameBufBytes = 4096.
+  d["maintenance_mode"] = PumpController.isMaintenanceInhibited();
   d["rescue_until"]  = (long)rescueState.untilEpoch;
-  d["rescue_dosing"] = isRescueChlorineActive(time(nullptr)) && !PumpController.isOrpPhInhibited();
+  d["rescue_dosing"] = isRescueChlorineActive(time(nullptr)) && !PumpController.isOrpPhInhibited() && !PumpController.isMaintenanceInhibited();
   // Complément feature-140 (2026-10-05, retour web-ui-developer) : une simple
   // transition actif→inactif ne dit PAS pourquoi le mode s'est terminé, et le
   // libellé L6 imposé par le gate (« les mesures ORP sont de nouveau fiables »)

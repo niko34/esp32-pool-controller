@@ -87,6 +87,9 @@ static const char* const kCauseCalibrationSessionOpen =
 static const char* const kCauseStabilizationActive = "stabilisation post-calibration en cours";
 static const char* const kCauseFlowAssistSuspend =
     "mesure du débit en cours — dosage suspendu";
+// bug-200 : libellé court de l'arrêt de sécurité (mot « maintenance » banni de
+// tout texte destiné à l'écran).
+static const char* const kCauseMaintenanceMode = "Ajout de produits arrêté par sécurité";
 
 // Définitions des membres statiques
 bool PumpControllerClass::_dailyLoaded = false;
@@ -878,6 +881,23 @@ void PumpControllerClass::postSuspendCause(int pumpIndex, DoseRefusal cause) {
   // stable. logRefusalOnce() prend la propriété de la chaîne (canDose
   // propriétaire, _refusalCauseFromGuard=false) et horodate la transition.
   logRefusalOnce(pumpIndex, text, cause);
+}
+
+// bug-200 — publie la cause « arrêt de sécurité » (maintenanceInhibit).
+// ⚠️ CONTOURNEMENT ASSUMÉ DU RANG 0 : NE LIT PAS _refusalCauseFromGuard (contrairement
+// à postSuspendCause, qui sort dessus pour ne pas perdre la cause chimique au retour).
+// Justification : setMaintenanceInhibit() n'est appelé qu'avec `true` (main.cpp) —
+// aucune levée à chaud n'existe, le mode ne se lève que par redémarrage, qui réévalue
+// tout à neuf : il n'y a rien à perdre. Et newRefusal / le compteur des 3 refus / 24 h
+// (escalade vers Manuel) vivent dans tickPhGuardSurveillance(), PAS dans
+// logRefusalOnce() : poser cette cause ne crée aucun chemin vers un changement de mode.
+// ⛔ SI UN FUTUR LOT RENDAIT L'ARRÊT LEVABLE À CHAUD, CE CONTOURNEMENT REDEVIENT LE
+// DÉFAUT DE bug-172 (cause chimique perdue définitivement).
+// Edge-triggered sur le code : aucune allocation en régime stable (ADR-0082).
+void PumpControllerClass::postMaintenanceCause(int pumpIndex) {
+  if (pumpIndex < 0 || pumpIndex > 1) return;
+  if (static_cast<uint8_t>(DoseRefusal::MaintenanceMode) == _lastRefusalCode[pumpIndex]) return;
+  logRefusalOnce(pumpIndex, kCauseMaintenanceMode, DoseRefusal::MaintenanceMode);
 }
 
 // D1 — pose une cause de refus au nom d'une GARDE de sécurité (surveillance
@@ -1886,6 +1906,10 @@ bool PumpControllerClass::canDose(int pumpIndex) {
       // (-Werror=switch) ; texte identique à kCauseFlowAssistSuspend (H2 :
       // une seule voix pour cette cause).
       cause = kCauseFlowAssistSuspend;
+      break;
+    case DoseRefusal::MaintenanceMode:
+      // bug-200 : jamais retourné par evaluateDose() (complétude du switch).
+      cause = kCauseMaintenanceMode;
       break;
     case DoseRefusal::None:
       // Inatteignable (traité plus haut) — présent pour la complétude du switch.
@@ -3756,6 +3780,9 @@ void PumpControllerClass::updateDosingCore(unsigned long now) {
     applyPumpDuty(0, 0);
     applyPumpDuty(1, 0);
     settlePumpAccounting(now);  // bug-115 (v2.61.0) : C1 — régler avant de sortir
+    // bug-200 : décision prise et exécutée — publier la cause (affichage seul).
+    postMaintenanceCause(0);
+    postMaintenanceCause(1);
     return;
   }
 

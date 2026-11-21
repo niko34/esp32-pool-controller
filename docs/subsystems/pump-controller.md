@@ -33,7 +33,7 @@ void setOtaInProgress(bool);
 // souvent par un redémarrage ; perdre les minutes de circulation surévaluerait
 // la charge observée, cf. ADR-0053)
 void setMaintenanceInhibit(bool);   // true → dosage suspendu toutes voies
-bool isMaintenanceInhibited() const;
+bool isMaintenanceInhibited() const;   // contrat PUBLIÉ (bug-200) : lu par /data, WS et POST /rescue/start
 
 // Suspension « assistant de mesure du débit » (feature-075, v2.24.0) —
 // suspend le dosage AUTO + SCHEDULED (deux chimies), préserve le mode MANUEL
@@ -173,7 +173,7 @@ Ordre par cycle :
 3. **`tickDailyRollover()`** — bascule date / reset des compteurs journaliers. Appelé **avant** `canDose()` pour que le passage à minuit soit honoré même si la filtration est arrêtée. Voir [Reset journalier](#reset-journalier) ci-dessous.
 3bis. **v2.27.0** — `tickDailyFiltrationMinutes()` (dénominateur de la charge acide observée) puis le **flush périodique 30 s** des compteurs journaliers, tous deux **remontés ici, en amont de toutes les sorties anticipées** (OTA, maintenance, capteurs non initialisés, stabilisation). Voir [Points de flush ajoutés](#points-de-flush-ajoutés-défaut-fail-open-corrigé-en-revue).
 4. **Court-circuit OTA** : `otaInProgress` actif → `applyPumpDuty(0,0)` + `applyPumpDuty(1,0)` puis `return`. Pompes coupées tant que l'OTA dure.
-4bis. **Court-circuit maintenance** (v2.9.1) : `maintenanceInhibit` actif → `applyPumpDuty(0,0)` + `applyPumpDuty(1,0)` puis `return`. Gate identique à l'OTA, placée **avant** toute évaluation de dosage ([`pump_controller.cpp:798`](../../src/pump_controller.cpp:798)). Voir [Mode maintenance auto-guérison](#mode-maintenance-auto-guérison-v291).
+4bis. **Court-circuit maintenance** (v2.9.1) : `maintenanceInhibit` actif → `applyPumpDuty(0,0)` + `applyPumpDuty(1,0)` puis `return`. Gate identique à l'OTA, placée **avant** toute évaluation de dosage ([`pump_controller.cpp:798`](../../src/pump_controller.cpp:798)). Depuis v2.98.0 (bug-200), ce court-circuit **publie sa cause** : `postMaintenanceCause(0/1)` après la coupe des pompes. Voir [Mode maintenance auto-guérison](#mode-maintenance-auto-guérison-v291).
 5. Refresh des fenêtres glissantes 1 h (`refreshDosingState`).
 6. Court-circuit capteurs : `!sensors.isInitialized()` → arrêt pompes.
 6bis. **v2.91.0 (bug-171)** — `tickManualPumpGuard(now, waterPresence)` : coupe toute pompe en marche manuelle sur échéance, perte de présence d'eau ou session d'étalonnage ouverte. `waterPresence` est calculée **ici** (hissée depuis la garde globale) et le garde-fou est placé **avant** les sorties « capteurs non initialisés » et « filtration coupée » : placé après, il serait inatteignable filtration coupée — le cas visé. Voir [Marche manuelle bornée](#marche-manuelle-bornée-bug-171-v2910).
@@ -210,6 +210,17 @@ Le flag `maintenanceInhibit` ([`pump_controller.h:53`](../../src/pump_controller
 > ⚠️ **Condition pool-chemistry C2** : l'inhibition doit couvrir **auto + scheduled + manuel web + test** (et toute future source d'activation). Fermer `update()` seul ne suffit pas — `setManualPump()` active la pompe **immédiatement** hors cycle `update()`, d'où la garde dédiée à ce point de passage unique. *(Jusqu'en v2.16.x, la voie « manuel UART » de l'écran externe était couverte au même point ; elle a disparu avec le retrait de l'écran en v2.17.0, feature-065.)*
 
 Le flag ne se lève **qu'au redémarrage** du contrôleur (le mode maintenance est un état terminal jusqu'au reboot manuel). Logs : `warning` throttlé une fois par boot sur refus de commande manuelle ; `critical` à l'entrée en maintenance (côté `main.cpp`).
+
+### Arrêt de sécurité visible : `DoseRefusal::MaintenanceMode = 26` (bug-200, v2.98.0, [ADR-0137](../adr/0137-un-etat-qui-court-circuite-le-dosage-nomme-sa-cause-dans-le-canal-de-refus.md))
+
+Avant v2.98.0 l'arrêt était **invisible** : l'accueil affichait « Mode Auto » en vert. Pire, le bandeau de blocage **mentait** (cause précédente gelée, durée qui continuait de courir).
+
+- **Contrat publié** : `isMaintenanceInhibited()` est lu par `/data`, la trame WS (`maintenance_mode`, `rescue_dosing`) et `POST /rescue/start` (409). Ne pas le renommer sans suivre ces trois lecteurs.
+- **Code 26** ajouté **en fin d'énum** (`dosing_logic.h`), jamais retourné par `evaluateDose()` ; `kDoseRefusalMaxValue = 26` (sentinelle `static_assert`). Libellé court `kCauseMaintenanceMode` : « Ajout de produits arrêté par sécurité » (le mot « maintenance » est banni de tout texte affiché).
+- `postMaintenanceCause()` : edge-triggered sur le code, aucune allocation en régime stable (ADR-0082), appelée **après** la coupe des pompes (affichage seul).
+- ⚠️ **Contournement assumé du rang 0** : contrairement à `postSuspendCause()`, elle **ne lit pas** `_refusalCauseFromGuard`. Valable parce que `setMaintenanceInhibit()` n'est appelé qu'avec `true` : aucune levée à chaud, donc rien à perdre ; et le compteur des 3 refus / 24 h vit dans `tickPhGuardSurveillance()`, pas dans `logRefusalOnce()`. ⛔ **Si un futur lot rend l'arrêt levable à chaud, ce contournement redevient le défaut de bug-172.**
+
+> ⭐ **Règle générale** : *toute sortie anticipée d'`updateDosingCore()` qui ne pose pas de code de refus est invisible au tableau de bord ET laisse la cause précédente GELÉE avec sa durée qui court.* bug-200 n'en est qu'une instance. Il en existe **deux** : la maintenance (corrigée) et l'**OTA** (`if (otaInProgress)`, `pump_controller.cpp:3748`). ⚠️ **L'OTA a le même défaut, non corrigé** : il dure quelques minutes et le propriétaire vient de le déclencher ; fiche de suivi à ouvrir. Toute nouvelle sortie anticipée doit nommer sa cause.
 
 ## Suspension « assistant de mesure du débit » (feature-075, v2.24.0)
 

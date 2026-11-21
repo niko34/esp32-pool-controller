@@ -4390,6 +4390,24 @@ h1, h2, h3 {
   line-height: 1.4;
   color: var(--text);
 }
+/* bug-200 : bandeau d'arrêt de sécurité (code 26). Pas de pulsation (du bruit),
+   colonne unique, texte plein contraste. */
+.dose-block-banner__row--suspend {
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 14px;
+  border-left: 4px solid var(--danger);
+  color: var(--text);
+}
+.dose-suspend__titre { display: block; font-size: 15px; font-weight: 700; line-height: 1.3; color: var(--danger); }
+.dose-suspend__duree { display: block; margin-top: 2px; font-size: 12px; line-height: 1.45; color: var(--text); }
+.dose-suspend__duree[hidden] { display: none !important; }
+.dose-suspend__texte { margin: 8px 0 0; font-size: 13px; line-height: 1.45; color: var(--text); }
+.dose-suspend__eau { padding-top: 8px; border-top: 1px solid rgba(185, 28, 28, 0.35); font-weight: 600; }
+/* Pleine opacité même périmé : --danger à 60 % passe sous 4,5:1. La note de
+   péremption est dupliquée DANS le bandeau (le bandeau générique est masqué). */
+.dose-block-banner__row--suspend.is-stale { opacity: 1; }
+.dose-block-banner__row--suspend.is-stale .dose-block-banner__stale-note { display: block; }
 @media (max-width: 480px) {
   .dose-block-banner__row { flex-wrap: wrap; }
   .dose-block-banner__cta { width: 100%; margin-top: 8px; }

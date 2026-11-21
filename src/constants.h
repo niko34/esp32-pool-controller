@@ -522,6 +522,19 @@ constexpr uint32_t kWsSkipWarnThrottleMs = 30000;         // 30s - throttle du w
 // Recompte détaillé : cf. ws_manager.cpp. Nouvelle marge : 4096 − 3547 = 549 o.
 // ⚠️ LEÇON : ce décompte n'est tenu que par DISCIPLINE, et il a décroché
 // pendant QUATRE lots. Tout ajout de champ à la trame DOIT le reprendre.
+// ⚠️ bug-200 (v2.98.0) — RECOMPTE clé par clé de _buildSensorJson (121 clés
+// `d[...]`, relevées par script sur le code et non sur les commentaires), valeurs
+// au PIRE CAS structurel : bool 5 o, uint32 10 o, uint8 3 o, chaînes bornées par
+// leur tampon, flottants arrondis par leur borne fonctionnelle (6 à 9 o),
+// enveloppe {"type":"sensor_data","data":{…}} = 30 o, objet flow_assist = 17 o
+// hors clés filles. Résultat : 3448 o (recompte indépendant).
+//   - Le décompte HISTORIQUE (3573 o, feature-163) est PLUS HAUT de 125 o : ses
+//     largeurs de flottants sont plus prudentes. AUCUN nouveau décrochage détecté
+//     (le recompte est SOUS la chaîne, pas au-dessus). On retient le plus prudent.
+//   - Ajout du lot : "maintenance_mode":false, = 1+16+1+1+5+1 = 25 o.
+//     `rescue_dosing` ne change PAS de taille (seule son expression change).
+//   Nouveau pire cas : 3573 + 25 = 3598 o ⇒ MARGE 4096 − 3598 = 498 o
+//   (recompte indépendant : 3448 + 25 = 3473 o, marge 623 o). Aucun bump.
 constexpr size_t kWsFrameBufBytes = 4096;                 // Taille du buffer statique de trame WS
 
 // Récolte des clients WS zombies (investigation churn-heap §G1/G2) : un client qui

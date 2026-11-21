@@ -1347,6 +1347,16 @@ static const SharedExprKey kSharedExpr[] = {
     "pour decider d'ouvrir la modale de confirmation avant un passage en "
     "Arret. Une divergence d'expression ferait apparaitre et disparaitre "
     "cette modale au rythme des deux cadences (~5 s / ~30 s)." },
+  { "maintenance_mode",
+    "bug-200 (v2.98.0) : pilote la pastille ambre et le bandeau d'arret de "
+    "securite de tout ajout de produit ; une divergence d'expression ferait "
+    "apparaitre et disparaitre l'alerte au rythme des deux cadences (~5 s / "
+    "~30 s), sur un etat qui ne retombe qu'au redemarrage." },
+  { "rescue_dosing",
+    "bug-200 (v2.98.0) : son expression gagne `&& !isMaintenanceInhibited()` ; "
+    "elle pilote l'affirmation « le secours dose reellement ». Un seul cote "
+    "sans la clause afficherait un secours actif pendant l'arret de securite, "
+    "ou l'inverse selon la trame, au rythme des deux cadences." },
 };
 static const size_t kSharedExprCount = sizeof(kSharedExpr) / sizeof(kSharedExpr[0]);
 

@@ -99,3 +99,27 @@ contrôle et ne **compte pour aucune famille** — les deux moitiés de la corre
   rien ne doit recompiler entre les deux.
 - ⭐ La montée de version **renouvelle la clé d'accès** : un script qui garde la sienne entre
   deux envois se fait refuser le second. Observé le 2026-11-17.
+
+
+## 📦 6ᵉ chemin non prouvé, porté par bug-200 (2026-11-21)
+
+**L'arrêt de sécurité n'a JAMAIS été vu sur matériel.** `enterMaintenanceMode()`
+(`src/main.cpp:1256`, appelé aussi `:1307` sur corruption du tas) suspend **tout** le dosage pour
+une durée **non bornée**. [bug-200](../done/bug-200-le-mode-maintenance-suspend-tout-le-dosage-sans-que-l-ecran-le-dise.md)
+l'a rendu visible à l'écran et l'a prouvé **par forçage de champ** — 4 captures, 113 vecteurs,
+13 mutants — ⛔ mais la **chaîne réelle** n'a pas tourné :
+
+> rafale de redémarrages (ou corruption du tas) → `enterMaintenanceMode()` → `setMaintenanceInhibit(true)`
+> → `postMaintenanceCause()` → code 26 dans une **vraie** trame → bandeau + pastilles à l'écran.
+
+⛔ **Impossible sur l'appareil de production** : le mode ne retombe **qu'au redémarrage**, et son
+déclencheur est précisément une rafale de redémarrages.
+
+### Critères d'acceptation à ajouter à cette fiche
+- [ ] Provoquer l'arrêt de sécurité sur l'appareil **dédié** (3 redémarrages auto en 15 min,
+      `kAutoHealMaxReboots`, `src/constants.h:465`) et **relever** le bandeau à l'écran.
+- [ ] Vérifier que la cause affichée est bien l'arrêt de sécurité **même si une garde chimique
+      possédait la cause** juste avant — ⭐ c'est le **piège de rang 0**, contourné volontairement,
+      et le seul test actuel lit le **texte du source**, ⛔ pas le comportement.
+- [ ] Vérifier qu'un **redémarrage** éteint bien le bandeau.
+- [ ] Vérifier le refus de la **chloration de secours** (409) et celui de l'**injection manuelle**.

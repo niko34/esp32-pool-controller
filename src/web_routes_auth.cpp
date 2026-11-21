@@ -9,6 +9,7 @@
 #include "auth_log_throttle_site.h"  // bug-183 : journal BORNÉ des échecs
 #include "auth_fail_backoff_logic.h"  // bug-189 : ralentissement progressif des échecs
 #include "ap_password_logic.h"        // bug-187 : règle des quatre familles
+#include "auth_messages.h"            // bug-200 : phrases des refus (pures)
 #include <ArduinoJson.h>
 #include <WiFi.h>
 #include <atomic>
@@ -334,35 +335,25 @@ void setupAuthRoutes(AsyncWebServer* server) {
         case PwdChangeVerdict::kDenyUnauth:
           // Essai de jeton, jusqu'ici invisible : même site borné que le mot de passe.
           logAuthFailure(req, "/auth/change-password : jeton absent ou invalide");
-          sendErrorResponse(req, 401, "Authentication required");
+          sendErrorResponse(req, 401, pwdChangeMessage(PwdChangeVerdict::kDenyUnauth, verdictNouveau));
           return;
         case PwdChangeVerdict::kDenyBadCurrent:
           logAuthFailure(req, "/auth/change-password : mot de passe actuel incorrect");
           // Cohérent avec la garde : l'état vierge n'est ni freiné ni compté.
           if (!virginState) authFailRecordFailure(gAuthBackoff, clientIp, millis(), authFailIpPolicy(), authFailGlobalPolicy());
-          sendErrorResponse(req, 401, "Current password incorrect");
+          sendErrorResponse(req, 401, pwdChangeMessage(PwdChangeVerdict::kDenyBadCurrent, verdictNouveau));
           return;
         case PwdChangeVerdict::kDenyTooShort:
-          sendErrorResponse(req, 400, "New password must be at least 8 characters");
+          sendErrorResponse(req, 400, pwdChangeMessage(PwdChangeVerdict::kDenyTooShort, verdictNouveau));
           return;
         case PwdChangeVerdict::kDenyWeak:
           // bug-187 : message EN FRANÇAIS et EXACT — l'utilisateur doit savoir ce qui
           // manque VRAIMENT. ⛔ Ne jamais recopier le mot de passe reçu dans la réponse.
-          if (verdictNouveau == ApPwdVerdict::kTooLong) {
-            sendErrorResponse(req, 400, "Le mot de passe ne peut pas depasser 128 caracteres");
-          } else if (verdictNouveau == ApPwdVerdict::kBadCharacter) {
-            sendErrorResponse(req, 400,
-                              "Le mot de passe n'accepte ni caractere invisible, ni espace "
-                              "en debut ou en fin");
-          } else {
-            sendErrorResponse(req, 400,
-                              "Le mot de passe doit contenir au moins une minuscule, une majuscule, "
-                              "un chiffre et un caractere special");
-          }
+          sendErrorResponse(req, 400, pwdChangeMessage(PwdChangeVerdict::kDenyWeak, verdictNouveau));
           return;
         case PwdChangeVerdict::kDenySame:
         default:
-          sendErrorResponse(req, 400, "New password must be different from current password");
+          sendErrorResponse(req, 400, pwdChangeMessage(PwdChangeVerdict::kDenySame, verdictNouveau));
           return;
       }
 
@@ -510,29 +501,13 @@ void setupAuthRoutes(AsyncWebServer* server) {
       // contournée, et une phrase trop courte ferait refuser softAP() — ou pire, une
       // phrase vide créerait un réseau OUVERT.
       // ⛔ `allowNonAscii = false` : WPA2 ne transporte que de l'ASCII imprimable.
-      switch (apPwdCheck(nouveau.c_str(), nouveau.length(), kApPwdMinLength, kApPwdMaxLength,
-                         /*allowNonAscii=*/false)) {
-        case ApPwdVerdict::kOk:
-          break;
-        case ApPwdVerdict::kTooShort:
-          sendErrorResponse(req, 400, "Le mot de passe du point d'acces doit faire au moins 12 caracteres");
-          return;
-        case ApPwdVerdict::kTooLong:
-          sendErrorResponse(req, 400, "Le mot de passe du point d'acces ne peut pas depasser 63 caracteres");
-          return;
-        case ApPwdVerdict::kBadCharacter:
-          // ⚠️ Cas très concret : un accent collé depuis un gestionnaire. WPA2 ne
-          // transporte que de l'ASCII imprimable.
-          sendErrorResponse(req, 400,
-                            "Le mot de passe du point d'acces n'accepte ni accent, ni caractere "
-                            "invisible, ni espace en debut ou en fin");
-          return;
-        case ApPwdVerdict::kMissingFamily:
-        default:
-          sendErrorResponse(req, 400,
-                            "Le mot de passe doit contenir au moins une minuscule, une majuscule, "
-                            "un chiffre et un caractere special");
-          return;
+      const ApPwdVerdict verdictAp = apPwdCheck(nouveau.c_str(), nouveau.length(), kApPwdMinLength,
+                                                kApPwdMaxLength, /*allowNonAscii=*/false);
+      if (verdictAp != ApPwdVerdict::kOk) {
+        // ⚠️ Cas très concret : un accent collé depuis un gestionnaire. WPA2 ne
+        // transporte que de l'ASCII imprimable. Phrases : auth_messages.h.
+        sendErrorResponse(req, 400, apPwdMessage(verdictAp));
+        return;
       }
 
       if (!authManager.setApPassword(nouveau)) {

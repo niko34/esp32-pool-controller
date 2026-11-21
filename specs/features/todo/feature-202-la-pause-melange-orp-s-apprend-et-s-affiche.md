@@ -6,7 +6,7 @@
 - **Priorité** : moyenne
 - **Version cible** : 2.98.0
 - **Dernière mise à jour** : 2026-11-19
-- **Spec(s) liée(s)** : [feature-085](../done/feature-085-dose-de-base-apprise-feedforward.md) (le patron d'apprentissage à copier) · [feature-025](../done/feature-025-lissage-mesures-ph-orp-pid.md) (la pause créée) · [bug-200](bug-200-le-mode-maintenance-suspend-tout-le-dosage-sans-que-l-ecran-le-dise.md) (le principe de visibilité qui s'applique ici)
+- **Spec(s) liée(s)** : [feature-085](../done/feature-085-dose-de-base-apprise-feedforward.md) (le patron d'apprentissage à copier) · [feature-025](../done/feature-025-lissage-mesures-ph-orp-pid.md) (la pause créée) · [bug-200](../done/bug-200-le-mode-maintenance-suspend-tout-le-dosage-sans-que-l-ecran-le-dise.md) (le principe de visibilité qui s'applique ici)
 
 ## Domaines touchés
 - [x] Régulation (pump_controller, PID) → **passage obligatoire par `pool-chemistry`**

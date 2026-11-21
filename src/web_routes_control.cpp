@@ -99,7 +99,9 @@ static bool manualInjectGuardOrReject(AsyncWebServerRequest* req, bool isPh,
   // journalier). Point commun aux deux handlers /ph|orp/inject/start.
   if (PumpController.isMaintenanceInhibited()) {
     req->send(409, "application/json",
-              "{\"error\":\"maintenance_mode\",\"message\":\"Mode maintenance actif (trop de redémarrages auto) — dosage suspendu. Redémarrez le contrôleur pour réactiver.\"}");
+              "{\"error\":\"maintenance_mode\",\"message\":\"L'appareil a arrêté par sécurité tout "
+              "ajout de produit : rien ne sera injecté. Redémarrez-le (coupez son alimentation "
+              "10 secondes, puis rallumez), puis réessayez.\"}");
     return false;
   }
 
@@ -875,6 +877,15 @@ void setupControlRoutes(AsyncWebServer* server) {
   // aussi en interne, mais sans distinguer la cause pour cette réponse HTTP).
   server->on("/rescue/start", HTTP_POST, [](AsyncWebServerRequest *req) {
     REQUIRE_AUTH(req, RouteProtection::WRITE);
+    // bug-200 : arrêt de sécurité => aucun chlore ne sera injecté ; refuser plutôt que
+    // d'afficher un bandeau « secours actif » sans un millilitre. Avant mode_manual.
+    if (PumpController.isMaintenanceInhibited()) {
+      req->send(409, "application/json",
+                "{\"error\":\"maintenance_mode\",\"message\":\"Chloration de secours indisponible : "
+                "l'appareil a arrêté par sécurité tout ajout de produit. Redémarrez-le "
+                "(coupez son alimentation 10 secondes, puis rallumez), puis réessayez.\"}");
+      return;
+    }
     if (mqttCfg.orpRegulationMode == "manual") {
       // L8 — libellé IMPOSÉ par le gate pool-chemistry (feature-140), repris
       // MOT À MOT : ne pas reformuler sans nouveau passage du gate.

@@ -709,8 +709,12 @@ static void handleGetData(AsyncWebServerRequest* request) {
   doc["tempFrozenAlarm"] = sensors.isTemperatureFrozen();
   // feature-140 : Chloration de secours — échéance + verdict dérivé. MÊMES
   // clés et MÊME calcul que ws_manager.cpp (parité /data ↔ WS obligatoire).
+  // bug-200 (v2.98.0) : arrêt de sécurité (trop de redémarrages auto). Servi aux consommateurs
+  // non-web et à la parité ; ne pilote JAMAIS la pastille (c'est le code 26). Parité /data <-> WS.
+  // Budget WS : +25 o au pire, total retenu 3598 o, marge 498 o sur kWsFrameBufBytes = 4096.
+  doc["maintenance_mode"] = PumpController.isMaintenanceInhibited();
   doc["rescue_until"]  = (long)rescueState.untilEpoch;
-  doc["rescue_dosing"] = isRescueChlorineActive(time(nullptr)) && !PumpController.isOrpPhInhibited();
+  doc["rescue_dosing"] = isRescueChlorineActive(time(nullptr)) && !PumpController.isOrpPhInhibited() && !PumpController.isMaintenanceInhibited();
   // Complément feature-140 (2026-10-05) : code de raison de fin — MÊME clé,
   // MÊME calcul que ws_manager.cpp (parité /data ↔ WS). Voir RescueLiftReason
   // (config.h) et le commentaire détaillé côté WS.

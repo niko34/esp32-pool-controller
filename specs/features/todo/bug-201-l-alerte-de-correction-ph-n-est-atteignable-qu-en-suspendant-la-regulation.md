@@ -6,7 +6,7 @@
 - **Priorité** : **haute**
 - **Version cible** : 2.97.0
 - **Dernière mise à jour** : 2026-11-18
-- **Spec(s) liée(s)** : [bug-200](bug-200-le-mode-maintenance-suspend-tout-le-dosage-sans-que-l-ecran-le-dise.md) (même famille) · [feature-168](../done/feature-168-correction-ph-sans-borne.md) (le gate C12 dont la contrepartie n'a jamais été payée)
+- **Spec(s) liée(s)** : [bug-200](../done/bug-200-le-mode-maintenance-suspend-tout-le-dosage-sans-que-l-ecran-le-dise.md) (même famille) · [feature-168](../done/feature-168-correction-ph-sans-borne.md) (le gate C12 dont la contrepartie n'a jamais été payée)
 
 ## Domaines touchés
 - [x] Frontend (`data/`)

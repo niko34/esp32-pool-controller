@@ -143,7 +143,7 @@
       // bandeau lisent la MÊME trame (`latestSensorData`) dans la MÊME passe
       // synchrone de loadSensorData(). Scinder ce rafraîchissement en deux cycles
       // casserait le silence sans que rien ne le signale.
-      ['#ph-card-stats', '#orp-card-stats', '#dose-block-banner'].forEach(sel => {
+      ['#ph-card-stats', '#orp-card-stats', '#dose-block-banner', '#dose-suspend-banner'].forEach(sel => {
         const el = $(sel);
         if (el) el.classList.add('is-stale');
       });
@@ -3940,7 +3940,12 @@
     // feature-195 : c'est la PASTILLE (id inchangé), écrite ICI SEULE (B5) —
     // ni updateStatusCards ni le chemin WebSocket ne la recalculent.
     const doseInfo = _doseBlockInfo(latestSensorData, kind);
-    setDashPill(`detail-${kind}-mode`, "Mode " + (modeLabels[mode] || "Auto"),
+    // bug-200 : arrêt de sécurité (code 26) ⇒ le TEXTE change aussi (« Arrêt
+    // sécurité »), pas seulement la couleur : une pastille ambre portant « Mode
+    // Auto » serait identique à la verte pour un daltonien et un lecteur d'écran.
+    // Le ton ambre vient de dashModePillTone (tone 'fault'), pas d'un test ici.
+    const suspendChip = doseInfo.code === DOSE_BLOCK_CODE_SUSPEND ? DOSE_BLOCK_CODES[DOSE_BLOCK_CODE_SUSPEND].chip : null;
+    setDashPill(`detail-${kind}-mode`, suspendChip || ("Mode " + (modeLabels[mode] || "Auto")),
                 dashModePillTone(mode, doseInfo.tone, doseInfo.code), true);
 
     // B6 : consigne en LECTURE SEULE à droite de la mesure — même source que la
@@ -4078,7 +4083,9 @@
     // Arrêt — C7 : la régulation automatique ne dose plus, l'injection
     // manuelle reste accessible depuis les réglages (texte imposé).
     const hint = $(`#dashboard-${kind}-stopped-hint`);
-    if (hint) hint.hidden = mode !== "manual";
+    // bug-200 : sous l'arrêt de sécurité l'injection manuelle est REFUSÉE (409) —
+    // l'offre serait fausse, rien ne la remplace.
+    if (hint) hint.hidden = mode !== "manual" || isDoseSuspended(latestSensorData);
   }
 
   // feature-161 (lot A), converti vers .mode-select (DESIGN_SYSTEM.md §5.2,
@@ -5870,6 +5877,11 @@
   // existants (aucun champ WS dédié). Priorité IMPOSÉE par le gate :
   // L3 (filtration) > L4 (pH) > L5 (plafond).
   function _rescueReasonText(data, cfg) {
+    // bug-200 — texte IMPOSÉ par le gate pool-chemistry : l'arrêt de sécurité prime
+    // sur toute autre cause. Le compte à rebours 48 h court, lui, pendant ce temps.
+    if (isDoseSuspended(data)) {
+      return "L'appareil a arrêté par sécurité tout ajout de produit : aucun chlore ne sera injecté. Le compte à rebours des 48 h continue pourtant de courir. Redémarrez l'appareil, puis réarmez la chloration de secours.";
+    }
     if (data.water_present === false) {
       // L3
       return "Sans effet pour l'instant : filtration à l'arrêt, aucune injection possible.";
@@ -8621,6 +8633,11 @@
     // mesure du débit est un acte DÉLIBÉRÉ de l'utilisateur, pas une panne.
     // Libellé imposé par le gate, tel quel.
     25: { tone: 'normal',  label: 'Mesure du débit en cours' },
+    // bug-200 (v2.98.0) — arrêt de sécurité de TOUT ajout de produit (trop de
+    // redémarrages automatiques). ⛔ NON listé dans DOSE_BLOCK_CODE_ALREADY_SOURCED :
+    // le bandeau dédié (#dose-suspend-banner) la porte via `carries`. Tone 'fault'
+    // ⇒ variante 'danger' ⇒ pastille ambre, sans exception à la grammaire feature-195.
+    26: { tone: 'fault',   label: 'Ajout de produits arrêté par sécurité', chip: 'Arrêt sécurité' },
     // feature-092 — sentinelle 250 (cause de GARDE) : le message firmware porte
     // des valeurs runtime (seuils, mesure) et reste cité tel quel ; la pastille
     // des cartes « Débit d'injection » a besoin d'un libellé COURT, il vit donc
@@ -8694,6 +8711,13 @@
   //   11 Limite horaire            → traité explicitement (règle de combinaison)
   //   12 Limite cycles/jour        → idem
   //   15,18 (famille « stab »)     → measureStateSegments() (measures_valid)
+  // bug-200 : code firmware DoseRefusal::MaintenanceMode.
+  const DOSE_BLOCK_CODE_SUSPEND = 26;
+  // Vrai si l'appareil a arrêté tout ajout de produit (code 26 côté pH OU ORP).
+  function isDoseSuspended(json) {
+    return _doseBlockInfo(json, 'ph').code === DOSE_BLOCK_CODE_SUSPEND
+        || _doseBlockInfo(json, 'orp').code === DOSE_BLOCK_CODE_SUSPEND;
+  }
   const DOSE_BLOCK_CODE_ALREADY_SOURCED = new Set([2, 3, 7, 8, 10, 11, 12, 15, 18]);
 
   // bug-172 (H5) : liste UNIQUE des codes de suspension globale
@@ -8712,8 +8736,12 @@
   // réécrire la liste en dur localement.
   //   2  FiltrationOff          7  StabilizationActive
   //  24  CalibrationSessionOpen 25 FlowAssistSuspend
+  //   26 MaintenanceMode (bug-200) — ⭐ le plus fort de tous : l'appareil a coupé
+  //      TOUT dosage pour une durée NON BORNÉE. Une puce « Pause mélange » y
+  //      annoncerait une reprise imminente qui ⛔ ne viendra JAMAIS sans
+  //      redémarrage : ce serait le défaut de bug-200 rejoué sur les puces.
   function _doseSuspendOutranksMixing(code) {
-    return code === 2 || code === 7 || code === 24 || code === 25;
+    return code === 2 || code === 7 || code === 24 || code === 25 || code === 26;
   }
 
   // Traduit le couple (code, texte) servi pour `prefix` en { code, label, tone }.
@@ -8775,6 +8803,13 @@
     if (typeof durationS !== 'number' || !isFinite(durationS) || durationS < 0) return '—';
     if (durationS >= DOSE_BLOCKED_FOR_MAX_S) return 'bloqué depuis ≥ 24 h';
     return _elapsedText(durationS * 1000, 'bloqué depuis') || '—';
+  }
+
+  // bug-200 : durée de l'arrêt de sécurité. Chaîne vide ⇒ AUCUNE ligne (jamais « — »).
+  function _doseSuspendDurationText(durationS) {
+    if (typeof durationS !== 'number' || !isFinite(durationS) || durationS < 0) return '';
+    if (durationS >= DOSE_BLOCKED_FOR_MAX_S) return 'Arrêt depuis plus de 24 h';
+    return _elapsedText(durationS * 1000, 'Arrêt depuis') || '';
   }
 
   // null si la voie n'est pas bloquée.
@@ -8942,6 +8977,22 @@
       return { visible: false, rowPh: null, rowOrp: null, carries: { ph: false, orp: false } };
     }
 
+    // bug-200 — arrêt de sécurité (code 26), branche EN TÊTE : la cause prime.
+    // ⚠️ DÉROGE à la règle « jamais de fusion en `fault` » (plus bas) : le texte du
+    // bandeau couvre LES DEUX produits et le firmware n'a qu'UNE cause pour les
+    // deux voies — deux lignes diraient deux fois la même chose. `updateDoseBlockBanner`
+    // masque alors #dose-block-banner et ses lignes ; #dose-suspend-banner s'affiche.
+    if (ph?.code === DOSE_BLOCK_CODE_SUSPEND || orp?.code === DOSE_BLOCK_CODE_SUSPEND) {
+      const durations = [ph, orp].filter((r) => r && r.code === DOSE_BLOCK_CODE_SUSPEND && r.durationS != null)
+        .map((r) => r.durationS);
+      return {
+        visible: true,
+        suspend: { durationS: durations.length ? Math.max(...durations) : null },
+        rowPh: null, rowOrp: null,
+        carries: { ph: true, orp: true },
+      };
+    }
+
     // LISTE DES CODES « ATTENTE DE MESURE » — 3e passage pool-chemistry,
     // 2026-10-09, feature-146 ; réduite de SIX à TROIS codes par feature-152
     // (codes 4/19/22 retirés — ORP partage désormais les mêmes codes 15/18 que
@@ -9101,7 +9152,22 @@
 
     const plan = _doseBlockBannerPlan(json);
 
-    if (!plan.visible) {
+    // bug-200 : bandeau d'arrêt de sécurité — contenu statique, SEUL le texte de
+    // la durée change (rien n'est reconstruit : pas de relecture du role="alert").
+    const susp = $("#dose-suspend-banner");
+    if (susp) {
+      const durEl = $("#dose-suspend-duration");
+      if (plan.suspend) {
+        const t = _doseSuspendDurationText(plan.suspend.durationS);
+        if (durEl) {
+          if (durEl.textContent !== t) durEl.textContent = t;
+          durEl.hidden = !t;
+        }
+      }
+      susp.hidden = !plan.suspend;
+    }
+
+    if (!plan.visible || plan.suspend) {
       box.hidden = true;
       rowPh.hidden = true;
       rowOrp.hidden = true;
@@ -13906,7 +13972,13 @@
       hourly_limit: "Injection refusée : limite horaire d'injection atteinte — réessayer plus tard.",
       max_cycles: "Injection refusée : nombre maximal de démarrages de pompe atteint pour aujourd'hui.",
       burst_limit: "Injection refusée : trop de démarrages rapprochés (anti-rafale) — patienter avant de réessayer.",
-      flow_uncharacterized: "Injection refusée : débit de la pompe non caractérisé — effectuez la mesure du débit (Réglages → Avancé → Configuration des pompes)."
+      flow_uncharacterized: "Injection refusée : débit de la pompe non caractérisé — effectuez la mesure du débit (Réglages → Avancé → Configuration des pompes).",
+      // bug-200 : SANS cette clé, le repli `|| err.message` affichait le texte BRUT du
+      // firmware — avec le mot « maintenance », banni de l'écran (il veut dire « entretien
+      // prévu » pour un propriétaire), et le jargon « contrôleur ». Et ce, à l'endroit
+      // exact où le bandeau venait de retirer l'offre. ⇒ 5e bouche du même mensonge,
+      // trouvée par la revue de code.
+      maintenance_mode: "Injection refusée : l'ajout de produits est arrêté par sécurité. Redémarrez l'appareil (coupez son alimentation 10 secondes, puis rallumez)."
     };
 
     // feature-006 : raison de blocage CONNUE côté client (miroir best-effort des
@@ -14267,7 +14339,7 @@
       hourly_limit: "Marche refusée : limite horaire d'injection atteinte — réessayer plus tard.",
       max_cycles: "Marche refusée : nombre maximal de démarrages de pompe atteint pour aujourd'hui.",
       burst_limit: "Marche refusée : trop de démarrages rapprochés (anti-rafale) — patienter.",
-      maintenance_mode: "Marche refusée : mode maintenance actif — dosage suspendu.",
+      maintenance_mode: "Marche refusée : l'ajout de produits est arrêté par sécurité.",
     };
 
     const beforeUnload = (e) => { e.preventDefault(); e.returnValue = ""; };

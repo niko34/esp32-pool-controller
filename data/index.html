@@ -176,6 +176,24 @@
             Sondes de température à identifier
           </button>
 
+          <!-- bug-200 (v2.98.0, gate pool-chemistry) : arrêt de SÉCURITÉ de tout
+               ajout de produit (code firmware 26, trop de redémarrages). Contenu
+               STATIQUE, textes imposés mot à mot : seule la durée est mise à jour
+               (app.js, updateDoseBlockBanner) — jamais reconstruit, pour que le
+               lecteur d'écran ne relise pas le bandeau toutes les 30 s. Placé AVANT
+               #rescue-active-banner : la CAUSE prime sur sa conséquence. Pas de
+               bouton, pas de repli, pas de croix. -->
+          <div class="dose-block-banner__row dose-block-banner__row--fault dose-block-banner__row--suspend" id="dose-suspend-banner" hidden>
+            <div class="dose-block-banner__stale-note">Information non rafraîchie (connexion perdue)</div>
+            <div class="dose-suspend__alerte" role="alert">
+              <strong class="dose-suspend__titre">Ajout de produits arrêté par sécurité</strong>
+              <span class="dose-suspend__duree" id="dose-suspend-duration" aria-live="off" hidden></span>
+              <p class="dose-suspend__texte">L'appareil a redémarré plusieurs fois de suite et a arrêté lui-même tout ajout de correcteur de pH et de chlore. Rien ne sera ajouté, même si vous le demandez.</p>
+              <p class="dose-suspend__texte">Redémarrez l'appareil : coupez son alimentation 10 secondes, puis rallumez. Si le message revient, l'appareil a besoin d'être vérifié.</p>
+              <p class="dose-suspend__texte dose-suspend__eau">En attendant, contrôlez vous-même le pH et le chlore : pendant cet arrêt, l'appareil <strong>ne surveille plus l'eau</strong> et ne vous préviendra pas si elle se dégrade.</p>
+            </div>
+          </div>
+
           <!-- feature-140 (v2.55.3, gate pool-chemistry) : bandeau « chloration
                de secours active », affiché UNIQUEMENT quand rescue_until > 0.
                Placé AVANT #dose-block-banner : le secours RÉPOND au blocage,

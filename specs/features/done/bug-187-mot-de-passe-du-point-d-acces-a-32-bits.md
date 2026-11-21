@@ -496,7 +496,7 @@ réinitialisation est justement le point de départ.
 - [x] ~~Accent toléré et ne comptant pour aucune famille~~ — **fait sur matériel**
 - [→] **Choisir une autre clé** — porté par [bug-186](../todo/bug-186-cinq-essais-de-premier-demarrage-non-prouves-sur-materiel.md), avec son critère d'acceptation propre
 - [→] **Accentué accepté de bout en bout** (persistance NVS d'un UTF-8 multi-octets) — porté par bug-186
-- [→] **M1 / M2, les deux défauts de message** — portés par [bug-200](../todo/bug-200-le-mode-maintenance-suspend-tout-le-dosage-sans-que-l-ecran-le-dise.md), qui recompile déjà le firmware ⇒ ⭐ pas de seconde cérémonie de signature, pas de second redémarrage
+- [→] **M1 / M2, les deux défauts de message** — portés par [bug-200](../done/bug-200-le-mode-maintenance-suspend-tout-le-dosage-sans-que-l-ecran-le-dise.md), qui recompile déjà le firmware ⇒ ⭐ pas de seconde cérémonie de signature, pas de second redémarrage
 - [ ] 📸 Captures à refaire (étape **humaine**) : `10_Paramètres_2_Wifi.jpg` (obligatoire), `10_Paramètres_5_Sécurité.jpg`, `01_Assistant_Etape_1_Mot_de_passe.jpg`
 
 ⚠️ **Pourquoi la fiche se ferme avec des restes** : ⛔ aucun d'eux ne porte sur un **comportement

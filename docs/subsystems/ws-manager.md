@@ -1224,3 +1224,13 @@ un redémarrage logiciel court** pendant lequel l'eau n'a pas cessé de
 circuler — voir [filtration.md](filtration.md#reprise-de-la-durée-de-filtration-à-travers-un-redémarrage-feature-158-v2740)
 et [ADR-0104](../adr/0104-la-continuite-de-l-eau-a-un-producteur-unique-et-des-consommateurs.md).
 Alimente la garde des 10 minutes de [`POST /tune-ph-offset`](../API.md#post-tune-ph-offset--critical) (refus n°2).
+
+## Champ `sensor_data` ajouté en bug-200 — `maintenance_mode` (v2.98.0)
+
+| Champ | Type | Description |
+|---|---|---|
+| `maintenance_mode` | boolean | `PumpController.isMaintenanceInhibited()` : arrêt de sécurité de tout ajout de produit. Parité `/data` ↔ WS : **même expression** (`web_routes_data.cpp`, `ws_manager.cpp`). Informatif : ne pilote jamais la pastille (c'est le code de refus 26). |
+
+`rescue_dosing` ne change pas de taille, mais son expression intègre désormais `&& !isMaintenanceInhibited()` **des deux côtés**.
+
+**Budget de payload** : `"maintenance_mode":false,` = **25 o** au pire cas. Le décompte a été **repris clé par clé** (121 clés `d[...]` relevées par script sur le code, pas sur les commentaires), pas affirmé : recompte indépendant 3448 o, plus bas de 125 o que la chaîne historique (3573 o, largeurs de flottants plus prudentes). Aucun nouveau décrochage ; on retient le plus prudent : **3573 + 25 = 3598 o, marge 498 o** sur `kWsFrameBufBytes = 4096`. Aucun bump. Détail : commentaire de `constants.h`.

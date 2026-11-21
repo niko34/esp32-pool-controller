@@ -340,6 +340,10 @@ private:
   // journal avant feature-129).
   void postSuspendCause(int pumpIndex, DoseRefusal cause);
 
+  /** @brief bug-200 : publie la cause « arrêt de sécurité » (contourne volontairement
+   *  _refusalCauseFromGuard, cf. commentaire du .cpp). Edge-triggered, sans allocation stable. */
+  void postMaintenanceCause(int pumpIndex);
+
   // ===== Gardes de sécurité pH (pool-chemistry, refonte v2.25.0) =============
   // Les seuils CHIMIQUES portent sur le pH CORRIGÉ (brut + offset) : une fois
   // l'offset appliqué, la valeur EST le pH de l'eau, et un seuil chimique doit

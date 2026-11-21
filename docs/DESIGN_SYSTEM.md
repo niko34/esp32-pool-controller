@@ -707,6 +707,11 @@ ramène **toujours en Auto** (jamais en Programme). ⚠️ Marche/Arrêt existen
 tenue par `updateFiltrationModeButtons()` qui met à jour **les deux jeux** dans la même fonction.
 **Règle de teinte** : puce grise = arrêt normal du mode ; puce **ambre = état imposé par l'utilisateur**.
 
+#### `.dose-block-banner__row--suspend` — bandeau d'arrêt de sécurité (bug-200, v2.98.0)
+- **Contexte d'emploi : tableau de bord uniquement** (`#dose-suspend-banner`). Colonne unique, `border-left: 4px solid var(--danger)`, texte `--text`, titre `--danger`, **sans pulsation**, sans bouton. Modificateur de `.dose-block-banner__row--fault`.
+- **Opacité pleine même périmé** (`.is-stale`) : `--danger` à 60 % passe sous 4,5:1 ; la note de péremption est dupliquée dans le bandeau.
+- ⚠️ **Règle d'ordre** : ce bandeau passe **au-dessus** de celui du secours (`#rescue-active-banner`). C'est l'**inverse** de feature-140 (le secours au-dessus du blocage) : ici la **cause** prime sur sa **conséquence**.
+
 #### `.card__fold` / `.card__fold-panel` — volet « Modifier »
 **Contexte d'emploi** : **carte d'accueil uniquement** (pH, ORP, Filtration). Bouton pleine largeur de
 44 px, chevron en **caractère de texte** (▾ / ▴), `aria-expanded` + `aria-controls`. **Piloté par le clic

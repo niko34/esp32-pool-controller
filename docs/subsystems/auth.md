@@ -272,6 +272,12 @@ API : `getApPassword()` (courante), `getApPasswordOrigin()`, `setApPassword(pwd)
 | `GET /auth/ap-password` | Lit la clé courante du point d'accès (`no-store`, `ap_password_legacy`) |
 | `POST /auth/ap-password` | Remplace la clé courante du point d'accès ; jeton obligatoire, 12 caractères et quatre familles ; l'origine n'est jamais touchée |
 
+## Phrases des refus — `src/auth_messages.h` (bug-200, v2.98.0)
+
+Module **pur** header-only (ADR-0017, patron de `ota_refusal_messages.h`) : `apPwdMessage()` pour `/auth/ap-password`, `pwdChangeMessage()` pour `/auth/change-password`. Les routes n'écrivent plus de phrase en dur. Les refus qui étaient en anglais (« Current password incorrect », « Authentication required »…) sont **en français sans accents**, comme le reste du fichier ; testé par `test/test_native_auth_messages/`. ⛔ Jamais le mot de passe reçu dans une phrase.
+
+⚠️ **Les trois « Invalid JSON » restent EN ANGLAIS volontairement** (décision de l'utilisateur) : ils ne s'affichent que sur requête malformée et servent au diagnostic d'un outil. Ne pas les « corriger ». « Authentification requise » n'est jamais affichée : `authFetch` redirige vers `/login.html?expired=1` avant de lire le corps.
+
 ## Macro helper
 
 ```cpp

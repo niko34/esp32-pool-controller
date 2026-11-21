@@ -22,13 +22,24 @@ Décision structurante : [ADR-0135](../adr/0135-l-accueil-montre-les-reglages-re
 |---|---|---|
 | Filtration | `#detail-filtration-status` | En marche (vert) · Arrêtée (gris) · Hors gel (**gris**) · forcée Marche/Arrêt (**ambre**) |
 | Éclairage | `#detail-lighting-status` | Allumée (vert) · Éteinte (gris) · « Programme » (gris) — **toujours visible**, jamais ambre |
-| pH / ORP | `#detail-ph-mode` / `#detail-orp-mode` | Mode Auto, Mode Programme (vert) · Mode Arrêt (gris) · **ambre** ⟺ `doseBlockVariant(...) === 'danger'` |
+| pH / ORP | `#detail-ph-mode` / `#detail-orp-mode` | Mode Auto, Mode Programme (vert) · Mode Arrêt (gris) · **ambre** ⟺ `doseBlockVariant(...) === 'danger'` (code 26 : texte « Arrêt sécurité ») |
 | Température | `#detail-temperature-status` | À jour (vert) · En attente (gris) · Sonde absente (**ambre**) · Chargement… (gris) |
 
 - ⛔ **Pas d'ambre pour « dosage bloqué » au sens large** (condition B1 de `pool-chemistry`) : « Filtration arrêtée » (code 2), stabilisation (7, 8), limites (10-12), anti-rafale (13, 14) sont des marches attendues, `tone: 'normal'` — sinon l'ambre s'allumerait toutes les nuits sur les deux cartes. Seuls les tones `fault` / `unknown` allument l'ambre, en réutilisant `DOSE_BLOCK_CODES` / `_doseBlockInfo` / `doseBlockVariant` (pas de seconde table). Décision pure `dashModePillTone()`, couverte par `./tools/check_dash_pill_vectors.sh` (CI `hygiene-specs.yml`) — **mutation exigée** : passer un `tone: 'normal'` en `fault` doit tuer un vecteur.
 - **Texte de mode pH/ORP permanent** (gate C5 de feature-161) : mêmes mots qu'avant (« Mode Auto / Programme / Arrêt »), déplacés de la ligne sous le titre vers la pastille ; jamais tronqué ni réduit à la puce. Écrivain unique `renderDashboardModeCard()` (ids `detail-ph-mode` / `detail-orp-mode` conservés).
 - ⚠️ **« Hors gel » passe de l'ambre au gris, texte inchangé.** Ce **n'est pas un correctif** : le libellé (`temperature < 5,0` **et** filtration en marche, calculé dans le navigateur) annonce toujours une protection qui n'existe pas côté firmware — [bug-197](../../specs/features/todo/bug-197-le-libelle-hors-gel-annonce-une-protection-qui-n-existe-pas.md).
 - Nombres : `fmtFr()` (virgule), formateur **unique** pour `/data` et WebSocket (les deux passent par `updateStatusCards()`).
+
+### Arrêt de sécurité de tout ajout de produit (bug-200, v2.98.0, évolution n° suivante de la page — [ADR-0137](../adr/0137-un-etat-qui-court-circuite-le-dosage-nomme-sa-cause-dans-le-canal-de-refus.md))
+> ⚠️ **Compteur d'accumulation (règle UX)** : ajout supplémentaire sur le tableau de bord après feature-140, 147, 161, 164, 195 : le prochain lot touchant cet écran appelle `ux-ui-designer` sur la page **entière**.
+
+Quand l'appareil a arrêté tout dosage après trop de redémarrages, le firmware publie le **code 26** (voir [pump-controller.md](../subsystems/pump-controller.md)).
+- **Bandeau dédié `#dose-suspend-banner`** : « Ajout de produits arrêté par sécurité », durée (`Arrêt depuis …`, « plus de 24 h » au-delà), cause, geste (couper l'alimentation 10 s), et la ligne « l'appareil **ne surveille plus l'eau** ». Contenu **statique** : seule la durée est réécrite (pas de relecture du `role="alert"`). Ni bouton, ni repli, ni croix. Remplace `#dose-block-banner` et ses lignes (un seul message pour les deux voies, dérogation à la règle « pas de fusion en `fault` »).
+- **Ordre** : au-dessus de `#rescue-active-banner` (la cause prime sur sa conséquence). **Priorité** : arrêt > « Filtration arrêtée » (code 2) ; il prime aussi sur la pause de mélange (puces masquées pour le code 26).
+- **Pastilles pH/ORP** : ambre, texte « **Arrêt sécurité** » (pas seulement la couleur : daltonisme, lecteur d'écran).
+- Conseil « injection manuelle possible » masqué (elle est refusée en 409). Toast de refus : « Marche refusée : l'ajout de produits est arrêté par sécurité. »
+- **Chloration de secours** : `POST /rescue/start` répond 409 ; si elle était déjà armée, le texte du widget dit que le compte à rebours court sans dosage.
+- **Hors ligne** : le bandeau reste à **pleine opacité** (`opacity:.6` ferait passer le rouge sous 4,5:1) ; la note « Information non rafraîchie » est dupliquée dans le bandeau.
 
 ### Volet « Modifier » (`.card__fold`)
 Bouton pleine largeur de 44 px, `aria-expanded` / `aria-controls`, chevron ▾ / ▴. **Piloté par le clic seul** (`bindDashFolds`) : aucune fonction `render*` ne l'ouvre ni ne le ferme ; le bouton n'est **jamais** `disabled`. Sous escalade pH ou étalonnage, à l'ouverture : Auto/Programme `disabled` + `aria-disabled` (jamais `hidden`), « Arrêt » cliquable, consigne `disabled` (jamais masquée). Un volet ouvert le reste après un changement de mode.

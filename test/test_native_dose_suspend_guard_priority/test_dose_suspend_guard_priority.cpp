@@ -442,6 +442,54 @@ void test_guard_surveillance_runs_outside_suspend_block(void) {
 // -----------------------------------------------------------------------------
 // Runner
 // -----------------------------------------------------------------------------
+// ============================================================================
+// bug-200 — RANG 0 : l'arret de securite (maintenanceInhibit) CONTOURNE
+// VOLONTAIREMENT la garde de propriete. Raison ecrite dans pump_controller.cpp :
+// le mode ne se leve que par redemarrage (rien a perdre), et sans ce
+// contournement une cause de garde chimique posee avant (_refusalCauseFromGuard
+// vrai) ferait taire l'arret de securite POUR TOUJOURS : l'ecran dirait « tout
+// va bien » pendant que tout dosage est coupe — le defaut meme de bug-200.
+// MUTANT TUE : remettre `if (_refusalCauseFromGuard[pumpIndex]) return;` dans
+// postMaintenanceCause().
+// ============================================================================
+void test_maintenance_cause_ne_lit_pas_la_propriete_de_garde(void) {
+  long len = 0;
+  char* src = readProjectFile("src/pump_controller.cpp", &len);
+  TEST_ASSERT_NOT_NULL(src);
+  char* body = extractFunctionBody(src, "void PumpControllerClass::postMaintenanceCause(int pumpIndex) {");
+  TEST_ASSERT_NOT_NULL_MESSAGE(body, "postMaintenanceCause() introuvable ou non unique");
+  TEST_ASSERT_EQUAL_INT_MESSAGE(
+      0, countIn(body, "_refusalCauseFromGuard"),
+      "REGRESSION bug-200 : postMaintenanceCause() lit _refusalCauseFromGuard — une cause de "
+      "garde chimique poserait un silence DEFINITIF sur l'arret de securite.");
+  TEST_ASSERT_EQUAL_INT(1, countIn(body, "logRefusalOnce(pumpIndex, kCauseMaintenanceMode, DoseRefusal::MaintenanceMode)"));
+  free(body);
+  free(src);
+}
+
+void test_maintenance_cause_publiee_apres_la_decision_executee(void) {
+  long len = 0;
+  char* src = readProjectFile("src/pump_controller.cpp", &len);
+  TEST_ASSERT_NOT_NULL(src);
+  char* body = extractFunctionBody(src, "void PumpControllerClass::updateDosingCore(unsigned long now) {");
+  TEST_ASSERT_NOT_NULL_MESSAGE(body, "updateDosingCore() introuvable ou non unique");
+  TEST_ASSERT_EQUAL_INT(1, countIn(body, "postMaintenanceCause(0);"));
+  TEST_ASSERT_EQUAL_INT(1, countIn(body, "postMaintenanceCause(1);"));
+  const long a0 = indexOf(body, "applyPumpDuty(0, 0);");
+  const long a1 = indexOf(body, "applyPumpDuty(1, 0);");
+  const long st = indexOf(body, "settlePumpAccounting(now);");
+  const long p0 = indexOf(body, "postMaintenanceCause(0);");
+  const long p1 = indexOf(body, "postMaintenanceCause(1);");
+  TEST_ASSERT_TRUE(a0 >= 0 && a1 > a0 && st > a1);
+  TEST_ASSERT_MESSAGE(p0 > st && p1 > p0,
+                      "bug-200 : la cause doit etre publiee APRES l'arret effectif des pompes et le reglement");
+  const char* ret = strstr(body + p1, "return;");
+  TEST_ASSERT_NOT_NULL(ret);
+  TEST_ASSERT_TRUE_MESSAGE((ret - (body + p1)) < 40, "bug-200 : le return suit immediatement la publication");
+  free(body);
+  free(src);
+}
+
 int main(int argc, char** argv) {
   (void)argc;
   (void)argv;
@@ -451,5 +499,7 @@ int main(int argc, char** argv) {
   RUN_TEST(test_set_guard_cause_takes_ownership);
   RUN_TEST(test_clear_guard_cause_is_noop_outside_ownership);
   RUN_TEST(test_guard_surveillance_runs_outside_suspend_block);
+  RUN_TEST(test_maintenance_cause_ne_lit_pas_la_propriete_de_garde);
+  RUN_TEST(test_maintenance_cause_publiee_apres_la_decision_executee);
   return UNITY_END();
 }

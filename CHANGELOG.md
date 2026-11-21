@@ -2,6 +2,22 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [2.98.0] - 2026-11-21
+
+### Fonctionnalités
+- **L'écran ne ment plus quand l'appareil a arrêté tout ajout de produit.** Après plusieurs redémarrages automatiques de suite, l'appareil s'interdit d'ajouter du correcteur de pH et du chlore, sans limite de durée, même si vous le demandez. L'accueil affichait pourtant « Mode Auto » en vert, et le bandeau de blocage pouvait annoncer une vieille cause (« Filtration arrêtée depuis 3 jours ») alors que la filtration tournait. Désormais : un bandeau rouge « Ajout de produits arrêté par sécurité » dit depuis quand, ce qu'il faut faire (couper l'alimentation 10 secondes, puis rallumer) et que **l'appareil ne surveille plus l'eau** pendant ce temps ; les pastilles pH et ORP passent en ambre avec « Arrêt sécurité » ; l'offre d'injection manuelle disparaît.
+- **La chloration de secours refuse de s'armer** dans cet état, avec une explication, au lieu d'afficher un compte à rebours de 48 h sans le moindre chlore ajouté.
+- Messages de refus du mot de passe et de la clé du point d'accès : ceux qui restaient en anglais sont en français.
+
+### Firmware
+- Nouveau code de refus `26` (`phDoseBlockedCode` / `orpDoseBlockedCode`), nouveau champ `maintenance_mode` sur `/data` et le WebSocket ; `rescue_dosing` tient compte de l'arrêt ; `POST /rescue/start` répond 409.
+- ⚠️ Connu et non corrigé : pendant une mise à jour du logiciel (quelques minutes), la cause de refus affichée reste figée de la même façon.
+
+### Documentation
+- ADR-0137 ; `docs/API.md`, `docs/subsystems/ws-manager.md`, `pump-controller.md`, `auth.md`, `docs/features/page-dashboard.md`, `docs/DESIGN_SYSTEM.md`, `docs/user/src/guide-utilisation.html`.
+
+---
+
 ## [2.97.0] - 2026-11-21
 
 ### Firmware
