@@ -2,10 +2,10 @@
 - **ID** : feature-151
 - **Slug** : signature-de-l-image-ota
 - **Type** : feature (sécurité)
-- **Statut** : doing — démarrée le 2026-10-18
+- **Statut** : doing — démarrée le 2026-10-18. ⚠️ **Ne reste ouverte que pour les 2 envois du chemin PAGE de D4** (étape humaine, au navigateur) — tout le reste est livré et prouvé ; voir la section D4 en fin de fiche.
 - **Priorité** : haute — c'est le seul mécanisme qui satisfait réellement la règle de sécurité n° 6 de `CLAUDE.md`
-- **Version cible** : à définir
-- **Dernière mise à jour** : 2026-10-10
+- **Version cible** : D1 → 2.87.0 · D3-a → 2.88.0 · D3-b → 2.89.0 · D3-c → 2.90.0 · **D4 → 2.96.1** (déployée et acceptée le 2026-11-20)
+- **Dernière mise à jour** : 2026-11-20
 - **Spec(s) liée(s)** : [`feature-118`](../done/feature-118-authenticite-de-l-image-ota.md) (empreinte SHA-256, lot A livré — journalise l'intégrité du **transfert**, ne livre PAS l'authenticité d'origine), [`bug-117`](../done/bug-117-upload-ota-sans-verification-d-authentification.md) (garde d'authentification de l'upload)
 
 ## Domaines touchés
@@ -185,7 +185,7 @@ définitive sur les deux routes d'écriture — **JOURNALISE SEULEMENT, aucun re
 signe chaque envoi et refuse d'en faire sans outillage. Documentation à jour :
 [`docs/API.md`](../../../docs/API.md#authenticite-manifest-signature-feature-151-d1),
 [`docs/subsystems/ota-manager.md`](../../../docs/subsystems/ota-manager.md#d1--authenticite-par-signature-journalise-seulement-feature-151-verdict-security-reviewer-p1),
-[`docs/UPDATE_GUIDE.md`](../../../docs/UPDATE_GUIDE.md#signature-des-envois-ota),
+[`docs/UPDATE_GUIDE.md`](../../../docs/UPDATE_GUIDE.md#signature-des-envois-ota-feature-151-d1),
 [ADR-0120](../../../docs/adr/0120-signature-rsa-du-manifeste-ota-verifiee-avant-refus.md).
 ⛔ **Spec NON déplacée vers `done/`** : D2 (preuve terrain) à **D4** restent à livrer avant que la
 feature ne satisfasse réellement la règle de sécurité n° 6 de `CLAUDE.md`.
@@ -2576,8 +2576,72 @@ filtrait pas encore : ⛔ il ne compte pas pour D4).
 ### 🔴 Consigné dans l'ADR-0128
 Le vecteur « jeton admin volé » reste ouvert (deux requêtes). ADR-0022 déclare encore `ArduinoOTA` actif alors qu'il n'a aucun appelant : le rebrancher contournerait totalement le refus ; `check_ota_manager_isolated.sh` l'interdit désormais.
 
-### ⛔ Reste ouvert
-**D4 uniquement** — plus F9 (expiration naturelle) et les refus tardifs (essai destructif).
+## ✅ D4 — CAMPAGNE DE TERRAIN, CHEMIN SCRIPT (2026-11-20)
+
+**2.96.1 déployée à 20:23–20:25** par `./ota_update.sh --use-sig both 192.168.1.48`, sur un
+appareil qui portait **2.96.0** — donc un firmware qui **filtre** (le refus est livré depuis
+2.90.0, prouvé par la campagne D3-c du 2026-11-17). ⭐ **C'est exactement ce que D3-c ne pouvait
+pas montrer : il n'avait prouvé que les REFUS.**
+
+### Ce qui a été relevé, pas déduit
+
+| Horodatage | Ligne du journal persistant |
+|---|---|
+| 20:24:34 | `[feature-151 D1] Clé publique de signature OTA embarquée — empreinte SHA-256 (DER) : 844449550704da06b085d24a8ae2b079a349730d520e61824dc2816956a57ebb` |
+| 20:24:52 | `[feature-151 D3-c] /update — authenticité OTA : **valide — refusé : non**` |
+| 20:24:52 | `[feature-151 D1 B1] liaison manifeste/image (paramètre sha256 (index==0)) : **liée — divergente : non**` |
+| 20:24:54 | `Empreinte SHA-256 de l'image reçue: 01024e74b5c6921436912216cecd5fcdabe143f4148701e0424915150c58743f` |
+| 20:24:54 | `[feature-151 D1 B1] liaison manifeste/image (empreinte calculée (final)) : **liée — divergente : non**` |
+| 20:24:54 | `[feature-118 lot B] Empreinte upload OTA : conforme — refusée : non` |
+| 20:24:54 | `Mise à jour OTA réussie. Redémarrage...` |
+
+L'empreinte journalisée `01024e74…743f` est **celle de `littlefs.bin`** (`sha256sum` local
+identique), et l'empreinte de clé publique est **identique** à celle relevée le 2026-11-17.
+Version servie par `/get-system-info` après redémarrage : **`"firmware_version":"2.96.1"`**.
+
+⭐ **La liaison manifeste↔image est vérifiée DEUX FOIS** — au paramètre d'entrée
+(`index==0`, avant la première écriture) **puis** sur l'empreinte réellement calculée en fin de
+flux. Les deux verdicts sont *liée — divergente : non*.
+
+### ⚠️ Le firmware a bien été accepté, mais sa trace a tourné
+
+Le firmware est parti **avant** le filesystem ; `ota_update.sh` a rendu *« Firmware mis à jour »*
+avec **signature relue** (`aucune re-signature`), et l'appareil exécute l'image construite à
+`Nov 20 2026 08:13:34`. ⛔ **Mais ses lignes de verdict ont été chassées du journal persistant**
+par le redémarrage et le flux du démarrage suivant — l'historique exporté ne remonte qu'à
+20:24:32. ⇒ Pour le firmware, l'acceptation est **établie par le résultat** (l'appareil porte
+l'image), ⛔ **pas par un verdict relevé**. C'est le filesystem qui porte la preuve journalisée.
+
+⚠️ **Leçon d'outillage** : envoyer **les deux** binaires d'un trait écrase la trace du premier.
+Pour relever un verdict de firmware, l'envoyer **seul** et lire le journal **avant** le second envoi.
+
+### ⭐ Ce qui a failli être perdu, et ce que la garde a sauvé
+
+L'option retenue par l'utilisateur était de **renvoyer la 2.96.0** — un essai sans conséquence.
+`require_fresh_binary()` (`ota_update.sh:261-300`) l'a **refusé** : `src/version.h` était passé à
+2.96.1 au commit `0253017`, donc le manifeste aurait annoncé **2.96.1** pour un binaire construit
+en 2.96.0. ⛔ La garde est **fail-closed sans échappatoire**, et `--use-sig-raw` (qui désactive le
+contrôle d'empreinte) n'a **pas** été employé : prouver une sécurité en débranchant une autre
+n'est pas une preuve. ⇒ Reconstruction complète, re-signature, puis envoi — et D4 a été prouvé
+**sur un déploiement utile** (les retouches de fond du tableau de bord, v2.96.1) plutôt que sur un
+essai artificiel.
+
+### ⛔ Reste ouvert — trois réserves nommées, chacune avec son foyer
+
+Le critère de D4 était **« 4 déploiements acceptés »** = (script × page) × (firmware × FS).
+**2 sur 4 sont relevés** — les deux du chemin **script**.
+
+| Réserve | Pourquoi elle reste | Où elle se traite |
+|---|---|---|
+| **D4 — chemin PAGE** (2 envois) | La page réimplémente la grammaire du `.sig` en JS (`data/app.js:11695-11787`, miroir de `src/ota_manifest_logic.cpp`). ⚠️ **Une seconde implémentation est une seconde occasion de se tromper** — un `\n` final conservé dans le manifeste suffirait, et le diagnostic serait « signature invalide », ⛔ indistinguable d'une mauvaise clé. | **Étape humaine** : déposer `.bin` + `.sig` dans la carte « Mise à jour manuelle », au navigateur. Renvoyer la **2.96.1 elle-même** ⇒ essai sans conséquence. |
+| **F9 — expiration naturelle à 60 min** | Jamais observée : le décompte a été vu décroître, mais l'autorisation a toujours été **consommée par un flash** avant son terme. | Appareil **dédié** de [bug-186](../todo/bug-186-cinq-essais-de-premier-demarrage-non-prouves-sur-materiel.md) (début 2027), ou opportunisme : ouvrir l'autorisation et ne **rien** en faire. |
+| **Refus tardifs** (liaison image↔manifeste **divergente**) | Exige un essai **destructif** : envoyer une image dont l'empreinte ne correspond pas au manifeste signé, donc interrompre un flash en cours. ⛔ **Jamais sur l'appareil de production.** | Appareil **dédié** de bug-186. ⭐ Le **versant positif** de cette liaison est désormais prouvé (deux verdicts *liée* ci-dessus) : ce qui manque est le versant négatif. |
+
 ⛔ ~~D5~~ **annulé le 2026-11-17** : voir le tableau d'ordre de déploiement. Le « relèvement du
 plancher » n'a plus d'objet depuis la décision du 2026-11-15, et la ligne avait survécu deux jours
 à la décision qui la vide.
+
+⚠️ **« Impasse page web »** — l'impossibilité de **signer** depuis le navigateur (il faudrait la
+clé privée dans la page) reste hors périmètre, documentée dans
+[`docs/UPDATE_GUIDE.md`](../../../docs/UPDATE_GUIDE.md#signature-des-envois-ota-feature-151-d1). ⛔ Ce n'est pas
+une réserve de cette fiche : c'est une **décision**, la signature se fait au poste de travail.

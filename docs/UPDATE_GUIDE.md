@@ -307,7 +307,13 @@ Depuis la v2.11.0, **toute image téléchargée depuis GitHub est vérifiée par
 
 ## Signature des envois OTA (feature-151 D1)
 
-⛔ **Ce que ce lot NE fait PAS** : il ne bloque **aucun** envoi, qu'il soit signé ou non. Le
+> 🔴 **À JOUR AU 2026-11-20 — le refus EST actif depuis la v2.90.0.** Le paragraphe qui suit
+> décrit le lot **D1** (v2.87.0), où rien n'était encore refusé ; il est conservé parce qu'il
+> explique l'outillage, qui n'a pas changé. ⚠️ **Pour le comportement actuel, lisez
+> [« L'appareil refuse une mise à jour : que faire ? »](#lappareil-refuse-une-mise-à-jour--que-faire--d3-c)** :
+> un envoi **non signé, mal signé ou signé pour l'autre genre d'image est désormais REFUSé**.
+
+⛔ **Ce que le lot D1 NE faisait PAS** : il ne bloquait **aucun** envoi, qu'il soit signé ou non. Le
 firmware **calcule et journalise** un verdict d'authenticité à chaque `POST /update` et `POST
 /download-update`, mais ne **refuse** rien dessus pour l'instant — le refus est un lot
 **ultérieur**, qui n'existera qu'une fois la preuve terrain de ce mécanisme faite avec succès.
@@ -333,9 +339,37 @@ versionnée). Concrètement :
   refuse d'envoyer** — avant même de contacter l'appareil (fail-closed, pas de repli silencieux
   « sans signature »).
 
-⛔ **Perdre la clé privée sans en avoir conservé de copie hors-ligne bloquera les mises à jour** à
-partir du lot qui activera le refus (D3, pas celui-ci) — conservez **deux copies hors-ligne** de
-la clé chiffrée, en plus de la phrase de passe mémorisée.
+⛔ **Perdre la clé privée sans en avoir conservé de copie hors-ligne bloque les mises à jour**
+— le refus est actif **depuis la v2.90.0**. Conservez **deux copies hors-ligne** de la clé
+chiffrée, en plus de la phrase de passe mémorisée.
+
+### ⚠️ Relever le verdict d'un envoi : envoyez les deux binaires SÉPARÉMENT
+
+Le journal de l'appareil tient **8 Ko, soit environ une minute**. `ota_update.sh --use-sig both`
+envoie le **firmware puis le filesystem**, chacun suivi d'un redémarrage ⇒ ⛔ **les lignes de
+verdict du premier envoi sont chassées** du journal avant que vous puissiez les lire. C'est
+exactement ce qui s'est produit le 2026-11-20 : l'acceptation du filesystem est journalisée,
+celle du firmware a tourné.
+
+⇒ Pour **relever** un verdict (et non simplement constater que l'appareil a redémarré) :
+
+```bash
+./ota_update.sh --use-sig firmware 192.168.1.48
+# puis, IMMÉDIATEMENT, lire le journal — guetter LA LIGNE, jamais un redémarrage :
+curl -s -H "X-Auth-Token: $TOK" http://192.168.1.48/get-logs | grep -i 'authenticité\|liaison'
+./ota_update.sh --use-sig filesystem 192.168.1.48
+```
+
+Les lignes à chercher, en cas d'acceptation :
+
+```
+[feature-151 D3-c] /update — authenticité OTA : valide — refusé : non
+[feature-151 D1 B1] /update — liaison manifeste/image (paramètre sha256 (index==0)) : liée — divergente : non
+[feature-151 D1 B1] /update — liaison manifeste/image (empreinte calculée (final)) : liée — divergente : non
+```
+
+⭐ **La liaison manifeste↔image est contrôlée deux fois** : sur le paramètre annoncé **avant la
+première écriture**, puis sur l'empreinte **réellement calculée** en fin de transfert.
 
 ### Et la page web d'upload ? (tranché en v2.86.0, feature-151 D1-bis)
 
