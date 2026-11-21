@@ -3,7 +3,7 @@
 - **Statut** : Accepté
 - **Date** : 2026-10-18
 - **Décideurs** : Nicolas + Claude (architect, security-reviewer P1)
-- **Spec(s) liée(s)** : [`feature-151`](../../specs/features/doing/feature-151-signature-de-l-image-ota.md) (lot D1 ; `feature-118`/[ADR-0096](0096-empreinte-sha256-obligatoire-sur-post-update.md) pour le mécanisme d'empreinte qu'elle complète, sans le remplacer)
+- **Spec(s) liée(s)** : [`feature-151`](../../specs/features/done/feature-151-signature-de-l-image-ota.md) (lot D1 ; `feature-118`/[ADR-0096](0096-empreinte-sha256-obligatoire-sur-post-update.md) pour le mécanisme d'empreinte qu'elle complète, sans le remplacer)
 
 ## Contexte
 
@@ -177,7 +177,7 @@ D1, il est simplement **inerte**, figé à 0.0.0 (jamais franchi par une version
 - Tests : [`test/test_native_ota_manifest/`](../../test/test_native_ota_manifest/),
   [`test/test_native_ota_base64/`](../../test/test_native_ota_base64/),
   [`test/test_native_ota_authenticity/`](../../test/test_native_ota_authenticity/)
-- Spec : [`specs/features/doing/feature-151-signature-de-l-image-ota.md`](../../specs/features/doing/feature-151-signature-de-l-image-ota.md)
+- Spec : [`specs/features/done/feature-151-signature-de-l-image-ota.md`](../../specs/features/done/feature-151-signature-de-l-image-ota.md)
 - Doc externe : [`docs/API.md`](../API.md#authenticite-manifest-signature-feature-151-d1),
   [`docs/subsystems/ota-manager.md`](../subsystems/ota-manager.md#d1--authenticite-par-signature-journalise-seulement-feature-151-verdict-security-reviewer-p1),
   [`docs/UPDATE_GUIDE.md`](../UPDATE_GUIDE.md#signature-des-envois-ota)

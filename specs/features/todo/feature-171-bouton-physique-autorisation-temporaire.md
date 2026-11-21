@@ -6,7 +6,7 @@
 - **Priorité** : haute
 - **Version cible** : à définir — **après** `feature-151` D3-c (sans D3-c, cette feature est inerte : rien n'est refusé, donc rien n'est à autoriser)
 - **Dernière mise à jour** : 2026-11-16
-- **Spec(s) liée(s)** : [`feature-151`](../doing/feature-151-signature-de-l-image-ota.md) (durcissement « bouton physique », listé dans ses items ouverts) ; amende [ADR-0125](../../../docs/adr/0125-l-expiration-de-l-interrupteur-de-signature-se-mesure-sur-un-horodatage-nvs.md)
+- **Spec(s) liée(s)** : [`feature-151`](../done/feature-151-signature-de-l-image-ota.md) (durcissement « bouton physique », listé dans ses items ouverts) ; amende [ADR-0125](../../../docs/adr/0125-l-expiration-de-l-interrupteur-de-signature-se-mesure-sur-un-horodatage-nvs.md)
 
 ## Domaines touchés
 - [ ] Capteurs (pH / ORP / température)

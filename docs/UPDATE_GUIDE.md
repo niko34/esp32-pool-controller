@@ -107,7 +107,7 @@ envoyer a été construit **après** la dernière modification des sources :
 fichier envoyé. Un `pio run` oublié après un changement de version donnait donc une signature
 parfaitement valide, mais portant une étiquette fausse : l'empreinte décrit bien le fichier, le
 numéro décrit un autre build. Ce n'est pas une faille (l'étiquette vient de votre propre clé) et
-l'appareil n'en décide rien (aucun plancher de version, [feature-151](../specs/features/doing/feature-151-signature-de-l-image-ota.md)) ;
+l'appareil n'en décide rien (aucun plancher de version, [feature-151](../specs/features/done/feature-151-signature-de-l-image-ota.md)) ;
 mais le numéro s'affiche sur la ligne de récapitulatif de la carte « Mise à jour manuelle », et il
 mentirait. Autre cause : le 2026-11-14, un `build_fs.sh` relancé entre la signature et l'envoi a
 rendu la signature caduque. Une consigne écrite finit par être oubliée ; elle est maintenant vérifiée.

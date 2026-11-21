@@ -3,7 +3,7 @@
 - **Statut** : Accepté
 - **Date** : 2026-11-16
 - **Décideurs** : Nicolas + Claude (`architect`, `security-reviewer`, `code-reviewer`)
-- **Spec(s) liée(s)** : [`feature-151`](../../specs/features/doing/feature-151-signature-de-l-image-ota.md) (sous-lot D3-c « le refus » ; lève l'inertie posée par D1 à D3-b2, voir [ADR-0122](0122-socle-decision-ota-genre-empreinte-relais-sig.md) et [ADR-0125](0125-l-expiration-de-l-interrupteur-de-signature-se-mesure-sur-un-horodatage-nvs.md))
+- **Spec(s) liée(s)** : [`feature-151`](../../specs/features/done/feature-151-signature-de-l-image-ota.md) (sous-lot D3-c « le refus » ; lève l'inertie posée par D1 à D3-b2, voir [ADR-0122](0122-socle-decision-ota-genre-empreinte-relais-sig.md) et [ADR-0125](0125-l-expiration-de-l-interrupteur-de-signature-se-mesure-sur-un-horodatage-nvs.md))
 
 ## Contexte
 
@@ -52,5 +52,5 @@ Jusqu'à D3-b2, l'appareil vérifiait la signature d'une image OTA, journalisait
 ## Références
 
 - Code : [`src/ota_refusal_messages.h`](../../src/ota_refusal_messages.h) / `.cpp`, [`src/web_routes_ota.cpp`](../../src/web_routes_ota.cpp), [`src/web_routes_ota_switch.cpp`](../../src/web_routes_ota_switch.cpp), [`tools/check_ota_manager_isolated.sh`](../../tools/check_ota_manager_isolated.sh)
-- Spec : [`specs/features/doing/feature-151-signature-de-l-image-ota.md`](../../specs/features/doing/feature-151-signature-de-l-image-ota.md)
+- Spec : [`specs/features/done/feature-151-signature-de-l-image-ota.md`](../../specs/features/done/feature-151-signature-de-l-image-ota.md)
 - Doc : [`docs/API.md`](../API.md#refus-d-une-image-non-authentique-feature-151-d3-c), [`docs/subsystems/ota-manager.md`](../subsystems/ota-manager.md), [`docs/UPDATE_GUIDE.md`](../UPDATE_GUIDE.md#appareil-refuse-une-mise-à-jour-non-signée)

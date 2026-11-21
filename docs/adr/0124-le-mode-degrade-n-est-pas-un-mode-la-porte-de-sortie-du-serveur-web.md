@@ -3,7 +3,7 @@
 - **Statut** : Accepté
 - **Date** : 2026-11-15
 - **Décideurs** : Nicolas + Claude (`architect`, `security-reviewer` P1 — GO sans condition en fin de lot —, `ux-ui-designer`, `code-reviewer`)
-- **Spec(s) liée(s)** : [`feature-151`](../../specs/features/doing/feature-151-signature-de-l-image-ota.md) (sous-lot D3-b1 « la porte » ; complète [ADR-0122](0122-socle-decision-ota-genre-empreinte-relais-sig.md), [ADR-0123](0123-une-seule-session-tls-sortante-par-requete-http.md))
+- **Spec(s) liée(s)** : [`feature-151`](../../specs/features/done/feature-151-signature-de-l-image-ota.md) (sous-lot D3-b1 « la porte » ; complète [ADR-0122](0122-socle-decision-ota-genre-empreinte-relais-sig.md), [ADR-0123](0123-une-seule-session-tls-sortante-par-requete-http.md))
 
 ## Contexte
 
@@ -120,5 +120,5 @@ Décision pure (`decideOtaRecoveryReason`, `src/ota_recovery_logic.*`), entrées
 
 - Code : [`src/web_server.cpp`](../../src/web_server.cpp) (`begin()`, `setupRoutes()`), [`src/web_routes_recovery.cpp`](../../src/web_routes_recovery.cpp), [`src/ota_recovery_logic.h`](../../src/ota_recovery_logic.h), [`src/ota_recovery_marker.h`](../../src/ota_recovery_marker.h), [`src/ota_recovery_page.html.in`](../../src/ota_recovery_page.html.in), [`src/fs_guard.h`](../../src/fs_guard.h)
 - Outils : [`tools/gen_recovery_page.js`](../../tools/gen_recovery_page.js), [`tools/check_recovery_page_generated.sh`](../../tools/check_recovery_page_generated.sh), [`tools/check_degraded_mode_absent.sh`](../../tools/check_degraded_mode_absent.sh), [`tools/check_fs_probe_paths.sh`](../../tools/check_fs_probe_paths.sh)
-- Spec : [`feature-151`](../../specs/features/doing/feature-151-signature-de-l-image-ota.md) — « D3-b1 — CONCEPTION ARRÊTÉE », « REVUE DE SÉCURITÉ P1 (S1-S9) », « ÉTUDE ERGONOMIE RENDUE »
+- Spec : [`feature-151`](../../specs/features/done/feature-151-signature-de-l-image-ota.md) — « D3-b1 — CONCEPTION ARRÊTÉE », « REVUE DE SÉCURITÉ P1 (S1-S9) », « ÉTUDE ERGONOMIE RENDUE »
 - Doc : [`docs/subsystems/web-server.md`](../subsystems/web-server.md), [`docs/subsystems/ota-manager.md`](../subsystems/ota-manager.md), [`docs/UPDATE_GUIDE.md`](../UPDATE_GUIDE.md)

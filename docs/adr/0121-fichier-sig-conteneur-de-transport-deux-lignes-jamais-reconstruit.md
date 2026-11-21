@@ -3,7 +3,7 @@
 - **Statut** : Accepté
 - **Date** : 2026-10-21
 - **Décideurs** : Nicolas + Claude (architect, security-reviewer P1 et P2, ux-ui-designer)
-- **Spec(s) liée(s)** : [`feature-151`](../../specs/features/doing/feature-151-signature-de-l-image-ota.md) (lot D1-bis ; complète [ADR-0120](0120-signature-rsa-du-manifeste-ota-verifiee-avant-refus.md), qui avait explicitement reporté cette décision)
+- **Spec(s) liée(s)** : [`feature-151`](../../specs/features/done/feature-151-signature-de-l-image-ota.md) (lot D1-bis ; complète [ADR-0120](0120-signature-rsa-du-manifeste-ota-verifiee-avant-refus.md), qui avait explicitement reporté cette décision)
 
 ## Contexte
 
@@ -157,7 +157,7 @@ gagner l'heuristique contre le constat reviendrait à refuser un envoi que rien 
   (bloc S2)
 - Tests : `test/sig_parse_vectors.js` + `tools/check_sig_parse_vectors.sh` (job CI
   `sig-parse-vectors`), `test/test_native_ota_manifest_binding/`
-- Spec : [`specs/features/doing/feature-151-signature-de-l-image-ota.md`](../../specs/features/doing/feature-151-signature-de-l-image-ota.md)
+- Spec : [`specs/features/done/feature-151-signature-de-l-image-ota.md`](../../specs/features/done/feature-151-signature-de-l-image-ota.md)
   (section D1-bis)
 - Doc externe : [`docs/UPDATE_GUIDE.md`](../UPDATE_GUIDE.md#et-la-page-web-dupload--tranché-en-v2860-feature-151-d1-bis),
   [`docs/API.md`](../API.md#fichier-sig-feature-151-d1-bis),

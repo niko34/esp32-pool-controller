@@ -3,7 +3,7 @@
 - **Statut** : Accepté
 - **Date** : 2026-11-16
 - **Décideurs** : Nicolas + Claude (`architect`, `security-reviewer`, `code-reviewer`)
-- **Spec(s) liée(s)** : [`feature-151`](../../specs/features/doing/feature-151-signature-de-l-image-ota.md) (D3-b2, liaison genre + version)
+- **Spec(s) liée(s)** : [`feature-151`](../../specs/features/done/feature-151-signature-de-l-image-ota.md) (D3-b2, liaison genre + version)
 
 ## Contexte
 
@@ -45,5 +45,5 @@ Aucune décision d'acceptation ni de refus n'en dépend (`otaSelectVersionRefere
 ## Références
 
 - Code : [`src/ota_version_request_logic.h`](../../src/ota_version_request_logic.h), `logOtaVersionAgreement` dans [`src/web_routes_ota.cpp`](../../src/web_routes_ota.cpp)
-- Spec : [`feature-151`](../../specs/features/doing/feature-151-signature-de-l-image-ota.md)
+- Spec : [`feature-151`](../../specs/features/done/feature-151-signature-de-l-image-ota.md)
 - Doc : [`docs/API.md`](../API.md), [`docs/subsystems/ota-manager.md`](../subsystems/ota-manager.md)

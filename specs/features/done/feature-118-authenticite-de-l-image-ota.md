@@ -8,7 +8,7 @@
 | Priorité | Haute — `bug-117` est **close** (`specs/features/done/`), le prérequis est levé |
 | Version cible | 2.67.0 (`src/version.h`, lot B) |
 | Origine | 4ᵉ critère d'acceptation de `bug-117`, délibérément **non traité** dans son correctif |
-| Specs liées | `bug-117` (la garde d'authentification), `feature-026` (vérification d'intégrité OTA), [`feature-151`](../doing/feature-151-signature-de-l-image-ota.md) (suivi : signature à clé publique, seule réponse complète à la règle n° 6) |
+| Specs liées | `bug-117` (la garde d'authentification), `feature-026` (vérification d'intégrité OTA), [`feature-151`](../done/feature-151-signature-de-l-image-ota.md) (suivi : signature à clé publique, seule réponse complète à la règle n° 6) |
 
 ## Domaines touchés
 - [x] OTA (`src/web_routes_ota.cpp`), `ota_update.sh`
@@ -264,7 +264,7 @@ conditions du P1 ci-dessus sont reprises une à une ; celles qui concernent le l
 | 6 | Formulation de la doc (intégrité du transfert, pas sécurité) | **Livré par ce tour** — `docs/API.md`, `docs/subsystems/ota-manager.md`, [ADR-0096](../../../docs/adr/0096-empreinte-sha256-obligatoire-sur-post-update.md) portent les trois phrases et le constat de non-satisfaction de la règle n° 6 |
 | 7 | ADR-0081 relu | **Livré par ce tour** — ligne datée du 2026-10-10, déclencheur déplacé vers `feature-151` |
 | 8 | Messages d'erreur (ordre des champs) | **Livré** — `kOtaSha256MissingMessage` préparé pour le lot B (pas encore utilisé) ; message « malformée » explicite ; `ota_update.sh` affiche un indice ciblé (`[O3]`) sur un refus `400` mentionnant sha256/empreinte |
-| 9 | Spec de suivi créée avant clôture | **Livré par ce tour** — `specs/features/doing/feature-151-signature-de-l-image-ota.md` |
+| 9 | Spec de suivi créée avant clôture | **Livré par ce tour** — `specs/features/done/feature-151-signature-de-l-image-ota.md` |
 
 **Zéro régression confirmée** : `pio test -e native` — **65 suites / 2 152 cas, tous verts**
 (mesuré le 2026-10-10, ne pas recopier ce chiffre aux cycles suivants — ADR-0073, le

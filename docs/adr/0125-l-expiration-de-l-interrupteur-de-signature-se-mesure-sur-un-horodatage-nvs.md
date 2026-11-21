@@ -3,7 +3,7 @@
 - **Statut** : Accepté
 - **Date** : 2026-11-16
 - **Décideurs** : Nicolas + Claude (`architect`, `security-reviewer` P1 puis P2 — GO sous conditions C1-C12 —, `code-reviewer`)
-- **Spec(s) liée(s)** : [`feature-151`](../../specs/features/doing/feature-151-signature-de-l-image-ota.md) (sous-lot D3-b2 « les gardes inertes », B11 et condition 7 ; amende [ADR-0124](0124-le-mode-degrade-n-est-pas-un-mode-la-porte-de-sortie-du-serveur-web.md) sans le modifier)
+- **Spec(s) liée(s)** : [`feature-151`](../../specs/features/done/feature-151-signature-de-l-image-ota.md) (sous-lot D3-b2 « les gardes inertes », B11 et condition 7 ; amende [ADR-0124](0124-le-mode-degrade-n-est-pas-un-mode-la-porte-de-sortie-du-serveur-web.md) sans le modifier)
 
 ## Contexte
 
@@ -55,5 +55,5 @@ Il faut décider **comment mesurer les 60 min**. `millis()` est le réflexe, et 
 ## Références
 
 - Code : [`src/ota_signature_switch_logic.cpp`](../../src/ota_signature_switch_logic.cpp), [`src/ota_signature_switch.cpp`](../../src/ota_signature_switch.cpp), [`src/web_routes_ota_switch.cpp`](../../src/web_routes_ota_switch.cpp), [`tools/gen_recovery_page.js`](../../tools/gen_recovery_page.js)
-- Spec : [`feature-151`](../../specs/features/doing/feature-151-signature-de-l-image-ota.md)
+- Spec : [`feature-151`](../../specs/features/done/feature-151-signature-de-l-image-ota.md)
 - Doc : [`docs/subsystems/ota-manager.md`](../subsystems/ota-manager.md#interrupteur-de-signature-feature-151-d3-b2), [`docs/MQTT.md`](../MQTT.md#topics-et-entité-ajoutés-en-feature-151-d3-b2-interrupteur-de-signature-ota)

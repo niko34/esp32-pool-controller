@@ -3,7 +3,7 @@
 - **Statut** : Accepté
 - **Date** : 2026-11-16
 - **Décideurs** : Nicolas + Claude (`architect`, `security-reviewer`, `code-reviewer`)
-- **Spec(s) liée(s)** : [`bug-112`](../../specs/features/done/bug-112-journal-non-borne-sur-route-protegee.md), [`bug-080`](../../specs/features/), [`feature-151`](../../specs/features/doing/feature-151-signature-de-l-image-ota.md) (D3-c)
+- **Spec(s) liée(s)** : [`bug-112`](../../specs/features/done/bug-112-journal-non-borne-sur-route-protegee.md), [`bug-080`](../../specs/features/), [`feature-151`](../../specs/features/done/feature-151-signature-de-l-image-ota.md) (D3-c)
 
 ## Contexte
 

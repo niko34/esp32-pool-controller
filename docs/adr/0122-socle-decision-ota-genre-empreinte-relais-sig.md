@@ -3,7 +3,7 @@
 - **Statut** : Accepté
 - **Date** : 2026-11-15
 - **Décideurs** : Nicolas + Claude (architect, security-reviewer P2, code-reviewer)
-- **Spec(s) liée(s)** : [`feature-151`](../../specs/features/doing/feature-151-signature-de-l-image-ota.md) (lot D3-a ; [ADR-0120](0120-signature-rsa-du-manifeste-ota-verifiee-avant-refus.md) tranche le schéma cryptographique, [ADR-0121](0121-fichier-sig-conteneur-de-transport-deux-lignes-jamais-reconstruit.md) le format de transport ; celui-ci tranche la **conception d'exécution** côté appareil)
+- **Spec(s) liée(s)** : [`feature-151`](../../specs/features/done/feature-151-signature-de-l-image-ota.md) (lot D3-a ; [ADR-0120](0120-signature-rsa-du-manifeste-ota-verifiee-avant-refus.md) tranche le schéma cryptographique, [ADR-0121](0121-fichier-sig-conteneur-de-transport-deux-lignes-jamais-reconstruit.md) le format de transport ; celui-ci tranche la **conception d'exécution** côté appareil)
 
 ## Contexte
 
@@ -63,5 +63,5 @@ Le watchdog mesure le temps **depuis le dernier acquittement**, pas la durée to
 ## Références
 
 - Code : `src/ota_kind_authority_logic.*`, `src/ota_digest_source_logic.h`, `src/ota_sig_relay_logic.*`, `src/web_routes_ota.cpp`, `src/constants.h` (`kOtaSigFetchMaxBytes`, `kOtaTls*`)
-- Spec : [`feature-151`](../../specs/features/doing/feature-151-signature-de-l-image-ota.md) (sections D3-a)
+- Spec : [`feature-151`](../../specs/features/done/feature-151-signature-de-l-image-ota.md) (sections D3-a)
 - Doc : [`docs/subsystems/ota-manager.md`](../subsystems/ota-manager.md)

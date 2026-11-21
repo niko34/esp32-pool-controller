@@ -81,7 +81,7 @@ bool isEnabled() const;
    revue de sécurité) : la session est **TLS épinglée** (5 racines auto-signées, [ADR-0111](../adr/0111-ancre-de-confiance-tls-toujours-auto-signee.md))
    — un DNS détourné produit un **échec de handshake**, pas un corps hostile reçu avec succès. Le
    seul pair réellement capable de servir un contenu arbitraire est celui qui **contrôle la
-   release GitHub elle-même** ; seule [feature-151](../../specs/features/doing/feature-151-signature-de-l-image-ota.md)
+   release GitHub elle-même** ; seule [feature-151](../../specs/features/done/feature-151-signature-de-l-image-ota.md)
    (signature de l'image) répond à ce cas, puisque l'URL et l'empreinte SHA-256 sortent du **même**
    JSON. Détail complet et alternatives écartées (envelopper le flux, bibliothèque tierce) :
    [ADR-0119](../adr/0119-reponse-check-update-bufferisee-en-psram-bornee.md).
@@ -234,9 +234,9 @@ Règle de sécurité #6 (« toujours vérifier la signature/CRC avant flash »),
 
 ## Lot A — empreinte envoyée systématiquement, verdict journalisé (v2.66.0, feature-118, [ADR-0096](../adr/0096-empreinte-sha256-obligatoire-sur-post-update.md))
 
-**Ce que ce lot prouve, et ce qu'il ne prouve pas** — à ne jamais diluer : l'empreinte est **calculée par l'appelant** ; elle prouve que l'image écrite est celle qu'il a envoyée, **pas qui l'a produite**. Pour le **firmware**, l'IDF vérifie déjà l'image à l'activation ; l'empreinte ajoute la détection du **mauvais fichier**. Pour le **filesystem**, elle est la **seule** vérification d'intégrité. **La règle de sécurité n° 6 de `CLAUDE.md` n'est PAS satisfaite par ce lot** ; elle le sera par la signature (spec de suivi [feature-151](../../specs/features/doing/feature-151-signature-de-l-image-ota.md)). Le mot « sécurité » ne qualifie jamais ce mécanisme — le terme imposé est **« intégrité du transfert »**.
+**Ce que ce lot prouve, et ce qu'il ne prouve pas** — à ne jamais diluer : l'empreinte est **calculée par l'appelant** ; elle prouve que l'image écrite est celle qu'il a envoyée, **pas qui l'a produite**. Pour le **firmware**, l'IDF vérifie déjà l'image à l'activation ; l'empreinte ajoute la détection du **mauvais fichier**. Pour le **filesystem**, elle est la **seule** vérification d'intégrité. **La règle de sécurité n° 6 de `CLAUDE.md` n'est PAS satisfaite par ce lot** ; elle le sera par la signature (spec de suivi [feature-151](../../specs/features/done/feature-151-signature-de-l-image-ota.md)). Le mot « sécurité » ne qualifie jamais ce mécanisme — le terme imposé est **« intégrité du transfert »**.
 
-**Trois issues arbitrées** (détail et coûts chiffrés : [ADR-0096](../adr/0096-empreinte-sha256-obligatoire-sur-post-update.md)) : empreinte obligatoire + SHA-256 JS embarqué (**retenue**), empreinte obligatoire sauf page web exemptée (écartée — le firmware ne peut **structurellement pas** distinguer la page web d'un `curl`, tout provient de l'appelant), signature à clé publique (reportée à [feature-151](../../specs/features/doing/feature-151-signature-de-l-image-ota.md), coût le plus élevé mais seule option qui réponde à la règle n° 6).
+**Trois issues arbitrées** (détail et coûts chiffrés : [ADR-0096](../adr/0096-empreinte-sha256-obligatoire-sur-post-update.md)) : empreinte obligatoire + SHA-256 JS embarqué (**retenue**), empreinte obligatoire sauf page web exemptée (écartée — le firmware ne peut **structurellement pas** distinguer la page web d'un `curl`, tout provient de l'appelant), signature à clé publique (reportée à [feature-151](../../specs/features/done/feature-151-signature-de-l-image-ota.md), coût le plus élevé mais seule option qui réponde à la règle n° 6).
 
 **Côté page web** (`data/app.js`) : SHA-256 pur JS (`createSha256`/`sha256OfFile`), car `crypto.subtle` exige un contexte sécurisé (HTTPS/`localhost`), indisponible sur HTTP clair en LAN. Hachage incrémental par tranches de 256 Kio (jamais le fichier entier en RAM). Le champ `sha256` est ajouté au `FormData` **avant** `update_file` — un champ placé après le fichier se lirait comme **absent** côté firmware (le multipart est lu au fil de l'eau). Un échec de calcul **bloque l'envoi à l'écran**, sans repli silencieux. Vecteurs de test versionnés : [`test/sha256_vectors.js`](../../test/sha256_vectors.js) (chaîne vide, « abc », 55/56/64/65 octets, bloc > 1 Mo entier et fragmenté), extraits **du texte réel livré** dans `data/app.js` (pas une recopie — une divergence future est structurellement impossible), exécutés par [`tools/check_sha256_vectors.sh`](../../tools/check_sha256_vectors.sh). **Confirmé sur navigateur mobile** (essai on-target du 2026-10-11, image de 1,87 Mo) : c'était l'inconnue de tout l'arbitrage, elle est levée.
 
@@ -250,7 +250,7 @@ Règle de sécurité #6 (« toujours vérifier la signature/CRC avant flash »),
 
 ## Lot B — empreinte obligatoire, refus effectif (v2.67.0, feature-118, [ADR-0096](../adr/0096-empreinte-sha256-obligatoire-sur-post-update.md))
 
-**Ce que ce lot change par rapport au lot A : la décision devient réelle.** `otaUploadIntegrityVerdict()` ne change pas, mais `otaUploadIntegrityIsRejected()` (renommée depuis `otaUploadWouldLotBReject()` — ce n'est plus une projection, c'est la décision appliquée) est désormais **suivie d'effet** : `kAbsent` et `kNonConform` sont refusés (`kMalformed` l'était déjà depuis le lot A). **Ce que ce mécanisme prouve reste inchangé depuis le lot A** — intégrité du transfert, pas authenticité d'origine ; la règle n° 6 de `CLAUDE.md` reste non satisfaite, voir [feature-151](../../specs/features/doing/feature-151-signature-de-l-image-ota.md).
+**Ce que ce lot change par rapport au lot A : la décision devient réelle.** `otaUploadIntegrityVerdict()` ne change pas, mais `otaUploadIntegrityIsRejected()` (renommée depuis `otaUploadWouldLotBReject()` — ce n'est plus une projection, c'est la décision appliquée) est désormais **suivie d'effet** : `kAbsent` et `kNonConform` sont refusés (`kMalformed` l'était déjà depuis le lot A). **Ce que ce mécanisme prouve reste inchangé depuis le lot A** — intégrité du transfert, pas authenticité d'origine ; la règle n° 6 de `CLAUDE.md` reste non satisfaite, voir [feature-151](../../specs/features/done/feature-151-signature-de-l-image-ota.md).
 
 **Refus « absente », même patron que « malformée »** : `OtaSha256ParamVerdict::kAbsent` déclenche désormais, à la **même place** que le refus « malformée » (`index==0`, hors du bloc `if (len >= 1)`, avant `g_uploadOwner = request`), `markUploadRejected(request)` puis `failOtaUpload(request, 400, kOtaSha256MissingMessage, true)`. **`markUploadRejected` est non négociable** : sans lui, `Update.hasError()` resterait faux et le lambda de réponse servirait « OK » avec un **redémarrage parasite**, alors que l'upload a été refusé — défaut qualifié le plus grave de ce lot par `security-reviewer`. Garde structurelle dédiée : [`test/test_native_ota_order_guard/`](../../test/test_native_ota_order_guard/) (tests `G3`) vérifie les trois propriétés (avant `g_uploadOwner`, hors du bloc `len >= 1`, `markUploadRejected` bien appelé dans la branche).
 
@@ -284,7 +284,7 @@ cassé ou une clé perdue, rendrait l'appareil **définitivement non déployable
 s'éprouve qu'au déploiement **suivant**, trop tard pour revenir en arrière une fois le firmware
 en place. D1 vérifie donc **tout** ce que D3 vérifiera, calcule le verdict complet, le
 **journalise** — et, **en D1/D2 seulement**, ne refuse rien. ✅ **Depuis D3-c l'appareil refuse** (section « D3-c » plus bas). Le découpage complet (D0 → D5) et son arbitrage
-`security-reviewer` P1 : [`specs/features/doing/feature-151-signature-de-l-image-ota.md`](../../specs/features/doing/feature-151-signature-de-l-image-ota.md).
+`security-reviewer` P1 : [`specs/features/done/feature-151-signature-de-l-image-ota.md`](../../specs/features/done/feature-151-signature-de-l-image-ota.md).
 
 | # | Contenu | Statut |
 |---|---|---|
@@ -533,7 +533,7 @@ jour quelque chose à vérifier. **Champs additifs**, non encore exploités côt
 - **`/download-update`** reçoit en plus `setHandshakeTimeout` + `setConnectTimeout` (handshake à 120 s par défaut avant : redémarrage par watchdog possible pendant un téléchargement). Le délai de **lecture** n'y est volontairement pas posé (échéance d'inactivité : `bug-174`).
 - **Constantes** (`constants.h`) : `kOtaSigUrlMaxLen` = 192, `kOtaSigTagMaxLen` = 24 (emplacements statiques, ≈ +432 o de `.bss`), `kOtaSigMinIntervalMs` = 10 000.
 - ⚠️ **Marge honnête** : facteur 1,6 seulement au débit du terrain — la garde et le WARN sont conservés. Et `/download-update` garde une fenêtre de blocage bien plus large (le téléchargement), **non traitée**.
-- 🔴 **Contrainte d'ordre pour D3-c** : ne pas livrer le refus dans le même firmware que ce lot (voir [feature-151](../../specs/features/doing/feature-151-signature-de-l-image-ota.md)).
+- 🔴 **Contrainte d'ordre pour D3-c** : ne pas livrer le refus dans le même firmware que ce lot (voir [feature-151](../../specs/features/done/feature-151-signature-de-l-image-ota.md)).
 
 ### bug-178 (v2.88.1) — comparaison sémantique des versions, cinq états
 
@@ -546,7 +546,7 @@ Cinq états publiés dans `update_state` : `update_available`, `up_to_date`, `de
 Journal : la version de la release (qui vient de GitHub, donc non maîtrisée) n'est journalisée que si elle a été jugée lisible ; sinon le libellé fixe `(non analysable)` (le journal est rendu en `innerHTML` côté page).
 
 **Deux limites assumées**
-- ⛔ Une release **remplacée sous le même tag** est **invisible** à toute comparaison de versions (versions égales). Ce cas sera couvert **quand D3-c de [feature-151](../../specs/features/doing/feature-151-signature-de-l-image-ota.md) sera livré, pas avant** : l'empreinte vient de la même réponse GitHub que l'image (elle prouve le transport, pas l'authenticité) et la signature ne refuse encore rien.
+- ⛔ Une release **remplacée sous le même tag** est **invisible** à toute comparaison de versions (versions égales). Ce cas sera couvert **quand D3-c de [feature-151](../../specs/features/done/feature-151-signature-de-l-image-ota.md) sera livré, pas avant** : l'empreinte vient de la même réponse GitHub que l'image (elle prouve le transport, pas l'authenticité) et la signature ne refuse encore rien.
 - Le lot garantit que rien n'est **proposé**, **pas** que le retour arrière est **bloqué** : `POST /update` et `POST /download-update` restent volontairement permissifs, pour qu'un retour arrière **délibéré** reste possible (carte « Mise à jour manuelle »).
 
 Aucune pré-version n'est proposable (tag suffixé = `unknown_version`) ; voir [API.md](../API.md#get-check-update--write).
@@ -646,7 +646,7 @@ Consigné pour **ne pas re-auditer la même route** : la question ne se rouvre q
 
 ### Ce que ce correctif ne fait PAS
 
-Il apporte l'**autorisation** de l'appelant, pas l'**authenticité** de l'image. La comparaison SHA-256 de l'upload manuel est désormais **obligatoire** (lot B, v2.67.0) — mais une empreinte **fournie par l'appelant** prouve l'intégrité du **transfert**, jamais l'authenticité de l'image, obligatoire ou non : elle ne dit rien de qui l'a produite. La règle de sécurité n° 6 de `CLAUDE.md` (« vérifier la signature/CRC avant flash ») n'est donc **toujours pas** satisfaite sur ce chemin : traité par [`feature-118`](../../specs/features/done/feature-118-authenticite-de-l-image-ota.md) (lots A et B livrés), la signature reste ouverte dans [feature-151](../../specs/features/doing/feature-151-signature-de-l-image-ota.md).
+Il apporte l'**autorisation** de l'appelant, pas l'**authenticité** de l'image. La comparaison SHA-256 de l'upload manuel est désormais **obligatoire** (lot B, v2.67.0) — mais une empreinte **fournie par l'appelant** prouve l'intégrité du **transfert**, jamais l'authenticité de l'image, obligatoire ou non : elle ne dit rien de qui l'a produite. La règle de sécurité n° 6 de `CLAUDE.md` (« vérifier la signature/CRC avant flash ») n'est donc **toujours pas** satisfaite sur ce chemin : traité par [`feature-118`](../../specs/features/done/feature-118-authenticite-de-l-image-ota.md) (lots A et B livrés), la signature reste ouverte dans [feature-151](../../specs/features/done/feature-151-signature-de-l-image-ota.md).
 
 ### Verrou anti-upload concurrent (`/update`)
 
@@ -880,4 +880,4 @@ L'historique est **préservé** pendant une OTA filesystem car il vit sur une pa
 - [`partitions.csv`](../../partitions.csv)
 - [docs/UPDATE_GUIDE.md](../UPDATE_GUIDE.md)
 - [ADR-0007](../adr/0007-table-partitions-custom.md), [ADR-0022](../adr/0022-verification-integrite-ota.md), [ADR-0096](../adr/0096-empreinte-sha256-obligatoire-sur-post-update.md), [ADR-0119](../adr/0119-reponse-check-update-bufferisee-en-psram-bornee.md), [ADR-0120](../adr/0120-signature-rsa-du-manifeste-ota-verifiee-avant-refus.md), [ADR-0121](../adr/0121-fichier-sig-conteneur-de-transport-deux-lignes-jamais-reconstruit.md) (feature-151 D1-bis — le fichier `.sig` à deux lignes que la page web transporte, sans jamais le reconstruire), [ADR-0122](../adr/0122-socle-decision-ota-genre-empreinte-relais-sig.md) (feature-151 D3-a — genre, empreinte, relais du `.sig`), [ADR-0123](../adr/0123-une-seule-session-tls-sortante-par-requete-http.md) (bug-176 — une seule session TLS par requête, relais à la demande)
-- [`specs/features/done/feature-118-authenticite-de-l-image-ota.md`](../../specs/features/done/feature-118-authenticite-de-l-image-ota.md), [`specs/features/doing/feature-151-signature-de-l-image-ota.md`](../../specs/features/doing/feature-151-signature-de-l-image-ota.md)
+- [`specs/features/done/feature-118-authenticite-de-l-image-ota.md`](../../specs/features/done/feature-118-authenticite-de-l-image-ota.md), [`specs/features/done/feature-151-signature-de-l-image-ota.md`](../../specs/features/done/feature-151-signature-de-l-image-ota.md)

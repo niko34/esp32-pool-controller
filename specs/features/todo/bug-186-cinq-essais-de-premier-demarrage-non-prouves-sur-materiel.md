@@ -51,9 +51,27 @@ parce qu'un relecteur a suivi le chemin de bout en bout. Le correctif qui a suiv
 *(La persistance a déjà été prouvée le 2026-11-17 sur un appareil possédé — reste à la prouver
 depuis l'état vierge.)*
 
+## 📦 Deux essais OTA portés ici par feature-151 (ajoutés le 2026-11-21)
+
+[feature-151](../done/feature-151-signature-de-l-image-ota.md) est **close** : le refus est
+prouvé (4 essais négatifs, 2026-11-17) et l'acceptation aussi (4 déploiements sur 4, chemins
+script **et** page, 2026-11-20/21). ⚠️ **Deux essais n'ont jamais pu être faits sur l'appareil de
+production**, pour la même raison que les cinq ci-dessus : ils exigent un appareil que l'on peut
+casser. Ils atterrissent donc ici.
+
+| Essai | Ce qu'il faut observer | Pourquoi il n'a pas été fait |
+|---|---|---|
+| **F9 — expiration naturelle de l'autorisation temporaire** | Ouvrir l'autorisation de mise à jour non signée, **ne rien en faire**, et vérifier qu'elle se referme **seule à 60 min** (`no_entry` au journal, témoin MQTT → OFF). | Le décompte a été vu décroître, mais l'autorisation a **toujours été consommée par un flash** avant son terme. ⭐ L'expiration est mesurée sur un **horodatage NVS** ([ADR-0125](../../../docs/adr/0125-l-expiration-de-l-interrupteur-de-signature-se-mesure-sur-un-horodatage-nvs.md)) — elle doit donc survivre à un redémarrage, ce qui n'a jamais été vérifié non plus. |
+| **Refus tardifs — liaison image↔manifeste DIVERGENTE** | Envoyer une image dont l'empreinte réelle **ne correspond pas** au manifeste signé, et vérifier le refus en fin de flux (400 texte / 422 `integrity_mismatch`). | Essai **destructif** : il interrompt un flash en cours. ⭐ Le **versant positif** est prouvé (verdicts *liée — divergente : non*, au paramètre d'entrée **et** sur l'empreinte calculée) ; ce qui manque est le versant négatif. |
+
+⚠️ **Ces deux essais ne remettent rien en cause** : ils éprouvent des chemins **livrés et
+revus**, pas des comportements inconnus. ⛔ Ne pas les lire comme une réserve sur la signature OTA.
+
 ## Critères d'acceptation
 - [ ] Les 5 essais sont **mesurés** sur un appareil réinitialisé, et le relevé est écrit ici
 - [ ] ⛔ Tout écart ouvre une fiche de correction — ⚠️ ne pas corriger à la volée dans celle-ci
+- [ ] **F9** — expiration naturelle de l'autorisation à 60 min, relevée au journal (porté par feature-151)
+- [ ] **Refus tardifs** — liaison image↔manifeste divergente refusée en fin de flux (porté par feature-151)
 
 ## Notes pour agent
 - ⛔ **Ne jamais réinitialiser l'appareil de production** pour cette fiche : l'utilisateur a

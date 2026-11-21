@@ -160,7 +160,7 @@ manifeste ni signature, sans que rien ne le signale à l'utilisateur.
   (`:10946`, `:10999`), le message affiché à l'utilisateur
 - `docs/API.md` — contrat de `/check-update` (champs de relais et leur statut)
 - `docs/subsystems/ota-manager.md` — relais `.sig` et garde mémoire
-- `specs/features/doing/feature-151-*.md` — lever la condition C2
+- `specs/features/done/feature-151-*.md` — lever la condition C2
 
 ## Livrables — check-list
 - [ ] A1 — Les deux `.sig` d'une release signée sont relayés de façon reproductible

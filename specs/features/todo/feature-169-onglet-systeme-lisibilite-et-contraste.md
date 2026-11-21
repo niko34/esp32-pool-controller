@@ -6,7 +6,7 @@
 - **Priorité** : normale — ⚠️ **sauf B1 (contraste), qui est de l'accessibilité et vaut haute**
 - **Version cible** : à définir
 - **Dernière mise à jour** : 2026-11-14
-- **Spec(s) liée(s)** : `doing/feature-151-…` (c'est en la testant que l'onglet a été regardé
+- **Spec(s) liée(s)** : `done/feature-151-…` (c'est en la testant que l'onglet a été regardé
   **rendu** pour la première fois) · `done/feature-143-…` (page Produits — **même travers**) ·
   mémoire « Chantier de simplification de l'interface » (direction du 2026-10-09)
 

@@ -2,10 +2,10 @@
 - **ID** : feature-151
 - **Slug** : signature-de-l-image-ota
 - **Type** : feature (sécurité)
-- **Statut** : doing — démarrée le 2026-10-18. ⚠️ **Ne reste ouverte que pour les 2 envois du chemin PAGE de D4** (étape humaine, au navigateur) — tout le reste est livré et prouvé ; voir la section D4 en fin de fiche.
+- **Statut** : **done** — démarrée le 2026-10-18, **close le 2026-11-21**. D4 complet : 4 déploiements sur 4 acceptés, les deux chemins d'envoi prouvés. ⚠️ Deux essais restent **non faits** (F9, refus tardifs) — ils exigent un appareil que l'on peut casser, et sont portés par bug-186 ; voir la fin de fiche.
 - **Priorité** : haute — c'est le seul mécanisme qui satisfait réellement la règle de sécurité n° 6 de `CLAUDE.md`
 - **Version cible** : D1 → 2.87.0 · D3-a → 2.88.0 · D3-b → 2.89.0 · D3-c → 2.90.0 · **D4 → 2.96.1** (déployée et acceptée le 2026-11-20)
-- **Dernière mise à jour** : 2026-11-20
+- **Dernière mise à jour** : 2026-11-21
 - **Spec(s) liée(s)** : [`feature-118`](../done/feature-118-authenticite-de-l-image-ota.md) (empreinte SHA-256, lot A livré — journalise l'intégrité du **transfert**, ne livre PAS l'authenticité d'origine), [`bug-117`](../done/bug-117-upload-ota-sans-verification-d-authentification.md) (garde d'authentification de l'upload)
 
 ## Domaines touchés
@@ -187,9 +187,11 @@ signe chaque envoi et refuse d'en faire sans outillage. Documentation à jour :
 [`docs/subsystems/ota-manager.md`](../../../docs/subsystems/ota-manager.md#d1--authenticite-par-signature-journalise-seulement-feature-151-verdict-security-reviewer-p1),
 [`docs/UPDATE_GUIDE.md`](../../../docs/UPDATE_GUIDE.md#signature-des-envois-ota-feature-151-d1),
 [ADR-0120](../../../docs/adr/0120-signature-rsa-du-manifeste-ota-verifiee-avant-refus.md).
-⛔ **Spec NON déplacée vers `done/`** : D2 (preuve terrain) à **D4** restent à livrer avant que la
-feature ne satisfasse réellement la règle de sécurité n° 6 de `CLAUDE.md`.
-⚠️ *Disait « à D5 » — ⛔ D5 est annulé depuis le 2026-11-17 (plus de plancher).*
+✅ ~~⛔ **Spec NON déplacée vers `done/`** : D2 (preuve terrain) à **D4** restent à livrer avant que la
+feature ne satisfasse réellement la règle de sécurité n° 6 de `CLAUDE.md`.~~
+**LEVÉ le 2026-11-21** : D2, D3-a, D3-b, D3-c et D4 sont livrés et prouvés — voir
+« D4 EST COMPLET » en fin de fiche. ⚠️ *Disait « à D5 » — ⛔ D5 est annulé depuis le
+2026-11-17 (plus de plancher).*
 
 ### 🔒 Les deux gardes — nommées et placées ici (condition 1 du verdict P1, levée dans la spec)
 
@@ -2626,14 +2628,52 @@ n'est pas une preuve. ⇒ Reconstruction complète, re-signature, puis envoi —
 **sur un déploiement utile** (les retouches de fond du tableau de bord, v2.96.1) plutôt que sur un
 essai artificiel.
 
-### ⛔ Reste ouvert — trois réserves nommées, chacune avec son foyer
+## ✅ D4 — CHEMIN PAGE, PROUVÉ À SON TOUR (2026-11-21)
 
-Le critère de D4 était **« 4 déploiements acceptés »** = (script × page) × (firmware × FS).
-**2 sur 4 sont relevés** — les deux du chemin **script**.
+Les deux envois restants ont été faits **par la carte « Mise à jour manuelle »**, au navigateur,
+avec la **2.96.1 elle-même** (l'image que l'appareil portait déjà ⇒ essai sans conséquence : une
+acceptation le laisse dans son état exact, un refus le laisse sur sa version).
+
+| Horodatage | Ligne du journal persistant |
+|---|---|
+| 09:32:37 | `[feature-151 D3-c] /update — authenticité OTA : **valide — refusé : non**` |
+| 09:32:37 | `[feature-151 D1 B1] liaison manifeste/image (paramètre sha256 (index==0)) : **liée — divergente : non**` |
+| 09:32:40 | `Empreinte SHA-256 de l'image reçue: 01024e74…743f` — celle de `littlefs.bin` |
+| 09:32:40 | `[feature-151 D1 B1] liaison manifeste/image (empreinte calculée (final)) : **liée — divergente : non**` |
+| 09:32:40 | `Mise à jour OTA réussie. Redémarrage...` |
+
+⭐ **Ce que ce verdict prouve, et que le chemin script ne pouvait pas prouver** : le parseur
+**JavaScript** du `.sig` (`data/app.js:11695-11787`) reconstruit **exactement** le même manifeste
+que l'outil en ligne de commande — au caractère près. Un seul `\n` final conservé, un base64
+replié mal relu, et la signature n'aurait plus correspondu. ⚠️ Le diagnostic aurait alors été
+« signature invalide », ⛔ **indistinguable d'une mauvaise clé** — c'est précisément le piège
+identifié par l'audit, et il est refermé par une mesure.
+
+⚠️ **La trace du firmware a tourné une seconde fois**, pour la raison déjà documentée : le second
+envoi a chassé les lignes du premier. L'acceptation reste **établie** — l'appareil a redémarré
+vers 09:32:18, et ⭐ **un refus ne redémarre jamais** : il tombe avant toute écriture flash,
+`uptime` continu, fait établi par les quatre essais négatifs du 2026-11-17.
+
+### ✅ D4 EST COMPLET — 4 déploiements sur 4 acceptés
+
+| | firmware | filesystem |
+|---|---|---|
+| **chemin script** (`ota_update.sh --use-sig`) | ✅ accepté (2026-11-20, trace tournée) | ✅ accepté **+ verdict journalisé** |
+| **chemin page** (carte « Mise à jour manuelle ») | ✅ accepté (2026-11-21, trace tournée) | ✅ accepté **+ verdict journalisé** |
+
+⇒ **La règle de sécurité n° 6 de `CLAUDE.md`** (« toujours vérifier la signature/CRC avant
+flash ») est **réellement satisfaite** : le refus est livré depuis la v2.90.0 et prouvé sur
+quatre essais négatifs, l'acceptation d'une image légitime est prouvée sur les deux chemins
+d'envoi, et la porte de sortie (autorisation temporaire + page de secours) est prouvée en
+conditions réelles, partition `spiffs` détruite.
+
+### ⛔ Reste ouvert — deux réserves, hors périmètre de cette fiche
+
+⚠️ **Elles ne bloquent pas la clôture** : aucune des deux ne porte sur un comportement non
+livré. Elles portent sur deux **essais** qui exigent un appareil que l'on peut casser.
 
 | Réserve | Pourquoi elle reste | Où elle se traite |
 |---|---|---|
-| **D4 — chemin PAGE** (2 envois) | La page réimplémente la grammaire du `.sig` en JS (`data/app.js:11695-11787`, miroir de `src/ota_manifest_logic.cpp`). ⚠️ **Une seconde implémentation est une seconde occasion de se tromper** — un `\n` final conservé dans le manifeste suffirait, et le diagnostic serait « signature invalide », ⛔ indistinguable d'une mauvaise clé. | **Étape humaine** : déposer `.bin` + `.sig` dans la carte « Mise à jour manuelle », au navigateur. Renvoyer la **2.96.1 elle-même** ⇒ essai sans conséquence. |
 | **F9 — expiration naturelle à 60 min** | Jamais observée : le décompte a été vu décroître, mais l'autorisation a toujours été **consommée par un flash** avant son terme. | Appareil **dédié** de [bug-186](../todo/bug-186-cinq-essais-de-premier-demarrage-non-prouves-sur-materiel.md) (début 2027), ou opportunisme : ouvrir l'autorisation et ne **rien** en faire. |
 | **Refus tardifs** (liaison image↔manifeste **divergente**) | Exige un essai **destructif** : envoyer une image dont l'empreinte ne correspond pas au manifeste signé, donc interrompre un flash en cours. ⛔ **Jamais sur l'appareil de production.** | Appareil **dédié** de bug-186. ⭐ Le **versant positif** de cette liaison est désormais prouvé (deux verdicts *liée* ci-dessus) : ce qui manque est le versant négatif. |
 

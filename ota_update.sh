@@ -7,7 +7,7 @@
 # du/des binaire(s), SANS AUCUN envoi réseau et SANS mot de passe admin —
 # c'est le geste de développement qui alimente la carte "Mise à jour
 # manuelle" (celle-ci ne peut pas CONSTRUIRE le manifeste, voir
-# specs/features/doing/feature-151-signature-de-l-image-ota.md, section
+# specs/features/done/feature-151-signature-de-l-image-ota.md, section
 # D1-bis). Réutilise exactement `sign_manifest()`/`compute_sha256()` —
 # même format de fichier que `.claude/commands/release.md` (étape 2ter).
 #

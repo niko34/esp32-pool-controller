@@ -439,7 +439,7 @@
   piège du LF, correction du commentaire inexact sur `kValid`).
 - `docs/API.md` : paramètres `manifest`/`signature` complétés — ce que le verdict `valide` ne
   couvre pas (liaison à l'image), et le diagnostic des octets canoniques sur verdict rejeté.
-- `specs/features/doing/feature-151-signature-de-l-image-ota.md` : les deux gardes nommées et
+- `specs/features/done/feature-151-signature-de-l-image-ota.md` : les deux gardes nommées et
   placées **dans la spec** (condition 1 du verdict `security-reviewer` P1, jusqu'ici levée
   seulement dans `docs/API.md`) ; notes du lot B1.
 - `docs/UPDATE_GUIDE.md` : nouvelle procédure « Signature des envois OTA » — la phrase de passe
@@ -1819,7 +1819,7 @@ au **second** redémarrage.
   empreinte non conforme reste refusée comme depuis feature-026. `/update` est désormais au
   **même niveau d'obligation** que `/download-update` ; la nature de la preuve (fournie par
   l'appelant) ne change pas — toujours pas une signature, voir
-  [feature-151](specs/features/doing/feature-151-signature-de-l-image-ota.md).
+  [feature-151](specs/features/done/feature-151-signature-de-l-image-ota.md).
 - **Message de refus à deux causes** : il cite d'abord la cause la plus fréquente en
   pratique (page web en cache, chargée avant le déploiement du filesystem — rechargez-la),
   puis la cause scriptée (ordre des champs multipart). Trouvaille d'une observation
@@ -1867,7 +1867,7 @@ au **second** redémarrage.
   n'intervenait auparavant qu'en toute fin d'upload, après effacement **et réécriture** de
   la partition. **Ce mécanisme prouve l'intégrité du transfert, pas l'authenticité
   d'origine** — la règle de sécurité n° 6 de `CLAUDE.md` reste non satisfaite ; elle le sera
-  par une signature à clé publique, spec de suivi [feature-151](specs/features/doing/feature-151-signature-de-l-image-ota.md)
+  par une signature à clé publique, spec de suivi [feature-151](specs/features/done/feature-151-signature-de-l-image-ota.md)
   ouverte dans ce même lot.
 
 ### Documentation
@@ -1881,7 +1881,7 @@ au **second** redémarrage.
 - [ADR-0081](docs/adr/0081-recensement-du-tas-et-non-livraison-de-la-lecture-de-contenu.md) :
   relecture du 2026-10-10 — le régime R2 reste conditionné, le déclencheur de réévaluation
   se déplace vers feature-151 (signature), pas vers feature-118.
-- `specs/features/doing/feature-151-signature-de-l-image-ota.md` [nouveau] : spec de suivi,
+- `specs/features/done/feature-151-signature-de-l-image-ota.md` [nouveau] : spec de suivi,
   signature à clé publique et plancher de version anti-retour en arrière.
 
 ---

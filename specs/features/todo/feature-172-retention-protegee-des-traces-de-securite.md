@@ -6,7 +6,7 @@
 - **Priorité** : **haute** — c'est ce qui ferme réellement [`bug-112`](../done/bug-112-journal-non-borne-sur-route-protegee.md), clos sur un résidu assumé
 - **Version cible** : à définir
 - **Dernière mise à jour** : 2026-11-16
-- **Spec(s) liée(s)** : [`bug-112`](../done/bug-112-journal-non-borne-sur-route-protegee.md) · [`bug-183`](../done/bug-183-auth-login-echecs-muets-et-comparaison-non-constante.md) · [`feature-151`](../doing/feature-151-signature-de-l-image-ota.md) (la trace des autorisations OTA) · `bug-080` (le critère « 7 jours sans redémarrage ») · [ADR-0125](../../../docs/adr/0125-l-expiration-de-l-interrupteur-de-signature-se-mesure-sur-un-horodatage-nvs.md) · [ADR-0127](../../../docs/adr/0127-le-bornage-du-journal-d-authentification-est-global-par-emetteur.md)
+- **Spec(s) liée(s)** : [`bug-112`](../done/bug-112-journal-non-borne-sur-route-protegee.md) · [`bug-183`](../done/bug-183-auth-login-echecs-muets-et-comparaison-non-constante.md) · [`feature-151`](../done/feature-151-signature-de-l-image-ota.md) (la trace des autorisations OTA) · `bug-080` (le critère « 7 jours sans redémarrage ») · [ADR-0125](../../../docs/adr/0125-l-expiration-de-l-interrupteur-de-signature-se-mesure-sur-un-horodatage-nvs.md) · [ADR-0127](../../../docs/adr/0127-le-bornage-du-journal-d-authentification-est-global-par-emetteur.md)
 
 ## Domaines touchés
 - [ ] Capteurs — [ ] Régulation — [ ] Filtration / Éclairage — [ ] UART / écran
