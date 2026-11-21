@@ -6,7 +6,7 @@
 - **Priorité** : basse
 - **Version cible** : à arrêter
 - **Dernière mise à jour** : 2026-11-18
-- **Spec(s) liée(s)** : [feature-195](../doing/feature-195-langage-visuel-du-tableau-de-bord.md) (relevé sur capture, sorti de son périmètre à dessein)
+- **Spec(s) liée(s)** : [feature-195](../done/feature-195-langage-visuel-du-tableau-de-bord.md) (relevé sur capture, sorti de son périmètre à dessein)
 
 ## Domaines touchés
 - [x] Frontend (`data/`)
@@ -71,3 +71,21 @@ Deux conventions coexistent sur le même écran depuis la v2.96.0.
 - ⚠️ `_fmtPh()` est **le** formateur pH partagé, et `fmtFr()` le formateur générique.
   ⛔ Ne pas en créer un troisième : feature-195 a dû corriger exactement ça en revue
   (deux expressions pour la même consigne pH, divergentes à 7,35).
+
+## 📸 Observé sur l'appareil réel — 2026-11-21
+
+Capture du tableau de bord prise pendant la clôture de
+[feature-195](../done/feature-195-langage-visuel-du-tableau-de-bord.md) : le défaut est visible
+**deux fois sur le même écran, en même temps**, et dans l'état **courant** de la machine — pas
+dans un cas limite à provoquer :
+
+- carte **pH** : « Stock faible (0.3 L) » — à six pixels d'un « 7,3 » à virgule
+- carte **ORP** : « Stock faible (0.0 L) » — à six pixels d'un « 556 » et d'une « consigne 530 mV »
+
+⇒ Deux conventions décimales **sur la même carte**, répétées **sur deux cartes voisines**. Le
+lecteur voit le point et la virgule dans un même coup d'œil. ⚠️ Cela relève la priorité de fait :
+ce n'est pas une occurrence rare, c'est l'écran d'accueil au repos.
+
+⛔ **Le piège à ne pas improviser**, déjà écrit par la revue de code de feature-195 : `fmtFr`
+⛔ **ne doit jamais toucher un `.value` ni un `dataset`** — ce sont des valeurs machine qu'une
+virgule casse (`data/app.js`, `buildPhTargetSegments`).

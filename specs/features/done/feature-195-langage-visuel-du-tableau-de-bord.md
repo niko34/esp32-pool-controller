@@ -2,9 +2,10 @@
 - **ID** : feature-195
 - **Slug** : langage-visuel-du-tableau-de-bord
 - **Type** : feature
-- **Statut** : todo
+- **Statut** : **done**
 - **Priorité** : normale
-- **Version cible** : 2.96.0
+- **Version cible** : 2.96.0 → retouches **2.96.1** (fond) → **2.96.2** (corps des mesures, verdict D2)
+- **Clôturée le** : 2026-11-21, sur jugement de l'utilisateur sur son téléphone
 - **Spec(s) liée(s)** : [feature-153](../done/feature-153-signaux-capteurs-medianne-et-deux-cadences.md) (mandat UX découpé), [feature-164](../done/feature-164-regler-les-valeurs-depuis-les-cartes.md), [feature-147](../done/feature-147-widgets-du-tableau-de-bord-lire-avant-de-chercher.md)
 
 ## Domaines touchés
@@ -176,16 +177,19 @@ Température (mesure + jauge).
 - `docs/adr/NNNN-l-accueil-montre-les-reglages-reglent.md` (titre à arrêter par l'architect)
 
 ## Critères d'acceptation
-- [ ] Sur chaque carte, la mesure est l'élément le plus grand ; vérifié **sur capture**
-- [ ] Au plus **une** action mise en avant par carte ; les autres commandes sont neutres
-- [ ] Les quatre cartes emploient la **même** grammaire d'état
-- [ ] Aucune fonction retirée de l'accueil n'est devenue inatteignable — chaque
-      déplacement est nommé dans la spec avec sa nouvelle adresse
-- [ ] Rendu vérifié à **390 px** et 1024 px, sur captures
-- [ ] Les états hors ligne et « mesures non représentatives » restent lisibles
-- [ ] Tous les libellés utilisateur sont en français
-- [ ] `./build_fs.sh` passe sans dépasser la partition
-- [ ] `pio run` compile sans nouveau warning
+- [x] Sur chaque carte, la mesure est l'élément le plus grand ; vérifié **sur capture** — et
+      ⭐ **au-delà du nécessaire** : le verdict D2 a demandé de la *réduire* (48 → 32 px)
+- [x] Au plus **une** action mise en avant par carte ; les autres commandes sont neutres
+- [x] Les quatre cartes emploient la **même** grammaire d'état (`.dash-pill`, un seul écrivain
+      `setDashPill()` ; garde CI `check_dash_pill_vectors.sh`, 46/46)
+- [x] Aucune fonction retirée de l'accueil n'est devenue inatteignable — table « Ce qui
+      disparaît, et où ça va » ci-dessus ; revue de code : **aucun `id` supprimé**
+- [x] Rendu vérifié à **390 px** et 1024 px, sur captures (D1), puis **sur le téléphone réel** (D2)
+- [x] Les états hors ligne et « mesures non représentatives » restent lisibles (B6 ; le mot
+      d'état de l'exception chimique est conservé)
+- [x] Tous les libellés utilisateur sont en français
+- [x] `./build_fs.sh` passe sans dépasser la partition — **512 Ko**, mesuré en 2.96.2
+- [x] `pio run` compile sans nouveau warning
 
 ## Plan de test manuel
 1. Nominal : filtration en marche, mesures valides — les trois chiffres lisibles à bout de bras.
@@ -964,3 +968,34 @@ verdict du firmware, horodatées, **après** le redémarrage.
 relever un verdict ») reste utile pour une lecture immédiate, mais elle n'est **pas** la seule :
 ⭐ **le journal persistant garde les verdicts en travers des redémarrages.** Corrigé dans le guide
 le 2026-11-21.
+
+---
+
+## ✅ CLÔTURE — 2026-11-21
+
+L'utilisateur a rechargé la page sur son téléphone, avec la 2.96.2 à l'écran. Verdict, mot pour
+mot : **« oui, c'est beaucoup mieux »**. ⇒ **D2 est rempli**, et c'était le seul juge que ce lot
+s'était donné.
+
+### Ce que le lot a réellement produit
+Le tableau de bord **montre** au lieu de **demander** : la mesure domine, une pastille unique dit
+l'état sur les cinq cartes, la couleur ne vit plus que sur la donnée, et ce qui règle est replié
+dans un volet « Modifier » — ⛔ **sans qu'aucune fonction ne disparaisse**.
+
+⭐ **Le signe qui vaut le mieux qu'un critère coché** : le seul reproche du jugement final portait
+sur une mesure **trop** grande. Le défaut d'origine — *« la mesure occupe moins de place que les
+boutons »* — n'est pas seulement corrigé, il a fallu revenir en arrière d'un cran.
+
+### Ce qui sort de la fiche sans mourir avec elle
+
+| Sujet | Où il continue |
+|---|---|
+| Point décimal « Stock faible (0.3 L) » et « pH 7.3 » | [bug-199](../todo/bug-199-deux-conventions-decimales-sur-le-meme-ecran.md) — ⚠️ vu **deux fois sur le même écran** le 2026-11-21 |
+| R1 — l'avertissement C9 n'est plus visible en permanence | **acté non traité**, écrit au CHANGELOG et dans `docs/features/page-dashboard.md` |
+| R2 — volume quotidien | **acté non traité**, idem |
+| 📸 `screenshots/03_Tableau_de_bord.jpg` | ⏳ **étape humaine, encore à faire** — la capture du guide utilisateur est périmée depuis la 2.96.0 |
+
+⚠️ **La capture n'a pas été refaite à la clôture.** Elle ne bloque ni le code ni le déploiement,
+mais le guide utilisateur montre toujours l'ancien tableau de bord — ⛔ ne pas publier de release
+sans l'avoir reprise. Captures 04 à 08 à juger (fond de page changé) ; 01 et 02 inchangées
+(`login.html`, `wifi.html`, `wizard.html` gardent leur fond).

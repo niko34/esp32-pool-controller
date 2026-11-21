@@ -6,7 +6,7 @@
 - **Priorité** : haute
 - **Version cible** : à arrêter
 - **Dernière mise à jour** : 2026-11-18
-- **Spec(s) liée(s)** : [feature-195](../doing/feature-195-langage-visuel-du-tableau-de-bord.md) (trouvé en vérifiant un point laissé ouvert par son étude)
+- **Spec(s) liée(s)** : [feature-195](../done/feature-195-langage-visuel-du-tableau-de-bord.md) (trouvé en vérifiant un point laissé ouvert par son étude)
 
 ## Domaines touchés
 - [x] Filtration / Éclairage

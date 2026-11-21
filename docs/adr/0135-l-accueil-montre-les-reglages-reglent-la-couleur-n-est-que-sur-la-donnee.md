@@ -3,7 +3,7 @@
 - **Statut** : Accepté
 - **Date** : 2026-11-18
 - **Décideurs** : Nicolas + Claude (`ux-ui-designer`, `pool-chemistry`, `architect`)
-- **Spec(s) liée(s)** : [feature-195](../../specs/features/doing/feature-195-langage-visuel-du-tableau-de-bord.md) · [feature-161](../../specs/features/done/feature-161-choisir-le-mode-depuis-les-cartes.md) · [feature-164](../../specs/features/done/feature-164-regler-les-valeurs-depuis-les-cartes.md)
+- **Spec(s) liée(s)** : [feature-195](../../specs/features/done/feature-195-langage-visuel-du-tableau-de-bord.md) · [feature-161](../../specs/features/done/feature-161-choisir-le-mode-depuis-les-cartes.md) · [feature-164](../../specs/features/done/feature-164-regler-les-valeurs-depuis-les-cartes.md)
 
 ## Contexte
 
