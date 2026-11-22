@@ -503,7 +503,7 @@
   // de l'objet regulation_defaults servi par /get-config (source unique
   // firmware). Ce module ne porte que les libellés/unités d'affichage.
   const kRegulationResetFields = [
-    { key: "ph_target",               label: "Consigne pH",                          fmt: (v) => `${Math.round(Number(v) * 100) / 100} pH` },
+    { key: "ph_target",               label: "Consigne pH",                          fmt: (v) => `${_fmtPh(Number(v))} pH` },
     { key: "orp_target",              label: "Consigne ORP",                         fmt: (v) => `${Math.round(Number(v))} mV` },
     { key: "ph_limit_minutes",        label: "pH — durée max d'injection",           fmt: (v) => `${v} min/h` },
     { key: "orp_limit_minutes",       label: "ORP — durée max d'injection",          fmt: (v) => `${v} min/h` },
@@ -5061,11 +5061,14 @@
 
   // Texte « Trop bas/élevé » — factorisé (pH et ORP ne diffèrent que par la
   // tolérance, l'arrondi et l'unité).
-  function outOfRangeText(value, target, tol, round, unit) {
+  function outOfRangeText(value, target, tol, round, unit, show) {
     if (value == null || isNaN(value)) return null;
     const v = round(value), lo = round(target - tol), hi = round(target + tol);
-    if (v < lo) return `Trop bas (${v}${unit})`;
-    if (v > hi) return `Trop élevé (${v}${unit})`;
+    // Affichage seulement : `v` reste un nombre pour les comparaisons ci-dessus.
+    // `show` est INJECTÉ (_fmtPh pour le pH, String pour l'ORP) : le format est un
+    // contrat du capteur, jamais déduit de la valeur (« 6,0 » et non « 6 »).
+    if (v < lo) return `Trop bas (${show(v)}${unit})`;
+    if (v > hi) return `Trop élevé (${show(v)}${unit})`;
     return null;
   }
 
@@ -5127,20 +5130,20 @@
   // `remKey`/`thrKey` : seuls les NOMS DE CHAMP diffèrent entre pH et ORP (et
   // ne suivent pas tous le même gabarit, ex. max_chlorine_ml_per_day) — d'où
   // ces paramètres plutôt qu'un simple préfixe `${sensor}_`.
-  function buildSensorSegments(sensor, target, tol, round, unit, dailyMlKey, maxMlKey, remKey, thrKey) {
+  function buildSensorSegments(sensor, target, tol, round, unit, show, dailyMlKey, maxMlKey, remKey, thrKey) {
     const segs = measureStateSegments(sensor, latestSensorData);
     const v = latestSensorData?.[sensor];
     const ok = latestSensorData !== null && measuresAreValid(latestSensorData);
     if (ok && (v == null || isNaN(v))) {
       segs.push({ priority: 0, variant: 'danger', text: 'Capteur indisponible' });
     }
-    segs.push(...dosingLimitSegments(sensor, ok ? outOfRangeText(v, target, tol, round, unit) : null));
+    segs.push(...dosingLimitSegments(sensor, ok ? outOfRangeText(v, target, tol, round, unit, show) : null));
     const cumul = dailyCumulSegment(latestSensorData?.[dailyMlKey], window._config?.[maxMlKey] ?? 0,
       latestSensorData?.[`${sensor}_limit_reached`] === true);
     if (cumul) segs.push(cumul);
     const rem = latestSensorData?.[remKey], thr = latestSensorData?.[thrKey];
     if (rem != null && thr != null && rem <= thr && thr > 0) {
-      segs.push({ priority: 4, variant: 'warning', text: `Stock faible (${(rem / 1000).toFixed(1)} L)` });
+      segs.push({ priority: 4, variant: 'warning', text: `Stock faible (${fmtFr(rem / 1000, 1)} L)` });
     }
     // Décompte d'injection — relocalisé tel quel (segment neutre, faible
     // priorité). Décompte stabilisation/pause mélange — RESTAURÉ tel quel
@@ -5195,7 +5198,7 @@
     const measuresOk = measuresAreValid(latestSensorData);
 
     // Badge pH — assemblé par buildSensorSegments() (factorisé avec ORP)
-    const phSegments = buildSensorSegments('ph', window._config?.ph_target ?? 7.2, 0.2, v => +v.toFixed(1), '',
+    const phSegments = buildSensorSegments('ph', window._config?.ph_target ?? 7.2, 0.2, v => +v.toFixed(1), '', _fmtPh,
       'ph_daily_ml', 'max_ph_ml_per_day', 'ph_remaining_ml', 'ph_alert_threshold_ml');
     const phBadge = composeSensorBadge(phSegments);
     setBadge('ph-sensor-badge', phBadge.variant, phBadge.segments);
@@ -5205,7 +5208,7 @@
     // ORP en cours (510-540 mV stable jusqu'au 28/09, puis décroissance
     // monotone jusqu'à 74 mV, minimum −46 : jamais « Capteur indisponible »,
     // un « Trop bas » orange pendant dix jours sans cette règle).
-    const orpSegments = buildSensorSegments('orp', window._config?.orp_target ?? 650, 150, Math.round, ' mV',
+    const orpSegments = buildSensorSegments('orp', window._config?.orp_target ?? 650, 150, Math.round, ' mV', String,
       'orp_daily_ml', 'max_chlorine_ml_per_day', 'orp_remaining_ml', 'orp_alert_threshold_ml');
     const orpBadge = composeSensorBadge(orpSegments);
     setBadge('orp-sensor-badge', orpBadge.variant, orpBadge.segments);
@@ -5328,8 +5331,8 @@
         if (pct < 10) bar.classList.add('is-critical');
         else if (thresholdMl > 0 && remainingMl <= thresholdMl) bar.classList.add('is-low');
       }
-      if (remEl) remEl.textContent = (remainingMl / 1000).toFixed(1) + ' L';
-      if (totEl) totEl.textContent = hasContainer ? (containerMl / 1000).toFixed(1) : '--';
+      if (remEl) remEl.textContent = fmtFr(remainingMl / 1000, 1) + ' L';
+      if (totEl) totEl.textContent = hasContainer ? fmtFr(containerMl / 1000, 1) : '--';
 
       if (status) {
         const isLow = thresholdMl > 0 && remainingMl <= thresholdMl;
@@ -6200,7 +6203,7 @@
         // Ce texte est recalculé à CHAQUE RENDU : il ne se périme pas, à la
         // différence des causes de garde latchées du firmware (objet du
         // reste de cette spec).
-        return `Chloration suspendue : pH ${ph.toFixed(1)} — le chlore y est peu actif. Faire baisser le pH d'abord.`;
+        return `Chloration suspendue : pH ${_fmtPh(ph)} — le chlore y est peu actif. Faire baisser le pH d'abord.`;
       }
     }
     const effectiveDailyMl = _rescueEffectiveDailyMl(cfg || {});
@@ -8414,11 +8417,11 @@
     // feature-061 it. 2 : température gatée par la validité des mesures
     if (mTemp) {
       mTemp.textContent = (measuresAreValid(json) && json.temperature != null && !isNaN(json.temperature))
-        ? json.temperature.toFixed(1) : "--";
+        ? fmtFr(json.temperature, 1) : "--";
     }
     if (mPh) {
       mPh.textContent = (json.ph != null && !isNaN(json.ph))
-        ? (Math.round(json.ph * 10) / 10).toFixed(1) : "--";
+        ? _fmtPh(Math.round(json.ph * 10) / 10) : "--";
     }
     if (mOrp) {
       mOrp.textContent = (json.orp != null && !isNaN(json.orp))
@@ -8625,8 +8628,8 @@
     const ageMs = json?.phSlopeAgeMs;
     const calPoints = json?.phCalPoints;
 
-    const fmtPct = (v) => (v == null || isNaN(v)) ? '--' : `${Number(v).toFixed(1)} %`;
-    const fmtMv = (v) => (v == null || isNaN(v)) ? '--' : `${Number(v).toFixed(2)} mV`;
+    const fmtPct = (v) => (v == null || isNaN(v)) ? '--' : `${fmtFr(v, 1)} %`;
+    const fmtMv = (v) => (v == null || isNaN(v)) ? '--' : `${_fmt2(Number(v))} mV`;
 
     const acidPastille = $("#ph-probe-acid-pastille");
     const basePastille = $("#ph-probe-base-pastille");
@@ -8768,7 +8771,7 @@
 
   function _fmtFilterVal(prefix, v) {
     if (!_filterRawIsValid(v)) return '--';
-    return prefix === 'orp' ? `${Math.round(v)} mV` : Number(v).toFixed(2);
+    return prefix === 'orp' ? `${Math.round(v)} mV` : _fmt2(Number(v));
   }
 
   function _filterAgeText(prefix) {
@@ -9043,6 +9046,46 @@
     return code === 2 || code === 7 || code === 24 || code === 25 || code === 26;
   }
 
+  // bug-199 — normalisation À L'AFFICHAGE du texte firmware CITÉ (décision utilisateur :
+  // « uniquement pour les valeurs de capteurs : pH, ORP, température »).
+  //
+  // POURQUOI une TABLE de motifs ancrés et PAS une règle de forme : on ne convertit que ce
+  // qu'on SAIT être une valeur de capteur. Une règle « tout nombre à 1-2 décimales » devine :
+  // un pourcentage ou un débit serait converti aussi (reprise utilisateur du 2026-11-22).
+  // POURQUOI ici et pas dans src/ : le serveur émet un format CANONIQUE (point), la
+  // présentation localise — corriger le firmware figerait une convention française à la source.
+  // 🔴 LA LIMITE : si le firmware REFORMULE un message, le motif ne le reconnaît plus et la
+  // conversion s'arrête EN SILENCE (le point revient). ⇒ tools/check_dose_guard_text_parity.sh
+  // lit les chaînes réelles de src/pump_controller.cpp et exige qu'un motif les reconnaisse
+  // encore, et qu'aucun motif ne soit orphelin. Tout texte inconnu sort INCHANGÉ.
+  // Pas de lookbehind `(?<!…)` (Safari < 16.4 : SyntaxError = toute la page morte).
+  // Le sentinelle extrait ce bloc entre les deux ancres : une entrée = [motif, remplacement].
+  // ⚠️ LIMITE À CONNAÎTRE (revue 2026-11-22) : la sentinelle
+  // tools/check_dose_guard_text_parity.sh garantit la parité DANS LE DÉPÔT,
+  // ⛔ pas SUR L'APPAREIL. Le firmware et le système de fichiers se déploient
+  // SÉPARÉMENT (`ota-firmware` / `ota-fs`) : envoyer l'un sans l'autre peut
+  // faire réapparaître un point à l'écran AVEC UNE CI VERTE.
+  // ⭐ Symptôme bénin (un séparateur décimal, rien ne casse) — ⛔ mais à ne pas
+  // laisser croire acquis.
+  // >>> FIRMWARE-TEXT-MOTIFS:DEBUT
+  const _FIRMWARE_TEXT_MOTIFS = [
+    [/^(pH brut au-dessus de la butée de sécurité \()(\d{1,2})\.(\d{1,2})(?![\d.])/, '$1$2,$3'],
+    [/^(pH au-dessus du plafond de sécurité \()(\d{1,2})\.(\d{1,2})(?![\d.])/, '$1$2,$3'],
+    [/^(Vérifiez l'offset pH : brut sous )(\d{1,2})\.(\d{1,2})(, corrigé au-dessus de )(\d{1,2})\.(\d{1,2})(?![\d.])/, '$1$2,$3$4$5,$6'],
+    [/^(pH sous le plancher de sécurité \()(\d{1,2})\.(\d{1,2})(?![\d.])/, '$1$2,$3'],
+    [/^(pH brut en butée haute \(butée )(\d{1,2})\.(\d{1,2})(?![\d.])/, '$1$2,$3'],
+    [/^(pH trop élevé \(seuil )(\d{1,2})\.(\d{1,2})(?![\d.])/, '$1$2,$3']
+  ];
+  // <<< FIRMWARE-TEXT-MOTIFS:FIN
+  function _citeFirmwareText(text) {
+    if (!text || text.indexOf('.') < 0) return text; // rien à faire, aucune allocation
+    for (let i = 0; i < _FIRMWARE_TEXT_MOTIFS.length; i++) {
+      const m = _FIRMWARE_TEXT_MOTIFS[i];
+      if (m[0].test(text)) return text.replace(m[0], m[1]);
+    }
+    return text; // formulation inconnue : INCHANGÉE
+  }
+
   // Traduit le couple (code, texte) servi pour `prefix` en { code, label, tone }.
   // SÉMANTIQUE STRICTE des états du champ code (clé absente ≠ null ≠ 0) :
   //   0 ou null → aucun refus en cours, mesuré et affirmé par le firmware ;
@@ -9058,7 +9101,7 @@
     const raw = json[prefix + 'DoseBlockedReason'];
     const text = (typeof raw === 'string') ? raw.trim() : '';
     if (code === undefined) {
-      return { code: undefined, label: text, tone: text ? 'unknown' : 'none' };
+      return { code: undefined, label: _citeFirmwareText(text), tone: text ? 'unknown' : 'none' };
     }
     if (code === null || code === 0) return { code: 0, label: '', tone: 'none' };
     if (code === DOSE_BLOCK_CODE_GUARD) {
@@ -9074,7 +9117,7 @@
       // simple redémarrage (constaté en production le 2026-10-05, v2.55.0).
       const g = DOSE_BLOCK_CODES[code];
       const guardTone = (prefix === 'orp' && g && g.toneOrp) ? g.toneOrp : 'fault';
-      return { code, label: text || 'Sécurité pH/ORP active', tone: guardTone };
+      return { code, label: _citeFirmwareText(text) || 'Sécurité pH/ORP active', tone: guardTone };
     }
     // feature-139 (v2.62.0, lot B) : code 18 — libellé DÉTERMINISTE calculé
     // depuis measures_stab_elapsed_s (cf. _measuresWaitText ci-dessus), jamais
@@ -9702,7 +9745,7 @@
           // calibration/diagnostic (filter-sub, updateCalibrationReadouts) ne sont PAS gatées.
           if (measuresAreValid(json) && json.ph != null && typeof json.ph === "number" && !isNaN(json.ph)) {
             // Arrondi à 1 décimale, cohérent avec le tableau de bord (updateDashboardMetrics).
-            phCurrentValue.textContent = (Math.round(json.ph * 10) / 10).toFixed(1);
+            phCurrentValue.textContent = _fmtPh(Math.round(json.ph * 10) / 10);
           } else {
             phCurrentValue.textContent = "--";
           }
@@ -9735,7 +9778,7 @@
         {
           let tempText = "--";
           if (json.temperature != null && typeof json.temperature === "number" && !isNaN(json.temperature)) {
-            tempText = json.temperature.toFixed(1) + " °C";
+            tempText = fmtFr(json.temperature, 1) + " °C";
           }
           if (tempCurrentValue) {
             if (tempCurrentLabel) tempCurrentLabel.textContent = "Température actuelle";
@@ -9826,7 +9869,7 @@
       }
       const offset = cfg.temp_calibration_offset;
       headerText = "Calibré · " + d.toLocaleString("fr-FR");
-      if (offset != null && !isNaN(offset)) headerText += ` (offset ${offset > 0 ? "+" : ""}${offset.toFixed(1)} °C)`;
+      if (offset != null && !isNaN(offset)) headerText += ` (offset ${offset > 0 ? "+" : ""}${fmtFr(offset, 1)} °C)`;
     } else {
       cls = "chip--probe-unknown";
       label = "Non calibré";
@@ -9967,15 +10010,15 @@
 
           // Dashboard
           const mTemp = $("#m-temp");
-          if (mTemp) mTemp.textContent = correctedTemp.toFixed(1);
+          if (mTemp) mTemp.textContent = fmtFr(correctedTemp, 1);
           const mTime = $("#m-time");
           if (mTime) mTime.textContent = nowLabel;
 
           // Page température
           const tempCurrentValue = $("#temp_current_value");
-          if (tempCurrentValue) tempCurrentValue.textContent = correctedTemp.toFixed(1) + " °C";
+          if (tempCurrentValue) tempCurrentValue.textContent = fmtFr(correctedTemp, 1) + " °C";
           const tempCalLiveValue = $("#temp_cal_live_value");
-          if (tempCalLiveValue) tempCalLiveValue.textContent = correctedTemp.toFixed(1) + " °C";
+          if (tempCalLiveValue) tempCalLiveValue.textContent = fmtFr(correctedTemp, 1) + " °C";
 
           // Invalider le timestamp pour forcer le rechargement
           lastSensorDataLoadTime = 0;
@@ -10175,7 +10218,7 @@
     const phMid = $("#cal-ph-mid-readout");
     const phLow = $("#cal-ph-low-readout");
     const phV = phCalibrationActive ? calSmoothed("ph", phRaw) : phRaw;
-    const phStr = (phV != null) ? phV.toFixed(2) : "--";
+    const phStr = (phV != null) ? _fmt2(phV) : "--";
     if (phMid && phActive <= 1) phMid.textContent = phStr;   // figé si étape mid (1) franchie
     if (phLow && phActive <= 3) phLow.textContent = phStr;   // figé si étape low (3) franchie
 
@@ -11256,7 +11299,7 @@
     const btnId = step === "mid" ? "btn-cal-ph-mid" : "btn-cal-ph-low";
     const otherBtnId = step === "mid" ? "btn-cal-ph-low" : "btn-cal-ph-mid";
     const roId = step === "mid" ? "cal-ph-mid-readout" : "cal-ph-low-readout";
-    const stepLabel = step === "mid" ? "pH 7.0" : "pH 4.0";
+    const stepLabel = step === "mid" ? "pH 7,0" : "pH 4,0";
     const btn = $("#" + btnId);
     const originalLabel = btn ? btn.textContent : "Calibrer";
     // feature-159 (contre-visite) : passe par _calIsPtsKnown — c'était la
@@ -11376,8 +11419,8 @@
     // de bord → lien simple (_calRestartPoint), pas de confirmation.
     $("#btn-recal-ph-mid")?.addEventListener("click", async () => {
       const ok = await confirmDialog({
-        title: "Recalibrer le point 7.0",
-        message: "Recalibrer ce point efface aussi le point 4.00 sur la sonde : les deux seront à refaire. Il n'existe pas de retour en arrière.",
+        title: "Recalibrer le point 7,0",
+        message: "Recalibrer ce point efface aussi le point 4,00 sur la sonde : les deux seront à refaire. Il n'existe pas de retour en arrière.",
         confirmLabel: "Refaire les 2 points",
         cancelLabel: "Annuler",
         danger: true,
@@ -13114,7 +13157,7 @@
       const rows = sondes.map((s, idx) => {
         const addr = String(s.address || "").toUpperCase();
         const tempStr = (typeof s.temperature === "number" && !isNaN(s.temperature))
-          ? `${s.temperature.toFixed(1)} °C`
+          ? `${fmtFr(s.temperature, 1)} °C`
           : "—";
         const role = s.role || "unknown";
 
@@ -13480,7 +13523,7 @@
 
   function _formatSeriesStatsText(stats, decimals) {
     if (!stats || stats.n === 0) return "—";
-    const f = (v) => v.toFixed(decimals);
+    const f = (v) => fmtFr(v, decimals);
     return `min ${f(stats.min)} · max ${f(stats.max)} · moy ${f(stats.avg)}`;
   }
 
@@ -13578,9 +13621,9 @@
       { color: TRACE_COLOR_RAW,        label: "pH brut",    stats: seriesStats(phRaw),  decimals: 2 },
       { color: TRACE_COLOR_MEDIAN,     label: "pH médiane", stats: seriesStats(phMed),  decimals: 2 },
       { color: TRACE_COLOR_PH_SMOOTH,  label: "pH lissé",   stats: seriesStats(phFilt), decimals: 2 },
-      { color: TRACE_COLOR_RAW,        label: "ORP brut",    stats: seriesStats(orpRaw),  decimals: 1 },
-      { color: TRACE_COLOR_MEDIAN,     label: "ORP médiane", stats: seriesStats(orpMed),  decimals: 1 },
-      { color: TRACE_COLOR_ORP_SMOOTH, label: "ORP lissé",   stats: seriesStats(orpFilt), decimals: 1 }
+      { color: TRACE_COLOR_RAW,        label: "ORP brut",    stats: seriesStats(orpRaw),  decimals: 0 },
+      { color: TRACE_COLOR_MEDIAN,     label: "ORP médiane", stats: seriesStats(orpMed),  decimals: 0 },
+      { color: TRACE_COLOR_ORP_SMOOTH, label: "ORP lissé",   stats: seriesStats(orpFilt), decimals: 0 }
     ]);
 
     _showTraceCharts();
@@ -13653,7 +13696,7 @@
     _setTraceStatsSubtitle(lastTs - firstTs);
     _renderTraceStatsRows($("#trace_stats_rows"), [
       { color: "#7c3aed", label: "pH", stats: seriesStats(phVals), decimals: 2 },
-      { color: "#059669", label: "ORP", stats: seriesStats(orpVals), decimals: 1 }
+      { color: "#059669", label: "ORP", stats: seriesStats(orpVals), decimals: 0 }
     ]);
 
     _showTraceCharts();
@@ -13922,7 +13965,7 @@
       const info = $(`#pump${n}_cal_info`);
       if (info) {
         info.textContent = (calDuty > 0 && calFlow > 0)
-          ? `Amplitude d'impulsion : ${ampPct} % — débit ${calFlow.toFixed(1)} ml/min (${weighed ? "mesuré" : "valeur usine"})`
+          ? `Amplitude d'impulsion : ${ampPct} % — débit ${fmtFr(calFlow, 1)} ml/min (${weighed ? "mesuré" : "valeur usine"})`
           : `Amplitude d'impulsion : ${ampPct} % — débit non caractérisé`;
       }
     });
@@ -14029,7 +14072,7 @@
         const r = await sendConfigDetailed(payload);
         calBtn.disabled = false;
         if (r.ok) {
-          showToast(`Débit pompe ${n} enregistré : ${flow.toFixed(1)} ml/min.`, "success");
+          showToast(`Débit pompe ${n} enregistré : ${fmtFr(flow, 1)} ml/min.`, "success");
           // Rafraîchit la ligne lecture seule depuis get-config : l'indication
           // passe à « mesuré ».
           setTimeout(loadConfig, 500);
@@ -14844,7 +14887,7 @@
       }
       const flow = vol / (wiz.measureDurationS / 60);
       conversionEl.textContent =
-        `${vol} ml en ${fmtMSS(wiz.measureDurationS)} → ≈ ${flow.toFixed(1)} ml/min`;
+        `${String(vol).replace(".", ",")} ml en ${fmtMSS(wiz.measureDurationS)} → ≈ ${fmtFr(flow, 1)} ml/min`;
       // Vraisemblance NON bloquante (attendu ~20-35 ml/min pour ces pompes).
       if (plausibilityEl) plausibilityEl.hidden = (flow >= 20 && flow <= 35);
     }
@@ -14888,7 +14931,7 @@
       const doneText = $("#flow-wizard-done-text");
       if (doneText) {
         doneText.textContent =
-          `Débit enregistré : ${flow.toFixed(1)} ml/min (mesuré). Rebranchez le tuyau d'injection sur le point d'injection.`;
+          `Débit enregistré : ${fmtFr(flow, 1)} ml/min (mesuré). Rebranchez le tuyau d'injection sur le point d'injection.`;
       }
       gotoStep(5);
       setTimeout(loadConfig, 500);

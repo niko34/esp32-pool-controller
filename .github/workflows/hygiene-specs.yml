@@ -661,6 +661,37 @@ jobs:
       - name: Controle des ecritures innerHTML / outerHTML / insertAdjacentHTML / document.write
         run: ./tools/check_no_html_interpolation.sh
 
+  # ubuntu-latest : aucun actions/setup-node nécessaire.
+  decimal-format-guard:
+    name: Aucun formateur a virgule sur une valeur machine (bug-199 D1)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # fmtFr / _fmtPh / _fmt2 / _fmtPhOffset2 ecrivent une virgule : jamais sur un
+      # .value d'input, un dataset ou une valeur CSS (width: 72,4% est ignore en silence).
+      - name: Controle des trois interdits du format decimal
+        run: ./tools/check_decimal_format_guard.sh
+
+      # Vecteurs : largeur de barre CSS valide (M1), valeurs machine relisibles (M2),
+      # aucun point dans les textes (M3), separateur des statistiques (M4), libelle (M6).
+      - name: Vecteurs de la convention decimale
+        run: ./tools/check_decimal_format_vectors.sh
+
+  dose-guard-text-parity:
+    name: Motifs du front et messages de garde du firmware (bug-199)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # Si le firmware reformule une cause de garde, la conversion point -> virgule
+      # s'arreterait en silence : cette sentinelle echoue ferme (message non reconnu,
+      # motif orphelin, fichier absent).
+      - name: Parite des messages de garde pump_controller.cpp et des motifs de app.js
+        run: ./tools/check_dose_guard_text_parity.sh
+
   ota-signature-switch:
     name: Interrupteur de signature OTA - appelant, routes exactes, surface (feature-151 D3-b2, C2/C5/C6/C12)
     runs-on: ubuntu-latest

@@ -812,9 +812,9 @@ Au clic (ou `Enter`/`Espace`), un `<dialog id="ph-probe-modal">` s'ouvre. **Depu
 
 **Groupe « Étalonnage »** — les trois critères qui décident `isPhProbeHealthy()` côté firmware, chacun suivi d'une **pastille** (voir [Les 4 états de pastille](#les-4-états-de-pastille-feature-154) ci-dessous) :
 
-- **Pente acide** — `<id="ph-probe-acid">` au format `99.7 %` (1 décimale). `--` si NaN ou `phCalPoints < 2`. Pastille `#ph-probe-acid-pastille`.
-- **Pente base** — `<id="ph-probe-base">` au format `100.3 %`. Pastille `#ph-probe-base-pastille`.
-- **Décalage zéro** — `<id="ph-probe-zero">` au format `-0.89 mV` (2 décimales). `--` si firmware EZO ancien ne le rapporte pas. Pastille `#ph-probe-zero-pastille`.
+- **Pente acide** — `<id="ph-probe-acid">` au format `99,7 %` (1 décimale). `--` si NaN ou `phCalPoints < 2`. Pastille `#ph-probe-acid-pastille`.
+- **Pente base** — `<id="ph-probe-base">` au format `100,3 %`. Pastille `#ph-probe-base-pastille`.
+- **Décalage zéro** — `<id="ph-probe-zero">` au format `-0,89 mV` (2 décimales). `--` si firmware EZO ancien ne le rapporte pas. Pastille `#ph-probe-zero-pastille`.
 
 Suivi de la légende **« Vérifié »** (`<p class="probe-modal__legend">`, `<id="ph-probe-age">`) : libellé lisible « à l'instant », « il y a 14 h », « il y a 2 j 3 h », « jamais ». ⚠️ **Ex-ligne pleine largeur, devenue légende** sous le groupe en v2.70.0 : elle faisait **doublon** avec « Dernière mesure » du second groupe, qui est un **autre âge** (celui de la mesure brute, pas de la pente).
 

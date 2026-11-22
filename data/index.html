@@ -864,7 +864,7 @@
                   <div class="step__number">2</div>
                   <div class="step__content">
                     <div>Attendre que la température brute se stabilise et entrer la température connue</div>
-                    <input type="number" id="temp_reference_value" min="-10" max="50" step="0.1" placeholder="ex: 25.0 °C" style="margin-top: 8px; width: 100%;" />
+                    <input type="number" id="temp_reference_value" min="-10" max="50" step="0.1" placeholder="ex: 25,0 °C" style="margin-top: 8px; width: 100%;" />
                   </div>
                 </div>
                 <div class="step" id="temp_step3">
@@ -1474,20 +1474,20 @@
                   <li class="step is-active" data-step="0" aria-current="step">
                     <span class="step__number">1</span>
                     <div class="step__content">
-                      <div class="step__title">Rincer puis plonger dans la solution pH 7.00</div>
+                      <div class="step__title">Rincer puis plonger dans la solution pH 7,00</div>
                       <button class="btn btn--secondary cal-step-advance" type="button" data-advance="0">C'est fait, continuer →</button>
                     </div>
                   </li>
                   <li class="step is-upcoming" data-step="1">
                     <span class="step__number">2</span>
                     <div class="step__content">
-                      <div class="step__title">Stabiliser puis calibrer le point milieu (pH 7.00)</div>
+                      <div class="step__title">Stabiliser puis calibrer le point milieu (pH 7,00)</div>
                       <div class="readout cal-step-readout" data-readout="ph-mid">
                         <span class="readout__label">Lecture pH (stabilisée)</span>
                         <div class="readout__value" id="cal-ph-mid-readout">--</div>
                         <div class="cal-stability small" id="cal-ph-mid-stability">⏳ Lecture de la sonde en cours — ne calibrez pas encore</div>
                       </div>
-                      <button class="btn btn--primary" type="button" id="btn-cal-ph-mid">Calibrer le point 7.0</button>
+                      <button class="btn btn--primary" type="button" id="btn-cal-ph-mid">Calibrer le point 7,0</button>
                       <!-- feature-159 (A3/C3) : point déjà calibré → geste de RECOMMENCER plutôt
                            qu'un bouton figé sans issue. Asymétrique : recalibrer le milieu efface
                            aussi le point bas sur la sonde (datasheet Atlas) → confirmation franche
@@ -1502,20 +1502,20 @@
                   <li class="step is-upcoming" data-step="2">
                     <span class="step__number">3</span>
                     <div class="step__content">
-                      <div class="step__title">Rincer puis plonger dans la solution pH 4.00</div>
+                      <div class="step__title">Rincer puis plonger dans la solution pH 4,00</div>
                       <button class="btn btn--secondary cal-step-advance" type="button" data-advance="2">C'est fait, continuer →</button>
                     </div>
                   </li>
                   <li class="step is-upcoming" data-step="3">
                     <span class="step__number">4</span>
                     <div class="step__content">
-                      <div class="step__title">Stabiliser puis calibrer le point bas (pH 4.00)</div>
+                      <div class="step__title">Stabiliser puis calibrer le point bas (pH 4,00)</div>
                       <div class="readout cal-step-readout" data-readout="ph-low">
                         <span class="readout__label">Lecture pH (stabilisée)</span>
                         <div class="readout__value" id="cal-ph-low-readout">--</div>
                         <div class="cal-stability small" id="cal-ph-low-stability">⏳ Lecture de la sonde en cours — ne calibrez pas encore</div>
                       </div>
-                      <button class="btn btn--primary" type="button" id="btn-cal-ph-low">Calibrer le point 4.0</button>
+                      <button class="btn btn--primary" type="button" id="btn-cal-ph-low">Calibrer le point 4,0</button>
                       <!-- feature-159 (A3/C3) : point déjà calibré → geste de RECOMMENCER, lien
                            simple (contrairement au point 7.0) : refaire ce point seul n'efface
                            pas le point milieu (datasheet Atlas). -->
@@ -2850,7 +2850,7 @@ action:
                       <div class="grid grid--2" style="margin-top:8px">
                         <label class="field">
                           <span class="field__label">Débit mesuré <span class="unit">(ml/min)</span></span>
-                          <input type="number" id="pump1_cal_flow" min="0.1" max="200" step="0.1" placeholder="ex. 28.0" aria-label="Débit mesuré Pompe 1 (ml/min)" />
+                          <input type="number" id="pump1_cal_flow" min="0.1" max="200" step="0.1" placeholder="ex. 28,0" aria-label="Débit mesuré Pompe 1 (ml/min)" />
                         </label>
                       </div>
                       <div class="row row--gap">
@@ -2875,7 +2875,7 @@ action:
                       <div class="grid grid--2" style="margin-top:8px">
                         <label class="field">
                           <span class="field__label">Débit mesuré <span class="unit">(ml/min)</span></span>
-                          <input type="number" id="pump2_cal_flow" min="0.1" max="200" step="0.1" placeholder="ex. 28.0" aria-label="Débit mesuré Pompe 2 (ml/min)" />
+                          <input type="number" id="pump2_cal_flow" min="0.1" max="200" step="0.1" placeholder="ex. 28,0" aria-label="Débit mesuré Pompe 2 (ml/min)" />
                         </label>
                       </div>
                       <div class="row row--gap">

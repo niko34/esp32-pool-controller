@@ -2,6 +2,24 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [3.0.1] - 2026-11-22
+
+### Fonctionnalités
+- **La virgule devient la convention décimale de l'interface.** Le tableau de bord affichait « 7,2 » et, à quelques pixels, « Stock faible (0.3 L) » : le point et la virgule dans le même coup d'œil, deux fois, sur l'écran d'accueil au repos. 22 affichages sont convertis : litres de bidon, pH, °C, %, mV, ml/min, statistiques min/max/moy, offset de température.
+- **Étalonnage pH** : « pH 7,0 », « solution pH 7,00 » et trois exemples de saisie (« ex: 25,0 °C », « ex. 28,0 ») passent à la virgule.
+- **ORP sans décimale dans la carte Signaux** : les statistiques (min/max/moy) passent de 1 à 0 décimale, comme la valeur affichée. L'ORP est une tension en mV qui bouge par dizaines : « moy 555,8 » promettait une précision que la mesure n'a pas. Le pH garde 2 décimales.
+- **Messages du firmware** : « Trop bas (6,9) » sur les cartes pH/ORP et les **six messages de blocage de dosage** portaient un point ; l'interface les affiche à la virgule. ⚠️ Seuls ces six messages identifiés sont normalisés, tout autre texte du firmware s'affiche tel quel. Le bandeau de bascule manuelle pH (« pente acide 98.5 %, zéro 4.12 mV ») garde ses points. Le firmware continue d'émettre le point, la conversion se fait côté interface.
+  ℹ️ **Ce qui ne change pas** : aucun libellé, aucun autre nombre de décimales que l'ORP ci-dessus. Les champs de saisie et leurs valeurs enregistrées sont intacts, et le journal de développement garde son point.
+
+### Firmware
+- Version seule (`src/version.h`) : aucune ligne de firmware modifiée. Le changement est porté par le système de fichiers.
+
+### Documentation
+- `docs/DESIGN_SYSTEM.md` §4 « Nombres affichés : virgule, quatre interdits », six motifs ancrés pour les textes du firmware, garde `tools/check_dose_guard_text_parity.sh`, garde `tools/check_decimal_format_guard.sh` (CI, volets JS et HTML).
+- `docs/features/page-ph.md`, `page-temperature.md` : exemples de nombres passés à la virgule.
+
+---
+
 ## [3.0.0] - 2026-11-22
 
 ### Fonctionnalités

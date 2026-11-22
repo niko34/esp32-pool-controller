@@ -15,7 +15,7 @@ Depuis feature-035, l'écran adopte le **même agencement que pH/ORP** : un bloc
 
 En état courant, deux zones :
 
-1. **Bloc Statistiques** (`#temperature-card-stats`, sans titre) — **valeur de température courante** en grand (1 décimale, ex. `25.4 °C`), une rangée de chips contenant **un seul chip d'état de calibration** (`#temp-cal-chip`, non cliquable), un **badge d'état de la sonde** (`#temperature-page-badge`, v2.47.1 — masqué par défaut) et **sous la rangée** un bouton **« Calibrer la sonde »** (`#temp_cal_trigger_btn`) toujours accessible — voir [Mode réglage](#mode-réglage-calibration-seule-feature-156-v2720).
+1. **Bloc Statistiques** (`#temperature-card-stats`, sans titre) — **valeur de température courante** en grand (1 décimale, ex. `25,4 °C`), une rangée de chips contenant **un seul chip d'état de calibration** (`#temp-cal-chip`, non cliquable), un **badge d'état de la sonde** (`#temperature-page-badge`, v2.47.1 — masqué par défaut) et **sous la rangée** un bouton **« Calibrer la sonde »** (`#temp_cal_trigger_btn`) toujours accessible — voir [Mode réglage](#mode-réglage-calibration-seule-feature-156-v2720).
    - Il n'y a **pas de chip filtre/mesure** ni de chip sonde : la température n'a ni filtre médiane/EMA ni diagnostic de pente (contrairement à pH/ORP).
 2. **Carte Activation** (`#temperature-card-enable`) — toggle `temperature_enabled` pour masquer la fonctionnalité si aucune sonde n'est installée.
 
@@ -43,7 +43,7 @@ Le chip `#temp-cal-chip` reflète l'état de calibration. Il est mis à jour **c
 | Calibré il y a > 30 j (≤ 6 mois) | « Calibré · le JJ/MM » | `chip--probe-good` (vert) |
 | Calibré il y a > 6 mois | « Calibré · ancien (il y a N mois) » | `chip--probe-warn` (ambré) |
 
-> Le chip remplace les anciens callouts `#temp_cal_date_header` / `#temp_calibrated_status`, supprimés. L'en-tête de la carte de calibration (`#temp_cal_status_header`) reprend la même information en détail (« Calibré · JJ/MM/AAAA hh:mm (offset +0.3 °C) »).
+> Le chip remplace les anciens callouts `#temp_cal_date_header` / `#temp_calibrated_status`, supprimés. L'en-tête de la carte de calibration (`#temp_cal_status_header`) reprend la même information en détail (« Calibré · JJ/MM/AAAA hh:mm (offset +0,3 °C) »).
 
 ## Badge d'état de la sonde (`#temperature-page-badge`, v2.47.1, feature-068)
 

@@ -751,7 +751,7 @@ la sonde, pas du tableau de bord.
       inchangées).
 - [x] Point mineur relevé sur capture : le point décimal de « Stock faible (0.7 L) ». ⇒ **Sorti
       du périmètre et doté de sa propre fiche** par la revue de code :
-      [bug-199](../todo/bug-199-deux-conventions-decimales-sur-le-meme-ecran.md). ⚠️ La capture
+      [bug-199](../doing/bug-199-deux-conventions-decimales-sur-le-meme-ecran.md). ⚠️ La capture
       du 2026-11-21 le montre **deux fois sur le même écran** (pH « Stock faible (0.3 L) » et
       ORP « (0.0 L) ») — à verser à bug-199, qui avait déjà relevé que le cas n'est pas isolé.
 - [ ] R1 (perte de visibilité permanente de l'avertissement C9) et R2 (volume quotidien)
@@ -820,7 +820,7 @@ lot repassant le code 2 en `fault` serait passé **vert** en CI.
 `.compact-value` / `.compact-unit` ne sont pas scopés `.card--status`. Sans conséquence :
 ces classes n'existent que sur les trois héros du tableau de bord. Noté, non corrigé.
 
-### Sorti du périmètre — [bug-199](../todo/bug-199-deux-conventions-decimales-sur-le-meme-ecran.md)
+### Sorti du périmètre — [bug-199](../doing/bug-199-deux-conventions-decimales-sur-le-meme-ecran.md)
 « Stock faible (0.7 L) » garde le **point** décimal à quelques pixels d'un héros à virgule,
 et ce n'est **pas une occurrence isolée** : le bandeau de blocage écrit aussi « pH 7.3 ».
 ⛔ Le balayage contient un piège qui méritait d'être écrit avant d'être improvisé :
@@ -990,7 +990,7 @@ boutons »* — n'est pas seulement corrigé, il a fallu revenir en arrière d'u
 
 | Sujet | Où il continue |
 |---|---|
-| Point décimal « Stock faible (0.3 L) » et « pH 7.3 » | [bug-199](../todo/bug-199-deux-conventions-decimales-sur-le-meme-ecran.md) — ⚠️ vu **deux fois sur le même écran** le 2026-11-21 |
+| Point décimal « Stock faible (0.3 L) » et « pH 7.3 » | [bug-199](../doing/bug-199-deux-conventions-decimales-sur-le-meme-ecran.md) — ⚠️ vu **deux fois sur le même écran** le 2026-11-21 |
 | R1 — l'avertissement C9 n'est plus visible en permanence | **acté non traité**, écrit au CHANGELOG et dans `docs/features/page-dashboard.md` |
 | R2 — volume quotidien | **acté non traité**, idem |
 | 📸 `screenshots/03_Tableau_de_bord.jpg` | ⏳ **étape humaine, encore à faire** — la capture du guide utilisateur est périmée depuis la 2.96.0 |

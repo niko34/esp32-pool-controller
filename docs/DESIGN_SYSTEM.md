@@ -130,6 +130,48 @@ Tout élément interactif (bouton, segment, badge cliquable) déclare au minimum
 | Chargement | `.btn--loading` (spinner, texte masqué) |
 | Donnée absente | `—` (tiret cadratin), jamais `0`, `null` ou une chaîne vide |
 
+### Nombres affichés : virgule, quatre interdits (bug-199, v3.0.1)
+
+Même esprit que le Principe directeur (§1) : un geste, une forme. Ici, ⛔ aucun composant n'est créé.
+
+**Règle.** Tout nombre d'un texte affiché porte une **virgule**. Pour les nombres mis en forme, on emploie **l'un des quatre formateurs du projet**, ⛔ jamais un cinquième :
+
+| Besoin | Formateur |
+|---|---|
+| nombre générique | `fmtFr(value, decimals)` |
+| pH mesuré, 1 décimale | `_fmtPh(v, signed)` |
+| 2 décimales | `_fmt2(v)` |
+| correction pH signée, 2 décimales | `_fmtPhOffset2(v)` |
+
+**Seconde famille, déjà conforme** : `toLocaleString("fr-FR", …)` (une dizaine de sites) sert aux **dates/heures** et aux **grands nombres**. Elle rend déjà la virgule, ⛔ aucun défaut ; mais elle est **dans la garde aussi** : une virgule `fr-FR` dans un `style.width` casse exactement comme `fmtFr`.
+
+⚠️ Motif : feature-195 a dû corriger en revue exactement ce travers, deux expressions pour la même consigne pH, divergentes à 7,35.
+
+**Les quatre interdits, chacun avec sa raison :**
+- ⛔ Jamais sur un `.value` d'`<input>` : la saisie et l'enregistrement cassent **en silence**.
+- ⛔ Jamais sur un `dataset` : la valeur est **relue par le code**.
+- ⛔ Jamais sur une valeur CSS (`bar.style.width = …`) : `width: 72,4%` est **invalide**, le navigateur **ignore la règle** et la barre **reste figée**, sans aucune erreur.
+- ⛔ Jamais sur un **attribut numérique HTML** (`step="0.1"`, `min`, `max`, `value` d'un `<input type=number|range>`) : ce sont des valeurs machine, une virgule les casse.
+
+⚠️ Les deux cas cohabitent sur le même écran (`data/index.html`, étalonnage pH) : « solution pH 7,00 » est un **texte affiché**, converti ; `step="0.1"` à côté est un **attribut machine**, ⛔ intouchable.
+
+**Deux gabarits de pH, voulus.** 1 décimale pour la **mesure** (lue d'un coup d'œil), 2 pour les **repères** et la **correction** (seuils chimiques, lus comme des références). ⛔ Ne pas les fusionner.
+
+**Laissé en point à dessein** : le journal de développement (`debugLog`).
+
+**Textes rédigés par le firmware : le serveur émet le canonique (point), la présentation localise.** Choix de l'utilisateur : garder le format anglophone côté serveur rend une traduction possible, alors que corriger dans `src/` figerait une convention française à la source. Le firmware rédige **six messages de blocage en clair** que l'interface cite verbatim (leurs valeurs ne sont pas énumérables). La conversion se fait par **six motifs ancrés** (`_FIRMWARE_TEXT_MOTIFS`, `data/app.js`) : chacun fixe le libellé réel et ne capture que la valeur. ⛔ **Tout texte non reconnu sort inchangé** : on ne convertit que là où l'on sait ce qu'on convertit.
+
+🔴 Garde-fou obligatoire d'une approche ancrée : `tools/check_dose_guard_text_parity.sh`, câblée en CI. Elle lit les appels réels de `src/pump_controller.cpp`, reconstitue chaque message et le passe dans les motifs réels sous Node. Une reformulation du firmware **fait rougir la CI** au lieu d'arrêter la conversion en silence. Ses limites :
+1. Elle **clampe à 95 octets** comme l'appareil (`kDoseBlockedReasonMaxLen`), sinon elle validerait un texte que l'écran ne reçoit pas. Le message à deux valeurs n'a que 4 octets de marge, sur un texte déjà tronqué en production une fois.
+2. Elle garantit la parité **dans le dépôt, pas sur l'appareil** : firmware et système de fichiers se déploient séparément, envoyer l'un sans l'autre peut refaire apparaître un point avec une CI verte.
+3. **Hors périmètre** : le bandeau de bascule manuelle pH (« pente acide 98.5 %, zéro 4.12 mV ») n'est pas traité. La décision borne la règle à pH, ORP, température, et ce sont des diagnostics de sonde.
+
+**Décimales de l'ORP : zéro.** Les statistiques ORP de la carte Signaux sont à **0 décimale** (4 sites ensemble), comme la valeur affichée. Motif : l'ORP est une tension en mV qui bouge par dizaines, une décimale (« moy 555,8 ») affichait une précision que la mesure n'a pas. Le pH reste à 2 décimales sur ses quatre séries, cohérent avec `_fmtFilterVal`.
+
+**Séparateur de liste.** Quand un gabarit juxtapose des nombres, c'est `·`, ⛔ jamais la virgule : c'est lui qui rend « min 1,2 · max 3,4 · moy 2,3 » non ambigu.
+
+**Règle opposable** : `tools/check_decimal_format_guard.sh`, câblée en CI (job `decimal-format-guard`). Deux volets : `data/*.js` (formateurs et `toLocaleString` sur `.value`, `dataset`, CSS) et `data/*.html` (virgule dans les attributs numériques). ⚠️ Limite assumée : la garde est **syntaxique**, elle ne voit **pas** un formateur passé par une variable intermédiaire (`const t = fmtFr(v,1); el.value = t;`).
+
 ## 5. Catalogue des composants
 
 ### 5.1 Carte de statut — `.card.card--status`
