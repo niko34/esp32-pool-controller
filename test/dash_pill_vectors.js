@@ -41,7 +41,7 @@ const motifs = (() => {
 const cite = grab("function _citeFirmwareText(text) {", "{", "}");
 const variant = grab("function doseBlockVariant(tone, code) {", "{", "}");
 const tone = grab("function dashModePillTone(mode, doseTone, doseCode) {", "{", "}");
-const filt = grab("function dashFiltrationTone(forced, frost, running) {", "{", "}");
+const filt = grab("function dashFiltrationTone(forced, running) {", "{", "}");
 // bug-200 : le TEXTE de la pastille (inline dans l'appelant) et le plan du bandeau.
 const chipLine = (src.match(/const suspendChip = [^\n]*;/) || [])[0];
 assert.ok(chipLine, "ligne suspendChip introuvable dans app.js");
@@ -128,11 +128,11 @@ ok(live.dashModePillTone("automatic", "none", 0) === "ok", "json absent => vert"
 // Modes.
 ok(pill("ph", 0, "manual") === "off", "Arrêt => gris");
 ok(pill("ph", 0, "scheduled") === "ok", "Programme => vert");
-// Filtration : forcé = ambre ; hors gel = gris ; sinon vert/gris.
-ok(live.dashFiltrationTone(true, false, false) === "warn", "forcé => ambre");
-ok(live.dashFiltrationTone(true, true, true) === "off", "hors gel => gris");
-ok(live.dashFiltrationTone(false, false, true) === "ok", "en marche => vert");
-ok(live.dashFiltrationTone(false, false, false) === "off", "arrêtée normale => gris");
+// Filtration : forcé = ambre ; sinon vert/gris. Le froid n'a plus de teinte (bug-197).
+ok(live.dashFiltrationTone(true, false) === "warn", "forcé arrêt => ambre");
+ok(live.dashFiltrationTone(true, true) === "warn", "forcé marche => ambre");
+ok(live.dashFiltrationTone(false, true) === "ok", "en marche => vert");
+ok(live.dashFiltrationTone(false, false) === "off", "arrêtée normale => gris");
 
 // ---- bug-200 : arrêt de sécurité (code 26) ---------------------------------
 for (const kind of ["ph", "orp"]) {

@@ -285,6 +285,16 @@ jobs:
       - name: Contrôle des vecteurs de pastille
         run: ./tools/check_dash_pill_vectors.sh
 
+  filtration-state-vectors:
+    name: Vecteurs de la bande eau froide et de l'état de filtration (bug-197)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Contrôle des vecteurs d'état de filtration
+        run: ./tools/check_filtration_state_vectors.sh
+
   log-line-vectors:
     name: Vecteurs du rendu du journal (bug-179)
     runs-on: ubuntu-latest

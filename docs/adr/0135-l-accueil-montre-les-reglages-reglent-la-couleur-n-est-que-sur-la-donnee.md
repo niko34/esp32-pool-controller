@@ -43,7 +43,7 @@ Deux contraintes opposées pèsent sur la correction :
 - ⚠️ **R2 — non fait** : « Volume quotidien » et « Limite de sécurité » partent dans le volet alors qu'en mode Programme ils disent ce que l'appareil va faire.
 - **Un tap de plus** pour changer un mode ou une consigne pH/ORP.
 - **Incohérence provisoire accueil / réglages** : `.mode-select`, `.state-badge`, `.segmented--num` et `.card__option` ont deux apparences (encre sur l'accueil, bleu sur les pages de réglage). C'est un contexte d'emploi déclaré dans `DESIGN_SYSTEM.md`, pas une troisième forme.
-- La puce « Hors gel » passe de l'ambre au **gris**, texte inchangé : ce n'est **pas** un correctif — le libellé annonce toujours une protection qui n'existe pas ([bug-197](../../specs/features/todo/bug-197-le-libelle-hors-gel-annonce-une-protection-qui-n-existe-pas.md)).
+- La puce « Hors gel » passe de l'ambre au **gris**, texte inchangé : ce n'est **pas** un correctif — le libellé annonce toujours une protection qui n'existe pas ([bug-197](../../specs/features/done/bug-197-le-libelle-hors-gel-annonce-une-protection-qui-n-existe-pas.md)).
 
 ### Ce que ça verrouille
 - Tout écran ajouté ou refondu **respecte « la couleur n'est que sur la donnée »** ; les pages de réglage s'aligneront dans un lot ultérieur **si la direction est validée** (hors ligne : `login.html`, `wifi.html`, `wizard.html` gardent leur ancien fond).

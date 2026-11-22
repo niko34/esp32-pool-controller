@@ -3689,7 +3689,14 @@
   // (src/constants.h:2761, hivernage : plus de planning auto en dessous).
   const TEMP_GAUGE_MIN = 0;
   const TEMP_GAUGE_MAX = 40;
-  const TEMP_GAUGE_MARK_LOW = 4;
+  // Seuil d'eau froide : UNE valeur, deux emplois (repère de jauge + bande
+  // « eau froide »). 4 °C = kFiltrationRefTempMinC (src/constants.h:3285), le
+  // point où l'appareil cesse de recalculer le créneau automatique. Le 5,0 en dur
+  // d'avant ne correspondait à aucun comportement de l'appareil. Seuil DUPLIQUÉ
+  // ici plutôt que servi par l'API (choix assumé, bug-197) : si la constante du
+  // firmware change, changer celle-ci.
+  const TEMP_WINTER_MIN_C = 4;
+  const TEMP_GAUGE_MARK_LOW = TEMP_WINTER_MIN_C;
 
   // Dégradé DESCRIPTIF (demande utilisateur) — convention du thermomètre,
   // froid→chaud, AUCUN jugement de valeur : contrairement au pH (dégradé
@@ -4022,9 +4029,9 @@
   }
 
   // Filtration : ambre = état IMPOSÉ par l'utilisateur (Marche/Arrêt forcé) ;
-  // « Hors gel » = gris (le libellé décrit, il ne commande rien — bug-197).
-  function dashFiltrationTone(forced, frost, running) {
-    if (frost) return "off";
+  // sinon vert (en marche) / gris (arrêtée). Le froid n'a PAS de teinte ici :
+  // il a sa propre bande (bug-197).
+  function dashFiltrationTone(forced, running) {
     if (forced) return "warn";
     return running ? "ok" : "off";
   }
@@ -5009,6 +5016,68 @@
     return true;
   }
 
+  // Sonde « eau » non identifiée ? (extrait de updateSensorBadges, bug-197 :
+  // partagé avec la bande « eau froide » — jamais deux expressions du même fait.)
+  // LIMITE ASSUMÉE : `sondes_identified` couvre les DEUX rôles (eau ET
+  // circuit). Dans une installation où seule la sonde « circuit » manque, la
+  // sonde « eau » fonctionne et le badge « figée » sera SUPPRIMÉ à tort. C'est
+  // un défaut CONSERVATEUR — on perd un badge informatif, on n'en invente pas
+  // un faux — et le sens inverse est impossible : le rôle « eau » non assigné
+  // rend toujours `sondes_identified` faux.
+  function isWaterRoleUnknown(data) {
+    const sondesIdentified = data?.sondes_identified;
+    const sondesDetected = data?.sondes_detected;
+    return sondesIdentified === false &&
+      typeof sondesDetected === 'number' && sondesDetected >= 1;
+  }
+
+  // bug-197 : eau froide ? Fonction PURE (ni DOM ni global hors constante).
+  // L'appareil est TÉMOIN du froid, jamais agent : il relève une température, il
+  // ne protège rien. ⛔ Ne dépend PAS de measuresAreValid() pour se taire : pompe
+  // arrêtée, water_present est faux et c'est précisément le cas à signaler.
+  // Se tait si : température absente/NaN, sonde « eau » non identifiée (ce peut
+  // être le coffret), ou sonde figée pompe en marche. Condition sur la valeur
+  // ARRONDIE : on n'écrit jamais « 4,0 °C (sous 4 °C) ». Pas d'hystérésis.
+  function coldWaterState(data, isRunning) {
+    const none = { cold: false, running: !!isRunning, lines: [] };
+    const t = data ? data.temperature : null;
+    // Revue 2026-11-22 : typeof, car `isNaN("")` et `isNaN(false)` valent FAUX
+    // — sans ce filtre, une valeur vide afficherait « Eau à 0,0 °C ».
+    if (typeof t !== 'number' || isNaN(t)) return none;
+    if (isWaterRoleUnknown(data)) return none;
+    if (data.tempFrozenAlarm === true && measuresAreValid(data)) return none;
+    const rounded = Math.round(Number(t) * 10) / 10;
+    if (!(rounded < TEMP_WINTER_MIN_C)) return none;
+    const temp = fmtFr(rounded, 1);
+    const seuil = fmtFr(TEMP_WINTER_MIN_C, 0);
+    const first = isRunning
+      ? `Eau à ${temp} °C (sous ${seuil} °C).`
+      : `Eau des tuyaux à ${temp} °C (sous ${seuil} °C).`;
+    return { cold: true, running: !!isRunning, lines: [first, 'Le gel reste à votre charge.'] };
+  }
+
+  // bug-197 : ÉCRIVAIN UNIQUE des deux bandes « eau froide » (carte Filtration
+  // du tableau de bord + haut de la page Filtration). Hors ligne : absentes.
+  // Appelé par updateFiltrationBadges(), HORS du gate measuresOk.
+  function renderColdWaterNotice(data, isRunning) {
+    const st = isAppOffline() ? { cold: false, lines: [] } : coldWaterState(data, isRunning);
+    ['filtration-frost-badge', 'filtration-page-frost-badge'].forEach((id) => {
+      const el = document.getElementById(id);
+      if (!el) return;
+      if (!st.cold) {
+        if (el.style.display !== 'none') el.style.display = 'none';
+        return;
+      }
+      el.classList.add('sensor-badge--warning', 'sensor-badge--stacked');
+      st.lines.forEach((txt, i) => {
+        const span = el.children[i] || el.appendChild(document.createElement('span'));
+        if (span.textContent !== txt) span.textContent = txt;
+      });
+      while (el.children.length > st.lines.length) el.lastChild.remove();
+      el.style.display = '';
+    });
+  }
+
   // feature-061 : segments d'état mesure partagés dashboard / pages pH-ORP.
   // Recalculés à chaque push WS, AUCUN tick JS seconde. `sensor` réservé pour
   // d'éventuels textes différenciés.
@@ -5254,16 +5323,7 @@
     // exactement celle de la pastille #sondes-chip existante (identification
     // incomplète avec au moins une sonde sur le bus), donc l'appareil dit déjà
     // la même chose au même moment, au même endroit.
-    // LIMITE ASSUMÉE : `sondes_identified` couvre les DEUX rôles (eau ET
-    // circuit). Dans une installation où seule la sonde « circuit » manque, la
-    // sonde « eau » fonctionne et le badge « figée » sera SUPPRIMÉ à tort. C'est
-    // un défaut CONSERVATEUR — on perd un badge informatif, on n'en invente pas
-    // un faux — et le sens inverse est impossible : le rôle « eau » non assigné
-    // rend toujours `sondes_identified` faux.
-    const sondesIdentified = latestSensorData?.sondes_identified;
-    const sondesDetected = latestSensorData?.sondes_detected;
-    const waterRoleUnknown = sondesIdentified === false &&
-      typeof sondesDetected === 'number' && sondesDetected >= 1;
+    const waterRoleUnknown = isWaterRoleUnknown(latestSensorData);
     const tempValued = latestSensorData?.temperature != null && !isNaN(latestSensorData.temperature);
     if (latestSensorData !== null && measuresOk && waterRoleUnknown && tempValued) {
       tempSegments.push({ priority: 0, variant: 'danger', text: 'Sonde eau non identifiée' });
@@ -5279,6 +5339,12 @@
     if (measuresOk && !waterRoleUnknown && tempValued &&
         latestSensorData?.tempFrozenAlarm === true) {
       tempSegments.push({ priority: 1, variant: 'warning', text: 'Sonde température figée' });
+    }
+    // bug-197 (B8) : « le gel reste à votre charge » — avec measuresOk cette fois
+    // (sinon la carte dit déjà « -- » et c'est la bande Filtration qui porte).
+    if (measuresOk && !isAppOffline() && coldWaterState(latestSensorData, true).cold) {
+      tempSegments.push({ priority: 2, variant: 'warning',
+        text: `Sous ${fmtFr(TEMP_WINTER_MIN_C, 0)} °C : le gel reste à votre charge.` });
     }
     const tempBadge = composeSensorBadge(tempSegments);
     setBadge('temperature-sensor-badge', tempBadge.variant, tempBadge.segments);
@@ -5819,11 +5885,12 @@
     // du texte de mode — les 4 boutons ne remplacent que les anciens
     // Démarrer/Arrêter, pas cette information.
     // feature-195 : pastille d'état unique (écrite ICI SEULE) + face de la carte.
-    // Ambre = mode FORCÉ (Marche/Arrêt : état imposé) ; « Hors gel » = gris.
+    // Ambre = mode FORCÉ (Marche/Arrêt : état imposé).
     const modeNow = String(config.filtration_mode || 'auto').toLowerCase();
     const forced = modeNow === 'force' || modeNow === 'off';
-    setDashPill("detail-filtration-status", state.text, dashFiltrationTone(forced, state.frost, state.running));
+    setDashPill("detail-filtration-status", state.text, dashFiltrationTone(forced, state.running));
     renderFiltrationFace(config, modeNow, forced);
+    renderColdWaterNotice(latestSensorData, state.running);
     // Card "Contrôle manuel" (page Filtration, hors périmètre feature-147) :
     // badge .pill placé dans .card__head — INCHANGÉ, mis à jour depuis le
     // MÊME `state` que le badge du tableau de bord ci-dessus (synchronisés).
@@ -5883,22 +5950,14 @@
 
   function getFiltrationState(config, data) {
     const isRunning = filtrationRunningOverride !== null ? filtrationRunningOverride : (data && data.filtration_running);
-    const temp = data && data.temperature;
 
-    if (!config) return { text: 'Chargement…', class: 'state-badge--off', pillClass: '', frost: false, running: false };
+    if (!config) return { text: 'Chargement…', pillClass: '', running: false };
 
-    // Température hors gel — `frost` est l'ÉTAT testé par les appelants (pas
-    // le texte affiché, revue code-reviewer : un libellé reformulé un jour ne
-    // doit pas casser silencieusement la logique qui en dépend).
-    if (temp != null && temp < 5.0 && isRunning) {
-      return { text: 'Hors gel', class: 'state-badge--warn', pillClass: 'mid', frost: true, running: true };
-    }
-
+    // « Arrêtée » est un état NORMAL (Auto : chaque nuit) => pastille neutre,
+    // jamais rouge. Le froid n'est PAS dit ici : voir coldWaterState() (bug-197).
     return {
       text: isRunning ? 'En marche' : 'Arrêtée',
-      class: isRunning ? 'state-badge--ok' : 'state-badge--off',
-      pillClass: isRunning ? 'ok' : 'bad',
-      frost: false,
+      pillClass: isRunning ? 'ok' : '',
       running: !!isRunning
     };
   }
@@ -8192,7 +8251,7 @@
     try { renderPhTuneCard(); } catch (e) { console.error('[ph-tune] rendu:', e); }
 
     // === FILTRATION ===
-    // feature-147 : le texte de mode ("Mode Auto"/.../"Hors gel") est géré par
+    // feature-147 : le texte de mode ("Mode Auto"/.../"Horaires suspendus") est géré par
     // updateFiltrationBadges() ci-dessous (un seul calcul, header de carte).
     // feature-164 : la ligne Horaires EN LECTURE SEULE est désormais RESTREINTE
     // à Auto (elle couvrait Auto ET Programme jusqu'ici) — en Programme, les

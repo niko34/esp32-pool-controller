@@ -673,7 +673,7 @@ quand **la pompe tourne**, c'est-à-dire dans le cas **favorable** (l'eau circul
 froid). Le cas **dangereux** — eau froide, pompe à l'arrêt — n'a **jamais** porté le
 moindre signal. ⇒ Passer cette puce au gris ne retire rien ; le vrai défaut est l'absence
 de signal dans l'autre sens, et c'est l'objet de
-[bug-197](../todo/bug-197-le-libelle-hors-gel-annonce-une-protection-qui-n-existe-pas.md).
+[bug-197](../done/bug-197-le-libelle-hors-gel-annonce-une-protection-qui-n-existe-pas.md).
 
 ### B6 confirmé par l'agent d'ergonomie
 Sur pH et ORP, la consigne à droite du héros (« consigne 7,2 », « consigne 530 mV »)

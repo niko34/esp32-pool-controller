@@ -2899,6 +2899,22 @@ input.is-computed:disabled {
   font-size: 12px;
   font-weight: 600;
 }
+/* bug-197 : bande « eau froide » en tête de la page Filtration.
+   ⚠️ PIÈGE : setBadge() fait `el.className = 'sensor-badge sensor-badge--X'`,
+   ce qui EFFACERAIT --page. renderColdWaterNotice() emploie classList.add()
+   pour cette raison — ⛔ ne pas « simplifier » vers setBadge() sans reposer
+   --page. (Revue code-reviewer, 2026-11-22.) */
+.sensor-badge--page { margin-top: 0; margin-bottom: 12px; }
+/* bug-197 — ⚠️ les fonds de .sensor-badge--* sont TRANSLUCIDES : prévus pour une
+   carte BLANCHE. En tête de page, ils se composent sur --bg (bleu-gris) et
+   l'ambre vire à l'olive. MESURÉ sur capture : fond (206,208,200) et contraste
+   5,82:1 sur la page, contre (255,247,225) et 8,49:1 dans une carte — lisible,
+   mais ce n'est plus la MÊME couleur, et le projet interdit qu'un composant
+   partagé change d'aspect selon l'écran. ⇒ Fond OPAQUE identique au rendu en
+   carte. Spécificité 0,2,0 : l'ordre des règles n'entre pas en jeu. */
+.sensor-badge--page.sensor-badge--warning { background: rgb(255, 247, 225); }
+.sensor-badge--page.sensor-badge--danger  { background: rgb(255, 239, 238); }
+.sensor-badge--page.sensor-badge--info    { background: rgb(229, 236, 253); }
 .sensor-badge--danger {
   background: rgba(255, 59, 48, 0.08);
   border-color: rgba(255, 59, 48, 0.25);

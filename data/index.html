@@ -255,6 +255,7 @@
                 </div>
                 <!-- Contexte : « Mode Auto » / « Mode Programme » / « Horaires suspendus ». -->
                 <div class="dash-context" id="detail-filtration-mode">Mode Auto</div>
+                <div class="sensor-badge" id="filtration-frost-badge" style="display:none" role="status" aria-live="polite"></div>
 
                 <!-- Deux DÉROGATIONS sur la face (autre geste que le choix du mode),
                      même chemin setFiltrationRunMode() que le sélecteur à 4 modes
@@ -636,6 +637,7 @@
           </div>
 
           <div id="filtration-content">
+            <div class="sensor-badge sensor-badge--page" id="filtration-page-frost-badge" style="display:none" role="status" aria-live="polite"></div>
             <div class="card" id="filtration-manual-card" style="display:none;">
               <div class="card__head">
                 <h2 class="card__title">Contrôle manuel</h2>

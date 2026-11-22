@@ -2,6 +2,23 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [3.0.2] - 2026-11-22
+
+### Fonctionnalités
+- **L'appareil ne prétend plus protéger du gel (bug-197).** L'ancien libellé de froid sur la carte Filtration laissait croire que l'appareil s'occupait du gel : ce n'était pas le cas, et il disparaissait dès que la pompe s'arrêtait, au pire moment. Il est supprimé. À la place, sous **4 °C**, une **bande ambre** apparaît sur la carte Filtration et en tête de la page Filtration : « Eau à 3,0 °C (sous 4 °C). » (pompe en marche) ou « Eau des tuyaux à 3,0 °C (sous 4 °C). » (pompe arrêtée), puis « Le gel reste à votre charge. ». La carte Température ajoute « Sous 4 °C : le gel reste à votre charge. ».
+- ⚠️ **À retenir** : l'appareil constate la température, il ne gère pas le gel (vidange, bouchons, flotteurs ou circulation restent à la charge du propriétaire). Rien n'est affiché si les sondes de température ne sont pas identifiées ou si l'application est hors ligne.
+- La pastille « Arrêtée » de la page Filtration passe de **rouge** à **grise**, comme sur le tableau de bord : c'est un état normal (en Auto, la pompe s'arrête chaque nuit). Le seuil unique est 4 °C (il y en avait deux, 5 °C à l'écran et 4 °C dans l'appareil).
+
+### Firmware
+- Aucun changement côté ESP32 : interface (`data/`) seulement.
+
+### Documentation
+- [ADR-0141](docs/adr/0141-l-appareil-est-temoin-du-froid-jamais-agent.md) (nouveau) : « l'appareil est témoin du froid, jamais agent » — commander la pompe sous un seuil est refusé (mauvaise grandeur, marche à sec, dosage rouvert).
+- `docs/user/src/guide-utilisation.html` : la phrase sur une « pause anti-gel » (fonction inexistante) est remplacée par l'énoncé de la responsabilité du propriétaire. PDF à régénérer à la release.
+- `docs/features/page-dashboard.md`, `page-filtration.md`, `docs/subsystems/filtration.md`, `docs/DESIGN_SYSTEM.md` (§5.9 : contexte d'emploi « en tête de page » de `.sensor-badge`, fonds opaques).
+
+---
+
 ## [3.0.1] - 2026-11-22
 
 ### Fonctionnalités
@@ -137,7 +154,7 @@
 - Les roues dentées laissent place à des liens « Réglages › » de 44 px ; fond de page plus bleuté, cartes plus arrondies et sans bordure, titres en casse normale, plus de survol.
 - La consigne pH/ORP s'affiche en lecture seule à côté de la mesure, **en mode Auto seulement**.
 - ⚠️ **Pertes assumées** : l'avertissement « consigne pH à la borne haute » n'est plus visible en permanence sur l'accueil (il est dans le volet ; il informe, la protection réelle est le plafond du firmware) ; « Volume quotidien » et « Limite de sécurité » sont dans le volet, y compris en mode Programme (non traité). Un tap de plus pour changer un mode ou une consigne pH/ORP.
-- La pastille « Hors gel » passe de l'ambre au **gris**, texte inchangé — ce n'est **pas** un correctif : le libellé annonce toujours une protection qui n'existe pas (bug-197).
+- La pastille de froid passe de l'ambre au **gris** (corrigé ensuite en 3.0.2 : elle est supprimée, voir bug-197).
 - **Ce lot ne touche que le tableau de bord** : les pages de réglage gardent leur apparence, ainsi que `login.html`, `wifi.html` et `wizard.html` (ancien fond).
 
 ### Firmware

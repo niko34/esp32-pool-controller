@@ -52,7 +52,7 @@ contexte d'origine.
 | Afficher une paire libellé/valeur en lecture seule | `.detail-row` (§5.6) | Les deux |
 | Indiquer un état ponctuel (En marche / Inactif / Calibration requise) | `.state-badge` (§5.7) | Les deux |
 | Visualiser une mesure sur une échelle | `.gauge` (§5.8) | Carte d'accueil |
-| Expliquer pourquoi une mesure n'est pas représentative | `.sensor-badge` (§5.9) | Carte d'accueil |
+| Expliquer pourquoi une mesure n'est pas représentative | `.sensor-badge` (§5.9) | Carte d'accueil · en tête de page (`.sensor-badge--page`) |
 | Alerter sur une condition bloquante ou un risque | `.callout` (§5.10) | Les deux |
 | Réinstaller le filesystem quand l'interface est absente (page autonome, sans `app.css`) | copies **locales** : callout `--info`, sélecteur `.pick`, ligne de version `.ver`, `<progress>`, callout d'échec rouge (§5.21) | **Page de secours embarquée uniquement** — ⛔ jamais un composant partagé |
 | Distinguer deux niveaux de gravité dans un même `.callout`, sans empiler deux encadrés, et séparer l'essentiel du détail | `.callout__eyebrow` + `.callout__lead` + `.callout__more` (§5.10bis) | Page de réglage (pH) — généralisable |
@@ -313,9 +313,13 @@ nommés par grandeur précisément pour empêcher ce mélange.
 ### 5.9 `.sensor-badge`
 Bandeau expliquant pourquoi une mesure n'est pas représentative (ex. « Filtration arrêtée »).
 Variantes `--info` (bleu, état normal), `--warning` (ambre, anomalie), `--danger` (rouge).
-**Contexte** : carte d'accueil, juste sous la jauge. `margin-top:8px`, **aucun
-`margin-bottom`** aujourd'hui — tout bloc placé juste après doit apporter sa propre marge
-haute.
+**Contextes d'emploi déclarés (deux)** :
+1. **Carte d'accueil**, juste sous la jauge (ou, sur la carte Filtration, entre `#detail-filtration-mode` et les boutons : `#filtration-frost-badge`). `margin-top:8px`, **aucun `margin-bottom`** — tout bloc placé juste après doit apporter sa propre marge haute.
+2. **En tête de page** (bug-197) : `#filtration-page-frost-badge`, tout en haut de `#filtration-content`, avec le modificateur **`.sensor-badge--page`** (`margin-top:0`, `margin-bottom:12px`).
+
+🔴 **Enseignement de ce réemploi** : les fonds de `.sensor-badge--*` sont **translucides**, prévus pour une carte **blanche**. En tête de page ils se composent sur `--bg` (bleu-gris) et **l'ambre vire à l'olive** — mesuré : fond `(206,208,200)`, contraste 5,82:1, au lieu de `(255,247,225)` et 8,49:1 en carte. Pas un défaut d'accessibilité (AA passé) mais une **incohérence** : le même composant ne rendait pas la même couleur. ⇒ Règles **opaques** `.sensor-badge--page.sensor-badge--{warning,danger,info}` (spécificité 0,2,0), identiques au rendu en carte. ⚠️ Tout nouvel emploi sur un fond non blanc doit vérifier ce point.
+
+**Emploi « froid » (bug-197)** : variante `--warning`, texte sur deux lignes, nœud permanent `role="status" aria-live="polite"`, masqué par `display:none`. Le verdict est porté par le texte, jamais par la couleur seule.
 
 ### 5.10 `.callout` et variantes (`--info`, `--success`, `--warn`)
 Alerte ou information qui mérite un encadré visible (fond teinté, liseré). Réservé aux
@@ -741,7 +745,7 @@ verdict porté par la couleur seule, §7) :
 | Puce | Sens | Exemples |
 |---|---|---|
 | **Verte** (`data-tone="ok"`) | fonctionnement attendu en cours | En marche · Mode Auto · Mode Programme · À jour · Allumée |
-| **Grise** (`off`, défaut) | repos ou information normale | Arrêtée · Mode Arrêt · En attente · Éteinte · Hors ligne · **Hors gel** |
+| **Grise** (`off`, défaut) | repos ou information normale | Arrêtée · Mode Arrêt · En attente · Éteinte · Hors ligne |
 | **Ambre** (`warn`) | l'appareil s'écarte de son fonctionnement automatique attendu, **et ça demande un regard** | pH/ORP : `doseBlockVariant === 'danger'` · Filtration : mode **forcé** · Température : sonde absente |
 
 ⛔ **Pas d'ambre** pour : filtration arrêtée sur pH/ORP (codes 2, 7, 8, 10-14, marches attendues),
@@ -749,8 +753,6 @@ verdict porté par la couleur seule, §7) :
 (jamais). Aucune autre teinte, **pas de rouge**. Une exception (stock faible, étalonnage, sonde) est une
 **bande** sous la mesure (`.sensor-badge`), jamais une seconde pastille. Libellés ≤ 14 caractères
 (« Température » + « Sonde absente » = 272 px sur 326 utiles à 390 px).
-⚠️ **« Hors gel » passe de l'ambre au gris, texte inchangé** — ce n'est pas un correctif : le libellé
-annonce toujours une protection qui n'existe pas ([bug-197](../specs/features/todo/bug-197-le-libelle-hors-gel-annonce-une-protection-qui-n-existe-pas.md)).
 **Sur pH/ORP**, la pastille porte le **texte du mode** (« Mode Auto / Programme / Arrêt ») — texte gaté
 C5, jamais tronqué ni réduit à la puce ; hors ligne il est conservé (puce grise), les autres cartes
 disent « Hors ligne ».
@@ -760,13 +762,7 @@ disent « Hors ligne ».
 **et** où le mode ne permet pas de le déduire : ⇒ la pastille **refuse de deviner** et nomme le mode.
 ⛔ Ne jamais la faire basculer sur « Allumée » ou « Éteinte » par défaut dans ce cas (règle §4).
 
-⚠️ **Priorité des teintes sur la Filtration, arbitrage à connaître** : « Hors gel » **l'emporte** sur
-« forcé ». Une **Marche forcée** sous 5 °C affiche donc « Hors gel · puce grise », et le signal
-« état imposé par l'utilisateur » **disparaît**. Le cas est atteignable (« Hors gel » exige que la
-pompe tourne, ce qu'une marche forcée garantit). Ça ne **ment** pas — les deux textes diffèrent — mais
-c'est un choix, pas un hasard : le **fait météo** prime sur l'**origine de la commande**.
-⇒ Si [bug-197](../specs/features/todo/bug-197-le-libelle-hors-gel-annonce-une-protection-qui-n-existe-pas.md)
-retire ou renomme « Hors gel », **rejuger cette priorité** au lieu de la reconduire par inertie.
+ⓘ **Le froid n'est plus une teinte de pastille (bug-197).** L'ancien arbitrage de priorité entre l'ancien libellé de froid et « forcé » est **sans objet** : la pastille ne dit plus jamais le froid, il n'y a plus qu'un axe. En Marche forcée à 3 °C on voit : titre « Marche forcée » ambre, pastille « En marche », **et** la bande de froid (§5.9) — aucun signal n'en efface un autre. « Arrêtée » reste **grise** sur l'accueil comme sur la page Filtration (la pastille rouge de la page a été retirée : état normal en Auto). Voir [ADR-0141](adr/0141-l-appareil-est-temoin-du-froid-jamais-agent.md).
 
 #### `.dash-act` — « bouton de dérogation » (Forcer marche / Forcer arrêt / Revenir en Auto)
 **Contexte d'emploi** : **carte d'accueil uniquement** (carte Filtration). Autre geste que le choix du
