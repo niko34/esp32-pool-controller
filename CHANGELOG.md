@@ -2,6 +2,23 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [3.1.2] - 2026-11-22
+
+### Fonctionnalités
+- **Le message de l'en-tête hors ligne change, parce qu'il n'était pas vrai (bug-196).** Quand l'appareil est injoignable, l'en-tête affichait « — Modifications non sauvegardées ». Il affiche maintenant **« Enregistrement impossible »**. ⛔ Le premier message ne consultait **aucune saisie** : sa seule condition d'affichage était la perte de connexion. Il apparaissait donc même quand vous n'aviez rien modifié, et n'était juste que par coïncidence. Le nouveau texte est vrai dans tous les cas où il s'affiche : connexion **perdue** ⇒ rien ne peut être enregistré. ⚠️ Pendant le bref « Connexion… » du chargement, les commandes sont grisées **sans texte** : c'est voulu, mieux vaut un grisage passager que l'on ne commente pas qu'une phrase fausse. Même famille que le correctif de 3.1.1 : on n'affiche pas ce qui n'est pas vrai.
+- **Sur téléphone, la mention ne passe plus sous le bouton menu (☰).** À 390 px le texte était recouvert et illisible ; à 320 px il dépassait de la barre. Hors ligne et sous 500 px, le nom « PoolController » cède sa ligne : ligne 1 = puce + état, ligne 2 = « Enregistrement impossible ». La barre garde sa hauteur de 64 px et l'état **en ligne** n'a pas changé d'un pixel. Au-dessus de 500 px, tout reste sur une ligne, séparé par un tiret.
+- **Accessibilité** : le bouton menu passe de 36 à **44 px** de côté, la taille minimale que le projet s'impose (le glyphe, lui, ne change pas). La couleur d'avertissement de l'en-tête passe de `#b45309` (contraste ~4,7:1) à `--warn` = `#92400e` (~7,0:1) : cet emploi avait été oublié par la migration de contraste.
+- **Le message n'apparaît plus pendant la connexion.** Au chargement d'une page, et après un simple creux réseau, l'application affiche brièvement « Connexion… ». L'ancienne mention s'affichait **déjà là**, alors que l'appareil venait de répondre. Désormais la mention n'apparaît que sur une connexion **réellement perdue**. ⚠️ Le grisage des commandes, lui, ne change pas.
+- ℹ️ **Périmètre réel** : `data/index.html` (1 ligne), `data/app.css`, `data/app.js` (1 ligne) et `src/version.h`. ⚠️ **Envoi firmware ET interface** — un envoi de l'interface seule laisserait l'appareil annoncer la version précédente.
+- ⓘ **Reste ouvert, non traité ici** : l'appareil sait qu'une programmation de filtration a été modifiée sans être enregistrée (`filtrationDirty`) mais ne le dit nulle part. Aucun avertissement de saisie en attente n'existe ; une fiche reste à créer.
+
+### Documentation
+- `docs/DESIGN_SYSTEM.md` §5.28 (nouveau) : contrat de l'en-tête (hauteur 64 px, gouttière réservée au bouton absolu, mention hors ligne, budget de largeur, cible 44×44, couleur `--warn`).
+- `docs/features/page-dashboard.md` : l'en-tête commun n'était décrit nulle part ; section ajoutée.
+- `specs/features/todo/feature-169-…` : B5a (diagnostic du message) et le débordement de l'en-tête sont tranchés par ce lot.
+
+---
+
 ## [3.1.1] - 2026-11-22
 
 ### Fonctionnalités

@@ -248,15 +248,34 @@ select:focus-visible {
   gap: 8px;
 }
 
+/* ⚠️ `overflow` / `text-overflow` ne tiennent QUE parce que .topbar__status est
+   `display: flex` : la blockification de ses enfants rend ces propriétés
+   applicables. ⛔ Repasser .topbar__status en non-flex ferait tomber ce filet
+   EN SILENCE (le `display: inline` ci-dessous ne les honore pas seul). */
 .topbar__offline {
   display: none;
   font-size: 12px;
   font-weight: 500;
-  color: #b45309;
+  color: var(--warn);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.app--offline .topbar__offline {
+/* ⛔ `.app--disconnected`, PAS `.app--offline` : cette dernière couvre aussi
+   l'état « Connexion… » (`mid`), posé au démarrage JUSTE APRÈS un loadConfig
+   RÉUSSI et après un seul échec de /data. Affirmer là que l'enregistrement est
+   impossible serait FAUX — l'appareil vient de répondre. Le verrou des
+   contrôles, lui, reste sur `.app--offline` : son comportement ne change pas. */
+.app--disconnected .topbar__offline {
   display: inline;
+}
+
+/* Séparateur visible seulement quand tout tient sur une ligne (> 500 px) */
+.topbar__offline::before {
+  content: "—";
+  margin-right: 8px;
 }
 
 /* Conteneur sidebar + main */
@@ -409,8 +428,8 @@ select:focus-visible {
 
 /* 2026 Burger button - refined */
 .burgerBtn {
-  width: 36px;
-  height: 36px;
+  width: 44px;
+  height: 44px;
   border-radius: 8px;
   border: none;
   background: transparent;
@@ -421,8 +440,8 @@ select:focus-visible {
   place-items: center;
   font-size: 20px;
   position: absolute;
-  top: 14px;
-  right: 14px;
+  top: 10px;
+  right: 10px;
 }
 
 .burgerBtn:hover {
@@ -2345,6 +2364,10 @@ input.is-computed:disabled {
   }
   .sidebar.is-open { transform: translateX(0); }
   .burgerBtn--open { display: inline-grid; }
+  /* Gouttière du bouton ☰ (absolu, hors flux) : 10 + 44 + 8 de respiration */
+  .topbar { padding-right: 62px; }
+  #topbar-home-link { min-width: 0; }
+  .topbar__brand-text { min-width: 0; }
   .grid--cards { grid-template-columns: 1fr; }
   .grid--status-cards { grid-template-columns: 1fr; }
   .grid--charts { grid-template-columns: 1fr; }
@@ -4838,3 +4861,17 @@ h1, h2, h3 {
 }
 .sensor-badge__cta:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; border-radius: 4px; }
 .sensor-badge__explain { font-weight: 400; line-height: 1.4; }
+
+/* Connexion PERDUE sur téléphone : la mention prend la ligne du nom du produit
+   (barre toujours 64 px). ⛔ `.app--disconnected` et non `.app--offline` : sur
+   cette dernière, le nom aurait disparu puis reparu À CHAQUE chargement de page,
+   le temps de l'état « Connexion… ». */
+@media (max-width: 500px) {
+  .app--disconnected .topbar__name { display: none; }
+  .app--disconnected .topbar__status { flex-wrap: wrap; margin-top: 0; }
+  /* La mention s'aligne sur le LIBELLÉ d'état, pas sur la puce : 8 px de puce
+     + 8 px de `gap` de .topbar__status. Sans ce retrait, la ligne 2 démarre au
+     bord du bloc de marque et vient toucher le logo (constaté à la capture). */
+  .app--disconnected .topbar__offline { flex-basis: 100%; padding-left: 16px; }
+  .app--disconnected .topbar__offline::before { content: none; }
+}

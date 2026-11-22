@@ -247,7 +247,7 @@ Température (mesure + jauge).
   - la carte « Bassin 3 sur 4 » est un contenu neuf — hors périmètre.
 - Retenu du croquis : chiffre à gauche / consigne à droite sur une ligne, jauge pleine
   largeur, état en pastille.
-- **Défaut trouvé au passage, sorti en fiche** : [bug-196](../todo/bug-196-le-bandeau-hors-ligne-passe-sous-le-bouton-menu.md).
+- **Défaut trouvé au passage, sorti en fiche** : [bug-196](../done/bug-196-le-bandeau-hors-ligne-passe-sous-le-bouton-menu.md).
 
 ### Les trois options étudiées
 | | Principe | Verdict |
@@ -601,7 +601,7 @@ ferait **affirmer à la carte une cible que l'appareil ne poursuit pas**.
   le volet alors qu'ils disent **ce que l'appareil va faire**. Envisager de remonter le
   volume quotidien en ligne de contexte.
 - **R3** — ⚠️ Hors ligne, pH et ORP gardent « Mode Auto » : **aucun mot « Hors ligne » sur
-  ces deux cartes**. Le seul porteur est le bandeau global — **et [bug-196](../todo/bug-196-le-bandeau-hors-ligne-passe-sous-le-bouton-menu.md)
+  ces deux cartes**. Le seul porteur est le bandeau global — **et [bug-196](../done/bug-196-le-bandeau-hors-ligne-passe-sous-le-bouton-menu.md)
   dit qu'il passe sous le bouton menu.** Une carte affichant « Mode Auto » sur une mesure
   figée se lit « tout va bien ». ⇒ **Vérifier sur capture, ou livrer bug-196 d'abord.**
 - **R4** — Puce verte pour « Mode Programme » : défendable, le mot reste porteur.

@@ -919,6 +919,20 @@ Détail fonctionnel : [`docs/features/page-ph.md`](features/page-ph.md#barre--do
 et [`page-orp.md`](features/page-orp.md#barre--dosage-du-jour--bug-208-v310). Contrat des trois
 notions servies : [`docs/API.md`](API.md#champs-du-plafond-journalier-chlore-bug-208-v310).
 
+### 5.28 En-tête de l'application (`.topbar`, bug-196, v3.1.2)
+
+**Contexte d'emploi** : en-tête de `data/index.html` **uniquement**, visible sur **toutes** les vues de l'application. Inventaire mesuré : `.topbar`, `.topbar__status`, `.topbar__offline`, `.status__dot`, `.status__text` → **1 emploi chacun**, tous dans `index.html` ; **aucun** dans `login.html`, `wifi.html`, `wizard.html`.
+
+- **Hauteur fixe 64 px.** ⚠️ C'est un `height`, ⛔ **pas** un `min-height` : à fort grossissement du texte le contenu **déborde** au lieu de pousser la barre. `.sidebar-overlay` se cale dessus (`top: 64px`). Une mention ajoutée à l'en-tête doit donc **tenir dans cette hauteur**, jamais la repousser.
+- **Le bouton ☰ (`.burgerBtn`) est `position: absolute`, donc hors du flux.** Aucun dimensionnement flex ne le voit. ⇒ Sa **gouttière se réserve dans le flux** : `.topbar { padding-right: 62px }` (10 + 44 + 8) dans le `@media (max-width: 980px)` — c'est à **980 px** que le bouton apparaît, pas à 500. Sans cette réserve, le texte passe dessous.
+- **Mention hors ligne** (`.topbar__offline`, texte « Enregistrement impossible ») : une ligne, séparée de l'état par un tiret au-dessus de 500 px. **Connexion perdue et ≤ 500 px**, le nom (`.topbar__name`) cède sa ligne : ligne 1 = puce + état, ligne 2 = mention, alignée sur le libellé d'état (retrait 16 px = puce 8 + `gap` 8).
+- ⭐ **Deux classes, deux sens — ⛔ ne pas les confondre.** `.app--offline` = « pas `ok` », ce qui inclut « Connexion… » (`mid`) posé au démarrage **après un `loadConfig` réussi** ; elle verrouille les contrôles. `.app--disconnected` = **perte constatée** (`bad`) **seule** ; c'est elle qui autorise une **affirmation** à l'écran. ⚠️ Accrocher un texte d'état à `.app--offline` le ferait **clignoter à chaque chargement de page** et dirait un faux.
+- **Budget de largeur** : toute mention ajoutée doit tenir en **≈ 160 px à 12 px** pour passer à 320 px. Pire cas d'état : « Connexion lente » (15 caractères, `data/app.js`) → à compter en **48 caractères** avec l'ancienne mention, d'où son retrait.
+- **Cible tactile 44×44** (bouton ☰). L'en-tête ne respectait pas la règle de §4 ; c'est ce bouton qui recouvrait le texte. ℹ️ Son contour de focus clavier vient de la règle **globale** `button:focus-visible` : ⛔ ne pas en redéclarer une locale, elle serait inerte.
+- **Couleur d'avertissement = `var(--warn)`**, ⛔ jamais une valeur en dur (`#b45309` avait survécu à la migration de contraste).
+- ⛔ **Ne pas afficher d'état de saisie dans l'en-tête sans condition de saisie** : la mention est vraie parce qu'elle ne parle que de la connexion, et seulement d'une connexion **perdue**.
+- ⚠️ `overflow` / `text-overflow` sur `.topbar__offline` ne tiennent **que** parce que `.topbar__status` est `display: flex` (la blockification rend ces propriétés applicables). ⛔ Repasser le conteneur en non-flex ferait tomber le filet **en silence**.
+
 ## 6. Responsive — 390 px d'abord
 
 Référence de calcul pour toute nouvelle rangée de boutons dans une carte d'accueil :
@@ -1009,7 +1023,7 @@ page. `-n` installe un faux WebSocket qui s'ouvre et se tait — exactement l'é
 connecté et silencieux.
 ⛔ **Elle reste optionnelle, et ce n'est pas un oubli** : l'écran **hors ligne** est lui aussi à
 photographier, et il l'est **par défaut**. C'est d'ailleurs sur une capture prise **sans** `-n`
-qu'a été trouvé [bug-196](../specs/features/todo/bug-196-le-bandeau-hors-ligne-passe-sous-le-bouton-menu.md)
+qu'a été trouvé [bug-196](../specs/features/done/bug-196-le-bandeau-hors-ligne-passe-sous-le-bouton-menu.md)
 (le bandeau d'état passe sous le bouton de menu à 390 px).
 ⇒ **Règle** : capture du tableau de bord pour un brief d'ergonomie ⇒ **avec `-n`** ; capture de
 l'état hors ligne ⇒ **sans**.
@@ -1075,7 +1089,7 @@ documenté**. Allez le lire dans `data/app.css`, puis **ajoutez-le ici** (§11).
 
 | Thème | Familles |
 |---|---|
-| Navigation et cadre | `nav`, `topbar`, `burger`, `view`, `settings` |
+| Navigation et cadre | `nav`, `burger`, `view`, `settings` (`topbar` : §5.28) |
 | Modales et surcouches | `probe-modal`, `ttt` |
 | Bandeaux et alertes | `dose-block-banner`, `rescue-active-banner`, `calibration-alert`, `alert`, `wifi-notification`, `tips` |
 | Graphiques | `chart`, `chart-tab`, `chart-export`, `u-tooltip`, `ph-stats`, `orp-stats`, `trace-block`, `cal-stability` |

@@ -72,9 +72,17 @@ La jauge pH (évaluative) et la jauge température (descriptive) gardent leurs d
 - ⚠️ **R2 — non fait** : « Volume quotidien » et « Limite de sécurité » partent dans le volet alors qu'en mode Programme ils disent ce que l'appareil va faire.
 - Un tap de plus pour régler le mode ou la consigne pH/ORP (arbitrage de l'utilisateur : « Cacher celles qu'on règle rarement »).
 - **Ce lot ne touche que le tableau de bord.** Les pages de réglage gardent l'apparence bleue de leurs composants (contexte d'emploi déclaré) ; `login.html`, `wifi.html` et `wizard.html` gardent leur ancien fond.
-- Bug indépendant, non traité ici : [bug-196](../../specs/features/todo/bug-196-le-bandeau-hors-ligne-passe-sous-le-bouton-menu.md) (le bandeau hors ligne passe sous le bouton de menu à 390 px).
+- Bug indépendant, corrigé en v3.1.2 : [bug-196](../../specs/features/done/bug-196-le-bandeau-hors-ligne-passe-sous-le-bouton-menu.md) (voir « En-tête commun » plus bas).
 
 **Fichiers** : `data/index.html`, `data/app.css` (jetons `--dash-*`, `.dash-*`, `.card__fold*`, `.card__link`), `data/app.js` (`setDashPill`, `dashModePillTone`, `dashFiltrationTone`, `fmtFr`, `renderTemperaturePill`, `refreshDashPills`, `bindDashFolds`, `renderFiltrationFace`) · `test/dash_pill_vectors.js` + `tools/check_dash_pill_vectors.sh`.
+
+## En-tête commun de l'application (bug-196, v3.1.2)
+
+Décrit ici faute de page dédiée : l'en-tête `.topbar` de `data/index.html` est visible sur **toutes** les vues. Contrat visuel : [DESIGN_SYSTEM §5.28](../DESIGN_SYSTEM.md).
+
+- Ligne d'état : puce `#net-dot` + `#net-text` (« En ligne », « Connexion… », « Hors ligne », « Connexion lente », écrits par `setNetStatus`) ; hors ligne, `#topbar-offline-msg` ajoute **« Enregistrement impossible »** (classe `.app--offline`).
+- ⚠️ Cette mention dit « Modifications non sauvegardées » **jusqu'à v3.1.1**, à tort : aucune saisie n'était consultée. Elle ne parle plus que de la connexion. `filtrationDirty` (`app.js`) n'est lu par aucun élément d'en-tête.
+- Sur téléphone (≤ 500 px) hors ligne : le nom du produit est masqué, la mention passe en ligne 2. Barre toujours 64 px.
 
 ## Structure (historique — disposition périmée par la refonte ci-dessus)
 

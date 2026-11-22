@@ -988,6 +988,12 @@
       } else {
         appEl.classList.add("app--offline");
       }
+      // bug-196 : `app--offline` couvre AUSSI « Connexion… » (`mid`), posé au
+      // démarrage juste APRÈS un loadConfig RÉUSSI et après un seul échec de
+      // /data. ⛔ Y annoncer « Enregistrement impossible » serait FAUX :
+      // l'appareil vient de répondre. Seul `bad` est une perte constatée.
+      // ⚠️ Le verrou des contrôles reste sur `app--offline` — INCHANGÉ.
+      appEl.classList.toggle("app--disconnected", state === "bad");
     }
 
     refreshDashPills();  // feature-195 : pastilles « Hors ligne » / retour

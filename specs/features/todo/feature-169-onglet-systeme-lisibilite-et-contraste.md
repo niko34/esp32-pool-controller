@@ -102,7 +102,7 @@ premier**. ⇒ Masquer « Mettre à jour » tant qu'aucune version n'a été tro
 la moitié de sa hauteur au repos.
 
 ### B5 — Débordements à 390 px
-- **En-tête** : « Déconnecté — Modifications non sauvegardées » **touche le bouton menu**.
+- **En-tête** : « Déconnecté — Modifications non sauvegardées » **touche le bouton menu**. → *Traité par bug-196 (v3.1.2), voir B5a/B5b.*
 - 🔴 ⚠️ **ET C'EST PEUT-ÊTRE UN BUG, PAS UNE MISE EN PAGE** : ce message s'affiche sur un onglet
   où **rien n'a été modifié**. ⛔ **Diagnostiquer AVANT de toucher à la forme** — raccourcir un
   texte qui n'aurait pas dû apparaître masquerait le vrai défaut.
@@ -143,8 +143,8 @@ L'onglet affiche cinq cartes à la suite. Tout ce qui est décrit ci-dessus est 
 - [ ] B2 — « Infos système » : disposition compacte, repli du diagnostic, phrase en infobulle
 - [ ] B3 — encadré de réinitialisation raccourci ; vérifier l'étape de confirmation
 - [ ] B4 — « Mettre à jour » masqué tant qu'aucune version n'est trouvée
-- [ ] B5a — 🔴 **DIAGNOSTIQUER** « Modifications non sauvegardées » affiché à tort (bug ?)
-- [ ] B5b — débordement de l'en-tête à 390 px, **après** B5a
+- [x] B5a — 🔴 **DIAGNOSTIQUER** « Modifications non sauvegardées » affiché à tort (bug ?) — **répondu par [bug-196](../done/bug-196-le-bandeau-hors-ligne-passe-sous-le-bouton-menu.md) (v3.1.2)** : c'était bien un défaut, la mention ne consultait aucune saisie (seule la perte de connexion l'affichait). Remplacée par « Enregistrement impossible ».
+- [x] B5b — débordement de l'en-tête à 390 px — **corrigé par bug-196 (v3.1.2)**, revue de code en cours au moment de l'écriture. Cette fiche reste ouverte (B1 à B4, C, D).
 - [ ] C1 — `docs/DESIGN_SYSTEM.md` : `.btn:disabled` et son contraste cible
 - [ ] C2 — `docs/features/page-settings.md`
 - [ ] D1 — captures **avant / après** à 390 px, jointes à la clôture
