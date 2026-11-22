@@ -155,8 +155,17 @@ docs/
 ├── API.md               ← Référence REST + WebSocket
 ├── MQTT.md              ← Topics MQTT + auto-discovery Home Assistant
 ├── BUILD.md             ← Build firmware + filesystem
-└── UPDATE_GUIDE.md      ← Procédure OTA
+├── UPDATE_GUIDE.md      ← Procédure OTA
+│
+├── tests-automatises.md    ← ce qui se vérifie SANS matériel (et ⛔ ce que ça ne prouve pas)
+├── test-on-target.md       ← check-list fonctionnelle sur l'appareil
+└── test-materiel-manuel.md ← procédure encadrée + traçabilité des relevés
 ```
+
+> ⭐ **Les trois pages de test se lisent ensemble, et leur frontière est leur raison d'être** :
+> `tests-automatises.md` dit ce qu'une machine peut vérifier seule ; `test-on-target.md` dit quoi
+> observer sur l'appareil ; `test-materiel-manuel.md` dit **dans quelles conditions** et **comment
+> consigner**. ⛔ **Un test logiciel simulé n'est JAMAIS une validation du matériel.**
 
 ## Les trois types et quand les utiliser
 
