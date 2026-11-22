@@ -693,8 +693,10 @@ Chaque carte pH et ORP porte un badge composé (`composeSensorBadge()`, app.js �
 | 1 | `Reprise automatique dans N min` (v2.62.0 ; était `Stabilisation depuis N min` / `Re-stabilisation depuis N min` en v2.34.0, et `Stabilisation : ~N min` avant) | `info` | `water_present === true` et `measures_valid === false` (attente post-reprise, feature-061) |
 | 1 | `Trop bas (X)` / `Trop élevé (X)` | `danger` | valeur hors plage (cible ± 0,2 pH / ± 150 mV) — **gaté par `measures_valid`** (feature-061) |
 | 2 | `Limite journalière atteinte` | `warning` | `ph_limit_reached` / `orp_limit_reached` |
+| 2.5 | `Compteur du bidon à zéro` | `danger` | bug-211, v3.0.3 — `*_tracking_enabled === true`, `*_container_ml > 0` **et** `*_remaining_ml ≤ 0`. Suivi d'un segment d'explication (priorité 2.6, même variante). ⚠️ Priorité **2,5 et non 0,5** (revue 2026-11-22) : une mesure hors plage (1) et les limites de dosage (2) passent AVANT un consommable |
 | 3 | `Cumul XX %` | `warning` | cumul journalier ≥ 75 % du quota |
-| 4 | `Stock faible (X,X L)` | `warning` | `*_remaining_ml` ≤ `*_alert_threshold_ml` (seuil > 0) |
+| 4 | `Stock faible (X,X L)` | `warning` | `0 < *_remaining_ml ≤ *_alert_threshold_ml` (seuil > 0) |
+| 4 | `Contenance du bidon à renseigner ›` | `info` | bug-211, v3.0.3 — `*_container_ml` absent ou ≤ 0. **Lien** vers `#/dosages` |
 
 **Règle de composition** :
 - **Maximum 2 segments** affichés simultanément, séparés par « · ». Au-delà de deux candidats, seuls les **deux plus prioritaires** sont retenus (ex. « hors plage + limite atteinte + stock faible » → `Trop élevé (7.8) · Limite journalière atteinte`, le stock est tronqué).
@@ -711,6 +713,50 @@ Chaque carte pH et ORP porte un badge composé (`composeSensorBadge()`, app.js �
 **Segment « Cumul XX % »** :
 - Affiché à partir de **75 %** du quota journalier (`ph_daily_ml / max_ph_ml_per_day`, `orp_daily_ml / max_chlorine_ml_per_day`), même arithmétique que la barre de cumul des pages `/ph` et `/orp` (arrondi des entrées, pourcentage plafonné à 100).
 - Masqué quand la limite est atteinte (le segment « Limite journalière atteinte » prend le relais, pas de redondance), quand la limite n'est pas configurée (quota ≤ 0), ou quand les données sont indisponibles.
+
+### Les quatre états du compteur de bidon (bug-211, v3.0.3)
+
+Avant la v3.0.3, un seul segment existait : `Stock faible (X,X L)`. Il s'affichait **aussi** quand
+le volume déclaré avait été entièrement injecté — donc « **Stock faible (0,0 L)** », qui annonce un
+reste chiffré là où il n'y en a pas et invite à attendre là où il faut vérifier.
+
+`bidonCounterState(remainingMl, containerMl, thresholdMl, tttState)` (app.js, **fonction pure**,
+extraite par ancre pour le harnais de vecteurs) rend une **cascade exclusive** de quatre états :
+
+| État | Condition | Segment produit | Variante |
+|---|---|---|---|
+| `configure` | `*_container_ml` absent, `null`, `NaN` ou ≤ 0 | « Contenance du bidon à renseigner › » — **lien** vers `#/dosages` | `info` |
+| `zero` | contenance > 0 **et** `*_remaining_ml ≤ 0` | « Compteur du bidon à zéro » + une phrase d'explication — ⛔ **aucun nombre**, et ⛔ **aucun chiffre de dérive** (les campagnes +5,11 % / +6,25 % n'ont été relevées que sur la pompe ORP) | `danger` (2 segments, priorités 2.5 et 2.6) |
+| `low` | `0 < *_remaining_ml ≤ *_alert_threshold_ml` (seuil > 0) | « Stock faible (X,X L) » — inchangé | `warning` |
+| `ok` | au-dessus du seuil, ou données absentes | aucun segment | — |
+
+**Deux rédactions pour l'état `zero`**, choisies sur `*_ttt_state` (`3` = `kTttStateMissed`,
+journée close sans que la cible ait été tenue) — ⛔ pas une phrase ajoutée à l'autre, **deux
+textes entiers** (la forme « base + ajout » répétait « vérifiez » et « le bidon » et occupait six
+lignes de rouge à 390 px) :
+
+- `*_ttt_state ≠ 3` → « Le volume déclaré a été injecté. Le compteur peut dépasser la réalité :
+  le bidon peut encore contenir du produit. Vérifiez-le, puis enregistrez le changement dans
+  Produits. »
+  ⛔ **Aucune fourchette chiffrée** (revue 2026-11-22) : les deux campagnes (+5,11 % puis
+  +6,25 %) ont été relevées sur la **seule pompe ORP**, et ni le modèle en % ni le modèle par
+  démarrage n'est constant. L'afficher sur l'axe pH aurait été la faute même que ce lot corrige.
+- `*_ttt_state === 3` → « Le volume déclaré a été injecté, et la cible n'est plus tenue malgré le
+  dosage. Vérifiez le bidon et le tuyau d'aspiration, puis enregistrez le changement dans
+  Produits. »
+
+⛔ **Le mot « vide » n'apparaît nulle part**, et **le dosage ne s'arrête pas** — ni sur le pH, ni
+sur l'ORP. Les deux points sont des décisions, pas des tournures :
+[ADR-0142](../adr/0142-un-compteur-de-bidon-sature-alerte-il-n-arrete-jamais-le-dosage.md).
+
+⚠️ **Limite assumée** : l'invitation `configure` est un segment `info`, et `composeSensorBadge()`
+ne garde un `info` **que si** aucun `danger`/`warning` n'existe pour ce capteur. Un appareil non
+configuré **et** dont le pH est hors plage ne voit donc pas l'invitation. Aucune exception n'a été
+faite à la règle de composition.
+
+⚠️ **Trois clés lues, zéro clé nouvelle** : `*_remaining_ml`, `*_container_ml` et `*_ttt_state`
+étaient déjà servies par `/data` **et** par la trame `sensor_data` — aucune ligne de firmware n'a
+changé.
 
 ## Badge de la carte Température (`#temperature-sensor-badge`, v2.10.5, étendu feature-061 itération 2 puis feature-068)
 

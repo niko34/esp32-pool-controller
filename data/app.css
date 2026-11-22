@@ -2942,21 +2942,14 @@ input.is-computed:disabled {
   justify-content: flex-start;
   gap: 4px;
 }
-.sensor-badge--stacked > span {
+.sensor-badge--stacked > span,
+.sensor-badge--stacked > a {
   display: block;
 }
-.sensor-badge__link {
-  font-size: 12px;
-  font-weight: 600;
-  color: inherit;
-  text-decoration: none;
-  white-space: nowrap;
-  border-bottom: 1px solid currentColor;
-  opacity: 0.8;
-}
-.sensor-badge__link:hover {
-  opacity: 1;
-}
+/* ⛔ .sensor-badge__link a été SUPPRIMÉ ici (revue bug-211, 2026-11-22) :
+   déclaré deux fois en CSS, employé zéro fois en HTML comme en JS. Le seul
+   lien d'une pastille est .sensor-badge__cta — garder les deux aurait ajouté
+   une troisième forme là où le design system demande d'en retirer une. */
 
 /* ========== CARTES PRODUITS ========== */
 .product-card + .product-card {
@@ -4815,3 +4808,12 @@ h1, h2, h3 {
 @media (max-width: 499px) {
   .ap-pwd-btn { width: 100%; }
 }
+
+/* bug-211 : invitation à renseigner la contenance (seul segment interactif) et
+   ligne d'explication du compteur à zéro. Aucune animation. */
+.sensor-badge__cta {
+  display: flex; align-items: center; min-height: 44px; width: 100%;
+  color: inherit; text-decoration: none; font-weight: 600;
+}
+.sensor-badge__cta:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; border-radius: 4px; }
+.sensor-badge__explain { font-weight: 400; line-height: 1.4; }

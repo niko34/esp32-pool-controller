@@ -2,6 +2,29 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [3.0.3] - 2026-11-22
+
+### Fonctionnalités
+- ⚠️ **Rien ne s'affiche quand le suivi de produit est désactivé** — c'est son réglage d'usine. Un appareil neuf, ou un appareil dont le suivi a été coupé, ne reçoit donc **aucun** de ces messages. De même au démarrage, tant que l'appareil n'a pas répondu : plus de fausse alerte le temps du chargement.
+- **Un bidon arrivé au bout n'est plus annoncé comme un « stock faible » (bug-211).** Le tableau de bord affichait « **Stock faible (0,0 L)** » : un reste chiffré alors qu'il n'y a plus rien à chiffrer, et une invitation à attendre alors qu'il faut aller voir. Les cartes pH et chlore distinguent désormais **quatre** situations : rien du tout · « Stock faible (0,3 L) » (orange, inchangé) · « **Compteur du bidon à zéro** » (rouge, **sans aucun nombre**) · « **Contenance du bidon à renseigner ›** » (bleu, et c'est un **lien** vers la page Produits — pour l'appareil qui n'a jamais été configuré, qui affichait jusqu'ici une fausse alerte dès son premier démarrage).
+- **Le message rouge explique, et il s'adapte.** Sous le constat, une phrase dit quoi faire. Si la cible du jour n'a pas été tenue **malgré le dosage**, le texte le dit et oriente vers le bidon **et** le tuyau d'aspiration — le signe d'un produit qui ne sort pas. Sinon, il rappelle que le bidon peut encore contenir du produit, le compteur pouvant dépasser la réalité. ⛔ **Aucun pourcentage n'est affiché** : la dérive n'a été mesurée que sur la pompe de chlore, et elle n'est pas constante.
+- ⚠️ **Deux choses que l'appareil ne fait pas, et c'est voulu.** Il ne dit **jamais** « bidon vide » : il n'a aucune sonde dans le bidon, il ne connaît que son compteur — un tuyau pincé ou une crépine hors du liquide donnent exactement le même constat. Et **le dosage ne s'arrête pas**, ni sur le pH ni sur le chlore : s'arrêter sur un compteur qui compte large reviendrait à cesser de désinfecter un bassin qui a encore du produit. Ce sont les limites par injection, par heure et par jour qui protègent le bassin ; elles n'ont pas changé.
+- **Le seuil d'alerte des bidons se saisit en litres entiers** (page Produits). Il affichait « 2.0 » — un point, à trois centimètres de valeurs à virgule : un champ numérique impose le point au navigateur, la seule sortie propre était de supprimer la décimale. ⓘ Affichage seulement : un réglage existant à 2,5 L n'est **pas** réécrit tout seul.
+- ⚠️ **Limite connue, non traitée par cette version** : la page **Produits** continue d'afficher « 0,0 L » quand le compteur est au bout. Seul le tableau de bord a été repris.
+
+### Firmware
+- Aucun changement côté ESP32 : interface (`data/`) seulement. Les trois valeurs utilisées (reste, contenance, atteinte de la cible) étaient déjà transmises.
+- Version seule (`src/version.h`) : c'est le système de fichiers qui porte tout le changement.
+
+### Documentation
+- [ADR-0142](docs/adr/0142-un-compteur-de-bidon-sature-alerte-il-n-arrete-jamais-le-dosage.md) (nouveau) : « un compteur de bidon saturé alerte, il n'arrête jamais le dosage — et l'écran nomme le compteur, jamais le bidon ». L'arrêt du dosage recommandé par `pool-chemistry` (asymétrique pH/ORP) est écarté : les deux axes sont couplés, arrêter l'acide coupe la désinfection par ricochet.
+- `docs/features/page-dashboard.md` : les quatre états du compteur de bidon, les deux rédactions de l'explication, et la limite assumée (l'invitation bleue est masquée quand le capteur est déjà en alerte).
+- `docs/features/page-dosages.md` : l'impact non traité (« 0,0 L » persistant), le seuil en litres entiers, et la suppression d'une pastille d'état qui n'a jamais existé à l'écran (code mort).
+- `docs/DESIGN_SYSTEM.md` §5.9bis : `.sensor-badge__cta` (seul segment interactif d'un badge, cible 44 px, ⛔ jamais un bouton d'action) et `.sensor-badge__explain`, avec leurs contextes d'emploi.
+- `docs/user/src/guide-utilisation.html` : les quatre états, pourquoi l'appareil ne dit jamais « bidon vide », pourquoi il ne s'arrête pas, et une entrée « Que faire si… » dédiée. PDF à régénérer à la release.
+
+---
+
 ## [3.0.2] - 2026-11-22
 
 ### Fonctionnalités

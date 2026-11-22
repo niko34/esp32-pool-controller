@@ -68,6 +68,15 @@ remplacé la version livrée la veille (voir l'encadré ci-dessous) :
      (« pas d'auto-save, bouton Sauvegarder uniquement ») — ce n'est **pas** une mise en
      cohérence avec elle, mais une exception délibérée, justifiée par l'absence de
      conséquence immédiate d'un seuil d'alerte (contrairement à une consigne de régulation).
+     ⓘ **Litres entiers depuis la v3.0.3** (bug-211) : `step="1"`, et la valeur servie est
+     affichée arrondie à l'entier (`Math.round(ml / 1000)`, plus de `.toFixed(1)`). Motif :
+     `<input type="number">` **impose le point** au navigateur, un seuil affiché « 2.0 » se
+     lisait donc à trois centimètres de « 0,3 L » et « 20,0 L » qui portent des virgules — la
+     seule sortie honnête après [bug-199](../../specs/features/done/bug-199-deux-conventions-decimales-sur-le-meme-ecran.md)
+     est de n'avoir **aucune** décimale, et un seuil d'alerte s'en contente.
+     ⚠️ **Arrondi d'AFFICHAGE seulement** : `saveProduct()` n'écrit que si l'utilisateur modifie
+     le champ, donc un réglage existant à 2,5 L **n'est jamais réécrit en silence** — il
+     s'affiche « 3 » et reste 2 500 mL en NVS jusqu'à la prochaine modification volontaire.
 2. **Carte Chlore / ORP** (`#product-orp-card`) — strictement symétrique, toggle `orp_tracking_enabled`.
 
 > ⚠️ **Historique du chantier (sans spec numérotée) — deux versions en 24 h.** La version du
@@ -243,7 +252,17 @@ Voir aussi [docs/subsystems/pump-controller.md](../subsystems/pump-controller.md
 
 ## Cas limites
 
-- **Bidon vide** (`remaining_ml ≤ 0`) : la barre affiche 0 %, l'injection **n'est pas bloquée** par le firmware (la sécurité vient de `max_ph_ml_per_day` / `max_chlorine_ml_per_day`, pas du suivi produit).
+- **Compteur à zéro** (`remaining_ml ≤ 0`) : la barre affiche 0 %, l'injection **n'est pas bloquée** par le firmware (la sécurité vient de `max_ph_ml_per_day` / `max_chlorine_ml_per_day`, pas du suivi produit) — et elle ne le sera pas, c'est une décision, [ADR-0142](../adr/0142-un-compteur-de-bidon-sature-alerte-il-n-arrete-jamais-le-dosage.md).
+  > ⚠️ **Impact connu et NON traité (bug-211, v3.0.3).** Le tableau de bord ne dit plus « Stock
+  > faible (0,0 L) » dans cet état : il affiche « **Compteur du bidon à zéro** », sans aucun
+  > nombre, parce que `remaining_ml` est **borné** par `max(0, …)` — c'est une borne, pas un reste.
+  > **Cette page n'a pas été reprise** : le gros chiffre et la ligne « restant / total » continuent
+  > d'afficher « **0,0 L** », et la barre reste à 0 %. Deux surfaces disent donc la même chose de
+  > deux façons tant que ce n'est pas repris. Écrit ici plutôt que passé sous silence.
+- **Aucune pastille d'état sur cette page.** Le code écrivait « Stock faible » / « OK » dans
+  `#product-<prefix>-status` — un id qui n'existe dans **aucun** fichier HTML : le `if` était
+  toujours faux. Code mort supprimé en v3.0.3. Le libellé de stock n'a **qu'un seul** emploi réel,
+  celui du tableau de bord (`buildSensorSegments()`).
 - **Toggle désactivé** : la carte et son toggle restent visibles, mais **tout le corps de la carte est masqué** (`display: none` sur `#product-<prefix>-body`) — relevé compris. Voir `applyProductTracking()` dans [`app.js:3278`](../../data/app.js:3278).
 - **Aucun capteur pH/ORP connecté** : le suivi fonctionne quand même tant qu'une injection a lieu (mode manuel ou programmée).
 

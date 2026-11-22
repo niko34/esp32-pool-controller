@@ -53,6 +53,8 @@ contexte d'origine.
 | Indiquer un état ponctuel (En marche / Inactif / Calibration requise) | `.state-badge` (§5.7) | Les deux |
 | Visualiser une mesure sur une échelle | `.gauge` (§5.8) | Carte d'accueil |
 | Expliquer pourquoi une mesure n'est pas représentative | `.sensor-badge` (§5.9) | Carte d'accueil · en tête de page (`.sensor-badge--page`) |
+| Emmener vers la page qui corrige, depuis un `.sensor-badge` | `.sensor-badge__cta` (§5.9bis) | **Carte d'accueil uniquement** — un seul par badge, ⛔ jamais un bouton d'action |
+| Expliquer en une phrase un constat déjà affiché dans le même `.sensor-badge` | `.sensor-badge__explain` (§5.9bis) | **Carte d'accueil uniquement** — toujours en 2ᵉ segment, même variante |
 | Alerter sur une condition bloquante ou un risque | `.callout` (§5.10) | Les deux |
 | Réinstaller le filesystem quand l'interface est absente (page autonome, sans `app.css`) | copies **locales** : callout `--info`, sélecteur `.pick`, ligne de version `.ver`, `<progress>`, callout d'échec rouge (§5.21) | **Page de secours embarquée uniquement** — ⛔ jamais un composant partagé |
 | Distinguer deux niveaux de gravité dans un même `.callout`, sans empiler deux encadrés, et séparer l'essentiel du détail | `.callout__eyebrow` + `.callout__lead` + `.callout__more` (§5.10bis) | Page de réglage (pH) — généralisable |
@@ -320,6 +322,17 @@ Variantes `--info` (bleu, état normal), `--warning` (ambre, anomalie), `--dange
 🔴 **Enseignement de ce réemploi** : les fonds de `.sensor-badge--*` sont **translucides**, prévus pour une carte **blanche**. En tête de page ils se composent sur `--bg` (bleu-gris) et **l'ambre vire à l'olive** — mesuré : fond `(206,208,200)`, contraste 5,82:1, au lieu de `(255,247,225)` et 8,49:1 en carte. Pas un défaut d'accessibilité (AA passé) mais une **incohérence** : le même composant ne rendait pas la même couleur. ⇒ Règles **opaques** `.sensor-badge--page.sensor-badge--{warning,danger,info}` (spécificité 0,2,0), identiques au rendu en carte. ⚠️ Tout nouvel emploi sur un fond non blanc doit vérifier ce point.
 
 **Emploi « froid » (bug-197)** : variante `--warning`, texte sur deux lignes, nœud permanent `role="status" aria-live="polite"`, masqué par `display:none`. Le verdict est porté par le texte, jamais par la couleur seule.
+
+#### 5.9bis `.sensor-badge__cta` et `.sensor-badge__explain` (bug-211, v3.0.3)
+
+Deux sous-éléments de `.sensor-badge`, **indépendants l'un de l'autre**, nés du compteur de bidon à zéro. ⚠️ La variante `.sensor-badge--info` **préexiste** (feature-061) et ne change pas : seuls ces deux sous-éléments sont nouveaux.
+
+- **`.sensor-badge__cta` — le segment qui emmène ailleurs.** **Contexte d'emploi déclaré : carte d'accueil uniquement, un seul segment par badge, et seulement quand l'état n'est pas réparable sur place.** C'est le **seul** segment interactif qu'un `.sensor-badge` ait le droit de porter : `setBadge()` rend un `<a>` au lieu d'un `<span>` dès qu'un segment porte un `href`, et remplace le nœud si la balise ne correspond pas. Cible tactile **≥ 44 px** (`min-height:44px`, `width:100%` — ⚠️ un lien inline dans une bande de 2 lignes ne l'atteint pas), `color:inherit` (la couleur vient de la variante, ⛔ jamais du bleu de lien), `text-decoration:none`, `font-weight:600`, et un `:focus-visible` en `outline: 2px solid currentColor`. Le chevron final « › » dit la navigation **sans** couleur ni soulignement.
+  ⛔ **Ne pas en faire un bouton d'action.** Un `.sensor-badge` **explique**, il n'agit pas : le lien emmène vers la page qui corrige, il ne corrige pas lui-même. Un geste qui modifie l'état reste un `.btn`, dans la carte ou la page de réglage.
+- **`.sensor-badge__explain` — la phrase qui suit le constat.** **Contexte d'emploi déclaré : carte d'accueil, toujours en second segment, toujours dans la même variante que le constat qu'elle explique.** `font-weight:400` (le constat garde la graisse, l'explication la perd) et `line-height:1.4`. Elle existe parce que le badge est devenu **empilé** (`.sensor-badge--stacked` au-delà d'un segment) et que deux phrases de même graisse dans la même couleur se lisent comme une seule.
+  ⚠️ **Mesurer la hauteur avant d'ajouter une phrase.** La rédaction écartée (« constat + ajout ») occupait **six lignes de rouge à 390 px** : à cette densité, un `.sensor-badge` cesse d'informer et devient un mur. ⇒ Deux textes entiers choisis par l'état, jamais une phrase concaténée à une autre.
+
+Aucune animation sur l'un ni sur l'autre. Aucun emploi existant de `.sensor-badge` ne change.
 
 ### 5.10 `.callout` et variantes (`--info`, `--success`, `--warn`)
 Alerte ou information qui mérite un encadré visible (fond teinté, liseré). Réservé aux

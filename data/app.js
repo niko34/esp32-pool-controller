@@ -5003,7 +5003,7 @@
     // se réécrit à la seconde (dosingCountdownSegment) — s'il est annoncé par
     // le aria-live du badge à cette cadence, c'est une ré-annonce hostile à
     // chaque tick. setBadge() l'exclut de la région active via aria-hidden.
-    return { variant, segments: kept.map(s => ({ text: s.text, quiet: !!s.quiet })) };
+    return { variant, segments: kept.map(s => ({ text: s.text, quiet: !!s.quiet, href: s.href || null, explain: !!s.explain })) };
   }
 
   // feature-061 : validité des mesures pH/ORP côté firmware (filtration arrêtée
@@ -5193,6 +5193,46 @@
     return segs;
   }
 
+  // bug-211 : état du COMPTEUR de bidon — fonction PURE (ni DOM ni global hors
+  // fmtFr), extraite par ancre pour le harnais de vecteurs. ⭐ L'appareil connaît
+  // son compteur, pas son bidon : aucun mot n'affirme l'état du bidon.
+  // Cascade exclusive : 'configure' (contenance <= 0 ou absente) → 'zero'
+  // (contenance > 0 et reste = 0 ; AUCUN nombre affiché) → 'low' (0 < reste <=
+  // seuil, seuil > 0) → 'ok'. `tttState === 3` n'ajoute sa phrase qu'à 'zero'.
+  function bidonCounterState(remainingMl, containerMl, thresholdMl, tttState) {
+    const num = v => (typeof v === 'number' && !isNaN(v)) ? v : null;
+    const rem = num(remainingMl), cont = num(containerMl), thr = num(thresholdMl);
+    if (cont === null || cont <= 0) {
+      // ⛔ Le chevron est purement décoratif : il vit en ::after sur
+      // .sensor-badge__cta, JAMAIS dans le texte — textContent part tel quel
+      // vers les lecteurs d'écran, qui annonceraient le glyphe.
+      return { state: 'configure', text: 'Contenance du bidon à renseigner', explain: '' };
+    }
+    if (rem !== null && rem <= 0) {
+      // bug-211 — DEUX rédactions, ⛔ pas une phrase ajoutée à l'autre : la
+      // version « base + ajout » répétait « vérifiez » et « le bidon », et
+      // tenait sur SIX lignes de rouge à 390 px (constaté sur capture).
+      // ⛔ On ne dit JAMAIS « le bidon est vide » : ce serait un DIAGNOSTIC, et
+      // il choisit UNE cause parmi plusieurs — tuyau d'aspiration pincé,
+      // crépine hors du liquide, produit éventé donnent le MÊME constat.
+      // On énonce le FAIT, on oriente, on ne conclut pas (discipline ADR-0141).
+      // ⛔ Revue 2026-11-22 : AUCUN chiffre de dérive ici. Les deux campagnes
+      // (+5,11 % puis +6,25 %) ont été relevées sur la SEULE pompe ORP, et ni le
+      // modèle en % ni le modèle par démarrage n'est constant : annoncer une
+      // fourchette sur l'axe pH serait la faute même que cette fiche corrige.
+      const explain = (tttState === 3)
+        ? 'Le volume déclaré a été injecté, et la cible n\'est plus tenue malgré le dosage. '
+          + 'Vérifiez le bidon et le tuyau d\'aspiration, puis enregistrez le changement dans Produits.'
+        : 'Le volume déclaré a été injecté. Le compteur peut dépasser la réalité : le bidon '
+          + 'peut encore contenir du produit. Vérifiez-le, puis enregistrez le changement dans Produits.';
+      return { state: 'zero', text: 'Compteur du bidon à zéro', explain };
+    }
+    if (rem !== null && thr !== null && thr > 0 && rem <= thr) {
+      return { state: 'low', text: `Stock faible (${fmtFr(rem / 1000, 1)} L)`, explain: '' };
+    }
+    return { state: 'ok', text: '', explain: '' };
+  }
+
   // Facteur commun pH/ORP (revue code-reviewer) : assemble TOUS les segments
   // d'un capteur — mesure d'état, capteur indisponible, limites/combinaison
   // (dosingLimitSegments), cumul/stock, décomptes. `dailyMlKey`/`maxMlKey`/
@@ -5210,9 +5250,34 @@
     const cumul = dailyCumulSegment(latestSensorData?.[dailyMlKey], window._config?.[maxMlKey] ?? 0,
       latestSensorData?.[`${sensor}_limit_reached`] === true);
     if (cumul) segs.push(cumul);
-    const rem = latestSensorData?.[remKey], thr = latestSensorData?.[thrKey];
-    if (rem != null && thr != null && rem <= thr && thr > 0) {
-      segs.push({ priority: 4, variant: 'warning', text: `Stock faible (${fmtFr(rem / 1000, 1)} L)` });
+    // bug-211 : cascade de quatre états exclusifs (cf. bidonCounterState()).
+    // ⚠️ composeSensorBadge() ne garde un segment 'info' (l'invitation à
+    // renseigner la contenance) que si AUCUN danger/warning n'existe pour ce
+    // capteur : règle du projet, délibérée — pas d'exception ici.
+    // ⛔ Revue 2026-11-22 — DEUX défauts fermés par le même garde :
+    //   1. le suivi de produit est DÉSACTIVÉ en sortie d'usine (config.h :
+    //      phTrackingEnabled = false). Sans lui, un appareil neuf — et tout
+    //      appareil dont l'utilisateur a coupé le suivi — affiche une invitation
+    //      PERMANENTE vers une page dont le corps de carte est précisément masqué
+    //      par applyProductTracking() : un cul-de-sac.
+    //   2. au DÉMARRAGE, latestSensorData vaut null tant que /data n'a pas
+    //      répondu — `undefined !== true`, donc aucun faux positif sur un appareil
+    //      pourtant bien configuré. Même invariant que measureStateSegments().
+    const tracked = latestSensorData?.[`${sensor}_tracking_enabled`] === true;
+    const bc = tracked
+      ? bidonCounterState(latestSensorData?.[remKey], latestSensorData?.[`${sensor}_container_ml`],
+        latestSensorData?.[thrKey], latestSensorData?.[`${sensor}_ttt_state`])
+      : { state: 'ok', text: '', explain: '' };
+    if (bc.state === 'configure') {
+      segs.push({ priority: 4, variant: 'info', text: bc.text, href: '#/dosages' });
+    } else if (bc.state === 'zero') {
+      // ⛔ Revue 2026-11-22 — priorité 2,5 et non 0,5 : un pH hors plage
+      // (priorité 1) et les limites de dosage (2) passent AVANT un consommable.
+      // << Les plafonds protègent, le reste informe >> : un bidon au bout informe.
+      segs.push({ priority: 2.5, variant: 'danger', text: bc.text });
+      segs.push({ priority: 2.6, variant: 'danger', text: bc.explain, explain: true });
+    } else if (bc.state === 'low') {
+      segs.push({ priority: 4, variant: 'warning', text: bc.text });
     }
     // Décompte d'injection — relocalisé tel quel (segment neutre, faible
     // priorité). Décompte stabilisation/pause mélange — RESTAURÉ tel quel
@@ -5252,8 +5317,36 @@
         (segments.length > 1 ? ' sensor-badge--stacked' : '');
       const kids = el.children;
       segments.forEach((seg, i) => {
-        const span = kids[i] || el.appendChild(document.createElement('span'));
-        if (span.textContent !== seg.text) span.textContent = seg.text;
+        // bug-211 : seul segment interactif = l'invitation (href) → <a>, cible >= 44 px.
+        const tag = seg.href ? 'A' : 'SPAN';
+        let span = kids[i];
+        if (span && span.tagName !== tag) { span.remove(); span = null; }
+        if (!span) {
+          span = document.createElement(tag.toLowerCase());
+          el.insertBefore(span, kids[i] || null);
+        }
+        if (seg.href) {
+          span.setAttribute('href', seg.href); span.className = 'sensor-badge__cta';
+          // Chevron : EXACTEMENT le motif de .card__link (cf. data/index.html,
+          // « Tous les réglages › ») — un <span aria-hidden>, donc muet pour les
+          // lecteurs d'écran ET dans le flux du texte.
+          // ⛔ Une variante en ::after a été essayée puis RETIRéE : sur capture
+          // 390 px (2026-11-22), le chevron tombait seul sur une 2e ligne et
+          // débordait du cadre. Le motif déjà en place, lui, est éprouvé.
+          if (span.firstChild?.nodeValue !== seg.text) {
+            span.textContent = seg.text;
+            const chev = document.createElement('span');
+            chev.setAttribute('aria-hidden', 'true');
+            // ⛔ Espace INSÉCABLE : une espace ordinaire en tête d'un élément
+            // est COLLAPSÉE ici (constaté sur capture), d'où « renseigner› » collé.
+            chev.textContent = '\u00a0›';
+            span.appendChild(chev);
+          }
+        } else {
+          if (seg.explain) span.className = 'sensor-badge__explain';
+          else span.removeAttribute('class');
+          if (span.textContent !== seg.text) span.textContent = seg.text;
+        }
         if (seg.quiet) span.setAttribute('aria-hidden', 'true');
         else span.removeAttribute('aria-hidden');
       });
@@ -5389,7 +5482,6 @@
       const bar = $(`#product-${prefix}-bar`);
       const remEl = $(`#product-${prefix}-remaining`);
       const totEl = $(`#product-${prefix}-total`);
-      const status = $(`#product-${prefix}-status`);
 
       if (bar) {
         bar.style.width = pct.toFixed(1) + '%';
@@ -5400,11 +5492,13 @@
       if (remEl) remEl.textContent = fmtFr(remainingMl / 1000, 1) + ' L';
       if (totEl) totEl.textContent = hasContainer ? fmtFr(containerMl / 1000, 1) : '--';
 
-      if (status) {
-        const isLow = thresholdMl > 0 && remainingMl <= thresholdMl;
-        status.textContent = isLow ? 'Stock faible' : 'OK';
-        status.className = 'state-badge ' + (isLow ? 'state-badge--warn' : 'state-badge--on');
-      }
+      // bug-211 : le bloc qui écrivait ici une pastille « Stock faible » / « OK »
+      // visait #product-<prefix>-status — ⛔ un id qui n'existe dans AUCUN fichier
+      // HTML (vérifié : la page Produits n'a que -bar, -body, -card, -injected,
+      // -remaining, -starts, -title, -total, -update-level). $() rendait null,
+      // le `if` était toujours faux : CODE MORT, et il a fait croire à bug-211
+      // qu'il existait « deux emplois indissociables » du libellé. Il n'y en a
+      // qu'un, celui du tableau de bord (buildSensorSegments). SUPPRIMÉ.
     }
 
     if (data.ph_remaining_ml != null) {
@@ -5452,8 +5546,33 @@
     // seul, à chaque affichage.
     const phAlert = $(`#ph_alert_threshold_l`);
     const orpAlert = $(`#orp_alert_threshold_l`);
-    if (phAlert && cfg.ph_alert_threshold_ml != null) phAlert.value = (cfg.ph_alert_threshold_ml / 1000).toFixed(1);
-    if (orpAlert && cfg.orp_alert_threshold_ml != null) orpAlert.value = (cfg.orp_alert_threshold_ml / 1000).toFixed(1);
+    // bug-211 : seuil d'alerte en litres ENTIERS (décision utilisateur, 2026-11-22).
+    // Motif : `.toFixed(1)` affichait « 2.0 » — un POINT, à trois centimètres de
+    // « 0,3 L » et « 20,0 L » qui portent des virgules. Un champ <input type=number>
+    // IMPOSE le point au navigateur, on ne peut donc pas y mettre une virgule ;
+    // la seule sortie honnête est de n'avoir aucune décimale. Un seuil d'alerte
+    // s'en contente. ⓘ Arrondi d'AFFICHAGE seulement : saveProduct() n'écrit que
+    // si l'utilisateur modifie le champ, donc un réglage existant à 2,5 L n'est
+    // jamais réécrit en silence.
+    // ⛔ Revue 2026-11-22 : l'arrondi seul MENTAIT. Un réglage hérité de
+    // 2 500 ml s'affichait << 3 >> alors que l'appareil alerte à 2,5 L ; pire,
+    // 300 ml s'affichait << 0 >>, qui signifie PAS D'ALERTE dans la sémantique
+    // de cette même interface (bidonCounterState exige thr > 0). On arrondit
+    // toujours — le champ reste sans décimale — mais quand la valeur stockée
+    // n'est pas un nombre entier de litres, l'aide SOUS le champ dit l'exacte.
+    // ⛔ Aucune réécriture silencieuse de la config : c'est son réglage.
+    const showAlertThreshold = (input, hintId, ml) => {
+      if (!input || ml == null) return;
+      input.value = String(Math.round(ml / 1000));
+      const hint = $(`#${hintId}`);
+      if (!hint) return;
+      const base = 'Enregistré automatiquement à la modification.';
+      hint.textContent = (ml % 1000 === 0)
+        ? base
+        : `${base} Réglage actuel : ${fmtFr(ml / 1000, 1)} L — arrondi à l'affichage.`;
+    };
+    showAlertThreshold(phAlert, 'ph_alert_threshold_hint', cfg.ph_alert_threshold_ml);
+    showAlertThreshold(orpAlert, 'orp_alert_threshold_hint', cfg.orp_alert_threshold_ml);
 
     const phToggle = $('#ph_tracking_enabled');
     const orpToggle = $('#orp_tracking_enabled');

@@ -11,7 +11,7 @@
 //       buildPhTargetSegments) sont relisibles par parseFloat, sans virgule.
 //   M3  aucun TEXTE produit par les fonctions d'affichage atteignables ne contient
 //       `\d\.\d` ; complété par un balayage TEXTUEL de tous les `toFixed(` de app.js
-//       (chacun suivi d'un `.replace(".", ",")`, ou l'une des 5 exceptions nommées).
+//       (chacun suivi d'un `.replace(".", ",")`, ou l'une des 3 exceptions nommées).
 //   M4  `_formatSeriesStatsText` : séparateur `·`, trois valeurs à virgule.
 //   M5  (numéro conservé pour ne pas décaler les renvois) : c'était la garde
 //       tools/check_decimal_format_guard.sh elle-même, couverte par son propre script et
@@ -20,7 +20,8 @@
 //       et ORP entier préservé (« 820 mV ») ; l'ORP des statistiques à 0 décimale.
 //   M8  🔴 texte firmware CITÉ (`_doseBlockInfo`, garde pH/ORP) : six motifs ANCRÉS (une table, pas une règle de forme) ; tout texte inconnu,
 //       IP, version, « 12.5 » INCHANGÉS — ce sont les NON-conversions qui comptent.
-//   M6  le libellé « Stock faible (0,3 L) » ne change PAS (bug-211 le traitera).
+//   M6  les libellés de stock : virgule de « Stock faible », AUCUN nombre sur le
+//       compteur au bout, et appareil neuf ≠ bidon épuisé (bug-211, livré).
 //
 // 🔴 LIMITE DU BALAYAGE TEXTUEL (M3) — à ne pas oublier : il ne garantit QUE « aucun
 // `toFixed` nu ». Il ne voit NI les littéraux de texte (« pH 7.0 » en dur, en JS ou en
@@ -85,6 +86,10 @@ const prelude = [
   fn("_fmtFilterVal", "(prefix, v)", "  "),
   fn("_formatSeriesStatsText", "(stats, decimals)", "  "),
   fn("outOfRangeText", "(value, target, tol, round, unit, show)", "  "),
+  // bug-211 : la cascade des quatre états de stock vit ici ; buildSensorSegments
+  // l'APPELLE, donc elle doit être extraite AVANT lui (ADR-0099 : on extrait le
+  // code livré, ⛔ on ne le recopie jamais).
+  fn("bidonCounterState", "(remainingMl, containerMl, thresholdMl, tttState)", "  "),
   fn("buildSensorSegments", "(sensor, target, tol, round, unit, show, dailyMlKey, maxMlKey, remKey, thrKey)", "  "),
   fn("updateCard", "(prefix, remainingMl, containerMl, thresholdMl)", "    "),
   fn("loadProductConfig", "(cfg)", "  "),
@@ -111,6 +116,7 @@ const factory = new Function("els", "globals", `
   const updateProductUI = () => {};
   ${prelude}
   return { outOfRangeText, fmtFr, _fmtPh, _fmt2, _fmtFilterVal, _formatSeriesStatsText, buildSensorSegments,
+           bidonCounterState,
            updateCard, loadProductConfig, buildPhTargetSegments, _rescueReasonText,
            setData: (d) => { latestSensorData = d; } };
 `);
@@ -159,8 +165,14 @@ check("loadProductConfig : input.value relisible, sans virgule", () => {
     for (const id of ["#ph_alert_threshold_l", "#orp_alert_threshold_l"]) {
       const v = els.get(id).value;
       assert.ok(!String(v).includes(","), `virgule dans input.value : ${v}`);
-      assert.ok(/^\d+\.\d$/.test(v), `format inattendu : ${v}`);
-      assert.strictEqual(parseFloat(v), Math.round(ml / 100) / 10);
+      // bug-211 : le seuil d'alerte s'affiche en litres ENTIERS. Motif :
+      // `.toFixed(1)` rendait « 2.0 » — un POINT — à trois centimètres de
+      // « 0,3 L » et « 20,0 L » à virgule. Un <input type=number> IMPOSE le
+      // point au navigateur : la seule sortie honnête est de n'avoir aucune
+      // décimale. ⇒ On garde la garde « jamais de virgule » (elle casserait la
+      // saisie) et on exige désormais un ENTIER NU.
+      assert.ok(/^\d+$/.test(v), `format inattendu : ${v}`);
+      assert.strictEqual(parseFloat(v), Math.round(ml / 1000));
     }
   }
 });
@@ -190,9 +202,13 @@ check("fmtFr / _fmtPh / _fmt2 : virgule, jamais de point", () => {
   }
 });
 check("« Stock faible » (carte pH/ORP) : virgule pour plusieurs restes", () => {
-  for (const rem of [0, 40, 300, 700, 1500, 1999]) {
+  // bug-211 : ⛔ `rem = 0` a QUITTÉ cette liste. Ce n'est plus « Stock faible
+  // (0,0 L) » — c'est « Compteur du bidon à zéro », SANS nombre. Le cas est
+  // couvert par M6, qui exige l'absence de tout chiffre. Les valeurs ci-dessous
+  // sont les restes NON NULS, seuls à afficher encore une quantité.
+  for (const rem of [40, 300, 700, 1500, 1999]) {
     const { api } = sandbox();
-    api.setData({ ph_remaining_ml: rem, ph_alert_threshold_ml: 2000 });
+    api.setData({ ph_remaining_ml: rem, ph_container_ml: 20000, ph_alert_threshold_ml: 2000, ph_tracking_enabled: true });
     const segs = api.buildSensorSegments("ph", 7.2, 0.2, REAL_ROUND, "", api._fmtPh, "a", "b", "ph_remaining_ml", "ph_alert_threshold_ml");
     const s = segs.find((x) => /Stock faible/.test(x.text));
     assert.ok(s, `segment absent pour rem=${rem}`);
@@ -226,14 +242,16 @@ check("_fmtFilterVal : pH 2 décimales à virgule, ORP entier", () => {
 });
 
 // Balayage TEXTUEL : couvre aussi les sites non extractibles (voir l'en-tête).
-check("balayage : tout toFixed( est converti, ou l'une des 5 exceptions nommées", () => {
+check("balayage : tout toFixed( est converti, ou l'une des 3 exceptions nommées", () => {
   const lines = src.split("\n");
+  // bug-211 : les DEUX exceptions `*Alert.value = (… / 1000).toFixed(1)` ont
+  // DISPARU — le seuil d'alerte est passé en litres entiers (Math.round), il
+  // n'emploie plus toFixed du tout. ⛔ Les laisser ici rendrait la sentinelle
+  // MENTEUSE : elle exigerait la présence d'un motif absent du code livré.
   const exceptions = [
     /performance\.now\(\) - t0\)\.toFixed\(0\)/,          // debugLog (journal de développement)
     /v => \+v\.toFixed\(1\)/,                              // nombre, pas affichage
     /bar\.style\.width = pct\.toFixed\(1\) \+ '%'/,        // valeur CSS
-    /phAlert\.value = \(cfg\.ph_alert_threshold_ml \/ 1000\)\.toFixed\(1\)/,   // input.value
-    /orpAlert\.value = \(cfg\.orp_alert_threshold_ml \/ 1000\)\.toFixed\(1\)/, // input.value
   ];
   const used = new Set();
   const bare = [];
@@ -246,7 +264,7 @@ check("balayage : tout toFixed( est converti, ou l'une des 5 exceptions nommées
     else used.add(k);
   });
   assert.deepStrictEqual(bare, [], `toFixed nu hors exceptions :\n${bare.join("\n")}`);
-  assert.strictEqual(used.size, 5, `exceptions attendues toutes présentes, vues : ${used.size}`);
+  assert.strictEqual(used.size, 3, `exceptions attendues toutes présentes, vues : ${used.size}`);
 });
 
 // ------------------------------------------------------------------------- M7
@@ -369,21 +387,78 @@ console.log("M8 texte firmware cité : valeurs de capteurs seules");
 }
 
 // ------------------------------------------------------------------------- M6
-console.log("M6 le libellé ne change pas (bug-211)");
-check("« Stock faible (0,3 L) » et « (0,0 L) » mot pour mot", () => {
-  for (const [rem, want] of [[300, "Stock faible (0,3 L)"], [0, "Stock faible (0,0 L)"]]) {
-    const { api } = sandbox();
-    api.setData({ ph_remaining_ml: rem, ph_alert_threshold_ml: 2000 });
+// bug-211 (2026-11-22) : CE BLOC A ÉTÉ RÉÉCRIT, et c'est la sentinelle qui l'a
+// exigé — elle a échoué dès que bug-211 a touché le libellé, ce qui est très
+// exactement son rôle. Ce qu'elle gardait et qui N'EXISTE PLUS :
+//   1. « Stock faible (0,0 L) » — ⛔ c'était LE défaut de bug-211 : l'écran
+//      annonçait un stock « faible » sur un compteur arrivé au bout, avec un
+//      nombre qui SATURE à zéro. Remplacé par « Compteur du bidon à zéro »,
+//      SANS aucun nombre.
+//   2. Le vecteur du « badge des cartes de dosage » : il testait du CODE MORT
+//      (#product-<p>-status n'existe dans aucun HTML), supprimé par bug-211.
+// Ce qui reste gardé ici : la VIRGULE de l'état « faible », seul état qui
+// affiche encore un nombre — c'est l'acquis de bug-199 qu'il faut protéger.
+console.log("M6 les libellés de stock (bug-211) et leur virgule");
+check("« Stock faible (0,3 L) » : virgule conservée", () => {
+  const { api } = sandbox();
+  api.setData({ ph_remaining_ml: 300, ph_container_ml: 20000, ph_alert_threshold_ml: 2000, ph_tracking_enabled: true });
+  const segs = api.buildSensorSegments("ph", 7.2, 0.2, REAL_ROUND, "", api._fmtPh, "a", "b", "ph_remaining_ml", "ph_alert_threshold_ml");
+  const seg = segs.find((x) => /Stock faible/.test(x.text));
+  assert.ok(seg, "segment « Stock faible » absent");
+  assert.strictEqual(seg.text, "Stock faible (0,3 L)");
+  assert.ok(!/\d\.\d/.test(seg.text), "un POINT décimal a reparu");
+});
+check("compteur au bout : AUCUN nombre affiché", () => {
+  const { api } = sandbox();
+  api.setData({ ph_remaining_ml: 0, ph_container_ml: 20000, ph_alert_threshold_ml: 2000, ph_tracking_enabled: true });
+  const segs = api.buildSensorSegments("ph", 7.2, 0.2, REAL_ROUND, "", api._fmtPh, "a", "b", "ph_remaining_ml", "ph_alert_threshold_ml");
+  const seg = segs.find((x) => /Compteur du bidon/.test(x.text));
+  assert.ok(seg, "segment « Compteur du bidon à zéro » absent");
+  assert.strictEqual(seg.text, "Compteur du bidon à zéro");
+  assert.ok(!/\d/.test(seg.text), "un CHIFFRE est réapparu dans l'état nul — c'était le défaut de bug-211");
+  assert.ok(!/Stock faible/.test(segs.map((x) => x.text).join(" ")), "« Stock faible » survit à l'état nul");
+});
+check("contenance non renseignée ≠ compteur au bout", () => {
+  const { api } = sandbox();
+  api.setData({ ph_remaining_ml: 0, ph_container_ml: 0, ph_alert_threshold_ml: 2000, ph_tracking_enabled: true });
+  const segs = api.buildSensorSegments("ph", 7.2, 0.2, REAL_ROUND, "", api._fmtPh, "a", "b", "ph_remaining_ml", "ph_alert_threshold_ml");
+  const txt = segs.map((x) => x.text).join(" ");
+  assert.ok(/Contenance du bidon à renseigner/.test(txt), "l'appareil neuf n'invite pas à renseigner la contenance");
+  assert.ok(!/Compteur du bidon à zéro/.test(txt), "appareil neuf confondu avec un bidon épuisé — LE défaut de bug-211");
+});
+// ⛔ Revue bug-211 (2026-11-22) : ces DEUX vecteurs sont nés d'un défaut réel.
+// La cascade ne lisait pas `*_tracking_enabled`, qui vaut FALSE en sortie
+// d'usine (src/config.h) — un appareil neuf criait une alerte permanente vers
+// une page dont le corps de carte est justement masqué. Le même garde ferme le
+// démarrage, où latestSensorData est encore null.
+check("suivi de produit désactivé ⇒ AUCUN segment de stock", () => {
+  const { api } = sandbox();
+  for (const d of [{ ph_remaining_ml: 0, ph_container_ml: 0 },
+                   { ph_remaining_ml: 0, ph_container_ml: 20000 },
+                   { ph_remaining_ml: 300, ph_container_ml: 20000 }]) {
+    api.setData({ ...d, ph_alert_threshold_ml: 2000, ph_tracking_enabled: false });
     const segs = api.buildSensorSegments("ph", 7.2, 0.2, REAL_ROUND, "", api._fmtPh, "a", "b", "ph_remaining_ml", "ph_alert_threshold_ml");
-    assert.strictEqual(segs.find((x) => /Stock/.test(x.text)).text, want);
+    const txt = segs.map((x) => x.text).join(" ");
+    assert.ok(!/Contenance du bidon|Compteur du bidon|Stock faible/.test(txt),
+      `le suivi est COUPÉ et l'appareil parle quand même du bidon : « ${txt} »`);
   }
 });
-check("badge des cartes de dosage : « Stock faible » / « OK » inchangés", () => {
-  const { api, els } = sandbox();
-  api.updateCard("ph", 100, 2000, 500);
-  assert.strictEqual(els.get("#product-ph-status").textContent, "Stock faible");
-  api.updateCard("ph", 1900, 2000, 500);
-  assert.strictEqual(els.get("#product-ph-status").textContent, "OK");
+check("démarrage (aucune donnée reçue) ⇒ AUCUN segment de stock", () => {
+  const { api } = sandbox();
+  api.setData(null);
+  const segs = api.buildSensorSegments("ph", 7.2, 0.2, REAL_ROUND, "", api._fmtPh, "a", "b", "ph_remaining_ml", "ph_alert_threshold_ml");
+  const txt = segs.map((x) => x.text).join(" ");
+  assert.ok(!/Contenance du bidon|Compteur du bidon|Stock faible/.test(txt),
+    `faux positif AVANT la première réponse de /data : « ${txt} »`);
+});
+check("⛔ aucun texte n'affirme que le bidon est vide", () => {
+  const { api } = sandbox();
+  for (const d of [{ ph_remaining_ml: 0, ph_container_ml: 20000 }, { ph_remaining_ml: 0, ph_container_ml: 20000, ph_ttt_state: 3 }]) {
+    api.setData({ ...d, ph_alert_threshold_ml: 2000, ph_tracking_enabled: true });
+    const segs = api.buildSensorSegments("ph", 7.2, 0.2, REAL_ROUND, "", api._fmtPh, "a", "b", "ph_remaining_ml", "ph_alert_threshold_ml");
+    const txt = segs.map((x) => x.text).join(" ");
+    assert.ok(!/\bvide\b/i.test(txt), "l'interface AFFIRME que le bidon est vide — l'appareil ne le sait pas (ADR-0141)");
+  }
 });
 
 console.log(`\n${ran - failures}/${ran} vecteurs conformes`);

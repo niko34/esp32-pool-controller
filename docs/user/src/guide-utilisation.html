@@ -136,8 +136,8 @@ plusieurs équipements&nbsp;:</p>
   <li><strong>Il commande l'éclairage</strong> du bassin, à la demande ou
   sur programmation&nbsp;;</li>
   <li><strong>Il garde l'historique</strong> des mesures et vous alerte
-  quand quelque chose mérite votre attention (bidon presque vide, sonde à
-  recalibrer, régulation suspendue…).</li>
+  quand quelque chose mérite votre attention (bidon qui approche de la fin,
+  sonde à recalibrer, régulation suspendue…).</li>
 </ul>
 
 <h3>Se connecter</h3>
@@ -375,8 +375,8 @@ bloqué&nbsp;» au chapitre suivant.</p>
   «&nbsp;Limite journalière atteinte&nbsp;»…) — une information à
   prendre en compte&nbsp;;</li>
   <li><strong>Badge rouge</strong> («&nbsp;Capteur indisponible&nbsp;»,
-  «&nbsp;Trop élevé&nbsp;»…) — quelque chose demande votre
-  intervention.</li>
+  «&nbsp;Trop élevé&nbsp;», «&nbsp;Compteur du bidon à zéro&nbsp;»…) —
+  quelque chose demande votre intervention.</li>
 </ul>
 
 <p><strong>Deux courbes sur les graphiques pH et chlore</strong> — depuis la
@@ -1135,8 +1135,56 @@ gris — «&nbsp;Pause mélange · N&nbsp;min&nbsp;»,
 chlore), chacune avec une barre «&nbsp;restant / total&nbsp;»&nbsp;:
 l'appareil décompte chaque millilitre injecté du volume du bidon que vous
 avez déclaré. Sous un seuil d'alerte réglable (2&nbsp;litres par défaut),
-la barre passe au rouge et un badge «&nbsp;Stock faible&nbsp;» apparaît sur
-le tableau de bord.</p>
+la barre passe au rouge.</p>
+
+<p><strong>Le tableau de bord, lui, dit quatre choses différentes</strong>
+selon l'état de ce décompte&nbsp;— et depuis la version&nbsp;3.0.3 il ne les
+confond plus&nbsp;:</p>
+
+<ul>
+  <li><strong>Rien du tout</strong> — il reste de la marge, il n'y a rien à
+  faire&nbsp;;</li>
+  <li><strong>«&nbsp;Stock faible (0,3&nbsp;L)&nbsp;»</strong> (orange) — vous
+  passez sous le seuil d'alerte&nbsp;: pensez à prévoir du produit&nbsp;;</li>
+  <li><strong>«&nbsp;Compteur du bidon à zéro&nbsp;»</strong> (rouge) — tout le
+  volume que vous aviez déclaré a été injecté. Une phrase suit, et elle dit quoi
+  faire&nbsp;;</li>
+  <li><strong>«&nbsp;Contenance du bidon à renseigner&nbsp;›&nbsp;»</strong>
+  (bleu) — vous n'avez pas encore dit combien contient le bidon. Ce badge est un
+  lien&nbsp;: il vous emmène sur la page Produits.</li>
+</ul>
+
+<div class="box-alerte">
+  <span class="box-title">Pourquoi l'appareil ne dit jamais «&nbsp;bidon
+  vide&nbsp;»</span>
+  <p>Parce qu'il n'en sait rien. Il n'y a <strong>aucune sonde dans le
+  bidon</strong>&nbsp;: l'appareil part de la quantité que <em>vous</em> avez
+  déclarée et en retire ce qu'il pense avoir injecté. Quand les deux se
+  rejoignent, il sait seulement que <strong>son compteur est arrivé au
+  bout</strong> — pas que le jerrican est sec.</p>
+  <p>Et il compte un peu <strong>large</strong>&nbsp;: les relevés faits sur cet
+  appareil montrent un écart de <strong>5 à 6&nbsp;%</strong> de trop. Un
+  compteur à zéro arrive donc en général <em>avant</em> le bidon réellement
+  vide. Il peut aussi arriver pour une tout autre raison&nbsp;: tuyau
+  d'aspiration pincé, crépine qui n'est plus dans le liquide, produit éventé —
+  dans ces trois cas le bidon est plein et le compteur dit zéro quand même.
+  C'est pour cela que le message vous demande de <strong>vérifier</strong>, et
+  ne conclut pas à votre place.</p>
+</div>
+
+<div class="box-alerte">
+  <span class="box-title">Un compteur à zéro n'arrête <strong>jamais</strong> le
+  dosage</span>
+  <p>Ni pour le pH, ni pour le chlore. C'est un choix, pas un oubli&nbsp;: comme
+  le compteur peut se tromper dans le sens «&nbsp;il reste du produit&nbsp;»,
+  s'arrêter reviendrait à <strong>cesser de désinfecter un bassin qui a encore de
+  quoi l'être</strong>. Et arrêter l'acide fait monter le pH, ce qui finit par
+  bloquer le chlore à son tour&nbsp;: on couperait la désinfection pour signaler
+  un bidon dont on n'est même pas sûr.</p>
+  <p>Ce qui protège votre bassin, ce sont les <strong>limites par injection, par
+  heure et par jour</strong> — elles, ne changent pas. Le suivi des bidons vous
+  <em>informe</em>, il ne commande rien.</p>
+</div>
 
 <p>Sous la barre, deux nombres sont affichés en permanence&nbsp;:
 <strong>Volume injecté</strong> et <strong>Démarrages pompe</strong>. Ils ne
@@ -1203,11 +1251,16 @@ page&nbsp;: il n'y a jamais de valeur pré-remplie à (mal) réutiliser.</p>
 </div>
 
 <p>Deux précisions utiles&nbsp;: ce suivi est <strong>indicatif</strong> —
-un bidon affiché vide ne bloque pas le dosage (ce sont les limites
-journalières qui protègent le bassin, pas ce compteur)&nbsp;; et mettre à
-jour le niveau n'a <strong>aucun effet</strong> sur ce que l'appareil a
-appris de votre bassin — la mémoire porte sur la consommation de l'eau, pas
-sur le contenant.</p>
+un compteur à zéro ne bloque pas le dosage (ce sont les limites journalières
+qui protègent le bassin, pas ce compteur)&nbsp;; et mettre à jour le niveau
+n'a <strong>aucun effet</strong> sur ce que l'appareil a appris de votre
+bassin — la mémoire porte sur la consommation de l'eau, pas sur le
+contenant.</p>
+
+<p>Dernier détail&nbsp;: le <strong>seuil d'alerte se saisit en litres
+entiers</strong> (2, 3, 5…). Pour un seuil qui sert à vous prévenir, la
+décimale n'apportait rien et obligeait à afficher un point là où tout le reste
+de l'interface utilise la virgule.</p>
 
 <!-- ══════════════════ CH. 04 — Que faire si… ══════════════════ -->
 <h2 class="page-break"><span class="num">4</span>Que faire si…</h2>
@@ -1246,6 +1299,30 @@ geste qui compte — cliquez <strong>«&nbsp;Mettre à jour le
 niveau&nbsp;»</strong> sur la page Produits (chapitre&nbsp;3). La fenêtre
 de confirmation vous montre au passage le <strong>relevé</strong> à
 noter&nbsp;: c'est le moment de le recopier.</p>
+
+<h3>… «&nbsp;Compteur du bidon à zéro&nbsp;» s'affiche en rouge&nbsp;?</h3>
+
+<p>Tout le volume que vous aviez déclaré a été injecté. <strong>Allez voir le
+bidon.</strong> Trois cas, et le message ne peut pas les distinguer à votre
+place&nbsp;:</p>
+
+<ul>
+  <li><strong>Il est effectivement vide ou presque</strong> — remplacez-le ou
+  remplissez-le&nbsp;;</li>
+  <li><strong>Il contient encore du produit</strong> — c'est fréquent, le
+  compteur compte un peu large&nbsp;: il suffit de saisir la quantité réelle
+  (chapitre&nbsp;3)&nbsp;;</li>
+  <li><strong>Il est plein</strong> — alors le produit ne sort pas. Vérifiez le
+  <strong>tuyau d'aspiration</strong> (pincé, fendu) et la <strong>crépine</strong>
+  (toujours dans le liquide&nbsp;?). Si le message précise «&nbsp;<em>et la cible
+  n'est plus tenue malgré le dosage</em>&nbsp;», c'est exactement ce qu'il faut
+  regarder&nbsp;: l'appareil a passé la journée à doser sans effet.</li>
+</ul>
+
+<p>Dans tous les cas, le message disparaît quand vous cliquez
+<strong>«&nbsp;Mettre à jour le niveau&nbsp;»</strong> sur la page Produits. Et
+pendant tout ce temps, <strong>le dosage continue</strong>&nbsp;: ce badge vous
+alerte, il ne coupe rien.</p>
 
 <h3>… «&nbsp;Limite journalière atteinte&nbsp;» s'affiche&nbsp;?</h3>
 

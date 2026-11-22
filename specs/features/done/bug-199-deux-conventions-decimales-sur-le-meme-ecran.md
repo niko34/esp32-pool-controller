@@ -185,7 +185,7 @@ de bord) **et** `:5336` (`status.textContent = isLow ? 'Stock faible' : 'OK'`, b
 dosage). ⛔ **Traiter l'un sans l'autre créerait exactement la seconde forme que ce chantier
 combat.**
 
-⇒ **DÉCISION : extension SORTIE de bug-199**, et ouverte en **[bug-211](../todo/bug-211-un-bidon-vide-est-annonce-comme-un-stock-faible.md)**.
+⇒ **DÉCISION : extension SORTIE de bug-199**, et ouverte en **[bug-211](bug-211-un-bidon-vide-est-annonce-comme-un-stock-faible.md)**.
 **Motif** : bug-199 a un objet **net** — la convention décimale — et un critère d'acceptation
 mesurable (*aucun point décimal affiché*). ⚠️ Y mêler un changement de **libellé** ferait perdre
 ce critère. ⇒ Dans ce lot, `:5143` ne change **que de format** : « Stock faible (0,3 L) ».
