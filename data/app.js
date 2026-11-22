@@ -5235,11 +5235,13 @@
 
   // Facteur commun pH/ORP (revue code-reviewer) : assemble TOUS les segments
   // d'un capteur — mesure d'état, capteur indisponible, limites/combinaison
-  // (dosingLimitSegments), cumul/stock, décomptes. `dailyMlKey`/`maxMlKey`/
-  // `remKey`/`thrKey` : seuls les NOMS DE CHAMP diffèrent entre pH et ORP (et
-  // ne suivent pas tous le même gabarit, ex. max_chlorine_ml_per_day) — d'où
-  // ces paramètres plutôt qu'un simple préfixe `${sensor}_`.
-  function buildSensorSegments(sensor, target, tol, round, unit, show, dailyMlKey, maxMlKey, remKey, thrKey) {
+  // (dosingLimitSegments), cumul/stock, décomptes. `dailyMlKey`/`remKey`/`thrKey` :
+  // seuls les NOMS DE CHAMP diffèrent entre pH et ORP, et ils ne suivent pas tous
+  // le même gabarit — d'où ces paramètres plutôt qu'un simple préfixe `${sensor}_`.
+  // ⛔ `maxMlKey` a été RETIRÉ (revue 2026-11-22, m3) : depuis que le cumul passe
+  // par _effectiveDailyMax(), plus personne ne le lisait. Un paramètre mort fait
+  // croire à un rôle qu'il n'a plus.
+  function buildSensorSegments(sensor, target, tol, round, unit, show, dailyMlKey, remKey, thrKey) {
     const segs = measureStateSegments(sensor, latestSensorData);
     const v = latestSensorData?.[sensor];
     const ok = latestSensorData !== null && measuresAreValid(latestSensorData);
@@ -5247,7 +5249,12 @@
       segs.push({ priority: 0, variant: 'danger', text: 'Capteur indisponible' });
     }
     segs.push(...dosingLimitSegments(sensor, ok ? outOfRangeText(v, target, tol, round, unit, show) : null));
-    const cumul = dailyCumulSegment(latestSensorData?.[dailyMlKey], window._config?.[maxMlKey] ?? 0,
+    // bug-208 : MEME dénominateur que la barre de la carte héros — le segment
+    // disait « la même arithmétique » et portait donc le MÊME défaut.
+    // ⚠️ Conséquence assumée : le segment apparaît PLUS TÔT qu'avant. C'est le
+    // correctif, pas une régression.
+    const cumul = dailyCumulSegment(latestSensorData?.[dailyMlKey],
+      _effectiveDailyMax(sensor).effective ?? 0,
       latestSensorData?.[`${sensor}_limit_reached`] === true);
     if (cumul) segs.push(cumul);
     // bug-211 : cascade de quatre états exclusifs (cf. bidonCounterState()).
@@ -5361,7 +5368,7 @@
 
     // Badge pH — assemblé par buildSensorSegments() (factorisé avec ORP)
     const phSegments = buildSensorSegments('ph', window._config?.ph_target ?? 7.2, 0.2, v => +v.toFixed(1), '', _fmtPh,
-      'ph_daily_ml', 'max_ph_ml_per_day', 'ph_remaining_ml', 'ph_alert_threshold_ml');
+      'ph_daily_ml', 'ph_remaining_ml', 'ph_alert_threshold_ml');
     const phBadge = composeSensorBadge(phSegments);
     setBadge('ph-sensor-badge', phBadge.variant, phBadge.segments);
 
@@ -5371,7 +5378,7 @@
     // monotone jusqu'à 74 mV, minimum −46 : jamais « Capteur indisponible »,
     // un « Trop bas » orange pendant dix jours sans cette règle).
     const orpSegments = buildSensorSegments('orp', window._config?.orp_target ?? 650, 150, Math.round, ' mV', String,
-      'orp_daily_ml', 'max_chlorine_ml_per_day', 'orp_remaining_ml', 'orp_alert_threshold_ml');
+      'orp_daily_ml', 'orp_remaining_ml', 'orp_alert_threshold_ml');
     const orpBadge = composeSensorBadge(orpSegments);
     setBadge('orp-sensor-badge', orpBadge.variant, orpBadge.segments);
 
@@ -7298,6 +7305,71 @@
   }
 
   // ========== DOSAGE JOURNALIER ==========
+  // bug-208 — LA limite réellement opposable d'une journée. ⚠️ UN SEUL calcul,
+  // DEUX consommateurs (la barre de la carte héros ET le segment « Cumul XX % »
+  // du tableau de bord) : deux expressions pour la même notion divergent, c'est
+  // le piège n° 1 de ce projet, déjà constaté quatre fois.
+  //
+  // ⛔ Le MINIMUM des deux, jamais l'un des deux :
+  //   • le plafond RÉGLÉ seul ⇒ la barre vise un but inatteignable (LE défaut) ;
+  //   • le plafond MATÉRIEL seul ⇒ bien pire. À orp_limit_minutes = 60 (réglage
+  //     autorisé), phSustainableAvgFlow() rend l'amplitude ENTIÈRE : ~10 400 mL/j
+  //     sur cet appareil, soit CINQ FOIS le plafond réglé, et la barre marquerait
+  //     19 % à l'instant où le dosage s'arrête (visa pool-chemistry, C1).
+  //
+  // Le plafond matériel n'est PAS une constante : il vaut le débit soutenable ×
+  // les minutes de filtration PROGRAMMÉES du jour. Il bouge avec le planning, et
+  // en mode Auto il peut même rétrécir en cours de journée (C5).
+  function _effectiveDailyMax(sensor) {
+    const num = v => (typeof v === 'number' && isFinite(v) && v > 0) ? v : null;
+    // ⛔ Revue 2026-11-22 (M2) : ZERO n'est PAS une donnée manquante, c'est une
+    // décision — le champ accepte min="0" et le firmware traite 0 comme
+    // « tout bloqué » (dailyInjectedMl >= 0 est vrai d'emblée). Le confondre avec
+    // « absent » faisait retomber la barre sur la capacité matérielle : l'en-tête
+    // annonçait « 0 / 1 768 mL » avec une barre PLEINE, et le 1 768 n'était
+    // expliqué par rien. Avant ce lot, l'écran disait « Limite non configurée ».
+    const zeroSet = v => (typeof v === 'number' && isFinite(v) && v === 0);
+    // TROIS notions distinctes, ⛔ jamais interchangeables — les confondre serait
+    // la faute même que cette fiche corrige :
+    //   configured : ce que l'utilisateur a RÉGLÉ. Jamais masqué.
+    //   enforced   : ce que le firmware OPPOSE réellement (Mode Boost compris).
+    //                Absent côté pH — aucun boost pH n'existe ⇒ repli sur le réglage.
+    //   capacity   : ce que la pompe peut DÉLIVRER dans la journée programmée.
+    const cfgKey = sensor === 'ph' ? 'max_ph_ml_per_day' : 'max_chlorine_ml_per_day';
+    const rawCfg = window._config?.[cfgKey];
+    if (zeroSet(rawCfg)) {
+      // Dosage volontairement interdit : aucun plafond à viser, aucune note.
+      return { configured: 0, capacity: null, enforced: 0, effective: null, limitedByCapacity: false };
+    }
+    const configured = num(rawCfg);
+    const enforced   = num(latestSensorData?.[`${sensor}_effective_max_ml_per_day`]) ?? configured;
+    const capacity   = num(latestSensorData?.[`${sensor}_daily_max_ml`]);
+    const floors = [enforced, capacity].filter(v => v !== null);
+    const effective = floors.length ? Math.min(...floors) : null;
+    return {
+      configured, capacity, enforced, effective,
+      // L'écart à EXPLIQUER est celui que l'utilisateur constate : son propre
+      // réglage n'est pas atteignable. ⛔ Et seulement dans ce sens : quand le
+      // firmware accorde PLUS que le réglage (Boost sous le genou), il n'y a
+      // rien à expliquer et surtout rien à suggérer.
+      limitedByCapacity: (configured !== null && effective !== null && effective < configured),
+    };
+  }
+
+  // bug-208 — la note d'écart CÈDE LA PLACE au stock (visa pool-chemistry, C4).
+  // Quand le compteur du bidon est au bout, c'est LUI la cause à traiter ; annoncer
+  // un plafond inatteignable fournirait une explication FAUSSE d'un symptôme VRAI
+  // et retarderait le seul geste utile. ⛔ On se branche sur la cascade existante
+  // de bug-211, on n'en crée pas une seconde.
+  function _stockTakesPrecedence(sensor) {
+    if (latestSensorData?.[`${sensor}_tracking_enabled`] !== true) return false;
+    const st = bidonCounterState(latestSensorData?.[`${sensor}_remaining_ml`],
+      latestSensorData?.[`${sensor}_container_ml`],
+      latestSensorData?.[`${sensor}_alert_threshold_ml`],
+      latestSensorData?.[`${sensor}_ttt_state`]);
+    return st.state === 'zero' || st.state === 'low';
+  }
+
   // type : 'ph' ou 'orp'
   function updateDailyDoseDisplay(type) {
     const injectedMl = type === 'ph'
@@ -7306,19 +7378,26 @@
     const limitReached = type === 'ph'
       ? (latestSensorData?.ph_limit_reached === true)
       : (latestSensorData?.orp_limit_reached === true);
-    const maxMl = type === 'ph'
-      ? (window._config?.max_ph_ml_per_day ?? 0)
-      : (window._config?.max_chlorine_ml_per_day ?? 0);
+    const lim = _effectiveDailyMax(type);
+    const maxMl = lim.effective ?? 0;
 
     const valueEl  = $(`#daily-dose-${type}-value`);
     const barEl    = $(`#daily-dose-${type}-bar`);
     const statusEl = $(`#daily-dose-${type}-status`);
+    const noteEl   = $(`#daily-dose-${type}-note`);
     if (!valueEl || !barEl || !statusEl) return;
+    // bug-208 : la note n'existe QUE s'il y a un écart à expliquer. `:empty`
+    // referme le bloc — aucune ligne permanente n'est ajoutée à la carte.
+    const setNote = (txt) => { if (noteEl) noteEl.textContent = txt; };
+    setNote('');
 
     if (injectedMl === null) {
       valueEl.textContent = '— mL';
       barEl.style.width = '0%';
-      barEl.setAttribute('aria-valuenow', '0');
+      // ⛔ Pas d'aria-valuenow à 0 : un lecteur d'écran annoncerait « 0 % »
+      // là où la valeur est INCONNUE (visa pool-chemistry, C5).
+      barEl.removeAttribute('aria-valuenow');
+      barEl.setAttribute('aria-valuetext', 'indisponible');
       barEl.className = 'daily-dose__bar dose-bar--ok';
       statusEl.textContent = '';
       return;
@@ -7328,9 +7407,10 @@
 
     if (!maxMl || maxMl <= 0) {
       // Limite non configurée
-      valueEl.textContent = `${injected} mL`;
+      valueEl.textContent = `${injected.toLocaleString('fr-FR')} mL`;
       barEl.style.width = '0%';
-      barEl.setAttribute('aria-valuenow', '0');
+      barEl.removeAttribute('aria-valuenow');
+      barEl.setAttribute('aria-valuetext', 'indisponible');
       barEl.className = 'daily-dose__bar dose-bar--ok';
       statusEl.textContent = 'Limite non configurée';
       statusEl.style.color = 'var(--muted)';
@@ -7338,11 +7418,27 @@
     }
 
     const max = Math.round(maxMl);
-    valueEl.textContent = `${injected} / ${max} mL`;
+    // Les DEUX nombres au même format : l'en-tête écrivait « 2000 » sans séparateur
+    // à deux centimètres d'un « 1 768 » qui en portait un.
+    valueEl.textContent = `${injected.toLocaleString('fr-FR')} / ${max.toLocaleString('fr-FR')} mL`;
 
-    const pct = Math.min(100, Math.round((injected / max) * 100));
+    // ⛔ PRIMAUTÉ DU VERDICT FIRMWARE (visa pool-chemistry, C2) : quand l'appareil
+    // dit que la limite est atteinte, la barre est PLEINE et rouge, quel que soit
+    // le rapport injecté/dénominateur. Sans ce court-circuit, un plafond effectif
+    // non publié (Mode Boost) ferait afficher « 1 000 / 1 734 mL » en vert pendant
+    // que le journal écrit « LIMITE JOURNALIÈRE CHLORE ATTEINTE ».
+    // ⚠️ Et l'inverse reste INTERDIT : une barre pleine ne conclut JAMAIS à
+    // « limite atteinte » d'elle-même — en mode Auto le dénominateur peut rétrécir
+    // en cours de journée sous le volume déjà injecté (C5). Seul *_limit_reached
+    // pilote le texte d'état.
+    const pct = limitReached ? 100 : Math.min(100, Math.round((injected / max) * 100));
     barEl.style.width = `${pct}%`;
     barEl.setAttribute('aria-valuenow', String(pct));
+    // m1 : au court-circuit, « 100 % » contredirait les deux nombres de la même
+    // phrase (1 000 sur 1 734). On énonce alors le VERDICT, pas un pourcentage.
+    barEl.setAttribute('aria-valuetext', limitReached
+      ? `${injected.toLocaleString('fr-FR')} mL sur ${max.toLocaleString('fr-FR')} mL, limite journalière atteinte`
+      : `${injected.toLocaleString('fr-FR')} mL sur ${max.toLocaleString('fr-FR')} mL, ${pct} %`);
 
     let barClass = 'dose-bar--ok';
     if (limitReached || pct >= 90) {
@@ -7357,6 +7453,28 @@
       statusEl.style.color = 'var(--danger)';
     } else {
       statusEl.textContent = '';
+    }
+
+    // bug-208 — l'écart entre ce qui est RÉGLÉ et ce qui est ATTEIGNABLE.
+    // ⛔ Le chiffre réglé n'est pas masqué : il est QUALIFIÉ. C'est une
+    // information d'installation, pas une alerte — d'où le gris et non l'ambre :
+    // elle est vraie tous les jours chez cet utilisateur, et une alerte permanente
+    // cesse d'être lue.
+    // ⛔ AUCUN impératif, AUCUN nom de réglage (visa pool-chemistry, C3) : les deux
+    // leviers qui « récupéreraient » la différence sont l'un un mauvais échange
+    // (relever la limite horaire défait la garde qui protège vraiment) et l'autre
+    // inopérant ET dangereux (relever la consigne ORP ne délivre pas un mL de plus
+    // — régulation P pure bornée par le soutenable — et pousse le pH vers le seuil
+    // d'inhibition chlore de 7,60).
+    if (lim.limitedByCapacity && !_stockTakesPrecedence(type)) {
+      // ⛔ Revue 2026-11-22 (M1) : la première rédaction accusait « la durée de
+      // filtration prévue aujourd'hui ». C'est UNE des causes, pas LA cause : le
+      // plafond atteignable dépend AUSSI de la limite horaire et du débit calibré
+      // de la pompe. Filtration en Marche 24 h/24 + limite horaire basse ⇒ la
+      // phrase désignait un coupable innocent — la faute même que cette fiche
+      // corrige, déplacée de la valeur vers la cause.
+      setNote(`Réglage : ${Math.round(lim.configured).toLocaleString('fr-FR')} mL — la pompe ne peut `
+        + 'pas en injecter autant dans une journée. Il n\'y a rien à corriger si l\'eau est bonne.');
     }
   }
 
@@ -7703,15 +7821,14 @@
     // comme avant, INDÉPENDANT du mode de régulation : un maximum journalier
     // reste une capacité lisible en mode manuel.
     const served086 = (typeof data.ph_limited_by_hourly_budget === "boolean");
-    const capBlock = $("#ph_capacity_block");
-    if (capBlock) {
-      capBlock.hidden = !served086;
-      const maxEl = $("#ph_daily_max_value");
-      const dailyMax = _doseNum(data.ph_daily_max_ml);
-      if (maxEl) maxEl.textContent = (dailyMax !== null)
-        ? Math.round(dailyMax).toLocaleString("fr-FR") + " mL/j"
-        : "Indisponible";
-    }
+    // bug-208 — le bloc « Maximum journalier » a été SUPPRIMÉ d'index.html.
+    // Il flottait entre la barre et « Atteinte de la cible », rattaché visuellement
+    // à ni l'une ni l'autre, et donnait un nombre sans dire que c'était LUI la vraie
+    // limite. Le plafond n'a désormais qu'UN SEUL point de décision,
+    // updateDailyDoseDisplay(), et son écart est dit par une note attachée à la
+    // barre — affichée seulement quand il y a un écart.
+    // ⛔ Et plus jamais « Indisponible » écrit en toutes lettres : une ligne
+    // occupée à ne rien dire (visa pool-chemistry, C5).
     const undersizedBanner = $("#ph_undersized_banner");
     if (undersizedBanner) {
       undersizedBanner.hidden = !(served086 && data.ph_undersized === true);

@@ -2,6 +2,36 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [3.1.0] - 2026-11-22
+
+### Fonctionnalités
+- **La barre «&nbsp;Dosage du jour&nbsp;» vise enfin un but atteignable (bug-208).** Elle se remplissait vers la limite **saisie dans les réglages** (2 000 mL) alors que l'appareil ne peut pas la délivrer : une pompe doseuse n'injecte que quelques minutes par heure, et seulement pendant la filtration. Sur l'installation de référence, le vrai plafond est de **1 768 mL** côté pH et d'environ **1 734 mL** côté chlore. Le dosage s'arrêtait donc avec une barre à **88 %**, sans explication. La barre vise désormais la limite réellement opposable, et l'en-tête affiche « 1 600 / 1 768 mL » — les deux nombres avec le même séparateur de milliers.
+- **Quand les deux chiffres diffèrent, l'écran le dit** : une phrase grise sous la barre, « Réglage : 2 000 mL — non atteignable avec la durée de filtration prévue aujourd'hui. Il n'y a rien à corriger si l'eau est bonne. » Grise et non orange : c'est une caractéristique d'installation, vraie tous les jours, pas une alerte. Elle n'apparaît **que** s'il y a un écart.
+- ⛔ **Ce qu'il ne faut PAS faire pour « récupérer » la différence** : augmenter la durée d'injection par heure défait la protection qui sert réellement, et monter la consigne (pH ou ORP) ne fait sortir **aucun** millilitre de plus — côté pH, cela pousse en plus l'eau vers la zone où le chlore devient moins efficace. Le seul levier utile est d'**allonger la filtration**.
+- **La carte chlore reçoit le même traitement** — elle n'avait **aucune** ligne de plafond, donc rien ne permettait de voir que son vrai maximum est d'environ 1 734 mL.
+- **La ligne « Maximum journalier » de la page pH est supprimée.** Elle flottait entre la barre et la rubrique suivante, rattachée à ni l'une ni l'autre, et donnait un nombre sans dire que c'était **lui** la vraie limite. Son information vit maintenant dans la barre et dans la phrase grise.
+- **Le segment « Cumul XX % » du tableau de bord apparaît plus tôt.** Il portait le même mauvais dénominateur. ⚠️ **C'est le correctif, pas une régression** : 75 % de 1 768 mL se franchissent à 1 326 mL au lieu de 1 500.
+- **La phrase grise cède la place au stock** : quand le compteur du bidon est au bout ou bas, c'est ce message-là qui s'affiche — sinon l'appareil donnerait une explication fausse d'un symptôme vrai.
+- Symétrie pH / chlore : « MAJ auto toutes les 5 secondes » est retiré de la carte Chlore (doublon de la ligne « maj — » juste au-dessus, déjà retiré du pH en 3.0.0). ⛔ **Conservé sur la carte Température**, qui n'a pas de ligne « brut · maj » : c'est sa seule indication de fraîcheur.
+
+### Firmware
+- 🔴 **Le Mode Boost ABAISSAIT la limite de chlore du jour — corrigé.** Le Boost rendait `min(réglé × 1,5 ; 1 000 mL)` : au-delà de **666,7 mL/jour réglés**, il **faisait descendre** le plafond. Sur l'appareil de production (2 000 mL/j réglés), l'armer ramenait la limite opposée à **1 000 mL/j** — le mode censé doser davantage divisait le budget du jour par deux et déclenchait un message rouge « limite journalière chlore atteinte » à mi-course. La formule devient `max(réglé, min(réglé × 1,5 ; 1 000))` : **le Boost ne peut plus qu'ajouter**. ⭐ Ce n'est pas une règle neuve — la fonction jumelle qui relève la consigne ORP porte la même garde depuis l'origine ; elle n'avait été appliquée qu'à **un** des deux leviers.
+  ⚠️ **Conséquence à connaître** : au-delà de 1 000 mL/j réglés, le Boost **n'ajoute plus rien à cette limite** (il ne la retire pas non plus). Ses deux autres effets — consigne de désinfection relevée, filtration prolongée — restent entiers. Un **avertissement au journal** le dit maintenant à l'activation.
+- **Mesure** : nouvel accesseur `getOrpDailyMaxMl()` (miroir de celui du pH), **lecture seule**, ⛔ aucun chemin nouveau vers les pompes.
+- **`/data` et WebSocket** : deux clés neuves en parité stricte — `orp_daily_max_ml` (ce que la pompe peut **délivrer**) et `orp_effective_max_ml_per_day` (ce que le firmware **oppose** réellement, Mode Boost compris). +67 octets, trame à 3 665 o, marge 431 o : aucun agrandissement de tampon.
+- **Deux `static_assert`** verrouillent les bornes dont dépend l'invariant du Boost (`kBoostDailyFactor ≥ 1`, `kBoostDailyHardCapMl > 0`).
+
+### Documentation
+- [ADR-0143](docs/adr/0143-le-mode-boost-ne-peut-qu-ajouter.md) (nouveau) : « le Mode Boost ne peut qu'AJOUTER ; `kBoostDailyHardCapMl` plafonne le **relèvement**, jamais la valeur finale ». Quatre alternatives écartées, dont le refus d'activation au-delà du genou. **Amende [ADR-0093](docs/adr/0093-le-mode-de-filtration-est-la-seule-autorite.md)** — son argument « Boost + Marche : le volume reste borné à 1 000 mL quelle que soit la durée » est devenu **faux** et portait un visa chimique — et **rectifie [ADR-0025](docs/adr/0025-mode-boost.md)**, déjà *Superseded*, dont trois passages sur le dosage mentaient encore.
+- `docs/API.md`, `docs/subsystems/ws-manager.md` : les deux clés neuves, avec la distinction des **trois notions** — réglé · réellement opposé · délivrable. Les confondre est la faute que ce correctif dénonce.
+- `docs/subsystems/pump-controller.md` : `getOrpDailyMaxMl()`, formule corrigée de `getEffectiveMaxChlorineMlPerDay()`, `kBoostDailyHardCapMl` requalifié en plafond du relèvement, argument de la cellule « Marche » refait, troisième levier inerte du Boost.
+- `docs/features/page-ph.md`, `page-orp.md` : le dénominateur, la note conditionnelle, la ligne supprimée, les cas limites. `docs/features/page-dashboard.md` : le segment « Cumul XX % » apparaît plus tôt.
+- `docs/DESIGN_SYSTEM.md` §5.27 : `.daily-dose` et ses enfants, **contexte d'emploi déclaré** (carte héros pH/ORP uniquement, ⛔ jamais le tableau de bord), et la règle opposable — *une barre de quota se remplit vers la limite réellement opposable, et le chiffre réglé, s'il diffère, est porté par une note attachée à la barre, jamais par une ligne flottante*.
+- `docs/user/src/guide-utilisation.html` et `guide-regulation.html` : ce que signifie la barre, pourquoi il n'y a rien à corriger si l'eau est bonne, et ce que le Boost fait vraiment. PDF à régénérer à la release.
+- ⚠️ **Capture à refaire** : `screenshots/08_ORP.jpg` (la ligne « MAJ auto toutes les 5 secondes » y figure encore). ⓘ `screenshots/07_pH.jpg` est périmée **depuis la 3.0.0** pour la même ligne — dette antérieure, pas causée par cette version.
+
+---
+
 ## [3.0.3] - 2026-11-22
 
 ### Fonctionnalités

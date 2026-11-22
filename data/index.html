@@ -940,11 +940,16 @@
                 <div class="daily-dose__bar-wrap">
                   <div class="daily-dose__bar dose-bar--ok"
                     id="daily-dose-ph-bar"
+                    aria-describedby="daily-dose-ph-note"
                     role="progressbar"
-                    aria-valuenow="0" aria-valuemin="0" aria-valuemax="100"
+aria-valuemin="0" aria-valuemax="100"
+                    aria-valuetext="indisponible"
                     style="width:0%"></div>
                 </div>
                 <p class="daily-dose__status" id="daily-dose-ph-status"></p>
+                <!-- bug-208 : écart entre le plafond RÉGLÉ et le plafond ATTEIGNABLE.
+                     Vide la plupart du temps — `:empty` referme le bloc. -->
+                <p class="daily-dose__note" id="daily-dose-ph-note"></p>
               </div>
               <!-- feature-086 (v2.29.0) : capacité de dosage pH — maximum
                    journalier (limite horaire × débit calibré × minutes de
@@ -959,9 +964,13 @@
                    Masqué en bloc si le firmware ne sert pas
                    ph_limited_by_hourly_budget (antérieur à la 2.29.0) — cf.
                    updatePhDosingCard(), seul point de décision. -->
-              <div class="muted small" id="ph_capacity_block" hidden style="margin-top:8px">
-                <div>Maximum journalier : <span id="ph_daily_max_value">—</span></div>
-              </div>
+              <!-- bug-208 : #ph_capacity_block SUPPRIMÉ. La ligne « Maximum
+                   journalier » flottait entre la barre de dosage et « Atteinte de la
+                   cible », rattachée visuellement à ni l'une ni l'autre, et donnait un
+                   nombre sans dire que c'était LUI la vraie limite. La barre vise
+                   désormais ce plafond, et l'écart avec le réglage est porté par
+                   .daily-dose__note, attachée à la barre et affichée SEULEMENT quand il
+                   y a un écart. − 1 élément permanent sur une carte qui en portait 13. -->
               <!-- feature-096 (v2.37.0) : temps d'atteinte de cible pH. Patron
                    maison field__label + <strong> + <span class="muted small">,
                    identique aux autres rubriques de cette colonne (pas de .kv).
@@ -1650,7 +1659,11 @@
               <div class="readout__value" id="orp_current_value" style="font-size:2rem;font-weight:700;line-height:1">--</div>
               <!-- feature-025 : ligne brute discrète (brut · maj) -->
               <div class="filter-sub" id="orp-filter-sub">brut -- · maj --</div>
-              <div class="muted small" style="margin-top:4px">MAJ auto toutes les 5 secondes</div>
+              <!-- bug-208 (symétrie pH/ORP) : « MAJ auto toutes les 5 secondes »
+                   RETIRÉ — doublon du « maj — » de #orp-filter-sub juste au-dessus,
+                   déjà retiré de la carte pH par bug-201.
+                   ⛔ NE PAS le retirer de la carte Température : elle n'a pas de
+                   ligne « brut · maj », c'est sa SEULE indication de fraîcheur. -->
               <div class="chip-row">
                 <!-- feature-034 itération 2, convertie en bouton par feature-152 (asymétrie
                      corrigée : la sonde ORP n'avait pas de modal cliquable comme pH) —
@@ -1688,11 +1701,16 @@
                 <div class="daily-dose__bar-wrap">
                   <div class="daily-dose__bar dose-bar--ok"
                     id="daily-dose-orp-bar"
+                    aria-describedby="daily-dose-orp-note"
                     role="progressbar"
-                    aria-valuenow="0" aria-valuemin="0" aria-valuemax="100"
+aria-valuemin="0" aria-valuemax="100"
+                    aria-valuetext="indisponible"
                     style="width:0%"></div>
                 </div>
                 <p class="daily-dose__status" id="daily-dose-orp-status"></p>
+                <!-- bug-208 : écart entre le plafond RÉGLÉ et le plafond ATTEIGNABLE.
+                     Vide la plupart du temps — `:empty` referme le bloc. -->
+                <p class="daily-dose__note" id="daily-dose-orp-note"></p>
               </div>
               <!-- feature-096 (v2.37.0) : miroir ORP du bloc pH — même patron,
                    même rendu (updateTimeToTargetDisplay(), une seule fonction

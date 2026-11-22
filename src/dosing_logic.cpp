@@ -631,5 +631,14 @@ float effectiveMaxChlorinePure(float maxChlorine, bool boostActive, bool orpMode
     return maxChlorine;
   }
   // Limite journalière relevée × facteur, bornée en dur (condition #1).
-  return fminf(maxChlorine * factor, hardCapMl);
+  // bug-208 / visa pool-chemistry du 2026-11-22 : le max() garantit que la
+  // limite n'est JAMAIS abaissée quand elle dépasse déjà le plafond dur —
+  // STRICTEMENT la condition #5 déjà appliquée à effectiveOrpTargetPure()
+  // ci-dessus, et OMISE ici. Le Boost ne peut qu'AJOUTER ; au-delà de
+  // hardCapMl/factor il devient inerte sur ce levier, jamais soustractif.
+  // ⛔ NE PAS « re-simplifier » ce max() : sans lui, un plafond réglé à
+  // 2 000 mL/j tombait à 1 000 à l'armement du Boost — le mode censé doser PLUS
+  // divisait le budget par deux, et déclenchait un critical à mi-course.
+  float raised = fminf(maxChlorine * factor, hardCapMl);
+  return maxChlorine > raised ? maxChlorine : raised;
 }

@@ -161,8 +161,9 @@ static void handleGetData(AsyncWebServerRequest* request) {
   //   "orp_p_term_ml_per_min":-1234.56,    → 1+21+1+1+8+1 = 33 o
   //   "orp_demand_ml_per_min":123.45,      → 1+21+1+1+6+1 = 31 o
   //   "orp_sustainable_ml_per_min":123.45, → 1+26+1+1+6+1 = 36 o
+  //   "orp_daily_max_ml":1439986,          → 1+16+1+1+7+1 = 27 o   (bug-208)
   //   "orp_limited_by_hourly_budget":false, → 1+28+1+1+5+1 = 37 o
-  //   → 265 o.
+  //   → 292 o.
   // Décompte des 4 clés de pause mélange (uint32 comptés sur 10 chiffres — borne
   // du TYPE, pas la borne fonctionnelle de 900 s) :
   //   "phMixingDelayActive":false,      → 1+19+1+1+ 5+1 = 28 o
@@ -673,6 +674,7 @@ static void handleGetData(AsyncWebServerRequest* request) {
   const float orpPTerm     = PumpController.getOrpPTermFlow();
   const float orpDemand    = PumpController.getOrpDemandFlow();
   const float orpSust      = PumpController.getOrpSustainableMlPerMin();
+  const float orpDailyMax  = PumpController.getOrpDailyMaxMl();
   if (!isnan(phFfLearned)) doc["ph_ff_learned_ml_per_min"] = round(phFfLearned * 100.0f) / 100.0f; else doc["ph_ff_learned_ml_per_min"] = nullptr;
   if (!isnan(phPTerm))     doc["ph_p_term_ml_per_min"]     = round(phPTerm * 100.0f) / 100.0f;     else doc["ph_p_term_ml_per_min"]     = nullptr;
   if (!isnan(phITerm))     doc["ph_i_term_ml_per_min"]     = round(phITerm * 100.0f) / 100.0f;     else doc["ph_i_term_ml_per_min"]     = nullptr;
@@ -680,6 +682,30 @@ static void handleGetData(AsyncWebServerRequest* request) {
   if (!isnan(orpPTerm))    doc["orp_p_term_ml_per_min"]    = round(orpPTerm * 100.0f) / 100.0f;    else doc["orp_p_term_ml_per_min"]    = nullptr;
   if (!isnan(orpDemand))   doc["orp_demand_ml_per_min"]    = round(orpDemand * 100.0f) / 100.0f;   else doc["orp_demand_ml_per_min"]    = nullptr;
   if (!isnan(orpSust))     doc["orp_sustainable_ml_per_min"] = round(orpSust * 100.0f) / 100.0f;   else doc["orp_sustainable_ml_per_min"] = nullptr;
+  // bug-208 — ⛔ POSÉ ICI, ENTRE LES MARQUEURS, et NON à côté de son jumeau
+  // ph_daily_max_ml : le bloc pH de feature-086 est AU-DESSUS de
+  // >>> PARITE-DATA:DEBUT, donc hors de portée de la sentinelle de parité.
+  // Recopier son emplacement aurait offert une 5ᵉ récidive du piège n° 1 du
+  // projet (visa pool-chemistry, condition C6). Même arrondi que le pH.
+  if (!isnan(orpDailyMax)) doc["orp_daily_max_ml"] = (uint32_t)lroundf(orpDailyMax);              else doc["orp_daily_max_ml"] = nullptr;
+  // bug-208 (visa pool-chemistry, C5) — le plafond journalier RÉELLEMENT
+  // OPPOSÉ par le firmware, Mode Boost compris. ⛔ À ne pas confondre avec
+  // orp_daily_max_ml (ce que la pompe peut DÉLIVRER) ni avec
+  // max_chlorine_ml_per_day (ce que l'utilisateur a RÉGLÉ, servi par ailleurs et
+  // jamais masqué) : trois notions distinctes, et les confondre serait la faute
+  // même que bug-208 dénonce.
+  // Sans cette clé, l'écran peut CONTREDIRE le journal : à 500 mL réglés et Boost
+  // armé, le firmware autorise 750 tandis que la barre saturerait à 100 %.
+  // ⛔ Revue 2026-11-22 (B1) : garde OBLIGATOIRE, comme ses trois voisines.
+  // `max_chlorine_ml_per_day` entre par /set-config SANS validation serveur
+  // (web_routes_config.cpp) : un réglage négatif traversait jusqu'au cast
+  // (uint32_t)lroundf(-5) = 4 294 967 291, et l'écran annonçait
+  // « 0 / 4 294 967 291 mL ». `lroundf(NaN)` puis cast est en outre un
+  // comportement INDÉFINI (NVS corrompue). Avant ce lot, le même réglage
+  // dégradait proprement en « Limite non configurée ».
+  const float orpEffMax = PumpController.getEffectiveMaxChlorineMlPerDay();
+  if (isfinite(orpEffMax) && orpEffMax >= 0.0f) doc["orp_effective_max_ml_per_day"] = (uint32_t)lroundf(orpEffMax);
+  else doc["orp_effective_max_ml_per_day"] = nullptr;
   doc["orp_limited_by_hourly_budget"] = PumpController.isOrpLimitedByHourlyBudget();
   //
   // CARACTÉRISATION DE POMPE — deux booléens qui étaient /data-SEULS, donc le
@@ -712,6 +738,10 @@ static void handleGetData(AsyncWebServerRequest* request) {
   // bug-200 (v2.98.0) : arrêt de sécurité (trop de redémarrages auto). Servi aux consommateurs
   // non-web et à la parité ; ne pilote JAMAIS la pastille (c'est le code 26). Parité /data <-> WS.
   // Budget WS : +25 o au pire, total retenu 3598 o, marge 498 o sur kWsFrameBufBytes = 4096.
+  // bug-208 (2026-11-22) : +27 o pour "orp_daily_max_ml" ⇒ total 3625 o, marge 471 o.
+  //   "orp_effective_max_ml_per_day":1439986, → 1+28+1+1+7+1 = 39 o
+  //   (clé recomptée en revue : 28 caractères, pas 29)
+  // ⇒ total 3664 o, marge 432 o. Aucun bump de gabarit nécessaire.
   doc["maintenance_mode"] = PumpController.isMaintenanceInhibited();
   doc["rescue_until"]  = (long)rescueState.untilEpoch;
   doc["rescue_dosing"] = isRescueChlorineActive(time(nullptr)) && !PumpController.isOrpPhInhibited() && !PumpController.isMaintenanceInhibited();

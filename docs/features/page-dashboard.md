@@ -694,7 +694,7 @@ Chaque carte pH et ORP porte un badge composé (`composeSensorBadge()`, app.js �
 | 1 | `Trop bas (X)` / `Trop élevé (X)` | `danger` | valeur hors plage (cible ± 0,2 pH / ± 150 mV) — **gaté par `measures_valid`** (feature-061) |
 | 2 | `Limite journalière atteinte` | `warning` | `ph_limit_reached` / `orp_limit_reached` |
 | 2.5 | `Compteur du bidon à zéro` | `danger` | bug-211, v3.0.3 — `*_tracking_enabled === true`, `*_container_ml > 0` **et** `*_remaining_ml ≤ 0`. Suivi d'un segment d'explication (priorité 2.6, même variante). ⚠️ Priorité **2,5 et non 0,5** (revue 2026-11-22) : une mesure hors plage (1) et les limites de dosage (2) passent AVANT un consommable |
-| 3 | `Cumul XX %` | `warning` | cumul journalier ≥ 75 % du quota |
+| 3 | `Cumul XX %` | `warning` | cumul journalier ≥ 75 % du quota **réellement opposable** (⚠️ **dénominateur corrigé en v3.1.0, bug-208** — le segment apparaît donc **plus tôt** qu'avant) |
 | 4 | `Stock faible (X,X L)` | `warning` | `0 < *_remaining_ml ≤ *_alert_threshold_ml` (seuil > 0) |
 | 4 | `Contenance du bidon à renseigner ›` | `info` | bug-211, v3.0.3 — `*_container_ml` absent ou ≤ 0. **Lien** vers `#/dosages` |
 
@@ -711,8 +711,12 @@ Chaque carte pH et ORP porte un badge composé (`composeSensorBadge()`, app.js �
 - **Garde anti-faux-positif « mesures invalides » (feature-061)** : le segment n'est produit que si `measuresAreValid(latestSensorData)` — on ne peut pas juger une sonde (ni une valeur hors plage) quand l'eau ne circule pas. Filtration arrêtée → seul le segment d'état mesure s'affiche, jamais un faux « Capteur indisponible » rouge.
 
 **Segment « Cumul XX % »** :
-- Affiché à partir de **75 %** du quota journalier (`ph_daily_ml / max_ph_ml_per_day`, `orp_daily_ml / max_chlorine_ml_per_day`), même arithmétique que la barre de cumul des pages `/ph` et `/orp` (arrondi des entrées, pourcentage plafonné à 100).
-- Masqué quand la limite est atteinte (le segment « Limite journalière atteinte » prend le relais, pas de redondance), quand la limite n'est pas configurée (quota ≤ 0), ou quand les données sont indisponibles.
+- Affiché à partir de **75 %** du quota journalier, **même arithmétique ET même dénominateur** que la barre « Dosage du jour » des pages `/ph` et `/orp` (arrondi des entrées, pourcentage plafonné à 100).
+- ⚠️ **Dénominateur corrigé en v3.1.0 (bug-208).** Il valait le plafond **réglé** (`max_ph_ml_per_day` / `max_chlorine_ml_per_day`) ; il vaut désormais `_effectiveDailyMax(sensor).effective`, c'est-à-dire le **minimum** entre ce que le firmware oppose et ce que la pompe peut délivrer sur la journée programmée. `dailyCumulSegment()` disait déjà, de son propre aveu, employer « la même arithmétique que `updateDailyDoseDisplay` » — il portait donc **le même défaut**, à un second endroit.
+  ⭐ **Conséquence assumée : le segment apparaît PLUS TÔT qu'avant.** Sur l'appareil de référence, 75 % de 1 768 mL se franchissent à 1 326 mL au lieu de 1 500. **C'est le correctif, pas une régression** : le seuil s'approche réellement plus tôt de la limite que l'appareil opposera.
+- `maxMlKey` reste un paramètre de `buildSensorSegments()` : il **nomme la clé de configuration**, que `_effectiveDailyMax()` relit par capteur.
+- Masqué quand la limite est atteinte (le segment « Limite journalière atteinte » prend le relais, pas de redondance), quand le dénominateur n'est pas exploitable (≤ 0, absent, non fini), ou quand les données sont indisponibles.
+- Détail du dénominateur et de ses trois notions : [page-ph.md — Barre « Dosage du jour »](page-ph.md#barre--dosage-du-jour--bug-208-v310).
 
 ### Les quatre états du compteur de bidon (bug-211, v3.0.3)
 
@@ -1109,12 +1113,12 @@ La fonction `updateFiltrationBadges()` côté JS met à jour simultanément `#de
 - **Sonde non calibrée** : bandeau `calibration-alert` + chip global en haut de page.
 - **Dosage en cours** : badge `dosing-status` affiché dans la carte concernée (motif filtration masqué si le badge capteur le porte déjà — dé-duplication feature-061).
 
-Le détail complet du cumul journalier (barre de progression, mL consommés / quota) reste sur les pages `/ph` et `/orp` ; le dashboard n'en montre que le segment « Cumul XX % » à partir de 75 %.
+Le détail complet du cumul journalier (barre de progression, mL consommés / quota, note d'écart entre réglé et atteignable) reste sur les pages `/ph` et `/orp` ; le dashboard n'en montre que le segment « Cumul XX % » à partir de 75 %. ⛔ **La barre `.daily-dose` elle-même n'a pas sa place ici** — contexte d'emploi déclaré : carte héros des pages pH et ORP uniquement ([DESIGN_SYSTEM.md §5.27](../DESIGN_SYSTEM.md#527-daily-dose--barre-de-quota-journalier-bug-208-v310)).
 
 ## Fichiers
 
 - [`data/index.html:162`](../../data/index.html:162) — structure HTML du dashboard
-- [`data/app.js`](../../data/app.js) — `latestSensorData`, `updateFiltrationBadges()`, `composeSensorBadge()`, `dailyCumulSegment()`, `getDosingStopReason()`, `updateDosingStatus()` + `dosingAnchor` (v2.21.1), rendu uPlot (`createMiniLineChart`), préférences d'interface `uiPrefGet()` / `uiPrefSet()` + `bindMiniRawToggles()` / `refreshMiniLegendAbsence()` (v2.38.0) ; `updateFiltrationModeButtons()`, `phGaugePosition()`/`phGaugeStateText()`, `orpGaugePosition()`/`orpGaugeStateText()`, `updatePhGauge()`, `updateOrpGauge()` (feature-147, v2.63.0)
+- [`data/app.js`](../../data/app.js) — `latestSensorData`, `updateFiltrationBadges()`, `composeSensorBadge()`, `dailyCumulSegment()`, `_effectiveDailyMax()` (bug-208), `getDosingStopReason()`, `updateDosingStatus()` + `dosingAnchor` (v2.21.1), rendu uPlot (`createMiniLineChart`), préférences d'interface `uiPrefGet()` / `uiPrefSet()` + `bindMiniRawToggles()` / `refreshMiniLegendAbsence()` (v2.38.0) ; `updateFiltrationModeButtons()`, `phGaugePosition()`/`phGaugeStateText()`, `orpGaugePosition()`/`orpGaugeStateText()`, `updatePhGauge()`, `updateOrpGauge()` (feature-147, v2.63.0)
 - [`data/uPlot.iife.min.js`](../../data/uPlot.iife.min.js), [`data/uPlot.min.css`](../../data/uPlot.min.css) — bibliothèque uPlot 1.6.32 (voir [BUILD.md](../BUILD.md#bibliothèque-de-graphiques-uplot-frontend))
 - [`data/app.css`](../../data/app.css) — classes `.card--status`, `.compact-value`, `.dosing-status`, `.sensor-badge`, `.mini-legend*` (v2.38.0 — pastilles **neutres** à dessein : les traits sont colorés **par la valeur**, une pastille colorée mentirait sur la couleur réelle) ; `.rescue-active-banner`, `.rescue-active-banner--info` / `--warning` (v2.55.2, pas de variante `--critical`/`--fault` — voir [Bandeau « Chloration de secours active »](#bandeau--chloration-de-secours-active-rescue-active-banner-feature-140-v2552)) ; `.filtration-modes`, `.card__status-label--warn`, `.gauge*` (feature-147, v2.63.0)
 - [`src/ws_manager.cpp`](../../src/ws_manager.cpp) — `broadcastSensorData()` pousse les champs consommés ici

@@ -13,7 +13,7 @@ Point d'entrée unique pour **tout** ce qui concerne l'ORP (potentiel redox, pil
 
 En état courant, quatre zones :
 
-1. **Bloc Statistiques** (bandeau compact, sans titre) — valeur ORP **officielle** courante en grand (mV) + **ligne brute discrète** « brut · maj » + **rangée de chips** : **chip d'état de calibration** (cf. [Chip d'état de calibration](#chip-détat-de-calibration-feature-034)) + dosage du jour (barre de progression, borne `max_orp_ml_per_day`). ⚠️ **Depuis la refonte de la chaîne de mesure (feature-152, v2.68.0)**, il n'existe plus de chip ni de modal d'état du **filtre** distincts — voir [Ce qui a été retiré, fusionné, conservé](#ce-qui-a-été-retiré-fusionné-conservé-feature-152-v2680). Depuis la **v2.37.0** (feature-096), ce bloc se termine par « **Atteinte de la cible** » (`#orp-ttt-block`) — voir [Atteinte de la cible](#atteinte-de-la-cible-feature-096-v2370).
+1. **Bloc Statistiques** (bandeau compact, sans titre) — valeur ORP **officielle** courante en grand (mV) + **ligne brute discrète** « brut · maj » + **rangée de chips** : **chip d'état de calibration** (cf. [Chip d'état de calibration](#chip-détat-de-calibration-feature-034)) + dosage du jour (barre de progression — ⚠️ **depuis la v3.1.0, la borne n'est plus `max_orp_ml_per_day` seul** : voir [Barre « Dosage du jour »](#barre--dosage-du-jour--bug-208-v310)). ⚠️ **Depuis la refonte de la chaîne de mesure (feature-152, v2.68.0)**, il n'existe plus de chip ni de modal d'état du **filtre** distincts — voir [Ce qui a été retiré, fusionné, conservé](#ce-qui-a-été-retiré-fusionné-conservé-feature-152-v2680). Depuis la **v2.37.0** (feature-096), ce bloc se termine par « **Atteinte de la cible** » (`#orp-ttt-block`) — voir [Atteinte de la cible](#atteinte-de-la-cible-feature-096-v2370).
 2. **Carte Débit d'injection ORP** (`#orp-card-dosing`, feature-092, v2.46.0) — insérée **entre** le bloc Statistiques et la carte Régulation, visible **en mode automatique uniquement** : **deux** lignes (écart courant, **Demande** en total) et une pastille d'état. Voir [Carte « Débit d'injection ORP »](#carte--débit-dinjection-orp--orp-card-dosing-feature-092-v2460).
 3. **Carte Régulation ORP** — sélecteur de mode : `Auto`, `Programme`, `Arrêt` (libellés révisés en **feature-161, v2.77.0** — étaient `Automatique`, `Programmée`, `Manuelle` ; miroir **exact** de la [page pH](page-ph.md#libellés-révisés-auto--programme--arrêt-feature-161-v2770), détail non dupliqué ici). Sous-blocs :
    - **Auto** : ORP cible (mV) + bouton Sauvegarder.
@@ -110,6 +110,33 @@ Une variante ORP existe pour la sentinelle `250` : côté chlore, cette garde es
 ### Règles de dégradation
 
 Identiques à la carte pH, aux deux lignes près : mode ≠ `automatic` **ou** `orp_demand_ml_per_min` `undefined` ⇒ **carte entière masquée** ; `null` ⇒ « — » sur sa ligne, la pastille portant la cause ; mesure non représentative ⇒ Écart et Demande « — » ; `/data` porte **tous** les champs (parité `PARITE-DATA`) ⇒ **aucun clignotement**. Le rendu est appelé sous `try/catch`.
+
+## Barre « Dosage du jour » (bug-208, v3.1.0)
+
+**Miroir strict de la carte pH** — mêmes règles, même fonction (`updateDailyDoseDisplay('orp')`, `_effectiveDailyMax('orp')`). Le détail complet, les cas limites et la rédaction de la note sont documentés **une seule fois**, côté pH : [page-ph.md — Barre « Dosage du jour »](page-ph.md#barre--dosage-du-jour--bug-208-v310). Ce qui suit ne retient que **ce qui est propre au chlore**.
+
+### Ce que la carte chlore n'avait PAS, et qui est le vrai défaut
+
+| | pH | Chlore (avant v3.1.0) |
+|---|---|---|
+| Plafond réglé | 2 000 mL | 2 000 mL |
+| Débit soutenable servi | 4,33 mL/min | 4,25 mL/min |
+| Plafond réellement atteignable (408 min programmées, 2026-11-22) | **1 768 mL** (servi) | **≈ 1 734 mL** — ⛔ **non servi** |
+| Ligne « Maximum journalier » à l'écran | présente | ⛔ **absente** |
+
+⇒ La carte chlore portait **le même défaut, de la même ampleur**, et **rien à l'écran** ne permettait de s'en apercevoir. ⛔ Le navigateur ne pouvait pas le calculer : les minutes programmées ne sont pas servies, et les dériver aurait été un seuil recalculé côté client ([ADR-0100](../adr/0100-un-seuil-de-sante-est-servi-jamais-reecrit-cote-client.md)). Le firmware a donc reçu `getOrpDailyMaxMl()`, miroir strict de son homologue pH, et la clé `orp_daily_max_ml`.
+
+### La seule différence réelle avec le pH : le Mode Boost
+
+Côté chlore, `enforced` **existe** (`orp_effective_max_ml_per_day`) : le Mode Boost peut relever le plafond opposé au-dessus du réglage. ⇒ `effective = min(enforced, capacity)` et la note d'écart ne s'affiche **que** si `effective < configured`. Quand le Boost accorde **plus** que le réglage, il n'y a **rien à expliquer et surtout rien à suggérer** — la note reste muette.
+
+⚠️ **Le Boost ne peut qu'ajouter depuis la v3.1.0** ([ADR-0143](../adr/0143-le-mode-boost-ne-peut-qu-ajouter.md)) : avant, au-delà de 666,7 mL/j réglés, il **abaissait** le plafond opposé. Sur un appareil réglé à 2 000 mL/j, armer le Boost ramenait la limite à 1 000 mL/j et déclenchait un `critical` à mi-course.
+
+### Retrait associé — symétrie pH/ORP
+
+La ligne « **MAJ auto toutes les 5 secondes** » est retirée de la carte héros ORP : doublon du « maj — » de `#orp-filter-sub` juste au-dessus, déjà retiré du pH par [bug-201](page-ph.md). ⛔ **Conservée sur la carte Température**, qui n'a pas de ligne « brut · maj » — c'est sa **seule** indication de fraîcheur.
+
+Note d'écart : `#daily-dose-orp-note` (`.daily-dose__note`), vide la plupart du temps, `:empty` referme le bloc. La barre porte `aria-describedby="daily-dose-orp-note"`.
 
 ## Affichage mesure filtrée / brute (feature-025)
 
@@ -208,6 +235,7 @@ La carte `#orp-card-calibration` présente un **stepper** (`<ol class="calibrati
 **État filtre** : `orpRejectedCount` (diagnostic seul), `orpMixingDelayActive`, `orpDoseBlockedReason` (feature-025), **`orpDoseBlockedCode`** (v2.25.1 — code machine de la cause de refus, source de la catégorie) — voir le modal sonde ORP, [Ce qui a été retiré, fusionné, conservé](#ce-qui-a-été-retiré-fusionné-conservé-feature-152-v2680). ⚠️ `orpFilterReady` / `orpFilterUnstable` / `orpFilterAlarm` sont **retirés en v2.68.0** (feature-152) — voir [API.md](../API.md#get-data--write)
 **Calibration** : `orpCalPoints` (`-1..1`) — voir [Chip d'état de calibration](#chip-détat-de-calibration-feature-034)
 **Dosage** : `orp_dosing`, `orp_used_ms`, `orp_daily_ml`, `orp_limit_reached`
+**Plafond journalier (bug-208, v3.1.0)** : `orp_daily_max_ml` (int \| `null` — ce que la pompe peut **délivrer** sur la journée programmée) et `orp_effective_max_ml_per_day` (int — ce que le firmware **oppose** réellement, **Mode Boost compris**). ⛔ À ne confondre **ni entre eux, ni** avec `max_chlorine_ml_per_day` (ce qui est **réglé**) **ni** avec `orp_daily_target_ml` (volume **visé** en mode Programme, pas un plafond). Parité stricte `/data` ↔ WS. Voir [API.md](../API.md#champs-du-plafond-journalier-chlore-bug-208-v310)
 **Composition du débit (feature-092, v2.46.0)** : `orp_p_term_ml_per_min`, `orp_demand_ml_per_min`, `orp_sustainable_ml_per_min` (float 2 décimales \| `null`), `orp_limited_by_hourly_budget` (bool, **verdict** firmware — jamais `null`), plus `orpMixingDelayActive` / `orp_mix_remaining_s` (pause mélange, désormais servis **aussi** par `/data`) et `orp_pump_flow_uncharacterized` (désormais servi **aussi** par le WebSocket). Tous en **parité stricte** ([ADR-0071](../adr/0071-parite-data-trame-capteurs.md)). `orp_demand_ml_per_min` absent = firmware antérieur → **carte masquée**. Voir [Carte « Débit d'injection ORP »](#carte--débit-dinjection-orp--orp-card-dosing-feature-092-v2460)
 **Mode** : `orp_regulation_mode`, `orp_daily_target_ml`, `orp_enabled` (miroir — voir [ADR-0004](../adr/0004-mode-regulation-enum-3-valeurs.md))
 **Répartition scheduled (feature-011, v2.8.0)** : `orp_scheduled_flow_ml_per_min` (float 1 décimale, mL/min — débit moyen planifié restant ; `null` hors mode `scheduled`, hors plage de filtration ou heure ESP32 invalide → l'UI affiche « — »)

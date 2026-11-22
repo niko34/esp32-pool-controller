@@ -2630,6 +2630,16 @@ bool PumpControllerClass::isOrpLimitedByHourlyBudget() const {
   return isfinite(sust) && isfinite(demand) && demand >= sust;
 }
 
+float PumpControllerClass::getOrpDailyMaxMl() const {
+  // Miroir strict de getPhDailyMaxMl() : mêmes minutes PROGRAMMÉES (pas les
+  // minutes effectives), même repli NAN. ⛔ Aucun chemin vers les pompes.
+  const float sustainable = getOrpSustainableMlPerMin();
+  if (isnan(sustainable)) return NAN;
+  const int scheduledMin = filtration.scheduledMinutesToday();
+  if (scheduledMin < 0) return NAN;
+  return sustainable * (float)scheduledMin;
+}
+
 float PumpControllerClass::getOrpSustainableMlPerMin() const {
   // Miroir strict de getPhSustainableMlPerMin() : recalcul à la demande depuis la
   // source UNIQUE (config.cpp), 0 ou non fini ⇒ NAN (→ null : on affiche

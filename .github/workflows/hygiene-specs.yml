@@ -285,6 +285,20 @@ jobs:
       - name: Contrôle des vecteurs de pastille
         run: ./tools/check_dash_pill_vectors.sh
 
+  # bug-208 : le dénominateur de la barre « Dosage du jour ». ⚠️ Deux vecteurs
+  # gardent le sens DANGEREUX (prendre le plafond matériel seul : ~10 400 mL/j à
+  # 60 min/h, cinq fois le plafond réglé) — sans ce job, ils ne meurent qu'en local.
+  daily-dose-limit-vectors:
+    name: Vecteurs de la limite journalière opposable (bug-208)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # Même script en local (`./tools/check_daily_dose_limit_vectors.sh`) et en CI.
+      - name: Contrôle des vecteurs de limite journalière
+        run: ./tools/check_daily_dose_limit_vectors.sh
+
   filtration-state-vectors:
     name: Vecteurs de la bande eau froide et de l'état de filtration (bug-197)
     runs-on: ubuntu-latest

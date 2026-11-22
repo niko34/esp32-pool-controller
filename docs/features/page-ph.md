@@ -249,6 +249,8 @@ Un rendu qui lance est capté (`try/catch` autour de `updatePhDosingCard()`), po
 
 **Conservé** : `#daily-dose-ph*`, le bloc capacités `#ph_capacity_block` **réduit à « Maximum journalier »** (`#ph_daily_max_value`) — grandeur **journalière**, pas un débit, qui reste sous la barre du jour et n'est **pas** fusionnée dans l'en-tête `daily-dose` (deux « maximum » côte à côte prêteraient à confusion) —, les chips sonde et filtre, et le modal filtre (la pastille ne remplace pas le détail du code de refus).
 
+> ⚠️ **PÉRIMÉ depuis la v3.1.0 (bug-208)** : `#ph_capacity_block` et `#ph_daily_max_value` **n'existent plus dans le DOM**. L'argument « deux maximum côte à côte prêteraient à confusion » est resté vrai — mais la sortie retenue n'est plus de **séparer** les deux nombres, c'est que **la barre vise le bon**. Voir [Barre « Dosage du jour »](#barre--dosage-du-jour--bug-208-v310).
+
 Le `hidden` du bloc capacités et celui de `#ph_undersized_banner` sont pilotés par `updatePhDosingCard()` (ils vivent hors de la carte, mais dépendaient de la fonction supprimée) et restent, comme avant, **indépendants du mode de régulation** : un maximum journalier reste une capacité lisible en mode manuel. Sentinelle de présence inchangée : `ph_limited_by_hourly_budget` non booléen ⇒ les deux éléments restent masqués.
 
 ### Données consommées
@@ -272,9 +274,65 @@ Conséquences pour cette page :
 - **Verrou de calibration** (`_updateInjectButtons`, condition `(ph_inject_remaining_s > 0) || (ph_dosing === true)`, cf. [État de calibration](#état-de-calibration--bouton--calibrer-la-sonde--feature-034)) : le bouton « Calibrer la sonde » reste **désactivé plus longtemps**, y compris pompe à l'arrêt. C'est **cohérent avec l'intention d'origine** du verrou — il a toujours couvert **toute la session** d'impulsions, repos compris — et il va dans le sens **restrictif**, donc aucun changement n'est apporté.
 - **Statut de dosage des cartes** : la distinction « **commandé** vs **effectif** » posée en v2.21.1 ([ADR-0045](../adr/0045-etat-impulsion-expose-en-calendrier.md)) reste la règle et devient indispensable — « la pompe est alimentée maintenant » se lit **uniquement** sur `ph_pulse_phase_ms < ph_pulse_ms`, **jamais** sur `ph_dosing`. Voir [page-dashboard.md](page-dashboard.md#statut-dosage-des-cartes-phorp--commandé-vs-effectif-v2211).
 
+## Barre « Dosage du jour » (bug-208, v3.1.0)
+
+Dans la carte héros : en-tête `injecté / limite`, barre `.daily-dose__bar`, ligne d'état `.daily-dose__status`, et — **nouveau** — note d'écart `.daily-dose__note` (`#daily-dose-ph-note`). Point de décision **unique** : `updateDailyDoseDisplay('ph')`.
+
+### Le dénominateur : la limite réellement OPPOSABLE, jamais l'un des deux plafonds
+
+Avant la v3.1.0, la barre se remplissait vers le plafond **réglé** (`max_ph_ml_per_day` = 2 000 mL) alors que la ligne juste en dessous annonçait « Maximum journalier : 1 768 mL/j ». Le dosage s'arrêtait donc **à 88 %**, et rien à l'écran n'expliquait pourquoi.
+
+`_effectiveDailyMax(sensor)` (app.js, **fonction pure**, extraite par ancre pour le harnais de vecteurs — [ADR-0099](../adr/0099-tester-par-extraction-de-texte-jamais-par-duplication.md)) rend **trois notions distinctes** et leur minimum :
+
+| Champ rendu | Source | Ce que c'est |
+|---|---|---|
+| `configured` | `max_ph_ml_per_day` (`/get-config`) | ce que l'utilisateur a **réglé**. ⛔ Jamais masqué |
+| `enforced` | `ph_effective_max_ml_per_day` si servi, sinon `configured` | ce que le firmware **oppose**. ⚠️ **Absent côté pH** : il n'existe aucun boost pH, donc le repli sur le réglage est le comportement normal, pas une dégradation |
+| `capacity` | `ph_daily_max_ml` (`/data` + WS) | ce que la pompe peut **délivrer** sur la journée programmée |
+| `effective` | `min(enforced, capacity)` | **le dénominateur de la barre** |
+| `limitedByCapacity` | `effective < configured` | pilote la note — ⛔ dans **ce sens seulement** |
+
+⛔ **Le minimum, jamais l'un des deux.** Le réglé seul vise un but inatteignable (le défaut d'origine) ; le matériel seul est **pire** : à `ph_limit_minutes = 60` (réglage autorisé), la capacité vaut l'amplitude entière de la pompe, ≈ 10 400 mL/j — **cinq fois** le plafond réglé, et la barre marquerait 19 % à l'instant où le dosage s'arrête.
+
+⚠️ **La capacité n'est pas une constante** : elle vaut le débit soutenable × les minutes de filtration **programmées** du jour. Elle bouge avec le planning, et en mode Auto elle peut **rétrécir en cours de journée**.
+
+### La note d'écart — conditionnelle, grise, et sans impératif
+
+Affichée **seulement** quand `limitedByCapacity` est vrai :
+
+> Réglage : 2 000 mL — non atteignable avec la durée de filtration prévue aujourd'hui. Il n'y a rien à corriger si l'eau est bonne.
+
+- **Gris** (`var(--text-secondary)`), pas ambre : c'est une information **d'installation**, vraie tous les jours chez cet utilisateur. Une alerte permanente cesse d'être lue, et elle contaminerait le code couleur de la barre (`ok` / `warning` / `danger`).
+- `:empty` referme le bloc ⇒ **aucune ligne permanente** n'est ajoutée à la carte. La barre porte `aria-describedby="daily-dose-ph-note"`.
+- ⛔ **Aucun impératif, aucun nom de réglage.** Les deux leviers qui « récupéreraient » la différence sont l'un un **mauvais échange** (relever la limite horaire défait la garde qui protège réellement) et l'autre **inopérant et dangereux** (relever la consigne ne délivre pas un millilitre de plus — régulation bornée par le soutenable — et pousse le pH vers le seuil d'inhibition du chlore à 7,60).
+- ⭐ **La note CÈDE LA PLACE au stock** (`_stockTakesPrecedence()`) : quand le compteur du bidon est à `zero` ou `low` ([quatre états de bug-211](page-dashboard.md#les-quatre-états-du-compteur-de-bidon-bug-211-v303)), c'est ce message-là qui s'affiche. Annoncer un plafond inatteignable fournirait une **explication fausse d'un symptôme vrai** et retarderait le seul geste utile. On se branche sur la cascade existante ; on n'en crée pas une seconde.
+
+### Primauté du verdict firmware, et son interdit réciproque
+
+`limitReached === true` ⇒ barre **pleine et rouge**, quel que soit le rapport injecté / dénominateur. Sans ce court-circuit, un plafond effectif non publié ferait afficher « 1 000 / 1 734 mL » en vert pendant que le journal écrit « LIMITE JOURNALIÈRE ATTEINTE ».
+
+⛔ **La réciproque est INTERDITE** : une barre pleine ne conclut **jamais** à « limite atteinte » d'elle-même — en mode Auto, le dénominateur peut rétrécir en cours de journée sous le volume déjà injecté. Seul `ph_limit_reached` pilote le texte d'état.
+
+### Cas limites
+
+| Situation | Rendu |
+|---|---|
+| Les deux plafonds **égaux** | ⛔ aucune note, rien ne cloche |
+| Une clé **absente** (firmware antérieur) | repli sur celle qui existe — ⛔ jamais un nombre écrit en dur côté client ([ADR-0100](../adr/0100-un-seuil-de-sante-est-servi-jamais-reecrit-cote-client.md)) |
+| Dénominateur **0**, `null` ou non fini | « Limite non configurée », barre à 0 % — ⛔ pas de division par zéro |
+| Volume injecté **inconnu** | « — mL », `aria-valuenow` **retiré** et `aria-valuetext="indisponible"` : ⛔ un lecteur d'écran n'annonce pas « 0 % » là où la valeur est **inconnue** |
+
+### Format des nombres
+
+Les **deux** nombres de l'en-tête passent par `toLocaleString('fr-FR')`. Avant, l'en-tête écrivait « 2000 » sans séparateur de milliers à deux centimètres d'un « 1 768 » qui en portait un. Convention : [DESIGN_SYSTEM.md §4](../DESIGN_SYSTEM.md#nombres-affichés--virgule-quatre-interdits-bug-199-v301).
+
+Composant et règle opposable : [DESIGN_SYSTEM.md §5.27](../DESIGN_SYSTEM.md#527-daily-dose--barre-de-quota-journalier-bug-208-v310). Miroir chlore : [page-orp.md](page-orp.md#barre--dosage-du-jour--bug-208-v310). Vecteurs : `test/daily_dose_limit_vectors.js` (CI, job `daily-dose-limit-vectors`).
+
 ## Capacités de dosage et limite d'actionneur (feature-086, v2.29.0 ; remanié en v2.46.0)
 
-Deux éléments exposent encore la [limite d'actionneur pH](../subsystems/pump-controller.md#limite-dactionneur-ph--exposition-et-alerte-de-sous-dimensionnement-feature-086-v2290) ([ADR-0056](../adr/0056-sous-dimensionnement-actionneur-3-jours-80-pct.md)) : la ligne « Maximum journalier » du bloc capacités, et l'alerte de diagnostic. Point de décision **unique** : `updatePhDosingCard()` depuis la v2.46.0 (`updatePhActuatorLimitDisplay()` est **supprimée**), appelée sous `try/catch`. **Sentinelle de présence** inchangée : `ph_limited_by_hourly_budget` non booléen (`undefined`, firmware < 2.29.0) → les deux éléments restent masqués, rien n'est inventé.
+> ⚠️ **AMENDEMENT bug-208 (v3.1.0)** — il ne reste **qu'UN** élément : l'alerte de diagnostic. La ligne « Maximum journalier » (`#ph_capacity_block` / `#ph_daily_max_value`) est **supprimée du DOM**, et `ph_daily_max_ml` est désormais consommé par la **barre de dose** elle-même. Ce qui suit décrit l'état v2.46.0 ; la sous-section « Bloc capacités » ci-dessous est **historique**.
+
+Deux éléments exposaient la [limite d'actionneur pH](../subsystems/pump-controller.md#limite-dactionneur-ph--exposition-et-alerte-de-sous-dimensionnement-feature-086-v2290) ([ADR-0056](../adr/0056-sous-dimensionnement-actionneur-3-jours-80-pct.md)) : la ligne « Maximum journalier » du bloc capacités, et l'alerte de diagnostic. Point de décision **unique** : `updatePhDosingCard()` depuis la v2.46.0 (`updatePhActuatorLimitDisplay()` est **supprimée**), appelée sous `try/catch`. **Sentinelle de présence** inchangée : `ph_limited_by_hourly_budget` non booléen (`undefined`, firmware < 2.29.0) → les deux éléments restent masqués, rien n'est inventé.
 
 > ⚠️ **Deux éléments de cette feature ont été retirés en v2.46.0** ([feature-092](#carte--débit-dinjection-ph--ph-card-dosing-feature-092-v2460)) :
 >
@@ -283,7 +341,11 @@ Deux éléments exposent encore la [limite d'actionneur pH](../subsystems/pump-c
 >
 > Ce qui a changé au passage, et qui compte : l'ancien bandeau annonçait un débit **plafonné**, ce que la pompe ne fait pas. Elle **sert la demande, puis s'arrête** — voir l'avertissement « le total est la Demande » de la carte.
 
-### Bloc capacités (`#ph_capacity_block`) — réduit à une ligne
+### ~~Bloc capacités (`#ph_capacity_block`)~~ — SUPPRIMÉ (bug-208, v3.1.0)
+
+> ⛔ **Retiré du DOM en v3.1.0.** Il flottait entre la barre de dose et « Atteinte de la cible », rattaché visuellement à **ni l'une ni l'autre**, et donnait un nombre **sans dire que c'était LUI la vraie limite**. Son seul `null` produisait en outre une ligne permanente occupée à écrire « **Indisponible** ». `updatePhDosingCard()` ne pilote plus que `#ph_undersized_banner`. Ce qui suit est **historique**.
+
+### Bloc capacités (`#ph_capacity_block`) — réduit à une ligne *(historique, ≤ v3.0.3)*
 
 Sous la barre de dose journalière, présentation volontairement **discrète** (`muted small`) : c'est une **capacité dérivée des réglages** (soutenable × minutes de filtration programmées), pas une mesure.
 

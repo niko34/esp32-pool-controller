@@ -3930,6 +3930,18 @@ h1, h2, h3 {
   background: var(--danger);
 }
 
+/* bug-208 : écart entre le plafond RÉGLÉ et le plafond ATTEIGNABLE.
+   ⛔ GRIS et non ambre : c'est une information d'INSTALLATION, vraie tous les
+   jours chez cet utilisateur. Une alerte permanente cesse d'être lue, et elle
+   contaminerait le code couleur de la barre (ok / warning / danger).
+   `:empty` referme le bloc : aucune ligne permanente n'est ajoutée à la carte. */
+.daily-dose__note {
+  margin: 6px 0 0;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text-secondary);
+}
+.daily-dose__note:empty { display: none; }
 .daily-dose__status {
   margin: 6px 0 0;
   font-size: 12px;

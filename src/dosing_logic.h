@@ -693,7 +693,10 @@ float effectiveOrpTargetPure(float orpTarget, bool boostActive, bool orpModeAuto
                              float deltaMv, float ceilingMv);
 
 // Limite journalière chlore effective (mL). Si boost actif ET mode automatic :
-//   fminf(maxChlorine * factor, hardCapMl)  (borné en dur, condition #1)
+//   max(maxChlorine, fminf(maxChlorine * factor, hardCapMl))
+//   — borné en dur (condition #1) ET jamais abaissé (condition #5, bug-208).
+//   ⛔ Le max() n'est pas cosmétique : sans lui, un plafond réglé au-delà de
+//   hardCapMl/factor DESCENDAIT à l'armement du Boost. Ne pas le re-simplifier.
 // Sinon → maxChlorine inchangée.
 float effectiveMaxChlorinePure(float maxChlorine, bool boostActive, bool orpModeAutomatic,
                                float factor, float hardCapMl);

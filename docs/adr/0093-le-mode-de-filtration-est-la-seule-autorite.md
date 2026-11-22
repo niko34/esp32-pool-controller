@@ -1,6 +1,6 @@
 # ADR-0093 — Le mode de filtration est la seule autorité
 
-- **Statut** : Accepté
+- **Statut** : Accepté — ⚠️ **argument « Boost + Marche » amendé par [ADR-0143](0143-le-mode-boost-ne-peut-qu-ajouter.md)** (2026-11-22). Voir l'amendement en fin de fichier.
 - **Date** : 2026-10-09
 - **Décideurs** : Nicolas Philippe (architect), pool-chemistry (GO sous conditions, deux passages — conception initiale puis amendements du Boost)
 - **Spec(s) liée(s)** : feature-146 (quatre-modes-de-filtration-qui-disent-ce-quils-font) · feature-053 (Mode Boost, remplace [ADR-0025](0025-mode-boost.md)) · bug-126
@@ -221,3 +221,30 @@ sécurité chimique posées par l'ADR-0025 (`kBoostOrpDeltaMv`, `kBoostOrpCeilin
   [ADR-0017](0017-logique-metier-pure-humble-object-testabilite.md) (logique métier pure,
   Humble Object — patron réutilisé pour `parseFiltrationMode`/`effectiveRunWindow`),
   [ADR-0026](0026-mode-installation.md) (mode d'installation, non modifié par ce lot)
+
+## Mise à jour 2026-11-22 (bug-208) — AMENDEMENT, pas supersession
+
+**La décision centrale est inchangée** : le mode de filtration reste la seule autorité, aucun
+mécanisme d'override parallèle n'est acceptable, et le Boost continue de ne modifier que le
+créneau **effectif** en RAM.
+
+⛔ **Mais UNE PHRASE de la section « Négatives / dette assumée » est devenue FAUSSE**, et elle
+portait un visa chimique :
+
+> « **Boost + Marche** […] Validée par `pool-chemistry` : aucun plafond n'est desserré, le
+> volume de chlore reste borné à `kBoostDailyHardCapMl = 1000 mL` quelle que soit la durée. »
+
+Depuis [ADR-0143](0143-le-mode-boost-ne-peut-qu-ajouter.md), `kBoostDailyHardCapMl` plafonne le
+**relèvement** accordé par le Boost, **pas la valeur finale** : la formule est devenue
+`max(réglé, min(réglé × 1,5 ; 1 000))`. Sur un appareil réglé à 2 000 mL/j, une journée
+Boost + Marche peut donc dépasser 1 000 mL de chlore.
+
+⭐ **Le constat « aucun plafond n'est desserré » reste vrai — son ARGUMENT change.** Il ne repose
+plus sur un plafond en dur de 1 000 mL (qui, lui, **abaissait** le réglage au-delà de
+666,7 mL/j — c'était le défaut), mais sur le fait que le Boost **ne peut qu'ajouter** : le
+plafond opposé est au pire celui que l'utilisateur a lui-même réglé, et les limites par
+injection, par heure et par cycle, la garde de présence d'eau et le gate `automatic` sont
+inchangés.
+
+Le corps de l'ADR ci-dessus n'est pas modifié ; cette phrase doit être lue à travers
+[ADR-0143](0143-le-mode-boost-ne-peut-qu-ajouter.md).

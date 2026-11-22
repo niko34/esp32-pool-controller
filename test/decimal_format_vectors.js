@@ -90,7 +90,11 @@ const prelude = [
   // l'APPELLE, donc elle doit être extraite AVANT lui (ADR-0099 : on extrait le
   // code livré, ⛔ on ne le recopie jamais).
   fn("bidonCounterState", "(remainingMl, containerMl, thresholdMl, tttState)", "  "),
-  fn("buildSensorSegments", "(sensor, target, tol, round, unit, show, dailyMlKey, maxMlKey, remKey, thrKey)", "  "),
+  // bug-208 : buildSensorSegments APPELLE _effectiveDailyMax pour le segment
+  // « Cumul XX % » (même dénominateur que la barre de la carte héros) — extraite
+  // avant lui, comme bidonCounterState ci-dessus.
+  fn("_effectiveDailyMax", "(sensor)", "  "),
+  fn("buildSensorSegments", "(sensor, target, tol, round, unit, show, dailyMlKey, remKey, thrKey)", "  "),
   fn("updateCard", "(prefix, remainingMl, containerMl, thresholdMl)", "    "),
   fn("loadProductConfig", "(cfg)", "  "),
   fn("buildPhTargetSegments", '(groupId = "ph_target_group", inputId = "ph_target", warningBoxId = "ph_target_warning")', "  "),
@@ -209,7 +213,7 @@ check("« Stock faible » (carte pH/ORP) : virgule pour plusieurs restes", () =>
   for (const rem of [40, 300, 700, 1500, 1999]) {
     const { api } = sandbox();
     api.setData({ ph_remaining_ml: rem, ph_container_ml: 20000, ph_alert_threshold_ml: 2000, ph_tracking_enabled: true });
-    const segs = api.buildSensorSegments("ph", 7.2, 0.2, REAL_ROUND, "", api._fmtPh, "a", "b", "ph_remaining_ml", "ph_alert_threshold_ml");
+    const segs = api.buildSensorSegments("ph", 7.2, 0.2, REAL_ROUND, "", api._fmtPh, "a", "ph_remaining_ml", "ph_alert_threshold_ml");
     const s = segs.find((x) => /Stock faible/.test(x.text));
     assert.ok(s, `segment absent pour rem=${rem}`);
     assert.ok(!POINT.test(s.text), `point dans « ${s.text} »`);
@@ -402,7 +406,7 @@ console.log("M6 les libellés de stock (bug-211) et leur virgule");
 check("« Stock faible (0,3 L) » : virgule conservée", () => {
   const { api } = sandbox();
   api.setData({ ph_remaining_ml: 300, ph_container_ml: 20000, ph_alert_threshold_ml: 2000, ph_tracking_enabled: true });
-  const segs = api.buildSensorSegments("ph", 7.2, 0.2, REAL_ROUND, "", api._fmtPh, "a", "b", "ph_remaining_ml", "ph_alert_threshold_ml");
+  const segs = api.buildSensorSegments("ph", 7.2, 0.2, REAL_ROUND, "", api._fmtPh, "a", "ph_remaining_ml", "ph_alert_threshold_ml");
   const seg = segs.find((x) => /Stock faible/.test(x.text));
   assert.ok(seg, "segment « Stock faible » absent");
   assert.strictEqual(seg.text, "Stock faible (0,3 L)");
@@ -411,7 +415,7 @@ check("« Stock faible (0,3 L) » : virgule conservée", () => {
 check("compteur au bout : AUCUN nombre affiché", () => {
   const { api } = sandbox();
   api.setData({ ph_remaining_ml: 0, ph_container_ml: 20000, ph_alert_threshold_ml: 2000, ph_tracking_enabled: true });
-  const segs = api.buildSensorSegments("ph", 7.2, 0.2, REAL_ROUND, "", api._fmtPh, "a", "b", "ph_remaining_ml", "ph_alert_threshold_ml");
+  const segs = api.buildSensorSegments("ph", 7.2, 0.2, REAL_ROUND, "", api._fmtPh, "a", "ph_remaining_ml", "ph_alert_threshold_ml");
   const seg = segs.find((x) => /Compteur du bidon/.test(x.text));
   assert.ok(seg, "segment « Compteur du bidon à zéro » absent");
   assert.strictEqual(seg.text, "Compteur du bidon à zéro");
@@ -421,7 +425,7 @@ check("compteur au bout : AUCUN nombre affiché", () => {
 check("contenance non renseignée ≠ compteur au bout", () => {
   const { api } = sandbox();
   api.setData({ ph_remaining_ml: 0, ph_container_ml: 0, ph_alert_threshold_ml: 2000, ph_tracking_enabled: true });
-  const segs = api.buildSensorSegments("ph", 7.2, 0.2, REAL_ROUND, "", api._fmtPh, "a", "b", "ph_remaining_ml", "ph_alert_threshold_ml");
+  const segs = api.buildSensorSegments("ph", 7.2, 0.2, REAL_ROUND, "", api._fmtPh, "a", "ph_remaining_ml", "ph_alert_threshold_ml");
   const txt = segs.map((x) => x.text).join(" ");
   assert.ok(/Contenance du bidon à renseigner/.test(txt), "l'appareil neuf n'invite pas à renseigner la contenance");
   assert.ok(!/Compteur du bidon à zéro/.test(txt), "appareil neuf confondu avec un bidon épuisé — LE défaut de bug-211");
@@ -437,7 +441,7 @@ check("suivi de produit désactivé ⇒ AUCUN segment de stock", () => {
                    { ph_remaining_ml: 0, ph_container_ml: 20000 },
                    { ph_remaining_ml: 300, ph_container_ml: 20000 }]) {
     api.setData({ ...d, ph_alert_threshold_ml: 2000, ph_tracking_enabled: false });
-    const segs = api.buildSensorSegments("ph", 7.2, 0.2, REAL_ROUND, "", api._fmtPh, "a", "b", "ph_remaining_ml", "ph_alert_threshold_ml");
+    const segs = api.buildSensorSegments("ph", 7.2, 0.2, REAL_ROUND, "", api._fmtPh, "a", "ph_remaining_ml", "ph_alert_threshold_ml");
     const txt = segs.map((x) => x.text).join(" ");
     assert.ok(!/Contenance du bidon|Compteur du bidon|Stock faible/.test(txt),
       `le suivi est COUPÉ et l'appareil parle quand même du bidon : « ${txt} »`);
@@ -446,7 +450,7 @@ check("suivi de produit désactivé ⇒ AUCUN segment de stock", () => {
 check("démarrage (aucune donnée reçue) ⇒ AUCUN segment de stock", () => {
   const { api } = sandbox();
   api.setData(null);
-  const segs = api.buildSensorSegments("ph", 7.2, 0.2, REAL_ROUND, "", api._fmtPh, "a", "b", "ph_remaining_ml", "ph_alert_threshold_ml");
+  const segs = api.buildSensorSegments("ph", 7.2, 0.2, REAL_ROUND, "", api._fmtPh, "a", "ph_remaining_ml", "ph_alert_threshold_ml");
   const txt = segs.map((x) => x.text).join(" ");
   assert.ok(!/Contenance du bidon|Compteur du bidon|Stock faible/.test(txt),
     `faux positif AVANT la première réponse de /data : « ${txt} »`);
@@ -455,7 +459,7 @@ check("⛔ aucun texte n'affirme que le bidon est vide", () => {
   const { api } = sandbox();
   for (const d of [{ ph_remaining_ml: 0, ph_container_ml: 20000 }, { ph_remaining_ml: 0, ph_container_ml: 20000, ph_ttt_state: 3 }]) {
     api.setData({ ...d, ph_alert_threshold_ml: 2000, ph_tracking_enabled: true });
-    const segs = api.buildSensorSegments("ph", 7.2, 0.2, REAL_ROUND, "", api._fmtPh, "a", "b", "ph_remaining_ml", "ph_alert_threshold_ml");
+    const segs = api.buildSensorSegments("ph", 7.2, 0.2, REAL_ROUND, "", api._fmtPh, "a", "ph_remaining_ml", "ph_alert_threshold_ml");
     const txt = segs.map((x) => x.text).join(" ");
     assert.ok(!/\bvide\b/i.test(txt), "l'interface AFFIRME que le bidon est vide — l'appareil ne le sait pas (ADR-0141)");
   }

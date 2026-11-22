@@ -154,6 +154,9 @@ float getOrpDemandFlow() const;             // demande ORP = terme P borné
 float getOrpSustainableMlPerMin() const;    // miroir de getPhSustainableMlPerMin()
 bool isOrpLimitedByHourlyBudget() const;    // VERDICT « chlore borné par sa limite horaire »
 
+// bug-208 (v3.1.0) — maximum journalier DÉLIVRABLE de la voie ORP.
+float getOrpDailyMaxMl() const;             // miroir de getPhDailyMaxMl()
+
 void setManualPump(int pumpIndex, uint8_t duty,
                    uint32_t budgetMs = kManualPumpTestMaxOnMs);  // marche manuelle BORNÉE (bug-171)
 void tickManualPumpGuard(unsigned long now, const WaterPresence& water);  // garde-fou, loopTask
@@ -2261,9 +2264,40 @@ Suite native [`test/test_native_ph_session/`](../../test/test_native_ph_session/
 | `getPhDemandFlow()` | `float` | `clamp(PI servi + FF, 0, ampFlow)`. |
 | `getOrpPTermFlow()` / `getOrpDemandFlow()` | `float` | Mêmes règles, régulation **P-pure** : la demande **vaut** le terme proportionnel borné. |
 | `getOrpSustainableMlPerMin()` | `float` | Miroir strict de `getPhSustainableMlPerMin()` : recalcul à la demande depuis `orpSustainableFlowFromConfig()`, NAN si ≤ 0 ou non fini. |
+| `getOrpDailyMaxMl()` | `float` | **bug-208, v3.1.0** — miroir strict de `getPhDailyMaxMl()` : soutenable × `filtration.scheduledMinutesToday()` (minutes **programmées**). NAN si le soutenable est indisponible ou si le planning ne fait pas foi (mode Arrêt, plage invalide) — jamais de maximum inventé. Voir [Le maximum journalier délivrable de la voie ORP](#le-maximum-journalier-délivrable-de-la-voie-orp-bug-208-v310). |
 | `isOrpLimitedByHourlyBudget()` | `bool` | Verdict, jamais une comparaison laissée au client. Vrai si `orpDosingState.usedMs ≥ limite` **ou** si `demande ≥ soutenable` (deux faces du même phénomène). Faux si la limite est désactivée (≤ 0 ou ≥ 60 min/h) et faux quand la mesure n'est pas représentative — même fail-closed que le pH : servir un verdict figé ferait annoncer « bridé » sur une filtration à l'arrêt. **Il n'y a pas de terme intégral ORP**, donc aucune hystérésis d'épisode : au voisinage exact du plafond, la note « plafonnée » peut apparaître et disparaître d'un rafraîchissement à l'autre. |
 
 **Course bénigne assumée**, patron `isAnyPumpEnergized` : l'instantané est écrit par `loopTask` (branche automatique) et lu en contexte web async / tâche MQTT. La copie passe par un **spinlock `portMUX`** (`doseCompositionSnapshot()`, patron feature-096) : les cinq flottants d'une **même** composition sont donc cohérents **entre eux**. Le spinlock ne prétend pas rendre l'instantané synchrone avec la mesure publiée dans la même trame — pire cas, un instantané en retard d'un tour de loop. Aucun de ces accesseurs ne touche l'I²C, LittleFS, la NVS, ni `getPhDecisionValue()` (réservée à `loopTask`, condition C2 du gate feature-096) : ils sont sûrs dans un handler `AsyncWebServer`.
+
+### Le maximum journalier délivrable de la voie ORP (bug-208, v3.1.0)
+
+`getOrpDailyMaxMl()` est le **miroir strict** de `getPhDailyMaxMl()` : mêmes minutes
+**programmées** (`filtration.scheduledMinutesToday()`, pas les minutes effectives), même repli
+`NAN`, **aucun chemin vers les pompes**. Il n'existait pas avant ce lot, et c'est le défaut :
+la voie chlore n'avait **aucun** équivalent du maximum journalier pH, donc sa barre « Dosage du
+jour » visait un plafond que l'appareil n'atteint pas, et **rien à l'écran** ne permettait de
+s'en apercevoir (≈ 1 734 mL réellement délivrables contre 2 000 mL réglés, mesuré le
+2026-11-22 : 4,25 mL/min soutenable × 408 min programmées).
+
+⛔ **Trois notions distinctes, jamais interchangeables** — les confondre est la faute même que
+bug-208 dénonce :
+
+| Notion | Source | Clé publiée | Ce que c'est |
+|---|---|---|---|
+| **Réglé** | configuration utilisateur | `max_chlorine_ml_per_day` (`/get-config`) | le plafond que le propriétaire a inscrit. ⛔ Jamais masqué |
+| **Réellement opposé** | `getEffectiveMaxChlorineMlPerDay()` | `orp_effective_max_ml_per_day` (`/data` + WS) | ce que le firmware **oppose** aujourd'hui, **Mode Boost compris** |
+| **Délivrable** | `getOrpDailyMaxMl()` | `orp_daily_max_ml` (`/data` + WS) | ce que la pompe peut **sortir** dans la journée programmée |
+
+⚠️ **Employé SEUL, le délivrable induit massivement en erreur.** À `orp_limit_minutes = 60`
+(réglage autorisé), le débit soutenable vaut l'**amplitude entière** de la pompe, soit
+≈ 10 400 mL/j sur cet appareil — **cinq fois** le plafond réglé. Une barre calée dessus
+marquerait 19 % à l'instant où le dosage s'arrête. ⇒ L'affichage prend le **minimum** du
+réellement opposé et du délivrable (condition C1 du visa `pool-chemistry` du 2026-11-22),
+jamais l'un des deux.
+
+⛔ **Lecture seule stricte** : consommé par `/data` et la trame WS, par **aucune** décision de
+dosage. Même course bénigne assumée que les accesseurs voisins. Affichage :
+[page-orp.md](../features/page-orp.md) et [page-ph.md](../features/page-ph.md).
 
 ### Traduction de statut `3 → 0`, et sa précédence
 
@@ -3259,7 +3293,7 @@ Plus jamais de durée déduite du modèle linéaire (`calcInjectFlow` supprimé)
 | Boost — delta cible ORP (feature-053) | `kBoostOrpDeltaMv` | +60 mV | [`constants.h`](../../src/constants.h) |
 | Boost — plafond cible ORP (feature-053) | `kBoostOrpCeilingMv` | 850 mV (< alerte `orp_abnormal` 900) | [`constants.h`](../../src/constants.h) |
 | Boost — facteur limite journalière chlore (feature-053) | `kBoostDailyFactor` | 1,5× | [`constants.h`](../../src/constants.h) |
-| Boost — plafond dur limite journalière chlore (feature-053) | `kBoostDailyHardCapMl` | 1000 mL | [`constants.h`](../../src/constants.h) |
+| Boost — plafond du **RELÈVEMENT** de la limite journalière chlore (feature-053, **sens rectifié bug-208 / [ADR-0143](../adr/0143-le-mode-boost-ne-peut-qu-ajouter.md)**) | `kBoostDailyHardCapMl` | 1000 mL | [`constants.h`](../../src/constants.h) |
 | Chloration de secours — durée glissante (feature-140) | `kRescueChlorineDurationS` | 172 800 s (48 h) | [`constants.h`](../../src/constants.h) |
 | Chloration de secours — volume quotidien, **défaut grand bassin / repli final** (feature-140, rôle redéfini feature-141) | `kRescueChlorineDailyMl` | 1500 mL/j | [`constants.h`](../../src/constants.h) |
 | Chloration de secours — plafond dur (feature-140) | `kRescueChlorineDailyHardCapMl` | 2000 mL/j | [`constants.h`](../../src/constants.h) |
@@ -3344,7 +3378,11 @@ Le **Mode Boost** est une **surcouche temporaire non destructive** permettant d'
 
 1. **Créneau de filtration effectif élargi jusqu'à minuit** — feature-146 : `boostForce` a **disparu** de `decideFiltrationRun()`. Le Boost ne décide plus rien ; il **modifie le créneau en amont**, via la fonction pure `effectiveRunWindow(base, boostActive, nowMin)` ([`src/schedule_logic.h`](../../src/schedule_logic.h)), dérivé **en RAM uniquement** (jamais stocké dans `filtrationCfg`). Disponible dans tous les modes **sauf Arrêt** (voir ci-dessus). En mode **Marche**, cet effet est **sans objet** : `decideFiltrationRun()` n'y consulte de toute façon pas le créneau (la pompe tourne déjà). Voir [filtration.md](filtration.md#décision-et-temps-indisponible) et [ADR-0093](../adr/0093-le-mode-de-filtration-est-la-seule-autorite.md).
 2. **Cible ORP effective** : `getEffectiveOrpTarget() = min(orpTarget + kBoostOrpDeltaMv, kBoostOrpCeilingMv)` (60 mV / plafond 850 mV, sous l'alerte `orp_abnormal` > 900). **Jamais abaissée.** La régulation ORP **automatique** existante injecte naturellement vers cette cible — **aucun nouveau chemin d'injection**. Lit `isBoostActive()` directement ([`src/dosing_logic.cpp:549`](../../src/dosing_logic.cpp)), indépendamment du mode de filtration.
-3. **Limite journalière chlore effective** : `getEffectiveMaxChlorine() = min(maxChlorineMlPerDay × kBoostDailyFactor, kBoostDailyHardCapMl)` (×1,5 / plafond dur 1000 mL). Lit `isBoostActive()` directement ([`src/dosing_logic.cpp:560`](../../src/dosing_logic.cpp)), indépendamment du mode de filtration — **c'est précisément pourquoi l'annulation en Arrêt doit effacer `boost_until`** (ci-dessus) plutôt que de bloquer seulement l'effet 1.
+3. **Limite journalière chlore effective** : `getEffectiveMaxChlorineMlPerDay() = max(maxChlorineMlPerDay, min(maxChlorineMlPerDay × kBoostDailyFactor, kBoostDailyHardCapMl))` (×1,5, relèvement plafonné à 1000 mL — ⚠️ **formule corrigée par bug-208**, voir ci-dessous). Lit `isBoostActive()` directement ([`src/dosing_logic.cpp`](../../src/dosing_logic.cpp)), indépendamment du mode de filtration — **c'est précisément pourquoi l'annulation en Arrêt doit effacer `boost_until`** (ci-dessus) plutôt que de bloquer seulement l'effet 1.
+
+   > ⛔ **Le `max()` externe n'est pas décoratif, et ⛔ il ne se « re-simplifie » pas.** Sans lui, `min(réglé × 1,5 ; 1 000)` **ABAISSE** le plafond dès que le réglage dépasse **666,7 mL/j** : sur l'appareil de production (2 000 mL/j réglés), armer le Boost ramenait le plafond opposé à **1 000 mL/j** — le mode censé doser *plus* divisait le budget par deux et déclenchait un `critical` « LIMITE JOURNALIÈRE CHLORE ATTEINTE » à mi-course. ⭐ Ce n'est pas un arbitrage neuf : `effectiveOrpTargetPure()` porte la **même** garde (« jamais abaissée », condition #5 de la feature-053) depuis l'origine — elle avait été appliquée à **un** des deux leviers du Boost. Décision et conséquences : [ADR-0143](../adr/0143-le-mode-boost-ne-peut-qu-ajouter.md).
+   >
+   > ⚠️ **`kBoostDailyHardCapMl` plafonne donc le RELÈVEMENT, pas la valeur finale.** Au-delà du genou (`kBoostDailyHardCapMl / kBoostDailyFactor` = 666,7 mL/j), ce levier est **inerte** — jamais soustractif. Deux `static_assert` ([`constants.h`](../../src/constants.h)) verrouillent les bornes dont dépend l'invariant : `kBoostDailyFactor >= 1` et `kBoostDailyHardCapMl > 0`.
 
 ### Gate mode `automatic` (logique pure)
 
@@ -3356,7 +3394,7 @@ L'effet **chlore** (points 2 et 3) est **strictement gaté au mode de régulatio
 |---|---|---|
 | **Auto** | autorisé | créneau étendu jusqu'à minuit + surchloration |
 | **Programme** | autorisé | identique à Auto — aucune différence de traitement, et **plus sûr** (le créneau de base n'est jamais recalculé en Programme, donc aucun effet rétroactif via l'échantillonnage de température) |
-| **Marche** | autorisé | effet filtration sans objet (pompe déjà en marche) ; **surchloration active** — cas neuf, validé `pool-chemistry` : aucun plafond desserré, les deux effets de dosage sont bornés **en dur** (`kBoostDailyHardCapMl`, `kBoostOrpCeilingMv`), pas additifs avec l'éligibilité 24 h/24 de ce mode |
+| **Marche** | autorisé | effet filtration sans objet (pompe déjà en marche) ; **surchloration active** — cas validé `pool-chemistry`, ⚠️ **argument rectifié par bug-208** : la borne n'est plus « 1 000 mL en dur quelle que soit la durée » (`kBoostDailyHardCapMl` ne plafonne plus la valeur finale, cf. ci-dessus et [ADR-0143](../adr/0143-le-mode-boost-ne-peut-qu-ajouter.md)). **Aucun plafond n'est desserré pour autant** : le Boost ne peut qu'**ajouter**, donc le plafond opposé est au pire **celui que l'utilisateur a réglé**, et la cible ORP reste bornée en dur par `kBoostOrpCeilingMv`. Les limites par injection, par heure et par cycle ne sont pas additives avec l'éligibilité 24 h/24 de ce mode |
 | **Arrêt** | **refusé** | pas de circulation ⇒ pas de dosage ⇒ surchloration impossible |
 
 ### Signalement des leviers inertes (feature-054, v2.18.1 — révisé feature-146)
@@ -3367,10 +3405,12 @@ Un seul levier peut encore être **inerte** selon la config (à distinguer d'un 
 |--------|-------------------|-----------|
 | Créneau de filtration étendu | `install_mode == "managed"` (filtration gérée par PoolController) | Filtration non gérée (`powered`/`external`) → le relais n'est de toute façon pas piloté par le PoolController (retour anticipé dans `filtration.update()`) |
 | Chlore relevé | `orpRegulationMode == "automatic"` | Mode ORP Manuel / Programmé → cible et limite non relevées (gate ci-dessus) |
+| **Limite journalière chlore relevée** (bug-208, v3.1.0) | `maxChlorineMlPerDay < kBoostDailyHardCapMl` | Réglage **≥ 1 000 mL/j** → le Boost n'ajoute plus rien à cette limite (il ne la retire pas non plus). ⚠️ Cas de l'appareil de production, réglé à 2 000 mL/j : les deux **autres** effets (consigne ORP relevée, créneau de filtration élargi) restent pleinement actifs |
 
 `startBoost()` ([`src/config.cpp`](../../src/config.cpp)) émet, après activation, un log `warning` par levier inerte — ce qui **couvre les activations HTTP ET MQTT/HA** (canal unique) :
 - `install_mode != "managed"` → « Filtration non gérée par PoolController — le Boost ne prolonge PAS la filtration ».
 - `orpRegulationMode != "automatic"` → « Régulation ORP non automatique — le Boost ne relève PAS le chlore ».
+- **bug-208** — régulation ORP automatique **mais** `effectiveMaxChlorinePure(réglé, …) <= réglé` → « Limite de chlore du jour déjà à N mL, au-dessus de ce que le Boost accorde (1000 mL) — le Boost NE change RIEN à cette limite. Il relève la consigne de désinfection et prolonge la filtration, si elle est gérée ». Le verdict est obtenu **en appelant la fonction pure elle-même**, jamais en recopiant son arithmétique : journal et comportement ne peuvent pas diverger.
 
 La route `POST /boost/start` expose en parallèle ces deux états dans sa réponse 200 (`filtration_extended`, `chlorine_boosted`) pour que l'UI affiche un toast adaptatif ([API.md](../API.md#post-booststart--write), [page-dashboard.md](../features/page-dashboard.md#carte-modes-temporaires-feature-140)). **Purement informatif** : aucun chemin de dosage ni aucune garde n'est modifié, l'activation n'est jamais bloquée par un levier inerte — à la différence du refus **mode Arrêt**, qui lui bloque (409 côté HTTP, commande ignorée côté MQTT).
 

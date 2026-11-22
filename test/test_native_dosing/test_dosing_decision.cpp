@@ -1890,6 +1890,85 @@ void test_F053_chlorine_boundary_near_hard_cap(void) {
   TEST_ASSERT_FLOAT_WITHIN(kFloatEps, 1000.0f, m);
 }
 
+// -----------------------------------------------------------------------------
+// bug-208 — LE BOOST NE PEUT QU'AJOUTER (visa pool-chemistry du 2026-11-22)
+//
+// ⚠️ Défaut réel, trouvé en instruisant bug-208 : `fminf(ml × 1,5 ; 1000)` SEUL
+// fait DESCENDRE la limite dès que le réglage dépasse 666,7 mL/j. Sur l'appareil
+// de production (2 000 mL/j réglés), armer le Boost ramenait le plafond opposé à
+// 1 000 — le mode censé doser PLUS divisait le budget par deux et déclenchait un
+// critical à mi-course.
+// ⭐ Ce n'est PAS un arbitrage neuf : la fonction jumelle effectiveOrpTargetPure()
+// porte la même garde depuis l'origine (condition #5), testée par
+// test_F053_orp_target_above_ceiling_never_lowered. Elle avait été appliquée à UN
+// des deux leviers du Boost et oubliée sur l'autre.
+// -----------------------------------------------------------------------------
+void test_B208_chlorine_boost_never_lowers_production_setting(void) {
+  // ⭐ LE défaut : 2 000 réglés → rendait 1 000. Doit rendre 2 000.
+  float m = effectiveMaxChlorinePure(2000.0f, true, true,
+                                     kRefBoostDailyFactor, kRefBoostDailyHardCapMl);
+  TEST_ASSERT_FLOAT_WITHIN(kFloatEps, 2000.0f, m);
+}
+
+void test_B208_chlorine_boost_never_lowers_heavy_water_setting(void) {
+  // Cas terrain : besoin relevé de 939 à 1 500+ mL/j en eau chargée.
+  float m = effectiveMaxChlorinePure(1500.0f, true, true,
+                                     kRefBoostDailyFactor, kRefBoostDailyHardCapMl);
+  TEST_ASSERT_FLOAT_WITHIN(kFloatEps, 1500.0f, m);
+}
+
+void test_B208_chlorine_at_hard_cap_exactly(void) {
+  // Jointure : réglé = plafond dur. Aucune marche d'escalier.
+  float m = effectiveMaxChlorinePure(1000.0f, true, true,
+                                     kRefBoostDailyFactor, kRefBoostDailyHardCapMl);
+  TEST_ASSERT_FLOAT_WITHIN(kFloatEps, 1000.0f, m);
+}
+
+void test_B208_chlorine_just_above_hard_cap(void) {
+  // ⭐ Juste au-dessus : c'est la branche max() qui prend le relais.
+  float m = effectiveMaxChlorinePure(1000.1f, true, true,
+                                     kRefBoostDailyFactor, kRefBoostDailyHardCapMl);
+  TEST_ASSERT_FLOAT_WITHIN(kFloatEps, 1000.1f, m);
+}
+
+void test_B208_chlorine_boost_still_raises_below_knee(void) {
+  // ⭐ Le correctif n'a PAS neutralisé le Boost : sous le genou (666,7 mL), le
+  // relèvement existe toujours. 666 × 1,5 = 999.
+  float m = effectiveMaxChlorinePure(666.0f, true, true,
+                                     kRefBoostDailyFactor, kRefBoostDailyHardCapMl);
+  TEST_ASSERT_FLOAT_WITHIN(kFloatEps, 999.0f, m);
+}
+
+void test_B208_chlorine_zero_setting_unchanged(void) {
+  // Cas dégénéré : 0 reste 0, comme avant le correctif.
+  float m = effectiveMaxChlorinePure(0.0f, true, true,
+                                     kRefBoostDailyFactor, kRefBoostDailyHardCapMl);
+  TEST_ASSERT_FLOAT_WITHIN(kFloatEps, 0.0f, m);
+}
+
+void test_B208_chlorine_boost_non_automatic_high_setting(void) {
+  // Le gate de mode tient AUSSI sur un réglage élevé : après le correctif, le cas
+  // à 500 ne distingue plus rien à lui seul.
+  float m = effectiveMaxChlorinePure(2000.0f, true, false,
+                                     kRefBoostDailyFactor, kRefBoostDailyHardCapMl);
+  TEST_ASSERT_FLOAT_WITHIN(kFloatEps, 2000.0f, m);
+}
+
+void test_B208_chlorine_invariant_sweep(void) {
+  // ⭐ L'INVARIANT comme PROPRIÉTÉ, pas comme point. ⚠️ C'est `eff >= ml` qui tue
+  // le mutant : l'ancienne formule était elle aussi monotone croissante, donc la
+  // monotonie seule ne prouvait RIEN.
+  for (float ml = 0.0f; ml <= 3000.0f; ml += 50.0f) {
+    float eff = effectiveMaxChlorinePure(ml, true, true,
+                                         kRefBoostDailyFactor, kRefBoostDailyHardCapMl);
+    char msg[96];
+    snprintf(msg, sizeof(msg), "reglage %.0f mL : le Boost a ABAISSE le plafond a %.1f", ml, eff);
+    TEST_ASSERT_TRUE_MESSAGE(eff >= ml - kFloatEps, msg);
+    float borne = (ml > kRefBoostDailyHardCapMl) ? ml : kRefBoostDailyHardCapMl;
+    TEST_ASSERT_TRUE_MESSAGE(eff <= borne + kFloatEps, "le Boost a depasse sa borne");
+  }
+}
+
 // =============================================================================
 // feature-060 — Limite cycles/jour configurable : garde 9 avec maxCyclesPerDay
 // paramétré + sanitization clampCyclesPerDay (bornes kCyclesPerDayMin/Max)
@@ -3844,6 +3923,15 @@ int main(int, char **) {
   RUN_TEST(test_F053_chlorine_hard_cap);
   RUN_TEST(test_F053_chlorine_boost_on_non_automatic_unchanged);
   RUN_TEST(test_F053_chlorine_boundary_near_hard_cap);
+  // bug-208 : le Boost ne peut qu'ajouter
+  RUN_TEST(test_B208_chlorine_boost_never_lowers_production_setting);
+  RUN_TEST(test_B208_chlorine_boost_never_lowers_heavy_water_setting);
+  RUN_TEST(test_B208_chlorine_at_hard_cap_exactly);
+  RUN_TEST(test_B208_chlorine_just_above_hard_cap);
+  RUN_TEST(test_B208_chlorine_boost_still_raises_below_knee);
+  RUN_TEST(test_B208_chlorine_zero_setting_unchanged);
+  RUN_TEST(test_B208_chlorine_boost_non_automatic_high_setting);
+  RUN_TEST(test_B208_chlorine_invariant_sweep);
   // feature-060 — limite cycles/jour configurable (garde 9 + clampCyclesPerDay).
   RUN_TEST(test_F060_auto_guard9_47_allowed_48_refused);
   RUN_TEST(test_F060_manual_guard_47_allowed_48_refused);

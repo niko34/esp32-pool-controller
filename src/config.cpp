@@ -9,6 +9,7 @@
 #include "ph_integral_logic.h"  // v2.27.0 : phSustainableAvgFlow() (logique pure)
 #include "ph_actuator_limit_logic.h"  // feature-086 : phActuatorLimitStreak() (logique pure)
 #include "temp_mode_logic.h"  // feature-140 : rescueActivePure()/rescueDeadlinePure() (logique pure)
+#include "dosing_logic.h"  // bug-208 (C2) : effectiveMaxChlorinePure() (logique pure)
 #include <Preferences.h>
 #include <time.h>
 
@@ -1600,6 +1601,23 @@ void startBoost() {
   // C'est précisément l'honnêteté d'effet que feature-055 a instaurée.
   if (mqttCfg.orpRegulationMode != "automatic" || isRescueChlorineActive(time(nullptr))) {
     systemLogger.warning("[Boost] Régulation ORP non automatique — le Boost NE relève PAS le chlore (seule la filtration est prolongée, si gérée)");
+  } else {
+    // bug-208 (visa pool-chemistry, C2) — MÊME honnêteté d'effet, TROISIÈME levier
+    // inerte. Depuis que le Boost ne peut plus ABAISSER le plafond journalier
+    // (dosing_logic.cpp), il n'y ajoute plus rien dès que le réglage atteint
+    // kBoostDailyHardCapMl. Sur un appareil réglé à 2 000 mL/j — le cas de
+    // production — armer le Boost ne change donc RIEN à cette limite.
+    // ⛔ Se taire ici reproduirait exactement le défaut que les deux warning
+    // ci-dessus ferment : un levier annoncé et sans effet.
+    const float reglee = safetyLimits.maxChlorineMlPerDay;
+    const float effective = effectiveMaxChlorinePure(reglee, true, true,
+                                                     kBoostDailyFactor, kBoostDailyHardCapMl);
+    if (!(effective > reglee)) {
+      systemLogger.warning("[Boost] Limite de chlore du jour déjà à " + String((long)reglee)
+        + " mL, au-dessus de ce que le Boost accorde (" + String((long)kBoostDailyHardCapMl)
+        + " mL) — le Boost NE change RIEN à cette limite. Il relève la consigne de "
+          "désinfection et prolonge la filtration, si elle est gérée");
+    }
   }
 }
 

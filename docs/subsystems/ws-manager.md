@@ -1234,3 +1234,28 @@ Alimente la garde des 10 minutes de [`POST /tune-ph-offset`](../API.md#post-tune
 `rescue_dosing` ne change pas de taille, mais son expression intègre désormais `&& !isMaintenanceInhibited()` **des deux côtés**.
 
 **Budget de payload** : `"maintenance_mode":false,` = **25 o** au pire cas. Le décompte a été **repris clé par clé** (121 clés `d[...]` relevées par script sur le code, pas sur les commentaires), pas affirmé : recompte indépendant 3448 o, plus bas de 125 o que la chaîne historique (3573 o, largeurs de flottants plus prudentes). Aucun nouveau décrochage ; on retient le plus prudent : **3573 + 25 = 3598 o, marge 498 o** sur `kWsFrameBufBytes = 4096`. Aucun bump. Détail : commentaire de `constants.h`.
+
+## Champs `sensor_data` ajoutés en v3.1.0 — plafond journalier chlore (bug-208)
+
+Deux clés neuves, servies **entre les marqueurs `PARITE-DATA`** des deux côtés (mêmes noms, même arrondi entier, même règle `NaN → null`, même passage de code) — [ADR-0071](../adr/0071-parite-data-trame-capteurs.md).
+
+⛔ **TROIS notions distinctes, jamais interchangeables** — les confondre est exactement la faute que bug-208 corrige :
+
+| Notion | Clé | Ce que c'est |
+|---|---|---|
+| **RÉGLÉ** | `max_chlorine_ml_per_day` (trame `config` / `GET /get-config`) | le plafond que le propriétaire a **inscrit**. ⛔ Jamais masqué, jamais remplacé par les deux autres |
+| **RÉELLEMENT OPPOSÉ** | `orp_effective_max_ml_per_day` | ce que le firmware **oppose aujourd'hui**, Mode Boost compris. C'est lui qui déclenche « limite journalière atteinte » |
+| **DÉLIVRABLE** | `orp_daily_max_ml` | ce que la **pompe peut sortir** dans la journée de filtration **programmée** |
+
+| Champ | Type | Unité | Description |
+|-------|------|-------|-------------|
+| `orp_daily_max_ml` | int \| null | mL/j | `getOrpDailyMaxMl()`, arrondi à l'entier = débit soutenable ORP × minutes **programmées** de filtration. Miroir strict de `ph_daily_max_ml` (Auto/Programme = minutes de la plage, Marche = 1440, Arrêt ou plage invalide → `null`). `null` aussi si la pompe n'est pas caractérisée. |
+| `orp_effective_max_ml_per_day` | int \| null | mL/j | `getEffectiveMaxChlorineMlPerDay()`, arrondi à l'entier : `max(réglé, min(réglé × kBoostDailyFactor, kBoostDailyHardCapMl))` en Boost + régulation ORP `automatic`, sinon le réglé tel quel ([ADR-0143](../adr/0143-le-mode-boost-ne-peut-qu-ajouter.md)). ⚠️ Sans cette clé, l'écran peut **contredire le journal** : à 500 mL réglés et Boost armé, le firmware autorise 750 mL tandis qu'une barre calée sur le réglé saturerait à 100 %. |
+
+⚠️ **`orp_daily_max_ml` employé SEUL induit massivement en erreur.** À `orp_limit_minutes = 60` (réglage autorisé), le soutenable vaut l'**amplitude entière** de la pompe : ≈ 10 400 mL/j sur l'appareil de référence, **cinq fois** le plafond réglé, et une barre calée dessus marquerait 19 % à l'instant où le dosage s'arrête. ⇒ Un consommateur prend le **minimum** des deux clés, **jamais** l'une des deux. Côté pH, la paire équivalente est `max_ph_ml_per_day` (réglé) et `ph_daily_max_ml` (délivrable) — il n'y a pas de boost pH, donc le « réellement opposé » **est** le réglé.
+
+⛔ **Placement volontaire dans `_buildSensorJson()`** : les deux clés sont posées **entre** les marqueurs `PARITE-DATA`, et **non** à côté de leur jumeau `ph_daily_max_ml` — le bloc pH de feature-086 est **au-dessus** de `>>> PARITE-DATA:DEBUT`, donc hors de portée de la sentinelle. Recopier son emplacement aurait offert une récidive de plus au [piège de parité](../adr/0071-parite-data-trame-capteurs.md).
+
+**Budget de payload** : `"orp_daily_max_ml":1439986,` = **27 o** (clé de 16 caractères) et `"orp_effective_max_ml_per_day":1439986,` = **39 o** (clé de **28** caractères — recomptée en revue, une première version annonçait 29), soit **+66 o**. Total retenu **3598 → 3664 o**, marge **432 o** sur `kWsFrameBufBytes = 4096`. **Aucun bump de gabarit.**
+
+Contrat HTTP : [API.md](../API.md#champs-du-plafond-journalier-chlore-bug-208-v310). Firmware : [pump-controller.md](pump-controller.md#le-maximum-journalier-délivrable-de-la-voie-orp-bug-208-v310). Affichage : [page-orp.md](../features/page-orp.md) et [page-ph.md](../features/page-ph.md).

@@ -694,6 +694,8 @@ du dosage (coupée dès l'entrée, et le restant immédiatement visible via `phR
 
 > **feature-092 (v2.46.0) — composition du débit d'injection** : **8** champs (`ph_ff_learned_ml_per_min`, `ph_p_term_ml_per_min`, `ph_i_term_ml_per_min`, `ph_demand_ml_per_min`, `orp_p_term_ml_per_min`, `orp_demand_ml_per_min`, `orp_sustainable_ml_per_min`, `orp_limited_by_hourly_budget`), plus **4** champs de **pause mélange** (`phMixingDelayActive`, `orpMixingDelayActive`, `ph_mix_remaining_s`, `orp_mix_remaining_s`) qui étaient WS-seuls, sont désormais servis **des deux côtés**, dans le même passage de code. Réciproquement, `ph_pump_flow_uncharacterized` / `orp_pump_flow_uncharacterized`, jusqu'ici `/data`-seuls, rejoignent la trame WS. ⚠ **Il n'existe aucun champ « appliqué »** : `ph_applied_ml_per_min` n'existe pas. Tableau complet, règles de nullité et budget : [Champs de composition du débit d'injection](#champs-de-composition-du-débit-dinjection-feature-092-v2460).
 
+> **bug-208 (v3.1.0) — plafond journalier chlore** : **2** champs (`orp_daily_max_ml`, `orp_effective_max_ml_per_day`), servis en parité `/data` ↔ WS. ⛔ **Trois notions à ne pas confondre** — ce qui est **réglé** (`max_chlorine_ml_per_day`, `/get-config`), ce qui est **réellement opposé** (`orp_effective_max_ml_per_day`, Mode Boost compris) et ce qui est **délivrable** par la pompe sur la journée programmée (`orp_daily_max_ml`). Tableau complet et pièges : [Champs du plafond journalier chlore](#champs-du-plafond-journalier-chlore-bug-208-v310).
+
 > Les champs live `ph` / `orp` / `phRaw` / … restent publiés tels quels quand `measures_valid` est `false` (calibration et diagnostics intacts) — c'est le **client** qui arbitre l'affichage. ⚠️ **Repli HTTP** : `/data` n'expose pas `filtration_state_stale` (présent en WS uniquement) — un client en polling HTTP dégrade « Signal filtration périmé » en « Filtration arrêtée » (asymétrie préexistante, à harmoniser). Voir [`docs/subsystems/measure-validity.md`](subsystems/measure-validity.md).
 
 ---
@@ -2486,7 +2488,6 @@ Interprétation : [pump-controller.md — Limite d'actionneur pH](subsystems/pum
 | `orp_demand_ml_per_min` | float \| null | Demande ORP. Régulation **P-pure** (`Ki = 0`, aucun feedforward) : la demande **vaut** le terme proportionnel borné. Les deux champs sont servis malgré la redondance apparente — c'est ce qui rend la carte ORP lisible avec le même composant que la carte pH. |
 | `orp_sustainable_ml_per_min` | float \| null | Débit moyen **soutenable** de la voie ORP (mL/min, 2 décimales) = débit d'amplitude calibré × limite horaire ORP. Miroir de `ph_sustainable_ml_per_min`. `null` si la pompe n'est pas caractérisée. |
 | `orp_limited_by_hourly_budget` | bool | **Verdict** firmware « la voie chlore est bornée par sa limite horaire **en ce moment** » — homologue d'`ph_limited_by_hourly_budget`, qui n'avait pas d'équivalent ORP alors que c'est la voie qui rencontre le cas **tous les jours** sur cet appareil. Vrai si la fenêtre horaire est **épuisée** *ou* si la demande atteint le soutenable (même phénomène, constaté plus tôt). Faux si la limite est désactivée (≤ 0 ou ≥ 60 min/h) et faux quand la mesure n'est pas représentative (même fail-closed que le pH). Jamais `null`. |
-
 > **`ph_i_term_ml_per_min` est la contribution réellement servie (bande morte appliquée) ; `ph_integral_term` est le terme PI brut, conservé pour MQTT et l'historique. Les deux diffèrent exactement dans la bande morte.**
 
 **Quatre champs de pause mélange, désormais servis sur `/data`** (ils étaient **WS-seuls**, donc un affichage qui s'en sert **clignotait**) : `phMixingDelayActive`, `orpMixingDelayActive` (bool) et `ph_mix_remaining_s`, `orp_mix_remaining_s` (uint32, secondes restantes). Sémantique **inchangée** côté WebSocket.
@@ -2518,6 +2519,29 @@ Champs ajoutés en feature-056 (mode d'installation, v2.19.0 — [ADR-0026](adr/
 | `filtration_ext_age_s` | integer | Âge en secondes du dernier signal externe (`0` si `filtration_ext_known` est `false`). |
 
 > ⚠️ **v2.55.0 (feature-140) — `filtration_state_source` et `filtration_ext_on` RETIRÉS de cette trame WebSocket.** Aucun consommateur dans `data/` (vérifié par grep), ils financent le budget d'octets de la Chloration de secours ([ADR-0086](adr/0086-trame-websocket-sous-ensemble-choisi-de-data.md)) et migrent **`/data`-seuls** — voir [`GET /data`](#champs-ajoutés-en-feature-140-chloration-de-secours). **Changement observable pour tout client WebSocket tiers** qui lirait ces deux clés : il faut désormais les lire via `GET /data`.
+
+#### Champs du plafond journalier chlore (bug-208, v3.1.0)
+
+**Deux** champs ajoutés à `GET /data` **et** à la trame WebSocket `sensor_data`, dans le **même passage** de code, entre les marqueurs `PARITE-DATA` ([ADR-0071](adr/0071-parite-data-trame-capteurs.md)). **Lecture seule stricte** : aucun n'influence une décision de dosage.
+
+⛔ **TROIS notions distinctes, jamais interchangeables.** Les confondre est exactement la faute que bug-208 corrige — un client qui prend l'une pour l'autre affiche un pourcentage faux, ou contredit le journal de l'appareil :
+
+| Notion | Clé | Source | Ce que c'est |
+|---|---|---|---|
+| **RÉGLÉ** | `max_chlorine_ml_per_day` (`GET /get-config`) | configuration utilisateur | le plafond que le propriétaire a **inscrit**. ⛔ Jamais masqué, jamais remplacé par les deux autres |
+| **RÉELLEMENT OPPOSÉ** | `orp_effective_max_ml_per_day` (`/data` + WS) | `getEffectiveMaxChlorineMlPerDay()` | ce que le firmware **oppose aujourd'hui**, **Mode Boost compris** — c'est lui qui déclenche « limite journalière atteinte » |
+| **DÉLIVRABLE** | `orp_daily_max_ml` (`/data` + WS) | `getOrpDailyMaxMl()` | ce que la **pompe peut sortir** dans la journée de filtration **programmée** |
+
+| Champ | Type | Description |
+|-------|------|-------------|
+| `orp_daily_max_ml` | int \| null | Maximum journalier **délivrable** de la voie chlore (mL/j, entier) = débit soutenable × minutes **programmées** de filtration du jour. Miroir strict de `ph_daily_max_ml` (mêmes règles de mode : Auto/Programme = minutes de la plage, Marche = 1440, Arrêt ou plage invalide = `null`). `null` aussi si le soutenable est indisponible (pompe non caractérisée). |
+| `orp_effective_max_ml_per_day` | int \| null | Plafond journalier chlore **réellement opposé** par le firmware (mL/j, entier), Mode Boost compris : `max(réglé, min(réglé × 1,5 ; 1 000))` en Boost + régulation ORP `automatic`, sinon le réglé tel quel ([ADR-0143](adr/0143-le-mode-boost-ne-peut-qu-ajouter.md)). Sert à ce qu'un client **ne puisse pas contredire le journal** : à 500 mL réglés et Boost armé, le firmware autorise 750 mL, et une barre calée sur le réglé saturerait à 100 % pour rien. |
+
+⚠️ **`orp_daily_max_ml` employé SEUL induit massivement en erreur.** À `orp_limit_minutes = 60` (réglage autorisé), le soutenable vaut l'**amplitude entière** de la pompe : ≈ 10 400 mL/j sur l'appareil de référence, **cinq fois** le plafond réglé. ⇒ Un affichage de quota prend le **minimum** de `orp_effective_max_ml_per_day` et de `orp_daily_max_ml`, **jamais** l'un des deux. Même règle côté pH avec `ph_daily_max_ml` et `max_ph_ml_per_day` (il n'y a pas de boost pH : le « réellement opposé » y **est** le réglé).
+
+⛔ **Et il n'existe aucune clé « ce qu'il reste à doser aujourd'hui »** : elle se reconstruit par soustraction du cumul (`orp_daily_ml`), elle n'est pas servie.
+
+> **Budget de payload** : +**67 o** au pire cas, des deux côtés (`"orp_daily_max_ml":1439986,` 27 o + `"orp_effective_max_ml_per_day":1439986,` 40 o). Trame WS portée à **3 665 o**, marge **431 o** sous `kWsFrameBufBytes` (4096) — aucun bump de gabarit. Côté WebSocket : voir [ws-manager.md](subsystems/ws-manager.md#champs-sensor_data-ajoutés-en-v310--plafond-journalier-chlore-bug-208).
 
 #### Objet `flow_assist` — deux champs en parité (bug-082, v2.47.1)
 

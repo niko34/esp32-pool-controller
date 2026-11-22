@@ -1,6 +1,6 @@
 # ADR-0025 — Mode Boost : surcouche temporaire « valeurs effectives » + relèvement borné de la limite chlore
 
-- **Statut** : Superseded by ADR-0093
+- **Statut** : Superseded by ADR-0093 — ⚠️ **bornes de dosage rectifiées par [ADR-0143](0143-le-mode-boost-ne-peut-qu-ajouter.md)** (2026-11-22) : `kBoostDailyHardCapMl` plafonne le **relèvement**, pas la valeur finale. Voir le rectificatif en fin de fichier.
 - **Date** : 2026-07-06
 - **Décideurs** : Nicolas Philippe (architect), pool-chemistry (GO pré + post)
 - **Spec(s) liée(s)** : feature-053 (mode-boost)
@@ -80,3 +80,21 @@ Tant que `isBoostActive()` est vrai :
 - Spec : `specs/features/doing/feature-053-mode-boost.md`
 - Docs : [MQTT.md](../MQTT.md), [API.md](../API.md), [subsystems/pump-controller.md](../subsystems/pump-controller.md), [subsystems/ws-manager.md](../subsystems/ws-manager.md), [features/page-dashboard.md](../features/page-dashboard.md)
 - ADR liés : [ADR-0008](0008-persistance-cumuls-journaliers-nvs.md) (reset journalier aligné minuit local, réutilisé par l'expiration), [ADR-0002](0002-mode-programmee-volume-quotidien.md) (volume quotidien), [ADR-0017](0017-logique-metier-pure-humble-object-testabilite.md) (logique pure testable — patron des fonctions `effective*Pure`)
+
+## Mise à jour 2026-11-22 (bug-208) — RECTIFICATIF sur un ADR déjà remplacé
+
+Cet ADR est **Superseded by [ADR-0093](0093-le-mode-de-filtration-est-la-seule-autorite.md)**
+depuis le 2026-10-09 : son mécanisme de forçage de filtration (`boostForce`) n'existe plus.
+Mais **deux passages sur le dosage y sont restés exacts jusqu'au 2026-11-22**, ont donc continué
+d'être lus comme la référence du Mode Boost — et sont désormais **faux**. Ils sont rectifiés ici
+plutôt que laissés à mentir.
+
+| Passage | Ce qu'il dit | Ce qui est vrai depuis [ADR-0143](0143-le-mode-boost-ne-peut-qu-ajouter.md) |
+|---|---|---|
+| Décision, point 3 | `effectiveMaxChlorine = min(maxChlorineMlPerDay × kBoostDailyFactor, kBoostDailyHardCapMl)` | `max(réglé, min(réglé × kBoostDailyFactor, kBoostDailyHardCapMl))` — **le Boost ne peut qu'ajouter** |
+| Tableau des bornes, `kBoostDailyHardCapMl` | « Plafond **absolu** en dur : […] le boost ne peut jamais dépasser 1000 mL/jour de chlore » | Plafond du **relèvement**. Au-delà de 666,7 mL/j réglés, le Boost est **inerte** sur ce levier ; il ne RETIRE jamais ce que l'utilisateur a réglé |
+| Conséquences / « Ce que ça verrouille » | « uniquement bornée par `kBoostDailyHardCapMl` » | La valeur finale est bornée par le **réglage de l'utilisateur** quand celui-ci dépasse le plafond dur |
+
+⚠️ **Le reste de l'ADR est inchangé**, y compris la condition #5 (« cible effective […] jamais
+abaissée ») : c'est précisément la garde qui n'avait **pas** été appliquée au second levier, et
+que [ADR-0143](0143-le-mode-boost-ne-peut-qu-ajouter.md) y porte enfin.

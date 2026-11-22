@@ -62,6 +62,7 @@ contexte d'origine.
 | Dire **pourquoi un bouton est désactivé** (un refus, pas un conseil) | `.field__hint.field__hint--refus` (§5.11bis) | Page de réglage — carte « Correction manuelle de la mesure » (pH) |
 | Faire survivre un élément au mode réglage (flux maintenance) | `.flow-maintenance` (§5.25) | Pages pH, ORP, Température — ⚠️ ne veut **pas** dire « visible seulement en réglage » |
 | Demander un second geste avant un acte destructif à conséquence chiffrée | bloc `.callout--warn` + `.ph-tune-confirm__actions` (§5.26) | Page de réglage pH |
+| Montrer la consommation du jour face à un quota | `.daily-dose` et ses enfants (§5.27) | **Carte héros des pages pH et ORP uniquement** — ⛔ jamais le tableau de bord |
 | Signaler une anomalie de régulation nécessitant un acquittement | `.regul-alert` (§5.12) | Carte d'accueil et page de réglage |
 | Saisir une valeur dans un formulaire de réglage | `.field` (§5.13) | Page de réglage — ⚠️ nom repris **sans styles partagés** par `wizard.html` et `wifi.html` |
 | Activer/désactiver une option binaire | `.switch` (§5.14) | Page de réglage uniquement |
@@ -853,6 +854,56 @@ Décision et alternatives : [ADR-0140](adr/0140-quand-un-gate-renonce-a-bloquer-
 
 Règles : la cible destructive n'occupe **pas** la position du bouton d'origine ; sortie au moins aussi facile que la confirmation (Échap, clic extérieur, changement de page, retour de config) ; ⛔ ni `confirm()` natif, ni mot à saisir, ni appui long, ni modale, ni minuterie. Ne se déclenche que si la conséquence le justifie (seuil servi) : *une garde qui bloque plus qu'elle ne protège est un défaut*. Aucun autre emploi à ce jour ; un nouvel emploi devra déclarer son contexte ici. Détail : [`docs/features/page-ph.md`](features/page-ph.md#friction-sur-supprimer-la-correction-bug-201-c41-c45-c47-v300).
 
+### 5.27 `.daily-dose` — barre de quota journalier (bug-208, v3.1.0)
+
+**Contexte d'emploi déclaré : carte héros des pages pH et ORP, et nulle part ailleurs.**
+⛔ **Jamais sur le tableau de bord** : l'accueil dit le cumul par un **segment de `.sensor-badge`**
+(« Cumul XX % », à partir de 75 %), pas par une barre. Réemployer `.daily-dose` sur une carte
+d'accueil y introduirait une troisième forme pour la même information.
+
+| Élément | Classe | Rôle |
+|---|---|---|
+| Conteneur | `.daily-dose` | le bloc entier, dans la colonne droite de la carte héros |
+| En-tête | `.daily-dose__header` | rangée du libellé et de la valeur |
+| Libellé | `.daily-dose__label` | « DOSAGE DU JOUR », à gauche |
+| Valeur | `.daily-dose__value` | `injecté / limite mL` — ⚠️ **les deux nombres au même format** (`toLocaleString('fr-FR')`, cf. §4) |
+| Barre | `.daily-dose__bar` dans `.daily-dose__bar-wrap` | `role="progressbar"`, variantes `dose-bar--ok` / `--warning` / `--danger` |
+| État | `.daily-dose__status` | texte court piloté **uniquement** par le verdict firmware `*_limit_reached` |
+| Note d'écart | `.daily-dose__note` | **gris** (`var(--text-secondary)`, 12 px), `:empty { display:none }`, cible d'`aria-describedby` de la barre |
+
+### ⭐ La règle opposable — elle vaut pour TOUTE barre de quota, pas seulement celle-ci
+
+> **Une barre de quota se remplit vers la limite réellement opposable — le minimum entre ce qui
+> est réglé et ce que l'appareil peut délivrer — et le chiffre réglé, s'il diffère, est porté par
+> une note attachée à la barre, jamais par une ligne flottante.**
+
+**Origine du défaut.** La barre pH visait le plafond **réglé** (2 000 mL) tandis qu'une ligne
+« Maximum journalier : 1 768 mL/j » flottait dessous, rattachée visuellement à **ni la barre ni
+la rubrique suivante**. Résultat : le dosage s'arrêtait avec une barre à **88 %**, et le seul
+élément qui disait pourquoi était posé à côté, sans lien. La correction **supprime la ligne
+flottante** et déplace son information dans une note **attachée** à la barre — affichée
+**seulement s'il y a un écart**.
+
+⛔ **Pièges**
+- **Gris, pas ambre.** C'est une information d'**installation**, vraie tous les jours chez cet
+  utilisateur. Une alerte permanente cesse d'être lue et contaminerait le code couleur de la
+  barre (`ok` / `warning` / `danger`), qui, lui, porte un verdict.
+- **Aucune ligne permanente.** `:empty` referme le bloc : le composant ne doit **rien** ajouter à
+  la hauteur de la carte quand il n'a rien à dire. La carte héros pH portait déjà **13 éléments**.
+- **Aucun impératif dans la note**, et ⛔ **aucun nom de réglage** : suggérer de relever un plafond
+  reviendrait à conseiller de défaire une garde (limite horaire) ou un geste inopérant
+  (consigne). La note se termine par « il n'y a rien à corriger si l'eau est bonne ».
+- **La note cède la place au stock.** Si le compteur du bidon est au bout ou bas, c'est ce
+  message-là qui s'affiche : une explication juste sur un symptôme dont la cause est ailleurs
+  retarde le seul geste utile.
+- **Valeur inconnue ≠ 0 %.** `aria-valuenow` est **retiré** et remplacé par
+  `aria-valuetext="indisponible"` — ⛔ ne jamais faire annoncer « 0 % » à un lecteur d'écran là où
+  la valeur n'est pas connue (§4).
+
+Détail fonctionnel : [`docs/features/page-ph.md`](features/page-ph.md#barre--dosage-du-jour--bug-208-v310)
+et [`page-orp.md`](features/page-orp.md#barre--dosage-du-jour--bug-208-v310). Contrat des trois
+notions servies : [`docs/API.md`](API.md#champs-du-plafond-journalier-chlore-bug-208-v310).
+
 ## 6. Responsive — 390 px d'abord
 
 Référence de calcul pour toute nouvelle rangée de boutons dans une carte d'accueil :
@@ -1013,7 +1064,7 @@ documenté**. Allez le lire dans `data/app.css`, puis **ajoutez-le ici** (§11).
 | Modales et surcouches | `probe-modal`, `ttt` |
 | Bandeaux et alertes | `dose-block-banner`, `rescue-active-banner`, `calibration-alert`, `alert`, `wifi-notification`, `tips` |
 | Graphiques | `chart`, `chart-tab`, `chart-export`, `u-tooltip`, `ph-stats`, `orp-stats`, `trace-block`, `cal-stability` |
-| Cartes spécialisées | `install-card`, `product-card`, `product-volume`, `daily-dose` |
+| Cartes spécialisées | `install-card`, `product-card`, `product-volume` |
 | Petits éléments | `pill`, `chip`, `kv`, `readout`, `metric`, `status`, `row`, `panel`, `terminal` |
 
 ⚠️ **Ce tableau est lui-même daté.** Le recompter plutôt que le recopier :

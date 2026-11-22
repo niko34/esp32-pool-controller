@@ -507,7 +507,18 @@ l'autre</strong>&nbsp;: ils peuvent fonctionner en même temps.</p>
   <li><strong>Mode Boost</strong>&nbsp;: après une journée de forte
   fréquentation, un seul bouton prolonge la filtration et relève
   temporairement la cible de chlore, jusqu'à minuit où tout revient
-  automatiquement à la normale. Disponible quel que soit le mode de
+  automatiquement à la normale. <strong>⚠️ Corrigé en 3.1 — à lire si vous
+  avez réglé une limite de chlore élevée</strong>&nbsp;: le Boost
+  <strong>ne peut qu'ajouter</strong>. Jusqu'à la version&nbsp;3.0, si votre
+  limite de chlore par jour dépassait environ 667&nbsp;mL, l'activer la
+  <strong>faisait baisser</strong> à 1&nbsp;000&nbsp;mL — le mode censé
+  désinfecter davantage réduisait donc le budget du jour, et le message
+  «&nbsp;limite journalière atteinte&nbsp;» tombait à mi-parcours. Désormais,
+  votre limite est respectée telle quelle. À savoir&nbsp;: au-delà de cette
+  valeur, le Boost <strong>n'ajoute plus rien à votre limite journalière</strong>
+  (il ne la réduit pas non plus)&nbsp;— il continue de relever la cible de
+  désinfection et de prolonger la filtration, ce qui reste l'essentiel de son
+  effet. Disponible quel que soit le mode de
   filtration, <strong>sauf en mode Arrêt</strong>&nbsp;: sans circulation
   d'eau, il n'y a rien à surchlorer. À l'activation, un message vous rappelle
   de vérifier le taux de chlore avant la baignade — l'appareil mesure le
@@ -717,8 +728,57 @@ sa plage normale ou non. Un indicateur gris, en pointillés, signifie
 simplement que la valeur n'a pas encore pu être mesurée — ce n'est ni bon ni
 mauvais signe.</p>
 
-<p>Sous la barre de dose, le <strong>maximum journalier</strong> livrable
-sur la journée de filtration programmée est affiché discrètement.</p>
+<h4>Ce que signifie la barre «&nbsp;Dosage du jour&nbsp;»</h4>
+
+<p><em>Revu en 3.1.</em> La barre se remplit vers la quantité que l'appareil
+<strong>s'autorise réellement</strong> aujourd'hui — et non plus vers la limite
+que vous avez saisie dans les réglages, quand celle-ci est hors de portée.</p>
+
+<p>Pourquoi les deux peuvent différer&nbsp;: une pompe doseuse n'injecte que
+pendant quelques minutes par heure, et <strong>uniquement</strong> quand la
+filtration tourne. Multipliez ce débit par la durée de filtration prévue
+aujourd'hui, et vous obtenez ce que la pompe peut <strong>physiquement</strong>
+sortir dans la journée. Si ce nombre est plus bas que votre limite, c'est lui
+qui s'applique&nbsp;: votre limite ne sera jamais atteinte.</p>
+
+<p>Jusqu'à la version&nbsp;3.0, la barre visait quand même la limite saisie.
+Le dosage s'arrêtait donc avec une barre aux alentours de 88&nbsp;%, et rien
+à l'écran ne disait pourquoi. C'est corrigé.</p>
+
+<p>Quand l'écart existe, une phrase grise apparaît sous la barre, par
+exemple&nbsp;: «&nbsp;Réglage&nbsp;: 2&nbsp;000&nbsp;mL — non atteignable avec
+la durée de filtration prévue aujourd'hui.&nbsp;» Elle est grise et non
+orange parce que ce n'est <strong>pas une alerte</strong>&nbsp;: c'est une
+caractéristique de votre installation, vraie tous les jours. Si l'eau est
+bonne, <strong>il n'y a rien à corriger</strong>.</p>
+
+<p><strong>⚠️ Ce qu'il ne faut PAS faire</strong> pour «&nbsp;récupérer&nbsp;»
+la différence&nbsp;:</p>
+
+<ul>
+  <li><strong>Augmenter la durée d'injection par heure</strong> défait la
+  protection qui empêche de verser trop de produit d'un coup. Elle ne sert pas
+  à rien&nbsp;: c'est elle qui vous protège réellement.</li>
+  <li><strong>Monter la consigne</strong> (pH cible, ORP cible) ne fait sortir
+  <strong>aucun</strong> millilitre de plus&nbsp;: la quantité versée reste
+  bornée par la pompe et par la durée de filtration. Côté pH, cela pousse en
+  plus l'eau vers la zone où le chlore devient moins efficace.</li>
+</ul>
+
+<p>Si vous voulez réellement doser davantage, le seul levier utile est
+d'<strong>allonger la filtration</strong> — ce qui est de toute façon la bonne
+réponse quand l'eau en demande plus.</p>
+
+<p>La barre de la page <strong>Chlore&nbsp;/&nbsp;ORP</strong> fonctionne
+exactement de la même façon depuis la version&nbsp;3.1. Avant, elle ne
+donnait aucune indication de ce genre&nbsp;: son plafond réel
+(environ&nbsp;1&nbsp;734&nbsp;mL sur l'installation de référence) n'était
+affiché nulle part.</p>
+
+<p><em>La ligne «&nbsp;Maximum journalier&nbsp;» qui flottait sous la barre de
+la page pH a été supprimée&nbsp;: elle donnait un nombre sans dire que c'était
+lui la vraie limite. Son information est maintenant dans la barre elle-même et
+dans la phrase grise.</em></p>
 
 <h4>La carte «&nbsp;Débit d'injection pH&nbsp;»</h4>
 

@@ -3967,11 +3967,20 @@ constexpr float kBoostOrpCeilingMv = 850.0f;
 // borné en dur par kBoostDailyHardCapMl ci-dessous.
 constexpr float kBoostDailyFactor = 1.5f;
 
-// Plafond dur ABSOLU de la limite journalière chlore effective boostée : 1000 mL.
-// Quel que soit maxChlorineMlPerDay × facteur, la limite effective ne dépasse
-// jamais cette valeur — garde-fou anti-surdosage même si l'utilisateur a une
-// limite normale déjà élevée.
+// Plafond du RELÈVEMENT accordé par le Boost sur la limite journalière chlore.
+// ⚠️ bug-208 (2026-11-22) : ce commentaire disait « la limite effective ne
+// dépasse jamais cette valeur ». C'était vrai, et c'était le défaut : au-delà de
+// 666,7 mL/j réglés, le Boost ABAISSAIT le plafond au lieu de le relever.
+// Le sens exact désormais : le Boost n'ajoute plus rien au-delà de ce genou,
+// et il ne RETIRE jamais ce que l'utilisateur a déjà réglé.
 constexpr float kBoostDailyHardCapMl = 1000.0f;
+
+// Le sens ci-dessus repose sur ces deux bornes : un facteur < 1 rendrait le
+// max() seul garant de l'invariant, et un plafond ≤ 0 l'annulerait.
+static_assert(kBoostDailyFactor >= 1.0f,
+              "kBoostDailyFactor < 1 : le Boost abaisserait la limite journaliere");
+static_assert(kBoostDailyHardCapMl > 0.0f,
+              "kBoostDailyHardCapMl <= 0 : le relevement du Boost serait annule");
 
 // ============================================================================
 // RESCUE CHLORINE CONSTANTS - Chloration de secours (feature-140)

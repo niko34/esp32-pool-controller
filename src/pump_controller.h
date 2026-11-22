@@ -1524,6 +1524,22 @@ public:
   // Miroir exact de getPhSustainableMlPerMin().
   float getOrpSustainableMlPerMin() const;
 
+  // Maximum journalier DÉLIVRABLE de la voie ORP (mL) = soutenable × minutes
+  // PROGRAMMÉES de filtration (scheduledMinutesToday). Miroir exact de
+  // getPhDailyMaxMl() — bug-208 : la voie chlore n'avait AUCUN équivalent, donc
+  // sa barre « Dosage du jour » visait un plafond que l'appareil n'atteint pas,
+  // et RIEN à l'écran ne permettait de s'en apercevoir.
+  // NAN si le soutenable est indisponible (pompe non caractérisée) ou si le
+  // planning ne fait pas foi (mode Arrêt, plage invalide) — jamais de maximum
+  // inventé.
+  // ⛔ LECTURE SEULE : consommé par /data et la trame WS, par AUCUNE décision de
+  // dosage (visa pool-chemistry du 2026-11-22, point 1).
+  // ⚠️ Employé SEUL côté client, il induit massivement en erreur : à
+  // orp_limit_minutes = 60 (réglage autorisé) phSustainableAvgFlow() rend
+  // l'amplitude ENTIÈRE, soit ~10 400 mL/j ici, cinq fois le plafond réglé.
+  // ⇒ L'affichage prend le MINIMUM des deux (condition C1 du visa).
+  float getOrpDailyMaxMl() const;
+
   // La régulation ORP est-elle BORNÉE par sa limite horaire EN CE MOMENT ?
   // Homologue d'isPhLimitedByHourlyBudget(), qui n'avait pas d'équivalent chlore
   // alors que c'est la voie qui rencontre le cas TOUS LES JOURS sur cet appareil.
