@@ -1,7 +1,7 @@
 # Bug — bascule des 5 gardes restantes sur la métrique 8 bits + recalibrage des seuils
 
 - **Type** : bug critique différé (mémoire / disponibilité / **sécurité chimique**)
-- **Statut** : todo — **BLOQUÉE** par une condition d'entrée (voir ci-dessous)
+- **Statut** : ✅ **CLOSE le 2026-11-22 — SANS OBJET** : chantier livré par bug-080 lot A (v2.33.0, commit `c0b33f0`). Voir la clôture en fin de fiche.
 - **Priorité** : haute — mais **surtout pas urgente** : agir trop tôt suspend le dosage
 - **Version cible** : ≥ 2.21.0
 - **Créée** : 2026-08-15, à la clôture de la v2.20.2
@@ -90,3 +90,96 @@ Tant que ces deux points ne sont pas acquis, **ne pas ouvrir ce chantier** : rec
 - [ ] Vérification on-target après chaque jalon de bascule (WS, puis HTTP/TLS, puis auto-guérison)
 - [ ] `pio run` bi-core verts, `pio test -e native` sans régression
 - [ ] `docs/subsystems/oom-guard.md`, `docs/subsystems/system-health.md` et ADR-0040 mis à jour (le régime bi-métrique prend fin → nouvel ADR ou note additive datée)
+
+---
+
+# ✅ CLÔTURE — 2026-11-22 : **le chantier a été livré par un AUTRE lot, il y a onze versions**
+
+⛔ **Aucun code n'a été écrit pour cette fiche, et il n'y en avait pas à écrire.** Instruction
+demandée par l'utilisateur ; première action : **mesurer**, ⛔ pas coder.
+
+## 1. Ce que la fiche affirme, et qui est FAUX depuis la v2.33.0
+> *« 5 gardes, 6 constantes **restées sur la métrique BRUTE** »*
+
+🔴 **Les six lisent la métrique 8 bits.** Vérifié ligne à ligne le 2026-11-22 (v3.0.0) :
+| Constante | Site d'appel | Métrique réellement lue |
+|---|---|---|
+| `kRestartMaxAllocHeapBytes` · `kLowHeapWarnBytes` | `src/main.cpp:1541`, `:1555` | `heapLargestFreeBlock8Bit()` (`:1314`) |
+| `kWsPushMinAllocBytes` | `src/ws_manager.cpp:263` | `heapLargestFreeBlock8Bit()` |
+| `kHttpHeapMarginBytes` | `src/web_routes_heap.cpp:280`, `:398` | `heapLargestFreeBlock8Bit()` |
+| `kCheckUpdateMinFreeHeapBytes` · `kCheckUpdateMinMaxAllocBytes` | `src/web_routes_ota.cpp:1482` | `heapFree8Bit()` (`:1480`) |
+
+**Le lot responsable est identifié** : commit **`c0b33f0`** — *« fix: les gardes mémoire lisent
+enfin la vraie mémoire (**v2.33.0, bug-080 lot A**) »*, livré le **2026-09-02**.
+⇒ `specs/features/done/bug-080-redemarrage-panic-et-fragmentation-heap.md` le consigne.
+
+## 2. Les valeurs ont été recalibrées, elles aussi
+| Constante | Fiche (v2.20.x, août) | **Aujourd'hui (v3.0.0)** |
+|---|---|---|
+| `kRestartMaxAllocHeapBytes` | 8 192 | **4 096** |
+| `kHttpHeapMarginBytes` | 4 096 | 4 096 *(inchangée)* |
+| `kWsPushMinAllocBytes` | 16 384 | **6 144** |
+| `kLowHeapWarnBytes` | 20 000 | **12 288** |
+| `kCheckUpdateMinFreeHeapBytes` | 65 536 | **32 768** |
+| `kCheckUpdateMinMaxAllocBytes` | 20 480 | **24 576** |
+
+## 3. 🔴 Et la FRAGMENTATION PATHOLOGIQUE, qui justifiait le NO GO, A DISPARU
+Relevé sur l'appareil le **2026-11-22**, v3.0.0, 34 min d'uptime :
+```
+libre8 = 50 324    maxBloc8 = 28 660    minBoot = 25 588    minFen = 25 588
+```
+| Grandeur | Fiche (15/08, v2.20.0) | **2026-11-22 (v3.0.0)** | Facteur |
+|---|---|---|---|
+| `maxBloc8` | 4 596 | **28 660** | **× 6,2** |
+| `minMaxBloc8_boot` | 3 060 | **25 588** | **× 8,4** |
+| Ratio `libre8 / maxBloc8` | **10 : 1** (pathologique) | **1,75 : 1** | — |
+
+⇒ ⭐ **Les quatre motifs du NO GO de `pool-chemistry` reposaient tous sur cet état.** Aucun ne
+tient : avec `minBoot = 25 588`, le seuil de redémarrage (4 096) est **six fois plus bas** que le
+minimum observé — ⛔ aucune boucle de redémarrage possible, donc ⛔ aucun chemin vers le mode
+maintenance par cette voie.
+⚠️ Cohérent avec le repère du projet : *maxBloc8 ~25 Ko = **NOMINAL**, pas une alerte.*
+ⓘ L'observabilité livrée depuis fonctionne : le journal porte
+`Chute maxBloc8: 51188 -> 28660 (-22528)` et une trace `Heap 8bits:` toutes les 30 min.
+
+## 4. ⚠️ LE SEUL POINT QUI RESTE — et il est d'aujourd'hui, pas d'août
+`kCheckUpdateMinMaxAllocBytes = **24 576**` contre un `minBoot` mesuré à **25 588**.
+⇒ **1 012 octets de marge.** Si le plus gros bloc descend d'un kilooctet de plus, la **mise à jour
+en ligne est refusée** — ⛔ silencieusement, du point de vue de l'utilisateur.
+⚠️ **Un seul démarrage de 34 min ne suffit pas à en juger** : c'est exactement la campagne de 24 h
+que cette fiche exigeait, et elle n'a jamais été faite.
+
+### ⏱️ CAMPAGNE OUVERTE le 2026-11-22 — à la demande de l'utilisateur
+**Surveillance installée**, cadence **30 min**, ⛔ lecture seule (l'appareil dose pendant la mesure) :
+- script : `/root/pool-captures/f210-marge-ota/mesure-marge-ota.sh`
+- relevés : `/root/pool-captures/f210-marge-ota/mesures.csv`
+- alertes : `/root/pool-captures/f210-marge-ota/alertes.log`
+- cron : `*/30 * * * *` — ⚠️ **marqué TEMPORAIRE, à retirer une fois la décision prise**
+
+**Ce qu'elle relève** (`hf.i8`) : plus gros bloc courant, **plancher depuis le boot** (`mb`, *le*
+chiffre qui décide), plancher de la fenêtre de 30 min (`wb`, qui se réarme et capte les creux),
+heap libre et son plancher, contexte au creux.
+**Deux seuils d'alerte** : plancher **sous** `kCheckUpdateMinMaxAllocBytes` (24 576) ou sous
+`kCheckUpdateMinFreeHeapBytes` (32 768) ⇒ *« la mise à jour en ligne serait REFUSÉE »* ; marge
+**< 2 Ko** ⇒ *« marge faible »*.
+
+⚠️ **Cadence choisie, ⛔ pas prise au hasard** : 30 min s'aligne sur le réarmement des planchers de
+fenêtre (`heapFloorsRearmWindow`) et reste **très au-dessus** du seuil d'effet d'observateur —
+⭐ *chaque lecture de `/get-system-info` est elle-même un GET qui traverse le filtre de la garde et
+pousse un échantillon* (condition X4 de feature-132 : jamais sous 60 s).
+
+**Premier relevé, 2026-11-22T09:09Z** (uptime 2 431 s) :
+`bloc courant 28 660 · plancher boot 25 588 · libre 53 136 · plancher libre 47 476` ⇒ **marge
+1 012 o**, l'alerte « marge faible » s'est déclenchée **dès le premier passage**.
+
+⇒ **Décision reportée à ≥ 24 h de relevés.** ⛔ Pas tranchée ici.
+
+## 5. ⭐ La leçon, et elle vaut au-delà de cette fiche
+**Une fiche BLOQUÉE que personne ne relit devient un DOUBLON.** Celle-ci décrivait un chantier
+« critique différé » pendant **trois mois** alors qu'un autre lot l'avait livré **dix-sept jours
+après sa création**. ⇒ Ses conditions d'entrée (24 h de relevés, fragmenteur identifié) n'ont
+**jamais** été remplies — et n'avaient plus à l'être.
+⚠️ C'est la raison d'être de la consigne du projet : *étudier chaque fiche **avant** de la traiter,
+parce que l'application a évolué.* Ici, elle a évité d'ouvrir un chantier **entièrement vide**.
+
+**Statut : ✅ CLOSE — sans objet, travail livré par bug-080 lot A (v2.33.0).**
