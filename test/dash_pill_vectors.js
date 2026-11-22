@@ -24,6 +24,21 @@ const grab = (anchor, open, close) => extractBalancedFromAnchor(src, anchor, ope
 
 const codes = grab("const DOSE_BLOCK_CODES = {", "{", "}");
 const info = grab("function _doseBlockInfo(json, prefix) {", "{", "}");
+// bug-199 : _doseBlockInfo CITE le texte firmware via _citeFirmwareText, qui
+// s'appuie sur la table _FIRMWARE_TEXT_MOTIFS. ⛔ Sans ces deux extractions,
+// l'évaluation lève un ReferenceError — ⭐ ce harnais a d'ailleurs échoué
+// BRUYAMMENT en CI plutôt que de passer en silence, ce qui est la propriété
+// voulue. ⚠️ Toute dépendance NOUVELLE de _doseBlockInfo devra être ajoutée ici.
+// ⚠️ Extrait par ANCRES, ⛔ pas par comptage de crochets : la table contient des
+// EXPRESSIONS RÉGULIÈRES dont les classes `[...]` feraient dérailler le
+// compteur. ⭐ Les deux ancres existent déjà — tools/check_dose_guard_text_parity.sh
+// s'en sert pour comparer ces motifs aux chaînes réelles du firmware.
+const motifs = (() => {
+  const m = src.match(/\/\/ >>> FIRMWARE-TEXT-MOTIFS:DEBUT\n([\s\S]*?)\n\s*\/\/ <<< FIRMWARE-TEXT-MOTIFS:FIN/);
+  assert.ok(m, "bloc FIRMWARE-TEXT-MOTIFS introuvable dans app.js");
+  return m[1];
+})();
+const cite = grab("function _citeFirmwareText(text) {", "{", "}");
 const variant = grab("function doseBlockVariant(tone, code) {", "{", "}");
 const tone = grab("function dashModePillTone(mode, doseTone, doseCode) {", "{", "}");
 const filt = grab("function dashFiltrationTone(forced, frost, running) {", "{", "}");
@@ -52,6 +67,8 @@ const live = new Function(`
   "use strict";
   const DOSE_BLOCK_CODE_GUARD = 250;
   function _measuresWaitText() { return "attente"; }
+  ${motifs};
+  ${cite}
   ${codes};
   ${info}
   ${variant}

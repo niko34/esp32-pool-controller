@@ -2,7 +2,7 @@
 - **ID** : bug-199
 - **Slug** : deux-conventions-decimales-sur-le-meme-ecran
 - **Type** : bug
-- **Statut** : **doing** — ouvert le 2026-11-22
+- **Statut** : ✅ **DONE** — livrée, déployée en **v3.0.1**, et **vérifiée par l'utilisateur à l'écran** le 2026-11-22
 - **Priorité** : basse
 - **Version cible** : à arrêter
 - **Dernière mise à jour** : **2026-11-22**
@@ -424,3 +424,65 @@ Le bandeau de **bascule manuelle pH** (`renderPhAutoManualBanner`) cite lui auss
 firmware verbatim (`pump_controller.cpp:1326-1328`) : « pente acide **98.5** %, … zéro **4.12**
 mV ». ⛔ **Non traité** : la décision de l'utilisateur borne la règle à **pH, ORP, température**, et
 ce sont des **diagnostics de sonde** (pente en %, zéro en mV).
+
+---
+
+# ✅ CLÔTURE — 2026-11-22
+
+**Déployée en v3.0.1** (firmware puis système de fichiers, signatures vérifiées à l'octet près, et
+`check_release_artefacts.sh` **vert** — les deux `.sig` validés contre la clé **embarquée dans
+`src/constants.h`**, celle que l'appareil utilise réellement).
+
+**Verdict de l'utilisateur, à l'écran** : *« j'ai vérifié à l'écran. Tout fonctionne. »*
+
+## 🔴 UN ÉCHEC DE CI APRÈS LE PUSH — et la faute est de MÉTHODE, la mienne
+`check_dash_pill_vectors.sh` (feature-195) est passé **rouge** après le push. ⚠️ **L'utilisateur l'a
+vu avant moi**, par le courriel de GitHub.
+
+**Cause** : `dash_pill_vectors.js` extrait `_doseBlockInfo` du code vivant (ADR-0099), et
+`_doseBlockInfo` appelle désormais `_citeFirmwareText`, qu'il ⛔ n'extrayait pas ⇒ `ReferenceError`.
+⭐ **Le harnais a échoué BRUYAMMENT plutôt que de passer en silence** : la propriété voulue a tenu.
+
+**Et un second obstacle, instructif** : extraire la table `_FIRMWARE_TEXT_MOTIFS` par **comptage de
+crochets** échoue — ⚠️ elle contient des **expressions régulières** dont les classes `[...]` font
+dérailler le compteur. ⇒ Extraite par les **ancres** `FIRMWARE-TEXT-MOTIFS:DEBUT/FIN`, déjà posées
+pour la sentinelle de parité. ⭐ Un seul repère sert donc **deux** outils.
+
+### ⛔ LA LEÇON, et elle vaut au-delà de ce lot
+J'ai lancé une **liste CHOISIE** de contrôles — ceux que je jugeais concernés — et j'ai annoncé
+« tous les contrôles verts ». ⛔ **Le dépôt en compte 44.**
+⭐ *Un contrôle qu'on ne lance pas ne protège de rien — et une liste choisie reflète ce qu'on croit
+avoir touché, pas ce qu'on a touché.* ⚠️ Ici, le lot avait modifié une fonction dont un **autre**
+harnais dépendait, à l'autre bout du fichier.
+⇒ **Avant toute annonce de verdict vert : `for s in tools/check_*.sh; do ./"$s"; done`.** Les 44
+tiennent en moins d'une minute.
+
+**Après correction : 44 contrôles lancés, 0 rouge.**
+
+## Ce que le lot a réellement corrigé
+Une seule convention décimale dans l'interface — **22 affichages**, les **six messages de blocage**
+du firmware, l'écran d'étalonnage, les placeholders — et les **statistiques ORP à l'entier**
+(décision utilisateur).
+
+## ⭐ Ce que ce lot a appris au projet
+- ⛔ **`grep toFixed` n'est pas un inventaire** : il manque les **littéraux** et les **nombres
+  interpolés**. C'est par là qu'est passé « Trop bas (6.9) », **au centre de l'écran qui a motivé
+  la fiche**.
+- ⭐ *Une assertion qui dit ce qui **ne doit PAS** être présent ne vérifie pas ce qui **doit**
+  l'être.* Le vecteur voyait « (8) » et le déclarait conforme.
+- ⭐ *Extraire le code vivant ne sert à rien si on lui passe un **faux paramètre**.* Le harnais
+  substituait `(v) => v` au vrai callback — c'est ce qui l'a rendu aveugle.
+- ⭐ *Un format ne doit pas dépendre d'une **valeur**.* `Number.isInteger` faisait afficher « (8) »
+  à côté d'un héros « 8,0 », **une fois sur dix**.
+- 🔴 **Règle de l'utilisateur, la plus structurante** : *le serveur émet le **canonique**, la
+  présentation **localise***. Elle a écarté la correction dans le firmware et rendu une traduction
+  future possible.
+- ⭐ **Et sa reprise** : *convertir des **données identifiées** ≠ convertir des **nombres de la
+  bonne forme***. Une règle de forme **devine** ; six motifs ancrés **savent**.
+
+## ⏳ Reste ouvert, écrit et assumé
+- Le bandeau de **bascule manuelle pH** garde ses points (diagnostics de sonde — hors périmètre).
+- La parité est garantie **dans le dépôt**, ⛔ **pas sur l'appareil** : firmware et FS se déploient
+  séparément.
+- **bug-211** (un bidon vide annoncé « stock faible ») — ouvert, non traité.
+- 📸 Captures `screenshots/` : écran d'étalonnage pH, carte Signaux, cartes pH/ORP.

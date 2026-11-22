@@ -6,7 +6,7 @@
 - **Priorité** : à définir
 - **Version cible** : à définir
 - **Dernière mise à jour** : 2026-11-22
-- **Spec(s) liée(s)** : [bug-199](../doing/bug-199-deux-conventions-decimales-sur-le-meme-ecran.md)
+- **Spec(s) liée(s)** : [bug-199](../done/bug-199-deux-conventions-decimales-sur-le-meme-ecran.md)
   (⭐ **c'est son étude d'ergonomie qui a sorti ce sujet de son périmètre, à dessein**)
 
 ## Domaines touchés
