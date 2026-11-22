@@ -59,3 +59,12 @@ La **logique métier sensible est extraite en modules purs** (pattern *Humble Ob
 - Spec : [`specs/features/done/feature-036-dosage-testable-decision-pure.md`](../../specs/features/done/feature-036-dosage-testable-decision-pure.md)
 - Doc : [`docs/subsystems/pump-controller.md`](../subsystems/pump-controller.md), [`docs/BUILD.md`](../BUILD.md)
 - Voir aussi : [ADR-0016](0016-regulation-p-temporisee-vs-pid.md) (régulation P temporisée, feature-025)
+
+## Mise à jour 2026-11-22 (feature-170) — AMENDEMENT, pas supersession
+
+**La décision centrale est inchangée** : la logique métier pure est séparée de la coquille matérielle et se teste en natif. Le lot feature-170 ajoute **deux règles de frontière**, nées de l'extraction du texte d'alerte (`src/ph_stale_message.h`) et de l'écriture de son site d'appel.
+
+1. **On extrait ce qui VARIE, pas la condition d'appel.** Une fonction pure qui n'enveloppe qu'un unique test trivial est **décorative** : ici, extraire la condition « émettre l'alerte ou non » aurait **doublonné un verdict déjà extrait** (`isPhOffsetSupersededByCalibration`, `ph_offset.h`) et rouvert le piège « même notion, deux expressions ». Le module pur reçoit ce qui varie (la valeur, le texte), pas le `if`.
+2. **Un vecteur natif ne prouve JAMAIS un SITE D'APPEL.** Il prouve ce que la fonction rend quand on l'appelle, pas que quelqu'un l'appelle, au bon endroit, après la libération du mutex. C'est le travail d'une **sentinelle** (`tools/check_ph_stale_alert_emitted.sh` : l'appel existe, il suit le `xSemaphoreGiveRecursive(configMutex)`, aucune lecture de `mqttCfg` ne le suit).
+
+Voir [ADR-0139](0139-le-firmware-notifie-un-evenement-l-ecran-rend-un-etat.md) pour la sentinelle de parité de texte. Le corps de l'ADR ci-dessus n'est pas modifié.

@@ -960,20 +960,29 @@ deux vivent sur le même écran, mais ce sont deux gestes distincts.</p>
 </div>
 
 <div class="box-alerte">
-  <span class="box-title">Correction à revoir</span>
-  <p>Trois situations affichent la même bannière, avec un texte adapté à
-  chacune. <strong>Après un étalonnage</strong>&nbsp;: étalonner la sonde
-  change son zéro et sa pente, une correction posée <strong>avant</strong>
-  ne compense plus un réglage qui a changé. <strong>Après 30&nbsp;jours sans
-  revérification</strong>, si la correction est importante&nbsp;: elle
-  compense un décalage de votre installation qui peut avoir changé entre
-  temps. <strong>Au redémarrage</strong>, si l'appareil retrouve en mémoire
-  une correction importante que vous ne reconnaissez pas&nbsp;: c'est le
-  signe d'une mémoire altérée, à vérifier sans attendre. Dans les trois cas,
-  deux choix clairs&nbsp;: l'annuler, ou la garder. Rien n'est effacé
-  automatiquement — c'est à vous de décider, parce que cette valeur engage
-  le dosage. Tant que vous n'avez pas choisi, la correction continue de
-  s'appliquer.</p>
+  <span class="box-title">Correction à vérifier</span>
+  <p>Une seule situation affiche ce bandeau&nbsp;: <strong>l'étalonnage de la
+  sonde a changé après que vous avez posé une correction</strong> — qu'il ait
+  été refait ou effacé. Ce changement a déplacé la mesure sur laquelle la
+  correction avait été calculée&nbsp;; le bandeau annonce
+  «&nbsp;Étalonnage modifié&nbsp;», donne la
+  date de l'étalonnage et celle de la pose de la correction, puis vous dit
+  quoi faire&nbsp;: refaire un test manuel et accorder la mesure dessus, ou
+  remettre la correction à zéro. Deux boutons&nbsp;:
+  «&nbsp;Je l'ai vérifiée — garder&nbsp;» ou «&nbsp;Remettre à zéro&nbsp;».
+  Rien n'est effacé automatiquement — c'est à vous de décider, parce que
+  cette valeur engage le dosage. Tant que vous n'avez pas choisi, la
+  correction continue de s'appliquer. En même temps, l'appareil envoie une
+  alerte à Home Assistant au moment de l'étalonnage.</p>
+  <p><strong>Ce qui a disparu (version&nbsp;2.99)</strong>&nbsp;: le message
+  «&nbsp;Correction à revoir&nbsp;» qui apparaissait à chaque démarrage pour
+  une correction importante, et l'alerte des 30&nbsp;jours. Ils vous
+  demandaient de confirmer une valeur sans rien prouver&nbsp;: la mémoire de
+  l'appareil se protège elle-même. Au démarrage, l'appareil écrit seulement
+  une ligne dans son journal.</p>
+  <p>Quand aucun bandeau n'est affiché, une ligne en haut de la carte rappelle
+  la correction en vigueur et sa date de pose («&nbsp;Correction +1,20&nbsp;pH
+  — posée le 16/10/2026&nbsp;»).</p>
 </div>
 
 <h3>Le chlore (ORP)</h3>

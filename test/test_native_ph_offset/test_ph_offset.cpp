@@ -31,13 +31,10 @@
 //        test_native_ph_guard (revision C11 du gate pool-chemistry) ; ici on ne
 //        teste QUE ce qui met l'offset en jeu CÔTÉ MESURE.
 //
-//   D4 — HORODATAGE DE JUSTESSE (feature-156, étendu feature-168/C10/C12) :
-//        isPhOffsetStale(offset, offsetSeq, calSeq, offsetEpoch, nowEpoch,
-//        confirmIntervalDays, unusualAbs) et nextJustnessSeq(a, b). Deux causes
-//        INDÉPENDANTES de caducité : (a) correction antérieure au dernier
-//        étalonnage réussi (feature-156, inchangée) ; (b) correction INHABITUELLE
-//        non reconfirmée depuis plus de confirmIntervalDays jours (feature-168,
-//        C10) — isPhOffsetExpired() isolément, fail-open sur horloge non fiable.
+//   D4 — HORODATAGE DE JUSTESSE (feature-156) : isPhOffsetSupersededByCalibration(
+//        offset, offsetSeq, calSeq) et nextJustnessSeq(a, b). Une seule cause de
+//        caducité depuis feature-170 (C26) : correction antérieure au dernier
+//        étalonnage. (isPhOffsetExpired/isPhOffsetStale et leurs cas retirés.)
 //
 // Chaîne de production reproduite (src/sensors.cpp + pump_controller.cpp,
 // feature-152) :
@@ -52,6 +49,7 @@
 #include <unity.h>
 #include <math.h>   // C header uniquement (libc++ <cmath> indisponible sur l'hôte)
 #include <stdio.h>  // snprintf (messages des balayages D3)
+#include <type_traits>  // feature-170 (V1) : signature de l'accesseur
 
 #include "ph_guard_logic.h"  // phGuardBlocksBelow / phGuardBlocksAbove (D3)
 #include "ph_offset.h"
@@ -574,40 +572,34 @@ void test_offset_plus_one_consigne_720_never_hits_the_raw_floor(void) {
 // est caduque. `seq` (entier croissant), PAS `epoch`, fait foi pour l'ORDRE
 // étalonnage/correction (cause a) — epoch ne sert qu'à dater la cause (b).
 
-// Paramètres NOMINAUX de la cause (b), neutres pour ne tester QUE la cause (a) :
-// horloge jamais synchronisée (epoch=0 des deux côtés) ⇒ cause (b) fail-open.
-static const uint32_t kNoEpoch = 0;
-static const uint32_t kConfirmDays = 30;
-static const float kUnusual = 0.50f;
-
 void test_stale_offset_null_and_anterior_is_false(void) {
   // Offset nul (inerte) : rien à annuler, jamais caduc, même antérieur.
-  TEST_ASSERT_FALSE(isPhOffsetStale(0.0f, 1, 5, kNoEpoch, kNoEpoch, kConfirmDays, kUnusual));
+  TEST_ASSERT_FALSE(isPhOffsetSupersededByCalibration(0.0f, 1, 5));
 }
 
 void test_stale_offset_nonzero_and_anterior_is_true(void) {
   // Correction posée (seq=1) avant un étalonnage plus récent (seq=5) : caduque.
-  TEST_ASSERT_TRUE(isPhOffsetStale(0.30f, 1, 5, kNoEpoch, kNoEpoch, kConfirmDays, kUnusual));
-  TEST_ASSERT_TRUE(isPhOffsetStale(-0.10f, 2, 3, kNoEpoch, kNoEpoch, kConfirmDays, kUnusual));
+  TEST_ASSERT_TRUE(isPhOffsetSupersededByCalibration(0.30f, 1, 5));
+  TEST_ASSERT_TRUE(isPhOffsetSupersededByCalibration(-0.10f, 2, 3));
 }
 
 void test_stale_offset_nonzero_and_posterior_is_false(void) {
   // Correction posée APRÈS le dernier étalonnage : toujours à jour (cause a).
-  TEST_ASSERT_FALSE(isPhOffsetStale(0.30f, 9, 5, kNoEpoch, kNoEpoch, kConfirmDays, kUnusual));
+  TEST_ASSERT_FALSE(isPhOffsetSupersededByCalibration(0.30f, 9, 5));
 }
 
 void test_stale_equal_sequences_is_false(void) {
   // Séquences ÉGALES : aucune préséance de l'étalonnage sur la correction —
   // pas caduque. Cas limite explicitement exigé (ni l'un ni l'autre n'est
   // strictement postérieur).
-  TEST_ASSERT_FALSE(isPhOffsetStale(0.30f, 4, 4, kNoEpoch, kNoEpoch, kConfirmDays, kUnusual));
+  TEST_ASSERT_FALSE(isPhOffsetSupersededByCalibration(0.30f, 4, 4));
 }
 
 void test_stale_both_zero_is_false(void) {
   // Aucun des deux événements ne s'est jamais produit (appareil neuf, ou
   // config antérieure à feature-156 sans ces clés NVS) : jamais caduc, même
   // avec un offset non nul hérité d'une ancienne version.
-  TEST_ASSERT_FALSE(isPhOffsetStale(0.20f, 0, 0, kNoEpoch, kNoEpoch, kConfirmDays, kUnusual));
+  TEST_ASSERT_FALSE(isPhOffsetSupersededByCalibration(0.20f, 0, 0));
 }
 
 void test_stale_first_calibration_after_update_with_inherited_offset(void) {
@@ -616,10 +608,10 @@ void test_stale_first_calibration_after_update_with_inherited_offset(void) {
   // correction non nulle en vigueur depuis des mois — test_stale_both_zero_is_false
   // couvre déjà ce premier redémarrage : pas de fausse alerte.
   // Ici : l'étape SUIVANTE, le premier étalonnage posé APRÈS la mise à jour.
-  TEST_ASSERT_TRUE(isPhOffsetStale(0.30f, 0, 1, kNoEpoch, kNoEpoch, kConfirmDays, kUnusual));
+  TEST_ASSERT_TRUE(isPhOffsetSupersededByCalibration(0.30f, 0, 1));
   // Et si la correction héritée était nulle, elle reste jamais caduque (rien
   // à annuler), même avec le même franchissement de séquence.
-  TEST_ASSERT_FALSE(isPhOffsetStale(0.0f, 0, 1, kNoEpoch, kNoEpoch, kConfirmDays, kUnusual));
+  TEST_ASSERT_FALSE(isPhOffsetSupersededByCalibration(0.0f, 0, 1));
 }
 
 void test_next_justness_seq_is_max_plus_one(void) {
@@ -628,67 +620,6 @@ void test_next_justness_seq_is_max_plus_one(void) {
   TEST_ASSERT_EQUAL_UINT32(1, nextJustnessSeq(0, 0));  // premier événement de l'appareil
   TEST_ASSERT_EQUAL_UINT32(101, nextJustnessSeq(100, 0));
   TEST_ASSERT_EQUAL_UINT32(101, nextJustnessSeq(0, 100));
-}
-
-// =============================================================================
-// D4bis — feature-168 (C10) : DEUXIÈME CAUSE DE CADUCITÉ, isPhOffsetExpired
-// =============================================================================
-// Indépendante de l'étalonnage : une correction INHABITUELLE (|offset| > 0,50)
-// non reconfirmée depuis plus de 30 jours est caduque, QUEL QUE SOIT l'état de
-// l'étalonnage (seq ne joue aucun rôle ici, epoch seul).
-
-// Fail-open : epoch == 0 (date inconnue) ⇒ jamais caduc par cette cause, quelle
-// que soit l'ampleur de l'offset.
-void test_expired_epoch_zero_never_caduc(void) {
-  TEST_ASSERT_FALSE(isPhOffsetExpired(1.00f, 0, 1000000000UL, kConfirmDays, kUnusual));
-}
-
-// Fail-open : horloge pas encore synchronisée côté "maintenant" (nowEpoch==0).
-void test_expired_now_epoch_zero_never_caduc(void) {
-  TEST_ASSERT_FALSE(isPhOffsetExpired(1.00f, 1000000000UL, 0, kConfirmDays, kUnusual));
-}
-
-// Un offset DANS la zone habituelle (|offset| <= 0,50) n'est jamais caduc par
-// cette cause, même très ancien.
-void test_expired_offset_usual_never_caduc(void) {
-  const uint32_t posed = 1000000000UL;
-  const uint32_t farLater = posed + 365UL * 86400UL;  // un an plus tard
-  TEST_ASSERT_FALSE(isPhOffsetExpired(0.50f, posed, farLater, kConfirmDays, kUnusual));
-  TEST_ASSERT_FALSE(isPhOffsetExpired(-0.50f, posed, farLater, kConfirmDays, kUnusual));
-}
-
-// *** LES QUATRE COMBINAISONS EXIGÉES PAR LA SPEC *** — 29 j / 31 j croisés
-// avec |offset| 0,40 (habituel, jamais caduc) / 1,00 (inhabituel, caduc
-// seulement au-delà du délai).
-void test_expired_four_combinations_29_31_days_x_040_100(void) {
-  const uint32_t posed = 1000000000UL;
-  const uint32_t after29 = posed + 29UL * 86400UL;
-  const uint32_t after31 = posed + 31UL * 86400UL;
-
-  // 29 jours, offset habituel (0,40) : jamais caduc (ni le délai, ni l'ampleur).
-  TEST_ASSERT_FALSE_MESSAGE(
-      isPhOffsetExpired(0.40f, posed, after29, kConfirmDays, kUnusual),
-      "29j / 0,40 : ni le delai ni l'ampleur ne justifient la caducite");
-  // 29 jours, offset inhabituel (1,00) : délai PAS encore dépassé, pas caduc.
-  TEST_ASSERT_FALSE_MESSAGE(
-      isPhOffsetExpired(1.00f, posed, after29, kConfirmDays, kUnusual),
-      "29j / 1,00 : le delai de 30j n'est pas encore depasse");
-  // 31 jours, offset habituel (0,40) : jamais caduc par cette cause (l'ampleur
-  // manque), quel que soit le délai.
-  TEST_ASSERT_FALSE_MESSAGE(
-      isPhOffsetExpired(0.40f, posed, after31, kConfirmDays, kUnusual),
-      "31j / 0,40 : l'ampleur ne declenche jamais cette cause");
-  // 31 jours, offset inhabituel (1,00) : délai dépassé ET ampleur inhabituelle
-  // ⇒ caduc.
-  TEST_ASSERT_TRUE_MESSAGE(
-      isPhOffsetExpired(1.00f, posed, after31, kConfirmDays, kUnusual),
-      "31j / 1,00 : delai depasse ET offset inhabituel => caduc");
-}
-
-// Horloge repartie en arrière (RTC non recalée) : fail-open, pas de caducité
-// signalée sur une donnée temporelle qui n'a pas de sens.
-void test_expired_clock_went_backwards_is_false(void) {
-  TEST_ASSERT_FALSE(isPhOffsetExpired(1.00f, 2000000000UL, 1000000000UL, kConfirmDays, kUnusual));
 }
 
 void test_refusal_counter_constants(void) {
@@ -722,6 +653,98 @@ void test_refusal_counter_constants(void) {
 //     test_native_ph_guard, mais leur BRANCHEMENT au compteur vit dans
 //     pump_controller.cpp (impur).
 // =============================================================================
+
+// =============================================================================
+// feature-170 — VECTEURS V1→V5 de la cause survivante, et banc de régression
+// de feature-170 (C20) : ce lot ne touche AUCUNE garde de dosage.
+// =============================================================================
+
+// V1 — une correction de +1,20 posée il y a 400 jours ne devient JAMAIS caduque
+// par l'âge. isPhOffsetExpired() a été SUPPRIMÉE (feature-170 (C26)) : on ne peut
+// donc plus l'appeler pour le prouver. La preuve est de TYPE : l'accesseur unique
+// n'accepte ni époque ni horloge — un test d'âge est INEXPRIMABLE sans changer sa
+// signature, et ce static_assert meurt (à la compilation) si quelqu'un lui en
+// rend une. ⚠️ Limite honnête : un test d'âge lu dans un global resterait
+// invisible d'ici.
+static_assert(std::is_same<decltype(&isPhOffsetSupersededByCalibration),
+                           bool (*)(float, uint32_t, uint32_t)>::value,
+              "feature-170 (V1) : l'accesseur ne doit recevoir ni age ni horloge");
+
+void test_feature170_v1_correction_ancienne_jamais_caduque_par_l_age(void) {
+  // Correction postérieure au dernier étalonnage (offsetSeq > calSeq), quel que
+  // soit son âge (non représentable ici) : aucune cause.
+  TEST_ASSERT_FALSE(isPhOffsetSupersededByCalibration(1.20f, 5, 3));
+  TEST_ASSERT_FALSE(isPhOffsetSupersededByCalibration(1.20f, 4000000000u, 3));
+  // Aucun étalonnage jamais fait, correction ancienne : aucune cause.
+  TEST_ASSERT_FALSE(isPhOffsetSupersededByCalibration(1.20f, 1, 0));
+  TEST_ASSERT_FALSE(isPhOffsetSupersededByCalibration(10.50f, 1, 0));
+}
+
+void test_feature170_v2_etalonnage_posterieur_rend_la_correction_caduque(void) {
+  TEST_ASSERT_TRUE(isPhOffsetSupersededByCalibration(1.20f, 5, 7));
+  TEST_ASSERT_TRUE(isPhOffsetSupersededByCalibration(-0.90f, 5, 7));
+}
+
+void test_feature170_v3_correction_posterieure_n_est_pas_caduque(void) {
+  TEST_ASSERT_FALSE(isPhOffsetSupersededByCalibration(1.20f, 7, 5));
+}
+
+void test_feature170_v4_correction_nulle_jamais_caduque(void) {
+  TEST_ASSERT_FALSE(isPhOffsetSupersededByCalibration(0.00f, 1, 5));
+  TEST_ASSERT_FALSE(isPhOffsetSupersededByCalibration(-0.0f, 1, 5));
+}
+
+void test_feature170_v5_premier_demarrage_seq_nulles_jamais_caduque(void) {
+  TEST_ASSERT_FALSE(isPhOffsetSupersededByCalibration(1.20f, 0, 0));
+}
+
+// feature-170 (C20) — BANC DE RÉGRESSION. Correction +1,20, brut 6,10 :
+// le corrigé vaut 7,30. ⚠️ Écart avec l'énoncé de la fiche (« acide REFUSÉ ») :
+// à 7,30 corrigé l'acide n'est PAS refusé par le plancher corrigé (6,70) — il
+// l'est si la correction DISPARAÎT (corrigé 6,10 < 6,70), c'est précisément le
+// scénario chiffré de feature-170 (C23). Les deux faces sont verrouillées ici ;
+// ce qui compte pour (C20) est qu'elles soient IDENTIQUES avant/après le lot
+// (src/ph_guard_logic.h inchangé, seule kPhOffsetUnusualAbs est redéfinie, à
+// valeur égale — pinnée plus bas).
+void test_feature170_banc_regression_correction_1_20_brut_6_10(void) {
+  const float brut = 6.10f, offset = 1.20f;
+  const float corrige = applyPhOffset(brut, offset);
+  TEST_ASSERT_FLOAT_WITHIN(0.005f, 7.30f, corrige);
+  // Avec la correction : l'acide n'est pas refusé, l'ORP n'est pas inhibé.
+  TEST_ASSERT_FALSE(phGuardBlocksBelow(corrige, kPhFloorCorrected, false));
+  TEST_ASSERT_FALSE_MESSAGE(phGuardBlocksAbove(corrige, kPhOrpInhibit, false),
+                            "ORP inhibe a 7,60 sur le CORRIGE : 7,30 ne l'inhibe pas");
+  // Sans la correction (scénario de disparition) : l'acide est refusé à 6,70.
+  TEST_ASSERT_TRUE_MESSAGE(phGuardBlocksBelow(applyPhOffset(brut, 0.0f), kPhFloorCorrected, false),
+                           "la correction disparue fait lire 6,10 < 6,70 : refus d'acidifier");
+  TEST_ASSERT_FLOAT_WITHIN(1e-6f, 6.70f, kPhFloorCorrected);
+  TEST_ASSERT_FLOAT_WITHIN(1e-6f, 7.60f, kPhOrpInhibit);
+}
+
+// Les filets BRUTS 5,50 / 8,50 ne dépendent d'AUCUNE correction : même verdict
+// pour toutes, y compris les extrêmes. Un test qui meurt si quelqu'un les refait
+// dériver de l'offset.
+void test_feature170_banc_regression_filets_bruts_inchanges(void) {
+  TEST_ASSERT_FLOAT_WITHIN(1e-6f, 5.50f, kPhFloorRawHard);
+  TEST_ASSERT_FLOAT_WITHIN(1e-6f, 8.50f, kPhCeilingRawHard);
+  const float offsets[] = {-10.50f, -0.90f, -0.30f, 0.0f, 0.30f, 1.20f, 10.50f};
+  for (unsigned i = 0; i < sizeof(offsets) / sizeof(offsets[0]); ++i) {
+    char msg[64];
+    snprintf(msg, sizeof(msg), "offset=%+.2f", (double)offsets[i]);
+    // Le filet s'applique au BRUT : l'offset n'entre pas dans la décision.
+    TEST_ASSERT_TRUE_MESSAGE(phGuardBlocksBelow(5.49f, kPhFloorRawHard, false), msg);
+    TEST_ASSERT_FALSE_MESSAGE(phGuardBlocksBelow(5.51f, kPhFloorRawHard, false), msg);
+    TEST_ASSERT_TRUE_MESSAGE(phGuardBlocksAbove(8.51f, kPhCeilingRawHard, false), msg);
+    TEST_ASSERT_FALSE_MESSAGE(phGuardBlocksAbove(8.49f, kPhCeilingRawHard, false), msg);
+  }
+}
+
+// kPhOffsetUnusualAbs est redéfinie DÉRIVÉE (feature-170 (C23)) : sa VALEUR ne
+// doit pas bouger (le repli client de feature-170 (C33) en dépend).
+void test_feature170_seuil_inhabituel_derive_valeur_inchangee(void) {
+  TEST_ASSERT_FLOAT_WITHIN(1e-6f, 0.50f, kPhOffsetUnusualAbs);
+}
+
 
 int main(int, char**) {
   UNITY_BEGIN();
@@ -771,11 +794,14 @@ int main(int, char**) {
   RUN_TEST(test_stale_both_zero_is_false);
   RUN_TEST(test_stale_first_calibration_after_update_with_inherited_offset);
   RUN_TEST(test_next_justness_seq_is_max_plus_one);
-  // D4bis — péremption (feature-168, C10, cause b)
-  RUN_TEST(test_expired_epoch_zero_never_caduc);
-  RUN_TEST(test_expired_now_epoch_zero_never_caduc);
-  RUN_TEST(test_expired_offset_usual_never_caduc);
-  RUN_TEST(test_expired_four_combinations_29_31_days_x_040_100);
-  RUN_TEST(test_expired_clock_went_backwards_is_false);
+  // feature-170 : V1→V5 et banc de régression (C20)
+  RUN_TEST(test_feature170_v1_correction_ancienne_jamais_caduque_par_l_age);
+  RUN_TEST(test_feature170_v2_etalonnage_posterieur_rend_la_correction_caduque);
+  RUN_TEST(test_feature170_v3_correction_posterieure_n_est_pas_caduque);
+  RUN_TEST(test_feature170_v4_correction_nulle_jamais_caduque);
+  RUN_TEST(test_feature170_v5_premier_demarrage_seq_nulles_jamais_caduque);
+  RUN_TEST(test_feature170_banc_regression_correction_1_20_brut_6_10);
+  RUN_TEST(test_feature170_banc_regression_filets_bruts_inchanges);
+  RUN_TEST(test_feature170_seuil_inhabituel_derive_valeur_inchangee);
   return UNITY_END();
 }

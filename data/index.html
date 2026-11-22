@@ -1355,7 +1355,7 @@
           <!-- feature-155 : accorder l'appareil sur un test manuel. Toujours visible
                (quel que soit le mode de régulation) car elle corrige la MESURE, pas la
                régulation. Distincte de la calibration EZO (carte juste au-dessus) : deux
-               gestes différents, deux effets différents — cf. #ph_tune_calib_note.
+               gestes différents, deux effets différents (note retirée par feature-170, D2 : le refus de POST /tune-ph-offset le dit au moment utile).
                Remplace l'ancien réglage d'un offset abstrait (feature-067) : l'écran
                demande une VALEUR LUE, jamais un écart ; le mot « offset » n'y figure
                plus. Le pas-à-pas existant est RÉAFFECTÉ (pas supprimé).
@@ -1375,21 +1375,30 @@
                    Calibration. Deux issues explicites, jamais de fermeture silencieuse. -->
               <div class="callout callout--warn" id="ph_tune_stale_banner" role="status" aria-live="polite"
                    hidden style="margin:0 0 16px">
-                <!-- feature-168 (C15) : TROIS causes de péremption (calibration /
-                     expiration / boot), TROIS textes — mot pour mot imposés par le
-                     gate pool-chemistry (« les trois causes appellent trois gestes
-                     différents ; une formule commune ne dirait quoi faire dans aucun
-                     cas »). Texte choisi par ph_offset_stale_cause, écrit dans
-                     #ph_tune_stale_text par renderPhOffsetStaleBanner() — rien de figé
-                     ici hors le titre (générique, valable pour les trois causes) et les
-                     deux actions, inchangées depuis feature-156. -->
-                <p style="margin:0 0 8px"><strong>Correction à revoir</strong></p>
-                <p style="margin:0 0 10px" id="ph_tune_stale_text"></p>
+                <!-- feature-170 (C29/C31) : chapeau (l'ÉVÉNEMENT déclencheur), titre, puis
+                     DEUX paragraphes — P1 le fait, P2 l'acte —, écrits par
+                     renderPhOffsetStaleBanner(). ⛔ Aucun repliable, ⛔ pas d'aria-live
+                     ajouté (le conteneur porte déjà le sien ; re-rendu à chaque
+                     loadConfig). Le chapeau est masqué pour une cause héritée
+                     (boot / expiration) : aucun étalonnage n'a eu lieu. -->
+                <p class="callout__eyebrow callout__eyebrow--danger" id="ph_tune_stale_eyebrow">Étalonnage modifié</p>
+                <p style="margin:0 0 8px"><strong>Correction à vérifier</strong></p>
+                <p style="margin:0 0 8px" id="ph_tune_stale_fait"></p>
+                <p style="margin:0 0 10px" id="ph_tune_stale_acte"></p>
                 <div class="detail-actions">
-                  <button class="btn btn--danger" type="button" id="ph_tune_stale_cancel_btn">Annuler la correction</button>
-                  <button class="btn btn--secondary" type="button" id="ph_tune_stale_keep_btn">Garder la correction</button>
+                  <!-- feature-170 (C30) : nommer l'ACTE. « Je l'ai vérifiée » en premier et
+                       SECONDAIRE (il ne doit pas inviter à valider) ; le geste destructif
+                       en second. Aucune confirmation (verdict du gate). -->
+                  <button class="btn btn--secondary" type="button" id="ph_tune_stale_keep_btn">Je l'ai vérifiée — garder</button>
+                  <button class="btn btn--danger action-destructive" type="button" id="ph_tune_stale_cancel_btn">Remettre à zéro</button>
                 </div>
               </div>
+
+              <!-- feature-170 (C28) : date de pose de la correction — un FAIT, pas une
+                   alerte (--text, seul le nombre en gras, ni cadre ni icône). Écrit par
+                   renderPhTuneAppliedLine() ; masqué si la correction est nulle ; absorbe
+                   l'ancienne étiquette « Correction actuelle : … pH ». -->
+              <p class="small" id="ph_tune_applied" hidden style="margin:0 0 12px"></p>
 
               <!-- UN SEUL BLOC, décision utilisateur du 2026-10-11 : la carte était
                    passée de 3 blocs visibles à 6, alors que la consigne était de
@@ -1464,23 +1473,10 @@
                 </details>
               </div>
 
-              <!-- feature-156 : la carte visée est désormais JUSTE AU-DESSUS (DOM
-                   réordonné) — texte corrigé en conséquence (« plus bas » → « ci-dessus »),
-                   sinon la phrase devient fausse. #ph_tune_goto_cal_btn est SUPPRIMÉ : plus
-                   besoin de défiler vers une carte qui est déjà adjacente. -->
-              <p class="muted small" id="ph_tune_calib_note" style="margin:10px 0 0">
-                Cela n'étalonne pas la sonde : pour cela, utilisez la carte
-                « Calibration de la sonde pH » ci-dessus.
-              </p>
-
               <!-- feature-157 : bouton de SUPPRESSION de la correction, distinct du
                    pas-à-pas ci-dessus. Masqué si la correction est nulle OU si la
                    bannière « correction caduque » est affichée (elle couvre déjà le
                    cas avec ses deux boutons — pas de doublon visuel, B3). -->
-              <p class="muted small" id="ph_tune_remove_label" hidden style="margin:10px 0 0">
-                Correction actuelle : <strong id="ph_tune_remove_value">—</strong> pH
-              </p>
-
               <p class="small" id="ph_tune_error" role="alert"
                  style="display:none;margin:10px 0 0;color:var(--danger)"></p>
 
@@ -1490,7 +1486,7 @@
                      (feature-157) : ne pas écrire « vous pouvez en poser une
                      nouvelle » — piège symétrique de celui évité sur « Garder ». -->
                 <button class="btn btn--danger action-destructive" type="button" id="ph_tune_remove_btn" hidden
-                        aria-describedby="ph_tune_remove_label ph_tune_remove_hint">Supprimer la correction</button>
+                        aria-describedby="ph_tune_applied ph_tune_remove_hint">Supprimer la correction</button>
               </div>
               <p class="muted small" id="ph_tune_remove_hint" hidden style="margin:6px 0 0">
                 Sans correction, l'appareil régule sur la mesure de la sonde telle quelle.

@@ -1825,9 +1825,8 @@ constexpr size_t kSensorTraceHeapMarginBytes     = kHttpHeapMarginBytes;
 //   - kPhOffsetScaleSpan (bloc « FILETS ABSOLUS SUR LE pH BRUT » plus bas) :
 //     une salubrité de DOMAINE (NaN/inf/valeurs aberrantes refusés), PAS une
 //     borne de réglage — ADR-0098/ADR-0100.
-//   - kPhOffsetUnusualAbs : l'ANCIENNE borne ±0,50, CONSERVÉE comme SIGNAL
-//     d'alerte (défaut matériel possible) — elle ne limite plus rien, elle
-//     avertit seulement.
+//   - kPhOffsetUnusualAbs : seuil de CONSÉQUENCE dérivé de kPhSafetyMargin
+//     (feature-170 (C23)) — elle ne limite plus rien, elle informe seulement.
 //   - kPhRawFloorAbsolute / kPhRawCeilingAbsolute : les deux filets chimiques
 //     sur le pH BRUT, qui ne DÉRIVENT plus de cette borne (c'était le défaut
 //     structurel que cette levée de limite a mis au jour : la correction
@@ -2051,23 +2050,31 @@ constexpr float kPhCeilingRawHard   = kPhRawCeilingAbsolute;  // 8,50
 
 // --- Correction de mesure : plus de borne de réglage, un SIGNAL et une
 //     salubrité (feature-168, décision utilisateur du 2026-10-16) ---
-// kPhOffsetUnusualAbs — l'ANCIENNE borne ±0,50 (feature-067/pool-chemistry),
-// CONSERVÉE : au-delà, ce n'est plus une limite, mais le SIGNAL qu'un défaut
-// matériel est possible (le décalage ne s'explique alors plus simplement par
-// une implantation de sonde). Pilote l'avertissement UI (C8), le log + alerte
-// MQTT de correction inhabituelle (C7), et une des trois causes de péremption
-// (C10/C15).
-constexpr float kPhOffsetUnusualAbs = 0.50f;
+// kPhOffsetUnusualAbs — seuil de CONSÉQUENCE, pas d'amplitude (feature-170 (C23)),
+// DÉRIVÉ de kPhSafetyMargin (ADR-0098), valeur inchangée à 0,50. À la consigne
+// basse kPhTargetMin (7,20), une correction `o` qui DISPARAÎT fait lire
+// 7,20 − o ; l'appareil cesse d'acidifier dès que 7,20 − o < kPhFloorCorrected
+// (6,70), soit o > kPhSafetyMargin. Au-delà, et seulement au-delà, la correction
+// est devenue une pièce du dosage. Pilote l'avertissement UI (feature-168 (C8)),
+// le log + alerte de correction (feature-168 (C7), dont feature-170 (C23) a
+// RÉÉCRIT le texte : même déclencheur, justification nouvelle) et le journal de
+// démarrage (feature-170 (C24)).
+// ⚠️ DÉRIVATION DU CHEMIN ACIDE. Le symétrique côté alcalinisation n'est PAS
+// 0,50 mais kPhHighMargin (0,10, asymétrie assumée — voir son commentaire).
+// Les textes dérivés nomment donc l'acidification, comme le faisait déjà celui
+// de feature-168 (C7) ; ⛔ ne pas UNIVERSALISER cette justification. La variante
+// `ph_plus` se traitera le jour où ce produit est déclaré, et elle vivra dans
+// feature-168 (C8), qui porte déjà deux variantes de texte.
+// ⛔ ce seuil n'est PAS un détecteur d'intégrité (ADR-0138) : une mémoire
+// altérée produit 0,30 aussi aisément que 9,30. ⛔ Ne pas le renommer (la clé
+// servie ph_offset_unusual_abs est lue par le client) ni changer sa valeur
+// (feature-170 (C33) : le repli client en dépend).
+constexpr float kPhOffsetUnusualAbs = kPhSafetyMargin;
 // kPhOffsetScaleSpan — SALUBRITÉ DE DOMAINE, PAS une borne de réglage : au-delà
 // de ±14 pH (l'échelle pH entière), une valeur ne peut plus être une correction
 // de mesure réelle — c'est NaN/inf/une faute de saisie. isPhOffsetValid() ne
 // refuse plus QUE cela (ADR-0100 : ce seuil n'est jamais réécrit côté client).
 constexpr float kPhOffsetScaleSpan = 14.0f;
-// kPhOffsetConfirmIntervalDays — péremption (C10) : au-delà de 30 jours sans
-// reconfirmation, une correction INHABITUELLE (|offset| > kPhOffsetUnusualAbs)
-// est signalée comme à revérifier — elle compense un décalage d'installation
-// qui peut avoir changé. Non bloquant, conforme à la décision utilisateur.
-constexpr uint32_t kPhOffsetConfirmIntervalDays = 30;
 
 // --- Zone d'IMPASSE de régulation (C5 + C5bis) ---
 // Au-delà de ces seuils, le filet BRUT (fixe) mord STRUCTURELLEMENT avant que

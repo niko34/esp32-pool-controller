@@ -73,7 +73,6 @@ static const HttpOnlyKey kHttpOnlyKeys[] = {
   // memes regles, ADR-0100 (seuils cites par les textes d'avertissement de
   // l'ecran de reglage, jamais ecrits en dur cote client).
   {"ph_offset_unusual_abs",            "Constante de compilation (kPhOffsetUnusualAbs) : immuable a l'execution, app.js conserve le dernier seuil recu."},
-  {"ph_offset_confirm_interval_days",  "Constante de compilation (kPhOffsetConfirmIntervalDays) : immuable a l'execution, app.js conserve le dernier seuil recu."},
   {"ph_offset_impasse_threshold",      "Constante de compilation (kPhOffsetImpasseThreshold) : immuable a l'execution, app.js conserve le dernier seuil recu."},
   {"ph_offset_impasse_threshold_high", "Constante de compilation (kPhOffsetImpasseThresholdHigh) : immuable a l'execution, app.js conserve le dernier seuil recu."},
   {"ph_raw_floor_absolute",            "Constante de compilation (kPhRawFloorAbsolute) : immuable a l'execution, app.js conserve le dernier seuil recu."},

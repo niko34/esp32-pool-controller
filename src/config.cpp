@@ -3,6 +3,7 @@
 #include "logger.h"
 #include "mqtt_manager.h"  // feature-168 (C7) : mqttManager.publishAlert()
 #include "ph_offset.h"  // feature-067 : isPhOffsetValid() (logique pure)
+#include "ph_stale_message.h"  // feature-170 (C32) : texte de l'alerte (module pur)
 #include "temp_compensation_logic.h"  // bug-114 : clampTempCalOffset() (logique pure)
 #include "ph_guard_logic.h"  // v2.25.0 : roundPhOffsetToStep() (logique pure)
 #include "ph_integral_logic.h"  // v2.27.0 : phSustainableAvgFlow() (logique pure)
@@ -176,7 +177,8 @@ void clearPhAutoManualTrace() {
 // deux routes concernées (handleTunePhOffset, branche ph_offset de
 // /save-config) : ne le reprend pas, un mutex récursif le permettrait mais ce
 // n'est pas le contrat voulu ici (symétrie avec le patron existant).
-// « Garder la correction » (B11, écran de réglage) ré-envoie la MÊME route
+// « Je l'ai vérifiée — garder » (écran de réglage ; libellé posé par
+// feature-170 (C30), ex-« Garder la correction ») ré-envoie la MÊME route
 // avec la valeur COURANTE : ce ré-envoi re-estampille (phOffsetSeq devient
 // > phCalSeq) et ÉTEINT le verdict de caducité durablement — c'est voulu, pas
 // une redondance à simplifier : c'est la manière dont l'utilisateur confirme
@@ -190,16 +192,19 @@ void setPhOffsetStamped(float offset, const char* source) {
   // L'AFFICHAGE SEUL — c'est phOffsetSeq qui fait foi pour l'ordre.
   mqttCfg.phOffsetEpoch = (now >= kMinValidEpoch) ? (uint32_t)now : 0;
   mqttCfg.phOffsetSeq = nextJustnessSeq(mqttCfg.phOffsetSeq, mqttCfg.phCalSeq);
-  // feature-168 (C12) : tout écrivain EXPLICITE (saisie, tune, « Garder la
-  // correction ») reconfirme la valeur relue au démarrage, quelle qu'elle
-  // soit — le signal de mémoire potentiellement altérée n'a plus lieu d'être.
-  mqttCfg.phOffsetBootUnconfirmed = false;
   systemLogger.info("[pH] Offset re-estampillé (" + String(source) + ") : " +
                     String(oldOffset, 2) + " → " + String(offset, 2) +
                     " (seq=" + String(mqttCfg.phOffsetSeq) + ")");
-  // feature-168 (C7) : correction INHABITUELLE (au-delà de l'ancienne borne,
-  // conservée comme SIGNAL de défaut matériel possible) — critical + MQTT.
-  // `offset != oldOffset` est NÉCESSAIRE : « Garder la correction » ré-envoie
+  // feature-168 (C7), texte RÉÉCRIT par feature-170 (C23) : au-delà de
+  // kPhOffsetUnusualAbs, la correction est devenue UNE PIÈCE DU DOSAGE (seuil
+  // de CONSÉQUENCE : la retirer arrêterait l'acidification sur le champ).
+  // ⛔ Ne PAS réintroduire « inhabituelle », « ancienne borne » ni « SIGNAL de
+  // défaut matériel possible » : la première est la formule que l'utilisateur a
+  // contestée, la dernière désigne un coupable non identifié (cf. la mise en
+  // garde de src/ph_offset.h et l'incident du 25/08/2026).
+  // critical + MQTT : DEUX niveaux, ⛔ pas le doublon interdit par
+  // feature-170 (C32) (publishAlert journalise en warning).
+  // `offset != oldOffset` est NÉCESSAIRE : « Je l'ai vérifiée — garder » ré-envoie
   // la MÊME valeur pour éteindre la caducité ci-dessus — sans ce garde-fou,
   // chaque confirmation ré-alerterait.
   if (fabsf(offset) > kPhOffsetUnusualAbs && offset != oldOffset) {
@@ -207,12 +212,32 @@ void setPhOffsetStamped(float offset, const char* source) {
     String offsetStr = signStr + String(offset, 2); offsetStr.replace('.', ',');
     String unusualStr(kPhOffsetUnusualAbs, 2); unusualStr.replace('.', ',');
     String floorStr(kPhRawFloorAbsolute, 2); floorStr.replace('.', ',');
-    const String msg = "[pH] Correction de mesure inhabituelle : " + offsetStr +
-      " pH (au-delà de " + unusualStr + ", ancienne borne de l'appareil). Rien "
-      "ne la limite : elle est appliquée telle quelle. Le refus d'acidifier "
-      "sur la mesure brute reste fixé à " + floorStr + ", quelle que soit la "
-      "correction.";
-    systemLogger.critical(msg);
+    // feature-168 (C7) RÉÉCRITE par feature-170 (C23), arbitrage du gate du
+    // 2026-11-22 : son DÉCLENCHEUR est inchangé, sa JUSTIFICATION a changé.
+    // ⛔ « inhabituelle » et « ancienne borne de l'appareil » sont SUPPRIMÉS :
+    // c'est mot pour mot la formule que l'utilisateur a contestée (« 0.5 comme
+    // seuil est totalement arbitraire »), et feature-170 (C23) vient justement
+    // d'établir que ce seuil n'est PAS arbitraire — il dit à partir de quand la
+    // correction devient une PIÈCE DU DOSAGE. Laisser l'ancien texte debout
+    // aurait déplacé le défaut du code vers l'utilisateur.
+    // ⚠️ TÊTE DE 40 OCTETS, et c'est une CONTRAINTE DE CANAL, pas un style :
+    // publishAlert() tronque à ~46 octets utiles (cf. src/ph_stale_message.h).
+    // L'ancien texte y perdait le verdict ; celui-ci fait passer la valeur ET
+    // « le dosage en dépend » en entier, y compris pour une correction à deux
+    // chiffres. ⛔ Ne pas rallonger la tête.
+    const String msg = "Correction " + offsetStr + " : le dosage en dépend. "
+      "Au-delà de " + unusualStr + ", la retirer arrêterait l'acidification sur "
+      "le champ. Rien ne la limite : elle est appliquée telle quelle. Le refus "
+      "d'acidifier sur la mesure brute reste fixé à " + floorStr + ", quelle que "
+      "soit la correction.";
+    // ⚠️ Deux canaux, deux formes (ADR-0139) : le JOURNAL garde le préfixe
+    // « [pH] » de toutes les lignes pH du projet ; l'ALERTE MQTT s'en passe —
+    // le type `ph_offset_unusual` nomme déjà la chose, et ces 5 octets, sur ce
+    // canal, se prendraient sur le verdict.
+    // ⛔ Le doublon de niveau interdit par feature-170 (C32)/F1 ne s'applique
+    // PAS ici : critical + publishAlert = DEUX NIVEAUX différents, c'est l'usage
+    // établi (publishAlert journalise en warning, mqtt_manager.cpp:929).
+    systemLogger.critical("[pH] " + msg);
     mqttManager.publishAlert("ph_offset_unusual", msg);
   }
 }
@@ -234,14 +259,36 @@ void markPhCalibrationStamped() {
   mqttCfg.phCalEpoch = (now >= kMinValidEpoch) ? (uint32_t)now : 0;
   mqttCfg.phCalSeq = nextJustnessSeq(mqttCfg.phOffsetSeq, mqttCfg.phCalSeq);
   saveMqttConfig();  // mutex récursif : persistance dans la même section critique
+  // feature-170 (C32) : TROIS instantanés pris DANS la section critique ; ⛔ plus
+  // aucune lecture de mqttCfg après le give (config lue sans son verrou).
+  const float offsetSnap = mqttCfg.phOffset;
+  const uint32_t offsetSeqSnap = mqttCfg.phOffsetSeq;
+  const uint32_t calSeqSnap = mqttCfg.phCalSeq;
   // Garde symétrique de la prise : si configMutex est nul, on n'a rien pris —
   // donner un sémaphore nul est un comportement indéfini (relevé en revue).
   if (configMutex) xSemaphoreGiveRecursive(configMutex);
-  systemLogger.info("[pH] Étalonnage horodaté (seq=" + String(mqttCfg.phCalSeq) + ")");
+  systemLogger.info("[pH] Étalonnage horodaté (seq=" + String(calSeqSnap) + ")");
+  // feature-170 (C32) : la cause « calibration » reçoit enfin un signal HORS
+  // écran. Verdict = l'accesseur pur UNIQUE (⛔ pas `offset != 0` : ce serait le
+  // verdict en deux expressions). ⛔ UN SEUL appel, pas de log adjacent :
+  // publishAlert() journalise déjà un warning avec le message ENTIER.
+  // ⚠️ Le tampon ci-dessous est sur la PILE — mais publishAlert(const String&)
+  // construit un String temporaire (~190 o de tas, une fois par étalonnage) :
+  // ⛔ ne pas écrire « zéro tas ». ADR-0082 ne porte pas sur ce chemin (il vise
+  // logger.{h,cpp} / log_arena_logic.{h,cpp}), et check_memory_discipline.sh
+  // reste vert. Texte : src/ph_stale_message.h.
+  if (isPhOffsetSupersededByCalibration(offsetSnap, offsetSeqSnap, calSeqSnap)) {
+    char alertMsg[320];
+    phStaleCalibrationMessage(alertMsg, sizeof(alertMsg), offsetSnap);
+    mqttManager.publishAlert("ph_offset_stale", alertMsg);
+  }
 }
 
 // =============================================================================
-// feature-168 (C10 + C12 + C15) — ACCESSEUR UNIQUE de péremption de l'offset pH
+// feature-168 (C15) — ACCESSEUR UNIQUE de caducité de l'offset pH
+// ⚠️ feature-170 (C25)/(C26) : feature-168 (C10) et (C12) sont SUPPRIMÉES. Il
+// ne reste qu'UNE cause, et elle vient d'un ÉVÉNEMENT, pas d'un calendrier —
+// « péremption » n'est donc plus le bon mot.
 // =============================================================================
 // 🔴 PARITÉ : /get-config (web_routes_config.cpp) et la trame WebSocket
 // (ws_manager.cpp) appellent CETTE fonction, MOT POUR MOT identique des deux
@@ -249,29 +296,15 @@ void markPhCalibrationStamped() {
 // piège de parité de ce projet (même clé, expressions divergentes) ; cette
 // fois il n'y a plus d'expression à diverger, juste un appel.
 bool phOffsetStaleNow() {
-  // Cause BOOT (C12), prioritaire : signale une anomalie MÉMOIRE possible,
-  // réarmée uniquement par une action EXPLICITE de l'utilisateur.
-  if (mqttCfg.phOffsetBootUnconfirmed) return true;
-  const time_t now = time(nullptr);
-  const uint32_t nowEpoch = (now >= kMinValidEpoch) ? (uint32_t)now : 0;
-  return isPhOffsetStale(mqttCfg.phOffset, mqttCfg.phOffsetSeq, mqttCfg.phCalSeq,
-                          mqttCfg.phOffsetEpoch, nowEpoch,
-                          kPhOffsetConfirmIntervalDays, kPhOffsetUnusualAbs);
+  // feature-170 (C26) : un seul verdict, l'accesseur pur (⛔ pas d'enveloppe).
+  return isPhOffsetSupersededByCalibration(mqttCfg.phOffset, mqttCfg.phOffsetSeq,
+                                           mqttCfg.phCalSeq);
 }
 
-// Cause affichée — n'a de sens QUE si phOffsetStaleNow() est vrai. Même ordre
-// de priorité que phOffsetStaleNow() (boot avant calibration avant expiration),
-// pour rester cohérente avec elle.
+// Cause affichée — n'a de sens QUE si phOffsetStaleNow() est vrai. Une seule
+// cause survit (feature-170 (C25), (C26)) : « calibration ».
 const char* phOffsetStaleCause() {
-  if (mqttCfg.phOffsetBootUnconfirmed) return "boot";
-  // ⛔ MEME FONCTION que isPhOffsetStale() — pas une expression recopiee (revue
-  // feature-168) : sans cela, faire evoluer la cause (a) ferait diverger le
-  // libelle affiche du verdict qui l'a declenche.
-  if (isPhOffsetSupersededByCalibration(mqttCfg.phOffset, mqttCfg.phOffsetSeq,
-                                        mqttCfg.phCalSeq)) {
-    return "calibration";
-  }
-  return "expiration";
+  return "calibration";
 }
 
 // bug-187 (condition G3 de la revue P1) — RELIT la clé du mot de passe du point
@@ -776,7 +809,10 @@ void loadMqttConfig() {
   // neutralisée à 0.00 plutôt qu'appliquée. ⚠️ feature-168 : ce n'est PLUS un
   // écrêtage vers une borne de réglage — il n'en existe plus — uniquement un
   // refus de salubrité, qui ne mord plus sur une correction large mais réelle
-  // (ex. +9,30 est maintenant APPLIQUÉE, voir le signal C12 ci-dessous).
+  // (ex. +9,30 est maintenant APPLIQUÉE — voir le CONSTAT de démarrage plus
+  // bas, feature-170 (C24)). ⛔ Il n'y a plus de « signal » à confirmer : NVS
+  // vérifie l'intégrité de chaque entrée (ADR-0138), et une corruption fait
+  // DISPARAÎTRE la valeur bien plus sûrement qu'elle ne la rend grande.
   mqttCfg.phOffset = prefs.getFloat("ph_offset", 0.0f);
   if (!isPhOffsetValid(mqttCfg.phOffset)) {
     systemLogger.warning("[Config] Offset pH NVS non salubre (" +
@@ -785,7 +821,7 @@ void loadMqttConfig() {
   }
   // feature-156 : horodatage de justesse. Clés absentes (config antérieure à
   // 2.72.0) → 0 partout = « aucun événement connu », verdict de caducité
-  // toujours faux par construction (isPhOffsetStale). AUCUN estampillage
+  // toujours faux par construction (isPhOffsetSupersededByCalibration). AUCUN estampillage
   // n'a lieu ici — seule une LECTURE brute des valeurs NVS (cf. contrainte
   // écrite sur setPhOffsetStamped/markPhCalibrationStamped : ne jamais
   // écrire ces 4 champs dans loadConfig()).
@@ -813,29 +849,24 @@ void loadMqttConfig() {
     phOffsetNeedsRewrite = true;
   }
 
-  // feature-168 (C12) — UNE MÉMOIRE ALTÉRÉE DOIT ÊTRE VISIBLE, PAS SEULEMENT
-  // CONTENUE : l'écrêtage retiré, une valeur NVS corrompue mais DANS l'échelle
-  // (ex. +9,30) est désormais appliquée telle quelle (décision utilisateur).
-  // On ne la bloque PAS et on ne la remet PAS à 0 — on le SIGNALE, à CHAQUE
-  // démarrage, tant qu'aucune action utilisateur n'a reconfirmé la valeur
-  // (setPhOffsetStamped() éteint ce drapeau).
-  // ⚠️ PAS de mqttManager.publishAlert() ICI : loadMqttConfig() tourne AVANT
-  // mqttManager.begin() (setup(), main.cpp) — l'outQueue MQTT n'existe pas
-  // encore à ce stade (même piège déjà documenté pour l'alerte du disjoncteur
-  // history, main.cpp, « outQueue inexistante à ce stade »). Le log critique
-  // est sans risque (systemLogger ne dépend pas du réseau) ; l'alerte MQTT est
-  // DIFFÉRÉE dans setup(), juste après mqttManager.begin(), sur le drapeau
-  // phOffsetBootUnconfirmed posé ici.
-  if (fabsf(mqttCfg.phOffset) > kPhOffsetUnusualAbs) {
-    mqttCfg.phOffsetBootUnconfirmed = true;
+  // feature-170 (C24) : la relecture ne VÉRIFIE plus rien (l'intégrité est
+  // déléguée à NVS, ADR-0138) ; elle ne fait que CONSTATER, au journal seul.
+  // ⛔ Pas d'alerte MQTT (outQueue inexistante ici) ni de date (horloge non
+  // synchronisée : applyTimeConfig() tourne après).
+  if (mqttCfg.phOffset != 0.0f) {
     String signStr = (mqttCfg.phOffset >= 0.0f) ? "+" : "";
     String offsetStr = signStr + String(mqttCfg.phOffset, 2); offsetStr.replace('.', ',');
-    String unusualStr(kPhOffsetUnusualAbs, 2); unusualStr.replace('.', ',');
-    systemLogger.critical("[pH] Correction de mesure de " + offsetStr +
-      " relue en mémoire au démarrage (au-delà de " + unusualStr + "). Elle "
-      "est appliquée telle quelle — rien ne la borne. Confirmez-la ou "
-      "corrigez-la : une valeur que vous n'avez pas saisie signale une "
-      "mémoire altérée.");
+    if (fabsf(mqttCfg.phOffset) > kPhOffsetUnusualAbs) {
+      String unusualStr(kPhOffsetUnusualAbs, 2); unusualStr.replace('.', ',');
+      String floorStr(kPhFloorCorrected, 2); floorStr.replace('.', ',');
+      systemLogger.warning("[pH] Correction de mesure appliquée au démarrage : " +
+        offsetStr + " pH. Elle dépasse " + unusualStr + " : si elle venait à "
+        "disparaître, la mesure corrigée tomberait sous " + floorStr +
+        " à la consigne et l'appareil cesserait d'ajouter de l'acide.");
+    } else {
+      systemLogger.info("[pH] Correction de mesure appliquée au démarrage : " +
+        offsetStr + " pH.");
+    }
   }
 
   // Temps

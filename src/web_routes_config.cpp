@@ -168,7 +168,7 @@ static void handleGetConfig(AsyncWebServerRequest* request) {
   // feature-168 : ph_offset_min/max RETIRÉS (-2 clés, ~-40 o) ; +6 seuils
   // servies (ph_offset_unusual_abs, ph_offset_impasse_threshold,
   // ph_offset_impasse_threshold_high, ph_raw_floor_absolute,
-  // ph_raw_ceiling_absolute, ph_offset_confirm_interval_days, ~190 o) et
+  // ph_raw_ceiling_absolute, ~190 o ; feature-170 (C26) : ph_offset_confirm_interval_days retiré, −~40 o) et
   // +ph_offset_stale_cause (chaîne, ~34 o)
   // → net ≈ +144 o → marge portée à 3968.
   // Correctif 2026-10-17 (fausse alerte pH) : +2 clés booléennes ph_impasse_low/
@@ -345,12 +345,6 @@ static void handleGetConfig(AsyncWebServerRequest* request) {
   doc["ph_offset_impasse_threshold_high"] = kPhOffsetImpasseThresholdHigh;
   doc["ph_raw_floor_absolute"]            = kPhRawFloorAbsolute;
   doc["ph_raw_ceiling_absolute"]          = kPhRawCeilingAbsolute;
-  // ⚠️ AJOUTEE EN REVUE (feature-168) : le texte du bandeau de peremption
-  // citait « 30 jours » EN DUR dans data/app.js, pendant que les cinq seuils
-  // voisins venaient d'etre servis. Porter la peremption a 60 jours aurait
-  // change le DECLENCHEMENT sans changer le TEXTE — et rien n'aurait compare
-  // les deux. Meme defaut qu'en C17, laisse intact dans le texte d'a cote.
-  doc["ph_offset_confirm_interval_days"]  = kPhOffsetConfirmIntervalDays;
   doc["ph_offset_step"] = kPhOffsetStep;
   // feature-164 (gate pool-chemistry, 3e passage) — ADR-0100 : un seuil est
   // SERVI, jamais réécrit côté client. `orp_target_min/_max` manquaient ici

@@ -2,6 +2,30 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [2.99.0] - 2026-11-22
+
+### Fonctionnalités
+- **Le message « Correction à revoir » du démarrage disparaît.** Quand la correction de mesure pH dépassait 0,50, l'appareil vous demandait de la « confirmer » à chaque démarrage — même après confirmation, car rien n'était mémorisé. Une confirmation ne prouve rien sur la mémoire : celle-ci vérifie déjà chaque valeur (somme de contrôle), et sa corruption ferait **disparaître** la correction plutôt que la rendre fausse. Au démarrage, l'appareil écrit désormais une seule ligne dans son journal (avertissement si la correction dépasse 0,50, simple information en dessous).
+- **L'alerte des 30 jours disparaît.** La validité d'une correction ne s'use pas avec le temps mais avec des événements (étalonnage, intervention sur la pompe). Cette alerte sonnait en réalité à chaque redémarrage, donc à chaque mise à jour du logiciel.
+- **Une alerte neuve part quand l'étalonnage change** — qu'il soit refait ou effacé — et qu'une correction plus ancienne est en vigueur (Home Assistant la reçoit : « Correction de mesure +1,20 à vérifier : … »). C'était la seule situation réellement utile, et elle n'avait aucun signal hors de l'écran.
+- **Le bandeau de la carte « Correction manuelle de la mesure » est refait** : chapeau « Étalonnage modifié », titre « Correction à vérifier », dates de l'étalonnage et de la pose, deux boutons qui disent ce qu'ils font — « Je l'ai vérifiée — garder » et « Remettre à zéro » (en second). La formule fausse « un état de la sonde qui n'existe plus » est retirée.
+- **La date de pose de la correction est affichée en permanence** (« Correction +1,20 pH — posée le 16/10/2026 ») quand aucun bandeau ne la porte déjà. ⚠️ Cette carte reste derrière le mode réglage tant que bug-201 n'est pas livré.
+- La note « Cela n'étalonne pas la sonde » et l'étiquette « Correction actuelle » sont retirées de la carte (doublons).
+- Le texte de l'alerte « correction au-delà de 0,50 » est réécrit : valeur et verdict en tête (« Correction +1,00 : le dosage en dépend. … »), sans « ancienne borne ».
+
+### Firmware
+- Supprimés : `phOffsetBootUnconfirmed`, `isPhOffsetExpired()`, `isPhOffsetStale()`, `kPhOffsetConfirmIntervalDays`, le champ servi `ph_offset_confirm_interval_days`. `ph_offset_stale_cause` ne vaut plus que `"calibration"` ; le client tolère encore `"boot"`/`"expiration"` d'un firmware antérieur (texte neutre). **Ordre de mise à jour : firmware d'abord, puis système de fichiers.**
+- `kPhOffsetUnusualAbs = kPhSafetyMargin` (dérivée, valeur inchangée à 0,50) : seuil de conséquence, pas détecteur d'intégrité. Aucune garde de dosage touchée.
+- **MQTT** : `ph_offset_stale` change d'émetteur — deux retirés (démarrage, péremption), un ajouté (à l'étalonnage, `markPhCalibrationStamped()`). Aucun topic neuf. Nouveau module pur `src/ph_stale_message.h`.
+- Aucune migration NVS (le drapeau n'avait aucune clé).
+
+### Documentation
+- ADR-0138 (l'intégrité d'une valeur persistée est déléguée à NVS), ADR-0139 (le firmware notifie un événement, l'écran rend un état), amendement d'ADR-0017 (deux règles de frontière).
+- `docs/MQTT.md`, `docs/API.md`, `docs/features/page-ph.md`, `docs/subsystems/sensors.md`, `mqtt-manager.md` (alerte publiée et journal), `pump-controller.md`, `ws-manager.md`, `docs/user/src/guide-utilisation.html`, `guide-regulation.html`.
+- Règle posée pour tout le projet : aucun `Cxx` nu hors de la fiche qui le définit (`feature-170 (C29)`).
+
+---
+
 ## [2.98.0] - 2026-11-21
 
 ### Fonctionnalités

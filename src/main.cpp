@@ -30,7 +30,6 @@ extern "C" bool esp_psram_check_ptr_addr(const void* p);
 #include "logger.h"
 #include "auth.h"
 #include "sensors.h"
-#include "ph_offset.h"       // feature-168 (C10) : isPhOffsetExpired() (logique pure)
 #include "ph_guard_logic.h"  // feature-168 (C6+C5bis) : isPhRegulationImpasseLow/High()
 #include "pump_controller.h"
 #include "filtration.h"
@@ -508,20 +507,6 @@ void setup() {
     if (history.partitionWasAutoErased()) {
       mqttManager.publishAlert("history_partition_reset",
         "Partition historique corrompue effacée automatiquement (boot-loop détecté) — l'historique repart de zéro");
-    }
-
-    // feature-168 (C12) : alerte MQTT différée — le drapeau et le log critical
-    // ont déjà eu lieu dans loadMqttConfig() (config.cpp, avant WiFi/MQTT,
-    // outQueue inexistante à ce stade), MÊME piège que l'alerte ci-dessus.
-    if (mqttCfg.phOffsetBootUnconfirmed) {
-      String signStr = (mqttCfg.phOffset >= 0.0f) ? "+" : "";
-      String offsetStr = signStr + String(mqttCfg.phOffset, 2); offsetStr.replace('.', ',');
-      String unusualStr(kPhOffsetUnusualAbs, 2); unusualStr.replace('.', ',');
-      mqttManager.publishAlert("ph_offset_stale",
-        "[pH] Correction de mesure de " + offsetStr + " relue en mémoire au "
-        "démarrage (au-delà de " + unusualStr + "). Elle est appliquée telle "
-        "quelle — rien ne la borne. Confirmez-la ou corrigez-la : une valeur "
-        "que vous n'avez pas saisie signale une mémoire altérée.");
     }
 
     applyTimeConfig();
@@ -1912,30 +1897,6 @@ void checkSystemHealth() {
     mqttManager.publishAlert("ph_impasse", msg);
   }
   lastPhImpasseHigh = phImpasseHigh;
-
-  // feature-168 (C10) — PÉREMPTION : une correction inhabituelle non
-  // reconfirmée depuis plus de kPhOffsetConfirmIntervalDays jours. Même
-  // patron edge-trigger ; niveau WARNING (non critique, non bloquant —
-  // conforme à la décision utilisateur) à la différence de C6/C5bis/C7/C12.
-  // ⚠️ Teste isPhOffsetExpired() SEULE (pas phOffsetStaleNow()) : les causes
-  // « boot » (C12) et « calibration » (feature-156) ont CHACUNE déjà leur
-  // propre alerte dédiée à leur propre instant de transition — ajouter ce
-  // latch sur le OR des trois causes les aurait fait sonner une seconde fois.
-  static bool lastPhOffsetExpired = false;
-  const time_t nowForOffset = time(nullptr);
-  const bool phOffsetExpired = isPhOffsetExpired(
-      phOffset, mqttCfg.phOffsetEpoch,
-      (nowForOffset >= kMinValidEpoch) ? (uint32_t)nowForOffset : 0,
-      kPhOffsetConfirmIntervalDays, kPhOffsetUnusualAbs);
-  if (phOffsetExpired && !lastPhOffsetExpired) {
-    String offsetStr(phOffset, 2); offsetStr.replace('.', ',');
-    const String msg = "[pH] Correction de mesure de " + offsetStr +
-      " non revérifiée depuis plus de " + String(kPhOffsetConfirmIntervalDays) +
-      " jours : voir l'écran de réglage pH.";
-    systemLogger.warning(msg);
-    mqttManager.publishAlert("ph_offset_stale", msg);
-  }
-  lastPhOffsetExpired = phOffsetExpired;
 
   static bool lastPhAbnormal   = false;
   static bool lastOrpAbnormal  = false;

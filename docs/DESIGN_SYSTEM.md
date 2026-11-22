@@ -292,6 +292,21 @@ informatif sans enjeu — c'est à ça que sert `.field__hint` ou `.detail-row`.
 
 Les trois sous-éléments sont **optionnels indépendamment** : un refus simplement bloquant n'utilise que `.callout__lead` (chapeau et détail masqués) ; l'avertissement non bloquant utilise les trois. Voir [`docs/features/page-ph.md`](features/page-ph.md#avertissement-et-impasse-de-régulation-v2820) pour l'emploi complet et les textes exacts.
 
+**Second contexte d'emploi (feature-170 (C31), v2.99.0) : bandeau d'acquittement** — `#ph_tune_stale_banner` (carte « Correction manuelle de la mesure », page pH) : `.callout__eyebrow` + `--danger` sur un bandeau où l'utilisateur doit **trancher entre deux actes** (« Je l'ai vérifiée — garder » / « Remettre à zéro »), et non plus seulement le couple avertissement/impasse de `#ph_tune_blocked`. Aucun composant partagé modifié, aucun emploi existant ne change.
+
+Ce qui distingue les deux emplois :
+
+| | `#ph_tune_blocked` | `#ph_tune_stale_banner` |
+|---|---|---|
+| Le chapeau nomme | un **état** (« Avertissement », « ⚠ Impasse possible »), bascule mot + couleur | un **état établi** (« Étalonnage modifié ») |
+| `.callout__more` repliable | oui | **non** (rien à replier : replier la raison ou l'acte, c'est les supprimer pour qui ne lit pas) |
+| Chapeau masqué | jamais | **oui, quand l'événement n'est pas établi** (cause héritée `boot`/`expiration` d'un firmware antérieur) |
+
+⭐ **Règle générale** : *un chapeau qui nomme un ÉVÉNEMENT ne s'affiche que lorsque cet événement est établi — sinon il affirme un fait que l'appareil ne connaît pas.* Un chapeau qui nomme un ÉTAT n'a pas cette contrainte.
+
+⛔ **Aucune couleur nouvelle** : la boîte reste `callout--warn`, le rouge vient de `--danger` (`data/app.css`, déjà employé par « ⚠ Impasse possible »). Contraste mesuré **6,14:1** sur le fond ambre composé (seuil 4,5:1) : `--danger` conservé. ⚠️ **Limite à réévaluer** : le mode sombre n'existe pas dans `app.css` (aucun `prefers-color-scheme`, `data-theme` ni `.dark`, vérifié) — rien à mesurer dans ce mode aujourd'hui ; à mesurer le jour où il existera. Le mot porte le sens, la couleur ne fait que l'appuyer (daltonisme). Voir [`docs/features/page-ph.md`](features/page-ph.md#correction-devenue-caduque-ph_tune_stale_banner).
+
+
 ### 5.10bis `.tips__code--wrap` — bloc de commande qui se replie (bug-184, v2.92.0)
 
 **Contexte d'emploi déclaré : les blocs `<pre class="tips__code">` d'un `.tips` qui contiennent une COMMANDE (shell, `curl`, `mosquitto_pub`). ⛔ PAS un bloc dont l'indentation porte du sens — YAML, JSON, arborescence.**

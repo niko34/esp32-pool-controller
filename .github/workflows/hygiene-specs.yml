@@ -366,6 +366,61 @@ jobs:
       - name: Contrôle des vecteurs du bouton de suppression de correction pH
         run: ./tools/check_ph_tune_remove_vectors.sh
 
+  ph-stale-alert-emitted:
+    name: L'alerte « correction à vérifier » est émise au bon endroit (feature-170, V6b)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # Même script en local (`./tools/check_ph_stale_alert_emitted.sh`).
+      # Un vecteur natif ne prouve jamais un SITE D'APPEL : ce contrôle lit le corps
+      # de markPhCalibrationStamped() et exige l'appel publishAlert("ph_offset_stale"
+      # après la libération de configMutex, sans lecture de mqttCfg ensuite. Échec
+      # fermé : fonction ou appel introuvable => rouge.
+      - name: Contrôle du site d'appel de l'alerte ph_offset_stale
+        run: ./tools/check_ph_stale_alert_emitted.sh
+
+  ph-stale-text-parity:
+    name: Parité du texte d'acte firmware / interface (feature-170, V6c)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # Même script en local (`./tools/check_ph_stale_text_parity.sh`). Première
+      # sentinelle qui compare un littéral de .cpp à un littéral de .js : la phrase
+      # d'acte entre les ancres PH-STALE-ACTE doit être identique octet pour octet.
+      # La disparition d'une ancre fait ÉCHOUER le contrôle (jamais passer).
+      - name: Contrôle de la phrase d'acte (src/ph_stale_message.h / data/app.js)
+        run: ./tools/check_ph_stale_text_parity.sh
+
+  ph-unusual-alert-head:
+    name: La tête de l'alerte de correction survit à la troncature MQTT (feature-170, V7bis)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # Même script en local (`./tools/check_ph_unusual_alert_head.sh`). Le texte de
+      # ph_offset_unusual est construit en String (non testable en natif) : on mesure
+      # la tête du littéral — « le dosage en dépend » dans les 46 premiers octets.
+      - name: Contrôle de la tête du texte ph_offset_unusual
+        run: ./tools/check_ph_unusual_alert_head.sh
+
+  ph-stale-banner-vectors:
+    name: Vecteurs du bandeau « Correction à vérifier » et des seuils servis (feature-170)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # Même script en local (`./tools/check_ph_stale_banner_vectors.sh`). Code vivant
+      # de data/app.js extrait (ADR-0099) : seuils sans l'ancien champ (V7), cause
+      # héritée => texte neutre (V8), chapeau masqué (V9), quatre rendus de la fiche.
+      - name: Contrôle des vecteurs du bandeau de correction pH
+        run: ./tools/check_ph_stale_banner_vectors.sh
+
   cal-points-acquired-vectors:
     name: Vecteurs « point de calibration acquis » (feature-159, correctif bloquant)
     runs-on: ubuntu-latest

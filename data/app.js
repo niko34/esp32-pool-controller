@@ -2418,18 +2418,16 @@
   // PH_BOUNDS_FALLBACK ci-dessus : jamais une autorité, juste une valeur de
   // secours avant le premier /get-config ou pour un firmware antérieur à
   // feature-168 qui ne servirait pas encore ces six champs.
-  // ⚠️ `confirmIntervalDays` AJOUTÉ EN REVUE (C17 bis) : le texte du bandeau
-  // de péremption (`renderPhOffsetStaleBanner`, cause "expiration") citait
-  // « 30 jours » EN DUR alors que les cinq seuils voisins venaient d'être
-  // servis — exactement le défaut de C17, laissé intact dans le texte d'à
-  // côté. C'est un ENTIER (jours), jamais un décimal — pas de _fmt2 ici.
+  // feature-170 (C33a) : `confirmIntervalDays` RETIRÉ (le firmware ne sert plus
+  // ph_offset_confirm_interval_days) — du repli ET de la garde, dans le même geste,
+  // sans quoi la garde en bloc échouerait et les cinq seuils servis retomberaient
+  // sur des copies client (violation d'ADR-0100 déclenchée par un retrait).
   const PH_OFFSET_THRESHOLDS_FALLBACK = Object.freeze({
     unusualAbs: 0.50,
     impasseThreshold: 1.20,
     impasseThresholdHigh: -0.90,
     rawFloorAbsolute: 5.50,
     rawCeilingAbsolute: 8.50,
-    confirmIntervalDays: 30,
   });
   let _phOffsetThresholds = Object.assign({}, PH_OFFSET_THRESHOLDS_FALLBACK);
 
@@ -2442,12 +2440,11 @@
     const ih = _phNum(cfg?.ph_offset_impasse_threshold_high);
     const rf = _phNum(cfg?.ph_raw_floor_absolute);
     const rc = _phNum(cfg?.ph_raw_ceiling_absolute);
-    const ci = _phNum(cfg?.ph_offset_confirm_interval_days);
     if (isFinite(u) && u > 0 && isFinite(it) && it > u && isFinite(ih) && ih < 0
-        && isFinite(rf) && isFinite(rc) && rf < rc && isFinite(ci) && ci > 0) {
+        && isFinite(rf) && isFinite(rc) && rf < rc) {
       _phOffsetThresholds = {
         unusualAbs: u, impasseThreshold: it, impasseThresholdHigh: ih,
-        rawFloorAbsolute: rf, rawCeilingAbsolute: rc, confirmIntervalDays: ci,
+        rawFloorAbsolute: rf, rawCeilingAbsolute: rc,
       };
     }
   }
@@ -2596,39 +2593,122 @@
     const offset = (typeof cfg?.ph_offset === "number" && isFinite(cfg.ph_offset)) ? cfg.ph_offset : 0;
     const stale = (cfg?.ph_offset_stale === true) && (offset !== 0);
     if (!stale) { banner.hidden = true; return; }
-    const textEl = $("#ph_tune_stale_text");
+    const faitEl = $("#ph_tune_stale_fait");
+    const acteEl = $("#ph_tune_stale_acte");
+    const eyebrowEl = $("#ph_tune_stale_eyebrow");
     const cause = cfg?.ph_offset_stale_cause;
-    let text;
-    if (cause === "boot") {
-      text = "L'appareil a relu au démarrage une correction de " + _fmtPhOffset2(offset)
-        + ", bien au-delà de l'usage courant. Si vous ne l'avez pas saisie, sa mémoire "
-        + "est altérée : corrigez-la maintenant. Elle est appliquée telle quelle en attendant.";
-    } else if (cause === "expiration") {
-      // feature-168 (C17 bis, ADR-0100) : « 30 » est un ENTIER (jours),
-      // INTERPOLÉ depuis _phOffsetThresholds.confirmIntervalDays (servi par
-      // /get-config, ph_offset_confirm_interval_days) — jamais recopié en
-      // dur. Aux valeurs actuelles, rendu IDENTIQUE mot pour mot au texte figé
-      // d'origine. ⛔ Pas de décimale : String(30) === "30", pas "30,00".
-      text = "Cette correction n'a pas été revérifiée depuis plus de "
-        + String(_phOffsetThresholds.confirmIntervalDays) + " jours. Elle "
-        + "compense un décalage de l'installation, qui peut avoir changé. Faites un "
-        + "test manuel : si l'appareil affiche déjà la bonne valeur, confirmez-la telle quelle.";
+    // feature-170 (C29) : DEUX constantes — le FAIT (P1) et l'ACTE (P2) —, jamais
+    // une chaîne découpée après coup. Les deux <p> restent dans le même conteneur
+    // aria-live, aucun repliable : P2 ne s'affiche jamais sans P1.
+    // La phrase d'ACTE est comparée octet pour octet à PH_STALE_ACTE de
+    // src/ph_stale_message.h par une sentinelle : ⛔ ne pas retirer les ancres.
+    // >>> PH-STALE-ACTE:DEBUT
+    const acte = "Refaites un test manuel et accordez la mesure dessus, ou remettez la correction à zéro.";
+    // <<< PH-STALE-ACTE:FIN
+    let fait;
+    // feature-170 (C29), REMPLACÉE par l'arbitrage Q14 du 2026-11-22.
+    // 🔴 markPhCalibrationStamped() est appelée depuis TROIS sites de
+    // sensors.cpp : CalibratePhMid, CalibratePhLow — et ClearPhCal (l'EFFACEMENT
+    // de l'étalonnage, délibéré). ⇒ « Vous avez refait l'étalonnage » était FAUX
+    // dans le 3ᵉ cas, au moment même d'un dépannage, là où l'utilisateur lit.
+    // ⭐ RÈGLE (ADR-0139) : n'affirme que l'événement que tu peux prouver —
+    // quand plusieurs chemins mènent au même ÉTAT, le texte nomme l'ÉTAT, ⛔
+    // jamais le chemin. L'état : l'étalonnage n'est plus celui sur lequel la
+    // correction a été calculée. ⛔ Les mots « refait » et « vient d'avoir lieu »
+    // sont BANNIS de ces textes (gardés par tools/check_ph_stale_text_parity.sh).
+    let etalonnageChange = true;
+    if (cause === undefined || cause === "calibration") {
+      // feature-170 (C33c) : `calibration` OU cause absente (firmware antérieur,
+      // qui ne connaissait que celle-là). Verdict servi, jamais recalculé (ADR-0100,
+      // feature-170 (C22)) : ph_offset_epoch / ph_cal_epoch ne servent qu'à
+      // l'AFFICHAGE, une date manquante ne masque ni ne change rien.
+      const horlogeKO = "à une date que l'appareil n'a pas pu enregistrer (son horloge n'était pas à l'heure)";
+      const dCal = _fmtPhStaleDate(cfg?.ph_cal_epoch);
+      const dOff = _fmtPhStaleDate(cfg?.ph_offset_epoch);
+      const v = _fmtPhOffset2(offset);
+      if (dCal === null && dOff === null) {
+        // (d) DÉDIÉ : « donc avant » sans aucune date ne voudrait rien dire.
+        fait = "L'étalonnage a changé après la pose de la correction en vigueur (" + v
+          + ") — l'appareil n'a pu enregistrer aucune des deux dates, son horloge n'étant pas à l'heure. "
+          + "Ce changement a déplacé la mesure sur laquelle elle avait été calculée.";
+      } else if (dOff === null) {
+        // (c)
+        fait = "L'étalonnage a changé le " + dCal + ". La correction en vigueur (" + v
+          + ") a été posée avant, " + horlogeKO + " : ce changement a déplacé la mesure sur laquelle elle avait été calculée.";
+      } else {
+        // (a) et (b)
+        fait = "L'étalonnage a changé " + (dCal === null ? horlogeKO : "le " + dCal)
+          + ". La correction en vigueur (" + v + ") a été posée le " + dOff
+          + ", donc avant : ce changement a déplacé la mesure sur laquelle elle avait été calculée.";
+      }
     } else {
-      // "calibration", ou cause ABSENTE (firmware antérieur à feature-168, qui
-      // ne connaissait que cette seule cause) : jamais l'inverse (compat. en avant).
-      text = "Cette correction a été posée avant l'étalonnage qui vient d'avoir lieu : "
-        + "elle compense un état de la sonde qui n'existe plus. Refaites un test manuel "
-        + "et accordez la mesure dessus, ou remettez la correction à zéro.";
+      // "boot" / "expiration" / inconnue : un firmware ANTÉRIEUR (ou un retour
+      // arrière) peut encore les servir. ⛔ Jamais le texte `calibration` : il
+      // affirmerait un étalonnage qui n'a pas eu lieu (feature-170 (C33c)).
+      fait = "L'appareil signale cette correction comme à revérifier.";
+      etalonnageChange = false;
     }
-    if (textEl) textEl.textContent = text;
+    if (eyebrowEl) eyebrowEl.hidden = !etalonnageChange;
+    if (faitEl) faitEl.textContent = fait;
+    if (acteEl) acteEl.textContent = acte;
     banner.hidden = false;
+  }
+
+  // feature-170 (C29) : date d'affichage « 16/10/2026 », ou null si l'horloge
+  // n'était pas à l'heure (epoch 0/absent/non fini) ou si la conversion échoue
+  // (patron renderPhAutoManualBanner). ⛔ toLocaleDateString : l'heure n'apporte
+  // rien entre deux événements distants de semaines, et on est à 390 px.
+  function _fmtPhStaleDate(epoch) {
+    if (typeof epoch !== "number" || !isFinite(epoch) || epoch <= 0) return null;
+    try {
+      return new Date(epoch * 1000).toLocaleDateString("fr-FR");
+    } catch (e) { return null; }
+  }
+
+  // feature-170 (C28) : ligne de date de pose de la correction — un FAIT, pas une
+  // alerte (--text, pas .muted ; ni cadre, ni icône, ni ambre). Absorbe l'ancienne
+  // étiquette « Correction actuelle : … pH ». Valeur en 2 décimales signées
+  // (_fmtPhOffset2), la même convention que le bandeau. Rien si la correction est
+  // nulle ou non finie ; ph_offset_epoch lu depuis la config servie, jamais
+  // recalculé (ADR-0100).
+  // feature-170 (C28), écart n°2 tranché SUR CAPTURE le 2026-11-22 : le bandeau
+  // porte-t-il DÉJÀ le fait (valeur + date) ? Condition écrite UNE SEULE FOIS et
+  // partagée avec renderPhTuneAppliedLine().
+  // ⚠️ POURQUOI : à 390 px, « +1,20 » et « posée le 16/10/2026 » s'affichaient
+  // DEUX FOIS en 2 cm, dans deux styles — l'étude d'ergonomie avait toléré cette
+  // redondance SANS L'AVOIR VUE RENDUE, et l'a retirée devant la capture.
+  // ⛔ FAUX pour une cause héritée (`boot` / `expiration`) : le texte neutre de
+  // feature-170 (C33c) ne cite NI la valeur NI la date — masquer la ligne dans ce
+  // cas FERAIT PERDRE LE FAIT.
+  function _phStaleBannerCarriesFact(cfg) {
+    const offset = (typeof cfg?.ph_offset === "number" && isFinite(cfg.ph_offset)) ? cfg.ph_offset : 0;
+    const shown = (cfg?.ph_offset_stale === true) && (offset !== 0);
+    const cause = cfg?.ph_offset_stale_cause;
+    return shown && (cause === undefined || cause === "calibration");
+  }
+
+  function renderPhTuneAppliedLine(cfg) {
+    const el = $("#ph_tune_applied");
+    if (!el) return;
+    const offset = (typeof cfg?.ph_offset === "number" && isFinite(cfg.ph_offset)) ? cfg.ph_offset : 0;
+    if (offset === 0) { el.hidden = true; el.replaceChildren(); return; }
+    if (_phStaleBannerCarriesFact(cfg)) { el.hidden = true; el.replaceChildren(); return; }
+    const d = _fmtPhStaleDate(cfg?.ph_offset_epoch);
+    const strong = document.createElement("strong");
+    strong.textContent = _fmtPhOffset2(offset);
+    el.replaceChildren(
+      document.createTextNode("Correction "),
+      strong,
+      document.createTextNode(" pH — " + (d === null ? "date de pose inconnue" : "posée le " + d))
+    );
+    el.hidden = false;
   }
 
   function bindPhOffsetStaleBanner() {
     $("#ph_tune_stale_cancel_btn")?.addEventListener("click", async () => {
       const res = await sendConfigDetailed({ ph_offset: 0 });
-      if (res.ok) { showToast("Correction annulée", "success"); loadConfig(); }
-      else showToast("Échec de l'annulation — " + (res.message || res.error), "error");
+      if (res.ok) { showToast("Correction remise à zéro", "success"); loadConfig(); }
+      else showToast("Échec de la remise à zéro — " + (res.message || res.error), "error");
     });
     $("#ph_tune_stale_keep_btn")?.addEventListener("click", async () => {
       const current = (typeof window._config?.ph_offset === "number") ? window._config.ph_offset : 0;
@@ -2645,7 +2725,7 @@
       // Condition mineure du gate pool-chemistry : « conservée » seul laisserait
       // croire que le sujet est clos. La correction a été posée AVANT l'étalonnage
       // et n'a pas été revérifiée — le toast le rappelle au moment du choix.
-      if (res.ok) { showToast("Correction conservée — vérifiez-la par un test fiable", "success"); loadConfig(); }
+      if (res.ok) { showToast("Correction conservée, marquée comme vérifiée", "success"); loadConfig(); }
       else showToast("Échec — " + (res.message || res.error), "error");
     });
   }
@@ -2655,20 +2735,20 @@
   // elle est affichée, elle seule agit (ses deux boutons couvrent déjà le cas
   // de la suppression) — pas de doublon visuel (B3).
   function renderPhTuneRemoveRow(cfg) {
-    const label = $("#ph_tune_remove_label");
+    // feature-170 (C28) : l'étiquette « Correction actuelle : … pH » est FUSIONNÉE
+    // dans #ph_tune_applied (renderPhTuneAppliedLine). ⛔ Ne PAS réintroduire
+    // `label` dans la garde ci-dessous : sortir sur un élément supprimé ferait
+    // disparaître « Supprimer la correction » pour toujours.
     const btn = $("#ph_tune_remove_btn");
     const hint = $("#ph_tune_remove_hint");
-    const valueEl = $("#ph_tune_remove_value");
-    if (!label || !btn || !hint) return;
-    // Offset absent ou non numérique => traité comme 0 => ligne et bouton
+    if (!btn || !hint) return;
+    // Offset absent ou non numérique => traité comme 0 => bouton et phrase
     // masqués (jamais un bouton qui supprimerait une correction inconnue).
     const offset = (typeof cfg?.ph_offset === "number" && isFinite(cfg.ph_offset)) ? cfg.ph_offset : 0;
     const staleBannerShown = (cfg?.ph_offset_stale === true) && (offset !== 0);
     const show = (offset !== 0) && !staleBannerShown;
-    label.hidden = !show;
     btn.hidden = !show;
     hint.hidden = !show;
-    if (valueEl) valueEl.textContent = _fmtPh(offset, true);
   }
 
   // ⛔ Ne PAS passer par /tune-ph-offset : il exige 10 min de filtration et une
@@ -2718,8 +2798,11 @@
   // pas-à-pas, cf. PH_TUNE_SCALE_FLOOR/CEIL ci-dessus — elle vit côté serveur
   // dans isPhOffsetValid()/ph_tune_logic.h, hors de portée de cet aperçu).
   // Deux signaux NON BLOQUANTS la remplacent :
-  //   - inhabituel : |écart| > unusualAbs — l'ANCIENNE borne ±0,50, conservée
-  //     comme SIGNAL d'un défaut matériel possible, plus un refus (C8) ;
+  //   - inhabituel : |écart| > unusualAbs — seuil de CONSÉQUENCE, pas d'amplitude
+  //     (feature-170 (C23)) : au-delà, et seulement au-delà, une correction qui
+  //     viendrait à disparaître ferait lire la mesure corrigée sous le plancher à la
+  //     consigne basse, et l'appareil cesserait d'acidifier — la correction est
+  //     devenue une pièce du dosage. Ce n'est plus un refus (feature-168 (C8)) ;
   //   - impasse : cet écart, une fois appliqué, pousserait le filet BRUT
   //     (fixe) à mordre AVANT la consigne/le plafond CORRIGÉS — ecart >
   //     impasseThreshold + impasseEpsilon (acidification) OU ecart <
@@ -4455,6 +4538,8 @@
     renderPhOffsetStaleBanner(cfg);
     // feature-157 : ligne + bouton « Supprimer la correction ».
     renderPhTuneRemoveRow(cfg);
+    // feature-170 (C28) : ligne de date de pose.
+    renderPhTuneAppliedLine(cfg);
     buildPhTargetSegments();
     renderPhTargetHint();
     // feature-164 : seconde instance du MÊME contrôle, carte d'accueil —

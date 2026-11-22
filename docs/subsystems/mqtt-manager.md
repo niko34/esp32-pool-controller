@@ -382,6 +382,16 @@ Deux nouvelles entités, décision structurante [ADR-0026](../adr/0026-mode-inst
 
 Le `select/{id}_install_mode` est **souscrit** au connect (`mqtt.subscribe(topics.installModeCommand)`) ; `filtration_external_state/set` l'est via la souscription des topics de commande.
 
+## Alerte publiée et journal — ne jamais doubler le log
+
+⚠️ **Piège évité de justesse (feature-170 (C32))** : `publishAlert(type, message)` produit **sa propre ligne de journal**, au niveau `warning`, au format `Alerte: <type> - <message>` ([`src/mqtt_manager.cpp:929`](../../src/mqtt_manager.cpp)). Elle journalise `message` **en entier**, pas le `msg` tronqué envoyé sur le canal.
+
+⛔ **Ne jamais doubler un `publishAlert` d'un `systemLogger.warning` adjacent** : on obtiendrait deux lignes identiques au même niveau. Le préfixe `[pH]` des lignes pH du journal est perdu sur cette ligne : le type d'alerte nomme déjà la chose.
+
+✅ `systemLogger.critical(...)` + `publishAlert(...)` reste **légitime** : deux niveaux différents (usage établi, ex. `ph_offset_unusual`).
+
+**Budget du canal** : `publishAlert()` tronque à **~46 octets utiles** (`kMaxPayloadLen = 128`, enveloppe JSON ~62 o, queue `"... (voir journal)"` 19 o) — ~43 caractères français (`à`, `é` pèsent 2 octets). Le verdict et la valeur se placent **en tête** de tout message d'alerte ([ADR-0139](../adr/0139-le-firmware-notifie-un-evenement-l-ecran-rend-un-etat.md)). Le texte intégral n'est lisible qu'au journal.
+
 ## Intervalles
 
 - Publication d'état périodique : **10 s** (`kMqttPublishIntervalMs` [`constants.h:17`](../../src/constants.h:17)). Déclenchée depuis `loopTask` par un simple flag atomique — la publication réelle se fait dans `mqttTask`.

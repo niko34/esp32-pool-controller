@@ -59,8 +59,7 @@ inline float applyPhOffset(float raw, float offset) {
 // large a d'AUTRES causes au moins aussi probables : test de référence périmé,
 // lecture à la mauvaise échelle, étalonnage à refaire. Ne pas désigner un
 // coupable qu'on n'a pas identifié — ni ici, ni dans un message dérivé. C'est
-// désormais kPhOffsetUnusualAbs (constants.h) qui porte le SIGNAL (pas le
-// refus) d'un défaut matériel possible.
+// désormais kPhOffsetUnusualAbs (constants.h), seuil de CONSÉQUENCE (feature-170 (C23)).
 inline bool isPhOffsetValid(float offset) {
   // isfinite() couvre déjà NaN ET infini (tous deux → false) : formule exacte
   // de la condition C3 du gate, pas de test isnan() redondant devant.
@@ -76,70 +75,22 @@ inline bool isPhOffsetValid(float offset) {
 // ordre : voir config.h (champs phOffset*/phCal*) pour la justification
 // complète (indépendance à l'horloge et au redémarrage).
 
-// =============================================================================
-// feature-168 (C10) — DEUXIÈME CAUSE DE CADUCITÉ, INDÉPENDANTE DE L'ÉTALONNAGE
-// =============================================================================
-// Une correction INHABITUELLE (|offset| > unusualAbs) non reconfirmée depuis
-// plus de confirmIntervalDays jours est elle aussi caduque : elle compense un
-// décalage d'INSTALLATION (courants de fuite de la pompe de filtration) qui
-// peut avoir changé depuis. Non bloquant, conforme à la décision utilisateur
-// du 2026-10-16 (« je ne veux pas bloquer »).
+// Verdict UNIQUE de caducite (feature-170 (C26)) : la correction a ete posee
+// AVANT le dernier etalonnage ; l'etalonnage a deplace la mesure sur laquelle elle
+// avait ete calculee.
 //
-// True ssi : (a) une correction non nulle en vigueur est ANTÉRIEURE au dernier
-// étalonnage réussi — donc caduque au sens feature-156 (`offsetSeq`/`calSeq`,
-// les séquences des deux écrivains uniques, config.h) ; une correction nulle
-// (0,00 = inerte) n'est jamais caduque par cette voie, et deux séquences
-// ÉGALES (aucun des deux événements ne s'est jamais produit après l'autre, y
-// compris 0 == 0 au premier démarrage) ne sont PAS une préséance de
-// l'étalonnage ;
-// OU (b) l'offset est INHABITUEL et n'a pas été reconfirmé depuis plus de
-// `confirmIntervalDays` jours (feature-168, C10).
-//
-// Fail-open sur horloge non fiable (paramètre EXPLICITE, pas un appel time()
-// masqué — cette fonction reste pure et testable en natif, ADR-0017) :
-// `offsetEpoch == 0` (date inconnue à la pose) ou `nowEpoch == 0` (horloge pas
-// encore synchronisée) ⇒ cause (b) jamais levée. Une horloge qui serait
-// repartie en arrière (nowEpoch < offsetEpoch, ex. RTC non recalée) fail-open
-// aussi : mieux vaut ne pas signaler qu'afficher un âge négatif.
-//
-// @param offset               Offset APPLIQUÉ (mqttCfg.phOffset)
-// @param offsetSeq            Séquence de la dernière correction (feature-156)
-// @param calSeq               Séquence du dernier étalonnage (feature-156)
-// @param offsetEpoch          Horodatage de la correction (0 = date inconnue)
-// @param nowEpoch             Horodatage courant (0 = horloge non synchronisée)
-// @param confirmIntervalDays  Péremption en jours (kPhOffsetConfirmIntervalDays)
-// @param unusualAbs           Seuil d'« inhabituel » (kPhOffsetUnusualAbs)
-inline bool isPhOffsetExpired(float offset, uint32_t offsetEpoch, uint32_t nowEpoch,
-                              uint32_t confirmIntervalDays, float unusualAbs) {
-  if (offsetEpoch == 0 || nowEpoch == 0) return false;     // horloge non fiable
-  if (nowEpoch < offsetEpoch) return false;                // horloge retour arriere
-  if (fabsf(offset) <= unusualAbs) return false;            // pas "inhabituel"
-  const uint32_t ageDays = (nowEpoch - offsetEpoch) / 86400UL;
-  return ageDays > confirmIntervalDays;
-}
-
-// Cause (a) SEULE : la correction a ete posee AVANT le dernier etalonnage, elle
-// compense un etat de sonde qui n'existe plus.
-//
-// ⚠️ Extraite en fonction propre sur revue (feature-168) : l'expression vivait
-// en DEUX exemplaires — ici et dans phOffsetStaleCause() (config.cpp), qui
-// choisit le libelle affiche. C'est le piege « meme notion, deux expressions »
-// d'un cran en dessous de celui que phOffsetStaleNow() venait d'eliminer : la
-// cause (a) aurait pu evoluer ici et laisser le libelle afficher autre chose
-// que le verdict. ⛔ Un seul endroit, desormais.
+// ⚠️ Un seul nom, une seule expression (feature-170 (C26)) : phOffsetStaleNow()
+// (config.cpp) l'appelle DIRECTEMENT — pas d'enveloppe, sinon le piege « meme
+// notion, deux expressions » reviendrait.
+// ⛔ phOffsetStaleCause(), elle, ne l'appelle PLUS : il ne reste qu'une cause,
+// elle rend le litteral "calibration". C'est voulu — reappeler le verdict pour
+// choisir un libelle unique serait un second calcul sans second resultat.
+// Elle n'a de sens QUE si phOffsetStaleNow() est vrai, comme avant.
+// ⚠️ markPhCalibrationStamped() (config.cpp) l'appelle aussi, sur INSTANTANES
+// pris sous mutex (feature-170 (C32)) : meme verdict, pas `offset != 0`.
 inline bool isPhOffsetSupersededByCalibration(float offset, uint32_t offsetSeq,
                                               uint32_t calSeq) {
   return (offset != 0) && (offsetSeq < calSeq);
-}
-
-inline bool isPhOffsetStale(float offset, uint32_t offsetSeq, uint32_t calSeq,
-                            uint32_t offsetEpoch, uint32_t nowEpoch,
-                            uint32_t confirmIntervalDays, float unusualAbs) {
-  if (isPhOffsetSupersededByCalibration(offset, offsetSeq, calSeq)) {
-    return true;                                           // cause (a) : calibration
-  }
-  return isPhOffsetExpired(offset, offsetEpoch, nowEpoch, confirmIntervalDays,
-                            unusualAbs);                   // cause (b) : expiration
 }
 
 // Prochaine séquence « justesse », toujours strictement supérieure aux deux

@@ -1565,8 +1565,8 @@ size_t WsManager::_buildConfigJson(char* buf, size_t cap) const {
   // RÉSERVE CONNUE : `server`, `topic`, `username` et `wifi_ssid` ne sont bornés
   // NULLE PART (/save-config ne valide aucune longueur) ; la marge est prouvée
   // sous l'hypothèse d'environ 64 o par champ. Surveiller oversizedFrameCount().
-  // feature-168 : +1 clé ph_offset_stale_cause (chaîne courte, "calibration"/
-  // "expiration"/"boot", ~40 o au pire) — absorbée par la marge ci-dessus, pas
+  // feature-168 : +1 clé ph_offset_stale_cause (chaîne courte, "calibration"
+  // seule depuis feature-170 (C25)/(C26) : "expiration"/"boot" retirées) — absorbée par la marge ci-dessus, pas
   // d'ajustement du gabarit documentaire.
   // Correctif 2026-10-17 (fausse alerte pH) : +2 clés booléennes, VERDICT
   // d'impasse de régulation calculé par le firmware (ADR-0100) :

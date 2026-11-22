@@ -143,10 +143,8 @@ function check(label, actual, expected) {
 function makeDom(overrides) {
   const elements = Object.assign(
     {
-      "#ph_tune_remove_label": { hidden: true, textContent: "" },
       "#ph_tune_remove_btn": { hidden: true, textContent: "" },
       "#ph_tune_remove_hint": { hidden: true, textContent: "" },
-      "#ph_tune_remove_value": { hidden: false, textContent: "—" },
     },
     overrides || {}
   );
@@ -202,42 +200,41 @@ check("_fmtPh(-Infinity ; signé) -> \"−Infinity\"", _fmtPh(-Infinity, true), 
 
 {
   const el = renderWithCfg({});
-  check("offset absent -> label masqué", el["#ph_tune_remove_label"].hidden, true);
+  check("offset absent -> bouton masqué", el["#ph_tune_remove_btn"].hidden, true);
   check("offset absent -> bouton masqué", el["#ph_tune_remove_btn"].hidden, true);
   check("offset absent -> conseil masqué", el["#ph_tune_remove_hint"].hidden, true);
-  check("offset absent -> valeur quand même formatée (+0,0)", el["#ph_tune_remove_value"].textContent, "+0,0");
 }
 
 {
   const el = renderWithCfg({ ph_offset: 0 });
-  check("offset explicite 0 -> tout masqué", el["#ph_tune_remove_label"].hidden, true);
+  check("offset explicite 0 -> tout masqué", el["#ph_tune_remove_btn"].hidden, true);
   check("offset explicite 0 -> bouton masqué", el["#ph_tune_remove_btn"].hidden, true);
 }
 
 {
   const el = renderWithCfg({ ph_offset: "0.30" });
-  check("offset non numérique (chaîne) -> traité comme 0 -> masqué", el["#ph_tune_remove_label"].hidden, true);
+  check("offset non numérique (chaîne) -> traité comme 0 -> masqué", el["#ph_tune_remove_btn"].hidden, true);
   check("offset non numérique (chaîne) -> bouton masqué", el["#ph_tune_remove_btn"].hidden, true);
 }
 
 {
   const el = renderWithCfg({ ph_offset: NaN });
-  check("offset NaN (type number non fini) -> traité comme 0 -> masqué", el["#ph_tune_remove_label"].hidden, true);
+  check("offset NaN (type number non fini) -> traité comme 0 -> masqué", el["#ph_tune_remove_btn"].hidden, true);
 }
 
 {
   const el = renderWithCfg({ ph_offset: Infinity });
-  check("offset Infinity (non fini) -> traité comme 0 -> masqué", el["#ph_tune_remove_label"].hidden, true);
+  check("offset Infinity (non fini) -> traité comme 0 -> masqué", el["#ph_tune_remove_btn"].hidden, true);
 }
 
 {
   const el = renderWithCfg(undefined);
-  check("cfg undefined -> ne lève pas, masqué", el["#ph_tune_remove_label"].hidden, true);
+  check("cfg undefined -> ne lève pas, masqué", el["#ph_tune_remove_btn"].hidden, true);
 }
 
 {
   const el = renderWithCfg(null);
-  check("cfg null -> ne lève pas, masqué", el["#ph_tune_remove_label"].hidden, true);
+  check("cfg null -> ne lève pas, masqué", el["#ph_tune_remove_btn"].hidden, true);
 }
 
 // =============================================================================
@@ -246,28 +243,26 @@ check("_fmtPh(-Infinity ; signé) -> \"−Infinity\"", _fmtPh(-Infinity, true), 
 
 {
   const el = renderWithCfg({ ph_offset: 0.3 });
-  check("offset 0,30 sans bannière caduque -> label affiché", el["#ph_tune_remove_label"].hidden, false);
+  check("offset 0,30 sans bannière caduque -> bouton affiché", el["#ph_tune_remove_btn"].hidden, false);
   check("offset 0,30 sans bannière caduque -> bouton affiché", el["#ph_tune_remove_btn"].hidden, false);
   check("offset 0,30 sans bannière caduque -> conseil affiché", el["#ph_tune_remove_hint"].hidden, false);
-  check("offset 0,30 -> valeur formatée signée (+0,3)", el["#ph_tune_remove_value"].textContent, "+0,3");
 }
 
 {
   const el = renderWithCfg({ ph_offset: -0.5 });
-  check("offset -0,50 sans bannière caduque -> affiché", el["#ph_tune_remove_label"].hidden, false);
-  check("offset -0,50 -> valeur formatée avec signe moins (−0,5)", el["#ph_tune_remove_value"].textContent, "−0,5");
+  check("offset -0,50 sans bannière caduque -> affiché", el["#ph_tune_remove_btn"].hidden, false);
 }
 
 {
   // ph_offset_stale vrai mais NON strictement === true (comparaison stricte
   // exigée par le code réel) -> ne doit PAS activer le masquage.
   const el = renderWithCfg({ ph_offset: 0.3, ph_offset_stale: 1 });
-  check("ph_offset_stale=1 (pas === true) -> N'ACTIVE PAS le masquage -> affiché", el["#ph_tune_remove_label"].hidden, false);
+  check("ph_offset_stale=1 (pas === true) -> N'ACTIVE PAS le masquage -> affiché", el["#ph_tune_remove_btn"].hidden, false);
 }
 
 {
   const el = renderWithCfg({ ph_offset: 0.3, ph_offset_stale: "true" });
-  check("ph_offset_stale=\"true\" (chaîne, pas === true) -> N'ACTIVE PAS le masquage -> affiché", el["#ph_tune_remove_label"].hidden, false);
+  check("ph_offset_stale=\"true\" (chaîne, pas === true) -> N'ACTIVE PAS le masquage -> affiché", el["#ph_tune_remove_btn"].hidden, false);
 }
 
 // =============================================================================
@@ -277,7 +272,7 @@ check("_fmtPh(-Infinity ; signé) -> \"−Infinity\"", _fmtPh(-Infinity, true), 
 
 {
   const el = renderWithCfg({ ph_offset: 0.3, ph_offset_stale: true });
-  check("offset 0,30 + bannière caduque -> label masqué (masquage mutuel)", el["#ph_tune_remove_label"].hidden, true);
+  check("offset 0,30 + bannière caduque -> bouton masqué (masquage mutuel)", el["#ph_tune_remove_btn"].hidden, true);
   check("offset 0,30 + bannière caduque -> bouton masqué", el["#ph_tune_remove_btn"].hidden, true);
   check("offset 0,30 + bannière caduque -> conseil masqué", el["#ph_tune_remove_hint"].hidden, true);
 }
@@ -288,7 +283,7 @@ check("_fmtPh(-Infinity ; signé) -> \"−Infinity\"", _fmtPh(-Infinity, true), 
   // (masqué), pour une raison structurellement différente : couvre
   // l'occurrence "(offset !== 0)" DANS le calcul de staleBannerShown.
   const el = renderWithCfg({ ph_offset: 0, ph_offset_stale: true });
-  check("offset 0 + ph_offset_stale=true -> masqué (offset nul l'emporte)", el["#ph_tune_remove_label"].hidden, true);
+  check("offset 0 + ph_offset_stale=true -> masqué (offset nul l'emporte)", el["#ph_tune_remove_btn"].hidden, true);
 }
 
 // =============================================================================
@@ -298,16 +293,13 @@ check("_fmtPh(-Infinity ; signé) -> \"−Infinity\"", _fmtPh(-Infinity, true), 
 
 {
   const sentinelHint = { hidden: false, textContent: "intact" };
-  const sentinelValue = { hidden: false, textContent: "intact" };
   const { elements, dollar } = makeDom({
-    "#ph_tune_remove_label": null,
+    "#ph_tune_remove_btn": null,
     "#ph_tune_remove_hint": sentinelHint,
-    "#ph_tune_remove_value": sentinelValue,
   });
   const { renderPhTuneRemoveRow } = buildRemoveRow(dollar);
   renderPhTuneRemoveRow({ ph_offset: 0.5 });
-  check("label absent -> conseil NON touché (retour anticipé)", elements["#ph_tune_remove_hint"].textContent, "intact");
-  check("label absent -> valeur NON touchée (retour anticipé)", elements["#ph_tune_remove_value"].textContent, "intact");
+  check("bouton absent -> conseil NON touché (retour anticipé)", elements["#ph_tune_remove_hint"].textContent, "intact");
 }
 
 if (failures > 0) {
