@@ -3,7 +3,7 @@
 - **Statut** : Accepté
 - **Date** : 2026-11-22
 - **Décideurs** : Nicolas + Claude (`pool-chemistry`, `ux-ui-designer`, `architect`)
-- **Spec(s) liée(s)** : [feature-170](../../specs/features/doing/feature-170-retirer-la-confirmation-de-correction-ph.md) (C34) ; retire un mécanisme créé par [feature-168](../../specs/features/done/feature-168-correction-ph-sans-borne.md) (C12) ; voir aussi [ADR-0114](0114-correction-mesure-ph-sans-borne-de-reglage.md)
+- **Spec(s) liée(s)** : [feature-170](../../specs/features/done/feature-170-retirer-la-confirmation-de-correction-ph.md) (C34) ; retire un mécanisme créé par [feature-168](../../specs/features/done/feature-168-correction-ph-sans-borne.md) (C12) ; voir aussi [ADR-0114](0114-correction-mesure-ph-sans-borne-de-reglage.md)
 
 > Règle de forme, posée par ce lot : dans tout document, une condition de gate s'écrit **`feature-170 (C34)`**, jamais `C34` seul. Voir [ADR-0139](0139-le-firmware-notifie-un-evenement-l-ecran-rend-un-etat.md), section « Conventions ».
 
@@ -59,5 +59,5 @@ Deux angles morts, **assumés et nommés** :
 ## Références
 
 - Code : [`src/constants.h`](../../src/constants.h) (`kPhOffsetUnusualAbs`), [`src/config.cpp`](../../src/config.cpp) (relecture au démarrage), [`src/ph_offset.h`](../../src/ph_offset.h)
-- Spec : [`specs/features/doing/feature-170-retirer-la-confirmation-de-correction-ph.md`](../../specs/features/doing/feature-170-retirer-la-confirmation-de-correction-ph.md)
+- Spec : [`specs/features/doing/feature-170-retirer-la-confirmation-de-correction-ph.md`](../../specs/features/done/feature-170-retirer-la-confirmation-de-correction-ph.md)
 - Doc : [`docs/features/page-ph.md`](../features/page-ph.md), [`docs/subsystems/sensors.md`](../subsystems/sensors.md)

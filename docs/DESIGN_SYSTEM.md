@@ -57,6 +57,9 @@ contexte d'origine.
 | Réinstaller le filesystem quand l'interface est absente (page autonome, sans `app.css`) | copies **locales** : callout `--info`, sélecteur `.pick`, ligne de version `.ver`, `<progress>`, callout d'échec rouge (§5.21) | **Page de secours embarquée uniquement** — ⛔ jamais un composant partagé |
 | Distinguer deux niveaux de gravité dans un même `.callout`, sans empiler deux encadrés, et séparer l'essentiel du détail | `.callout__eyebrow` + `.callout__lead` + `.callout__more` (§5.10bis) | Page de réglage (pH) — généralisable |
 | Commenter un contrôle sans en faire une alerte | `.field__hint` (§5.11) | Les deux, **jamais seul porteur d'une info de sécurité** |
+| Dire **pourquoi un bouton est désactivé** (un refus, pas un conseil) | `.field__hint.field__hint--refus` (§5.11bis) | Page de réglage — carte « Correction manuelle de la mesure » (pH) |
+| Faire survivre un élément au mode réglage (flux maintenance) | `.flow-maintenance` (§5.25) | Pages pH, ORP, Température — ⚠️ ne veut **pas** dire « visible seulement en réglage » |
+| Demander un second geste avant un acte destructif à conséquence chiffrée | bloc `.callout--warn` + `.ph-tune-confirm__actions` (§5.26) | Page de réglage pH |
 | Signaler une anomalie de régulation nécessitant un acquittement | `.regul-alert` (§5.12) | Carte d'accueil et page de réglage |
 | Saisir une valeur dans un formulaire de réglage | `.field` (§5.13) | Page de réglage — ⚠️ nom repris **sans styles partagés** par `wizard.html` et `wifi.html` |
 | Activer/désactiver une option binaire | `.switch` (§5.14) | Page de réglage uniquement |
@@ -292,7 +295,7 @@ informatif sans enjeu — c'est à ça que sert `.field__hint` ou `.detail-row`.
 
 Les trois sous-éléments sont **optionnels indépendamment** : un refus simplement bloquant n'utilise que `.callout__lead` (chapeau et détail masqués) ; l'avertissement non bloquant utilise les trois. Voir [`docs/features/page-ph.md`](features/page-ph.md#avertissement-et-impasse-de-régulation-v2820) pour l'emploi complet et les textes exacts.
 
-**Second contexte d'emploi (feature-170 (C31), v2.99.0) : bandeau d'acquittement** — `#ph_tune_stale_banner` (carte « Correction manuelle de la mesure », page pH) : `.callout__eyebrow` + `--danger` sur un bandeau où l'utilisateur doit **trancher entre deux actes** (« Je l'ai vérifiée — garder » / « Remettre à zéro »), et non plus seulement le couple avertissement/impasse de `#ph_tune_blocked`. Aucun composant partagé modifié, aucun emploi existant ne change.
+**Second contexte d'emploi (feature-170 (C31), v2.99.0) : bandeau d'acquittement** — `#ph_tune_stale_banner` (carte « Correction manuelle de la mesure », page pH) : `.callout__eyebrow` + `--danger` sur un bandeau où l'utilisateur doit **trancher** (« Je l'ai vérifiée — garder » ; ⚠️ le second acte « Remettre à zéro » a été **supprimé du bandeau en v3.0.0**, le seul chemin destructif étant « Supprimer la correction » en bas de carte), et non plus seulement le couple avertissement/impasse de `#ph_tune_blocked`. Aucun composant partagé modifié, aucun emploi existant ne change.
 
 Ce qui distingue les deux emplois :
 
@@ -339,6 +342,16 @@ impact sur les 20 emplois de `index.html` ni sur l'emploi de `app.js`.
 `<span class="field__hint">` dans `#no_update_msg` (même carte), après la ligne en gras
 (`ℹ` / `⚠` en glyphes texte, pas emoji). Construit en DOM (`textContent`). Aucune évolution du
 composant : CSS inchangé, aucun inventaire d'emplois dû.
+
+### 5.11bis `.field__hint--refus` un refus adjacent à ce qu'il désactive (bug-201, v3.0.0)
+
+**Contexte d'emploi déclaré : page de réglage pH, carte « Correction manuelle de la mesure » — `#ph_tune_refus`, juste sous le bouton « Corriger » (`aria-describedby` depuis ce bouton).** Modificateur de `.field__hint` (§5.11), ajouté à `data/app.css` : `font-size: 14px`, `color: var(--text)`, `margin-top: 8px`. Aucun cadre, aucune teinte d'alerte : l'ambre reste réservé à l'avertissement `feature-168 (C8)` de la même carte (`#ph_tune_blocked`, `.callout--warn`).
+
+⛔ **Ce n'est pas un `.callout`** (un refus n'est pas une alerte de régulation) **mais ce n'est pas non plus `.muted` / `.field__hint` seul** : *ce sont des REFUS, pas des conseils*. Un refus doit rester **au moins aussi saillant que le bouton qu'il désactive** — un bouton grisé sans explication lisible est précisément le défaut que ces textes existent pour éviter. D'où le texte plein et 14 px au lieu de 12 px `--muted`.
+
+⚠️ **Règle de conception associée** : les refus et l'avertissement C8 **ne partagent plus d'élément** (deux rendus distincts). Dégrader l'un dégraderait l'autre en silence. Écriture a11y : texte et `hidden` ne sont écrits **que s'ils changent**.
+
+Aucun impact sur les emplois existants de `.field__hint` : la règle ne s'applique qu'avec le modificateur. Voir [`docs/features/page-ph.md`](features/page-ph.md#les-refus-bloquants-de-laccord).
 
 ### 5.12 `.regul-alert` (+ `--inline`)
 Bandeau d'exception de régulation (escalade de sécurité pH, étalonnage en cours). Rouge
@@ -759,6 +772,35 @@ largeur fixe.
 - **R2 — non fait** : « Volume quotidien » et « Limite de sécurité » sont dans le volet alors qu'en mode
   Programme ils disent ce que l'appareil va faire.
 - **Mode sombre** : toujours inexistant (§8).
+
+### 5.25 `.flow-maintenance` survit au mode réglage (bug-201, v3.0.0)
+
+> ⭐ **`.flow-maintenance` ne signifie PAS « visible seulement en mode réglage » : elle signifie « SURVIT au mode réglage ».** Les éléments qui la portent sont, pour la plupart, `hidden` par défaut et dévoilés par `enterMaintenance()` ; **`#ph-card-tune` est l'exception** : permanente, mais marquée, parce que la règle générique masquerait sinon tout enfant non marqué pendant le flux.
+
+**Mécanisme** (`data/app.css`) : `#view-ph.is-flow-maintenance > :not(.flow-maintenance)` (idem `#view-orp`, `#view-temperature`) masque tout enfant direct de la vue qui n'est pas marqué. `enterMaintenance()` / `exitMaintenance()` (`data/app.js`, table `MAINTENANCE_PAGES`) ne font que lever / reposer le `hidden` des éléments listés dans `cardIds`.
+
+**Inventaire mesuré le 2026-11-22** — **18 éléments** portent la classe dans `data/index.html` (compte par attributs `class="…flow-maintenance…"`, hors commentaires) :
+
+| Vue | Éléments | Nombre |
+|---|---|---:|
+| Température | en-tête `.settingsHead`, région d'annonce `.sr-only`, lien de retour haut, carte d'étalonnage, lien de retour bas | 5 |
+| pH | en-tête `.settingsHead`, lien de retour haut, **`#ph-card-tune`**, région d'annonce `.sr-only`, bandeau de bascule (`callout--warn`), carte d'étalonnage, lien de retour bas | 7 |
+| ORP | en-tête `.settingsHead`, région d'annonce `.sr-only`, lien de retour haut, bandeau de bascule, carte d'étalonnage, lien de retour bas | 6 |
+
+⭐ **Un seul emploi change d'appartenance** : `#ph-card-tune` (sortie de `cardIds`, **plus de `hidden`**, classe conservée). Les 17 autres sont **inchangés** (en-têtes et régions d'annonce : toujours visibles, la classe leur évite d'être masqués ; liens, cartes et bandeaux : `hidden` par défaut). C'est la **première** carte à sortir du flux.
+
+⛔ **Pièges**
+- Retirer **la classe** (et non l'entrée de `cardIds`) masque la carte **pendant l'étalonnage**, au moment où la cause `calibration` vient de se lever et où ses boutons servent.
+- Ne jamais réintroduire `hidden` ni un `el.style.display` sur `#ph-card-tune` (un style inline écrase la règle sans effet visible).
+- ⚠️ **Placement dans le DOM** : l'ordre compte en mode réglage. Le lien `#ph-maintenance-back-top` est **avant** `#ph-card-tune` ; entre deux cartes visibles, il se lisait comme un pied de la carte de correction (défaut vu sur capture).
+
+Décision et alternatives : [ADR-0140](adr/0140-quand-un-gate-renonce-a-bloquer-la-contrepartie-est-la-visibilite-permanente.md). Voir aussi [ADR-0103](adr/0103-gestes-d-entretien-quittent-la-vue-courante.md) (le mécanisme d'origine) et [`docs/features/page-ph.md`](features/page-ph.md#mécanisme--entermaintenance--exitmaintenance).
+
+### 5.26 Bloc de confirmation d'un acte destructif (`.ph-tune-confirm__actions`, bug-201, v3.0.0)
+
+**Contexte d'emploi déclaré : page de réglage pH, « Supprimer la correction » (`#ph_tune_remove_confirm`).** Un premier appui **remplace** le bouton par : un `callout callout--warn` (`role="group"`, la phrase de conséquence chiffrée), puis `.ph-tune-confirm__actions` — conteneur `flex` en **colonne**, `gap: 12px`, enfants `width: 100%` et `min-height: 44px` (390 px d'abord, doigt mouillé). Ordre : **« Ne rien changer »** (`btn--secondary`, reçoit le focus) **puis** le destructif (`btn--danger action-destructive`).
+
+Règles : la cible destructive n'occupe **pas** la position du bouton d'origine ; sortie au moins aussi facile que la confirmation (Échap, clic extérieur, changement de page, retour de config) ; ⛔ ni `confirm()` natif, ni mot à saisir, ni appui long, ni modale, ni minuterie. Ne se déclenche que si la conséquence le justifie (seuil servi) : *une garde qui bloque plus qu'elle ne protège est un défaut*. Aucun autre emploi à ce jour ; un nouvel emploi devra déclarer son contexte ici. Détail : [`docs/features/page-ph.md`](features/page-ph.md#friction-sur-supprimer-la-correction-bug-201-c41-c45-c47-v300).
 
 ## 6. Responsive — 390 px d'abord
 

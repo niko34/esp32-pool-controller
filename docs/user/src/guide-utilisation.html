@@ -834,21 +834,32 @@ affiché à ce moment-là.</p>
   d'observer le nouveau produit.</p>
 </div>
 
-<h4>Calibration et correction de la mesure pH</h4>
+<h4>Étalonnage de la sonde et correction de la mesure pH</h4>
 
 <figure>
-  <img class="capture" src="../../../screenshots/07_pH_Calibration.jpg" alt="Écran de calibration et de correction pH">
-  <figcaption class="capture-legende">Le mode réglage pH&nbsp;: calibration guidée puis, juste en dessous, correction manuelle de la mesure.</figcaption>
+  <img class="capture" src="../../../screenshots/07_pH_Calibration.jpg" alt="Écran de calibration pH">
+  <figcaption class="capture-legende">Le mode réglage pH&nbsp;: l'étalonnage guidé de la sonde, avec la carte de correction de la mesure juste en dessous.</figcaption>
 </figure>
 
-<p>Le bouton «&nbsp;<strong>Calibration et correction de la mesure</strong>&nbsp;»
-— toujours accessible, quel que soit le mode — ouvre un écran dédié qui
-rassemble les <strong>deux seuls gestes qui touchent à la justesse de la
-mesure</strong> : l'étalonnage de la sonde et la correction manuelle. Le reste
-de la page pH (débit d'injection, régulation, historique) est masqué le temps
-de ce réglage ; un lien «&nbsp;← Retour à la page pH&nbsp;», placé en haut
-<strong>et</strong> en bas de l'écran, vous ramène à la page normale, exactement
-où vous l'aviez laissée.</p>
+<p>Deux gestes touchent à la justesse de la mesure, et ils ne se règlent pas
+au même endroit.</p>
+
+<ul>
+  <li><strong>L'étalonnage de la sonde</strong> passe par le bouton
+  «&nbsp;<strong>Étalonnage de la sonde</strong>&nbsp;» (toujours accessible,
+  quel que soit le mode, à côté de la pastille d'état de la sonde). Il ouvre un
+  écran dédié&nbsp;: le reste de la page pH (débit d'injection, régulation,
+  historique) est masqué le temps de ce réglage ; un lien «&nbsp;← Retour à la
+  page pH&nbsp;», placé en haut <strong>et</strong> en bas de l'écran, vous
+  ramène à la page normale, exactement où vous l'aviez laissée.</li>
+  <li><strong>La correction de la mesure</strong> (carte «&nbsp;Correction
+  manuelle de la mesure&nbsp;») est <strong>toujours visible sur la page
+  pH</strong>, juste sous la valeur en grand. Vous n'avez pas à ouvrir
+  l'écran d'étalonnage pour la lire ni pour la régler&nbsp;: <strong>ouvrir
+  l'étalonnage met la régulation en Manuel, pas la correction</strong>.
+  (Jusqu'à la version&nbsp;2.99, la correction se cachait derrière ce bouton,
+  et lire son alerte obligeait à suspendre le dosage.)</li>
+</ul>
 
 <h5>Calibrer la sonde</h5>
 
@@ -918,7 +929,7 @@ confirmé sur deux mesures à des moments différents, justifie de corriger.</p>
 <p>Contrôlez de temps en temps votre eau avec une <strong>bandelette</strong>,
 un PoolLab ou un pH-mètre. Si la valeur affichée par l'appareil ne correspond
 pas à votre test, la carte «&nbsp;<strong>Correction manuelle de la
-mesure</strong>&nbsp;», juste en dessous de la calibration, vous permet de la
+mesure</strong>&nbsp;», visible en permanence sur la page pH, vous permet de la
 corriger&nbsp;: avec les boutons <strong>−</strong> et <strong>+</strong>,
 <strong>amenez le nombre affiché jusqu'à la valeur lue sur votre test</strong>,
 puis appuyez sur «&nbsp;<strong>Corriger</strong>&nbsp;». L'appareil calcule
@@ -937,11 +948,12 @@ défaillante — c'est l'objet même de cette correction.</p>
 <p>Trois cas empêchent la correction, et l'appareil vous dit lequel&nbsp;:
 la mesure n'est pas assez récente, la <strong>filtration doit tourner depuis
 10&nbsp;minutes</strong> (un décompte s'affiche le temps d'attendre), ou la
-sonde n'a pas encore ses deux points d'étalonnage (dans ce cas, le geste à
-faire est juste au-dessus). Cette correction est <strong>différente de la
+sonde n'a pas encore ses deux points d'étalonnage (dans ce cas, commencez par
+le bouton «&nbsp;Étalonnage de la sonde&nbsp;»). Le motif s'affiche en texte
+plein juste sous le bouton «&nbsp;Corriger&nbsp;» grisé. Cette correction est <strong>différente de la
 calibration</strong> ci-dessus&nbsp;: la calibration règle la sonde elle-même,
-la correction compense un écart de mesure propre à votre installation. Les
-deux vivent sur le même écran, mais ce sont deux gestes distincts.</p>
+la correction compense un écart de mesure propre à votre installation. Ce
+sont deux gestes distincts, sur deux écrans distincts.</p>
 
 <div class="box-alerte">
   <span class="box-title">Plus de limite sur l'écart, un avertissement à la place (nouveau en 2.82)</span>
@@ -968,9 +980,12 @@ deux vivent sur le même écran, mais ce sont deux gestes distincts.</p>
   «&nbsp;Étalonnage modifié&nbsp;», donne la
   date de l'étalonnage et celle de la pose de la correction, puis vous dit
   quoi faire&nbsp;: refaire un test manuel et accorder la mesure dessus, ou
-  remettre la correction à zéro. Deux boutons&nbsp;:
-  «&nbsp;Je l'ai vérifiée — garder&nbsp;» ou «&nbsp;Remettre à zéro&nbsp;».
-  Rien n'est effacé automatiquement — c'est à vous de décider, parce que
+  remettre la correction à zéro. Le bandeau porte un bouton,
+  «&nbsp;Je l'ai vérifiée — garder&nbsp;»&nbsp;; pour supprimer la correction,
+  utilisez le bouton «&nbsp;Supprimer la correction&nbsp;» en bas de la carte
+  (visible même quand le bandeau est affiché). Ce bandeau se lit
+  <strong>sans rien suspendre</strong>&nbsp;: la carte est toujours visible sur
+  la page pH. Rien n'est effacé automatiquement — c'est à vous de décider, parce que
   cette valeur engage le dosage. Tant que vous n'avez pas choisi, la
   correction continue de s'appliquer. En même temps, l'appareil envoie une
   alerte à Home Assistant au moment de l'étalonnage.</p>
@@ -983,6 +998,26 @@ deux vivent sur le même écran, mais ce sont deux gestes distincts.</p>
   <p>Quand aucun bandeau n'est affiché, une ligne en haut de la carte rappelle
   la correction en vigueur et sa date de pose («&nbsp;Correction +1,20&nbsp;pH
   — posée le 16/10/2026&nbsp;»).</p>
+</div>
+
+<div class="box-alerte">
+  <span class="box-title">Supprimer une correction importante demande deux gestes (nouveau en 2.100)</span>
+  <p>Le bouton «&nbsp;<strong>Remettre à zéro</strong>&nbsp;» du bandeau a
+  <strong>disparu</strong>. Son nom évoquait le <em>zéro de la sonde</em>, qui
+  est une tout autre chose&nbsp;: on pouvait croire faire un geste d'entretien
+  de la sonde alors qu'on supprimait sa correction. Il ne reste qu'un chemin,
+  «&nbsp;<strong>Supprimer la correction</strong>&nbsp;».</p>
+  <p>Si la correction dépasse <strong>0,50</strong> pH, un premier appui ne
+  supprime rien&nbsp;: il ouvre un encadré qui dit <strong>ce que ça
+  changera</strong>, par exemple «&nbsp;Sans cette correction, l'appareil lira
+  6,10 au lieu de 7,30&nbsp;: il cessera d'ajouter de l'acide et laissera le pH
+  monter&nbsp;». Deux boutons suivent&nbsp;: «&nbsp;Ne rien changer&nbsp;» (en
+  premier, c'est le choix sûr) puis «&nbsp;Supprimer la correction&nbsp;». Le
+  texte s'adapte au signe de la correction. Quand l'appareil n'a pas de mesure
+  (filtration arrêtée), il l'exprime en écart&nbsp;: «&nbsp;l'appareil lira
+  1,20 pH de moins qu'aujourd'hui&nbsp;». En dessous de 0,50, un seul appui
+  suffit. Pour refermer l'encadré sans rien supprimer&nbsp;: «&nbsp;Ne rien
+  changer&nbsp;», la touche Échap ou un appui ailleurs sur l'écran.</p>
 </div>
 
 <h3>Le chlore (ORP)</h3>
@@ -1338,8 +1373,10 @@ sonde n'a jamais été calibrée, ou sa calibration a été effacée — la
 régulation automatique reste inactive tant qu'elle n'est pas faite
 (chapitre&nbsp;3).</p>
 
-<p>«&nbsp;<strong>Calibré · critère hors norme</strong>&nbsp;» (rouge)&nbsp;:
-l'un des trois critères de la sonde (pente acide, pente base ou décalage de
+<p>«&nbsp;<strong>Étalonnage&nbsp;: critère hors norme</strong>&nbsp;» (rouge,
+anciennement «&nbsp;Calibré · critère hors norme&nbsp;», renommée en 2.100 pour
+qu'on ne la confonde pas avec la correction de mesure — elle parle de la
+sonde, pas de la correction)&nbsp;: l'un des trois critères de la sonde (pente acide, pente base ou décalage de
 zéro) sort de sa plage normale. Cliquez la pastille pour ouvrir le détail
 — trois indicateurs séparés, un par critère, chacun vert ou rouge&nbsp;:
 c'est lui qui vous dit <em>lequel</em> poser problème, au lieu d'un verdict

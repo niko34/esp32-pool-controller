@@ -3,7 +3,7 @@
 - **Statut** : Accepté
 - **Date** : 2026-11-22
 - **Décideurs** : Nicolas + Claude (`pool-chemistry`, `architect`, `test-engineer`)
-- **Spec(s) liée(s)** : [feature-170](../../specs/features/doing/feature-170-retirer-la-confirmation-de-correction-ph.md) (C32, V6a/V6b/V6c) ; prolonge [ADR-0100](0100-un-seuil-de-sante-est-servi-jamais-reecrit-cote-client.md) et [ADR-0099](0099-tester-par-extraction-de-texte-jamais-par-duplication.md) dans leur esprit
+- **Spec(s) liée(s)** : [feature-170](../../specs/features/done/feature-170-retirer-la-confirmation-de-correction-ph.md) (C32, V6a/V6b/V6c) ; prolonge [ADR-0100](0100-un-seuil-de-sante-est-servi-jamais-reecrit-cote-client.md) et [ADR-0099](0099-tester-par-extraction-de-texte-jamais-par-duplication.md) dans leur esprit
 
 ## Contexte
 
@@ -55,4 +55,4 @@ Faut-il que le firmware reproduise ces quatre rendus ? Le canal MQTT est **born�
 - Code : [`src/ph_stale_message.h`](../../src/ph_stale_message.h), [`src/config.cpp`](../../src/config.cpp) (`markPhCalibrationStamped`), [`src/mqtt_manager.cpp`](../../src/mqtt_manager.cpp) (`publishAlert`), [`data/app.js`](../../data/app.js) (`renderPhOffsetStaleBanner`)
 - Sentinelles : `tools/check_ph_stale_text_parity.sh`, `tools/check_ph_stale_alert_emitted.sh`, `tools/check_ph_unusual_alert_head.sh`, `tools/check_ph_stale_banner_vectors.sh`
 - Tests : `test/test_native_ph_stale_message/`, `test/ph_stale_banner_vectors.js`
-- Spec : [`specs/features/doing/feature-170-retirer-la-confirmation-de-correction-ph.md`](../../specs/features/doing/feature-170-retirer-la-confirmation-de-correction-ph.md)
+- Spec : [`specs/features/doing/feature-170-retirer-la-confirmation-de-correction-ph.md`](../../specs/features/done/feature-170-retirer-la-confirmation-de-correction-ph.md)

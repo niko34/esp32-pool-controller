@@ -366,6 +366,21 @@ jobs:
       - name: Contrôle des vecteurs du bouton de suppression de correction pH
         run: ./tools/check_ph_tune_remove_vectors.sh
 
+  ph-card-permanent-vectors:
+    name: Carte de correction pH permanente et friction du geste destructif (bug-201)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # Même script en local (`./tools/check_ph_card_permanent_vectors.sh`). Protège ce
+      # qu'aucun test de logique pure ne voit : la carte hors du péage de maintenance
+      # (mais gardant `.flow-maintenance`), l'ordre des nœuds, le focus, le seuil lu sur
+      # la clé servie, les deux textes de friction, et le fait que refus et
+      # avertissement feature-168 (C8) restent deux rendus distincts.
+      - name: Contrôle des vecteurs de la carte de correction pH permanente
+        run: ./tools/check_ph_card_permanent_vectors.sh
+
   ph-stale-alert-emitted:
     name: L'alerte « correction à vérifier » est émise au bon endroit (feature-170, V6b)
     runs-on: ubuntu-latest

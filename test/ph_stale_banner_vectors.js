@@ -61,6 +61,9 @@ const parts = [
   extractBalancedFromAnchor(src, "const PH_OFFSET_THRESHOLDS_FALLBACK = Object.freeze(", "(", ")").text + ";",
   line(/^\s*let _phOffsetThresholds = .*;$/m, "let _phOffsetThresholds"),
   fn("_applyPhOffsetThresholds", "(cfg)"),
+  // bug-201 (a11y) : les rendus n'écrivent plus que sur changement, via ces deux helpers.
+  fn("_setTextIfChanged", "(el, text)"),
+  fn("_setHiddenIfChanged", "(el, hidden)"),
   fn("_fmtPhOffset2", "(v)"),
   fn("_fmtPhStaleDate", "(epoch)"),
   fn("renderPhOffsetStaleBanner", "(cfg)"),
@@ -342,6 +345,42 @@ for (const cause of ["boot", "expiration"]) {
 check("feature-170 (C28) sans bandeau : ligne visible même avec une cause servie",
       applied({ ph_offset: 1.20, ph_offset_epoch: OFF, ph_offset_stale: false,
                 ph_offset_stale_cause: "calibration" }).hidden, false);
+
+// ============================================================================
+// bug-201 (a11y) — ⛔ un texte n'est écrit QUE s'il a changé, ⛔ `hidden` n'est
+// rebasculé que si l'état change : sinon un lecteur d'écran relit l'alerte à
+// chaque rafraîchissement. On COMPTE les écritures sur un second rendu identique.
+// ============================================================================
+{
+  const { els, api } = makeDom();
+  const writes = { fait: 0, acte: 0, banner: 0, applied: 0 };
+  const watch = (el, key, prop) => {
+    let v = el[prop];
+    Object.defineProperty(el, prop, { get: () => v, set: (x) => { writes[key]++; v = x; }, configurable: true });
+  };
+  watch(els["#ph_tune_stale_fait"], "fait", "textContent");
+  watch(els["#ph_tune_stale_acte"], "acte", "textContent");
+  watch(els["#ph_tune_stale_banner"], "banner", "hidden");
+  const cfg = base({ ph_offset_stale_cause: "calibration", ph_cal_epoch: CAL, ph_offset_epoch: OFF });
+  api.renderBanner(cfg);
+  const first = { ...writes };
+  api.renderBanner(cfg);
+  api.renderBanner(cfg);
+  check("bug-201 : 1er rendu = une écriture de chaque", [first.fait, first.acte, first.banner], [1, 1, 1]);
+  check("bug-201 : rendus identiques suivants = AUCUNE écriture (texte ni hidden)", { ...writes }, first);
+  api.renderBanner(base({ ph_offset_stale_cause: "calibration", ph_cal_epoch: CAL + 86400, ph_offset_epoch: OFF }));
+  check("bug-201 : le texte change => réécrit (fait seul)", [writes.fait, writes.acte], [2, 1]);
+}
+{
+  const { els, api } = makeDom();
+  const el = els["#ph_tune_applied"];
+  api.renderApplied({ ph_offset: 1.20, ph_offset_epoch: OFF });
+  const nodes1 = el.nodes;
+  api.renderApplied({ ph_offset: 1.20, ph_offset_epoch: OFF });
+  check("bug-201 : ligne de fait identique => non reconstruite", el.nodes === nodes1, true);
+  api.renderApplied({ ph_offset: 1.30, ph_offset_epoch: OFF });
+  check("bug-201 : ligne de fait modifiée => reconstruite", el.textContent, "Correction +1,30 pH — posée le 16/10/2026");
+}
 
 if (failures > 0) {
   console.error(`\n${failures} vecteur(s) en échec.`);

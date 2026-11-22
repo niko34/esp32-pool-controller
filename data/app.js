@@ -2581,6 +2581,17 @@
     return v.toFixed(2).replace(".", ",");
   }
 
+  // bug-201 (a11y) : ⛔ n'écrire un texte QUE s'il a changé, ⛔ ne rebasculer `hidden`
+  // que si l'état change — chaque écriture refait relire la région aria-live (défaut de
+  // relecture toutes les 30 s, déjà corrigé ailleurs par bug-179). On compare à l'ÉTAT DU
+  // DOM, jamais à une copie mémorisée.
+  function _setTextIfChanged(el, text) {
+    if (el && el.textContent !== text) el.textContent = text;
+  }
+  function _setHiddenIfChanged(el, hidden) {
+    if (el && el.hidden !== hidden) el.hidden = hidden;
+  }
+
   function renderPhOffsetStaleBanner(cfg) {
     const banner = $("#ph_tune_stale_banner");
     if (!banner) return;
@@ -2592,7 +2603,7 @@
     // lectures d'une même donnée ne doivent pas avoir deux forces de garde.
     const offset = (typeof cfg?.ph_offset === "number" && isFinite(cfg.ph_offset)) ? cfg.ph_offset : 0;
     const stale = (cfg?.ph_offset_stale === true) && (offset !== 0);
-    if (!stale) { banner.hidden = true; return; }
+    if (!stale) { _setHiddenIfChanged(banner, true); return; }
     const faitEl = $("#ph_tune_stale_fait");
     const acteEl = $("#ph_tune_stale_acte");
     const eyebrowEl = $("#ph_tune_stale_eyebrow");
@@ -2648,10 +2659,10 @@
       fait = "L'appareil signale cette correction comme à revérifier.";
       etalonnageChange = false;
     }
-    if (eyebrowEl) eyebrowEl.hidden = !etalonnageChange;
-    if (faitEl) faitEl.textContent = fait;
-    if (acteEl) acteEl.textContent = acte;
-    banner.hidden = false;
+    _setHiddenIfChanged(eyebrowEl, !etalonnageChange);
+    _setTextIfChanged(faitEl, fait);
+    _setTextIfChanged(acteEl, acte);
+    _setHiddenIfChanged(banner, false);
   }
 
   // feature-170 (C29) : date d'affichage « 16/10/2026 », ou null si l'horloge
@@ -2691,25 +2702,31 @@
     const el = $("#ph_tune_applied");
     if (!el) return;
     const offset = (typeof cfg?.ph_offset === "number" && isFinite(cfg.ph_offset)) ? cfg.ph_offset : 0;
-    if (offset === 0) { el.hidden = true; el.replaceChildren(); return; }
-    if (_phStaleBannerCarriesFact(cfg)) { el.hidden = true; el.replaceChildren(); return; }
+    // bug-201 (a11y) : la ligne de fait n'a AUCUN aria-live (c'est un fait, lu dans l'ordre
+    // de la page) ; on ne la réécrit tout de même que si elle a changé.
+    if (offset === 0 || _phStaleBannerCarriesFact(cfg)) {
+      _setHiddenIfChanged(el, true);
+      if (el.textContent !== "") el.replaceChildren();
+      return;
+    }
     const d = _fmtPhStaleDate(cfg?.ph_offset_epoch);
+    const v = _fmtPhOffset2(offset);
+    const tail = " pH — " + (d === null ? "date de pose inconnue" : "posée le " + d);
+    if (el.hidden === false && el.textContent === "Correction " + v + tail) return;
     const strong = document.createElement("strong");
-    strong.textContent = _fmtPhOffset2(offset);
+    strong.textContent = v;
     el.replaceChildren(
       document.createTextNode("Correction "),
       strong,
-      document.createTextNode(" pH — " + (d === null ? "date de pose inconnue" : "posée le " + d))
+      document.createTextNode(tail)
     );
-    el.hidden = false;
+    _setHiddenIfChanged(el, false);
   }
 
   function bindPhOffsetStaleBanner() {
-    $("#ph_tune_stale_cancel_btn")?.addEventListener("click", async () => {
-      const res = await sendConfigDetailed({ ph_offset: 0 });
-      if (res.ok) { showToast("Correction remise à zéro", "success"); loadConfig(); }
-      else showToast("Échec de la remise à zéro — " + (res.message || res.error), "error");
-    });
+    // bug-201 (C49) : « Remettre à zéro » (#ph_tune_stale_cancel_btn) est SUPPRIMÉ du
+    // bandeau — son écouteur avec lui. Le seul chemin destructif de la carte est
+    // « Supprimer la correction » (renderPhTuneRemoveRow / bindPhTuneRemoveRow).
     $("#ph_tune_stale_keep_btn")?.addEventListener("click", async () => {
       const current = (typeof window._config?.ph_offset === "number") ? window._config.ph_offset : 0;
       // ⚠️ RE-ENVOYER LA VALEUR COURANTE N'EST PAS UNE REDONDANCE, NE PAS
@@ -2731,10 +2748,17 @@
   }
 
   // feature-157 : bouton « Supprimer la correction », distinct du pas-à-pas.
-  // MASQUAGE MUTUEL avec la bannière « correction caduque » ci-dessus : si
-  // elle est affichée, elle seule agit (ses deux boutons couvrent déjà le cas
-  // de la suppression) — pas de doublon visuel (B3).
+  // bug-201 (C49/C48) : ⛔ PLUS de masquage mutuel avec la bannière « correction à
+  // vérifier ». Le terme `!staleBannerShown` est RETIRÉ — dans le MÊME geste que la
+  // suppression de « Remettre à zéro » du bandeau : sans cela, bandeau affiché, l'écran
+  // n'offrirait que « Je l'ai vérifiée — garder » pendant que son texte dit « …ou
+  // remettez la correction à zéro ». ⭐ Un bandeau qui demande de vérifier et n'offre que
+  // de conserver pousse à la confirmation sans vérification. Condition : offset !== 0
+  // seule. UN SEUL contrôle destructif existe sur la carte, toujours au même endroit.
   function renderPhTuneRemoveRow(cfg) {
+    // bug-201 (C47) : un état armé ne survit JAMAIS à un re-rendu ni à un retour de
+    // /get-config (les nombres du texte de friction seraient périmés).
+    _phTuneRemoveDisarm(false);
     // feature-170 (C28) : l'étiquette « Correction actuelle : … pH » est FUSIONNÉE
     // dans #ph_tune_applied (renderPhTuneAppliedLine). ⛔ Ne PAS réintroduire
     // `label` dans la garde ci-dessous : sortir sur un élément supprimé ferait
@@ -2745,19 +2769,111 @@
     // Offset absent ou non numérique => traité comme 0 => bouton et phrase
     // masqués (jamais un bouton qui supprimerait une correction inconnue).
     const offset = (typeof cfg?.ph_offset === "number" && isFinite(cfg.ph_offset)) ? cfg.ph_offset : 0;
-    const staleBannerShown = (cfg?.ph_offset_stale === true) && (offset !== 0);
-    const show = (offset !== 0) && !staleBannerShown;
-    btn.hidden = !show;
-    hint.hidden = !show;
+    const show = (offset !== 0);
+    _setHiddenIfChanged(btn, !show);
+    _setHiddenIfChanged(hint, !show);
+  }
+
+  // bug-201 (C41) : la friction se déclenche au-delà de ph_offset_unusual_abs, clé SERVIE
+  // (⛔ jamais 0,50 en dur, ADR-0100), reçue en paramètre. En dessous : AUCUNE
+  // confirmation. ⚠️ Écrit `!(|o| <= seuil)` et non `|o| > seuil` : un seuil non fini
+  // donne la friction, pas son absence (échec côté prudent).
+  function phTuneRemoveNeedsFriction(offset, unusualAbs) {
+    return !(Math.abs(offset) <= unusualAbs);
+  }
+
+  // bug-201 (C45/C46) : texte de friction, en segments {text, strong}. DEUX variantes
+  // choisies sur le SIGNE de la correction : retirer une correction positive fait lire
+  // plus BAS (l'acide s'arrête), retirer une négative fait lire plus HAUT (acide en
+  // trop, chlore possiblement suspendu) — ⛔ jamais la variante positive aux deux
+  // signes. Dernière phrase gelée dans les deux.
+  // Les deux nombres : « il lira » = phValueRaw, « au lieu de » = ph (les deux SERVIS,
+  // même étage de filtrage, ⛔ aucune arithmétique client, ⛔ jamais `phRaw` : instantané
+  // EZO, jusqu'à 0,13 d'écart en quelques minutes). Repli OBLIGATOIRE si l'un des deux
+  // manque (filtration arrêtée = état réel de l'appareil) : texte bâti sur le seul
+  // ph_offset ; ⛔ la friction ne disparaît jamais faute de mesure.
+  function phTuneRemoveWarningParts(offset, ph, phValueRaw) {
+    const positive = offset > 0;
+    const consequence = positive
+      ? "il cessera d'ajouter de l'acide et laissera le pH monter."
+      : "il ajoutera de l'acide en trop et pourra arrêter le chlore en croyant le pH trop haut.";
+    const tail = " Pour la remettre, il faudra refaire un test manuel.";
+    const measured = (typeof ph === "number" && isFinite(ph))
+      && (typeof phValueRaw === "number" && isFinite(phValueRaw));
+    if (measured) {
+      return [
+        { text: "Sans cette correction, l'appareil lira " },
+        { text: _fmt2(phValueRaw), strong: true },
+        { text: " au lieu de " },
+        { text: _fmt2(ph), strong: true },
+        { text: " : " + consequence + tail },
+      ];
+    }
+    return [
+      { text: "Sans cette correction, l'appareil lira " },
+      { text: _fmt2(Math.abs(offset)), strong: true },
+      { text: " pH de " + (positive ? "moins" : "plus") + " qu'aujourd'hui : " + consequence + tail },
+    ];
+  }
+
+  let _phTuneRemoveArmed = false;
+
+  // bug-201 (C47) : sortie du mode armé — TOUJOURS vers le défaut sûr (rien n'est supprimé).
+  // `restoreFocus` rend le focus au bouton d'origine (Échap, « Ne rien changer ») ; sinon
+  // seulement si le focus était dans le bloc qui disparaît. Aucun effet hors mode armé.
+  function _phTuneRemoveDisarm(restoreFocus) {
+    if (!_phTuneRemoveArmed) return;
+    _phTuneRemoveArmed = false;
+    const box = $("#ph_tune_remove_confirm");
+    const txt = $("#ph_tune_remove_confirm_text");
+    const btn = $("#ph_tune_remove_btn");
+    const hint = $("#ph_tune_remove_hint");
+    const focusInside = !!box && typeof document !== "undefined"
+      && typeof box.contains === "function" && box.contains(document.activeElement);
+    _setHiddenIfChanged(box, true);
+    if (txt && typeof txt.replaceChildren === "function") txt.replaceChildren();
+    _setHiddenIfChanged(btn, false);
+    _setHiddenIfChanged(hint, false);
+    if (btn && (restoreFocus || focusInside) && typeof btn.focus === "function") btn.focus();
+  }
+
+  // bug-201 (C47) : le bouton est REMPLACÉ sur place par le bloc (texte inerte, puis
+  // « Ne rien changer », puis le destructif). Focus sur « Ne rien changer » : une barre
+  // d'espace parasite ne détruit rien. Pas de région live : on déplace le focus.
+  function _phTuneRemoveArm() {
+    const box = $("#ph_tune_remove_confirm");
+    const txt = $("#ph_tune_remove_confirm_text");
+    const btn = $("#ph_tune_remove_btn");
+    const hint = $("#ph_tune_remove_hint");
+    const cancel = $("#ph_tune_remove_cancel_btn");
+    const offset = window._config?.ph_offset;
+    if (!box || !txt || !btn || !cancel) return false;
+    if (typeof offset !== "number" || !isFinite(offset) || offset === 0) return false;
+    const parts = phTuneRemoveWarningParts(offset, latestSensorData?.ph, latestSensorData?.phValueRaw);
+    txt.replaceChildren(...parts.map((part) => {
+      if (!part.strong) return document.createTextNode(part.text);
+      const el = document.createElement("strong");
+      el.textContent = part.text;
+      return el;
+    }));
+    _phTuneRemoveArmed = true;
+    btn.hidden = true;
+    if (hint) hint.hidden = true;
+    box.hidden = false;
+    cancel.focus();
+    return true;
   }
 
   // ⛔ Ne PAS passer par /tune-ph-offset : il exige 10 min de filtration et une
   // sonde étalonnée — absurde pour RETIRER une correction. /save-config est le
   // contrat de stockage, déjà validé (gate pool-chemistry, gate 2 feature-156).
-  // ⛔ Aucune confirmation (verdict du gate) : geste réversible qui va vers le
-  // défaut sûr (mesure nue de la sonde).
+  // feature-157 disait « aucune confirmation » ; bug-201 (C41) le RÉVISE : sous
+  // ph_offset_unusual_abs toujours aucune confirmation, au-delà un second geste
+  // explicite (cf. _phTuneRemoveArm) — « Corriger » et « Je l'ai vérifiée — garder »
+  // n'en reçoivent JAMAIS (les gestes vertueux ne se frictionnent pas).
   function bindPhTuneRemoveRow() {
-    $("#ph_tune_remove_btn")?.addEventListener("click", async () => {
+    let busy = false;
+    const doRemove = async () => {
       // sendConfigDetailed et PAS sendConfig : « réessayez » invite à répéter un
       // geste qui échouera à l'identique si le contrôleur est injoignable. Le
       // refus de PLAGE est hors d'atteinte ici (0 est toujours valide), mais la
@@ -2767,11 +2883,77 @@
       // par le gate).
       if (res.ok) {
         showToast("Correction supprimée — la mesure affichée est celle de la sonde.", "success");
-        loadConfig();
+        // ⚠️ bug-201 : `await` OBLIGATOIRE, course relevée par les tests. Sans lui,
+        // le `finally` de l'appelant désarme AVANT que /get-config soit revenu :
+        // `window._config.ph_offset` porte encore l'ANCIENNE valeur, donc
+        // « Supprimer la correction » se RÉAFFICHE une fraction de seconde et un
+        // appui à cet instant réarmerait la friction avec des nombres PÉRIMÉS.
+        // ⛔ Aucun envoi involontaire n'était possible (la friction restait en
+        // place), mais un écran qui ment un instant sur un geste destructif n'a
+        // pas sa place ici. Avec l'attente, la correction vaut 0 au désarmement,
+        // donc le bouton est masqué (`offset !== 0`).
+        await loadConfig();
       } else {
         showToast("Échec de la suppression — " + (res.message || res.error), "error");
       }
+    };
+    $("#ph_tune_remove_btn")?.addEventListener("click", async () => {
+      if (busy) return;
+      const offset = window._config?.ph_offset;
+      // ⚠️ bug-201, relevé en revue : la garde de phTuneRemoveNeedsFriction est
+      // écrite pour échouer VERS la friction (`!(|o| <= seuil)`) — ⛔ ce site
+      // d'appel l'annulait en ne la consultant QUE sur un nombre fini, donc un
+      // `ph_offset` non numérique tombait DIRECTEMENT sur la suppression, sans
+      // friction. ⇒ Inversé : hors nombre fini, on arme (et _phTuneRemoveArm()
+      // rend false sans rien faire) ⇒ le clic devient un NO-OP, défaut sûr.
+      if (!(typeof offset === "number" && isFinite(offset))
+          || phTuneRemoveNeedsFriction(offset, _phOffsetThresholds.unusualAbs)) {
+        _phTuneRemoveArm();
+        return;
+      }
+      busy = true;
+      // ⚠️ bug-201, relevé en revue : le chemin « échec métier » (res.ok faux)
+      // est propre, ⛔ pas le chemin EXCEPTION (réseau coupé) — il remontait en
+      // rejet non géré depuis un handler async.
+      try { await doRemove(); }
+      catch (e) { showToast("Échec de la suppression — réseau indisponible", "error"); }
+      finally { busy = false; }
     });
+    $("#ph_tune_remove_cancel_btn")?.addEventListener("click", () => {
+      // ⚠️ bug-201, relevé en revue : ⛔ « Ne rien changer » ne doit PAS refermer
+      // le bloc pendant l'envoi. Sinon l'utilisateur croit avoir annulé alors que
+      // la suppression part quand même — ⭐ le MÊME défaut d'honnêteté d'écran que
+      // la course corrigée par `await loadConfig()`, à trois lignes de là.
+      if (busy) return;
+      _phTuneRemoveDisarm(true);
+    });
+    const confirmBtn = $("#ph_tune_remove_confirm_btn");
+    confirmBtn?.addEventListener("click", async () => {
+      if (busy) return;
+      busy = true;
+      confirmBtn.disabled = true;
+      try { await doRemove(); }
+      catch (e) { showToast("Échec de la suppression — réseau indisponible", "error"); }
+      finally {
+        busy = false;
+        confirmBtn.disabled = false;
+        _phTuneRemoveDisarm(false);
+      }
+    });
+    // Échap et clic extérieur referment — ils vont au DÉFAUT SÛR. Ne suffit pas : le
+    // re-rendu de la carte et le retour de /get-config désarment aussi (renderPhTuneRemoveRow).
+    // Les trames capteurs (renderPhTuneCard) NE désarment PAS : elles tombent toutes les
+    // quelques secondes, l'utilisateur n'aurait jamais le temps de lire la phrase ; le texte
+    // est figé à l'armement.
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && _phTuneRemoveArmed) _phTuneRemoveDisarm(true);
+    });
+    document.addEventListener("click", (e) => {
+      if (!_phTuneRemoveArmed) return;
+      if (e.target?.closest?.("#ph_tune_remove_confirm, #ph_tune_remove_btn")) return;
+      _phTuneRemoveDisarm(false);
+    });
+    window.addEventListener("hashchange", () => _phTuneRemoveDisarm(false));
   }
 
   // feature-168 : plus de borne sur la correction (décision utilisateur du
@@ -3036,14 +3218,28 @@
     const moreEl = $("#ph_tune_blocked_more");
     const detailEl = $("#ph_tune_blocked_detail");
     const showWarning = !blockedText && preview.mesureIndisponible === false && preview.inhabituel;
+    // bug-201 (C51) : DEUX RENDUS DISTINCTS. Les trois refus bloquants vont dans
+    // #ph_tune_refus (.field__hint, adjacent au bouton « Corriger » qu'ils désactivent,
+    // textes mot pour mot) — écrits seulement s'ils ont changé (a11y). L'avertissement
+    // feature-168 (C8) reste, lui, un callout--warn avec chapeau et repliable : ⛔ ne
+    // jamais les ramener sur le même rendu (dégrader l'un dégraderait l'autre en silence).
+    const refusEl = $("#ph_tune_refus");
+    // ⚠️ bug-201 (C51), relevé en revue : l'ORDRE compte. `#ph_tune_refus` porte
+    // role="status" (donc aria-live implicite) — écrire PENDANT qu'il est `hidden`
+    // (display:none ⇒ hors de l'arbre d'accessibilité) ⛔ n'annonce RIEN, et la
+    // condition exige « annoncé à l'apparition ». ⇒ On LÈVE `hidden` d'abord sur la
+    // transition masqué→visible, puis on écrit ; dans l'autre sens on écrit (vide)
+    // avant de masquer. L'écriture reste conditionnelle (⛔ pas de relecture à
+    // chaque trame).
+    if (blockedText) {
+      _setHiddenIfChanged(refusEl, false);
+      _setTextIfChanged(refusEl, blockedText);
+    } else {
+      _setTextIfChanged(refusEl, "");
+      _setHiddenIfChanged(refusEl, true);
+    }
     if (blockedEl) {
-      if (blockedText) {
-        // Refus bloquant : texte simple, pas de chapeau ni de détail repliable.
-        if (eyebrowEl) eyebrowEl.hidden = true;
-        if (leadEl) leadEl.textContent = blockedText;
-        if (moreEl) moreEl.hidden = true;
-        blockedEl.hidden = false;
-      } else if (showWarning) {
+      if (!blockedText && showWarning) {
         // Avertissement C8, scindé lead (toujours visible) + détail repliable.
         // ⛔ TEXTES IMPOSÉS MOT POUR MOT par le gate pool-chemistry (feature-168,
         // 3e passe pour la variante pH− ; C16 pour la variante pH+ ajoutée
@@ -3060,21 +3256,21 @@
         const isPhPlus = (window._config?.ph_correction_type === "ph_plus");
         const unusualStr = _fmt2(_phOffsetThresholds.unusualAbs);
         if (eyebrowEl) {
-          eyebrowEl.hidden = false;
-          eyebrowEl.textContent = impasseAffichee ? "⚠ Impasse possible" : "Avertissement";
+          _setHiddenIfChanged(eyebrowEl, false);
+          _setTextIfChanged(eyebrowEl, impasseAffichee ? "⚠ Impasse possible" : "Avertissement");
           eyebrowEl.classList.toggle("callout__eyebrow--danger", impasseAffichee);
         }
         if (leadEl) {
-          leadEl.textContent = isPhPlus
+          _setTextIfChanged(leadEl, isPhPlus
             ? ("Au-delà de " + unusualStr + " pH, l'appareil régule sur une valeur qu'il ne "
               + "mesure pas : si cette correction est fausse de 0,3 pH, l'eau réelle sera "
               + "0,3 pH plus basique que la consigne.")
             : ("Au-delà de " + unusualStr + " pH, l'appareil régule sur une valeur qu'il ne "
               + "mesure pas : si cette correction est fausse de 0,3 pH, l'eau réelle sera "
-              + "0,3 pH plus acide que la consigne.");
+              + "0,3 pH plus acide que la consigne."));
         }
         if (detailEl) {
-          detailEl.textContent = isPhPlus
+          _setTextIfChanged(detailEl, isPhPlus
             ? ("Un écart de cette ampleur vient de l'installation — ce "
               + "réglage ne vaut que ce que vaut votre test. Rien ne borne cette correction ; "
               + "le seul filet restant est le refus d'alcaliniser au-dessus de "
@@ -3092,14 +3288,21 @@
               + ", ce refus survient avant la consigne : l'appareil arrêtera "
               + "d'acidifier sans l'avoir atteinte. Revérifiez par un test manuel après tout "
               + "étalonnage, toute intervention sur la pompe de filtration, et au moins une "
-              + "fois par mois.");
+              + "fois par mois."));
         }
-        if (moreEl) moreEl.hidden = false;
-        blockedEl.hidden = false;
+        _setHiddenIfChanged(moreEl, false);
+        _setHiddenIfChanged(blockedEl, false);
       } else {
-        if (leadEl) leadEl.textContent = "";
-        if (detailEl) detailEl.textContent = "";
-        blockedEl.hidden = true;
+        _setTextIfChanged(leadEl, "");
+        _setTextIfChanged(detailEl, "");
+        // ⚠️ bug-201 (C51), relevé en revue : le chapeau et le repliable doivent
+        // être remis à l'état neutre EUX AUSSI. Sinon, après un passage par
+        // l'avertissement feature-168 (C8), l'eyebrow garde « Avertissement » et
+        // le <details> reste ouvert dans un conteneur masqué — ⛔ exactement le
+        // « texte qui reste dans l'élément inactif » que la condition interdit.
+        if (eyebrowEl) { _setTextIfChanged(eyebrowEl, ""); _setHiddenIfChanged(eyebrowEl, true); }
+        _setHiddenIfChanged(moreEl, true);
+        _setHiddenIfChanged(blockedEl, true);
       }
     }
 
@@ -3109,7 +3312,7 @@
     // « C8 est strictement plus fort sur le même propos — empiler ne protège
     // pas, ça dilue. »
     const stakesEl = $("#ph_tune_stakes");
-    if (stakesEl) stakesEl.hidden = showWarning;
+    _setHiddenIfChanged(stakesEl, showWarning);
 
     const submitBtn = $("#ph_tune_submit_btn");
     // ⚠️ `!_phTuneTouched` EST UNE GARDE, PAS UN CONFORT (relevé en revue).
@@ -7654,10 +7857,18 @@
     if (_kpiFailed) {
       // Bande VIDÉE et légende explicite ; la ligne de valeur, elle, est
       // conservée (elle vient de /data ou du WS, pas de /get-kpi).
-      if (captionEl) captionEl.textContent = "Historique indisponible";
+      // bug-201 : sur le héros pH la légende « Historique indisponible » est RETIRÉE (la carte
+      // Historique, plus bas, montre déjà son graphique vide) : légende masquée, bande déjà
+      // vidée — ni « 7 derniers jours » (qui se lirait « rien d'enregistré »), ni aveu répété.
+      // L'ORP, hors lot, garde son aveu.
+      if (captionEl && captionEl.id === "ph-ttt-caption") {
+        captionEl.hidden = true;
+      } else if (captionEl) {
+        captionEl.textContent = "Historique indisponible";
+      }
       return;
     }
-    if (captionEl) captionEl.textContent = "7 derniers jours — le plus récent à droite";
+    if (captionEl) { captionEl.hidden = false; captionEl.textContent = "7 derniers jours — le plus récent à droite"; }
 
     // ALIGNEMENT PAR DATE, jamais par ordre du tableau.
     // -------------------------------------------------
@@ -7840,10 +8051,10 @@
       // État 0 : deux situations très différentes. L'heure système tranche.
       if (data.time_synced === false) {
         value = "indicateur suspendu";
-        detail = "heure système non synchronisée — aucune mesure enregistrée";
+        detail = "heure non synchronisée";
       } else {
         value = "en attente du départ";
-        detail = "le chronomètre démarre au premier relevé valide, filtration en marche";
+        detail = "";
       }
     }
 
@@ -8283,7 +8494,10 @@
     // libellé retenu par l'utilisateur n'accuse AUCUNE pièce et renvoie au
     // détail (3 pastilles) pour savoir lequel des trois critères est en cause.
     if (acidJudg === 'hors' || baseJudg === 'hors' || zeroJudg === 'hors') {
-      return { cls: 'bad', label: 'Calibré · critère hors norme' };
+      // bug-201 : renommée « Étalonnage : critère hors norme » (nomme le bon objet, lève la
+      // collision avec la ligne « Correction … » de la carte permanente). ⛔ Reste ROUGE :
+      // un zéro d'électrode dégradé déplace la mesure qui décide des injections d'acide.
+      return { cls: 'bad', label: 'Étalonnage : critère hors norme' };
     }
     // C2 (gate, bloquant) : le chip ne peut être vert QUE si les TROIS
     // critères sont mesurés ET dans la plage. Un seul 'indisponible' interdit
@@ -10743,8 +10957,13 @@
       viewId: "view-ph", triggerBtnId: "ph_cal_trigger_btn", closeBtnId: "ph_cal_close_btn",
       backTopId: "ph-maintenance-back-top", backBottomId: "ph-maintenance-back-bottom",
       announceId: "ph-maintenance-announce", label: "pH",
-      cardIds: ["ph-card-calibration", "ph-card-tune"],
-      subMaintenance: "Calibration de la sonde et correction de la mesure",
+      // bug-201 (C40) : "ph-card-tune" RETIRÉE de cette liste — la carte « Correction
+      // manuelle de la mesure » est PERMANENTE. ⛔ Ne retirer QUE l'entrée, jamais la classe
+      // `.flow-maintenance` de la carte (index.html) : sans elle la règle CSS du flux la
+      // masquerait pendant l'étalonnage, quand les boutons servent. L'étalonnage EZO reste
+      // ici : il touche la sonde, son gel du dosage est légitime.
+      cardIds: ["ph-card-calibration"],
+      subMaintenance: "Étalonnage de la sonde",
       // bug-160 (volet 2, REFONTE) : POST /calibration/enter ÉMIS ICI
       // UNIQUEMENT (geste humain, seul capable de basculer la régulation
       // en Manuel côté firmware).

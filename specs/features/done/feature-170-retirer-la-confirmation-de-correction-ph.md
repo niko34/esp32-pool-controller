@@ -444,6 +444,14 @@ chaque mise à jour OTA — **et sous la même clé MQTT `ph_offset_stale` que c
       pas ; le toast de `app.js:2648` doit rester cohérent avec le nouveau libellé.
       ⛔ **Rappel de périmètre** : tant que la carte reste derrière le flux maintenance, ce bouton
       ne porte **aucune friction** — c'est **bug-201 (`C40`…)** qui doit la poser, ⛔ pas ce lot.
+
+      ⚠️ **AMENDÉE par `bug-201 (C49)` le 2026-11-22, par le même gate.** « Remettre à zéro » est
+      **supprimé du bandeau** : le zéro de l'EZO est une **grandeur différente**, dégradée sur cet
+      appareil (128 mV, sain < 15), et le bouton est à deux cartes de « Calibration de la sonde
+      pH » — ⛔ un utilisateur pouvait croire faire un geste de maintenance en **supprimant sa
+      correction de +1,20**. ⭐ **L'ESPRIT de `C30` est intégralement préservé** : le destructif
+      reste second, reste `btn--danger`, reste précédé du choix vertueux. ⛔ Seul son
+      **EMPLACEMENT** change — plus un geste destructif *par bloc*, mais **un par carte**.
 - [ ] **C31 — Le bandeau doit se voir comme NEUF.** Il hérite de la boîte que l'utilisateur a
       appris, en un mois, à ignorer. ⛔ Ne pas inventer de 3ᵉ couleur (daltonisme) — le chapeau
       `.callout__eyebrow` existe et porte le sens par le **mot**. Captures avant/après à 390 px.

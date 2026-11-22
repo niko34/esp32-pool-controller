@@ -65,7 +65,8 @@
 //   - `renderPhTuneRemoveRow` : offset nul (absent/0/non numérique/NaN/
 //     Infinity) ⇒ ligne, bouton et conseil masqués ; offset non nul sans
 //     bannière caduque ⇒ tout affiché ; offset non nul AVEC
-//     `ph_offset_stale: true` ⇒ MASQUAGE MUTUEL (tout masqué) ;
+//     `ph_offset_stale: true` ⇒ bouton AFFICHÉ (bug-201 (C49) : plus de masquage
+//     mutuel, c'est désormais l'unique chemin destructif de la carte) ;
 //     `ph_offset_stale` vrai mais pas strictement `=== true` (ex. `1`) ⇒
 //     n'active PAS le masquage ; DOM partiellement absent ⇒ garde
 //     défensive, aucun élément restant touché.
@@ -92,6 +93,22 @@ const fmtPhSource = extractBalancedFromAnchor(
   "}"
 ).text;
 
+// bug-201 : renderPhTuneRemoveRow désarme l'état de friction et n'écrit `hidden` que sur
+// changement — ses dépendances sont extraites AUSSI, jamais bouchonnées (un bouchon
+// ne prouverait rien du désarmement).
+const fn2 = (sig) => extractBalancedFromAnchor(appJsSource, sig, "{", "}").text;
+const depsSource = [
+  fn2("function _fmt2(v) {"),
+  fn2("function _setHiddenIfChanged(el, hidden) {"),
+  fn2("function phTuneRemoveNeedsFriction(offset, unusualAbs) {"),
+  fn2("function phTuneRemoveWarningParts(offset, ph, phValueRaw) {"),
+  "let _phTuneRemoveArmed = false;",
+  fn2("function _phTuneRemoveDisarm(restoreFocus) {"),
+].join("\n");
+if ((appJsSource.match(/^ *let _phTuneRemoveArmed = false;$/gm) || []).length !== 1) {
+  throw new Error("déclaration `let _phTuneRemoveArmed` introuvable ou ambiguë dans data/app.js");
+}
+
 const renderRemoveRowSource = extractBalancedFromAnchor(
   appJsSource,
   "function renderPhTuneRemoveRow(cfg) {",
@@ -116,8 +133,15 @@ function buildRemoveRow(dollarStub) {
   const factory = new Function("$", `
     "use strict";
     ${fmtPhSource}
+    ${depsSource}
     ${renderRemoveRowSource}
-    return { renderPhTuneRemoveRow };
+    return {
+      renderPhTuneRemoveRow,
+      phTuneRemoveNeedsFriction,
+      phTuneRemoveWarningParts,
+      armedFlag: () => _phTuneRemoveArmed,
+      forceArm: () => { _phTuneRemoveArmed = true; },
+    };
   `);
   return factory(dollarStub);
 }
@@ -126,7 +150,7 @@ let failures = 0;
 
 function check(label, actual, expected) {
   try {
-    assert.strictEqual(actual, expected, label);
+    assert.deepStrictEqual(actual, expected, label);
     console.log(`OK  ${label}`);
   } catch (e) {
     failures++;
@@ -266,24 +290,87 @@ check("_fmtPh(-Infinity ; signé) -> \"−Infinity\"", _fmtPh(-Infinity, true), 
 }
 
 // =============================================================================
-// Offset non nul AVEC ph_offset_stale===true -> MASQUAGE MUTUEL (B3) : la
-// bannière caduque couvre déjà le cas, pas de doublon visuel.
+// bug-201 (C49) : ⛔ PLUS de masquage mutuel. Bandeau « correction à vérifier »
+// affiché, « Supprimer la correction » RESTE visible : c'est désormais l'unique
+// chemin destructif de la carte (« Remettre à zéro » a quitté le bandeau). Sans
+// cela, le bandeau n'offrirait que « garder » — un bandeau qui demande de
+// vérifier et n'offre que de conserver pousse à la confirmation sans vérification.
 // =============================================================================
 
 {
   const el = renderWithCfg({ ph_offset: 0.3, ph_offset_stale: true });
-  check("offset 0,30 + bannière caduque -> bouton masqué (masquage mutuel)", el["#ph_tune_remove_btn"].hidden, true);
-  check("offset 0,30 + bannière caduque -> bouton masqué", el["#ph_tune_remove_btn"].hidden, true);
-  check("offset 0,30 + bannière caduque -> conseil masqué", el["#ph_tune_remove_hint"].hidden, true);
+  check("bug-201 (C49) offset 0,30 + bandeau -> bouton AFFICHÉ", el["#ph_tune_remove_btn"].hidden, false);
+  check("bug-201 (C49) offset 0,30 + bandeau -> conseil affiché", el["#ph_tune_remove_hint"].hidden, false);
 }
 
 {
-  // offset nul + stale=true : staleBannerShown exige offset!==0, donc reste
-  // false ici — mais show reste false aussi car offset===0. Même verdict
-  // (masqué), pour une raison structurellement différente : couvre
-  // l'occurrence "(offset !== 0)" DANS le calcul de staleBannerShown.
   const el = renderWithCfg({ ph_offset: 0, ph_offset_stale: true });
   check("offset 0 + ph_offset_stale=true -> masqué (offset nul l'emporte)", el["#ph_tune_remove_btn"].hidden, true);
+}
+
+// =============================================================================
+// bug-201 (C41) : seuil de friction. Lu depuis la clé SERVIE (paramètre), strict.
+// =============================================================================
+
+{
+  const { phTuneRemoveNeedsFriction: f } = buildRemoveRow(makeDom().dollar);
+  check("bug-201 (C41) |1,20| > 0,50 -> friction", f(1.2, 0.5), true);
+  check("bug-201 (C41) |−0,60| > 0,50 -> friction (le signe ne compte pas)", f(-0.6, 0.5), true);
+  check("bug-201 (C41) |0,50| = seuil -> AUCUNE friction (strict)", f(0.5, 0.5), false);
+  check("bug-201 (C41) |−0,30| < seuil -> AUCUNE friction", f(-0.3, 0.5), false);
+  check("bug-201 (C41) le seuil est LU : 0,60 -> 0,60 sans friction, 0,70 avec", [f(0.6, 0.6), f(0.7, 0.6)], [false, true]);
+  check("bug-201 (C41) seuil non fini -> friction (échec côté prudent)", [f(0.3, NaN), f(0.3, undefined)], [true, true]);
+}
+
+// =============================================================================
+// bug-201 (C45/C46) : texte de friction — deux variantes selon le SIGNE, les deux
+// nombres lus (phValueRaw puis ph), repli sur le seul ph_offset.
+// =============================================================================
+
+{
+  const { phTuneRemoveWarningParts: w } = buildRemoveRow(makeDom().dollar);
+  const flat = (parts) => parts.map((p) => p.text).join("");
+  const bold = (parts) => parts.filter((p) => p.strong).map((p) => p.text);
+  const POS = "Sans cette correction, l'appareil lira 6,10 au lieu de 7,30 : il cessera d'ajouter de l'acide et laissera le pH monter. Pour la remettre, il faudra refaire un test manuel.";
+  const NEG = "Sans cette correction, l'appareil lira 7,90 au lieu de 7,30 : il ajoutera de l'acide en trop et pourra arrêter le chlore en croyant le pH trop haut. Pour la remettre, il faudra refaire un test manuel.";
+  check("bug-201 (C45) variante POSITIVE mot pour mot", flat(w(1.2, 7.30, 6.10)), POS);
+  check("bug-201 (C46) positive : seuls les deux nombres sont en gras, phValueRaw d'abord", bold(w(1.2, 7.30, 6.10)), ["6,10", "7,30"]);
+  check("bug-201 (C45) variante NÉGATIVE mot pour mot", flat(w(-0.6, 7.30, 7.90)), NEG);
+  check("bug-201 (C45) la variante négative nomme l'acide en trop ET l'arrêt du chlore",
+        [/acide en trop/.test(flat(w(-0.6, 7.3, 7.9))), /arrêter le chlore/.test(flat(w(-0.6, 7.3, 7.9)))], [true, true]);
+  check("bug-201 (C45) la variante positive n'est JAMAIS servie à une correction négative",
+        /cessera d'ajouter/.test(flat(w(-0.6, 7.3, 7.9))), false);
+  check("bug-201 (C46) repli (ph null, phValueRaw null) positif",
+        flat(w(1.2, null, null)), "Sans cette correction, l'appareil lira 1,20 pH de moins qu'aujourd'hui : il cessera d'ajouter de l'acide et laissera le pH monter. Pour la remettre, il faudra refaire un test manuel.");
+  check("bug-201 (C46) repli négatif : « de plus »",
+        flat(w(-0.6, null, null)), "Sans cette correction, l'appareil lira 0,60 pH de plus qu'aujourd'hui : il ajoutera de l'acide en trop et pourra arrêter le chlore en croyant le pH trop haut. Pour la remettre, il faudra refaire un test manuel.");
+  check("bug-201 (C46) repli si UN SEUL des deux manque (ph seul)", flat(w(1.2, 7.3, null)).includes("1,20 pH de moins"), true);
+  check("bug-201 (C46) repli si UN SEUL des deux manque (raw seul, NaN)", flat(w(1.2, NaN, 6.1)).includes("1,20 pH de moins"), true);
+  check("bug-201 (C46) la friction ne contient jamais « NaN » ni « null » en repli",
+        /NaN|null|undefined/.test(flat(w(1.2, undefined, NaN))), false);
+}
+
+// =============================================================================
+// bug-201 (C47) : un état armé ne survit JAMAIS à un re-rendu / retour de /get-config.
+// =============================================================================
+
+{
+  const box = { hidden: false, contains: () => false };
+  const txt = { textContent: "x", replaceChildren() { this.textContent = ""; } };
+  const { elements, dollar } = makeDom({
+    "#ph_tune_remove_btn": { hidden: true, textContent: "" },
+    "#ph_tune_remove_hint": { hidden: true, textContent: "" },
+    "#ph_tune_remove_confirm": box,
+    "#ph_tune_remove_confirm_text": txt,
+  });
+  const api = buildRemoveRow(dollar);
+  api.forceArm();
+  check("bug-201 (C47) état armé (préparation)", api.armedFlag(), true);
+  api.renderPhTuneRemoveRow({ ph_offset: 1.2 });
+  check("bug-201 (C47) re-rendu => désarmé", api.armedFlag(), false);
+  check("bug-201 (C47) re-rendu => bloc refermé", box.hidden, true);
+  check("bug-201 (C47) re-rendu => texte vidé", txt.textContent, "");
+  check("bug-201 (C47) re-rendu => bouton de nouveau visible", elements["#ph_tune_remove_btn"].hidden, false);
 }
 
 // =============================================================================

@@ -907,8 +907,15 @@
               <div class="readout__value" id="ph_current_value" style="font-size:2rem;font-weight:700;line-height:1">--</div>
               <!-- feature-025 : ligne brute discrète (brut · maj) -->
               <div class="filter-sub" id="ph-filter-sub">brut -- · maj --</div>
-              <div class="muted small" style="margin-top:4px">MAJ auto toutes les 5 secondes</div>
-              <div class="chip-row">
+              <!-- bug-201 : « MAJ auto toutes les 5 secondes » retiré (dit la même chose que
+                   « maj … » de #ph-filter-sub juste au-dessus) — compensation de la carte
+                   permanente ajoutée plus bas. -->
+              <!-- bug-201 : la pastille d'état de la sonde (#ph-probe-chip) passe sur la ligne
+                   du bouton d'entrée en réglage, DANS la carte héros : le verdict
+                   « Étalonnage : critère hors norme » (rouge, il engage le dosage) doit se voir
+                   sans entrer en maintenance et sans défilement. ⛔ Elle ne descend pas sur
+                   #ph-card-calibration. feature-034 : chip calibration pH fusionné ici. -->
+              <div class="cal-trigger-row">
                 <button type="button" id="ph-probe-chip"
                         class="chip chip--probe chip--probe-unknown"
                         aria-haspopup="dialog" aria-controls="ph-probe-modal"
@@ -916,11 +923,7 @@
                   <span class="chip__dot" aria-hidden="true"></span>
                   <span class="chip__label" id="ph-probe-chip-label">Pente non disponible</span>
                 </button>
-                <!-- feature-034 : chip calibration pH fusionné dans #ph-probe-chip -->
-              </div>
-              <!-- feature-034 itération 3 (volet A) : bouton Calibrer la sonde sous la rangée des badges -->
-              <div class="cal-trigger-row">
-                <button class="btn btn--secondary" type="button" id="ph_cal_trigger_btn">Calibration et correction de la mesure</button>
+                <button class="btn btn--secondary" type="button" id="ph_cal_trigger_btn">Étalonnage de la sonde</button>
                 <span class="muted small" id="ph_cal_hint"></span>
               </div>
               <!-- feature-061 : état mesure (filtration arrêtée / stabilisation) -->
@@ -976,6 +979,213 @@
                 <p class="muted small" id="ph-ttt-note" style="margin:4px 0 0;font-size:11px"
                    role="status" aria-live="polite" hidden></p>
               </div>
+            </div>
+          </div>
+
+          <!-- feature-156 : lien de retour HAUT — masqué par défaut (hidden), affiché
+               par enterMaintenance("ph") en même temps que la carte d'étalonnage.
+               Flèche dans un span aria-hidden pour que le lecteur d'écran n'énonce que
+               « Retour à la page pH ».
+               ⚠️ bug-201 : DÉPLACÉ ICI, AVANT #ph-card-tune. Motif vu sur capture — la
+               carte de correction étant devenue PERMANENTE, elle reste visible en mode
+               réglage ; le lien se retrouvait COINCÉ ENTRE les deux cartes et se lisait
+               comme un pied de la carte de correction. ⛔ Ne pas le redescendre. -->
+          <button class="btn btn--ghost flow-maintenance maintenance-back-link" type="button"
+                  id="ph-maintenance-back-top" hidden>
+            <span aria-hidden="true">←</span> Retour à la page pH
+          </button>
+
+          <!-- feature-155 : accorder l'appareil sur un test manuel. Toujours visible
+               (quel que soit le mode de régulation) car elle corrige la MESURE, pas la
+               régulation. Distincte de la calibration EZO (carte du mode réglage, plus bas) : deux
+               gestes différents, deux effets différents (note retirée par feature-170, D2 : le refus de POST /tune-ph-offset le dit au moment utile).
+               (La calibration EZO, elle, reste derrière le mode réglage — bug-201.)
+               Remplace l'ancien réglage d'un offset abstrait (feature-067) : l'écran
+               demande une VALEUR LUE, jamais un écart ; le mot « offset » n'y figure
+               plus. Le pas-à-pas existant est RÉAFFECTÉ (pas supprimé).
+               bug-201 (C40) : la carte est PERMANENTE (plus de `hidden`, absente de
+               MAINTENANCE_PAGES.ph.cardIds) et placée juste après la carte héros.
+               🔴 ⛔ ELLE GARDE la classe `.flow-maintenance` : sans elle, la règle
+               `#view-ph.is-flow-maintenance > :not(.flow-maintenance)` (app.css) la
+               masquerait PENDANT le flux d'étalonnage — exactement quand la cause
+               `calibration` vient de se lever et que les boutons servent. Seule
+               l'ENTRÉE de cardIds a été retirée (elle posait `hidden` à la sortie).
+               ⚠️ Ne jamais réintroduire `hidden` ni un `el.style.display` ici. -->
+          <div class="card flow-maintenance" id="ph-card-tune">
+            <div class="card__head">
+              <h2 class="card__title">Correction manuelle de la mesure</h2>
+            </div>
+            <div class="card__body">
+              <!-- feature-156 (B11/A2) : alerte PERSISTANTE « correction caduque »,
+                   pilotée par le champ firmware ph_offset_stale (servi par /get-config
+                   ET la trame WS "config", lu via renderPhOffsetStaleBanner()). Place EN
+                   TOUT PREMIER du card__body, avant #ph_tune_stakes : elle engage le
+                   dosage, elle pèse plus lourd que le conseil transitoire de la carte
+                   Calibration. Deux issues explicites, jamais de fermeture silencieuse. -->
+              <div class="callout callout--warn" id="ph_tune_stale_banner" role="status" aria-live="polite"
+                   hidden style="margin:0 0 16px">
+                <!-- feature-170 (C29/C31) : chapeau (l'ÉVÉNEMENT déclencheur), titre, puis
+                     DEUX paragraphes — P1 le fait, P2 l'acte —, écrits par
+                     renderPhOffsetStaleBanner(). ⛔ Aucun repliable, ⛔ pas d'aria-live
+                     ajouté (le conteneur porte déjà le sien ; re-rendu à chaque
+                     loadConfig). Le chapeau est masqué pour une cause héritée
+                     (boot / expiration) : aucun étalonnage n'a eu lieu. -->
+                <p class="callout__eyebrow callout__eyebrow--danger" id="ph_tune_stale_eyebrow">Étalonnage modifié</p>
+                <p style="margin:0 0 8px"><strong>Correction à vérifier</strong></p>
+                <p style="margin:0 0 8px" id="ph_tune_stale_fait"></p>
+                <p style="margin:0 0 10px" id="ph_tune_stale_acte"></p>
+                <div class="detail-actions">
+                  <!-- feature-170 (C30) : nommer l'ACTE. « Je l'ai vérifiée » SECONDAIRE (il
+                       ne doit pas inviter à valider).
+                       bug-201 (C49) : « Remettre à zéro » est SUPPRIMÉ du bandeau — il évoquait
+                       le zéro de l'électrode EZO (grandeur différente, celle qui est dégradée sur
+                       cet appareil). Le SEUL chemin destructif de la carte est « Supprimer la
+                       correction » (bas de carte, avec sa friction). ⛔ Indissociable de la
+                       levée de `!staleBannerShown` dans renderPhTuneRemoveRow() : sans elle, ce
+                       bandeau n'offrirait que « garder ». -->
+                  <button class="btn btn--secondary" type="button" id="ph_tune_stale_keep_btn">Je l'ai vérifiée — garder</button>
+                </div>
+              </div>
+
+              <!-- feature-170 (C28) : date de pose de la correction — un FAIT, pas une
+                   alerte (--text, seul le nombre en gras, ni cadre ni icône). Écrit par
+                   renderPhTuneAppliedLine() ; masqué si la correction est nulle ; absorbe
+                   l'ancienne étiquette « Correction actuelle : … pH ». -->
+              <p class="small" id="ph_tune_applied" hidden style="margin:0 0 12px"></p>
+
+              <!-- UN SEUL BLOC, décision utilisateur du 2026-10-11 : la carte était
+                   passée de 3 blocs visibles à 6, alors que la consigne était de
+                   SIMPLIFIER. L'explication du geste et l'enjeu se suivaient et
+                   parlaient du même sujet — ils sont fusionnés. 6 blocs -> 5.
+                   ⚠️ LES DEUX PHRASES DU GATE pool-chemistry (B4) SONT PRÉSERVÉES
+                   MOT POUR MOT, seule la ponctuation de liaison change (point ->
+                   deux-points). Ne pas les reformuler sans repasser par le gate :
+                   elles disent que cette valeur ENGAGE LE DOSAGE, pas l'affichage.
+                   feature-168 (C14) : cet encadré et l'avertissement #ph_tune_blocked
+                   ci-dessous NE S'EMPILENT JAMAIS — gate : « feature-168 (C8) est strictement plus
+                   fort sur le même propos — empiler ne protège pas, ça dilue. »
+                   renderPhTuneCard() le masque dès que l'avertissement prend le
+                   relais (|correction| > ph_offset_unusual_abs). -->
+              <div class="callout callout--info" id="ph_tune_stakes" role="note" style="margin:0 0 16px">
+                <!-- bug-201 (C50) : proposition d'ouverture raccourcie (libre).
+                     ⛔ « L'écart vient de l'installation, pas de la sonde. » est PRÉSERVÉE mot
+                     pour mot : seule phrase de l'écran qui empêche d'attribuer l'écart à la
+                     sonde (incident du 25/08/2026), et la carte est désormais PERMANENTE. -->
+                <!-- ⚠️ bug-201 : le GRAS a été RETIRÉ de cette phrase après lecture de la
+                     capture. Le gate ne gèle le gras que du SECOND paragraphe (celui qui dit
+                     que cette valeur DÉCIDE DES INJECTIONS). Mettre les deux en gras noyait
+                     justement celui-là : ⭐ quand tout est en gras, plus rien n'est souligné.
+                     ⛔ La PHRASE, elle, reste mot pour mot — c'est elle qui est préservée,
+                     pas sa graisse. -->
+                <p style="margin:0 0 8px">
+                  Indiquez la valeur lue sur un test manuel : l'appareil corrigera sa mesure.
+                  L'écart vient de l'installation, pas de la sonde.
+                </p>
+                <p style="margin:0"><strong>
+                  Ce réglage ne vaut que ce que vaut votre test. La valeur que vous indiquez
+                  ne change pas que l'affichage : c'est elle qui décidera des injections d'acide.
+                </strong></p>
+              </div>
+
+              <!-- Pas-à-pas RÉAFFECTÉ (ex-#ph-offset-stepper, feature-067) : affiche
+                   désormais une MESURE (la valeur lue sur le test), jamais un écart.
+                   Pas de clavier, pas de champ libre — décision utilisateur du
+                   2026-10-11 : « il n'y a pas de saisie ». Pas servi par /get-config
+                   (ph_offset_step). feature-168 : plus de borne de réglage — l'excursion
+                   est l'échelle physique universelle du pH [0 ; 14] seule (ⓘ ce n'est
+                   PAS un seuil de l'appareil, ADR-0100 ne s'applique pas à une constante
+                   physique). Touches Début/Fin retirées (elles sautaient aux anciennes
+                   bornes ±1,00 ; sans bornes elles sauteraient à pH 0 ou 14). -->
+              <div class="field" style="max-width:280px">
+                <span class="field__label" id="ph_tune_label">Valeur lue sur votre test</span>
+                <div class="stepper" id="ph-tune-stepper">
+                  <button class="btn btn--ghost stepper__btn" type="button" id="ph_tune_dec"
+                          aria-label="Diminuer de 0,1">−</button>
+                  <div class="stepper__value" id="ph_tune_value" role="spinbutton" tabindex="0"
+                       aria-labelledby="ph_tune_label">--</div>
+                  <button class="btn btn--ghost stepper__btn" type="button" id="ph_tune_inc"
+                          aria-label="Augmenter de 0,1">+</button>
+                </div>
+              </div>
+
+              <!-- B2 : les trois nombres avant validation — ici, 2 des 3 (lu sur le
+                   test = la valeur du pas-à-pas ci-dessus ; lu par l'appareil → valeur
+                   atteinte). Le 3e (valeur atteinte) est l'ÉCART RÉELLEMENT APPLIQUÉ
+                   après arrondi (Piège 1), jamais la valeur demandée. -->
+              <p class="small" id="ph_tune_result" style="margin:12px 0 0"></p>
+
+              <!-- feature-168 : il ne reste que TROIS refus réellement BLOQUANTS (pas de
+                   mesure récente, filtration pas assez stabilisée, sonde pas calibrée),
+                   jamais de mise en cause de la sonde — et UN avertissement NON BLOQUANT
+                   (C8, |correction| > ph_offset_unusual_abs) qui réutilise le MÊME
+                   callout (un seul message affiché à la fois, mutuellement exclusifs,
+                   piloté par renderPhTuneCard()/data/app.js). Les trois refus n'emploient
+                   que #ph_tune_blocked_lead (texte simple) ; l'avertissement feature-168 (C8) utilise
+                   les trois sous-éléments : chapeau (eyebrow, bascule mot+couleur entre
+                   « Avertissement » et « ⚠ Impasse possible » SANS 3e couleur, la boîte
+                   reste callout--warn dans les deux cas), lead (1re phrase, ~160 car.,
+                   toujours visible) et détail repliable (reste du texte feature-168 (C8)). Textes
+                   IMPOSÉS mot pour mot par le gate pool-chemistry. -->
+              <!-- bug-201 (C51) : DEUX RENDUS DISTINCTS. Les trois refus bloquants vivent
+                   dans #ph_tune_refus (.field__hint, juste sous « Corriger », plus bas) ;
+                   cet encadré ne porte PLUS QUE l'avertissement feature-168 (C8), qui reste
+                   un callout--warn avec son chapeau et son repliable. ⛔ Ne jamais dégrader
+                   cet élément : ce serait dégrader en silence l'avertissement qui dit que la
+                   correction est devenue une pièce du dosage. -->
+              <div class="callout callout--warn" id="ph_tune_blocked" role="status" aria-live="polite" hidden
+                   style="margin-top:12px">
+                <p class="callout__eyebrow" id="ph_tune_blocked_eyebrow" hidden></p>
+                <p class="callout__lead" id="ph_tune_blocked_lead" style="margin:0"></p>
+                <details class="callout__more" id="ph_tune_blocked_more" hidden>
+                  <summary>Pourquoi, et quoi vérifier →</summary>
+                  <p id="ph_tune_blocked_detail"></p>
+                </details>
+              </div>
+
+              <!-- feature-157 : bouton de SUPPRESSION de la correction, distinct du
+                   pas-à-pas ci-dessus. Masqué si la correction est nulle.
+                   bug-201 (C49) : il n'est PLUS masqué quand le bandeau est affiché — il en
+                   est désormais le seul chemin destructif. -->
+              <p class="small" id="ph_tune_error" role="alert"
+                 style="display:none;margin:10px 0 0;color:var(--danger)"></p>
+
+              <div class="detail-actions" style="margin-top:12px">
+                <button class="btn btn--primary" type="button" id="ph_tune_submit_btn"
+                        aria-describedby="ph_tune_refus">Corriger</button>
+              </div>
+              <!-- bug-201 (C51) : refus bloquants (mesure absente, filtration pas assez
+                   longue, sonde pas étalonnée) — textes MOT POUR MOT de feature-168, écrits
+                   par renderPhTuneCard() SEULEMENT s'ils ont changé. Adjacent au bouton
+                   « Corriger » qu'ils désactivent (aria-describedby depuis lui). ⛔ Pas de
+                   .muted : ce sont des REFUS, pas des conseils. -->
+              <p class="field__hint field__hint--refus" id="ph_tune_refus" role="status" hidden></p>
+
+              <!-- bug-201 (C49/C48) : UN SEUL contrôle destructif sur la carte, toujours ici.
+                   bug-201 (C41/C47) : au-delà de ph_offset_unusual_abs (clé SERVIE), le bouton
+                   est REMPLACÉ sur place par #ph_tune_remove_confirm (cf. app.js,
+                   bindPhTuneRemoveRow) — ⛔ pas de modale, pas de confirm() natif, pas de
+                   minuterie, pas de région live (le focus est déplacé). -->
+              <div id="ph_tune_remove_zone">
+                <!-- ⚠️ TEXTE IMPOSÉ MOT POUR MOT par le gate pool-chemistry
+                     (feature-157) : ne pas écrire « vous pouvez en poser une
+                     nouvelle » — piège symétrique de celui évité sur « Garder ». -->
+                <button class="btn btn--danger action-destructive" type="button" id="ph_tune_remove_btn" hidden
+                        aria-describedby="ph_tune_applied ph_tune_remove_hint" style="margin-top:12px">Supprimer la correction</button>
+                <div id="ph_tune_remove_confirm" hidden>
+                  <div class="callout callout--warn" role="group" aria-labelledby="ph_tune_remove_confirm_text"
+                       style="margin:12px 0 0">
+                    <p id="ph_tune_remove_confirm_text" style="margin:0"></p>
+                  </div>
+                  <div class="ph-tune-confirm__actions">
+                    <!-- « Ne rien changer » en PREMIER dans le DOM : il reçoit le focus. -->
+                    <button class="btn btn--secondary" type="button" id="ph_tune_remove_cancel_btn">Ne rien changer</button>
+                    <button class="btn btn--danger action-destructive" type="button" id="ph_tune_remove_confirm_btn">Supprimer la correction</button>
+                  </div>
+                </div>
+              </div>
+              <p class="muted small" id="ph_tune_remove_hint" hidden style="margin:6px 0 0">
+                Sans correction, l'appareil régule sur la mesure de la sonde telle quelle.
+              </p>
             </div>
           </div>
 
@@ -1165,9 +1375,7 @@
                 <!-- C7 — texte IMPOSÉ mot pour mot (gate pool-chemistry). -->
                 <p class="muted small" style="margin-bottom:10px"><strong>Injection manuelle — disponible dans tous les modes. Les limites de sécurité s'appliquent.</strong></p>
                 <p class="muted small" style="margin-bottom:10px">
-                  Démarre la pompe pH à la puissance configurée. Utile pour corriger manuellement le pH
-                  ou vérifier le fonctionnement de la pompe, même si la régulation automatique est désactivée.
-                  Cliquez à nouveau sur le bouton pour arrêter l'injection avant la fin.
+                  Démarre la pompe pH à la puissance configurée, même si la régulation automatique est désactivée.
                 </p>
                 <!-- v2.25.x — Avertissement « butée pH BRUT » sur le chemin d'injection
                      MANUELLE. L'injection manuelle est une échappatoire VOULUE : le
@@ -1204,15 +1412,6 @@
                > :not(.flow-maintenance) ne la masque donc jamais, dans aucun des deux
                états. Toujours .sr-only : elle n'a pas de rendu visuel, seulement vocal. -->
           <div class="sr-only flow-maintenance" id="ph-maintenance-announce" role="status" aria-live="polite"></div>
-
-          <!-- feature-156 : lien de retour HAUT — masqué par défaut (hidden), affiché
-               par enterMaintenance("ph") en même temps que les deux cartes ci-dessous.
-               Flèche dans un span aria-hidden pour que le lecteur d'écran n'énonce que
-               « Retour à la page pH ». -->
-          <button class="btn btn--ghost flow-maintenance maintenance-back-link" type="button"
-                  id="ph-maintenance-back-top" hidden>
-            <span aria-hidden="true">←</span> Retour à la page pH
-          </button>
 
           <!-- bug-160 (volet 2, REFONTE 2026-10-13) : bandeau de bascule de
                régulation pendant une calibration pH/ORP — HORS des cartes, juste
@@ -1349,148 +1548,6 @@
               <div class="row row--gap" style="margin-top:16px">
                 <button class="btn btn--secondary" type="button" id="ph_cal_close_btn">Fermer</button>
               </div>
-            </div>
-          </div>
-
-          <!-- feature-155 : accorder l'appareil sur un test manuel. Toujours visible
-               (quel que soit le mode de régulation) car elle corrige la MESURE, pas la
-               régulation. Distincte de la calibration EZO (carte juste au-dessus) : deux
-               gestes différents, deux effets différents (note retirée par feature-170, D2 : le refus de POST /tune-ph-offset le dit au moment utile).
-               Remplace l'ancien réglage d'un offset abstrait (feature-067) : l'écran
-               demande une VALEUR LUE, jamais un écart ; le mot « offset » n'y figure
-               plus. Le pas-à-pas existant est RÉAFFECTÉ (pas supprimé).
-               feature-156 : quitte elle aussi la vue courante pour le mode réglage —
-               cf. commentaire de #ph-card-calibration ci-dessus (même piège style
-               inline à éviter). -->
-          <div class="card flow-maintenance" id="ph-card-tune" hidden>
-            <div class="card__head">
-              <h2 class="card__title">Correction manuelle de la mesure</h2>
-            </div>
-            <div class="card__body">
-              <!-- feature-156 (B11/A2) : alerte PERSISTANTE « correction caduque »,
-                   pilotée par le champ firmware ph_offset_stale (servi par /get-config
-                   ET la trame WS "config", lu via renderPhOffsetStaleBanner()). Place EN
-                   TOUT PREMIER du card__body, avant #ph_tune_stakes : elle engage le
-                   dosage, elle pèse plus lourd que le conseil transitoire de la carte
-                   Calibration. Deux issues explicites, jamais de fermeture silencieuse. -->
-              <div class="callout callout--warn" id="ph_tune_stale_banner" role="status" aria-live="polite"
-                   hidden style="margin:0 0 16px">
-                <!-- feature-170 (C29/C31) : chapeau (l'ÉVÉNEMENT déclencheur), titre, puis
-                     DEUX paragraphes — P1 le fait, P2 l'acte —, écrits par
-                     renderPhOffsetStaleBanner(). ⛔ Aucun repliable, ⛔ pas d'aria-live
-                     ajouté (le conteneur porte déjà le sien ; re-rendu à chaque
-                     loadConfig). Le chapeau est masqué pour une cause héritée
-                     (boot / expiration) : aucun étalonnage n'a eu lieu. -->
-                <p class="callout__eyebrow callout__eyebrow--danger" id="ph_tune_stale_eyebrow">Étalonnage modifié</p>
-                <p style="margin:0 0 8px"><strong>Correction à vérifier</strong></p>
-                <p style="margin:0 0 8px" id="ph_tune_stale_fait"></p>
-                <p style="margin:0 0 10px" id="ph_tune_stale_acte"></p>
-                <div class="detail-actions">
-                  <!-- feature-170 (C30) : nommer l'ACTE. « Je l'ai vérifiée » en premier et
-                       SECONDAIRE (il ne doit pas inviter à valider) ; le geste destructif
-                       en second. Aucune confirmation (verdict du gate). -->
-                  <button class="btn btn--secondary" type="button" id="ph_tune_stale_keep_btn">Je l'ai vérifiée — garder</button>
-                  <button class="btn btn--danger action-destructive" type="button" id="ph_tune_stale_cancel_btn">Remettre à zéro</button>
-                </div>
-              </div>
-
-              <!-- feature-170 (C28) : date de pose de la correction — un FAIT, pas une
-                   alerte (--text, seul le nombre en gras, ni cadre ni icône). Écrit par
-                   renderPhTuneAppliedLine() ; masqué si la correction est nulle ; absorbe
-                   l'ancienne étiquette « Correction actuelle : … pH ». -->
-              <p class="small" id="ph_tune_applied" hidden style="margin:0 0 12px"></p>
-
-              <!-- UN SEUL BLOC, décision utilisateur du 2026-10-11 : la carte était
-                   passée de 3 blocs visibles à 6, alors que la consigne était de
-                   SIMPLIFIER. L'explication du geste et l'enjeu se suivaient et
-                   parlaient du même sujet — ils sont fusionnés. 6 blocs -> 5.
-                   ⚠️ LES DEUX PHRASES DU GATE pool-chemistry (B4) SONT PRÉSERVÉES
-                   MOT POUR MOT, seule la ponctuation de liaison change (point ->
-                   deux-points). Ne pas les reformuler sans repasser par le gate :
-                   elles disent que cette valeur ENGAGE LE DOSAGE, pas l'affichage.
-                   feature-168 (C14) : cet encadré et l'avertissement #ph_tune_blocked
-                   ci-dessous NE S'EMPILENT JAMAIS — gate : « C8 est strictement plus
-                   fort sur le même propos — empiler ne protège pas, ça dilue. »
-                   renderPhTuneCard() le masque dès que l'avertissement prend le
-                   relais (|correction| > ph_offset_unusual_abs). -->
-              <div class="callout callout--info" id="ph_tune_stakes" role="note" style="margin:0 0 16px">
-                <p style="margin:0 0 8px">
-                  Si votre test donne une valeur différente de celle affichée, indiquez-la ici :
-                  l'appareil corrigera sa mesure. L'écart vient de l'installation, pas de la sonde.
-                </p>
-                <p style="margin:0"><strong>
-                  Ce réglage ne vaut que ce que vaut votre test. La valeur que vous indiquez
-                  ne change pas que l'affichage : c'est elle qui décidera des injections d'acide.
-                </strong></p>
-              </div>
-
-              <!-- Pas-à-pas RÉAFFECTÉ (ex-#ph-offset-stepper, feature-067) : affiche
-                   désormais une MESURE (la valeur lue sur le test), jamais un écart.
-                   Pas de clavier, pas de champ libre — décision utilisateur du
-                   2026-10-11 : « il n'y a pas de saisie ». Pas servi par /get-config
-                   (ph_offset_step). feature-168 : plus de borne de réglage — l'excursion
-                   est l'échelle physique universelle du pH [0 ; 14] seule (ⓘ ce n'est
-                   PAS un seuil de l'appareil, ADR-0100 ne s'applique pas à une constante
-                   physique). Touches Début/Fin retirées (elles sautaient aux anciennes
-                   bornes ±1,00 ; sans bornes elles sauteraient à pH 0 ou 14). -->
-              <div class="field" style="max-width:280px">
-                <span class="field__label" id="ph_tune_label">Valeur lue sur votre test</span>
-                <div class="stepper" id="ph-tune-stepper">
-                  <button class="btn btn--ghost stepper__btn" type="button" id="ph_tune_dec"
-                          aria-label="Diminuer de 0,1">−</button>
-                  <div class="stepper__value" id="ph_tune_value" role="spinbutton" tabindex="0"
-                       aria-labelledby="ph_tune_label">--</div>
-                  <button class="btn btn--ghost stepper__btn" type="button" id="ph_tune_inc"
-                          aria-label="Augmenter de 0,1">+</button>
-                </div>
-              </div>
-
-              <!-- B2 : les trois nombres avant validation — ici, 2 des 3 (lu sur le
-                   test = la valeur du pas-à-pas ci-dessus ; lu par l'appareil → valeur
-                   atteinte). Le 3e (valeur atteinte) est l'ÉCART RÉELLEMENT APPLIQUÉ
-                   après arrondi (Piège 1), jamais la valeur demandée. -->
-              <p class="small" id="ph_tune_result" style="margin:12px 0 0"></p>
-
-              <!-- feature-168 : il ne reste que TROIS refus réellement BLOQUANTS (pas de
-                   mesure récente, filtration pas assez stabilisée, sonde pas calibrée),
-                   jamais de mise en cause de la sonde — et UN avertissement NON BLOQUANT
-                   (C8, |correction| > ph_offset_unusual_abs) qui réutilise le MÊME
-                   callout (un seul message affiché à la fois, mutuellement exclusifs,
-                   piloté par renderPhTuneCard()/data/app.js). Les trois refus n'emploient
-                   que #ph_tune_blocked_lead (texte simple) ; l'avertissement C8 utilise
-                   les trois sous-éléments : chapeau (eyebrow, bascule mot+couleur entre
-                   « Avertissement » et « ⚠ Impasse possible » SANS 3e couleur, la boîte
-                   reste callout--warn dans les deux cas), lead (1re phrase, ~160 car.,
-                   toujours visible) et détail repliable (reste du texte C8). Textes
-                   IMPOSÉS mot pour mot par le gate pool-chemistry. -->
-              <div class="callout callout--warn" id="ph_tune_blocked" role="status" aria-live="polite" hidden
-                   style="margin-top:12px">
-                <p class="callout__eyebrow" id="ph_tune_blocked_eyebrow" hidden></p>
-                <p class="callout__lead" id="ph_tune_blocked_lead" style="margin:0"></p>
-                <details class="callout__more" id="ph_tune_blocked_more" hidden>
-                  <summary>Pourquoi, et quoi vérifier →</summary>
-                  <p id="ph_tune_blocked_detail"></p>
-                </details>
-              </div>
-
-              <!-- feature-157 : bouton de SUPPRESSION de la correction, distinct du
-                   pas-à-pas ci-dessus. Masqué si la correction est nulle OU si la
-                   bannière « correction caduque » est affichée (elle couvre déjà le
-                   cas avec ses deux boutons — pas de doublon visuel, B3). -->
-              <p class="small" id="ph_tune_error" role="alert"
-                 style="display:none;margin:10px 0 0;color:var(--danger)"></p>
-
-              <div class="detail-actions" style="margin-top:12px">
-                <button class="btn btn--primary" type="button" id="ph_tune_submit_btn">Corriger</button>
-                <!-- ⚠️ TEXTE IMPOSÉ MOT POUR MOT par le gate pool-chemistry
-                     (feature-157) : ne pas écrire « vous pouvez en poser une
-                     nouvelle » — piège symétrique de celui évité sur « Garder ». -->
-                <button class="btn btn--danger action-destructive" type="button" id="ph_tune_remove_btn" hidden
-                        aria-describedby="ph_tune_applied ph_tune_remove_hint">Supprimer la correction</button>
-              </div>
-              <p class="muted small" id="ph_tune_remove_hint" hidden style="margin:6px 0 0">
-                Sans correction, l'appareil régule sur la mesure de la sonde telle quelle.
-              </p>
             </div>
           </div>
 

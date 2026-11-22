@@ -11,7 +11,7 @@ Point d'entrée unique pour **tout** ce qui concerne le pH : mesure, mode de ré
 
 ⚠️ **Depuis la v2.72.0 (feature-156), la page a DEUX états** — voir [Mode réglage](#mode-réglage-calibration--correction-feature-156-v2720) pour le détail complet. Ce qui suit décrit l'**état courant** (le seul visible par défaut).
 
-En état courant, cinq zones :
+En état courant, **six zones** (la sixième, la carte Correction manuelle de la mesure, est **permanente depuis la v3.0.0**, bug-201) :
 
 1. **Bloc Statistiques** (bandeau compact, sans titre) — valeur pH **officielle** courante en grand (1 décimale, cohérent avec le tableau de bord) + **ligne brute discrète** « brut · maj » + **rangée de chips** : **chip unique sonde + calibration** cliquable (cf. [Chip d'état sonde](#chip-détat-sonde-feature-024)) + dosage du jour (barre de progression). Depuis feature-034, le chip de calibration distinct est **supprimé** : son information est fusionnée dans le chip sonde. ⚠️ **Depuis la refonte de la chaîne de mesure (feature-152, v2.68.0)**, il n'existe plus de chip ni de modal d'état du **filtre** distincts : voir [Ce qui a été retiré, fusionné, conservé](#ce-qui-a-été-retiré-fusionné-conservé-feature-152-v2680). Depuis la **v2.37.0** (feature-096), ce bloc se termine par « **Atteinte de la cible** » (`#ph-ttt-block`) : ligne de valeur + bande de 7 pastilles — voir [Atteinte de la cible](#atteinte-de-la-cible-feature-096-v2370).
 2. **Carte Débit d'injection pH** (`#ph-card-dosing`, feature-092, v2.46.0) — insérée **entre** le bloc Statistiques et la carte Régulation, visible **en mode automatique uniquement** : quatre lignes (dose de base apprise, écart courant, rattrapage accumulé, **Demande** en total) et une pastille d'état à 5 priorités. Voir [Carte « Débit d'injection pH »](#carte--débit-dinjection-ph--ph-card-dosing-feature-092-v2460).
@@ -21,7 +21,10 @@ En état courant, cinq zones :
    - **Les trois modes** : bloc Injection manuelle (volume + bouton ▶ Injecter / ⏹ Stopper) — ⚠️ **déconditionné du mode depuis feature-161** (était visible en Manuelle seulement) : voir [Injection manuelle déconditionnée du mode](#injection-manuelle-déconditionnée-du-mode-feature-161-v2770).
    - Le bloc « Rattrapage accumulé » qui vivait en pied de cette carte (`#ph-integral-section`, v2.26.0) est **retiré** depuis la v2.46.0 : son contenu est passé dans la carte « Débit d'injection pH ».
 4. **Carte Historique** — graphique uPlot (feature-043, ex-Chart.js), plages `Tout` / `30j` / `7j` / `24h`. Depuis la **v2.28.1** (feature-083) : bande fixe **7,2-7,6** (plage idéale de l'eau) + **ligne de consigne pointillée** à `ph_target` — voir [Repères du graphique d'historique](#repères-du-graphique-dhistorique-feature-083-v2281). Ce graphique trace la mesure **brute** et le reste en v2.38.0 — voir [Le graphique d'historique de cette page reste brut](#le-graphique-dhistorique-de-cette-page-reste-brut-feature-095-v2380).
-5. **Point d'entrée du mode réglage** (`#ph_cal_trigger_btn`, « **Calibration et correction de la mesure** ») — sous la rangée de chips. **Ni la carte Calibration ni la carte Correction manuelle de la mesure ne sont visibles dans cet état** (changement v2.72.0 — avant cette version, la carte de correction était **toujours affichée** entre Régulation et Historique).
+5. **Point d'entrée du mode réglage** (`#ph_cal_trigger_btn`, « **Étalonnage de la sonde** » depuis la v3.0.0 ; « Calibration et correction de la mesure » de la v2.72.0 à la v2.99.0) — **sur la même ligne que la pastille d'état de la sonde** (`#ph-probe-chip`), dans la carte héros. **La carte Calibration (étalonnage EZO) n'est pas visible dans cet état.**
+6. **Carte « Correction manuelle de la mesure »** (`#ph-card-tune`) — **permanente depuis la v3.0.0 (bug-201)** : placée **juste après la carte héros**, visible **sans entrer en mode réglage**, donc **sans suspendre la régulation**. Voir [Carte « Correction manuelle de la mesure »](#carte--correction-manuelle-de-la-mesure--ph-card-tune-feature-155-v2710).
+
+> ⚠️ **Allègement de la carte héros (bug-201, v3.0.0)** — pour compenser l'arrivée de la carte permanente, quatre lignes ont disparu : « MAJ auto toutes les 5 secondes » (l'heure est déjà dans `#ph-filter-sub`), la légende « Historique indisponible » sous la bande de 7 pastilles de l'atteinte de la cible (la carte Historique, plus bas, montre déjà son graphique vide ; **l'ORP, hors lot, garde son aveu**), la 2ᵉ et la 3ᵉ phrase du mode d'emploi de « Injection manuelle » (réduit à : « Démarre la pompe pH à la puissance configurée, même si la régulation automatique est désactivée. »), et le détail « le chronomètre démarre au premier relevé valide, filtration en marche » de l'état « en attente du départ » (voir [Atteinte de la cible](#atteinte-de-la-cible-feature-096-v2370)). L'indication « atteinte de la cible » tient désormais sur une ligne.
 
 Le bloc Statistiques reste visible **en permanence**, y compris en mode réglage.
 
@@ -29,22 +32,28 @@ Le bloc Statistiques reste visible **en permanence**, y compris en mode réglage
 
 ## Mode réglage (calibration + correction, feature-156, v2.72.0)
 
+> ⚠️ **AMENDEMENT bug-201 (v3.0.0)** — ce qui suit décrit la v2.72.0. **La correction manuelle a quitté le mode réglage** : sa carte est permanente (voir [la section de la carte](#carte--correction-manuelle-de-la-mesure--ph-card-tune-feature-155-v2710)). **Seul l'étalonnage EZO reste derrière le mode réglage**, et c'est voulu : il touche la sonde, son gel du dosage est légitime. Motif de la sortie : le mode réglage **bascule la régulation en Manuel** (`POST /calibration/enter`) ; lire l'alerte sur sa propre correction coûtait donc une **suspension du dosage** — le geste vertueux était le plus cher. Les mentions ci-dessous de « deux gestes » et de la carte Correction **dans** le mode réglage sont **historiques**.
+
 Les **deux seuls gestes qui touchent à la justesse de la mesure** — étalonnage de la sonde et correction manuelle — ont quitté l'état courant pour un **mode réglage** dédié, atteint depuis un point d'entrée unique. Voir [ADR-0103](../adr/0103-gestes-d-entretien-quittent-la-vue-courante.md) pour l'arbitrage (mécanisme générique, partagé avec les pages [ORP](page-orp.md#mode-réglage-calibration-seule-feature-156-v2720) et [Température](page-temperature.md#mode-réglage-calibration-seule-feature-156-v2720)).
 
-### Pourquoi le point d'entrée s'appelle « Calibration et correction de la mesure »
+### Pourquoi le point d'entrée s'appelait « Calibration et correction de la mesure » (historique : devenu « Étalonnage de la sonde » en v3.0.0)
+
+⚠️ **v3.0.0 (bug-201)** : la correction n'est plus derrière ce bouton, qui retrouve un nom à **une seule** destination : « **Étalonnage de la sonde** ». Le raisonnement ci-dessous vaut pour les versions 2.72.0 à 2.99.0.
 
 Avant ce lot, le bouton s'appelait « Calibrer la sonde » et n'ouvrait que la carte de calibration — la correction manuelle restait **toujours visible** sur la page. En la faisant entrer dans le même mode réglage, un bouton resté « Calibrer la sonde » aurait rendu la correction **introuvable** : personne ne clique sur « Calibrer » pour corriger une mesure sur une bandelette. Le titre doit **à la fois** contenir « calibration »/« calibrer » (contrainte utilisateur) **et** laisser deviner que la correction est derrière — d'où le nom à deux destinations, arbitré par `ux-ui-designer`. Sur l'ORP et la Température, le bouton reste « Calibrer la sonde » : il n'y a **qu'une seule** destination (pas de carte de correction pour ces deux capteurs), le nom suit le contenu.
 
 ### Les deux états de la page
 
-**État courant** (par défaut) : les cinq zones listées ci-dessus. **Ni** la carte Calibration **ni** la carte Correction ne sont visibles.
+**État courant** (par défaut) : les six zones listées ci-dessus. La carte Calibration n'est pas visible ; la carte Correction l'est (depuis la v3.0.0).
 
 **État réglage** (après clic sur le point d'entrée) : le reste de la page (débit d'injection, régulation, historique) est masqué, et on voit, dans cet ordre :
 
 1. un **lien de retour** (« ← Retour à la page pH ») ;
 2. la carte **Calibration de la sonde pH** (inchangée dans son contenu, cf. [Workflow calibration](#workflow-calibration)) ;
-3. la carte **Correction manuelle de la mesure** (inchangée dans son contenu, cf. [Carte « Correction manuelle de la mesure »](#carte--correction-manuelle-de-la-mesure--ph-card-tune-feature-155-v2710)) ;
+3. la carte **Correction manuelle de la mesure** — ⚠️ **depuis la v3.0.0, elle n'« entre » plus dans ce mode : elle y est simplement restée** (permanente, cf. [Carte « Correction manuelle de la mesure »](#carte--correction-manuelle-de-la-mesure--ph-card-tune-feature-155-v2710)). Le lien de retour du haut a été **remonté avant elle** (voir ci-dessous) ;
 4. un second **lien de retour**, identique au premier.
+
+⚠️ **Ordre depuis la v3.0.0** : le lien de retour du haut (`#ph-maintenance-back-top`) est placé **avant** `#ph-card-tune` dans le DOM, et non plus entre les deux cartes — défaut attrapé **sur capture** : la carte de correction étant permanente, le lien se retrouvait coincé entre elle et la carte d'étalonnage et se lisait comme un pied de la carte de correction. ⛔ Ne pas le redescendre.
 
 L'ordre **calibration puis correction** n'est pas arbitraire : dans le cas « sonde non étalonnée » (refus n°3 de la carte Correction), le geste à faire d'abord est **juste au-dessus**, sans qu'aucun texte supplémentaire n'ait à l'expliquer.
 
@@ -53,6 +62,10 @@ Le sous-titre d'en-tête de la page (`<p class="settingsHead__sub">`, normalemen
 ### Mécanisme — `enterMaintenance()` / `exitMaintenance()`
 
 Générique, partagé avec l'ORP et la Température ([`data/app.js`](../../data/app.js), table `MAINTENANCE_PAGES`) : une classe CSS unique (`is-flow-maintenance`) posée sur la vue (`#view-ph`), qui masque tout enfant direct **non** marqué `.flow-maintenance` (les cartes Calibration et Correction, les liens de retour et la région d'annonce `sr-only` portent cette classe). **Aucun style inline** (`hidden` natif uniquement) : un `el.style.display` écraserait la règle CSS du mode sans effet visible — piège déjà rencontré par l'ancien `hidePhCalibrationCard()`.
+
+#### 🔴 Le piège : `#ph-card-tune` garde la classe `.flow-maintenance` tout en étant permanente
+
+`#ph-card-tune` a été retirée de `MAINTENANCE_PAGES.ph.cardIds` (`data/app.js`) et a perdu son `hidden` — **mais ⛔ elle GARDE la classe `.flow-maintenance`**. Raison : la règle CSS `#view-ph.is-flow-maintenance > :not(.flow-maintenance)` masque tout enfant direct non marqué. Retirer **la classe** (et non l'entrée de `cardIds`) masquerait la carte **pendant le flux d'étalonnage**, c'est-à-dire exactement quand la cause `calibration` vient de se lever et que ses boutons servent. ⇒ Seule l'**entrée** de `cardIds` est retirée ; ⛔ jamais `hidden`, jamais un `el.style.display`. Vocabulaire : [DESIGN_SYSTEM §5.25](../DESIGN_SYSTEM.md#525-flow-maintenance-survit-au-mode-réglage-bug-201-v300).
 
 ### Liens de retour et accessibilité
 
@@ -311,8 +324,8 @@ Bloc `#ph-ttt-block`, placé **en pied du bloc Statistiques**, sous les capacit�
 | `2`, `min === 0` | `déjà à la cible au départ` | `écart initial +0,02` |
 | `1` | `en cours — 1 h 10` | `de circulation depuis le départ du jour — écart initial +0,18` |
 | `3` | `non atteinte` | `après 10 h 12 de circulation — écart initial +0,24` |
-| `0`, `time_synced === false` | `indicateur suspendu` | `heure système non synchronisée — aucune mesure enregistrée` |
-| `0`, heure valide | `en attente du départ` | `le chronomètre démarre au premier relevé valide, filtration en marche` |
+| `0`, `time_synced === false` | `indicateur suspendu` | `heure non synchronisée` (v3.0.0, bug-201 ; était « heure système non synchronisée — aucune mesure enregistrée ») |
+| `0`, heure valide | `en attente du départ` | *(vide depuis la v3.0.0 — était « le chronomètre démarre au premier relevé valide, filtration en marche »)* |
 
 **Formats** : durée `45 min` sous l'heure, `3 h 53` (minutes sur 2 chiffres), `5 h` si le reste est nul — **espaces insécables** (une durée ne doit pas se couper en fin de ligne). Écart initial pH à **2 décimales**, virgule française, signe **toujours explicite**, moins typographique **U+2212** (jamais le trait d'union, qui se confond avec une puce à 11 px). `ph_ttt_e0` à `null` → « écart initial indisponible », jamais « 0,00 ».
 
@@ -359,7 +372,19 @@ L'ancien doublon ORP (`#measures_purge_timeout_banner_orp`) est retiré pour la 
 
 ## Carte « Correction manuelle de la mesure » (`#ph-card-tune`, feature-155, v2.71.0)
 
-Carte `#ph-card-tune` (**ex-`#ph-card-offset`**, feature-067). ⚠️ **Depuis la v2.72.0 (feature-156), elle a quitté l'état courant de la page** : elle ne vit plus en permanence entre Régulation et Historique, mais dans le [mode réglage](#mode-réglage-calibration--correction-feature-156-v2720), **juste sous** la carte Calibration. Le geste n'est pas moins accessible pour autant — il est désormais atteint via le point d'entrée « Calibration et correction de la mesure » plutôt que d'être toujours visible. Elle reste **distincte de la calibration EZO** (la carte juste au-dessus, dans le même mode) : deux gestes différents, deux effets différents, rappelés par `#ph_tune_calib_note`.
+Carte `#ph-card-tune` (**ex-`#ph-card-offset`**, feature-067).
+
+> ⭐ **Depuis la v3.0.0 (bug-201), la carte est PERMANENTE.** Elle est visible en permanence sur `#/ph`, **juste après la carte héros**, **sans entrer en mode réglage** — donc sans basculer la régulation en Manuel. Historique : v2.71.0 toujours visible → v2.72.0 (feature-156) enfouie dans le mode réglage → v3.0.0 permanente à nouveau.
+>
+> **Le défaut corrigé.** Le mode réglage émet `POST /calibration/enter`, qui **bascule la régulation en Manuel et gèle le dosage**. Pour lire l'alerte sur sa correction (bandeau « Correction à vérifier »), il fallait donc **suspendre la régulation** : le geste vertueux coûtait un arrêt du dosage. Signalé le 18/11/2026 : « je ne vois pas l'alerte » (il voyait une pastille rouge, mais elle parlait de l'étalonnage de la sonde, pas de la correction). Le commentaire de la carte annonçait déjà « toujours visible, car elle corrige la MESURE, pas la régulation » : le code ne le faisait pas.
+>
+> **Principe** (verdict `pool-chemistry`) : *le flux maintenance n'est pas une garde, il gèle le dosage pour lire une information ; une barrière qui ne fait que retarder l'effet de ce qu'elle garde est un péage.* Les vraies gardes sont ailleurs et ne dépendent pas du flux : filets BRUTS fixes 5,50 / 8,50, plancher/plafond corrigés, inhibition ORP, et le gate propre de `POST /tune-ph-offset` (mesure fraîche, 10 min de filtration, sonde étalonnée). Le gel du dosage à l'entrée du mode réglage n'a jamais protégé la correction : il retardait son effet. Voir [ADR-0140](../adr/0140-quand-un-gate-renonce-a-bloquer-la-contrepartie-est-la-visibilite-permanente.md).
+>
+> ⛔ **L'étalonnage EZO (`#ph-card-calibration`) reste, lui, derrière le mode réglage** (il touche la sonde). Les deux cartes ne sont pas sorties « d'un bloc ».
+>
+> Les autres changements de la carte en v3.0.0 : [refus bloquants en `.field__hint--refus`](#les-refus-bloquants-de-laccord), [bandeau à un seul bouton](#correction-devenue-caduque-ph_tune_stale_banner), [friction sur « Supprimer la correction »](#friction-sur-supprimer-la-correction-bug-201-c41-c45-c47-v300), [introduction raccourcie](#avant-le-geste--le-geste-puis-lenjeu--un-seul-bloc-deux-paragraphes).
+
+La carte reste **distincte de la calibration EZO** : deux gestes différents, deux effets différents. ⚠️ La note `#ph_tune_calib_note` qui le rappelait a été retirée en v2.99.0 (feature-170) — voir [Distinction avec l'étalonnage de la sonde](#distinction-avec-létalonnage-de-la-sonde).
 
 ⚠️ **Depuis la v2.73.0 (feature-157)** : toutes les valeurs de pH de cette carte s'affichent avec **une seule décimale**, et un bouton permet de **supprimer** la correction en vigueur sans attendre un étalonnage. Voir [Une décimale, et un geste de suppression](#une-décimale-et-un-geste-de-suppression-feature-157-v2730) plus bas.
 
@@ -370,7 +395,7 @@ Carte `#ph-card-tune` (**ex-`#ph-card-offset`**, feature-067). ⚠️ **Depuis l
 Quatre éléments de l'ancienne carte sont **retirés**, pas déplacés :
 
 - le libellé **« Offset pH »** ;
-- le bouton **« Remettre à zéro »** (`#ph_offset_reset`, masqué par défaut) ;
+- le bouton **« Remettre à zéro »** (`#ph_offset_reset`, masqué par défaut) — ⚠️ à ne pas confondre avec le « Remettre à zéro » du bandeau (feature-170), lui aussi supprimé en v3.0.0 ;
 - le **texte d'aide permanent** (`#ph_offset_help`, « Correction logicielle de la mesure pH… pH corrigé = pH brut + offset ») ;
 - l'**avertissement à deux paliers** `#ph_offset_warning` (0,15 / 0,30 pH, callout ambré qui recalculait un pH réel probable côté client).
 
@@ -398,7 +423,9 @@ Le **pas-à-pas n'est pas supprimé : il est réaffecté.** Même composant visu
 
 Le premier dit le **geste** et le **pourquoi** de l'écart, sans jamais mettre la sonde en cause :
 
-> Si votre test donne une valeur différente de celle affichée, indiquez-la ici : l'appareil corrigera sa mesure. L'écart vient de l'installation, pas de la sonde.
+> Indiquez la valeur lue sur un test manuel : l'appareil corrigera sa mesure. L'écart vient de l'installation, pas de la sonde.
+
+⚠️ **v3.0.0 (bug-201, condition « bug-201 (C50) »)** : la proposition d'ouverture a été **raccourcie** (6 lignes au lieu de 8 à 390 px ; ci-dessus, le texte actuel). **« L'écart vient de l'installation, pas de la sonde. » est préservée mot pour mot et n'est pas atténuée** (ni `.muted`, ni corps réduit) : c'est la seule phrase de l'écran qui empêche d'attribuer l'écart à la sonde — l'erreur réelle du 25/08/2026, quand une sonde saine avait été déclarée à remplacer. La carte étant permanente, la ligne « Correction +1,20 pH — posée le … » est visible en continu et **un nombre de cette taille, sans sa cause, invite à soupçonner la sonde**. Le **gras** n'est plus sur cette phrase : il est **réservé au second paragraphe** (celui qui dit que la valeur décide des injections) — quand tout est en gras, plus rien n'est souligné.
 
 Le second dit l'**enjeu** — texte **imposé mot pour mot ET ponctuation pour ponctuation** par le gate `pool-chemistry` (condition B4) :
 
@@ -411,7 +438,11 @@ Le second dit l'**enjeu** — texte **imposé mot pour mot ET ponctuation pour p
 
 ### Les refus bloquants de l'accord
 
-⚠️ **v2.82.0 (feature-168) : il ne reste que TROIS refus réellement bloquants** (le 4ᵉ, « écart hors ±0,50 », a disparu — un écart large n'est plus un refus, voir [Avertissement et impasse de régulation](#avertissement-et-impasse-de-régulation-v2820) ci-dessous). Un seul callout `#ph_tune_blocked` (ambré, `role="status"`, `aria-live="polite"`), évalué dans le **même ordre** que le serveur (`src/ph_tune_logic.h`, `evaluatePhTune()`) : un même jeu de conditions produit toujours le même verdict côté aperçu et côté serveur.
+⚠️ **v2.82.0 (feature-168) : il ne reste que TROIS refus réellement bloquants** (le 4ᵉ, « écart hors ±0,50 », a disparu — un écart large n'est plus un refus, voir [Avertissement et impasse de régulation](#avertissement-et-impasse-de-régulation-v2820) ci-dessous). ⚠️ **v3.0.0 (bug-201, condition « bug-201 (C51) ») : les trois refus ne sont plus dans un encadré ambre.** Ils sont écrits, **mot pour mot**, dans `#ph_tune_refus` — un `<p class="field__hint field__hint--refus" role="status">` placé **immédiatement sous le bouton « Corriger »** qu'ils désactivent (`aria-describedby="ph_tune_refus"` sur ce bouton). Taille **14 px**, couleur **`--text`** (pas `--muted`), sans cadre ni teinte : ⛔ ce sont des **refus**, pas des conseils, et ils doivent rester **au moins aussi saillants que le bouton grisé** — un bouton désactivé sans explication lisible est le défaut que ces textes existent pour éviter. Le composant est décrit dans [DESIGN_SYSTEM §5.11bis](../DESIGN_SYSTEM.md#511bis-field__hint--refus-un-refus-adjacent-à-ce-quil-désactive-bug-201-v300). Texte et visibilité ne sont écrits **que s'ils changent** (pas de relecture par lecteur d'écran à chaque trame).
+
+⛔ **Deux rendus distincts, et c'est un invariant.** `#ph_tune_blocked` (callout ambre avec chapeau et repliable) **ne porte plus que l'avertissement** feature-168 (voir plus bas). Les ramener sur le même rendu dégraderait **en silence** l'avertissement qui dit que la correction est devenue une pièce du dosage. Un test et une mutation le verrouillent (`test/ph_tune_remove_vectors.js`).
+
+Le tableau ci-dessous décrit toujours les conditions, évaluées dans le **même ordre** que le serveur (`src/ph_tune_logic.h`, `evaluatePhTune()`) : un même jeu de conditions produit toujours le même verdict côté aperçu et côté serveur.
 
 | Ordre | Condition | Texte affiché |
 |---:|---|---|
@@ -488,14 +519,20 @@ Le firmware expose le verdict (`ph_offset_stale`, booléen) **et** la cause (`ph
 
 **Cause héritée** : un firmware antérieur (ou un retour arrière) peut encore servir `"boot"` ou `"expiration"`. Le client affiche alors un **texte neutre** (P1 « L'appareil signale cette correction comme à revérifier. » + le même P2), **jamais** le texte de l'étalonnage, et masque le chapeau. Valeur absente (`undefined`) : traitée comme `calibration`. ⚠️ Ordre d'envoi OTA : **firmware d'abord, puis le système de fichiers**.
 
-Deux issues explicites (`#ph_tune_stale_keep_btn` / `#ph_tune_stale_cancel_btn`, identifiants inchangés), **pas** de remise à zéro automatique :
+⚠️ **v3.0.0 (bug-201, condition « bug-201 (C49) ») : le bandeau n'a plus QU'UN bouton.** « Remettre à zéro » (`#ph_tune_stale_cancel_btn`) est **supprimé**, avec son écouteur. Motif : ce libellé évoque le **zéro de l'électrode EZO**, une grandeur **différente** — et dégradée sur cet appareil (128 mV relevés le 11/10, sain < 15). Un utilisateur pouvait croire faire un geste d'entretien en **supprimant sa correction** (+1,20). Le **seul** chemin destructif de la carte est « [Supprimer la correction](#friction-sur-supprimer-la-correction-bug-201-c41-c45-c47-v300) » (bas de carte), désormais **visible même quand le bandeau est affiché** (le terme `!staleBannerShown` est retiré de `renderPhTuneRemoveRow()` — **indissociable** : sans cela, le bandeau n'offrirait que « garder »). ⭐ Un bandeau qui demande de vérifier et n'offre que de conserver pousse à la confirmation sans vérification.
+
+⚠️ **Écart assumé, ⛔ à ne pas « corriger »** : le texte du bandeau dit encore « …ou remettez la correction à zéro » alors que le bouton s'appelle « Supprimer la correction ». Cette phrase est comparée **octet pour octet** avec `src/ph_stale_message.h` par `tools/check_ph_stale_text_parity.sh` : la changer touche `src/`.
+
+⚠️ Cela **amende feature-170 (C30)** : l'esprit est préservé (le destructif reste second, `btn--danger`, précédé du choix vertueux) ; seul son **emplacement** change — plus un geste destructif par bloc, **un par carte**.
+
+Une issue explicite (`#ph_tune_stale_keep_btn`), **pas** de remise à zéro automatique ; l'historique des deux issues de la v2.99.0 :
 
 - **« Je l'ai vérifiée — garder »** (en premier, `btn--secondary` : il ne doit pas inviter à valider) — ré-envoie la valeur courante par `POST /save-config` : ce ré-envoi **re-estampille** la correction (`setPhOffsetStamped()`) et éteint durablement le verdict. Toast : « Correction conservée, marquée comme vérifiée ». Aucune confirmation : « Je l'ai vérifiée » **est** la déclaration.
-- **« Remettre à zéro »** (en second, `btn--danger action-destructive`) — remet `ph_offset` à 0 via `POST /save-config`, **sans** les gardes de `/tune-ph-offset` (exiger une attente pour **retirer** une correction serait une garde qui bloque plus qu'elle ne protège). Le geste destructif n'est pas le premier sous le pouce.
+- ~~**« Remettre à zéro »**~~ *(supprimé en v3.0.0, voir ci-dessus)* (en second, `btn--danger action-destructive`) — remettait `ph_offset` à 0 via `POST /save-config`, **sans** les gardes de `/tune-ph-offset` (exiger une attente pour **retirer** une correction serait une garde qui bloque plus qu'elle ne protège). Le geste destructif n'est pas le premier sous le pouce.
 
-⚠️ **Échec du POST sur ces deux boutons** (v2.73.0) : `sendConfigDetailed` ; message du contrôleur affiché tel quel. Ils n'écrivent que `0` ou la valeur déjà en vigueur : seul un contrôleur injoignable produit un échec réel.
+⚠️ **Échec du POST sur ces boutons** (v2.73.0) : `sendConfigDetailed` ; message du contrôleur affiché tel quel. Ils n'écrivent que `0` ou la valeur déjà en vigueur : seul un contrôleur injoignable produit un échec réel.
 
-⚠️ **Visibilité** : `#ph-card-tune` est derrière le flux maintenance (`.flow-maintenance`, `hidden`) : le bandeau n'est atteignable **qu'en mode réglage**. Dette connue, portée par bug-201 ; le signal hors écran est l'alerte MQTT `ph_offset_stale` émise **à l'étalonnage** ([MQTT.md](../MQTT.md)).
+⭐ **Visibilité (bug-201, v3.0.0) : la dette est payée.** `#ph-card-tune` est permanente : le bandeau, quand il y a lieu, se voit **sans entrer en mode réglage**, donc sans geler le dosage. Le signal hors écran reste l'alerte MQTT `ph_offset_stale` émise **à l'étalonnage** ([MQTT.md](../MQTT.md)).
 
 **Rétrocompatibilité assumée** : sur un appareil mis à jour depuis une version antérieure (compteurs d'horodatage à `0` des deux côtés), une correction héritée n'est **jamais** signalée caduque tant qu'aucun étalonnage n'a eu lieu depuis la mise à jour — pas de fausse alerte sur tout le parc au premier démarrage. Elle le sera au **prochain** étalonnage.
 
@@ -527,11 +564,11 @@ Un onzième site de formatage pH existait **hors** de `_fmtPh()` : la bannière 
 Jusqu'à ce lot, la correction en vigueur n'était **affichée nulle part** sur la carte en dehors du pas-à-pas lui-même, et le seul moyen de la retirer était le bouton « Annuler la correction » de la bannière « correction caduque » (visible **uniquement** après un étalonnage). Un bouton **« Supprimer la correction »** (`#ph_tune_remove_btn`, `btn--danger`) couvrent désormais ce cas en permanence :
 
 - **Visible** si et seulement si la correction en vigueur (`ph_offset`) est **non nulle** — pas de bouton inerte sur une carte qu'on vient d'alléger.
-- **Masquage mutuel avec la bannière « Correction à vérifier »** (`#ph_tune_stale_banner`) : les deux **ne coexistent jamais**. Quand la bannière est affichée, elle seule agit (« Remettre à zéro » couvre le cas de la suppression).
+- ~~**Masquage mutuel avec la bannière « Correction à vérifier »**~~ — **retiré en v3.0.0 (bug-201)** : le bouton est visible **dès que `ph_offset !== 0`**, bandeau affiché ou non. Invariant (condition « bug-201 (C48) ») : **un seul contrôle destructif existe sur la carte, toujours le même, toujours au même endroit**, quel que soit l'état de `ph_offset_stale`. Verrouillé par un test.
 - Écrit `ph_offset: 0` par `POST /save-config` — **pas** `/tune-ph-offset` : le chemin était déjà validé au gate 2 de feature-156 (les gardes de `/tune-ph-offset` — 10 min de filtration, sonde étalonnée — protègent l'**ajout** d'une interprétation, pas son **retrait**).
-- **Aucune confirmation** avant suppression (verdict `pool-chemistry`) : le geste est **réversible** (on peut re-corriger) et va vers le **défaut sûr** (plus de correction = mesure nue de la sonde). *« Les gardes de `/tune-ph-offset` protègent l'AJOUT d'une interprétation, pas son RETRAIT. »*
+- **Aucune confirmation sous le seuil ; un second geste au-delà (v3.0.0)** — voir [la section suivante](#friction-sur-supprimer-la-correction-bug-201-c41-c45-c47-v300). Verdict d'origine de la v2.73.0, **révisé** : le geste est **réversible** (on peut re-corriger) et va vers le **défaut sûr** (plus de correction = mesure nue de la sonde). *« Les gardes de `/tune-ph-offset` protègent l'AJOUT d'une interprétation, pas son RETRAIT. »*
 - **Échec du POST** (correctif de revue, v2.73.0) : la correction reste en vigueur, **aucun** toast de succès n'est émis, et le message montré est désormais celui du **contrôleur** (`res.message || res.error`, via `sendConfigDetailed` plutôt que `sendConfig`) au lieu du générique « réessayez » — qui invitait à répéter un geste voué à échouer à l'identique. ⚠️ **Le refus de plage est hors d'atteinte sur ce bouton** : il n'écrit que `0`, toujours valide ; le cas réel est le **contrôleur injoignable**, d'où l'intérêt de voir le vrai motif plutôt qu'une invitation à réessayer.
-- **Accessibilité** : `#ph_tune_remove_btn` porte `aria-describedby="ph_tune_applied ph_tune_remove_hint"` — le **fait** (valeur et date de pose) et sa **conséquence** (« Sans correction, l'appareil régule sur la mesure de la sonde telle quelle. »). ⚠️ `#ph_tune_applied` est masqué avec le bouton quand la bannière est affichée : aucun renvoi vers un élément caché depuis un bouton actif. L'ancienne étiquette `#ph_tune_remove_label` / `#ph_tune_remove_value` (« Correction actuelle : … pH », 1 décimale) est **supprimée** (feature-170, absorbée par la ligne de date).
+- **Accessibilité** : `#ph_tune_remove_btn` porte `aria-describedby="ph_tune_applied ph_tune_remove_hint"` — le **fait** (valeur et date de pose) et sa **conséquence** (« Sans correction, l'appareil régule sur la mesure de la sonde telle quelle. »). ⚠️ `#ph_tune_applied` s'efface derrière le bandeau quand celui-ci porte déjà le fait : le bouton garde alors `aria-describedby` vers un élément masqué — le texte de conséquence (`#ph_tune_remove_hint`) reste, lui, présent. L'ancienne étiquette `#ph_tune_remove_label` / `#ph_tune_remove_value` (« Correction actuelle : … pH », 1 décimale) est **supprimée** (feature-170, absorbée par la ligne de date).
 - **Placement** : classe locale `.action-destructive` qui écarte ce bouton de l'action principale de la carte — `margin-left: auto` en vue large (rejeté à l'opposé), `margin-top: 12px` sous 768 px (les boutons s'empilent en pleine largeur et le `gap` de 8 px ne suffisait pas pour une cible tactile). Classe **locale**, pas une règle sur `.detail-actions` (ce conteneur sert sur tout le produit).
 
 Textes imposés par le gate `pool-chemistry`, à ne pas reformuler :
@@ -541,9 +578,31 @@ Textes imposés par le gate `pool-chemistry`, à ne pas reformuler :
 
 ⚠️ **Effet de bord à connaître** : retirer un offset **positif** abaisse le pH corrigé et peut le faire **repasser sous le seuil d'inhibition ORP** (`kPhOrpInhibit`, 7,60) — donc **lever l'inhibition** du dosage chlore, qui peut reprendre. Comportement **correct** (la mesure nue de la sonde fait foi), mais à savoir avant de cliquer : **cas réel du 2026-10-12**, correction de **+0,50** en vigueur, pH affiché **7,66** (chlore inhibé) — supprimer la correction ramène l'affichage à **~7,15**, sous le seuil de 7,60, ce qui lève l'inhibition ORP.
 
+#### Friction sur « Supprimer la correction » (bug-201 (C41), (C45), (C47), v3.0.0)
+
+⚠️ **Révise le verdict de feature-157** (« aucune confirmation : geste réversible qui va vers le défaut sûr »), qui n'est vrai **que si la mesure nue est à peu près juste**. Sur un appareil portant +1,20, elle est fausse de 1,20 : la retirer fait lire 6,10 pour une eau à 7,30 — l'acide s'arrête, l'inhibition du chlore est repoussée à 8,80 réels, le chlore continue de se doser pendant que sa fraction active s'effondre. Et **détruire est gratuit, réparer demande une trousse d'analyse** (test manuel + 10 min de filtration + sonde étalonnée).
+
+**Déclencheur** : `phTuneRemoveNeedsFriction(offset, unusualAbs)` — vrai dès que `|correction| > ph_offset_unusual_abs`, **clé servie** (ADR-0100, jamais 0,50 en dur). Écrit `!(|o| <= seuil)` : un seuil non fini donne la friction, pas son absence. **En dessous : aucune confirmation** (une garde qui bloque plus qu'elle ne protège est un défaut) — le pas valant 0,10, la friction se déclenche en pratique à 0,60.
+
+**Forme** : un premier appui **remplace** le bouton par un bloc (`#ph_tune_remove_confirm`) portant, dans l'ordre : la **phrase de conséquence** (`callout--warn`), puis **« Ne rien changer »** (`btn--secondary`, **reçoit le focus**), puis **« Supprimer la correction »** (`btn--danger action-destructive`) **en second**. Boutons **empilés, pleine largeur, ≥ 44 px** (`.ph-tune-confirm__actions`). La cible destructive n'occupe **pas** la position du premier bouton (un double-appui rapide, doigt mouillé, n'atteint que du texte inerte puis le bouton sûr). ⛔ Pas de `confirm()` natif, pas de mot à saisir, pas d'appui long, pas de modale, pas de minuterie, pas de région live (le focus est déplacé).
+
+**Texte** — deux variantes choisies sur le **SIGNE** de la correction (valeurs lues dans les clés servies `phValueRaw` pour « il lira », `ph` pour « au lieu de », **jamais `phRaw`** ; aucune arithmétique client) :
+
+- `ph_offset > 0` : « Sans cette correction, l'appareil lira **6,10** au lieu de **7,30** : il cessera d'ajouter de l'acide et laissera le pH monter. Pour la remettre, il faudra refaire un test manuel. »
+- `ph_offset < 0` : « Sans cette correction, l'appareil lira **7,90** au lieu de **7,30** : il ajoutera de l'acide en trop et pourra arrêter le chlore en croyant le pH trop haut. Pour la remettre, il faudra refaire un test manuel. »
+- ⭐ **Repli obligatoire** si `ph` ou `phValueRaw` manque (filtration arrêtée : les deux tombent **ensemble** — c'est l'état le plus fréquent hors cycle de filtration) : « Sans cette correction, l'appareil lira **1,20** pH de moins qu'aujourd'hui : … » (« de plus » si négative), construit sur le seul `ph_offset`. ⛔ **La friction ne disparaît jamais faute de mesure**, et aucun nombre n'est inventé.
+
+⚠️ **`phRaw` est un instantané EZO, interdit ici.** Dispersion ~0,36 sur ce bassin, mesuré à 5,93 puis 5,799 en quelques minutes : un couple formé avec lui se contredirait lui-même. Voir [API.md](../API.md#get-data--write).
+
+**Désarmement** — toujours vers le défaut sûr (rien n'est supprimé) : **Échap**, **clic extérieur**, **changement de page** (`hashchange`), **tout retour de `/get-config`** (y compris la trame WS `config`, donc un changement de `ph_offset` depuis un autre onglet ou client), et « Ne rien changer ». ⛔ **Pas sur une trame capteurs** : `renderPhTuneCard()` tombe toutes les quelques secondes, refermer le bloc sous le doigt serait une garde qui bloque plus qu'elle ne protège. **Conséquence assumée** : le texte est **figé à l'armement** avec les `ph` / `phValueRaw` de cet instant ; sans conséquence chimique, car ce qui porte le sens est l'**écart** entre les deux nombres, qui **est** la correction et ne bouge pas pendant l'armement.
+
+⚠️ **Course corrigée** : le `doRemove` attend `await loadConfig()` avant le désarmement ; sans cette attente, le bouton se réaffichait une fraction de seconde avec l'ancienne valeur et un appui à cet instant réarmait la friction avec des nombres périmés.
+
+⛔ **La friction ne porte QUE sur le bouton destructif.** Jamais sur « Corriger » ni sur « Je l'ai vérifiée — garder » : ce sont les gestes **vertueux**.
+
 #### Un défaut réparé
 
-Le bouton « Remettre à zéro » (`#ph_offset_reset`) avait été retiré en feature-156 (v2.72.0) au motif que revenir à zéro n'était « qu'une position du pas-à-pas » — **ce motif était faux** : supprimer une correction est un **geste distinct**, pas une valeur parmi d'autres. Conséquence constatée en production : une correction devenue inutile restait en vigueur, sans aucun moyen direct de la retirer en dehors d'un étalonnage. Ce lot répare ce défaut, sous une forme différente (bouton dédié « Supprimer la correction », masqué par défaut et par la bannière caduque) plutôt qu'en ressuscitant l'ancien bouton.
+Le bouton « Remettre à zéro » (`#ph_offset_reset`) avait été retiré en feature-156 (v2.72.0) au motif que revenir à zéro n'était « qu'une position du pas-à-pas » — **ce motif était faux** : supprimer une correction est un **geste distinct**, pas une valeur parmi d'autres. Conséquence constatée en production : une correction devenue inutile restait en vigueur, sans aucun moyen direct de la retirer en dehors d'un étalonnage. Ce lot répare ce défaut, sous une forme différente (bouton dédié « Supprimer la correction », masqué quand la correction est nulle) plutôt qu'en ressuscitant l'ancien bouton. *(Jusqu'en v2.99.0 il était aussi masqué par la bannière caduque ; ce n'est plus le cas, voir plus haut.)*
 
 ### Consigne pH : contrôle segmenté (v2.25.0)
 
@@ -700,6 +759,10 @@ Sous la valeur pH dans le bloc Statistiques, un **chip cliquable** affiche en pe
 
 ### Placement
 
+⚠️ **v3.0.0 (bug-201)** : la pastille est **déplacée sur la ligne du bouton d'entrée** (`.cal-trigger-row`, bouton « Étalonnage de la sonde »), **toujours dans la carte héros** : le verdict doit se voir sans entrer en réglage et sans défilement. Elle ne descend **pas** sur `#ph-card-calibration`. **Pourquoi le renommage** : c'est cette pastille que l'utilisateur voyait en disant « je ne vois pas l'alerte » — il en voyait **une**, mais elle parlait de l'**étalonnage**, pas de la correction. Le nouveau nom nomme le bon objet et lève la collision avec la ligne « Correction … » de la carte permanente.
+
+(Texte historique ci-dessous, avant déplacement :)
+
 Élément `<button id="ph-probe-chip" class="chip chip--probe ...">` à l'intérieur du bloc Statistiques pH (`#ph-card-stats`), sous l'affichage pH (1 décimale). Le chip est focusable (rôle bouton, `Enter`/`Espace` ouvrent le modal).
 
 ### Classification (UI)
@@ -719,7 +782,7 @@ Source : champs WS `phSlopeAcid`, `phSlopeBase`, `phSlopeZero`, `phSlopeAgeMs`, 
 | `1` | — | `chip--probe-warn` | « Calibration 1/2 » | ambré |
 | `≥ 2` | pentes NaN/`null` **et** `phSlopeAgeMs` `null` (jamais lu) | `chip--probe-unknown` | « Pente en cours de lecture… » | gris |
 | `≥ 2` | pentes NaN/`null` **et** `phSlopeAgeMs` non-`null` (pente invalidée) | `chip--probe-warn` | « Pente non disponible » | ambré |
-| `≥ 2` | au moins un des 3 critères **hors** de la fenêtre servie | `chip--probe-bad` | « Calibré · critère hors norme » | rouge (`var(--danger)`, point pulsant) |
+| `≥ 2` | au moins un des 3 critères **hors** de la fenêtre servie | `chip--probe-bad` | « Étalonnage : critère hors norme » (**renommé en v3.0.0**, bug-201 ; était « Calibré · critère hors norme ») | rouge (`var(--danger)`, point pulsant) — ⛔ **toujours rouge** : ce critère engage le dosage (une jonction de référence qui se dégrade déplace la mesure qui décide des injections d'acide ; depuis la v2.82.0 plus aucune borne ne bute mécaniquement, cette alerte est ce qui reste) |
 | `≥ 2` | aucun critère hors norme, mais au moins un **indisponible** (ex. zéro non rapporté par un module EZO ancien, ou seuils pas encore reçus) | `chip--probe-unknown` | « Calibré · critère indisponible » | gris |
 | `≥ 2` | **les trois** critères mesurés et dans la fenêtre (condition C2 du gate `pool-chemistry` : un seul « indisponible » interdit le vert) | `chip--probe-good` | « Calibré · sain » | vert (`var(--success)`) |
 
@@ -789,7 +852,9 @@ Si `dialog.showModal` est absent (vieux navigateur), le chip est rendu non cliqu
 - **EZO pH débranché en runtime** : après 2 échecs consécutifs (`kEzoBusFailMaxConsecutive`), les champs `phSlope*` passent à `null` mais `phSlopeAgeMs` reste connu (`_phSlopeQueriedMs` non remis à zéro) → chip ambré « Pente non disponible » (erreur réelle, v2.21.2) — pas de crash, pas de toast.
 - **Refresh en cours et payload WS qui apporte une nouvelle valeur** : si `phSlopeAgeMs < 60 s`, l'état refresh est résolu en succès (toast).
 
-## État de calibration & bouton « Calibration et correction de la mesure » (feature-034 ; renommé feature-156, v2.72.0)
+## État de calibration & bouton « Étalonnage de la sonde » (feature-034 ; « Calibration et correction de la mesure » de feature-156, v2.72.0, à v2.99.0 ; renommé bug-201, v3.0.0)
+
+> ⚠️ **v3.0.0** : le libellé du bouton (`#ph_cal_trigger_btn`) est désormais « **Étalonnage de la sonde** » ; ce qui suit mentionne l'ancien nom « Calibration et correction de la mesure » (v2.72.0 à v2.99.0).
 
 Depuis l'itération 2 de feature-034, l'état de calibration EZO n'est plus présenté par trois callouts noyés dans la carte Régulation (supprimés). L'itération suivante a **fusionné** le chip de calibration séparé (`#ph-cal-chip`, supprimé) dans le **chip unique sonde + calibration** `#ph-probe-chip` (cf. [Chip d'état sonde](#chip-détat-sonde-feature-024)) : pour `phCalPoints < 2`, ce chip affiche directement l'état de calibration. Il ne reste donc plus qu'**un seul chip** côté sonde/calibration pH.
 
@@ -1188,7 +1253,7 @@ Encart `#ph_inject_raw_guard_warning` (titre `#ph_inject_raw_guard_title`, texte
 - **Injection pH en cours (feature-034)** : le clic sur le point d'entrée (`#ph_cal_trigger_btn`) est **bloqué** si une injection pH est active — condition `(ph_inject_remaining_s > 0) || (ph_dosing === true)`, toast « Calibration impossible pendant une injection pH ». Ce garde existait déjà côté ORP ; il est désormais ajouté côté pH (symétrie de sécurité). Depuis la **v2.21.1**, la **désactivation proactive** du bouton (`_updateInjectButtons`) applique la même condition (elle n'incluait pas `ph_dosing` avant — le clic était bloqué mais le bouton restait cliquable pendant une séance auto).
 - **Quitter le mode réglage par le menu, sans cliquer un lien de retour (feature-156, v2.72.0)** : défaut trouvé en test — la page revenait **amputée** (débit d'injection, régulation, historique restaient masqués). Corrigé par `_exitAllMaintenanceModes()`, appelée depuis `showView()` à chaque changement de vue. Voir [ADR-0103](../adr/0103-gestes-d-entretien-quittent-la-vue-courante.md#leçon--généraliser-un-mécanisme-en-oubliant-ce-quune-version-spécifique-faisait-en-plus).
 - **Quitter par le menu pendant une calibration en vol (feature-156, v2.72.0)** : même défaut, une couche plus bas — le minuteur de calibration (`_calPollTimer`) continuait de tourner après la sortie. `_exitAllMaintenanceModes()` annule désormais aussi l'attente client (`_calEndAwait()`) dans ce cas.
-- **Correction manuelle devenue caduque (feature-156, v2.72.0 ; réduite à la seule cause `calibration` v2.99.0, feature-170)** : bannière persistante sur la carte Correction (voir [section dédiée](#correction-devenue-caduque-ph_tune_stale_banner)), avec deux choix explicites. Survit au rechargement et au redémarrage.
+- **Correction manuelle devenue caduque (feature-156, v2.72.0 ; réduite à la seule cause `calibration` v2.99.0, feature-170)** : bannière persistante sur la carte Correction (voir [section dédiée](#correction-devenue-caduque-ph_tune_stale_banner)), avec **un** choix explicite (« Je l'ai vérifiée — garder ») ; le destructif est « Supprimer la correction », en bas de carte (v3.0.0). **Visible sans entrer en mode réglage** (v3.0.0, bug-201). Survit au rechargement et au redémarrage.
 
 ## Interaction MQTT
 

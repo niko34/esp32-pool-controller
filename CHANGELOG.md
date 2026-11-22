@@ -2,6 +2,27 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [3.0.0] - 2026-11-22
+
+### Fonctionnalités
+- **La carte « Correction manuelle de la mesure » est toujours visible sur la page pH.** Avant, elle se cachait derrière le mode réglage, qui **met la régulation en Manuel et gèle le dosage** : pour lire l'alerte sur votre correction, il fallait suspendre la régulation. Ce n'est plus le cas, et la ligne « Correction +1,20 pH — posée le 17/10/2026 » se lit sans rien geler. L'étalonnage de la sonde, lui, reste derrière son bouton (il touche la sonde, son gel du dosage est légitime).
+- **Le bouton « Remettre à zéro » du bandeau « Correction à vérifier » disparaît.** Son nom évoquait le zéro de la sonde, une grandeur différente (et dégradée sur cet appareil) : on pouvait croire faire un geste d'entretien alors qu'on supprimait sa correction. Il ne reste qu'un chemin destructif, « Supprimer la correction », désormais visible même quand le bandeau est affiché.
+- **Supprimer une correction importante demande deux gestes.** Au-delà de 0,50 pH, un premier appui ouvre un encadré qui chiffre la conséquence (« Sans cette correction, l'appareil lira 6,10 au lieu de 7,30 : il cessera d'ajouter de l'acide… »), avec « Ne rien changer » en premier puis « Supprimer la correction ». Le texte suit le signe de la correction et se rabat sur un écart (« 1,20 pH de moins ») quand il n'y a pas de mesure. Échap, un appui ailleurs ou un changement de page referment l'encadré sans rien supprimer. Sous 0,50, un seul appui suffit.
+- **La pastille rouge « Calibré · critère hors norme » devient « Étalonnage : critère hors norme »** et passe sur la ligne du bouton, rebaptisé « Étalonnage de la sonde ». C'était cette pastille que l'on voyait en cherchant l'alerte sur la correction : elle parlait de l'étalonnage, pas de la correction. Elle reste rouge.
+- **Refus du bouton « Corriger »** : les trois motifs (mesure absente, filtration trop courte, sonde non étalonnée) s'affichent en texte plein juste sous le bouton grisé, plus dans un encadré ambre — l'avertissement sur une correction supérieure à 0,50 garde, lui, son encadré.
+- **Carte héros pH allégée** : « MAJ auto toutes les 5 secondes » et « Historique indisponible » retirés, « Injection manuelle » réduit à une phrase, « Atteinte de la cible » sur une ligne. Texte d'introduction de la carte de correction raccourci (la phrase « L'écart vient de l'installation, pas de la sonde » est conservée).
+  ⚠️ **Périmètre de ces allègements, à lire si vous regardez aussi la page ORP** : « MAJ auto » et « Historique indisponible » ne sont retirés **que sur le pH** — la page ORP garde les siens. En revanche, le raccourci de « Atteinte de la cible » passe par une fonction **partagée** : il s'applique **aux deux pages**.
+
+### Firmware
+- Version seule (`src/version.h`) : **aucune ligne de firmware modifiée**, les deux clés servies (`ph_offset_stale`, `ph_offset_stale_cause`) l'étaient déjà. **Ordre de mise à jour : indifférent, mais c'est le système de fichiers qui porte tout le changement.**
+
+### Documentation
+- ADR-0140 (quand un gate renonce à bloquer, la contrepartie est la visibilité permanente ; le flux maintenance n'est pas une garde).
+- `docs/features/page-ph.md`, `docs/DESIGN_SYSTEM.md` (§5.11bis `.field__hint--refus`, §5.25 `.flow-maintenance` = « survit au mode réglage », §5.26 bloc de confirmation), `docs/API.md` (`phRaw` ne sert jamais à un texte de conséquence), `docs/user/src/guide-utilisation.html`.
+- ⚠️ Capture d'écran à refaire : `screenshots/07_pH_Calibration.jpg` (et la page pH).
+
+---
+
 ## [2.99.0] - 2026-11-22
 
 ### Fonctionnalités

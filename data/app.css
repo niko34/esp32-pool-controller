@@ -1298,6 +1298,30 @@ canvas:hover {
   margin-top: 8px;
 }
 
+/* bug-201 (C51) : un REFUS (ce que dit le bouton « Corriger » grisé, pourquoi il l'est) n'est
+   pas un conseil : texte plein (--text, pas --muted) et 14 px, pour ne pas être moins
+   saillant que le bouton qu'il désactive. Ni cadre ni teinte d'alerte : l'ambre reste
+   réservé à l'avertissement feature-168 (C8) de la même carte. */
+.field__hint--refus {
+  font-size: 14px;
+  color: var(--text);
+  margin-top: 8px;
+}
+
+/* bug-201 (C47) : bloc de friction de « Supprimer la correction » — deux boutons EMPILÉS,
+   pleine largeur, ≥ 44 px (390 px d'abord, doigt mouillé au bord du bassin). Le choix sûr
+   (« Ne rien changer ») est en premier. L'écart vertical sépare la cible destructive. */
+.ph-tune-confirm__actions {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 12px;
+}
+.ph-tune-confirm__actions .btn {
+  width: 100%;
+  min-height: 44px;
+}
+
 .field__error {
   font-size: 12px;
   color: var(--danger);
@@ -4700,11 +4724,20 @@ h1, h2, h3 {
    de calibration, carte de correction pH). `display:none` sort aussi ces
    enfants de l'ordre de tabulation et de l'arbre d'accessibilité — B8 gratuit,
    aucun piège clavier à gérer en plus.
-   ⚠️ Les éléments .flow-maintenance eux-mêmes sont `hidden` par défaut dans le
+   ⚠️ La PLUPART des éléments .flow-maintenance sont `hidden` par défaut dans le
    HTML et affichés/masqués par enterMaintenance()/exitMaintenance() (app.js) —
    PAS par cette règle, qui ne fait QUE masquer le reste. Ne jamais réintroduire
    un `el.style.display` sur une carte de calibration/correction : un style
-   inline écraserait cette règle sans effet visible. */
+   inline écraserait cette règle sans effet visible.
+
+   🔴 EXCEPTION depuis bug-201 — #ph-card-tune (« Correction manuelle de la
+   mesure ») est PERMANENTE : plus de `hidden`, absente de
+   MAINTENANCE_PAGES.ph.cardIds. ⛔ Elle GARDE pourtant la classe
+   .flow-maintenance, et c'est VOULU : sans elle, cette règle la masquerait
+   PENDANT le flux d'étalonnage — c'est-à-dire exactement au moment où la cause
+   `calibration` vient de se lever et où ses boutons servent.
+   ⇒ `.flow-maintenance` ne signifie donc PAS « visible seulement en mode
+   réglage » : elle signifie « SURVIT au mode réglage ». */
 #view-ph.is-flow-maintenance > :not(.flow-maintenance),
 #view-orp.is-flow-maintenance > :not(.flow-maintenance),
 #view-temperature.is-flow-maintenance > :not(.flow-maintenance) {
