@@ -2,7 +2,7 @@
 - **ID** : bug-201
 - **Slug** : l-alerte-de-correction-ph-n-est-atteignable-qu-en-suspendant-la-regulation
 - **Type** : bug
-- **Statut** : **doing** — ✅ **DÉBLOQUÉ** : [feature-170](../done/feature-170-retirer-la-confirmation-de-correction-ph.md) est livrée, déployée (v2.99.0) et vérifiée sur l'appareil le 2026-11-22
+- **Statut** : ✅ **DONE** — livrée, déployée en **v3.0.0** le 2026-11-22, **vérifiée par l'utilisateur sur son appareil** — ✅ **DÉBLOQUÉ** : [feature-170](../done/feature-170-retirer-la-confirmation-de-correction-ph.md) est livrée, déployée (v2.99.0) et vérifiée sur l'appareil le 2026-11-22
 - **Priorité** : **haute**
 - **Version cible** : **à définir** (⚠️ 2.99.0 est en ligne ; trancher 2.99.1 ou 3.0.0 à la livraison)
 - **Dernière mise à jour** : **2026-11-22**
@@ -761,3 +761,61 @@ correction. **Quand l'utilisateur dit « je ne vois pas l'alerte », il en voit 
 (carte entière **avec** ses boutons, et un second geste sur « Annuler »). ⇒ **C'est le gate qui
 prime**, son verdict est contraignant. L'ergonomie garde tout le reste : emplacement, compensations,
 accessibilité, états limites.
+
+---
+
+# ✅ CLÔTURE — 2026-11-22
+
+**Déployée en v3.0.0** (firmware puis système de fichiers, signatures vérifiées à l'octet près),
+**CI verte sur les trois chaînes — 40 travaux**, dont le contrôle neuf
+`check_ph_card_permanent_vectors.sh` à son premier passage hors machine de développement.
+
+**Verdict de l'utilisateur, sur son appareil** : *« C'est ok. J'ai fait les autres vérifications.
+Tout est ok. »*
+
+## Ce que le lot a réellement corrigé
+L'alerte était **juste, servie, et inatteignable**. ⭐ Lire une information coûtait une
+**suspension du dosage** — le geste vertueux était le plus cher de l'écran.
+
+## 🔴 UN DÉFAUT RÉEL TROUVÉ PAR L'USAGE, ⛔ pas par les tests — et NON corrigé (décision utilisateur)
+L'utilisateur a supprimé sa correction, puis **n'a pas pu en poser une nouvelle**.
+✅ **L'appareil avait raison de refuser** : filtration à l'arrêt ⇒ `ph: null`, `phValueRaw: null`
+⇒ l'eau devant la sonde n'est pas celle du bassin. ⭐ C'est exactement la garde qui manquait lors
+des incidents de dérivation fermée (23/08 et 11/10).
+
+⛔ **Mais le texte du refus ne dit pas quoi faire** :
+> « L'appareil n'a pas de mesure assez récente. **Attendez qu'une valeur s'affiche**, puis
+> recommencez. »
+
+⚠️ **Cette valeur n'apparaîtra JAMAIS tant que la pompe est à l'arrêt.** Le message nomme le
+**symptôme** et invite à **attendre**, alors que l'action requise est de **démarrer la
+filtration**. ⭐ *Attendre est précisément ce qui ne marchera pas.*
+ⓘ Le refus **suivant** est bon, lui : « La filtration doit tourner depuis 10 minutes… **Possible
+dans 10 min** », avec décompte.
+
+⇒ **Décision de l'utilisateur du 2026-11-22 : ⛔ ne PAS ouvrir de fiche.** Consigné ici pour que
+le constat ne se perde pas. ⚠️ Le texte est **imposé par le gate** (feature-155) : le corriger
+exigerait son accord.
+
+## Campagne de tests
+**47 mutations jouées, 47 tuées** (37 au premier passage, 10 sur les corrections de revue).
+`pio run` sans warning · **2734 cas natifs verts** sur 97 suites · flash 52,7 %.
+Harnais neuf `test/ph_card_permanent_vectors.js` (80 vecteurs) + sentinelle en CI.
+
+## Ce que ce lot a appris au projet
+- **ADR-0140** : *quand un gate renonce à BLOQUER, la contrepartie qu'il achète est la VISIBILITÉ
+  PERMANENTE* — et son revers : *une barrière qui ne fait que **retarder** l'effet de ce qu'elle
+  garde n'est pas une barrière, c'est un **péage***.
+- ⭐ `.flow-maintenance` ne signifie plus « visible seulement en mode réglage » mais
+  « **SURVIT** au mode réglage ». Documenté aux **trois** endroits où l'on peut se tromper.
+- ⭐ *Un texte de friction qui annonce la mauvaise conséquence est **pire que pas de texte** : il
+  oriente vers le mauvais geste de rattrapage.* (D'où les deux variantes selon le signe.)
+- ⭐ *Quand tout est en gras, plus rien n'est souligné.*
+- ⭐ **Deux défauts n'ont été vus que SUR CAPTURE** : le lien de retour coincé entre deux cartes,
+  et la valeur + la date affichées deux fois en 2 cm. ⛔ Ni le code ni les tests ne les montraient.
+
+## ⏳ Reste ouvert
+- 📸 **Captures `screenshots/`** (étape humaine) : page pH hors réglage, et mode étalonnage.
+- Le défaut de texte ci-dessus, **assumé** et non corrigé.
+- Alignement du vocabulaire « Calibration » / « Étalonnage » dans l'application — **hors lot**.
+- Les allègements de la page **ORP**, laissés en l'état — **hors lot**, et l'asymétrie est écrite.

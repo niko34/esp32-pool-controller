@@ -6,7 +6,7 @@
 - **Priorité** : normale
 - **Version cible** : à définir
 - **Dernière mise à jour** : 2026-11-22
-- **Spec(s) liée(s)** : [bug-201](../doing/bug-201-l-alerte-de-correction-ph-n-est-atteignable-qu-en-suspendant-la-regulation.md)
+- **Spec(s) liée(s)** : [bug-201](../done/bug-201-l-alerte-de-correction-ph-n-est-atteignable-qu-en-suspendant-la-regulation.md)
   (trouvé en instruisant son étude d'ergonomie) · ADR-0053 / feature-086 (« limité par l'actionneur »)
 
 ## Domaines touchés

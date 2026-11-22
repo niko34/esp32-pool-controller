@@ -3,7 +3,7 @@
 - **Statut** : Accepté
 - **Date** : 2026-11-22
 - **Décideurs** : Nicolas + Claude (`pool-chemistry`, `ux-ui-designer`, `architect`)
-- **Spec(s) liée(s)** : [bug-201](../../specs/features/doing/bug-201-l-alerte-de-correction-ph-n-est-atteignable-qu-en-suspendant-la-regulation.md) (conditions `bug-201 (C40)` à `(C51)`) ; prolonge [feature-168](../../specs/features/done/feature-168-correction-ph-sans-borne.md) (`feature-168 (C12)`), [ADR-0103](0103-gestes-d-entretien-quittent-la-vue-courante.md) et [ADR-0138](0138-l-integrite-d-une-valeur-persistee-est-deleguee-a-nvs-jamais-a-l-utilisateur.md)
+- **Spec(s) liée(s)** : [bug-201](../../specs/features/done/bug-201-l-alerte-de-correction-ph-n-est-atteignable-qu-en-suspendant-la-regulation.md) (conditions `bug-201 (C40)` à `(C51)`) ; prolonge [feature-168](../../specs/features/done/feature-168-correction-ph-sans-borne.md) (`feature-168 (C12)`), [ADR-0103](0103-gestes-d-entretien-quittent-la-vue-courante.md) et [ADR-0138](0138-l-integrite-d-une-valeur-persistee-est-deleguee-a-nvs-jamais-a-l-utilisateur.md)
 
 ## Contexte
 

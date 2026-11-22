@@ -6,7 +6,7 @@
 - **Priorité** : **critique**
 - **Version cible** : ~~2.97.0~~ → **2.98.0** (la 2.97.0 a été publiée entre-temps, commit `72b0650`)
 - **Dernière mise à jour** : 2026-11-18
-- **Spec(s) liée(s)** : [bug-201](../doing/bug-201-l-alerte-de-correction-ph-n-est-atteignable-qu-en-suspendant-la-regulation.md) (même famille de cécité) · [feature-195](../done/feature-195-langage-visuel-du-tableau-de-bord.md) (la grammaire de pastille qui accueillera le signal)
+- **Spec(s) liée(s)** : [bug-201](../done/bug-201-l-alerte-de-correction-ph-n-est-atteignable-qu-en-suspendant-la-regulation.md) (même famille de cécité) · [feature-195](../done/feature-195-langage-visuel-du-tableau-de-bord.md) (la grammaire de pastille qui accueillera le signal)
 
 ## Domaines touchés
 - [x] Régulation (pump_controller, PID) → **passage obligatoire par `pool-chemistry`**
