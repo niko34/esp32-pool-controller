@@ -634,6 +634,7 @@
           <!-- feature-056 : callout affiché quand la filtration n'est pas pilotée par le PoolController -->
           <div class="callout callout--info" id="filtration-unmanaged-note" style="display:none;">
             La filtration n'est pas pilotée par le PoolController dans ce mode d'installation.
+            Le mode se change dans Réglages › Installation.
           </div>
 
           <div id="filtration-content">
@@ -686,7 +687,7 @@
                 <div class="callout callout--warn" id="filtration-duration-warning" role="status" aria-live="polite" hidden></div>
 
                 <div class="hint" id="filtration_mode_hint">
-                  <strong>Auto</strong> : les horaires sont calculés automatiquement selon la température et ajustés si elle change (affinés après 5 min de filtration). <strong>Programme</strong> : vous fixez les horaires vous-même, ils ne changent jamais tout seuls. <strong>Marche</strong> : la pompe tourne en continu. <strong>Arrêt</strong> : la pompe est arrêtée. Marche et Arrêt durent jusqu'à ce que vous changiez de mode.
+                  <strong>Auto</strong> : les horaires sont calculés automatiquement selon la température et ajustés si elle change (affinés après 5 min de filtration). <strong>Programme</strong> : vous fixez les horaires vous-même, ils ne changent jamais tout seuls. <strong>Marche</strong> : la pompe tourne en continu. <strong>Arrêt</strong> : la pompe est arrêtée. Marche et Arrêt durent jusqu'à ce que vous changiez de mode. <span id="filtration-mode-scope">L'appareil <strong>commande</strong> la pompe ; il ne mesure pas l'eau qui circule devant les points d'injection.</span>
                 </div>
                 <div class="row row--gap" style="margin-top: 16px;">
                   <button class="btn btn--primary" type="button" id="filtration_save_btn">Sauvegarder</button>
@@ -2158,11 +2159,18 @@ aria-valuemin="0" aria-valuemax="100"
                   <h2 class="card__title">Mode d'installation</h2>
                 </div>
                 <div class="card__body">
+                  <!-- feature-210 : la phrase précédente affirmait que ce réglage
+                       « garantit qu'aucun produit n'est injecté sans circulation d'eau ».
+                       ⛔ C'était FAUX dans les trois modes : aucun ne lit un débit. Même
+                       famille que bug-197 — un libellé qui annonce une protection
+                       inexistante — avec cette fois le verbe « garantit ». La même
+                       phrase vivait aussi dans wizard.html et dans le guide utilisateur. -->
                   <p class="muted small" style="margin-bottom: 14px;">
-                    Indiquez comment le PoolController est raccordé à la filtration. Ce réglage
-                    garantit qu'aucun produit n'est injecté sans circulation d'eau.
+                    Indiquez comment le PoolController est raccordé à la filtration.
+                    C'est ce réglage qui décide quand le dosage est autorisé.
                   </p>
-                  <div class="install-modes" role="radiogroup" aria-label="Mode d'installation">
+                  <div class="install-modes" role="radiogroup" aria-label="Mode d'installation"
+                       aria-describedby="install-scope-lead install-scope-mode">
                     <label class="install-card">
                       <input class="install-card__radio" type="radio" name="install_mode" value="managed" />
                       <span class="install-card__body">
@@ -2187,6 +2195,43 @@ aria-valuemin="0" aria-valuemax="100"
                         <span class="install-card__dosing"><strong>Dosage :</strong> autorisé seulement si le signal est ON et récent.</span>
                       </span>
                     </label>
+                  </div>
+
+                  <!-- feature-210 — ce que l'appareil sait, et ce qu'il ne sait pas.
+                       ⛔ Variante `info` et non `warn` : l'ambre est réservé dans ce projet
+                       aux CONDITIONS (froid, stock faible). Un ambre permanent sur un réglage
+                       structurel désensibiliserait l'ambre partout ailleurs, et présenterait
+                       comme dangereux un mode qui est le mode normal.
+                       ⛔ Aucun aria-live : c'est un FAIT permanent, pas un événement. Il est
+                       rattaché au choix par aria-describedby, ce qu'un aria-live ne ferait pas.
+                       ⛔ La LIMITE (le lead) n'est JAMAIS repliée, et elle est écrite EN DUR :
+                       vraie dès la première peinture, sans attendre /get-config. Seules les
+                       PRÉCAUTIONS se replient — elles se consultent à un moment, pas tous les
+                       jours, et ne pas les ouvrir ne détruit pas le message. -->
+                  <div class="callout callout--info" id="install-scope">
+                    <p class="callout__eyebrow">Ce que l'appareil sait</p>
+                    <p class="callout__lead" id="install-scope-lead">
+                      L'appareil ne mesure pas l'eau qui circule. Il se fie au raccordement
+                      indiqué ici. Une vanne fermée ou une pompe désamorcée ne lui
+                      apparaissent pas.
+                    </p>
+                    <p class="muted small" id="install-scope-mode" hidden></p>
+                    <details class="callout__more" id="install-scope-more">
+                      <summary>Que vérifier avant de laisser doser</summary>
+                      <p>Avant une remise en route ou une reprise de saison, ouvrez les vannes
+                        et les dérivations du circuit. C'est la seule vérification qui agisse
+                        <em>avant</em> l'injection.</p>
+                      <p>Après une intervention sur le circuit, comparez à un test manuel
+                        (bandelette ou trousse) avant de laisser doser — une sonde isolée dans
+                        une conduite peut afficher une valeur haute et plausible. Attendez les
+                        10 minutes d'attente de l'appareil : avant, la mesure porte sur l'eau
+                        immobile de la conduite.</p>
+                      <p>Si l'appareil a injecté sa dose quotidienne plusieurs jours de suite
+                        sans que la mesure se rapproche de la consigne, faites un test manuel
+                        avant d'en injecter davantage. ⚠️ Un écart stable qui ne se referme pas
+                        tout à fait est normal : la régulation vise la consigne sans toujours
+                        l'atteindre quand la filtration est courte. Ce n'est pas une panne.</p>
+                    </details>
                   </div>
 
                   <div id="install-ext-status" class="callout callout--info" style="display:none; margin-top: 14px;">

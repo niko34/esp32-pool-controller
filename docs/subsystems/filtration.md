@@ -318,13 +318,17 @@ Le **mode d'installation** (`InstallMode`, [ADR-0026](../adr/0026-mode-installat
 
 Mode inconnu → `false` (fail-closed).
 
+⛔ **Aucun des trois modes ne lit un débit** (feature-210, [ADR-0144](../adr/0144-l-appareil-ne-constate-jamais-l-eau-il-ne-nomme-que-son-absence.md)). `WaterSource` nomme elle-même ce qu'elle vaut : `FiltrationCommanded` (état **commandé** du relais), `PoweredAssumed` (déduction de **câblage**, vraie tant que l'appareil est alimenté), `ExternalSignal` (affirmation d'un **tiers**). L'entrée s'appelle `filtrationCommandedOn`. ⇒ L'appareil sait ce qu'il a **demandé** ou ce qu'on lui a **dit** ; il ne sait jamais ce qui **coule**. Conséquence pour toute documentation ou libellé : ⛔ jamais « vérifie », « détecte », « contrôle » ni « garantit » la circulation — **commande**, **présume** ou **reçoit**.
+
+⚠️ **Le mode `powered` est le plus aveugle dans le logiciel, pas le plus exposé en pratique** : pompe à l'arrêt, l'appareil **et** les pompes doseuses sont hors tension ([ADR-0026](../adr/0026-mode-installation.md)) — rien ne peut être injecté. Son absence de garde logicielle est compensée par le câblage.
+
 ### État de la filtration externe (mode `external`)
 
 Le signal externe est stocké dans le triplet `{_externalOn, _externalLastMs, _externalKnown}`, protégé par un **portMUX** (`portENTER_CRITICAL` / `portEXIT_CRITICAL`) — écrivable sans risque depuis un handler HTTP (`POST /filtration/external-state`) ou un callback MQTT async (`{base}/filtration_external_state/set`), tous deux hors `loopTask`.
 
 - `setExternalState(bool)` : horodate (`millis()`) avant la section critique, écrit le triplet sous lock, logue après (`info` `[Filtration externe] État signalé : ON|OFF`). Le flag `_externalKnown` passe à `true` au premier signal.
 - `getExternalState(on, lastMs, known)` : copie minimale sous lock ; l'âge (`now − lastMs`, wrap-safe) est calculé **hors** lock par `resolveWaterPresence()`.
-- **Aucune persistance NVS** : au boot, `_externalKnown == false` → présence d'eau `false` (fail-safe OFF). Au-delà de `kExternalFiltrationStaleMs = 180 000 ms` (3 min) sans nouveau signal → périmé (`stale`) → présence d'eau `false`. C'est la condition de sécurité clé (pool-chemistry) qui évite l'injection dans une eau stagnante.
+- **Aucune persistance NVS** : au boot, `_externalKnown == false` → présence d'eau `false` (fail-safe OFF). Au-delà de `kExternalFiltrationStaleMs = 180 000 ms` (3 min) sans nouveau signal → périmé (`stale`) → présence d'eau `false`. C'est la condition de sécurité clé (pool-chemistry) : elle évite de doser sur un **signal perdu** — ⛔ et non « d'injecter dans une eau stagnante », formule trop forte que portait cette ligne jusqu'à feature-210. L'appareil ne constate rien du circuit : il **répète** ce qu'un tiers lui signale, et cesse de doser quand ce tiers se tait. Un signal `ON` récent mais **faux** (automatisation qui publie sans vérifier, vanne fermée en aval) autorise le dosage ; c'est une limite physique — sans capteur de circulation, il n'y a rien à lire — et non un défaut de la garde. Voir [ADR-0144](../adr/0144-l-appareil-ne-constate-jamais-l-eau-il-ne-nomme-que-son-absence.md).
 
 ### Migration
 

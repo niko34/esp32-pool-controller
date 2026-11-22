@@ -299,6 +299,22 @@ jobs:
       - name: Contrôle des vecteurs de limite journalière
         run: ./tools/check_daily_dose_limit_vectors.sh
 
+  # feature-210 : ce que l'appareil SAIT selon le raccordement. ⛔ Le job garde
+  # aussi l'absence de la promesse fausse « garantit qu'aucun produit n'est
+  # injecté sans circulation d'eau » dans les quatre fichiers où elle vivait —
+  # elle y avait survécu en TRIPLE, et couvrir un seul fichier l'aurait laissée
+  # se réintroduire par les autres.
+  install-scope-vectors:
+    name: Vecteurs de la portée du raccordement (feature-210)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # Même script en local (`./tools/check_install_scope_vectors.sh`) et en CI.
+      - name: Contrôle des vecteurs de portée
+        run: ./tools/check_install_scope_vectors.sh
+
   filtration-state-vectors:
     name: Vecteurs de la bande eau froide et de l'état de filtration (bug-197)
     runs-on: ubuntu-latest

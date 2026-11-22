@@ -865,8 +865,12 @@
       <div class="step-content" data-step="3">
         <div class="step-title">Installation et bassin</div>
         <div class="step-description">
-          Indiquez comment le PoolController est raccordé à la filtration. Ce réglage garantit
-          qu'aucun produit n'est injecté sans circulation d'eau.
+          <!-- feature-210 : « Ce réglage garantit qu'aucun produit n'est injecté sans
+               circulation d'eau » RETIRÉ. ⛔ Faux dans les trois modes, et c'est ici que
+               le défaut coûtait le plus cher : l'assistant l'enseignait à CHAQUE nouveau
+               client, au moment exact où il choisit son câblage. -->
+          Indiquez comment le PoolController est raccordé à la filtration.
+          C'est ce réglage qui décide quand le dosage est autorisé.
         </div>
 
         <div class="field" role="radiogroup" aria-label="Mode d'installation">
@@ -894,6 +898,15 @@
               <span class="install-card-desc"><strong>Dosage :</strong> autorisé seulement si le signal est ON et récent.</span>
             </span>
           </label>
+        </div>
+
+        <!-- feature-210 — la limite, dite au moment où elle est actionnable.
+             ⛔ Pas de repliable ici : à la première mise en service, la précaution est
+             maximalement pertinente, et wizard.html ne charge pas app.css. -->
+        <div class="step-description" style="margin-top: 16px;">
+          L'appareil ne mesure pas l'eau qui circule : il se fie au raccordement indiqué
+          ci-dessus. Avant la première mise en route, ouvrez les vannes et les dérivations
+          du circuit.
         </div>
 
         <!-- feature-090 : taille du bassin → présélection des défauts de régulation -->

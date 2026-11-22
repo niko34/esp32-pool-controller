@@ -4829,6 +4829,8 @@
     if ($("#max_cycles_per_day")) $("#max_cycles_per_day").value = typeof cfg.max_cycles_per_day === "number" ? cfg.max_cycles_per_day : 48;
     // feature-056 : mode d'installation (remplace regulation_mode + filtration_enabled)
     applyInstallMode(cfg.install_mode || "managed");
+    // feature-210 : ⛔ la valeur BRUTE, sans le repli ci-dessus.
+    renderInstallScope(cfg.install_mode);
     // feature-091 : plus de champ « délai avant injection » — l'attente après
     // un arrêt d'eau est fixe (firmware) ; la ligne « Dernière pause » est
     // nourrie par latestSensorData (updateMeasuresPurgeDisplay), pas par la config.
@@ -5794,6 +5796,61 @@
   // filtration). managed → filtration pilotée (widgets + programmation + nav visibles).
   // powered/external → filtration non pilotée (widgets/programmation/nav masqués + note).
   // external → bloc « État du signal filtration » visible.
+  // feature-210 — ce que chaque raccordement permet à l'appareil de savoir.
+  // Fonction PURE (ni DOM ni global), extraite par ancre pour le harnais de vecteurs.
+  // ⛔ TROIS TEXTES ENTIERS, jamais une phrase commune suivie d'un suffixe : la
+  // même règle que .sensor-badge__explain, et pour la même raison — une phrase
+  // assemblée finit par répéter un mot ou par dire une demi-vérité.
+  // ⛔ null pour tout mode inconnu, et c'est le cœur du garde : applyInstallMode()
+  // replie sur 'managed' pour MASQUER l'interface, ce qui est légitime — mais
+  // replier le TEXTE sur 'managed' affirmerait un programme et un relais qui
+  // n'existent peut-être pas. Mode inconnu ⇒ on ne dit rien de plus que la limite.
+  // ⚠️ Aucun verbe de perception ici (vérifie, détecte, contrôle, garantit, mesure) :
+  // l'appareil commande, présume ou reçoit — il ne constate jamais.
+  function installScopeText(mode) {
+    if (mode === 'managed') {
+      return 'Il commande la pompe selon votre programme, n\'injecte rien en dehors, '
+        + 'et attend 10 min après un démarrage.';
+    }
+    if (mode === 'powered') {
+      return 'Alimenté par le circuit de filtration : pompe à l\'arrêt, l\'appareil l\'est '
+        + 'aussi et rien ne peut être injecté.';
+    }
+    if (mode === 'external') {
+      return 'Il se fie à l\'état qu\'un autre système envoie, et cesse de doser si plus '
+        + 'rien ne parvient pendant 3 min.';
+    }
+    return null;
+  }
+
+  // Pose le texte de mode. ⛔ On lui passe la valeur BRUTE, jamais celle repliée
+  // par applyInstallMode() : c'est la distinction entre « masquer l'interface »
+  // (où un repli est sûr) et « affirmer un fait » (où il ne l'est pas).
+  function renderInstallScope(rawMode) {
+    const el = $('#install-scope-mode');
+    if (!el) return;
+    const txt = installScopeText(rawMode);
+    if (txt === null) {
+      // ⛔ Vider le texte AVANT de masquer, et ne jamais relâcher cet ordre :
+      // un nœud référencé par aria-describedby est lu par les lecteurs d'écran
+      // MÊME masqué. `hidden` seul laisserait annoncer un mode périmé.
+      if (el.textContent !== '') el.textContent = '';
+      if (!el.hidden) el.hidden = true;
+      return;
+    }
+    // ⛔ Revue 2026-11-22 : cliquer un autre raccordement POUR LE LIRE, sans
+    // enregistrer, affichait un fait de sécurité — « rien ne peut être injecté » —
+    // faux pour l'installation réelle. Le reste de l'aperçu (masquage des écrans)
+    // est sans danger ; une AFFIRMATION ne l'est pas. On la qualifie donc tant
+    // qu'elle ne décrit pas le raccordement enregistré.
+    const enregistre = window._config?.install_mode;
+    const txtFinal = (enregistre && rawMode !== enregistre)
+      ? `Si vous enregistrez ce choix : ${txt.charAt(0).toLowerCase()}${txt.slice(1)}`
+      : txt;
+    if (el.textContent !== txtFinal) el.textContent = txtFinal;
+    if (el.hidden) el.hidden = false;
+  }
+
   function applyInstallMode(mode) {
     const m = (mode === "powered" || mode === "external") ? mode : "managed";
     const managed = m === "managed";
@@ -5869,7 +5926,7 @@
   function bindInstallMode() {
     document.querySelectorAll('input[name="install_mode"]').forEach((r) => {
       r.addEventListener("change", () => {
-        if (r.checked) applyInstallMode(r.value);  // masquage immédiat, persistance au save
+        if (r.checked) { applyInstallMode(r.value); renderInstallScope(r.value); }  // masquage immédiat, persistance au save
       });
     });
     $("#install_save_btn")?.addEventListener("click", async () => {
@@ -5882,6 +5939,7 @@
       if (ok) {
         if (window._config) window._config.install_mode = mode;
         applyInstallMode(mode);
+        renderInstallScope(mode);
         updateStatusCards();
         showToast("Mode d'installation enregistré", "success");
         loadConfig();

@@ -236,9 +236,8 @@ toute la maison, et l'heure se règle toute seule par internet.</p>
 <p>Deux choix sur cette étape, sous forme de cartes à cocher&nbsp;:</p>
 
 <p><strong>Le mode d'installation</strong> décrit la façon dont l'appareil
-est câblé par rapport à la pompe de filtration — c'est ce câblage qui
-garantit qu'aucun produit n'est jamais injecté dans une eau qui ne circule
-pas. Trois cas&nbsp;:</p>
+est câblé par rapport à la pompe de filtration — c'est ce câblage qui décide
+quand le dosage est autorisé. Trois cas&nbsp;:</p>
 
 <ul>
   <li><strong>PoolController pilote la filtration</strong> — c'est lui qui
@@ -249,6 +248,50 @@ pas. Trois cas&nbsp;:</p>
   (domotique, horloge) gère la filtration et signale son état à
   l'appareil.</li>
 </ul>
+
+<p>Ces trois cas ne décrivent pas seulement un câblage&nbsp;: ils décrivent
+<strong>ce que l'appareil peut savoir</strong> de la circulation de l'eau.
+Il n'en mesure jamais le débit&nbsp;— il se fie au raccordement que vous
+indiquez ici&nbsp;:</p>
+
+<ul>
+  <li><strong>S'il pilote la filtration</strong>, il sait ce qu'il a
+  <em>commandé</em>&nbsp;: il n'injecte rien en dehors des heures de
+  filtration, et attend 10&nbsp;minutes après chaque démarrage de la pompe
+  avant de doser&nbsp;;</li>
+  <li><strong>S'il est alimenté par le circuit de filtration</strong>, il
+  <em>présume</em> l'eau&nbsp;: pompe à l'arrêt, l'appareil et les pompes
+  doseuses sont hors tension — rien ne peut être injecté&nbsp;;</li>
+  <li><strong>Si un autre système signale l'état</strong>, il <em>répète</em>
+  ce qu'on lui envoie, et cesse de doser si plus rien ne lui parvient
+  pendant 3&nbsp;minutes.</li>
+</ul>
+
+<div class="box">
+  <span class="box-title">Ce que l'appareil ne sait pas</span>
+  <p>Une vanne fermée, une dérivation isolée, une crépine bouchée ou une
+  pompe désamorcée ne lui apparaissent pas&nbsp;: la pompe peut tourner sans
+  que l'eau passe devant les points d'injection. Le produit se concentre
+  alors dans la canalisation, et les sondes mesurent une eau qui ne
+  représente plus le bassin.</p>
+
+  <p><strong>Les deux gestes utiles.</strong> Avant une mise en service ou
+  une reprise de saison, <strong>ouvrez les vannes et les dérivations du
+  circuit</strong>&nbsp;— c'est la seule précaution qui agisse <em>avant</em>
+  l'injection. Après toute intervention sur le circuit, comparez la valeur
+  affichée à un test manuel (bandelette ou trousse) avant de laisser doser.
+  Méfiez-vous d'une mesure qui ne bouge pas alors que le dosage tourne.</p>
+
+  <p><strong>N'arrêtez pas la régulation «&nbsp;par prudence&nbsp;».</strong>
+  Un bassin privé de correcteur de pH pendant deux jours dérive vers
+  pH&nbsp;8,2 à 8,4, où le chlore perd les trois quarts de son efficacité.
+  En cas de doute, ouvrez le circuit et faites un test manuel&nbsp;— c'est
+  le bon réflexe, pas l'arrêt du dosage.</p>
+
+  <p>Un capteur de circulation installé sur le circuit permettrait de
+  remplacer cette déduction par une constatation.
+  <strong>L'appareil ne sait pas encore en utiliser.</strong></p>
+</div>
 
 <p><strong>La taille du bassin</strong> — «&nbsp;Moins de 20&nbsp;m³&nbsp;»,
 «&nbsp;20 à 60&nbsp;m³&nbsp;» ou «&nbsp;Plus de 60&nbsp;m³&nbsp;» —
@@ -1627,12 +1670,17 @@ temps.</p>
 </figure>
 
 <p>Les trois mêmes cartes que l'étape&nbsp;3 de l'assistant
-(chapitre&nbsp;2)&nbsp;: qui pilote la filtration, et comment l'appareil
-sait que l'eau circule. <strong>Ne changez ce réglage que si le câblage
-réel change</strong> — il conditionne la sécurité «&nbsp;jamais d'injection
-sans circulation d'eau&nbsp;». En mode «&nbsp;filtration externe
-signalée&nbsp;», un encart montre l'état du signal reçu et des exemples
-prêts à l'emploi pour le brancher depuis votre domotique.</p>
+(chapitre&nbsp;2)&nbsp;: qui pilote la filtration, et ce que l'appareil peut
+en savoir. <strong>Ne changez ce réglage que si le câblage réel
+change</strong> — c'est lui qui décide quand le dosage est autorisé.</p>
+
+<p>Sous les trois cartes, un encadré «&nbsp;Ce que l'appareil sait&nbsp;»
+rappelle la limite — l'appareil ne mesure pas l'eau qui circule, il se fie au
+raccordement indiqué — puis donne une ligne propre au raccordement choisi.
+Un volet à dérouler, «&nbsp;Que vérifier avant de laisser doser&nbsp;»,
+reprend les gestes du chapitre&nbsp;2. En mode «&nbsp;filtration externe
+signalée&nbsp;», un second encart montre l'état du signal reçu et des
+exemples prêts à l'emploi pour le brancher depuis votre domotique.</p>
 
 <h3>2 — Wi-Fi</h3>
 

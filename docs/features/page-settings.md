@@ -34,6 +34,63 @@ Nouvelle section **en 1ᵉʳ onglet** (feature-056, v2.19.0). Un `radiogroup` (`
 | `external` | Filtration externe signalée | alim permanente, filtration tierce qui signale son état | signal ON **et** récent (< 3 min) |
 
 - Champ WS/config : `install_mode` (string). Sauvegarde via bouton dédié `#install_save_btn` → `POST /save-config`.
+
+#### Encadré « Ce que l'appareil sait » (`#install-scope`, feature-210, v3.1.1)
+
+🔴 **Retrait d'abord.** Le chapeau de la carte affirmait : « Ce réglage **garantit qu'aucun produit n'est
+injecté sans circulation d'eau** ». ⛔ **Faux dans les trois modes** — aucun ne lit un débit (voir
+[ADR-0144](../adr/0144-l-appareil-ne-constate-jamais-l-eau-il-ne-nomme-que-son-absence.md) et
+[subsystems/filtration.md](../subsystems/filtration.md#mode-dinstallation-et-présence-deau-feature-056)).
+La même phrase vivait **en triple** (cette carte, `data/wizard.html` étape 3, guide utilisateur) ; elle est
+remplacée par « Indiquez comment le PoolController est raccordé à la filtration. C'est ce réglage qui décide
+quand le dosage est autorisé. »
+
+En dessous du `radiogroup` (qui le référence par `aria-describedby="install-scope-lead install-scope-mode"`),
+un `callout callout--info` en trois parties — composants [DESIGN_SYSTEM §5.10bis](../DESIGN_SYSTEM.md) :
+
+| Élément | Contenu | Règle |
+|---|---|---|
+| `.callout__eyebrow` | « Ce que l'appareil sait » | nomme un **état**, pas un événement : affiché en permanence |
+| `.callout__lead` `#install-scope-lead` | « L'appareil ne mesure pas l'eau qui circule. Il se fie au raccordement indiqué ici. Une vanne fermée ou une pompe désamorcée ne lui apparaissent pas. » | **écrit en dur dans le HTML** ⇒ vrai dès la première peinture, sans attendre `/get-config` ; ⛔ **jamais replié** |
+| `.muted.small` `#install-scope-mode` | une ligne **propre au mode**, posée par `renderInstallScope()` | `hidden` tant que le mode n'est pas connu |
+| `.callout__more` `#install-scope-more` | « Que vérifier avant de laisser doser » — trois paragraphes de précautions | seul le **détail** se replie |
+
+Les trois textes de mode, mot pour mot (`installScopeText()`, [`data/app.js`](../../data/app.js)) :
+
+| `install_mode` | Texte affiché |
+|---|---|
+| `managed` | « Il commande la pompe selon votre programme, n'injecte rien en dehors, et attend 10 min après un démarrage. » |
+| `powered` | « Alimenté par le circuit de filtration : pompe à l'arrêt, l'appareil l'est aussi et rien ne peut être injecté. » |
+| `external` | « Il se fie à l'état qu'un autre système envoie, et cesse de doser si plus rien ne parvient pendant 3 min. » |
+| *absent / inconnu* | **aucun** (`textContent = ''`, `hidden = true`) |
+
+⛔ **Trois textes entiers, jamais une phrase commune suivie d'un suffixe** (même règle que
+`.sensor-badge__explain`) : une phrase assemblée finit par dire une demi-vérité pour l'un des trois.
+
+⛔ **Le texte ne se replie JAMAIS sur `managed`.** `renderInstallScope()` reçoit `cfg.install_mode`
+**brut**, pas `cfg.install_mode || "managed"` — ce repli existe bien dans `loadConfig()`, mais il alimente
+`applyInstallMode()`, dont le rôle est de **masquer** une interface (un repli y est sûr). Affirmer un
+programme et un relais qu'on ne connaît pas ne l'est pas. Deux vecteurs gardent ce point.
+
+⚠️ **Vocabulaire opposable** : ⛔ ni « vérifie », ni « détecte », ni « contrôle », ni « garantit », ni
+« surveille » — l'appareil **commande**, **présume** ou **reçoit**. ⛔ Aucun texte n'alarme sur un mode
+(tous sont normaux) et ⛔ aucun n'invite à couper la régulation. Les trois interdits sont tenus par
+`tools/check_install_scope_vectors.sh` (CI, job `install-scope-vectors`).
+
+⛔ **Aucun `aria-live`** : c'est un **fait permanent**, pas un événement. Le rattachement au choix passe par
+`aria-describedby`, ce qu'un `aria-live` ne ferait pas. ⛔ Variante `--info` et non `--warn` : l'ambre est
+réservé aux **conditions** (froid, stock faible) ; un ambre permanent sur un réglage structurel
+désensibiliserait l'ambre partout ailleurs.
+
+**Pourquoi ici, et pas sur la page Filtration** — `applyInstallMode()` masque `#nav-filtration`,
+`#dashboard-filtration-card` et `#filtration-content` dès que le mode n'est pas `managed` :
+⚠️ **la page Filtration est injoignable par la navigation dans deux des trois raccordements**. Un
+avertissement posé là ne serait jamais lu par les deux tiers des configurations. Les cartes de choix du
+mode, elles, vivent dans cette page, accessible dans tous les cas. Voir
+[page-filtration.md](page-filtration.md#ce-que-lappareil-sait--où-vit-linformation-feature-210-v311).
+
+**Déclencheurs d'appel** : `loadConfig()` (valeur servie), `bindInstallMode()` au `change` d'un radio
+(aperçu immédiat, avant persistance) et après un enregistrement réussi.
 - **Callout signal externe** (`#install-ext-status`, affiché uniquement en mode `external`) : pill `#install-ext-pill` (« Aucun signal » / « Marche » / « Arrêt » / « Périmé ») alimentée par les champs WS `filtration_ext_known` / `filtration_ext_on` / `filtration_ext_age_s` / `filtration_state_stale`. Rappelle les deux canaux de signalement (`POST /filtration/external-state`, MQTT `.../filtration_external_state/set`) et le fail-safe à 3 min.
   - **Bloc dépliable « Comment signaler l'état de la filtration ? »** (`#install-ext-tips`) — trois exemples prêts à copier : HTTP, MQTT, Home Assistant.
     ⚠️ **Mis à jour par bug-184 (v2.92.0)** : l'exemple HTTP montrait `curl -u <utilisateur>:<mot_de_passe>`, que l'appareil **refuse désormais** (`401`). Il montre maintenant **deux étapes** — `POST /auth/login` pour obtenir un jeton, puis `POST /filtration/external-state` avec `X-Auth-Token`. ⛔ C'était une consigne d'interface devenue **fausse** : la suivre ne donnait aucune régulation, sans que rien ne l'explique.

@@ -57,7 +57,7 @@ contexte d'origine.
 | Expliquer en une phrase un constat déjà affiché dans le même `.sensor-badge` | `.sensor-badge__explain` (§5.9bis) | **Carte d'accueil uniquement** — toujours en 2ᵉ segment, même variante |
 | Alerter sur une condition bloquante ou un risque | `.callout` (§5.10) | Les deux |
 | Réinstaller le filesystem quand l'interface est absente (page autonome, sans `app.css`) | copies **locales** : callout `--info`, sélecteur `.pick`, ligne de version `.ver`, `<progress>`, callout d'échec rouge (§5.21) | **Page de secours embarquée uniquement** — ⛔ jamais un composant partagé |
-| Distinguer deux niveaux de gravité dans un même `.callout`, sans empiler deux encadrés, et séparer l'essentiel du détail | `.callout__eyebrow` + `.callout__lead` + `.callout__more` (§5.10bis) | Page de réglage (pH) — généralisable |
+| Distinguer deux niveaux de gravité dans un même `.callout`, **ou** séparer une limite permanente de ses précautions | `.callout__eyebrow` + `.callout__lead` + `.callout__more` (§5.10bis) | **Pages de réglage : pH et Installation** — ⛔ jamais une carte d'accueil |
 | Commenter un contrôle sans en faire une alerte | `.field__hint` (§5.11) | Les deux, **jamais seul porteur d'une info de sécurité** |
 | Dire **pourquoi un bouton est désactivé** (un refus, pas un conseil) | `.field__hint.field__hint--refus` (§5.11bis) | Page de réglage — carte « Correction manuelle de la mesure » (pH) |
 | Faire survivre un élément au mode réglage (flux maintenance) | `.flow-maintenance` (§5.25) | Pages pH, ORP, Température — ⚠️ ne veut **pas** dire « visible seulement en réglage » |
@@ -347,11 +347,12 @@ informatif sans enjeu — c'est à ça que sert `.field__hint` ou `.detail-row`.
 
 ### 5.10bis `.callout__eyebrow` / `.callout__lead` / `.callout__more` (v2.82.0, feature-168)
 
-**Contexte d'emploi déclaré : page de réglage pH (`#ph_tune_blocked`), généralisable à tout `.callout` qui doit distinguer deux niveaux de gravité sur le MÊME propos sans empiler deux encadrés.** Né de l'avertissement non bloquant de correction de mesure pH (dépassement de l'ancienne borne ±0,50) : au-delà d'un second seuil (« impasse »), le même encadré doit se faire plus pressant **sans changer de couleur de boîte** (⛔ pas de 3ᵉ couleur — daltonisme, §7) et sans forcer la lecture d'un pavé de texte entier à chaque ouverture.
+**Contexte d'emploi déclaré : pages de réglage — pH (`#ph_tune_blocked`, `#ph_tune_stale_banner`) et Installation (`#install-scope`, feature-210). ⛔ Jamais une carte d'accueil.** Généralisable à tout `.callout` qui doit distinguer deux niveaux de gravité sur le MÊME propos sans empiler deux encadrés, **ou** séparer une limite permanente de ses précautions (3ᵉ emploi, plus bas). Né de l'avertissement non bloquant de correction de mesure pH (dépassement de l'ancienne borne ±0,50) : au-delà d'un second seuil (« impasse »), le même encadré doit se faire plus pressant **sans changer de couleur de boîte** (⛔ pas de 3ᵉ couleur — daltonisme, §7) et sans forcer la lecture d'un pavé de texte entier à chaque ouverture.
 
 - **`.callout__eyebrow`** — chapeau de 2-3 mots (reprend la typo de `.product-card__eyebrow` : petite majuscule, 12px, 700), **toujours accompagné du texte** (« Avertissement » / « ⚠ Impasse possible ») : c'est le **mot** qui porte le sens, la variante `--danger` (couleur) ne fait que l'**appuyer**. La boîte `.callout` elle-même reste dans sa variante d'origine (`--warn`) dans les deux cas.
 - **`.callout__lead`** — première phrase, **toujours visible**, ~160 caractères : le constat minimal suffisant pour agir.
-- **`.callout__more`** (`<details>`) — reste du texte, **replié par défaut**, idiome `.tips > summary` (curseur, graisse, `list-style`) + `.linklike` (couleur accent, soulignement, hover) + cible tactile de 10px de padding vertical (`.tips > summary` seul ne la garantit pas — ne pas reconduire ce manque) + `:focus-visible`.
+- **`.callout__more`** (`<details>`) — reste du texte, **replié par défaut**, idiome `.tips > summary` (curseur, graisse, `list-style`) + `.linklike` (couleur accent, soulignement, hover) + **`padding: 14px 0`** sur le `summary` + `:focus-visible`.
+  🔴 **Correction (feature-210, v3.1.1) — cette ligne affirmait un faux.** Elle disait que le `padding: 10px` **garantissait** la cible tactile. ⛔ Il ne la garantissait pas : `0.85rem` sans `line-height` déclaré donne une boîte de ligne d'environ **16 px**, soit **16 + 2 × 10 = 36 px** — **sous les 44 px** exigés (§7). Le padding passe à **14 px** : 16 + 2 × 14 = **44 px**. ⚠️ Le reproche adressé à `.tips > summary` (« seul ne la garantit pas ») était donc vrai **des deux composants** ; `.tips > summary` n'est **pas** corrigé par ce lot — dette écrite, pas dette réparée.
 
 Les trois sous-éléments sont **optionnels indépendamment** : un refus simplement bloquant n'utilise que `.callout__lead` (chapeau et détail masqués) ; l'avertissement non bloquant utilise les trois. Voir [`docs/features/page-ph.md`](features/page-ph.md#avertissement-et-impasse-de-régulation-v2820) pour l'emploi complet et les textes exacts.
 
@@ -364,6 +365,20 @@ Ce qui distingue les deux emplois :
 | Le chapeau nomme | un **état** (« Avertissement », « ⚠ Impasse possible »), bascule mot + couleur | un **état établi** (« Étalonnage modifié ») |
 | `.callout__more` repliable | oui | **non** (rien à replier : replier la raison ou l'acte, c'est les supprimer pour qui ne lit pas) |
 | Chapeau masqué | jamais | **oui, quand l'événement n'est pas établi** (cause héritée `boot`/`expiration` d'un firmware antérieur) |
+
+**Troisième contexte d'emploi (feature-210, v3.1.1) : page de réglage Installation, et premier emploi PERMANENT** — `#install-scope` (carte « Mode d'installation », Réglages › Installation). Les deux emplois précédents étaient **conditionnels** (ils apparaissaient quand quelque chose clochait) ; celui-ci est **toujours affiché**, parce qu'il énonce une **limite de l'appareil**, vraie tous les jours, et non un état du bassin.
+
+Ce que cet emploi ajoute à la grammaire du composant :
+
+| | `#ph_tune_blocked` / `#ph_tune_stale_banner` | `#install-scope` |
+|---|---|---|
+| Variante de boîte | `callout--warn` (ambre) | ⛔ **`callout--info`** — l'ambre est réservé aux **conditions** (froid, stock faible) ; un ambre permanent sur un réglage structurel le désensibiliserait partout ailleurs |
+| Le chapeau nomme | un état du bassin ou un événement | une **capacité de l'appareil** (« Ce que l'appareil sait ») — donc jamais masqué |
+| `.callout__lead` | texte posé par le script | ⭐ **écrit en dur dans le HTML** : vrai dès la première peinture, sans attendre `/get-config` |
+| `.callout__more` | le détail d'un cas | les **précautions** (« Que vérifier avant de laisser doser ») — ⛔ ce qui se replie ne doit jamais porter la limite elle-même |
+| `aria-live` | `role="status"` / `alert` selon le cas | ⛔ **aucun** : un fait permanent n'est pas un événement. Rattachement au contrôle par **`aria-describedby`** sur le `radiogroup` — ce qu'un `aria-live` ne ferait pas |
+
+⭐ **Règle qui en sort** : *dans un `.callout` permanent, `.callout__lead` porte ce qui reste vrai tous les jours, et `.callout__more` ce qui ne se consulte qu'à un moment. Replier la limite revient à la supprimer pour qui n'ouvre pas.* Un **troisième** élément facultatif peut s'intercaler entre les deux (ici `#install-scope-mode`, `.muted.small`, une ligne qui dépend d'une valeur servie) : il est `hidden` tant que la valeur n'est pas connue — ⛔ **jamais replié sur un défaut**, sous peine d'affirmer un fait que l'appareil ignore.
 
 ⭐ **Règle générale** : *un chapeau qui nomme un ÉVÉNEMENT ne s'affiche que lorsque cet événement est établi — sinon il affirme un fait que l'appareil ne connaît pas.* Un chapeau qui nomme un ÉTAT n'a pas cette contrainte.
 

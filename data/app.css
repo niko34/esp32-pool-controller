@@ -4640,8 +4640,9 @@ h1, h2, h3 {
    bascule (mot ET couleur).
    `.callout__more > summary` = idiome `.tips > summary` (curseur, graisse,
    list-style) + `.linklike` (couleur accent, soulignement, hover) + cible
-   tactile 10px de padding vertical (`.tips > summary` seul ne la garantissait
-   pas — ne pas reconduire ce manque) + :focus-visible. ========================================================================== */
+   tactile (feature-210 : `line-height: 1.3` + `padding: 14px 0` = 45,7 px —
+   ⛔ les 10 px précédents donnaient ~36 px, et ce commentaire affirmait le
+   contraire ; `.tips > summary` n'a toujours aucun padding, dette écrite) + :focus-visible. ========================================================================== */
 .callout__eyebrow {
   font-weight: 700;
   font-size: 12px;
@@ -4663,7 +4664,15 @@ h1, h2, h3 {
   list-style: revert;
   color: var(--accent);
   text-decoration: underline;
-  padding: 10px 0;
+  /* feature-210 : 10px -> 14px, ET line-height déclarée. ⛔ La cible tactile
+     était de ~36 px, SOUS les 44 px exigés, et le commentaire d'en-tête affirmait
+     le contraire. ⚠️ Revue : 14px seul ne SUFFIT pas à garantir 44 px — 0.85rem
+     vaut 13,6 px et `line-height: normal` vaut ~1,15 sur une pile Arial, soit
+     43,6 px. On déclare donc la hauteur de ligne : 13,6 x 1,3 = 17,7 + 2 x 14
+     = 45,7 px, indépendamment de la police. ⛔ Ne pas revenir à un calcul qui
+     repose sur une valeur non déclarée. */
+  line-height: 1.3;
+  padding: 14px 0;
 }
 .callout__more > summary:hover { color: var(--accent-hover); }
 .callout__more > summary:focus-visible {

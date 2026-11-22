@@ -154,7 +154,12 @@ Ces règles sont **non négociables** — même si l'utilisateur demande de les 
 
 1. **Dosage chimique** :
    - TOUJOURS respecter `kMaxRequestsPerMinute`, les limites journalières et horaires configurées
-   - TOUJOURS vérifier la présence d'eau (filtration active) avant toute injection
+   - TOUJOURS passer par `resolveWaterPresent()` avant toute injection — source UNIQUE
+     de la présence d'eau (ADR-0026), fail-closed strict : doute = refus.
+     ⚠️ **L'appareil ne CONSTATE jamais l'eau, il la DÉDUIT** : il sait ce qu'il a
+     COMMANDÉ (`managed`), ce que son câblage IMPOSE (`powered`), ou ce qu'on lui a DIT
+     (`external`). ⛔ Aucun des trois ne lit un débit. ⇒ Ne jamais écrire « l'appareil
+     vérifie la présence d'eau », ni dans le code, ni dans l'interface (ADR-0144).
    - Aucun code de dosage ne doit s'exécuter sans watchdog actif
    - Tout nouveau chemin de code vers `pump_controller` → validation par `pool-chemistry` + `code-reviewer`
 2. **Watchdog** : jamais désactivé en production. `kWatchdogTimeoutSec = 30s`

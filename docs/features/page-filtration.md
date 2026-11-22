@@ -26,10 +26,10 @@ mode** (→ Marche / → Arrêt) au lieu de poser un état séparé.
 
 - **Bande de froid** (`#filtration-page-frost-badge`, bug-197) — **tout en haut** de `#filtration-content`, ⛔ pas dans la carte « Contrôle manuel » (qui peut être masquée selon le mode d'installation). Même bande, mêmes textes et mêmes gardes que sur le tableau de bord (`.sensor-badge--warning` + modificateur `.sensor-badge--page`, fonds opaques) : « Eau à X °C (sous 4 °C). » / « Eau des tuyaux à X °C (sous 4 °C). », puis « Le gel reste à votre charge. ». L'appareil constate la température, il ne gère pas le gel ([ADR-0141](../adr/0141-l-appareil-est-temoin-du-froid-jamais-agent.md)).
 
-> ⚠️ **Visibilité conditionnée au mode d'installation** (feature-056, v2.19.0). La page n'est pleinement active qu'en mode d'installation **`managed`** (PoolController pilote la filtration). En **`powered`** (alimenté par le circuit de filtration) et **`external`** (filtration tierce signalée), la programmation et le contrôle du relais sont **masqués** : le PoolController ne pilote pas le relais, une note « filtration non pilotée par le PoolController » est affichée. Le mode se règle dans Paramètres → Installation (voir [page-settings.md](page-settings.md#installation-panel-install-feature-056) et [ADR-0026](../adr/0026-mode-installation.md)). L'ancien toggle « Gérer la filtration » (`#filtration_enabled`) est **supprimé** (fusionné dans `install_mode`).
+> ⚠️ **Visibilité conditionnée au mode d'installation** (feature-056, v2.19.0). La page n'est pleinement active qu'en mode d'installation **`managed`** (PoolController pilote la filtration). En **`powered`** (alimenté par le circuit de filtration) et **`external`** (filtration tierce signalée), la programmation et le contrôle du relais sont **masqués** : le PoolController ne pilote pas le relais, une note « filtration non pilotée par le PoolController » est affichée — **et depuis feature-210 (v3.1.1) cette note dit où aller** : « Le mode se change dans Réglages › Installation. » ⚠️ Sans cette seconde phrase, la page était un **cul-de-sac** : son entrée de navigation (`#nav-filtration`) est elle aussi masquée dans ces deux modes, on n'y arrive qu'en forçant la route. Le mode se règle dans Paramètres → Installation (voir [page-settings.md](page-settings.md#encadré--ce-que-lappareil-sait--install-scope-feature-210-v311) et [ADR-0026](../adr/0026-mode-installation.md)). L'ancien toggle « Gérer la filtration » (`#filtration_enabled`) est **supprimé** (fusionné dans `install_mode`).
 
 - **Carte Contrôle manuel** (`#filtration-manual-card`) — boutons **Démarrer** / **Arrêter**, qui **changent le mode** (→ Marche / → Arrêt, feature-146) — **jamais grisés** : en mode Arrêt, « Démarrer » est précisément la sortie du mode. Le **badge d'état (Marche / Arrêt)** est placé à droite du titre dans le `card__head` (frère direct du `<h2>`, classes `pill ok` — En marche — ou `pill` nue, **grise** — Arrêtée ; depuis bug-197 la pastille n'est plus rouge : « Arrêtée » est un état normal, en Auto la pompe s'arrête chaque nuit) — voir feature-001. La ligne « État actuel » du body, devenue redondante, a été supprimée. Masquée hors mode d'installation `managed`.
-- **Carte Configuration** — sélecteur de mode (Auto / Programme / Marche / Arrêt), heure de début, heure de fin, bouton Sauvegarder. Le bandeau d'aide (`#filtration_mode_hint`) décrit désormais les **quatre modes en permanence** (il ne se masque plus selon le mode sélectionné). ⚠️ **feature-164 (v2.80.0)** : un bandeau `#filtration-duration-warning` (`.callout--warn`, non bloquant) apparaît en mode **Programme** si la durée saisie est sous 120 min — voir [Validation serveur des horaires](#validation-serveur-des-horaires-feature-164-v2800). Masquée hors mode d'installation `managed`.
+- **Carte Configuration** — sélecteur de mode (Auto / Programme / Marche / Arrêt), heure de début, heure de fin, bouton Sauvegarder. Le bandeau d'aide (`#filtration_mode_hint`) décrit désormais les **quatre modes en permanence** (il ne se masque plus selon le mode sélectionné). ⚠️ **feature-210 (v3.1.1)** : il se termine par `#filtration-mode-scope`, « L'appareil **commande** la pompe ; il ne mesure pas l'eau qui circule devant les points d'injection. » — **absorbée dans l'aide existante**, ⛔ pas un encadré de plus (la page est déjà dense, règle d'accumulation). Voir ci-dessous. ⚠️ **feature-164 (v2.80.0)** : un bandeau `#filtration-duration-warning` (`.callout--warn`, non bloquant) apparaît en mode **Programme** si la durée saisie est sous 120 min — voir [Validation serveur des horaires](#validation-serveur-des-horaires-feature-164-v2800). Masquée hors mode d'installation `managed`.
 
 Les autres cartes (graphe, statistiques) peuvent être ajoutées au fil du temps ; se référer à `#view-filtration` pour l'état courant.
 
@@ -49,6 +49,43 @@ Les autres cartes (graphe, statistiques) peuvent être ajoutées au fil du temps
 > **Cette page-ci** (réglage) **n'est pas restructurée**, mais son unique chemin d'écriture
 > (`POST /save-config`) gagne la **validation serveur des horaires** décrite ci-dessous — voir
 > [Validation serveur des horaires](#validation-serveur-des-horaires-feature-164-v2800).
+
+## Ce que l'appareil sait — où vit l'information (feature-210, v3.1.1)
+
+**Le constat qui a décidé du placement.** L'appareil autorise une injection sur une **déduction**, jamais
+sur une mesure : il sait ce qu'il a **commandé** (`managed`), ce que son **câblage impose** (`powered`) ou
+ce qu'un **tiers lui signale** (`external`). ⛔ Aucun des trois ne lit un débit — voir
+[ADR-0144](../adr/0144-l-appareil-ne-constate-jamais-l-eau-il-ne-nomme-que-son-absence.md).
+
+⚠️ **Cette page n'est pas le bon endroit pour le dire, et c'est mesurable** : `applyInstallMode()`
+([`data/app.js`](../../data/app.js)) masque `#nav-filtration`, `#dashboard-filtration-card` et
+`#filtration-content` dès que `install_mode` n'est pas `managed`. ⇒ **La page est injoignable par la
+navigation dans deux des trois raccordements.** Un encadré posé ici ne serait jamais lu par les deux tiers
+des configurations possibles. L'information complète vit donc dans
+**[Réglages › Installation](page-settings.md#encadré--ce-que-lappareil-sait--install-scope-feature-210-v311)**,
+page accessible dans tous les cas — c'est là que se choisit le raccordement.
+
+**Ce que cette page porte, et rien de plus** :
+
+| Élément | Texte | Condition |
+|---|---|---|
+| `#filtration-mode-scope` (dans `#filtration_mode_hint`) | « L'appareil **commande** la pompe ; il ne mesure pas l'eau qui circule devant les points d'injection. » | en mode `managed` seulement — c'est la visibilité de la carte Configuration qui le conditionne, aucune logique propre |
+| `#filtration-unmanaged-note` | « La filtration n'est pas pilotée par le PoolController dans ce mode d'installation. **Le mode se change dans Réglages › Installation.** » | `powered` / `external` |
+
+⛔ **Aucun encadré ajouté** sur cette page : la phrase est **absorbée** dans l'aide des quatre modes
+(règle d'accumulation). ⛔ Aucun `aria-live` : c'est un fait permanent, pas un événement.
+
+⚠️ **Ce que cette phrase ne dit pas, volontairement** : elle ne nomme ni coupable (la pompe, la sonde,
+l'installateur) ni danger. Le mode **Programme** est le mode normal, il fonctionne, et les protections
+existantes ne sont pas remises en cause — fail-closed strict de `resolveWaterPresent()`, limites par
+injection / horaire / journalière, filets bruts de pH, inhibition ORP. ⛔ **Et surtout : aucune invitation
+à couper la régulation « par prudence »** — un bassin privé d'acide 48 h part à pH 8,2-8,4, où la fraction
+de chlore actif tombe sous 25 %. Le bon réflexe de doute est d'**ouvrir les vannes et de faire un test
+manuel**, pas d'arrêter de doser.
+
+⚠️ Le `managed` n'est pas le moins sûr des trois, et le `powered` pas le plus risqué : dans ce dernier,
+pompe à l'arrêt, l'appareil **et** les pompes doseuses sont hors tension ([ADR-0026](../adr/0026-mode-installation.md)) —
+aveugle dans le logiciel, **protégé par le câblage**.
 
 ## Validation serveur des horaires (feature-164, v2.80.0)
 
@@ -146,3 +183,4 @@ jeton brut survivent. Voir [`docs/MQTT.md`](../MQTT.md) pour l'auto-discovery co
 - [docs/subsystems/pump-controller.md](../subsystems/pump-controller.md) — gardes (`canDose()` requiert la présence d'eau `resolveWaterPresence()`).
 - [ADR-0093](../adr/0093-le-mode-de-filtration-est-la-seule-autorite.md) — le mode de filtration est la seule autorité (feature-146).
 - [ADR-0026](../adr/0026-mode-installation.md) — mode d'installation (3 archétypes de câblage) + résolution de la présence d'eau.
+- [ADR-0144](../adr/0144-l-appareil-ne-constate-jamais-l-eau-il-ne-nomme-que-son-absence.md) — l'appareil ne constate jamais l'eau, il ne nomme que son absence (feature-210) ; fixe aussi la règle de placement qui a sorti cette information de cette page.
