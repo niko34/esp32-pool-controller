@@ -15,6 +15,7 @@
 #include "dose_block_duration_logic.h"  // feature-138 : durée du refus courant (PURE)
 #include "temp_mode_logic.h"            // feature-140 : mode ORP EFFECTIF (PURE)
 #include "dosing_window.h"              // feature-136 : survie du budget horaire au reboot
+#include "orp_mixing_learn_logic.h"      // feature-202 : pause mélange ORP apprise (PURE)
 #include "acct_window_logic.h"          // bug-115 : fenêtre de comptabilité pompe (PURE)
 
 struct PumpDriver {
@@ -319,6 +320,19 @@ private:
   // interrompre l'injection en cours. Gate indépendante (OR) dans canDose(), distincte du timer post-cal.
   // Écrits/lus en loopTask uniquement → pas de mutex (cohérent avec _stabilizationEndMs).
   uint32_t _mixingEndMs[2] = {0, 0};
+
+  // feature-202 : apprentissage de la pause mélange ORP. Observation, tick,
+  // clôture et écriture NVS : loopTask UNIQUEMENT (aucun mutex). Seuls les deux
+  // atomiques sont lus depuis async_tcp (accesseurs d'affichage).
+  OrpMixingObservation _orpObs;
+  OrpMixingLearnStore _orpLearn;
+  bool _orpLearnBegun = false;
+  uint16_t _orpObsDiscards[3] = {0, 0, 0};  // jetées : [0] perturbée [1] mesure [2] plafond
+  uint16_t _orpObsClosed = 0;               // closes depuis le boot
+  std::atomic<uint32_t> _orpMixingDelayMs{(uint32_t)kOrpMixingDelayMs};
+  std::atomic<uint8_t> _orpMixingObsCount{0};
+  void tickOrpMixingLearn(uint32_t nowMs, bool clean);
+  void abandonOrpMixingObservation();
 
   // Helpers internes pour le log de refus (canDose). `code` est mémorisé pour
   // /data + WS et pilote la SÉVÉRITÉ du journal : v2.25.1 escalade en `warn` +
@@ -1215,6 +1229,16 @@ public:
   // Géré uniquement par timestamps (AUCUN delay()).
   void notifyPhDose(uint32_t nowMs);
   void notifyOrpDose(uint32_t nowMs);
+  // feature-202 : charge les observations NVS et pose la durée en vigueur.
+  // IDEMPOTENTE ; ne touche que le store + le logger (ni LEDC, ni config, ni I2C).
+  // À appeler AVANT dosingWindow.begin() (main.cpp).
+  void beginOrpMixingLearn();
+  // Durée de pause ORP en vigueur (ms) / (s) — SEUL point de conversion en secondes.
+  uint32_t orpMixingDelayMs() const { return _orpMixingDelayMs.load(); }
+  uint32_t getOrpMixingDelayS() const { return _orpMixingDelayMs.load() / 1000UL; }
+  // true dès que 3 observations propres reposent derrière la durée (sinon usine).
+  bool isOrpMixingDelayLearned() const { return _orpMixingObsCount.load() >= kOrpMixingLearnObsCount; }
+  uint8_t getOrpMixingObsCount() const { return _orpMixingObsCount.load(); }
   bool isPhMixingDelayActive(uint32_t nowMs) const;
   bool isOrpMixingDelayActive(uint32_t nowMs) const;
   // Secondes restantes de pause mélange par pompe ([0]=pH, [1]=ORP) — observabilité UI.

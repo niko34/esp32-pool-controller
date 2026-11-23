@@ -2492,6 +2492,16 @@ Interprétation : [pump-controller.md — Limite d'actionneur pH](subsystems/pum
 
 **Quatre champs de pause mélange, désormais servis sur `/data`** (ils étaient **WS-seuls**, donc un affichage qui s'en sert **clignotait**) : `phMixingDelayActive`, `orpMixingDelayActive` (bool) et `ph_mix_remaining_s`, `orp_mix_remaining_s` (uint32, secondes restantes). Sémantique **inchangée** côté WebSocket.
 
+**Trois champs de pause mélange ORP apprise (feature-202, v3.2.0)**, servis sur `/data` **et** sur la trame WebSocket (même accesseur, parité d'expression) :
+
+| Champ | Type | Description |
+|---|---|---|
+| `orp_mix_delay_s` | uint32 | Durée de pause mélange ORP **en vigueur**, en secondes. Toujours un multiple de 1200 : 1200, 2400, 3600, 4800, 6000 ou 7200 (comparaison par blocs de 20 min, plancher `kOrpMixingDelayMs`, plafond `6 * kOrpMixingDelayMs`). Seul point de conversion ms → s : `PumpController.getOrpMixingDelayS()`. |
+| `orp_mix_delay_learned` | bool | `true` si la durée repose sur 3 observations propres ; `false` = réglage d'usine (20 min). |
+| `orp_mix_obs_count` | uint8 | Nombre d'observations propres retenues (saturé à 255 ; la durée n'est « apprise » qu'à partir de 3). |
+
+La pause pH n'est **pas** apprise : aucun champ équivalent. ⚠️ Le champ décrit la durée de la **garde** (mode Auto) ; elle n'est pas appliquée en mode Programmé ou manuel. Détail : [pump-controller](subsystems/pump-controller.md#pause-mélange-orp-apprise-feature-202-v320), [ADR-0145](adr/0145-la-pause-melange-orp-s-apprend-seulement-vers-le-prudent.md).
+
 **Deux booléens de caractérisation de pompe, désormais servis sur la trame WS** : `ph_pump_flow_uncharacterized` / `orp_pump_flow_uncharacterized` étaient `/data`-**seuls**, et le push WebSocket **effaçait** donc la clé de l'objet client (`latestSensorData` est remplacé en entier, sans fusion). Sémantique inchangée côté `/data`.
 
 **Sémantique de `ph_ff_status = 3` précisée** : le code `3` (« en apprentissage, historique < 3 jours ») n'est **jamais** servi si l'anneau de charge porte **≥ 3 journées exploitables**. Il est alors traduit en `0` (inactif) par l'accesseur, **avant** toute autre garde. Le défaut corrigé : entre l'archivage de minuit et le premier tick de feedforward du matin, l'interface annonçait « en apprentissage » pendant sept heures alors que la dose **était** apprise.

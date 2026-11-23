@@ -165,7 +165,9 @@ void test_04_no_source_triggers_t3_single_window_then_nominal(void) {
   TEST_ASSERT_EQUAL_UINT32(kHour, v.usedMs);     // UNE SEULE fenêtre pleine, pas plus
   TEST_ASSERT_EQUAL_UINT32(nowMs, v.windowStart);
   TEST_ASSERT_EQUAL_UINT16(0, v.cyclesToday);
-  TEST_ASSERT_EQUAL_UINT32(0u, v.mixingEndMs);
+  // feature-202 (C5) : la pause EST armée à la durée passée (plus 0). Le verrou
+  // horaire ne couvre une pause que jusqu'à 60 min.
+  TEST_ASSERT_EQUAL_UINT32(nowMs + kFullMixPh, v.mixingEndMs);
 
   // "Retour au nominal" : le même appel pur, avec des entrées nominales,
   // n'est pas pollué par l'appel précédent (aucun état caché/statique).

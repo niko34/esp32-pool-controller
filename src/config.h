@@ -7,6 +7,7 @@
 #include "dosing_logic.h"  // feature-056 : enum InstallMode (logique pure partagée)
 #include "constants.h"     // feature-074 : kPumpTypePulseFlowMlPerMin (calibration de type)
 #include "ph_persist_logic.h"  // feature-084 : PhIntegralSnapshot (logique PURE)
+#include "orp_mixing_learn_logic.h"  // feature-202 : OrpMixingLearnStore (logique PURE)
 #include "regulation_defaults.h"  // feature-088 : valeurs d'usine de régulation (source UNIQUE)
 #include "time_to_target_logic.h"  // feature-096 : TttHistory (logique PURE)
 #include "schedule_logic.h"  // feature-146 : FiltrationMode (parseFiltrationModeFrom)
@@ -510,6 +511,15 @@ bool loadPhIntegralSnapshot(PhIntegralSnapshot& out);
 // Écrit l'instantané en le SCELLANT au préalable (`reserved` normalisé, `crc`
 // posé) : le champ `crc` fourni par l'appelant est ignoré.
 void savePhIntegralSnapshot(PhIntegralSnapshot& s);
+
+// ==== feature-202 : observations de la pause mélange ORP (20 octets, NVS) ====
+// Namespace `pool-dose`, clé `orpmix`. TRANSPORT SEUL (décisions : module pur).
+// false si absent / taille inexacte / schéma ou CRC faux (store laissé vide ⇒
+// 20 min). `corrupted` = true quand des octets existaient mais sont rejetés
+// (à journaliser) ; absence = silencieuse. Sans configMutex (loopTask seule).
+bool loadOrpMixingStore(OrpMixingLearnStore& out, bool& corrupted);
+// Écrit le store (scellé). UNE écriture par observation CLOSE.
+void saveOrpMixingStore(const OrpMixingLearnStore& s);
 
 // ==== v2.27.0 (feature-084, R1) : anneau NVS de l'historique de charge ====
 // 7 journées {date, mL pH, minutes de filtration} dans UN blob de 64 octets

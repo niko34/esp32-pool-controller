@@ -292,6 +292,12 @@ Paire libellé/valeur en lecture seule, `justify-content:space-between`. Piloté
 et l'emporte sur `.detail-row{display:flex}` — toujours utiliser l'attribut `hidden`, jamais
 un style inline, pour toute nouvelle ligne conditionnelle.
 
+### 5.6 bis `.kv--plain` et `.kv[hidden]` (feature-202)
+
+**`.kv--plain`** : modificateur **additif** de `.kv` pour une ligne clé/valeur **permanente placée sous un bloc `.kv--dose`**. **Contexte** : carte de page mesure uniquement (aujourd'hui `#orp-mix-pause`, page ORP). Il pose un `margin-top` et un liseré haut propres, neutralise le survol des lignes, empêche le retour à la ligne de la valeur (`nowrap`) et aligne en haut. ⛔ Il ne se place pas **dans** `.kv--dose`, dont le liseré repose sur `:last-child`. `.kv__note__l` force un retour à la ligne entre deux notes.
+
+**Règle `.kv[hidden] { display: none !important; }`** : `.kv { display: grid }` **bat** l'attribut `hidden` de la feuille UA (`display: none`), donc une ligne `hidden` restait visible avec un tiret. Même piège déjà corrigé pour `.chip`, `.btn`, `.state-badge` et `.detail-row` : **tout composant qui fixe un `display` doit déclarer sa règle `[hidden]` avec `!important`**, et on pilote la visibilité par l'attribut, jamais par `style.display`.
+
 ### 5.7 `.state-badge`
 Pastille d'état : `--ok` (vert, fonctionnement normal), `--off` (gris neutre, à l'arrêt),
 `--active` (bleu accent, option activée), `--warn` (ambre, attention sans danger immédiat).

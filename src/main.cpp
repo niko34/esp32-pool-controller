@@ -449,6 +449,11 @@ void setup() {
   // applyRestoredDosingWindow(). APRÈS rtcManager.applyToSystem() : la voie T1
   // (NVS, ancrée sur l'epoch murale) a besoin d'une heure valide pour être
   // interprétée.
+  // feature-202 (C6/A9) : la durée de pause ORP apprise doit être connue AVANT
+  // dosingWindow.begin() (sinon la restauration travaille avec la constante
+  // d'usine). Idempotent : ne touche que le store NVS et le logger.
+  PumpController.beginOrpMixingLearn();
+  dosingWindow.setOrpFullMixingMs(PumpController.orpMixingDelayMs());
   dosingWindow.begin();
 
   PumpController.begin();

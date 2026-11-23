@@ -953,6 +953,53 @@ Une injection **en cours** n'est pas interrompue par un changement d'offset : le
 
 Toutes dans [`constants.h`](../../src/constants.h).
 
+## Pause mélange ORP apprise (feature-202, v3.2.0)
+
+Décision : [ADR-0145](../adr/0145-la-pause-melange-orp-s-apprend-seulement-vers-le-prudent.md). Logique **pure** dans [`src/orp_mixing_learn_logic.h`](../../src/orp_mixing_learn_logic.h) ([ADR-0017](../adr/0017-logique-metier-pure-humble-object-testabilite.md)) ; `pump_controller.cpp` ne fait que le câblage.
+
+### Mécanisme
+1. À la **fin de chaque session d'injection de chlore** (à côté de `notifyOrpDose`), `orpMixingOpen()` ouvre une observation : jalon 0 = fin d'injection.
+2. À chaque jalon (une fois toutes les `kOrpMixingDelayMs` = 20 min), `tickOrpMixingLearn()` compare la mesure filtrée (`getOrpFiltered()`) à celle du jalon **précédent**. Dès qu'elle n'est plus au-dessus, la montée est finie : observation = k × 20 min, k ∈ [1, 6].
+3. Durée en vigueur = **maximum des 3 dernières** observations propres, écrêtée à `[kOrpMixingDelayMs, kOrpMixingDelayLearnedMaxMs]`. Sous 3 observations : 20 min exactement.
+
+⚠️ La fenêtre de comparaison est la **constante**, jamais la durée en vigueur (sinon cliquet irréversible). Durées possibles : 20 min, 40 min, 1 h, 1 h 20, 1 h 40, 2 h.
+
+**Observation jetée** (jamais enregistrée) si, pendant la fenêtre : une injection pH ou ORP a eu lieu (y compris d'acide, manuelle comprise), la filtration s'est arrêtée / l'eau est absente, une attente eau neuve est en cours, une session d'étalonnage est ouverte ou sa stabilisation court, la mesure est non représentative (NaN), ou le plafond est atteint sans stabilisation (jeté, **pas** enregistré comme « très long »). Maintenance et OTA abandonnent l'observation. Motifs comptés (perturbée / mesure / plafond) et journalisés : `[Dosage ORP] Observation de la montée jetée : …` ; une observation close journalise `[Dosage ORP] Montée observée : N min — pause mélange en vigueur M min …`.
+
+### Accesseurs (publics)
+| Méthode | Rôle |
+|---|---|
+| `beginOrpMixingLearn()` | Charge l'instantané NVS (idempotent), pose la durée en vigueur. **Avant** `dosingWindow.begin()` (`main.cpp`) |
+| `orpMixingDelayMs()` | Durée en vigueur, ms |
+| `getOrpMixingDelayS()` | ⭐ **Seul** point de conversion `/1000` : `/data` et WS l'appellent tous deux, ce qui garantit la parité |
+| `isOrpMixingDelayLearned()` | `true` dès 3 observations |
+| `getOrpMixingObsCount()` | Nombre d'observations |
+
+`notifyOrpDose()` arme `_mixingEndMs[1] = nowMs + durée en vigueur`. La pause pH reste à `kPhMixingDelayMs`, **inchangée**.
+
+### Constantes
+| Constante | Valeur | Rôle |
+|---|---|---|
+| `kOrpMixingDelayMs` | 20 min | Plancher, fenêtre de comparaison, borne basse d'une observation |
+| `kOrpMixingDelayLearnedMaxMs` | `6 * kOrpMixingDelayMs` (120 min) | Plafond. ⛔ Exprimé en multiple du plancher, jamais en minutes |
+| `kOrpMixingLearnObsCount` / `kOrpMixingLearnSchema` | 3 / 1 | Taille de l'anneau / version de l'instantané |
+
+### Persistance
+Instantané NVS `orpmix` (namespace `pool-dose`) : **20 octets**, CRC FNV-1a, ⛔ sans empreinte de contexte ni péremption (grandeur hydraulique). Une écriture par observation close. CRC ou schéma invalide : retour à 20 min + avertissement. La **pause elle-même** reste persistée comme un reste en millisecondes : **aucun changement de schéma NVS/RTC** pour elle.
+
+### Correctif du repli fail-closed (C5)
+`dosingWindowResolveChannel()` armait `mixingEndMs = 0` en repli ; le verrou horaire (60 min) ne couvrait donc pas une pause ORP > 60 min (trou réel, indépendant de l'apprentissage). Le repli arme `safeNow + durée en vigueur`, **sur les deux voies**. Pour le pH (15 min < 60 min) aucune autorisation ne change, seul le libellé de cause peut différer (`test_21`).
+
+### Ordre de démarrage (C6) et restauration
+`main.cpp` : `beginOrpMixingLearn()` → `dosingWindow.setOrpFullMixingMs()` → `dosingWindow.begin()`. Inverser cet ordre ferait restaurer avec la constante d'usine. Une pause **en cours** au redémarrage repart à la durée **en vigueur** à la restauration (elle ne peut qu'allonger).
+
+### Limites connues
+- L'apprentissage peut rester **inerte** sur un bassin très demandeur : toute injection, acide compris, jette l'observation. Constatable via le compte affiché et les logs.
+- Au plafond, l'observation est jetée en silence ⇒ la pause reste au plancher (asymétrie défavorable). Suivi : fiche séparée.
+- Ce mécanisme ne supprime pas les dépassements : ils tiennent à la **taille de la dose**.
+
+Tests : `test/test_native_orp_mixing_learn/`.
+
 ## Présence d'eau selon le mode d'installation (feature-056)
 
 La garde #3 (« Présence d'eau ») ne teste plus `filtration.isRunning()` directement : elle consomme la **source unique** `filtration.resolveWaterPresence().waterPresent` ([ADR-0026](../adr/0026-mode-installation.md)). La même source alimente **tous** les chemins de dosage (régulation auto, injection manuelle `evaluateManualInject`, monitor d'injection en cours) — plus de logique de présence d'eau dupliquée par site.

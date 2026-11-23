@@ -1200,6 +1200,35 @@ void savePhIntegralSnapshot(PhIntegralSnapshot& s) {
   prefs.end();
 }
 
+// feature-202 — observations de la pause mélange ORP. TRANSPORT SEUL : schéma,
+// CRC et décisions vivent dans orp_mixing_learn_logic.h (testable en natif).
+bool loadOrpMixingStore(OrpMixingLearnStore& out, bool& corrupted) {
+  corrupted = false;
+  OrpMixingSnapshot raw;
+  Preferences prefs;
+  if (!prefs.begin("pool-dose", true)) return false;  // namespace jamais écrit
+  const size_t read = prefs.getBytes("orpmix", &raw, sizeof(raw));
+  prefs.end();
+  if (read == 0) return false;  // absence : cas nominal, silencieux
+  if (!orpMixingSnapshotIntact(raw, read)) {
+    corrupted = true;
+    return false;
+  }
+  out = orpMixingStoreFromSnapshot(raw);
+  return true;
+}
+
+void saveOrpMixingStore(const OrpMixingLearnStore& s) {
+  OrpMixingSnapshot snap = orpMixingSnapshotFromStore(s);  // scellé (CRC)
+  Preferences prefs;
+  if (!prefs.begin("pool-dose", false)) {
+    systemLogger.warning("[Config] Observations pause mélange ORP : ouverture NVS refusée");
+    return;
+  }
+  prefs.putBytes("orpmix", &snap, sizeof(snap));
+  prefs.end();
+}
+
 // =============================================================================
 // v2.27.0 (feature-084, R1) — ANNEAU NVS DE L'HISTORIQUE DE CHARGE ACIDE
 // =============================================================================

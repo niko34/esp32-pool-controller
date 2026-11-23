@@ -1357,6 +1357,16 @@ static const SharedExprKey kSharedExpr[] = {
     "elle pilote l'affirmation « le secours dose reellement ». Un seul cote "
     "sans la clause afficherait un secours actif pendant l'arret de securite, "
     "ou l'inverse selon la trame, au rythme des deux cadences." },
+  { "orp_mix_delay_s",
+    "feature-202 : duree de la pause melange ORP EN VIGUEUR (apprise), en "
+    "secondes. Une divergence d'expression ferait osciller la pastille de pause "
+    "et le texte de la carte au rythme des deux cadences (~5 s / ~30 s)." },
+  { "orp_mix_delay_learned",
+    "feature-202 : dit si la duree est apprise ou d'usine ; une divergence "
+    "ferait alterner l'affichage « apprise » / « d'usine » selon la trame." },
+  { "orp_mix_obs_count",
+    "feature-202 : nombre d'observations propres retenues ; une divergence "
+    "ferait osciller le compteur d'apprentissage affiche (0/3 a 3/3)." },
 };
 static const size_t kSharedExprCount = sizeof(kSharedExpr) / sizeof(kSharedExpr[0]);
 

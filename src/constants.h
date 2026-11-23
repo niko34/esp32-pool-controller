@@ -2338,6 +2338,24 @@ constexpr uint32_t kDoseSensorFaultAlertDelayMs = 60000UL;
 constexpr unsigned long kPhMixingDelayMs         = 900000UL;  // 15 min — pause mélange pH
 constexpr unsigned long kOrpMixingDelayMs        = 1200000UL; // 20 min — pause mélange ORP
 
+// feature-202 — la pause mélange ORP S'APPREND (module pur orp_mixing_learn_logic.h).
+// kOrpMixingDelayMs reste le PLANCHER, la fenêtre de comparaison de l'observation
+// ET la durée d'usine. Le plafond est un MULTIPLE du plancher (jamais des minutes
+// en dur) : garde-fou contre une observation aberrante. Il DÉPASSE volontairement
+// kDosingWindowHourMs (60 min) — c'est l'objet même du repli C5 de
+// dosing_window_logic.h. ⛔ kPhMixingDelayMs n'est PAS concernée.
+constexpr uint32_t kOrpMixingDelayLearnedMaxMs = 6UL * (uint32_t)kOrpMixingDelayMs;
+// Nombre d'observations propres retenues (la durée en vigueur en est le MAXIMUM).
+constexpr uint8_t  kOrpMixingLearnObsCount     = 3;
+// Schéma de l'instantané NVS (20 octets) — à incrémenter à tout changement de taille.
+constexpr uint8_t  kOrpMixingLearnSchema       = 1;
+static_assert(kOrpMixingDelayLearnedMaxMs > (uint32_t)kOrpMixingDelayMs,
+              "Plafond appris : doit dépasser le plancher (kOrpMixingDelayMs)");
+static_assert(kOrpMixingDelayLearnedMaxMs % (uint32_t)kOrpMixingDelayMs == 0,
+              "Plafond appris : multiple ENTIER du plancher (observations par blocs)");
+static_assert(kOrpMixingLearnObsCount == 3,
+              "Instantané NVS : 3 observations (20 octets) — changer le schéma sinon");
+
 // ============================================================================
 // SEUILS D'HYSTÉRÉSIS pH — PROMUS EN CONSTANTES (feature-094, condition C9)
 // ============================================================================

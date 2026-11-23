@@ -304,7 +304,11 @@ inline DosingWindowChannelVerdict dosingWindowResolveChannel(
     out.windowStart = safeNow;
     out.cyclesToday = 0;
     out.cyclesDayStart = safeNow;
-    out.mixingEndMs = 0;
+    // feature-202 (C5) : pause armée à la durée EN VIGUEUR, plus 0. Le verrou
+    // horaire ci-dessus ne couvre une pause que jusqu'à 60 min ; la pause ORP
+    // apprise peut aller à 120 min. Côté pH (15 min < 60 min) elle expire avant
+    // le verrou : aucune autorisation ne change, seul le libellé de cause.
+    out.mixingEndMs = safeNow + fullMixingDelayMs;
     out.source = DosingWindowSource::kFailClosed;
     return out;
   }

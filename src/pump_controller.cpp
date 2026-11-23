@@ -549,7 +549,73 @@ void PumpControllerClass::notifyPhDose(uint32_t nowMs) {
 }
 
 void PumpControllerClass::notifyOrpDose(uint32_t nowMs) {
-  _mixingEndMs[1] = nowMs + (uint32_t)kOrpMixingDelayMs;
+  // feature-202 : durée EN VIGUEUR (apprise), plancher = kOrpMixingDelayMs.
+  _mixingEndMs[1] = nowMs + _orpMixingDelayMs.load();
+}
+
+// feature-202 — chargement idempotent des observations (avant dosingWindow.begin()).
+void PumpControllerClass::beginOrpMixingLearn() {
+  if (_orpLearnBegun) return;
+  _orpLearnBegun = true;
+  bool corrupted = false;
+  OrpMixingLearnStore st;
+  if (loadOrpMixingStore(st, corrupted)) {
+    _orpLearn = st;
+  } else if (corrupted) {
+    systemLogger.warning("[Dosage ORP] Observations de pause mélange illisibles (CRC/schéma) : "
+                         "retour à la durée d'usine");
+  }
+  _orpMixingDelayMs.store(orpMixingEffectiveDelayMs(_orpLearn));
+  _orpMixingObsCount.store(_orpLearn.count);
+  char line[112];
+  snprintf(line, sizeof(line),
+           "[Dosage ORP] Pause mélange : %lu min (%s, %u observation(s))",
+           (unsigned long)(_orpMixingDelayMs.load() / 60000UL),
+           orpMixingIsLearned(_orpLearn) ? "observée" : "réglage d'usine",
+           (unsigned)_orpLearn.count);
+  systemLogger.info(line);
+}
+
+// Abandon d'une observation en cours (OTA / maintenance) : compté « perturbée ».
+void PumpControllerClass::abandonOrpMixingObservation() {
+  if (!_orpObs.active) return;
+  _orpObs.active = false;
+  if (_orpObsDiscards[0] < 0xFFFF) ++_orpObsDiscards[0];
+}
+
+// Un pas d'observation. `clean` = propreté de CE tick, calculée par l'appelant.
+// Aucun I2C, aucune allocation (ADR-0082) ; une écriture NVS par observation CLOSE.
+void PumpControllerClass::tickOrpMixingLearn(uint32_t nowMs, bool clean) {
+  if (!_orpObs.active) return;
+  OrpMixingTickInputs in;
+  in.nowMs = nowMs;
+  in.orpFiltered = sensors.getOrpFiltered();  // NaN = non représentatif
+  in.clean = clean;
+  const OrpMixingTickVerdict v = orpMixingTick(_orpObs, in);
+  char line[160];
+  if (v.outcome == OrpMixingOutcome::kClosed) {
+    orpMixingRecord(_orpLearn, v.observedMs);
+    if (_orpObsClosed < 0xFFFF) ++_orpObsClosed;
+    saveOrpMixingStore(_orpLearn);
+    _orpMixingDelayMs.store(orpMixingEffectiveDelayMs(_orpLearn));
+    _orpMixingObsCount.store(_orpLearn.count);
+    snprintf(line, sizeof(line),
+             "[Dosage ORP] Montée observée : %lu min — pause mélange en vigueur %lu min "
+             "(%u observation(s), %u jetée(s) depuis le démarrage)",
+             (unsigned long)(v.observedMs / 60000UL),
+             (unsigned long)(_orpMixingDelayMs.load() / 60000UL), (unsigned)_orpLearn.count,
+             (unsigned)(_orpObsDiscards[0] + _orpObsDiscards[1] + _orpObsDiscards[2]));
+    systemLogger.info(line);
+  } else if (v.outcome == OrpMixingOutcome::kDiscarded) {
+    const uint8_t idx = (uint8_t)v.discard - 1u;  // kDirty=1 → 0, … kCeiling=3 → 2
+    if (idx < 3 && _orpObsDiscards[idx] < 0xFFFF) ++_orpObsDiscards[idx];
+    snprintf(line, sizeof(line),
+             "[Dosage ORP] Observation de la montée jetée : %s (jetées : %u perturbée, "
+             "%u mesure, %u plafond ; %u close(s))",
+             orpMixingDiscardLabel(v.discard), (unsigned)_orpObsDiscards[0],
+             (unsigned)_orpObsDiscards[1], (unsigned)_orpObsDiscards[2], (unsigned)_orpObsClosed);
+    systemLogger.info(line);
+  }
 }
 
 bool PumpControllerClass::isPhMixingDelayActive(uint32_t nowMs) const {
@@ -3761,6 +3827,7 @@ void PumpControllerClass::updateDosingCore(unsigned long now) {
     // lui-même. Le rituel complet (état, pause mélange, log d'arrêt) a lieu ICI,
     // sur loopTask, au premier tour d'OTA. Idempotent : no-op aux tours suivants.
     closePhDosingSession(now, "OTA en cours");
+    abandonOrpMixingObservation();  // feature-202
     applyPumpDuty(0, 0);
     applyPumpDuty(1, 0);
     settlePumpAccounting(now);  // bug-115 (v2.61.0) : C1 — régler avant de sortir
@@ -3777,6 +3844,7 @@ void PumpControllerClass::updateDosingCore(unsigned long now) {
     // `isPhDosing()` mentait à l'UI. La fermeture est idempotente : elle ne
     // journalise qu'au premier tour de maintenance.
     closePhDosingSession(now, "mode maintenance");
+    abandonOrpMixingObservation();  // feature-202 : aucune observation hors régulation
     // bug-171 (pool-chemistry cond. 2) : purger manualMode + échéance, comme l'OTA —
     // sinon l'exemption des blocs de suspension survit au retour de maintenance.
     if (manualMode[0] || manualMode[1]) {
@@ -3830,6 +3898,23 @@ void PumpControllerClass::updateDosingCore(unsigned long now) {
   // (bassin en hivernage). Après les sorties OTA / maintenance (déjà coupées).
   const WaterPresence waterPresence = filtration.resolveWaterPresence();
   tickManualPumpGuard(now, waterPresence);
+
+  // feature-202 : pas d'observation de la montée ORP. Propre = eau présente,
+  // aucune injection pH/ORP (session ouverte ou pompe en marche, manuelle
+  // comprise) et eau de la conduite renouvelée (pas d'attente eau neuve).
+  //
+  // ⛔ ÉTALONNAGE : gate pool-chemistry P2 du 2026-11-23 (condition BLOQUANTE).
+  // Une session d'étalonnage ouverte, ou la stabilisation qui la suit, change
+  // l'ÉCHELLE mV sous l'observation — et la sonde peut être hors de l'eau. Un
+  // décalage vers le haut se lirait comme une montée qui dure, donc comme une
+  // pause plus longue, et cette valeur fausse serait PERSISTÉE SANS PÉREMPTION
+  // (la grandeur apprise est hydraulique, rien ne la périme). ⚠️ Les deux mêmes
+  // prédicats bloquent DÉJÀ le dosage à :4039 — l'observation doit s'aligner.
+  tickOrpMixingLearn((uint32_t)now,
+                     waterPresence.waterPresent && !phDosingState.active &&
+                         !orpDosingState.active && pumpDuty[0] == 0 && pumpDuty[1] == 0 &&
+                         measureValidity.isCirculationSettled() &&
+                         !mqttCfg.calSessionOpen && !isStabilizationTimerActive(1));
 
   // feature-084 (sujet 3) : lecture DIFFÉRÉE de l'instantané NVS. Placée ici, en
   // aval des sorties OTA et maintenance (une lecture NVS ne doit pas s'inviter au
@@ -5186,6 +5271,8 @@ void PumpControllerClass::updateDosingCore(unsigned long now) {
       orpDosingState.lastStopTime = now;
       // feature-025 : pause mélange armée à la FIN DE SESSION, jamais entre pouls.
       notifyOrpDose((uint32_t)now);
+      // feature-202 : ouvre l'observation de la montée (fin d'injection = jalon 0).
+      orpMixingOpen(_orpObs, (uint32_t)now, sensors.getOrpFiltered());
       unsigned long runTime = (now - orpDosingState.lastStartTime) / 1000;
       systemLogger.info("Arrêt dosage ORP (auto): session=" + String(runTime) + "s" +
         " pompe-ON=" + String(_sessionOnMs[1] / 1000UL) + "s" +

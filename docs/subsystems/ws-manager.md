@@ -75,7 +75,7 @@ La garde reste un **check-then-act** (TOCTOU) : entre `getMaxAllocHeap()` et l'a
 
 ### Buffer statique de trame `.bss` — `sWsFrameBuf` (pattern « réserver une fois, réutiliser toujours »)
 
-Les trames WS sortantes sont construites dans un buffer **statique** `sWsFrameBuf[kWsFrameBufBytes]` (**3584** o depuis v2.21.1 — 3072 de v2.14.0 à v2.21.0 —, réservé au link en `.bss`, **hors heap**, zéro fragmentation) réutilisé à chaque push — **plus aucune String temporaire par push** (supprime le churn G2 résiduel : ~2 Ko alloués/libérés toutes les 5 s). `_buildSensorJson(buf, cap)` / `_buildConfigJson(buf, cap)` sérialisent directement dedans (`measureJson` d'abord : si le JSON + NUL ne tient pas → retour **0**, push **sauté**, jamais de troncature) ; `broadcastLog` utilise le même buffer avec le même contrat. Chaque dépassement incrémente `_oversizedFrames` (atomic relaxed, exposé par `oversizedFrameCount()`), avec un WARN throttlé **dédié** dans `update()` (« N trame(s) WS > `kWsFrameBufBytes` o (buffer statique) — pushes sautés, agrandir kWsFrameBufBytes ») — même invariant anti-ré-entrance que le warn des pushes sautés. `kWsSensorJsonReserveBytes` est **supprimée** (plus de `reserve()` de String).
+Les trames WS sortantes sont construites dans un buffer **statique** `sWsFrameBuf[kWsFrameBufBytes]` (**4096** o depuis feature-163 — 3584 de v2.21.1 à cette version, 3072 de v2.14.0 à v2.21.0 —, réservé au link en `.bss`, **hors heap**, zéro fragmentation) réutilisé à chaque push — **plus aucune String temporaire par push** (supprime le churn G2 résiduel : ~2 Ko alloués/libérés toutes les 5 s). `_buildSensorJson(buf, cap)` / `_buildConfigJson(buf, cap)` sérialisent directement dedans (`measureJson` d'abord : si le JSON + NUL ne tient pas → retour **0**, push **sauté**, jamais de troncature) ; `broadcastLog` utilise le même buffer avec le même contrat. Chaque dépassement incrémente `_oversizedFrames` (atomic relaxed, exposé par `oversizedFrameCount()`), avec un WARN throttlé **dédié** dans `update()` (« N trame(s) WS > `kWsFrameBufBytes` o (buffer statique) — pushes sautés, agrandir kWsFrameBufBytes ») — même invariant anti-ré-entrance que le warn des pushes sautés. `kWsSensorJsonReserveBytes` est **supprimée** (plus de `reserve()` de String).
 
 > ⚠️ **INVARIANT BLOQUANT — `sWsFrameBuf` est réservé à `loopTask`.** Les 3 broadcasts sont tous appelés depuis `update()`/loop aujourd'hui. Tout futur câblage **multi-tâche** de `broadcastLog` (ex. callback logger depuis `async_tcp`/`mqttTask`) devra utiliser un buffer **dédié** — jamais celui-ci, sous peine de trames entrelacées. Voir le commentaire sur place ([`src/ws_manager.cpp`](../../src/ws_manager.cpp)).
 
@@ -87,12 +87,12 @@ Il y a **deux** trames JSON sortantes, donc **deux** gabarits `StaticJson<N>` di
 
 | Trame | Fabricant | Gabarit documentaire |
 |---|---|---|
-| `sensor_data` | `_buildSensorJson()` — [`src/ws_manager.cpp:303`](../../src/ws_manager.cpp) | `StaticJson<3584>` (**3456** de feature-092 à la v2.47.0, **3072** avant) |
+| `sensor_data` | `_buildSensorJson()` — [`src/ws_manager.cpp:303`](../../src/ws_manager.cpp) | `StaticJson<4096>` (**3584** jusqu'à feature-163, **3456** de feature-092 à la v2.47.0, **3072** avant) |
 | `config` | `_buildConfigJson()` — [`src/ws_manager.cpp:979`](../../src/ws_manager.cpp) | `StaticJson<3008>` |
 
 **Le gabarit n'est PAS une limite.** En ArduinoJson 7, `StaticJson<N>` dérive de `JsonDocument` et `N` n'est plus que la valeur rendue par `capacity()` — le pool est alloué dynamiquement. **Le bumper coûte 0 octet de RAM.** Un bump refusé « pour économiser la RAM » serait donc un **mauvais arbitrage** : il n'économise rien. Le gabarit ne documente que l'ordre de grandeur attendu de la trame ; c'est un repère de lecture, pas un garde-fou.
 
-**Le seul plafond DUR des deux chemins est `kWsFrameBufBytes = 3584` o** ([`src/constants.h`](../../src/constants.h)), taille du buffer statique `sWsFrameBuf` en `.bss`. Celui-là se paie : le relever coûte autant de `.bss`, donc autant de RAM en moins pour le tas.
+**Le seul plafond DUR des deux chemins est `kWsFrameBufBytes = 4096` o** ([`src/constants.h`](../../src/constants.h)), taille du buffer statique `sWsFrameBuf` en `.bss`. Celui-là se paie : le relever coûte autant de `.bss`, donc autant de RAM en moins pour le tas.
 
 **Mode de défaillance** : un dépassement **saute le push** (garde `measureJson(doc) + 1 > cap`, compteur `_oversizedFrames`, WARN throttlé) — il ne **tronque jamais**. Une trame trop grosse est une trame **entièrement perdue**, pas une trame amputée.
 
@@ -323,7 +323,7 @@ Côté UI : un toast est affiché une seule fois par session si la valeur ∈ {`
 - **Registre authentifié saturé** (`kWsMaxClients` dépassé, bug-081) : la connexion ou l'authentification excédentaire est **fermée** (`client->close()`) plutôt que servie en silence — compteur `registryFullCount()` + WARN throttlé 30 s dans `update()`. Jamais de log depuis le contexte `async_tcp` qui détecte la saturation (pile réduite).
 - **Push pendant write en cours** : `AsyncWebSocket` gère la file d'attente (bornée à 5 trames depuis v2.11.1), pas de blocage du loop.
 - **Heap fragmenté** (plus gros bloc **8 bits** `< kWsPushMinAllocBytes = 6144` depuis v2.33.0, [ADR-0058](../adr/0058-gardes-heap-metrique-8-bits.md)) : pushes **sautés** (garde v2.11.1), compteur `skippedPushCount()` + WARN throttlé 30 s dans `update()` (libellé `maxBloc8=`). Course résiduelle (TOCTOU) : `std::bad_alloc` **rattrapé** autour de l'envoi ciblé (`_sendToAuthenticated`, depuis bug-081 — anciennement `textAll`) → push sauté, même compteur, jamais d'`abort()` (v2.14.0).
-- **Trame plus grande que le buffer statique** (`kWsFrameBufBytes = 3584` depuis v2.21.1, était 3072) : push **sauté** (jamais tronqué), compteur `oversizedFrameCount()` + WARN throttlé dédié dans `update()` — signale qu'il faut agrandir la constante (v2.14.0).
+- **Trame plus grande que le buffer statique** (`kWsFrameBufBytes = 4096` depuis feature-163, était 3584 puis 3072) : push **sauté** (jamais tronqué), compteur `oversizedFrameCount()` + WARN throttlé dédié dans `update()` — signale qu'il faut agrandir la constante (v2.14.0).
 - **Bascule `auth_enabled` faux→vrai ou rotation de token** : révocation immédiate de tous les clients authentifiés — voir [`revokeAllAuthenticated()`](#révocation--wsmanagerrevokeallauthenticated).
 
 ## Dépendances
@@ -342,7 +342,7 @@ Côté UI : un toast est affiché une seule fois par session si la valeur ∈ {`
 - [`tools/check_ws_broadcast_targeting.sh`](../../tools/check_ws_broadcast_targeting.sh) — interdit tout `textAll`/`binaryAll`/`printfAll` dans `src/` (bug-081), lancé par `hygiene-specs.yml`
 - [`src/web_server.cpp`](../../src/web_server.cpp) — instanciation du serveur
 - [`src/logger.h:58`](../../src/logger.h) — `setLogCallback()` (**code mort**, jamais branché — cf. section API publique)
-- [`src/constants.h`](../../src/constants.h) — `kWsPushMinAllocBytes` (6144 en 8 bits depuis v2.33.0, était 16384 en brute), `kWsFrameBufBytes` (3584 depuis v2.21.1), `kWsSkipWarnThrottleMs`, `kWsKeepAlivePeriodS` (`kWsSensorJsonReserveBytes` supprimée en v2.14.0)
+- [`src/constants.h`](../../src/constants.h) — `kWsPushMinAllocBytes` (6144 en 8 bits depuis v2.33.0, était 16384 en brute), `kWsFrameBufBytes` (4096 depuis feature-163, était 3584 depuis v2.21.1), `kWsSkipWarnThrottleMs`, `kWsKeepAlivePeriodS` (`kWsSensorJsonReserveBytes` supprimée en v2.14.0)
 - [`src/heap_metrics.h`](../../src/heap_metrics.h) — `heapLargestFreeBlock8Bit()`, mesure lue par `_heapAllowsPush()` ([ADR-0058](../adr/0058-gardes-heap-metrique-8-bits.md))
 - [`platformio.ini`](../../platformio.ini) — `-DWS_MAX_QUEUED_MESSAGES=5`
 - [ADR-0005](../adr/0005-websocket-push-sans-polling.md), [ADR-0029 §Amendement](../adr/0029-auto-guerison-heap.md#amendement-2026-07-28--échantillonnage-adaptatif-v2111), [ADR-0032 §Extensions](../adr/0032-reponses-http-bornees.md#extension-2026-07-28--émissions-websocket-v2111) (v2.11.1 et v2.14.0)
@@ -371,6 +371,19 @@ Les champs `sondes_identified` et `sondes_detected` pilotent la chip de notifica
 Ces champs sont le miroir exact de la garde firmware **par pompe** (`manualInjectGuardOrReject` → `getStabilizationRemainingS(0/1)`) : l'UI désactive le bouton « Injecter » d'un produit uniquement si **sa** pompe est en stabilisation (une calibration ORP ne bloque pas le bouton pH, et inversement). Le champ global `stabilization_remaining_s` (max des 2 pompes) est **conservé** pour compatibilité (badge global, anciens clients) ; `data/app.js` `getInjectBlockReason()` retombe dessus si les champs par pompe sont absents (ancien firmware).
 
 Buffer `_buildSensorJson()` bumpe de **1408 → 1472 octets**.
+
+
+## Champs `sensor_data` ajoutés en feature-202 (pause mélange ORP apprise, v3.2.0)
+
+| Champ | Type | Description |
+|---|---|---|
+| `orp_mix_delay_s` | uint32 | Durée de pause mélange ORP en vigueur (s) = `getOrpMixingDelayS()` |
+| `orp_mix_delay_learned` | bool | `isOrpMixingDelayLearned()` : 3 observations propres atteintes |
+| `orp_mix_obs_count` | uint8 | `getOrpMixingObsCount()` |
+
+Parité `/data` ↔ WS : **même accesseur, même expression** des deux côtés (`src/web_routes_data.cpp`, `src/ws_manager.cpp`) ; le seul `/1000` vit dans `getOrpMixingDelayS()`. Le navigateur **lit**, il ne recalcule jamais ([ADR-0100](../adr/0100-un-seuil-de-sante-est-servi-jamais-reecrit-cote-client.md)).
+
+**Budget de trame** (pire cas structurel, mesuré par le développeur) : `"orp_mix_delay_s":7200,` = 23 o, `"orp_mix_delay_learned":false,` = 30 o, `"orp_mix_obs_count":255,` = 24 o, soit **+77 o**. Marge restante : **446 o** sous `kWsFrameBufBytes = 4096`. **Aucun bump** de gabarit ni de buffer.
 
 ## Champs `sensor_data` ajoutés en feature-011 (répartition scheduled, v2.8.0)
 

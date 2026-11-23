@@ -630,6 +630,17 @@ static void handleGetData(AsyncWebServerRequest* request) {
   doc["orpMixingDelayActive"] = PumpController.isOrpMixingDelayActive(mixNowMs);
   doc["ph_mix_remaining_s"]   = PumpController.getMixingRemainingS(0);
   doc["orp_mix_remaining_s"]  = PumpController.getMixingRemainingS(1);
+  // feature-202 : PAUSE MÉLANGE ORP APPRISE — 3 clés, MÊMES expressions que
+  // ws_manager.cpp (getOrpMixingDelayS() rend DÉJÀ des secondes : aucune
+  // division ici). Octets sérialisés pire cas (mesurés) — le décompte ci-dessous
+  // et la marge qui le suit concernent la TRAME WS, pas cette réponse HTTP :
+  //   "orp_mix_delay_s":7200,        → 1+15+1+1+4+1 = 23 o
+  //   "orp_mix_delay_learned":false, → 1+21+1+1+5+1 = 30 o
+  //   "orp_mix_obs_count":255,       → 1+17+1+1+3+1 = 24 o   → 77 o.
+  // Marge : 4096 − (3573 + 77) = 446 o sous kWsFrameBufBytes. Aucun bump.
+  doc["orp_mix_delay_s"]       = PumpController.getOrpMixingDelayS();
+  doc["orp_mix_delay_learned"] = PumpController.isOrpMixingDelayLearned();
+  doc["orp_mix_obs_count"]     = PumpController.getOrpMixingObsCount();
   //
   // COMPOSITION DU DÉBIT D'INJECTION (feature-092) — l'équation que la régulation
   // applique déjà, rendue lisible : demande = dose de base apprise + écart

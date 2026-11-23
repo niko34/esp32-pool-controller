@@ -93,7 +93,7 @@ void DosingWindowManager::begin() {
 
   const uint32_t nowMs = (uint32_t)millis();
   const char* names[2] = {"pH", "ORP"};
-  const uint32_t fullMixing[2] = {(uint32_t)kPhMixingDelayMs, (uint32_t)kOrpMixingDelayMs};
+  const uint32_t fullMixing[2] = {(uint32_t)kPhMixingDelayMs, _orpFullMixingMs};
 
   for (int ch = 0; ch < 2; ++ch) {
     // ----- Entrée T2 -----------------------------------------------------------

@@ -57,6 +57,16 @@ class DosingWindowManager {
   // fois, APRÈS rtcManager.applyToSystem(), AVANT PumpController::begin().
   void begin();
 
+  // feature-202 (C6/A9) : durée de pause ORP EN VIGUEUR, à poser AVANT begin()
+  // (main.cpp). Ré-écrêtée [kOrpMixingDelayMs, kOrpMixingDelayLearnedMaxMs] : la
+  // coquille ne fait pas confiance à son appelant. Défaut = constante d'usine.
+  // (Pas d'accès à PumpController ici : cycle d'inclusion avec pump_controller.h.)
+  void setOrpFullMixingMs(uint32_t ms) {
+    if (ms < (uint32_t)kOrpMixingDelayMs) ms = (uint32_t)kOrpMixingDelayMs;
+    if (ms > kOrpMixingDelayLearnedMaxMs) ms = kOrpMixingDelayLearnedMaxMs;
+    _orpFullMixingMs = ms;
+  }
+
   // L'état restauré par begin(), à consommer par
   // PumpControllerClass::applyRestoredDosingWindow(). ch invalide → voie 0.
   const DosingWindowRestoredChannel& restored(int ch) const {
@@ -84,6 +94,7 @@ class DosingWindowManager {
   DosingWindowRestoredChannel _restored[2];
   uint32_t _lastRtcRefreshMs = 0;
   uint32_t _lastNvsSaveMs = 0;
+  uint32_t _orpFullMixingMs = (uint32_t)kOrpMixingDelayMs;  // feature-202
 };
 
 extern DosingWindowManager dosingWindow;

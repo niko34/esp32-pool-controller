@@ -1816,6 +1816,11 @@ input.is-computed:disabled {
 }
 
 /* 2026 Key-Value pairs - refined */
+/* Respecter l'attribut HTML `hidden` : `display: grid` ci-dessous BAT la regle
+   [hidden] de la feuille UA, et la ligne resterait visible avec un tiret sur un
+   appareil qui ne sert pas encore ces champs. Meme motif que .chip[hidden]. */
+.kv[hidden] { display: none !important; }
+
 .kv {
   display: grid;
   gap: 8px;
@@ -1915,6 +1920,14 @@ input.is-computed:disabled {
 .kv--dose .kv__note { display: inline; margin-top: 0; margin-left: 8px; }
 .kv--dose .kv__row:last-child { border-top: 1px solid var(--stroke); padding-top: 10px; }
 .kv--dose .kv__row:last-child .kv__k { color: var(--text); }
+
+/* feature-202 : ligne permanente hors .kv--dose (pause mélange ORP) */
+.kv--plain { margin-top: 8px; border-top: 1px solid var(--stroke); font-variant-numeric: tabular-nums; }
+.kv--plain .kv__row { padding: 8px 0; align-items: flex-start; }
+.kv--plain .kv__row:hover { background: none; transform: none; }
+.kv--plain .kv__row:hover .kv__k { color: inherit; }
+.kv--plain .kv__v { white-space: nowrap; }
+.kv__note__l { display: block; }
 
 @media (max-width: 500px) {
   .kv--dose .kv__note { display: block; margin-top: 2px; margin-left: 0; }

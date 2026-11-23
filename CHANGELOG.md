@@ -2,6 +2,27 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [3.2.0] - 2026-11-23
+
+### Fonctionnalités
+- **La pause de mélange du chlore s'apprend et s'affiche (feature-202).** Après chaque injection de chlore, l'appareil compare sa mesure à ce qu'elle valait une pause plus tôt ; dès qu'elle ne monte plus, la montée est finie. La pause en vigueur est le **maximum des trois dernières montées propres**, jamais moins de 20 min, jamais plus de 2 h (`6 * kOrpMixingDelayMs`). La comparaison se fait **par blocs de 20 min** : la durée vaut 20 min, 40 min, 1 h, 1 h 20, 1 h 40 ou 2 h. L'appareil ne peut que devenir **plus patient**. Sous trois observations, comportement inchangé (20 min).
+- **Affichage** : la carte « Débit d'injection ORP » (mode Auto) gagne une ligne « Pause mélange » : durée, origine (« réglage d'usine » / « observée sur votre bassin ») et nombre d'observations. La ligne disparaît si l'appareil ne sert pas ces champs. Le paragraphe « Injection manuelle » de la carte Régulation est raccourci.
+- ⛔ **Ne supprime pas les dépassements** : celui du 18/11 vient de la taille de la dose, pas de la pause. La pause pH reste figée à 15 min.
+- ⚠️ **Limites connues** : l'apprentissage peut rester inerte sur un bassin très demandeur (toute injection, acide compris, jette l'observation ; compte affiché, motifs journalisés) ; au plafond l'observation est jetée en silence et la pause reste au plancher (fiche de suivi).
+
+### Firmware
+- **Régulation ORP** : module pur `orp_mixing_learn_logic.h`, instantané NVS `orpmix` (20 o, CRC FNV-1a), `getOrpMixingDelayS()` seul point de conversion en secondes. Chargé **avant** `dosingWindow.begin()`.
+- **Fenêtre de dosage — correctif de sécurité** : le repli fail-closed arme désormais la pause (durée en vigueur) au lieu de `0`, sur les deux voies. Le verrou horaire (60 min) ne couvrait pas une pause ORP plus longue : trou réel, indépendant de l'apprentissage. Aucune autorisation pH modifiée (15 min < 60 min).
+- **Redémarrage** : une pause en cours repart à la durée en vigueur à la restauration. Aucun changement de schéma NVS/RTC pour la pause.
+- **`/data` et WebSocket** : `orp_mix_delay_s`, `orp_mix_delay_learned`, `orp_mix_obs_count` (+77 o, marge 446 o sous `kWsFrameBufBytes = 4096`, aucun bump).
+- ⚠️ **Envoi firmware ET interface**.
+
+### Documentation
+- Nouvel [ADR-0145](docs/adr/0145-la-pause-melange-orp-s-apprend-seulement-vers-le-prudent.md).
+- `docs/API.md`, `docs/subsystems/ws-manager.md`, `docs/subsystems/pump-controller.md`, `docs/features/page-orp.md`, `docs/DESIGN_SYSTEM.md` (`.kv--plain`, règle `.kv[hidden]`), `docs/user/src/guide-regulation.html` (PDF non régénérés).
+
+---
+
 ## [3.1.3] - 2026-11-22
 
 ### Fonctionnalités

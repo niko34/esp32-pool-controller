@@ -1759,6 +1759,16 @@ aria-valuemin="0" aria-valuemax="100"
                   <span class="kv__v" id="orp-dose-total-value">—</span>
                 </div>
               </div>
+              <!-- feature-202 : durée de pause mélange EN VIGUEUR (permanente, lue du
+                   firmware). Hors .kv--dose : son liseré repose sur :last-child. -->
+              <div class="kv kv--plain" id="orp-mix-pause" hidden>
+                <div class="kv__row">
+                  <span class="kv__k">Pause mélange
+                    <span class="kv__note"><span class="kv__note__l" id="orp-mix-origin"></span><span class="kv__note__l" id="orp-mix-count"></span></span>
+                  </span>
+                  <span class="kv__v" id="orp-mix-value">—</span>
+                </div>
+              </div>
               <!-- Mention pool-chemistry (feature-092), permanente : sans elle, un
                    écart résiduel permanent se lit comme un défaut de réglage et
                    pousse à relever la consigne ou le gain — les deux mauvaises
@@ -1838,9 +1848,7 @@ aria-valuemin="0" aria-valuemax="100"
                 <!-- C7 — texte IMPOSÉ mot pour mot (gate pool-chemistry). -->
                 <p class="muted small" style="margin-bottom:10px"><strong>Injection manuelle — disponible dans tous les modes. Les limites de sécurité s'appliquent.</strong></p>
                 <p class="muted small" style="margin-bottom:10px">
-                  Démarre la pompe ORP à la puissance configurée. Utile pour corriger manuellement le taux
-                  de chlore ou vérifier le fonctionnement de la pompe. Cliquez à nouveau sur le bouton pour
-                  arrêter l'injection avant la fin.
+                  Démarre la pompe ORP à la puissance configurée. Un nouvel appui arrête l'injection.
                 </p>
                 <!-- v2.25.x — Même avertissement côté chlore : la butée pH BRUTE HAUTE
                      inhibe le dosage ORP (orpPhRawGuardBlocked). Bouton jamais bloqué. -->

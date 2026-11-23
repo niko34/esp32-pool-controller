@@ -91,6 +91,23 @@ Placement : **après** le bloc Statistiques (donc après « [Atteinte de la cibl
 
 > **Pas** de note « demande instantanée » ici, à la différence de la carte pH — et ce n'est pas un oubli. Le signal lent et la **porte de session** de feature-094 (`phSessionGate`, moyenne glissante de 10 min) n'existent **que** pour le pH : il n'y a **pas** d'`orpSessionGate`. Côté chlore, la décision lit la mesure **filtrée instantanée**, la même que la composition — une demande non nulle sans session relève de la **bande morte d'hystérésis**, pas d'une attente de stabilisation. Reprendre la phrase du pH y serait **faux**.
 
+### Ligne « Pause mélange » (`#orp-mix-pause`, feature-202, v3.2.0)
+
+Ligne permanente **sous** le bloc `.kv--dose`, dans la même carte, portée par `.kv.kv--plain` (voir [DESIGN_SYSTEM](../DESIGN_SYSTEM.md)). Elle dit la **durée de pause en vigueur** (`orp_mix_delay_s`, formatée « 20 min », « 40 min », « 1 h », « 1 h 20 », « 1 h 40 », « 2 h »), son **origine** et le **nombre d'observations** :
+
+| État (`orp_mix_delay_learned`) | Note ligne 1 | Note ligne 2 |
+|---|---|---|
+| `false` | « réglage d'usine » | « N observation(s) sur 3 » |
+| `true` | « observée sur votre bassin » | « N observations » |
+
+Champs absents, `orp_mix_delay_s` ≤ 0 ou `orp_mix_delay_learned` non booléen (appareil plus ancien) : la ligne **disparaît** (`hidden`), **pas de tiret**. L'origine est **lue** du firmware, jamais déduite côté navigateur ([ADR-0100](../adr/0100-un-seuil-de-sante-est-servi-jamais-reecrit-cote-client.md)). Distincte de la pastille de compte à rebours (`#orp-dosing-pill`, le **reste** de la pause en cours).
+
+**Pourquoi la ligne est masquée hors mode Auto — et c'est correct.** Elle vit dans la carte « Débit d'injection ORP », visible en mode Auto seulement. La pause est une garde de `canDose()`, qui n'est appelé à **aucun tick** en mode Programmé ou manuel (`src/pump_controller.cpp:855`) : afficher la durée hors Auto annoncerait une garde qui ne garde rien.
+
+Tenue à 390 px vérifiée par comptage (libellé 13 car., valeur 6 car. max, notes ≤ 25 car.) et par capture. Pour photographier la pause **en cours** : forcer `orp_mix_remaining_s` **et** `orpMixingDelayActive=true`.
+
+Même lot : le paragraphe « Injection manuelle » de la carte Régulation est raccourci (« Démarre la pompe ORP à la puissance configurée. Un nouvel appui arrête l'injection. ») ; la phrase de sécurité en gras est conservée.
+
 ### Pastille d'état (`#orp-dosing-pill`)
 
 Composant **identique** à celui de la page pH : mêmes 5 priorités, mêmes trois couleurs (vert = pompe commandée, gris = normal, rouge = panne), même compte à rebours sur la seule pause mélange. Champs consommés : `orp_pulse_session`, `orpMixingDelayActive`, `orp_mix_remaining_s`, `orpDoseBlockedCode` — `_doseBlockInfo(json, prefix)` est préfixé. Voir la [table des priorités](page-ph.md#pastille-détat-ph-dosing-pill--5-priorités-3-couleurs).

@@ -6,7 +6,7 @@
 - **Priorité** : moyenne
 - **Version cible** : 2.99.0
 - **Dernière mise à jour** : 2026-11-19
-- **Spec(s) liée(s)** : ⛔ **[feature-202](feature-202-la-pause-melange-orp-s-apprend-et-s-affiche.md) est un PRÉREQUIS DUR** (voir « Pourquoi 202 d'abord ») · [feature-085](../done/feature-085-dose-de-base-apprise-feedforward.md) (le patron d'apprentissage) · [feature-092](../done/feature-092-carte-debit-injection-ph-orp.md) (la composition de dose servie, à compléter)
+- **Spec(s) liée(s)** : ⛔ **[feature-202](../done/feature-202-la-pause-melange-orp-s-apprend-et-s-affiche.md) est un PRÉREQUIS DUR** (voir « Pourquoi 202 d'abord ») · [feature-085](../done/feature-085-dose-de-base-apprise-feedforward.md) (le patron d'apprentissage) · [feature-092](../done/feature-092-carte-debit-injection-ph-orp.md) (la composition de dose servie, à compléter)
 
 ## Domaines touchés
 - [x] Régulation (pump_controller, PID) → **passage obligatoire par `pool-chemistry`**

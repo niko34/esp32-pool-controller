@@ -8039,7 +8039,37 @@
 
     _renderDoseBudgetFoot("orp", limited, sust);
     _renderDoseUncharacterizedFoot("orp", data);
+    _renderOrpMixPause(data);
     _renderDosePill("orp", data);
+  }
+
+  // feature-202 : durée de pause mélange ORP en vigueur. ADR-0100 : l'origine
+  // est LUE (orp_mix_delay_learned), jamais déduite d'une valeur ou d'un seuil.
+  function _fmtMixDuration(s) {
+    const m = Math.round(s / 60);
+    if (m < 60) return m + " min";
+    const h = Math.floor(m / 60), r = m % 60;
+    return r === 0 ? h + " h" : h + " h " + String(r).padStart(2, "0");
+  }
+  function _renderOrpMixPause(data) {
+    const row = $("#orp-mix-pause");
+    if (!row) return;
+    const s = data.orp_mix_delay_s;
+    const learned = data.orp_mix_delay_learned;
+    const n = data.orp_mix_obs_count;
+    if (typeof s !== "number" || !isFinite(s) || s <= 0 || typeof learned !== "boolean") {
+      row.hidden = true;
+      return;
+    }
+    $("#orp-mix-value").textContent = _fmtMixDuration(s);
+    $("#orp-mix-origin").textContent = learned ? "observée sur votre bassin" : "réglage d'usine";
+    let cnt = "";
+    if (typeof n === "number" && isFinite(n) && n >= 0) {
+      cnt = learned ? n + (n > 1 ? " observations" : " observation")
+                    : n + (n > 1 ? " observations" : " observation") + " sur 3";
+    }
+    $("#orp-mix-count").textContent = cnt;
+    row.hidden = false;
   }
 
   // ========== feature-096 (v2.37.0) : temps d'atteinte de cible ==========
