@@ -1923,6 +1923,7 @@ input.is-computed:disabled {
 
 /* feature-202 : ligne permanente hors .kv--dose (pause mélange ORP) */
 .kv--plain { margin-top: 8px; border-top: 1px solid var(--stroke); font-variant-numeric: tabular-nums; }
+.kv--plain + .kv--plain { margin-top: 0 }
 .kv--plain .kv__row { padding: 8px 0; align-items: flex-start; }
 .kv--plain .kv__row:hover { background: none; transform: none; }
 .kv--plain .kv__row:hover .kv__k { color: inherit; }

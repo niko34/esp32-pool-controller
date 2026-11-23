@@ -385,6 +385,18 @@ Parité `/data` ↔ WS : **même accesseur, même expression** des deux côtés 
 
 **Budget de trame** (pire cas structurel, mesuré par le développeur) : `"orp_mix_delay_s":7200,` = 23 o, `"orp_mix_delay_learned":false,` = 30 o, `"orp_mix_obs_count":255,` = 24 o, soit **+77 o**. Marge restante : **446 o** sous `kWsFrameBufBytes = 4096`. **Aucun bump** de gabarit ni de buffer.
 
+## Champs `sensor_data` ajoutés en feature-203 (rendement du chlore, v3.3.0)
+
+| Champ | Type | Accesseur |
+|---|---|---|
+| `orp_yield_mv_per_ml` | float 2 déc. \| null | `getOrpYieldMvPerMl()` |
+| `orp_yield_obs_count` | uint8 | `getOrpYieldObsCount()` |
+| `orp_yield_budget_ml` | uint16 \| null | `getOrpYieldBudgetMl()` |
+| `orp_yield_budget_stop` | bool | `isOrpStoppedByYieldBudget()` |
+| `orp_yield_undersupply` | bool | `isOrpYieldUndersupplySuspected()` |
+
+Parité `/data` ↔ WS : mêmes accesseurs, même expression, une seule lecture par grandeur atomique. **Budget de trame : +142 o** (borne haute par décompte des clés). Deux chiffres à ne pas confondre : **pire cas structurel** (toutes les clés au maximum) = **3 806 o, marge 290 o** sous `kWsFrameBufBytes = 4096` ; **cas nominal mesuré sur l'appareil** (trame `/data`, 2 704 o en v3.2.0) ≈ **2 846 o** avec les 5 champs neufs, très en dessous du pire cas.
+
 ## Champs `sensor_data` ajoutés en feature-011 (répartition scheduled, v2.8.0)
 
 | Champ | Type | Description |

@@ -1653,6 +1653,14 @@ aria-valuemin="0" aria-valuemax="100"
             <p class="settingsHead__sub">Calibration et régulation du potentiel redox</p>
           </div>
 
+          <!-- feature-203 : verdict de SECURITE CHIMIQUE sur l'etat de l'eau, donc HORS de
+               #orp-card-dosing (masquee hors mode Auto : l'alerte disparaitrait alors que
+               le bassin reste sous-chlore). Piloté SANS condition de mode. Texte valide. -->
+          <div class="callout callout--warn" id="orp-yield-undersupply" role="alert" hidden>
+            <strong></strong>
+            <p style="margin:6px 0 0"></p>
+          </div>
+
           <!-- Bloc Statistiques : compact, sans titre, pas une .card -->
           <div class="orp-stats" id="orp-card-stats">
             <div class="orp-stats__col">
@@ -1769,11 +1777,34 @@ aria-valuemin="0" aria-valuemax="100"
                   <span class="kv__v" id="orp-mix-value">—</span>
                 </div>
               </div>
+              <!-- feature-203 : effet du chlore mesure + quantite prevue. Meme patron que la
+                   pause melange ; valeurs LUES du firmware (ADR-0100), aucun calcul client. -->
+              <div class="kv kv--plain" id="orp-yield" hidden>
+                <div class="kv__row">
+                  <span class="kv__k">Effet du chlore
+                    <span class="kv__note"><span class="kv__note__l" id="orp-yield-origin"></span><span class="kv__note__l" id="orp-yield-count"></span></span>
+                  </span>
+                  <span class="kv__v" id="orp-yield-value">—</span>
+                </div>
+              </div>
+              <div class="kv kv--plain" id="orp-yield-budget" hidden>
+                <div class="kv__row">
+                  <span class="kv__k">Quantité prévue
+                    <span class="kv__note"><span class="kv__note__l">pour cette injection</span></span>
+                  </span>
+                  <span class="kv__v" id="orp-yield-budget-value">—</span>
+                </div>
+              </div>
               <!-- Mention pool-chemistry (feature-092), permanente : sans elle, un
                    écart résiduel permanent se lit comme un défaut de réglage et
                    pousse à relever la consigne ou le gain — les deux mauvaises
                    réponses. Texte validé, ne pas reformuler. -->
-              <p class="muted small" style="margin:12px 0 0">La régulation chlore corrige l'écart courant sans rattrapage cumulé : un écart résiduel permanent est normal et ne demande ni consigne plus haute ni gain plus fort.</p>
+              <!-- feature-203 : replie, mais le TITRE porte la conclusion (jamais une question) :
+                   le garde-fou reste lisible sans deplier. Texte du detail inchange. -->
+              <details class="callout__more">
+                <summary>Un écart résiduel est normal</summary>
+                <p class="muted small">La régulation chlore corrige l'écart courant sans rattrapage cumulé : un écart résiduel permanent est normal et ne demande ni consigne plus haute ni gain plus fort.</p>
+              </details>
               <!-- Cas bridé : miroir EXACT de la carte pH (orp_limited_by_hourly_budget,
                    verdict firmware — aucune comparaison client). La régulation chlore
                    sature son quota horaire quotidiennement : ce pied n'est pas

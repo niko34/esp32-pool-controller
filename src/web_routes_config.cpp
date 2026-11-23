@@ -1747,6 +1747,7 @@ static void handleSaveConfig(AsyncWebServerRequest* request, uint8_t* data, size
     productCfg.orpAcctAnomalyCount = 0;
     productCfg.orpAcctAnomalyMl = 0.0f;
     productConfigDirty = true;
+    PumpController.requestOrpYieldBottleReset();  // feature-203 : épisode jeté + apprentissage à zéro
     systemLogger.info("Bidon chlore réinitialisé");
   }
   if (productConfigDirty) {

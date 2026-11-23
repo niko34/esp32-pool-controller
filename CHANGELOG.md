@@ -2,6 +2,24 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [3.3.0] - 2026-11-23
+
+### Fonctionnalités
+- **La dose de chlore se cale sur l'effet observé (feature-203).** L'appareil mesure ce qu'un millilitre de son chlore rapporte en millivolts sur votre bassin (médiane de 3 mesures) et s'en sert pour **arrêter l'injection plus tôt** quand la quantité utile est atteinte. Il ne peut **jamais** injecter plus qu'avant : sous 3 mesures, ou si le manque dépasse ce qu'il a déjà observé, il se comporte exactement comme avant. Après un changement de produit, il se recale seul en quelques injections.
+- **Affichage** (page Chlore/ORP) : lignes « Effet du chlore » et « Quantité prévue », pastille « En attente · quantité atteinte », et alerte « dose trop courte 3 fois de suite » (la limite est alors désactivée).
+- **« Nouveau bidon » remet l'apprentissage à zéro** : il faut de nouveau trois injections avant que l'appareil s'en serve. Volontaire, même pour le même produit.
+- ⚠️ **Limites** : le chlore injecté à la main n'est ni compté ni appris ; l'appareil reste lent à combler un grand manque (relation logarithmique) ; l'apprentissage peut ne jamais converger sur un bassin qui réinjecte souvent.
+
+### Firmware
+- **Régulation ORP** : module pur `orp_yield_learn_logic.h`, instantané NVS 32 o, plafond de volume (marge 2) recalculé à chaque tick, désarmé après 3 arrêts sans atteindre la consigne. `computePID()` inchangé. Remise à zéro sur « nouveau bidon » : `requestOrpYieldBottleReset()`, appelé par le handler « nouveau bidon » (`web_routes_config.cpp`).
+- **`/data` et WebSocket** : 5 champs `orp_yield_*` (+142 o ; pire cas structurel 3 806 o, marge 290 o sous 4096 ; cas nominal mesuré sur l'appareil ≈ 2 846 o, la trame `/data` v3.2.0 faisant 2 704 o).
+
+### Documentation
+- Nouvel [ADR-0146](docs/adr/0146-un-plafond-de-volume-plutot-qu-un-regulateur-pour-le-chlore.md).
+- `docs/API.md`, `docs/subsystems/ws-manager.md`, `docs/subsystems/pump-controller.md`, `docs/features/page-orp.md`, `docs/DESIGN_SYSTEM.md`, `docs/user/src/guide-regulation.html` (PDF non régénérés).
+
+---
+
 ## [3.2.0] - 2026-11-23
 
 ### Fonctionnalités

@@ -16,6 +16,7 @@
 #include "temp_mode_logic.h"            // feature-140 : mode ORP EFFECTIF (PURE)
 #include "dosing_window.h"              // feature-136 : survie du budget horaire au reboot
 #include "orp_mixing_learn_logic.h"      // feature-202 : pause mélange ORP apprise (PURE)
+#include "orp_yield_learn_logic.h"       // feature-203 : rendement du chlore appris (PURE)
 #include "acct_window_logic.h"          // bug-115 : fenêtre de comptabilité pompe (PURE)
 
 struct PumpDriver {
@@ -331,8 +332,42 @@ private:
   uint16_t _orpObsClosed = 0;               // closes depuis le boot
   std::atomic<uint32_t> _orpMixingDelayMs{(uint32_t)kOrpMixingDelayMs};
   std::atomic<uint8_t> _orpMixingObsCount{0};
-  void tickOrpMixingLearn(uint32_t nowMs, bool clean);
-  void abandonOrpMixingObservation();
+  // feature-202 + 203 : UNE fonction, car la fermeture de l'épisode de rendement (203)
+  // se fait sur le verdict `kClosed` de l'observation de la montée (202) — le lecteur
+  // doit tomber sur les deux ensemble. `orpEnvClean` = environnement propre (eau
+  // présente, circulation purgée, pas d'étalonnage, pas d'injection pH) ; `orpQuiet` =
+  // pas d'injection ORP. 202 reçoit `orpEnvClean && orpQuiet` ; 203 juge l'épisode sur
+  // `orpEnvClean` SEUL (l'injection ORP fait partie de l'épisode).
+  void tickOrpLearn(uint32_t nowMs, bool orpEnvClean, bool orpQuiet);
+  void abandonOrpObservations();
+
+  // feature-203 : rendement du chlore appris. Épisode, store, budget, séries : loopTask
+  // UNIQUEMENT. Seuls les atomiques « servis » sont lus depuis async_tcp.
+  // ⛔ Le budget n'est PAS une limite de sécurité : il ne fait qu'arrêter PLUS TÔT.
+  OrpYieldEpisode _orpYieldEp;
+  OrpYieldStore _orpYieldStore;
+  bool _orpYieldBegun = false;
+  uint32_t _orpYieldContext = 0;          // empreinte du contexte du store en RAM
+  float _orpTickOrp = NAN;                // mesure filtrée d'AVANT la commande de ce tick
+  uint8_t _orpYieldStopStreak = 0;        // sessions de suite arrêtées par le budget
+  bool _orpYieldStopLatched = false;      // la session courante est déjà comptée
+  std::atomic<bool> _orpYieldDisarmed{false};  // condition « budget » SEULE suspendue
+  bool _orpYieldAlertActive = false;      // état annoncé (log par transition)
+  uint8_t _orpYieldRearmReason = 0;       // 1 = épisode propre ≥ consigne, 2 = remise à zéro
+  std::atomic<float> _orpYieldServedMv{NAN};      // médiane, NaN si non appris
+  std::atomic<uint8_t> _orpYieldServedCount{0};
+  std::atomic<float> _orpYieldBudgetServedMl{NAN};  // budget du tick, NaN si inapplicable
+  std::atomic<bool> _orpYieldBudgetStop{false};   // le budget retient l'injection MAINTENANT
+  bool _orpYieldMayOpen = true;           // faux après un jet, jusqu'à un état au repos
+  bool _orpAutoSession = false;           // la séance ORP en cours est AUTOMATIQUE (≠ programmée)
+  bool _orpYieldTaint = false;            // chlore non automatique vu pendant l'épisode
+  uint32_t orpYieldCurrentContext() const;
+  void discardOrpYieldEpisode(const char* why);
+  void orpYieldEpisodeEnded();  // remet à zéro budget servi, retenue, verrou de comptage
+  void publishOrpYieldServed();
+  void resetOrpYieldLearning(const char* why);
+  std::atomic<bool> _orpYieldBottleReset{false};  // posé par le handler async, consommé en loopTask
+  void tickOrpYieldUndersupplyAlert();
 
   // Helpers internes pour le log de refus (canDose). `code` est mémorisé pour
   // /data + WS et pilote la SÉVÉRITÉ du journal : v2.25.1 escalade en `warn` +
@@ -1239,6 +1274,21 @@ public:
   // true dès que 3 observations propres reposent derrière la durée (sinon usine).
   bool isOrpMixingDelayLearned() const { return _orpMixingObsCount.load() >= kOrpMixingLearnObsCount; }
   uint8_t getOrpMixingObsCount() const { return _orpMixingObsCount.load(); }
+
+  // ===== feature-203 : rendement du chlore appris — LECTURE SEULE ===============
+  // Chargement idempotent du store NVS (après loadMqttConfig(), car l'empreinte lit
+  // la consigne configurée). Parité /data ↔ WS : ces accesseurs sont appelés à
+  // l'IDENTIQUE dans web_routes_data.cpp et ws_manager.cpp.
+  void beginOrpYieldLearn();
+  float getOrpYieldMvPerMl() const { return _orpYieldServedMv.load(); }  // NAN si non appris
+  uint8_t getOrpYieldObsCount() const { return _orpYieldServedCount.load(); }
+  float getOrpYieldBudgetMl() const;  // NAN hors épisode / hors domaine appris
+  // « Nouveau bidon » : demande de remise à zéro, exécutée par tickOrpLearn (loopTask).
+  void requestOrpYieldBottleReset() { _orpYieldBottleReset.store(true); }
+  bool isOrpStoppedByYieldBudget() const { return _orpYieldBudgetStop.load(); }
+  // Sous-dosage chronique (3 sessions de suite arrêtées par le budget, consigne non
+  // atteinte) ET mesure valide. Alimente AUSSI le journal (verdict unique).
+  bool isOrpYieldUndersupplySuspected() const;
   bool isPhMixingDelayActive(uint32_t nowMs) const;
   bool isOrpMixingDelayActive(uint32_t nowMs) const;
   // Secondes restantes de pause mélange par pompe ([0]=pH, [1]=ORP) — observabilité UI.

@@ -314,9 +314,12 @@ static char* readWholeFile(const char* path) {
   return t;
 }
 
-// Texte de l'appel `tickOrpMixingLearn((uint32_t)now,` (hors commentaires), jusqu'au ';'.
-static char* tickCallText(const char* text) {
-  const char* stmt = "tickOrpMixingLearn((uint32_t)now,";
+// Texte de l'instruction commençant par `stmt` (hors commentaires), jusqu'au ';'.
+// feature-203 : l'appel `tickOrpMixingLearn(now, <conjonction>)` est devenu
+// `tickOrpLearn(now, orpEnvClean, orpQuiet)` ; la conjonction de propreté vit désormais dans
+// `const bool orpEnvClean = ...;`. La garantie testée est INCHANGÉE (étalonnage et
+// stabilisation excluent l'observation), seul l'ancrage lexical a bougé.
+static char* tickCallText(const char* text, const char* stmt) {
   const char* p = text;
   while (*p) {
     const char* e = strchr(p, '\n');
@@ -340,9 +343,14 @@ static char* tickCallText(const char* text) {
 void test_20_learning_cleanliness_excludes_calibration_and_stabilization(void) {
   char* txt = readWholeFile("src/pump_controller.cpp");
   TEST_ASSERT_NOT_NULL_MESSAGE(txt, "src/pump_controller.cpp illisible : sentinelle aveugle, corriger le chemin");
-  char* call = tickCallText(txt);
+  char* call = tickCallText(txt, "const bool orpEnvClean =");
+  char* inv = tickCallText(txt, "tickOrpLearn((uint32_t)now,");
   free(txt);
-  TEST_ASSERT_NOT_NULL_MESSAGE(call, "appel tickOrpMixingLearn introuvable (hors commentaires)");
+  TEST_ASSERT_NOT_NULL_MESSAGE(call, "definition de orpEnvClean introuvable (hors commentaires)");
+  TEST_ASSERT_NOT_NULL_MESSAGE(inv, "appel tickOrpLearn introuvable (hors commentaires)");
+  // la propreté calculée DOIT être celle qu'on transmet à l'observation
+  TEST_ASSERT_TRUE_MESSAGE(strstr(inv, "orpEnvClean") != NULL, "tickOrpLearn ne recoit pas orpEnvClean");
+  free(inv);
   const bool cal = strstr(call, "!mqttCfg.calSessionOpen") != NULL;
   const bool stab = strstr(call, "!isStabilizationTimerActive(1)") != NULL;
   free(call);

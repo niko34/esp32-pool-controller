@@ -104,6 +104,15 @@ Champs absents, `orp_mix_delay_s` ≤ 0 ou `orp_mix_delay_learned` non booléen 
 
 **Pourquoi la ligne est masquée hors mode Auto — et c'est correct.** Elle vit dans la carte « Débit d'injection ORP », visible en mode Auto seulement. La pause est une garde de `canDose()`, qui n'est appelé à **aucun tick** en mode Programmé ou manuel (`src/pump_controller.cpp:855`) : afficher la durée hors Auto annoncerait une garde qui ne garde rien.
 
+### Lignes « Effet du chlore » et « Quantité prévue », alerte de sous-dosage (feature-203, v3.3.0)
+
+- `#orp-yield` (« Effet du chlore ») : `orp_yield_mv_per_ml` en « +0,23 mV/mL », notes « mesuré sur votre bassin » + « N mesures », ou « — » + « N mesure(s) sur 3 » tant que non appris. Masquée si `orp_yield_obs_count` ≤ 0 ou absent.
+- `#orp-yield-budget` (« Quantité prévue », note « pour cette injection ») : `orp_yield_budget_ml` en mL ; masquée si `null`, ≤ 0 ou si `orp_yield_undersupply` est vrai.
+- Pastille : quand `orp_yield_budget_stop` est vrai, « En attente · quantité atteinte » (verdict lu, jamais déduit).
+- `#orp-yield-undersupply` (`callout--warn`, `role="alert"`) : **hors** de la carte de dosage, donc visible hors mode Auto. « Dernier constat : dose trop courte 3 fois de suite » ; la quantité prévue est désactivée.
+- Mention « écart résiduel normal » désormais repliée (`<details class="callout__more">`, titre « Un écart résiduel est normal »). Légende « Historique indisponible » masquée au lieu d'être affichée.
+- Mode d'emploi : tout est **lu** du firmware ([ADR-0100](../adr/0100-un-seuil-de-sante-est-servi-jamais-reecrit-cote-client.md)). Décision : [ADR-0146](../adr/0146-un-plafond-de-volume-plutot-qu-un-regulateur-pour-le-chlore.md).
+
 Tenue à 390 px vérifiée par comptage (libellé 13 car., valeur 6 car. max, notes ≤ 25 car.) et par capture. Pour photographier la pause **en cours** : forcer `orp_mix_remaining_s` **et** `orpMixingDelayActive=true`.
 
 Même lot : le paragraphe « Injection manuelle » de la carte Régulation est raccourci (« Démarre la pompe ORP à la puissance configurée. Un nouvel appui arrête l'injection. ») ; la phrase de sécurité en gras est conservée.

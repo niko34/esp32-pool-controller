@@ -8,6 +8,7 @@
 #include "constants.h"     // feature-074 : kPumpTypePulseFlowMlPerMin (calibration de type)
 #include "ph_persist_logic.h"  // feature-084 : PhIntegralSnapshot (logique PURE)
 #include "orp_mixing_learn_logic.h"  // feature-202 : OrpMixingLearnStore (logique PURE)
+#include "orp_yield_learn_logic.h"   // feature-203 : OrpYieldSnapshot (logique PURE)
 #include "regulation_defaults.h"  // feature-088 : valeurs d'usine de régulation (source UNIQUE)
 #include "time_to_target_logic.h"  // feature-096 : TttHistory (logique PURE)
 #include "schedule_logic.h"  // feature-146 : FiltrationMode (parseFiltrationModeFrom)
@@ -520,6 +521,15 @@ void savePhIntegralSnapshot(PhIntegralSnapshot& s);
 bool loadOrpMixingStore(OrpMixingLearnStore& out, bool& corrupted);
 // Écrit le store (scellé). UNE écriture par observation CLOSE.
 void saveOrpMixingStore(const OrpMixingLearnStore& s);
+
+// ==== feature-203 : rendement du chlore appris (32 octets, NVS) ====
+// Namespace `pool-dose`, clé `orpyld`. TRANSPORT SEUL : la comparaison d'empreinte
+// de contexte et toute décision vivent dans orp_yield_learn_logic.h / pump_controller.
+// false si absent / taille inexacte / schéma, CRC ou valeurs faux (`corrupted` = true
+// si des octets existaient mais sont rejetés). loopTask seule, sans configMutex.
+bool loadOrpYieldSnapshot(OrpYieldSnapshot& out, bool& corrupted);
+// Écrit le store scellé. UNE écriture par épisode crédité (ou remise à zéro).
+void saveOrpYieldStore(const OrpYieldStore& s, uint32_t context);
 
 // ==== v2.27.0 (feature-084, R1) : anneau NVS de l'historique de charge ====
 // 7 journées {date, mL pH, minutes de filtration} dans UN blob de 64 octets

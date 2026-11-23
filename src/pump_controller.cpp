@@ -576,21 +576,180 @@ void PumpControllerClass::beginOrpMixingLearn() {
   systemLogger.info(line);
 }
 
-// Abandon d'une observation en cours (OTA / maintenance) : compté « perturbée ».
-void PumpControllerClass::abandonOrpMixingObservation() {
-  if (!_orpObs.active) return;
-  _orpObs.active = false;
-  if (_orpObsDiscards[0] < 0xFFFF) ++_orpObsDiscards[0];
+// Abandon des observations en cours (OTA / maintenance / toute sortie anticipée de
+// updateDosingCore) : observation 202 JETÉE (comptée « perturbée ») ET épisode de
+// rendement 203 jeté. ⛔ Jamais SUSPENDUES : à la reprise, la mesure aurait dérivé
+// pendant l'arrêt et se lirait comme une montée (rendement surestimé ⇒ budget trop
+// petit ⇒ sous-chloration ; côté 202, pause apprise faussée).
+void PumpControllerClass::abandonOrpObservations() {
+  if (_orpObs.active) {
+    _orpObs.active = false;
+    if (_orpObsDiscards[0] < 0xFFFF) ++_orpObsDiscards[0];
+  }
+  discardOrpYieldEpisode("régulation interrompue (OTA ou maintenance)");
+}
+
+// --- feature-203 -------------------------------------------------------------
+uint32_t PumpControllerClass::orpYieldCurrentContext() const {
+  // CONSIGNE CONFIGURÉE, jamais l'effective (le Mode Boost effacerait l'apprentissage).
+  // ⚠️ LIMITE ASSUMÉE : l'empreinte ne couvre ni la concentration du produit, ni la chimie
+  // de l'eau (stabilisant, température, charge de baigneurs) ; le rattrapage est le
+  // désarmement du budget (sous-dosage chronique), borné à 3 épisodes.
+  return orpYieldContextHash(mqttCfg.orpTarget, (uint8_t)mqttCfg.orpPump);
+}
+
+void PumpControllerClass::publishOrpYieldServed() {
+  const float m = orpYieldMedian(_orpYieldStore);
+  _orpYieldServedMv.store(m);
+  _orpYieldServedCount.store(_orpYieldStore.count);
+}
+
+void PumpControllerClass::orpYieldEpisodeEnded() {
+  _orpYieldBudgetServedMl.store(NAN);
+  _orpYieldBudgetStop.store(false);
+  _orpYieldStopLatched = false;
+}
+
+void PumpControllerClass::discardOrpYieldEpisode(const char* why) {
+  if (!_orpYieldEp.open) return;
+  orpYieldReset(_orpYieldEp);
+  orpYieldEpisodeEnded();
+  // ⛔ Pas de RÉ-OUVERTURE en cours de séance : un épisode rouvert avec un volume tronqué
+  // serait clos par l'observation avec TOUTE la montée restante (rendement surestimé ⇒
+  // budget trop petit ⇒ sous-chloration). Réarmé au repos (tickOrpLearn).
+  _orpYieldMayOpen = false;
+  char line[144];
+  snprintf(line, sizeof(line), "[Dosage ORP] Épisode de rendement jeté : %s", why);
+  systemLogger.info(line);
+}
+
+// Remise à zéro de l'apprentissage (changement d'empreinte de contexte) : anneau,
+// épisode, série, désarmement. Une écriture NVS seulement si de l'appris est perdu.
+void PumpControllerClass::resetOrpYieldLearning(const char* why) {
+  const bool hadStore = _orpYieldStore.count > 0;
+  discardOrpYieldEpisode(why);
+  _orpYieldStore = OrpYieldStore();
+  _orpYieldContext = orpYieldCurrentContext();
+  _orpYieldStopStreak = 0;
+  if (_orpYieldDisarmed.exchange(false)) _orpYieldRearmReason = 2;
+  orpYieldEpisodeEnded();
+  publishOrpYieldServed();
+  if (hadStore) {
+    saveOrpYieldStore(_orpYieldStore, _orpYieldContext);
+    char msg[112];
+    snprintf(msg, sizeof(msg), "[Dosage ORP] Rendement du chlore : apprentissage remis à zéro (%s)", why);
+    systemLogger.info(msg);
+  }
+}
+
+// Chargement idempotent (après loadMqttConfig : l'empreinte lit la consigne configurée).
+void PumpControllerClass::beginOrpYieldLearn() {
+  if (_orpYieldBegun) return;
+  _orpYieldBegun = true;
+  _orpYieldContext = orpYieldCurrentContext();
+  OrpYieldSnapshot snap;
+  bool corrupted = false;
+  if (loadOrpYieldSnapshot(snap, corrupted)) {
+    if (snap.context == _orpYieldContext) {
+      _orpYieldStore = orpYieldStoreFromSnapshot(snap);
+    } else {
+      systemLogger.info("[Dosage ORP] Rendement du chlore : contexte différent de celui "
+                        "de l'apprentissage enregistré, retour à zéro");
+    }
+  } else if (corrupted) {
+    systemLogger.warning("[Dosage ORP] Rendement du chlore illisible (CRC/schéma) : "
+                         "aucun budget, comportement d'avant");
+  }
+  publishOrpYieldServed();
+  char line[112];
+  snprintf(line, sizeof(line), "[Dosage ORP] Rendement du chlore : %u épisode(s) appris%s",
+           (unsigned)_orpYieldStore.count,
+           orpYieldIsLearned(_orpYieldStore) ? "" : " (budget inactif sous 3)");
+  systemLogger.info(line);
+}
+
+float PumpControllerClass::getOrpYieldBudgetMl() const { return _orpYieldBudgetServedMl.load(); }
+
+bool PumpControllerClass::isOrpYieldUndersupplySuspected() const {
+  // Garde mesure valide (patron isPhUndersizedSuspected) : verdict UNIQUE, partagé par
+  // le champ servi et le journal.
+  return _orpYieldDisarmed.load() && !isnan(sensors.getOrpFiltered());
+}
+
+// Journalisation PAR TRANSITION, dans les DEUX sens (levée : on nomme ce qui a réarmé,
+// sinon un diagnostic a posteriori ne peut pas dater la fin de l'épisode).
+void PumpControllerClass::tickOrpYieldUndersupplyAlert() {
+  const float orp = sensors.getOrpFiltered();
+  const bool reached = isfinite(orp) && orp >= getEffectiveOrpTarget();
+  // Désarmé : la série ne se remet PAS à zéro ici — seul un épisode propre clos
+  // (ou une remise à zéro de l'apprentissage) réarme.
+  if (!_orpYieldDisarmed.load()) {
+    _orpYieldStopStreak = orpYieldStreakNext(_orpYieldStopStreak, false, reached);
+  }
+  const bool active = isOrpYieldUndersupplySuspected();
+  if (active == _orpYieldAlertActive) return;
+  _orpYieldAlertActive = active;
+  char msg[256];
+  if (active) {
+    snprintf(msg, sizeof(msg),
+             "[Dosage ORP] Sous-dosage chronique suspecté : les %u dernières sessions ont "
+             "toutes été arrêtées par le budget de volume appris, sans atteindre la consigne "
+             "— le budget est SUSPENDU (dosage comme avant, plafonds inchangés)",
+             (unsigned)kOrpYieldLearnObsCount);
+    systemLogger.warning(msg);
+  } else {
+    const uint8_t why = _orpYieldRearmReason;
+    _orpYieldRearmReason = 0;
+    snprintf(msg, sizeof(msg),
+             "[Dosage ORP] Sous-dosage chronique : alerte levée — %s",
+             why == 1 ? "budget réarmé (épisode propre clos, mesure à la consigne ou au-dessus)"
+             : why == 2 ? "budget réarmé (apprentissage remis à zéro : contexte ou bidon modifié)"
+                        : "mesure ORP non représentative (budget toujours suspendu)");
+    systemLogger.info(msg);
+  }
 }
 
 // Un pas d'observation. `clean` = propreté de CE tick, calculée par l'appelant.
 // Aucun I2C, aucune allocation (ADR-0082) ; une écriture NVS par observation CLOSE.
-void PumpControllerClass::tickOrpMixingLearn(uint32_t nowMs, bool clean) {
+void PumpControllerClass::tickOrpLearn(uint32_t nowMs, bool orpEnvClean, bool orpQuiet) {
+  // 203 — empreinte de contexte : un changement remet l'apprentissage à zéro.
+  // 203 — état réellement AU REPOS : ouverture d'épisode de nouveau permise.
+  if (!_orpObs.active && orpQuiet && !_pulseSession[1]) _orpYieldMayOpen = true;
+  // « Nouveau bidon » (posé depuis le handler async, qui ne peut pas journaliser) : épisode
+  // jeté ET anneau remis à zéro. Remise à zéro même si c'est probablement le MÊME produit :
+  // c'est le seul instant où l'utilisateur a pu en changer, et la seule trace dont on
+  // dispose (aucun produit ni concentration dans la configuration, l'empreinte n'en voit
+  // rien). Coût : 3 épisodes de réapprentissage ; l'erreur inverse (garder un rendement
+  // faux) produirait un sous-dosage.
+  if (_orpYieldBottleReset.exchange(false)) {
+    resetOrpYieldLearning("nouveau bidon déclaré");
+  } else if (orpYieldCurrentContext() != _orpYieldContext) {
+    resetOrpYieldLearning("consigne ou pompe ORP modifiée");
+  }
+  // 203 — propreté de l'épisode : `orpEnvClean` (partagé avec 202) + deux gardes propres
+  // à 203. Un tick sale JETTE l'épisode. L'injection ORP elle-même n'est PAS une saleté.
+  if (_orpYieldEp.open &&
+      !(orpEnvClean && !_flowAssistSuspend && effectiveOrpMode() != OrpMode::Manual)) {
+    discardOrpYieldEpisode("conditions perturbées");
+  }
+  // 203 — ⭐ l'épisode vit EXACTEMENT aussi longtemps que l'observation qui le porte.
+  // Chlore non automatique vu : jeté. Épisode orphelin (aucune injection ORP en cours et
+  // plus d'observation pour le fermer) : jeté — sans détecteur de fin il ne produirait ni
+  // mesure valide ni fermeture, seulement un volume qui court contre le budget.
+  // Le jet au changement de jour n'est qu'un aveu : plus rien ne doit en dépendre.
+  if (_orpYieldEp.open) {
+    if (_orpYieldTaint) {
+      discardOrpYieldEpisode("chlore manuel ou programmé pendant l'épisode");
+    } else if (!_orpObs.active && orpQuiet) {
+      discardOrpYieldEpisode("plus d'observation pour le fermer");
+    }
+  }
+  _orpYieldTaint = false;
   if (!_orpObs.active) return;
   OrpMixingTickInputs in;
   in.nowMs = nowMs;
   in.orpFiltered = sensors.getOrpFiltered();  // NaN = non représentatif
-  in.clean = clean;
+  in.clean = orpEnvClean && orpQuiet;         // STRICTEMENT l'expression d'avant (202)
   const OrpMixingTickVerdict v = orpMixingTick(_orpObs, in);
   char line[160];
   if (v.outcome == OrpMixingOutcome::kClosed) {
@@ -606,6 +765,34 @@ void PumpControllerClass::tickOrpMixingLearn(uint32_t nowMs, bool clean) {
              (unsigned long)(_orpMixingDelayMs.load() / 60000UL), (unsigned)_orpLearn.count,
              (unsigned)(_orpObsDiscards[0] + _orpObsDiscards[1] + _orpObsDiscards[2]));
     systemLogger.info(line);
+    // 203 — MÊME verdict `kClosed` : la montée est finie, le plateau est le sommet
+    // (`refOrp`, ne monte que quand la mesure monte). ⛔ Jamais de relecture de la
+    // mesure après la pause (rendement 4x trop pessimiste) ; ⛔ rien ne dépend de
+    // isOrpMixingDelayLearned() (la mécanique est juste avant convergence).
+    if (_orpYieldEp.open) {
+      const OrpYieldVerdict yv = orpYieldClose(_orpYieldEp, _orpObs.refOrp);
+      orpYieldEpisodeEnded();
+      if (yv.kind == OrpYieldKind::kCredited) {
+        orpYieldRecord(_orpYieldStore, yv);
+        saveOrpYieldStore(_orpYieldStore, _orpYieldContext);  // UNE écriture par épisode
+        publishOrpYieldServed();
+        // Réarmement : épisode propre clos avec mesure filtrée >= consigne.
+        const float orpNow = sensors.getOrpFiltered();
+        if (_orpYieldDisarmed.load() && isfinite(orpNow) && orpNow >= getEffectiveOrpTarget()) {
+          _orpYieldDisarmed.store(false);
+          _orpYieldStopStreak = 0;
+          _orpYieldRearmReason = 1;
+        }
+        snprintf(line, sizeof(line),
+                 "[Dosage ORP] Rendement du chlore : %.2f mV/mL%s (%u épisode(s), médiane %.2f)",
+                 (double)yv.yieldMvPerMl, yv.capped ? " [écrêté]" : "",
+                 (unsigned)_orpYieldStore.count, (double)_orpYieldServedMv.load());
+      } else {
+        snprintf(line, sizeof(line), "[Dosage ORP] Épisode de rendement jeté : %s",
+                 orpYieldReasonLabel(yv.reason));
+      }
+      systemLogger.info(line);
+    }
   } else if (v.outcome == OrpMixingOutcome::kDiscarded) {
     const uint8_t idx = (uint8_t)v.discard - 1u;  // kDirty=1 → 0, … kCeiling=3 → 2
     if (idx < 3 && _orpObsDiscards[idx] < 0xFFFF) ++_orpObsDiscards[idx];
@@ -615,6 +802,9 @@ void PumpControllerClass::tickOrpMixingLearn(uint32_t nowMs, bool clean) {
              orpMixingDiscardLabel(v.discard), (unsigned)_orpObsDiscards[0],
              (unsigned)_orpObsDiscards[1], (unsigned)_orpObsDiscards[2], (unsigned)_orpObsClosed);
     systemLogger.info(line);
+    // 203 — l'épisode est jeté AVEC son observation, pour TOUTES ses causes (perturbée,
+    // y compris une nouvelle injection ORP pendant la montée ; mesure ; plafond).
+    discardOrpYieldEpisode(orpMixingDiscardLabel(v.discard));
   }
 }
 
@@ -3302,6 +3492,8 @@ void PumpControllerClass::tickDailyRollover() {
         }
       }
       resetScheduledSplit();  // feature-011 : reliquat scheduled + réarmement fenêtres
+      // feature-203 : un épisode ne dure pas plus d'un jour (borne sans nombre neuf).
+      discardOrpYieldEpisode("changement de jour");
 
       // feature-152 (C6, gate pool-chemistry) : compte la streak de jours
       // consécutifs où le plafond journalier a été atteint, AVANT de réinitialiser
@@ -3378,6 +3570,8 @@ void PumpControllerClass::tickDailyRollover() {
     }
     if (shouldRolloverByMillis((uint32_t)safetyLimits.dayStartTimestamp, (uint32_t)now)) {
       resetScheduledSplit();  // feature-011 : reliquat scheduled + réarmement fenêtres
+      // feature-203 : un épisode ne dure pas plus d'un jour (borne sans nombre neuf).
+      discardOrpYieldEpisode("changement de jour");
       safetyLimits.dailyPhInjectedMl  = 0;
       safetyLimits.dailyOrpInjectedMl = 0;
       // v2.27.0 : AUCUN archivage sur ce chemin — sans horloge valide la journée
@@ -3453,6 +3647,24 @@ void PumpControllerClass::creditInjectedVolume(bool isPhPump, float volumeMl) {
     }
   } else {
     safetyLimits.dailyOrpInjectedMl += volumeMl;
+    // feature-203 : POINT UNIQUE du cumul d'épisode (auto, manuel, programmé). Chemin
+    // chaud : ni log, ni String, ni lecture capteur, ni NVS (ADR-0082).
+    //
+    // ⭐ L'épisode ne s'ouvre QUE sur une injection AUTOMATIQUE (seule à avoir une
+    // observation qui la ferme). Un chlore manuel ou programmé n'est NI compté NI appris :
+    // pendant un épisode ouvert il le CONTAMINE (jet au tick suivant, avec journal). Sens du
+    // risque : ne pas compter ce chlore ⇒ le budget l'ignore ⇒ l'automatique peut doser
+    // par-dessus ⇒ un peu plus de chlore, tous plafonds intacts = comportement d'avant,
+    // connu sûr. Le crédit lui-même (compteurs, stock) reste inchangé, ci-dessus.
+    if (_orpAutoSession && _pulseSession[1] && !_acctManual[1]) {
+      // Ouverture : jamais tant qu'une observation court ni après un jet en séance.
+      if (!_orpYieldEp.open && _orpYieldMayOpen && !_orpObs.active) {
+        orpYieldOpen(_orpYieldEp, _orpTickOrp, getEffectiveOrpTarget() - _orpTickOrp);
+      }
+      if (_orpYieldEp.open) orpYieldAddVolume(_orpYieldEp, volumeMl);
+    } else if (_orpYieldEp.open) {
+      _orpYieldTaint = true;  // jeté par tickOrpLearn (chemin chaud : ni log ni NVS ici)
+    }
     if (tracking) {
       productCfg.orpTotalInjectedMl += volumeMl;
       productConfigDirty = true;
@@ -3827,7 +4039,7 @@ void PumpControllerClass::updateDosingCore(unsigned long now) {
     // lui-même. Le rituel complet (état, pause mélange, log d'arrêt) a lieu ICI,
     // sur loopTask, au premier tour d'OTA. Idempotent : no-op aux tours suivants.
     closePhDosingSession(now, "OTA en cours");
-    abandonOrpMixingObservation();  // feature-202
+    abandonOrpObservations();  // feature-202/203
     applyPumpDuty(0, 0);
     applyPumpDuty(1, 0);
     settlePumpAccounting(now);  // bug-115 (v2.61.0) : C1 — régler avant de sortir
@@ -3844,7 +4056,7 @@ void PumpControllerClass::updateDosingCore(unsigned long now) {
     // `isPhDosing()` mentait à l'UI. La fermeture est idempotente : elle ne
     // journalise qu'au premier tour de maintenance.
     closePhDosingSession(now, "mode maintenance");
-    abandonOrpMixingObservation();  // feature-202 : aucune observation hors régulation
+    abandonOrpObservations();  // feature-202/203 : aucune observation hors régulation
     // bug-171 (pool-chemistry cond. 2) : purger manualMode + échéance, comme l'OTA —
     // sinon l'exemption des blocs de suspension survit au retour de maintenance.
     if (manualMode[0] || manualMode[1]) {
@@ -3890,6 +4102,7 @@ void PumpControllerClass::updateDosingCore(unsigned long now) {
   // quand la branche automatique n'est plus atteinte (c'est la purge C4
   // elle-même qui referme l'épisode C5 après un hiver sans filtration).
   tickPhUndersizedAlert();
+  tickOrpYieldUndersupplyAlert();  // feature-203 : même point, mêmes raisons
 
   // bug-171 : présence d'eau calculée ICI (hissée depuis la garde globale plus
   // bas) pour que le garde-fou des pompes manuelles soit atteint AVANT les
@@ -3910,11 +4123,20 @@ void PumpControllerClass::updateDosingCore(unsigned long now) {
   // pause plus longue, et cette valeur fausse serait PERSISTÉE SANS PÉREMPTION
   // (la grandeur apprise est hydraulique, rien ne la périme). ⚠️ Les deux mêmes
   // prédicats bloquent DÉJÀ le dosage à :4039 — l'observation doit s'aligner.
-  tickOrpMixingLearn((uint32_t)now,
-                     waterPresence.waterPresent && !phDosingState.active &&
-                         !orpDosingState.active && pumpDuty[0] == 0 && pumpDuty[1] == 0 &&
-                         measureValidity.isCirculationSettled() &&
-                         !mqttCfg.calSessionOpen && !isStabilizationTimerActive(1));
+  //
+  // feature-203 : la conjonction est SCINDÉE en deux moitiés nommées, sans changer sa
+  // valeur pour 202 (qui reçoit `orpEnvClean && orpQuiet`) — une seule source du
+  // prédicat, divergence impossible. L'épisode de rendement ne juge que `orpEnvClean`.
+  const bool orpEnvClean = waterPresence.waterPresent && !phDosingState.active &&
+                           pumpDuty[0] == 0 && measureValidity.isCirculationSettled() &&
+                           !mqttCfg.calSessionOpen && !isStabilizationTimerActive(1);
+  const bool orpQuiet = !orpDosingState.active && pumpDuty[1] == 0;
+  tickOrpLearn((uint32_t)now, orpEnvClean, orpQuiet);
+  // Mesure filtrée lue AVANT la commande de ce tick. creditInjectedVolume() est appelé
+  // plus tard (settlePumpAccounting, en FIN de tick, ou au début du tick suivant) pour
+  // le volume des commandes déjà posées : à l'ouverture d'épisode, cette valeur est donc
+  // toujours antérieure à tout le chlore crédité à l'épisode.
+  _orpTickOrp = sensors.getOrpFiltered();
 
   // feature-084 (sujet 3) : lecture DIFFÉRÉE de l'instantané NVS. Placée ici, en
   // aval des sorties OTA et maintenance (une lecture NVS ne doit pas s'inviter au
@@ -5131,6 +5353,31 @@ void PumpControllerClass::updateDosingCore(unsigned long now) {
       // Arrêté : vérifier si on démarre
       shouldDose = shouldStartDosing(error, pumpProtection.orpStartThreshold, orpDosingState, now);
     }
+    // feature-203 — BUDGET DE VOLUME d'épisode : condition d'arrêt SUPPLÉMENTAIRE, en arrêt
+    // seul. ⛔ Ce n'est PAS une limite de sécurité (les plafonds protègent, le reste
+    // informe) : il ne fait qu'arrêter PLUS TÔT, et un geste manuel ou programmé alimente
+    // l'épisode sans jamais être interrompu par lui. Recalculé À CHAQUE TICK sur le manque
+    // COURANT (jamais figé à l'ouverture : un budget figé + un épisode qui ne se ferme
+    // jamais bloquerait la chloration pour toujours). Mesure NaN ⇒ manque indéfini ⇒ pas
+    // de budget (NaN, jamais 0). Désarmé (sous-dosage chronique) ⇒ pas de budget.
+    {
+      const bool armed = !_orpYieldDisarmed.load() && _orpYieldEp.open;
+      const float budget = armed ? orpYieldBudgetMl(error, _orpYieldStore) : NAN;
+      _orpYieldBudgetServedMl.store(budget);
+      const bool budgetReached = orpYieldBudgetReached(budget, _orpYieldEp.volMl);
+      const bool stoppedByBudget = shouldDose && budgetReached;
+      if (stoppedByBudget) {
+        shouldDose = false;
+        if (!_orpYieldStopLatched) {  // une série par arrêt, pas par tick
+          _orpYieldStopLatched = true;
+          _orpYieldStopStreak = orpYieldStreakNext(_orpYieldStopStreak, true, false);
+          if (orpYieldUndersupply(_orpYieldStopStreak)) _orpYieldDisarmed.store(true);
+        }
+      } else if (!budgetReached) {
+        _orpYieldStopLatched = false;
+      }
+      _orpYieldBudgetStop.store(stoppedByBudget);
+    }
     const bool orpStartDecided = !orpWasActiveTick && shouldDose;
 
     // --- Itération 2 (option B+C) : caractérisation de la pompe ORP affectée ---
@@ -5221,6 +5468,7 @@ void PumpControllerClass::updateDosingCore(unsigned long now) {
         // orpStartDecided couvre la reprise après suspension hors-branche.
         if (!_pulseSession[1] || orpStartDecided) {
           _pulseSession[1] = true;
+          _orpAutoSession = true;  // feature-203 : séance AUTOMATIQUE (seule à ouvrir un épisode)
           _sessionOnMs[1] = 0;
           _sessionVolMl[1] = 0.0f;
           _pulseState[1] = {now32, now32, true};
@@ -5527,6 +5775,7 @@ void PumpControllerClass::updateDosingCore(unsigned long now) {
             // suspension hors-branche (kick + compteurs de session à zéro).
             if (!_pulseSession[1] || !orpDosingState.active) {
               _pulseSession[1] = true;
+              _orpAutoSession = false;  // feature-203 : séance programmée, pas d'épisode
               _sessionOnMs[1] = 0;
               _sessionVolMl[1] = 0.0f;
               _pulseState[1] = {(uint32_t)now, (uint32_t)now, true};
@@ -5613,6 +5862,7 @@ void PumpControllerClass::updateDosingCore(unsigned long now) {
   }
   if (!orpActive) {
     _pulseSession[1] = false;
+    _orpAutoSession = false;
     _pulseCarryMl[1] = 0.0f;
     _carryPulseLogged[1] = false;
   }

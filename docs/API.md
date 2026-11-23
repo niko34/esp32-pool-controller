@@ -2500,6 +2500,18 @@ Interprétation : [pump-controller.md — Limite d'actionneur pH](subsystems/pum
 | `orp_mix_delay_learned` | bool | `true` si la durée repose sur 3 observations propres ; `false` = réglage d'usine (20 min). |
 | `orp_mix_obs_count` | uint8 | Nombre d'observations propres retenues (saturé à 255 ; la durée n'est « apprise » qu'à partir de 3). |
 
+**Cinq champs de rendement du chlore appris (feature-203, v3.3.0)**, sur `/data` **et** la trame WebSocket (mêmes accesseurs, même ordre, même expression) :
+
+| Champ | Type | Description |
+|---|---|---|
+| `orp_yield_mv_per_ml` | float (2 déc.) \| `null` | Effet appris d'un millilitre de chlore (médiane de 3 mesures). `null` sous 3 mesures. |
+| `orp_yield_obs_count` | uint8 (0-3) | Profondeur d'apprentissage. Jamais `null`. |
+| `orp_yield_budget_ml` | uint16 \| `null` | Volume que l'appareil s'autorise pour l'injection en cours. `null` hors épisode, ou si le manque dépasse le domaine appris. |
+| `orp_yield_budget_stop` | bool | **Verdict** : le budget retient l'injection maintenant. Jamais `null`. |
+| `orp_yield_undersupply` | bool | 3 arrêts d'affilée sans atteindre la consigne : budget **désarmé**. Jamais `null`. |
+
+Le budget ne peut qu'**arrêter plus tôt** ([ADR-0146](adr/0146-un-plafond-de-volume-plutot-qu-un-regulateur-pour-le-chlore.md)). Le navigateur lit, ne recalcule rien.
+
 La pause pH n'est **pas** apprise : aucun champ équivalent. ⚠️ Le champ décrit la durée de la **garde** (mode Auto) ; elle n'est pas appliquée en mode Programmé ou manuel. Détail : [pump-controller](subsystems/pump-controller.md#pause-mélange-orp-apprise-feature-202-v320), [ADR-0145](adr/0145-la-pause-melange-orp-s-apprend-seulement-vers-le-prudent.md).
 
 **Deux booléens de caractérisation de pompe, désormais servis sur la trame WS** : `ph_pump_flow_uncharacterized` / `orp_pump_flow_uncharacterized` étaient `/data`-**seuls**, et le push WebSocket **effaçait** donc la clé de l'objet client (`latestSensorData` est remplacé en entier, sans fusion). Sémantique inchangée côté `/data`.

@@ -1000,6 +1000,20 @@ Instantané NVS `orpmix` (namespace `pool-dose`) : **20 octets**, CRC FNV-1a, �
 
 Tests : `test/test_native_orp_mixing_learn/`.
 
+## Rendement du chlore appris et plafond de volume (feature-203, v3.3.0)
+
+Décision : [ADR-0146](../adr/0146-un-plafond-de-volume-plutot-qu-un-regulateur-pour-le-chlore.md). Logique **pure** dans `src/orp_yield_learn_logic.h` ; câblage dans `pump_controller.cpp`.
+
+- **Épisode** : ouvert sur une séance ORP **automatique**, cumule le volume via `creditInjectedVolume()` (point unique), fermé sur le verdict `kClosed` de l'observation de 202 (`tickOrpLearn(nowMs, orpEnvClean, orpQuiet)` remplace `tickOrpMixingLearn`). Jeté avec l'observation pour toutes ses causes ; pas de ré-ouverture en cours de séance. Le chlore manuel n'est ni compté ni appris.
+- **Apprentissage** : médiane de `kOrpYieldLearnObsCount` = 3 rendements, écrêtés en haut à `kOrpYieldMaxMvPerMl`. Instantané NVS 32 o (`kOrpYieldLearnSchema`), une écriture par épisode, remise à zéro si l'empreinte de contexte (consigne, pompe) change.
+- **Budget** : `kOrpYieldBudgetMargin (2) × manque / rendement`, **recalculé à chaque tick**, appliqué seulement si `manque ≤ médiane(manques observés)`. ⛔ `computePID()` intouché ; le budget n'ajoute qu'une condition d'arrêt.
+- **Désarmement** : 3 sessions de suite arrêtées par le budget sans atteindre la consigne ⇒ `isOrpYieldUndersupplySuspected()` ; la condition « budget » seule est suspendue, réarmée sur un épisode propre ≥ consigne.
+- **API publique** (lecture seule, atomiques) : `beginOrpYieldLearn()`, `getOrpYieldMvPerMl()`, `getOrpYieldObsCount()`, `getOrpYieldBudgetMl()`, `isOrpStoppedByYieldBudget()`, `isOrpYieldUndersupplySuspected()`.
+- **Nouveau bidon** : le handler « nouveau bidon » (`web_routes_config.cpp`, après `orp_reset_container`) appelle `requestOrpYieldBottleReset()`, qui pose un drapeau consommé par `tickOrpLearn` : épisode jeté, anneau, série et désarmement remis à zéro, écriture NVS, ligne de journal. C'est le **seul signal explicite** de changement de produit : l'empreinte ne porte que `{schéma, pompe, consigne}` (ni produit ni concentration n'existent dans le code).
+- **Limite** : l'empreinte ne couvre pas la concentration du produit ni la chimie de l'eau ; le désarmement rattrape.
+
+Tests : `test/test_native_orp_yield_learn/` (34 cas).
+
 ## Présence d'eau selon le mode d'installation (feature-056)
 
 La garde #3 (« Présence d'eau ») ne teste plus `filtration.isRunning()` directement : elle consomme la **source unique** `filtration.resolveWaterPresence().waterPresent` ([ADR-0026](../adr/0026-mode-installation.md)). La même source alimente **tous** les chemins de dosage (régulation auto, injection manuelle `evaluateManualInject`, monitor d'injection en cours) — plus de logique de présence d'eau dupliquée par site.

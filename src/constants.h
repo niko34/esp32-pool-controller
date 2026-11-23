@@ -3458,6 +3458,40 @@ static_assert(kPumpFlow255MlPerMin >= kPumpFlow255MeasuredMaxMlPerMin,
               "Majorant a 255 sous le maximum mesure : le firmware "
               "sous-crediterait le kick et les injections manuelles — les "
               "limites de dosage mordraient TROP TARD");
+
+// ============================================================================
+// feature-203 — la dose de chlore se cale sur le RENDEMENT OBSERVÉ
+// (module pur orp_yield_learn_logic.h). Un PLAFOND DE VOLUME par épisode, jamais
+// un régulateur : le budget ne peut qu'ARRÊTER plus tôt.
+// ============================================================================
+// Épisodes retenus (anneau ; le 4e chasse le 1er = fenêtre d'oubli, comptée en
+// épisodes et jamais en jours). Médiane de 3 = valeur du milieu.
+// ⚠️ Cette constante porte TROIS sens à la fois : taille de l'anneau, seuil d'apprentissage
+// (budget actif à partir de 3 épisodes) ET seuil de l'alerte de sous-dosage (3 sessions de
+// suite arrêtées par le budget). En changer la valeur déplace les trois — et la taille de
+// l'instantané NVS (static_assert ci-dessous).
+constexpr uint8_t kOrpYieldLearnObsCount = 3;
+// Schéma de l'instantané NVS (32 octets) — à incrémenter à tout changement de taille.
+constexpr uint8_t kOrpYieldLearnSchema = 1;
+// SEULE valeur posée. budget = marge × manque_courant / rendement_appris. Le rendement
+// appris est une MOYENNE sur toute la montée ; or un petit manque courant signifie
+// qu'on part PRÈS de la consigne, là où les millivolts coûtent le plus cher (relation
+// logarithmique, rendement ~ 1/C). Sans marge, le budget serait trop petit près de la
+// cible : sous-dosage. Condition de sécurité C2 (pool-chemistry) : ne jamais descendre
+// sous 2.
+constexpr float kOrpYieldBudgetMargin = 2.0f;
+// Volume de la plus petite dose que l'actionneur sache délivrer (grandeur MACHINE).
+constexpr float kPulseMinVolumeMl = kPumpFlow255MlPerMin * (float)kPulseMinMs / 60000.0f;
+// Écrêtage HAUT du rendement : un pouls minimal ne peut pas traverser toute la plage
+// de consigne produit. Aucun chiffre de bassin. Pas de borne BASSE : un rendement trop
+// faible donne un budget énorme, donc inerte (les plafonds horaire/journalier bornent).
+constexpr float kOrpYieldMaxMvPerMl =
+    (kOrpTargetPlausibleMax - kOrpTargetPlausibleMin) / kPulseMinVolumeMl;
+static_assert(kOrpYieldBudgetMargin >= 2.0f,
+              "Marge du budget < 2 : sous-dosage près de la consigne (condition C2)");
+static_assert(kOrpYieldMaxMvPerMl > 0.0f, "Écrêtage haut du rendement : doit être positif");
+static_assert(kOrpYieldLearnObsCount == 3,
+              "Instantané NVS 32 o — changer le schéma sinon");
 // Plancher de l'amplitude en % (UI/config) : 40 % × 255 ≈ 102 counts, cohérent
 // avec MIN_ACTIVE_DUTY = 98 (Dmin mesuré 82 + 16 counts de marge P2).
 constexpr uint8_t kPumpAmpMinPct = 40;

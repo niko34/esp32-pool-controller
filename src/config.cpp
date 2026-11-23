@@ -1229,6 +1229,35 @@ void saveOrpMixingStore(const OrpMixingLearnStore& s) {
   prefs.end();
 }
 
+// feature-203 — rendement du chlore appris. TRANSPORT SEUL (schéma, CRC et décisions
+// dans orp_yield_learn_logic.h, testable en natif).
+bool loadOrpYieldSnapshot(OrpYieldSnapshot& out, bool& corrupted) {
+  corrupted = false;
+  OrpYieldSnapshot raw;
+  Preferences prefs;
+  if (!prefs.begin("pool-dose", true)) return false;  // namespace jamais écrit
+  const size_t read = prefs.getBytes("orpyld", &raw, sizeof(raw));
+  prefs.end();
+  if (read == 0) return false;  // absence : cas nominal, silencieux
+  if (!orpYieldSnapshotIntact(raw, read)) {
+    corrupted = true;
+    return false;
+  }
+  out = raw;
+  return true;
+}
+
+void saveOrpYieldStore(const OrpYieldStore& s, uint32_t context) {
+  OrpYieldSnapshot snap = orpYieldSnapshotFromStore(s, context);  // scellé (CRC)
+  Preferences prefs;
+  if (!prefs.begin("pool-dose", false)) {
+    systemLogger.warning("[Config] Rendement chlore appris : ouverture NVS refusée");
+    return;
+  }
+  prefs.putBytes("orpyld", &snap, sizeof(snap));
+  prefs.end();
+}
+
 // =============================================================================
 // v2.27.0 (feature-084, R1) — ANNEAU NVS DE L'HISTORIQUE DE CHARGE ACIDE
 // =============================================================================

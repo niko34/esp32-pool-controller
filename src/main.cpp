@@ -453,6 +453,7 @@ void setup() {
   // dosingWindow.begin() (sinon la restauration travaille avec la constante
   // d'usine). Idempotent : ne touche que le store NVS et le logger.
   PumpController.beginOrpMixingLearn();
+  PumpController.beginOrpYieldLearn();  // feature-203 : après loadMqttConfig() (l.394), empreinte sur la consigne
   dosingWindow.setOrpFullMixingMs(PumpController.orpMixingDelayMs());
   dosingWindow.begin();
 

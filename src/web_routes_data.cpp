@@ -642,6 +642,20 @@ static void handleGetData(AsyncWebServerRequest* request) {
   doc["orp_mix_delay_learned"] = PumpController.isOrpMixingDelayLearned();
   doc["orp_mix_obs_count"]     = PumpController.getOrpMixingObsCount();
   //
+  // feature-203 : RENDEMENT DU CHLORE APPRIS — 5 clés, MÊMES accesseurs, MÊME ordre, MÊME
+  // expression que ws_manager.cpp (le navigateur LIT, ne recalcule jamais). Octets pire cas :
+  //   "orp_yield_mv_per_ml":52.70,    → 28 o     "orp_yield_obs_count":255,      → 26 o
+  //   "orp_yield_budget_ml":65535,    → 28 o     "orp_yield_budget_stop":false,  → 30 o
+  //   "orp_yield_undersupply":false,  → 30 o     → 142 o (cumul : voir « total 3806 o » plus bas).
+  // Une seule lecture par grandeur (atomique, peut changer entre deux appels).
+  const float orpYieldMv = PumpController.getOrpYieldMvPerMl();
+  const float orpYieldBudget = PumpController.getOrpYieldBudgetMl();
+  if (!isnan(orpYieldMv)) doc["orp_yield_mv_per_ml"] = round(orpYieldMv * 100.0f) / 100.0f; else doc["orp_yield_mv_per_ml"] = nullptr;
+  doc["orp_yield_obs_count"] = PumpController.getOrpYieldObsCount();
+  if (!isnan(orpYieldBudget)) doc["orp_yield_budget_ml"] = (uint16_t)fminf(round(orpYieldBudget), 65535.0f); else doc["orp_yield_budget_ml"] = nullptr;
+  doc["orp_yield_budget_stop"] = PumpController.isOrpStoppedByYieldBudget();
+  doc["orp_yield_undersupply"] = PumpController.isOrpYieldUndersupplySuspected();
+  //
   // COMPOSITION DU DÉBIT D'INJECTION (feature-092) — l'équation que la régulation
   // applique déjà, rendue lisible : demande = dose de base apprise + écart
   // courant + rattrapage accumulé, bornée par le débit soutenable.
@@ -753,6 +767,10 @@ static void handleGetData(AsyncWebServerRequest* request) {
   //   "orp_effective_max_ml_per_day":1439986, → 1+28+1+1+7+1 = 39 o
   //   (clé recomptée en revue : 28 caractères, pas 29)
   // ⇒ total 3664 o, marge 432 o. Aucun bump de gabarit nécessaire.
+  // feature-203 : +142 o au pire (5 clés) ⇒ cumul PIRE CAS (toutes clés présentes, valeurs
+  // maximales) : total 3806 o, marge 290 o sur kWsFrameBufBytes = 4096. MESURE RÉELLE,
+  // cas NOMINAL : la trame /data servie en v3.2.0 pesait 2704 o, soit ~2846 o avec les 5
+  // champs neufs — très en dessous du pire cas. Une trame > 4096 est sautée EN SILENCE.
   doc["maintenance_mode"] = PumpController.isMaintenanceInhibited();
   doc["rescue_until"]  = (long)rescueState.untilEpoch;
   doc["rescue_dosing"] = isRescueChlorineActive(time(nullptr)) && !PumpController.isOrpPhInhibited() && !PumpController.isMaintenanceInhibited();

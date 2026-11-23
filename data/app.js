@@ -7833,6 +7833,10 @@
     } else if (tone === "normal" && short) {
       txt = "En attente · " + short;
       state = "blocked";
+    } else if (prefix === "orp" && data.orp_yield_budget_stop === true) {
+      // feature-203 : verdict firmware LU (ADR-0100), jamais deduit.
+      txt = "En attente · quantité atteinte";
+      state = "blocked";
     } else if (data[`${prefix}_p_term_ml_per_min`] === 0) {
       txt = "En attente · " + ((prefix === "ph") ? "pH" : "ORP") + " à la consigne";
       state = "setpoint";
@@ -7862,7 +7866,7 @@
   // phrase serait creuse → on masque.
   function _renderDoseBudgetFoot(prefix, limited, sustainable) {
     const foot = $(`#${prefix}-dose-budget-foot`);
-    if (!foot) return;
+    if (!foot) return false;
     const limitMin = _doseNum(window._config?.[`${prefix}_limit_minutes`]);
     const show = limited && sustainable !== null && limitMin !== null;
     foot.hidden = !show;
@@ -7871,6 +7875,7 @@
         + " min/h) autorise " + _fmtDoseFlow(sustainable) + " en moyenne sur l'heure : "
         + "la pompe sert la demande, puis s'arrête jusqu'à l'heure suivante.";
     }
+    return show;
   }
 
   // Pied « débit non caractérisé » : sans pesée, TOUS les débits de la carte
@@ -8004,6 +8009,8 @@
   // complète pour ce qu'elle régule.
   function updateOrpDosingCard() {
     const data = latestSensorData || {};
+    // feature-203 : alerte HORS carte, donc evaluee AVANT le retour anticipe lie au mode.
+    _renderOrpYieldAlert(data);
     const card = $("#orp-card-dosing");
     if (!card) return;
     const mode = getModeSelect("orp_regulation_mode") || "automatic";
@@ -8035,12 +8042,63 @@
         ? "apport moyen possible " + _fmtDoseFlow(sust) + " en moyenne sur l'heure"
         : "sous le maximum de " + _fmtDoseFlow(sust);
     }
-    _setDoseCell("orp-dose-total", (demand === null) ? "—" : _fmtDoseFlow(demand), totalNote);
-
-    _renderDoseBudgetFoot("orp", limited, sust);
+    // Pied de bride visible : il dit deja le debit et les min/h, la note ferait doublon.
+    const footShown = _renderDoseBudgetFoot("orp", limited, sust);
+    _setDoseCell("orp-dose-total", (demand === null) ? "—" : _fmtDoseFlow(demand), footShown ? "" : totalNote);
     _renderDoseUncharacterizedFoot("orp", data);
     _renderOrpMixPause(data);
+    _renderOrpYield(data);
     _renderDosePill("orp", data);
+  }
+
+  // feature-203 : alerte de sous-dosage, HORS carte. role="alert" : texte reecrit
+  // seulement s'il change (sinon reannonce toutes les 30 s). Champ absent => masque.
+  function _renderOrpYieldAlert(data) {
+    const box = $("#orp-yield-undersupply");
+    if (!box) return;
+    const on = (data.orp_yield_undersupply === true);
+    if (on) {
+      const t = "Dernier constat : dose trop courte 3 fois de suite";
+      const d = "La quantité prévue a été désactivée : seuls les plafonds de sécurité limitent encore l'injection.";
+      const s = box.querySelector("strong"), p = box.querySelector("p");
+      if (s && s.textContent !== t) s.textContent = t;
+      if (p && p.textContent !== d) p.textContent = d;
+    }
+    box.hidden = !on;
+  }
+
+  // feature-203 : effet du chlore mesure + quantite prevue. ADR-0100 : tout est LU.
+  function _renderOrpYield(data) {
+    const row = $("#orp-yield");
+    const bud = $("#orp-yield-budget");
+    const n = data.orp_yield_obs_count;
+    const y = data.orp_yield_mv_per_ml;
+    if (row) {
+      if (typeof n !== "number" || !isFinite(n) || n <= 0) {
+        row.hidden = true;
+      } else {
+        const known = (typeof y === "number" && isFinite(y));
+        // revue feature-203 : chaque noeud est garde. Sans cela, un index.html
+        // plus ancien (champ servi mais element absent) leverait une TypeError
+        // qui casserait TOUT le rendu de la page, pas seulement cette ligne.
+        const vEl = $("#orp-yield-value");
+        const oEl = $("#orp-yield-origin");
+        const cEl = $("#orp-yield-count");
+        if (vEl) vEl.textContent = known
+          ? (y > 0 ? "+" : "") + y.toLocaleString("fr-FR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + " mV/mL"
+          : "—";
+        if (oEl) oEl.textContent = known ? "mesuré sur votre bassin" : "";
+        if (cEl) cEl.textContent = known ? n + " mesures" : n + (n > 1 ? " mesures" : " mesure") + " sur 3";
+        row.hidden = false;
+      }
+    }
+    if (bud) {
+      const b = data.orp_yield_budget_ml;
+      const show = (typeof b === "number" && isFinite(b) && b > 0 && data.orp_yield_undersupply !== true);
+      const bEl = $("#orp-yield-budget-value");  // garde : cf. commentaire ci-dessus
+      if (show && bEl) bEl.textContent = Math.round(b).toLocaleString("fr-FR") + " mL";
+      bud.hidden = !show;
+    }
   }
 
   // feature-202 : durée de pause mélange ORP en vigueur. ADR-0100 : l'origine
@@ -8268,7 +8326,9 @@
       if (captionEl && captionEl.id === "ph-ttt-caption") {
         captionEl.hidden = true;
       } else if (captionEl) {
-        captionEl.textContent = "Historique indisponible";
+        // feature-203 : l'aveu contredisait la valeur affichee juste au-dessus
+        // (« Atteinte de la cible : en 1 h 52 ») : legende masquee, bande videe.
+        captionEl.hidden = true;
       }
       return;
     }
