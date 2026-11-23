@@ -325,6 +325,21 @@ jobs:
       - name: Contrôle des vecteurs d'état de filtration
         run: ./tools/check_filtration_state_vectors.sh
 
+  # feature-213 : le troisième état de capture, « Connexion… ». ⚠️ Ce job ne
+  # photographie RIEN — il n'a ni appareil ni navigateur. Il EXÉCUTE la pose que
+  # `tools/ui_shot_server.py` sert, et lance le vrai `ui_shot.sh` contre un faux
+  # appareil et un faux navigateur pour vérifier que l'option arrive jusqu'à la
+  # page. ⛔ Sans ce second volet, débrancher `-m` laissait tout le reste au vert.
+  mid-stub-vectors:
+    name: Vecteurs de l'état « Connexion… » (feature-213)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Contrôle de la pose « Connexion… » et de son câblage
+        run: ./tools/check_mid_stub_vectors.sh
+
   log-line-vectors:
     name: Vecteurs du rendu du journal (bug-179)
     runs-on: ubuntu-latest

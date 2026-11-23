@@ -16,12 +16,38 @@
 #   ./tools/ui_shot.sh -c lighting_mode=scheduled   # forcer un champ de /get-config
 #   ./tools/ui_shot.sh -k '#ph_cal_trigger_btn'     # cliquer avant la capture
 #   ./tools/ui_shot.sh -n                           # faux WebSocket : PAS de bandeau hors ligne
+#   ./tools/ui_shot.sh -m                           # fige l'ecran sur « Connexion… »
+#
+# ⭐ L'APPLICATION A TROIS ETATS DE LIAISON, ET CHACUN SE PHOTOGRAPHIE (feature-213) :
+#
+#   | option | ce que voit l'application              | en-tete        |
+#   |--------|----------------------------------------|----------------|
+#   |  -n    | un socket ouvert et silencieux         | « En ligne »   |
+#   | (rien) | aucun socket, la liaison a echoue      | « Deconnecte » |
+#   |  -m    | un socket EN COURS d'ouverture, et la  | « Connexion… » |
+#   |        | configuration deja lue avec succes     |                |
+#
+#   ⛔ -n et -m s'excluent : chacune pose un faux WebSocket, et les deux se
+#     contrediraient.
 #
 # ⚠️ SANS -n, l'application ne voit aucun socket s'ouvrir, affiche « Deconnecte »
 #    et REMPLACE les mesures pH/ORP/temperature par « - » (constate le 2026-11-18).
 #    ⇒ Toute capture du TABLEAU DE BORD destinee a un brief d'ergonomie se prend
 #      avec -n, sinon le sujet meme de la page est absent de l'image.
 #      L'ecran hors ligne, lui, se photographie SANS -n : c'est le defaut.
+#
+# ⚠️ -m EST L'ETAT QUE VOIT TOUT LE MONDE, a chaque ouverture de page -- et c'est
+#    celui ou un faux a vecu sans etre vu : l'en-tete y affirmait « Enregistrement
+#    impossible » alors que l'appareil venait de repondre (bug-196), et les
+#    pastilles y annoncaient « Hors ligne » au meme instant (bug-212). Les deux
+#    corrections ont du etre validees PAR LECTURE DE CODE, faute d'image.
+#    ⇒ Il est fige par CONSTRUCTION, pas par une minuterie : le faux socket reste
+#      en cours d'ouverture et n'emet jamais rien, et `/data` rend une promesse
+#      qui ne se resout JAMAIS (⛔ pas un echec : un echec basculerait l'ecran).
+#      Plus aucun chemin du code livre ne peut reecrire l'etat.
+#      ⇒ Deux executions donnent le MEME ecran.
+#    ⚠️ Les mesures y sont absentes : `/data` n'est pas arrive. C'est l'etat REEL
+#      de la premiere seconde, ⛔ pas un defaut de la capture.
 #
 # L'option -k photographie un ecran situe DERRIERE un bouton (sous-vue ouverte
 # par JavaScript, panneau repliable, modale). Sans elle, ces ecrans etaient
@@ -59,8 +85,9 @@ declare -a FORCE=()
 declare -a FORCE_CFG=()
 declare -a CLICKS=()
 WS_STUB=0
+MID_STUB=0
 
-while getopts "w:h:r:p:o:f:c:k:n" opt; do
+while getopts "w:h:r:p:o:f:c:k:nm" opt; do
   case "$opt" in
     w) WIDTH="$OPTARG" ;;
     h) HEIGHT="$OPTARG" ;;
@@ -71,9 +98,22 @@ while getopts "w:h:r:p:o:f:c:k:n" opt; do
     c) FORCE_CFG+=("$OPTARG") ;;
     k) CLICKS+=("$OPTARG") ;;
     n) WS_STUB=1 ;;
+    m) MID_STUB=1 ;;
     *) grep '^#' "$0" | sed 's/^# \?//' >&2; exit 2 ;;
   esac
 done
+
+# ⛔ Exclusion mutuelle -n / -m : chacune remplace window.WebSocket, et les deux
+# poses se contredisent (l'une ouvre le socket, l'autre le laisse en cours
+# d'ouverture). Tranche AVANT toute lecture de l'appareil : un refus doit couter
+# zero requete et zero seconde.
+if [[ "$WS_STUB" == 1 && "$MID_STUB" == 1 ]]; then
+  echo "ERREUR : -n et -m s'excluent." >&2
+  echo "  -n  = socket ouvert et silencieux   -> « En ligne »" >&2
+  echo "  -m  = socket en cours d'ouverture   -> « Connexion… »" >&2
+  echo "  Choisissez l'etat a photographier, ou lancez deux captures." >&2
+  exit 2
+fi
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="${OUT:-$REPO/ui-shot-${WIDTH}px.png}"
@@ -178,7 +218,9 @@ for k in "${CLICKS[@]:-}"; do
 done
 export UI_SHOT_CLICK
 export UI_SHOT_WS="$WS_STUB"
+export UI_SHOT_MID="$MID_STUB"
 [[ "$WS_STUB" == 1 ]] && echo "   faux WebSocket : l'application se croit connectee"
+[[ "$MID_STUB" == 1 ]] && echo "   etat fige : « Connexion… » (socket en cours, /data sans reponse)"
 python3 "$REPO/tools/ui_shot_server.py" "$PORT" "$REPO/data" "$TMP/api" &
 SRV=$!
 for _ in $(seq 1 40); do

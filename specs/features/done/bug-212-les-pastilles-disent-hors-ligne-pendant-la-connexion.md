@@ -6,7 +6,7 @@
 - **Priorité** : normale
 - **Version cible** : 3.1.3
 - **Dernière mise à jour** : 2026-11-22
-- **Spec(s) liée(s)** : [bug-196](../done/bug-196-le-bandeau-hors-ligne-passe-sous-le-bouton-menu.md) (origine du constat), [feature-195](../done/feature-195-langage-visuel-du-tableau-de-bord.md) (auteur des pastilles), [feature-213](../todo/feature-213-photographier-l-etat-connexion-en-cours.md) (rend l'état vérifiable à l'image)
+- **Spec(s) liée(s)** : [bug-196](../done/bug-196-le-bandeau-hors-ligne-passe-sous-le-bouton-menu.md) (origine du constat), [feature-195](../done/feature-195-langage-visuel-du-tableau-de-bord.md) (auteur des pastilles), [feature-213](../done/feature-213-photographier-l-etat-connexion-en-cours.md) (rend l'état vérifiable à l'image)
 
 ## Domaines touchés
 - [x] Frontend (`data/`)
@@ -110,7 +110,7 @@ disent pendant `mid`**, et c'est le vrai sujet de la fiche :
 - [~] D1 — Captures 390 px : **perte réelle ✅** et **état normal ✅**
       (`apres_perte_390.png`, `apres_normal_390.png`, regardées). ⛔ **Première ouverture et
       creux réseau : IMPOSSIBLES à photographier** — ils vivent dans l'état « Connexion… », que
-      `ui_shot.sh` ne sait pas figer ([feature-213](../todo/feature-213-photographier-l-etat-connexion-en-cours.md)).
+      `ui_shot.sh` ne sait pas figer ([feature-213](../done/feature-213-photographier-l-etat-connexion-en-cours.md)).
       ⇒ Vérifiés par **vecteurs** et par **lecture**, ⛔ pas à l'image. ⚠️ Écrit tel quel :
       c'est précisément cet angle mort qui a laissé vivre le défaut.
 - [x] D2 — Vecteurs sur la fonction de décision du libellé, si elle devient extractible (ADR-0099)
@@ -177,7 +177,7 @@ Chacune seule, source restaurée et **prouvée identique** (`cmp`).
 ## ⭐ « Connexion… » n'est pas photographiable, mais il est EXÉCUTABLE
 
 ⚠️ Constat le plus utile du lot. `ui_shot.sh` ne sait produire que `ok` et `bad`
-([feature-213](../todo/feature-213-photographier-l-etat-connexion-en-cours.md) existe pour ça).
+([feature-213](../done/feature-213-photographier-l-etat-connexion-en-cours.md) existe pour ça).
 ⇒ Les vecteurs **figent `mid` en CI pour toujours** — ce qu'une capture ne ferait **pas**.
 **feature-213 reste utile pour l'œil, elle n'est plus nécessaire comme preuve.**
 
@@ -206,7 +206,7 @@ Chacune seule, source restaurée et **prouvée identique** (`cmp`).
 ## Plan de test manuel
 1. Ouvrir l'application et **regarder la première seconde** : en-tête et pastilles doivent dire
    la même chose. ⚠️ C'est l'état `mid`, ⛔ **non photographiable** aujourd'hui — voir
-   [feature-213](../todo/feature-213-photographier-l-etat-connexion-en-cours.md).
+   [feature-213](../done/feature-213-photographier-l-etat-connexion-en-cours.md).
 2. Couper le réseau et attendre la perte réelle : « Hors ligne » doit revenir, inchangé.
 3. Rétablir : retour à l'état normal sans état intermédiaire mensonger.
 4. Rejouer à 320 px et 1024 px.

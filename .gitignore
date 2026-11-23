@@ -113,3 +113,10 @@ docs/user/*.pdf
 # et le journal) sans qu'aucun ne fasse autorité. Le code et la configuration du
 # centre de contrôle, eux, restent versionnés.
 control-center/var/
+
+# Captures de ./tools/ui_shot.sh — par defaut elles atterrissent A LA RACINE du
+# depot (ui-shot-<largeur>px.png). ⚠️ Elles montrent l'interface avec les DONNEES
+# REELLES du bassin, recopiees depuis l'appareil : un `git add -A` les
+# emporterait sans que personne ne le voie. Les captures destinees a une revue
+# vont dans un dossier temporaire, et se joignent au brief par leur chemin.
+ui-shot-*.png

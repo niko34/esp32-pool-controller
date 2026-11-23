@@ -14,7 +14,14 @@
 ### Documentation
 - `docs/DESIGN_SYSTEM.md` §5.28 complété : les pastilles lisent `.app--disconnected`, jamais `.app--offline` ; règle « dernier état connu pendant Connexion… » ; vérification pour toute nouvelle surface lisant l'état de connexion.
 - `docs/features/page-dashboard.md` : langage des pastilles pendant la connexion. `docs/user/src/guide-utilisation.html` : phrase ajoutée (PDF non régénérés).
-- `specs/features/todo/feature-213-…` : bug-212 inscrit comme premier client (vérifié sans image).
+- `specs/features/done/feature-213-…` : bug-212 inscrit comme premier client (vérifié sans image).
+
+### Outillage — ⛔ aucun changement dans l'appareil
+- **`./tools/ui_shot.sh -m` photographie le troisième état de liaison, « Connexion… » (feature-213).** L'outil savait montrer « En ligne » (`-n`) et « Déconnecté » (par défaut) ; ⛔ l'état **intermédiaire**, celui que voit tout le monde à chaque ouverture de page, n'était pas capturable. C'est précisément là que les deux faux corrigés en 3.1.2 et 3.1.3 avaient vécu sans être vus, et leurs corrections ont dû être validées **par lecture de code**. ⛔ Aucun fichier de `data/` ni de `src/` n'est modifié : l'outil photographie l'application **telle qu'elle est livrée**.
+- ⭐ **L'état est figé par construction, pas par une temporisation** : le faux socket reste en cours d'ouverture et n'émet jamais rien, et `/data` rend une promesse qui ne se résout **jamais** (⛔ pas un échec — un échec ferait basculer l'écran). `/get-config` répond normalement : c'est lui qui prouve que l'appareil est joignable. ⇒ Deux exécutions donnent le même écran, à la phase de l'animation de la pastille près (8×8 px, ⚠️ déjà vrai de `-n` — mesuré).
+- **`-n` et `-m` se refusent ensemble** (code de sortie `2`), avant toute lecture de l'appareil.
+- Nouvelle garde CI : `./tools/check_mid_stub_vectors.sh`. ⚠️ Elle ne photographie rien — elle **exécute** la pose, puis lance le vrai `ui_shot.sh` contre un faux appareil et un faux navigateur pour vérifier que l'option arrive jusqu'à la page. ⛔ Sans ce second volet, débrancher l'option laissait tout le reste au vert. Ni appareil, ni navigateur, ni compilation.
+- `.gitignore` : les captures déposées par défaut **à la racine du dépôt** (`ui-shot-*.png`) sont ignorées — elles montrent l'interface avec les données réelles du bassin, et un `git add -A` les emportait.
 
 ---
 

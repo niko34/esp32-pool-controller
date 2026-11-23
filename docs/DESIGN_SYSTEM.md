@@ -1009,7 +1009,52 @@ le rendu au lieu de le déduire d'une feuille de style.
 ./tools/ui_shot.sh -f cal_switch_active=true    # forcer un état rare
 ./tools/ui_shot.sh -k '#ph_cal_trigger_btn'      # cliquer avant la capture (v2.82.0)
 ./tools/ui_shot.sh -n                           # faux WebSocket : PAS de bandeau hors ligne (v2.96.0)
+./tools/ui_shot.sh -m                           # fige l'écran sur « Connexion… » (2026-11-23)
 ```
+
+### Les TROIS états de liaison, et comment les photographier
+
+`setNetStatus(state, text)` (`data/app.js`) est le **seul** écrivain de l'état de liaison, et il
+en connaît **trois**. L'outil n'en photographiait que deux jusqu'au 2026-11-23.
+
+| option | ce que voit l'application | en-tête | classes posées sur `.app` |
+|---|---|---|---|
+| `-n` | un socket **ouvert et silencieux** | « En ligne » | *(aucune)* |
+| *(aucune)* | **aucun socket**, la liaison a échoué | « Déconnecté » | `app--offline` **+** `app--disconnected` |
+| `-m` | un socket **en cours d'ouverture**, configuration déjà lue | « Connexion… » | `app--offline` **seule** |
+
+⛔ **`-n` et `-m` s'excluent** : chacune pose un faux WebSocket, et les deux se contrediraient.
+L'outil refuse la combinaison avec le code de sortie `2`, **avant** toute lecture de l'appareil.
+
+⚠️ **`-m` (feature-213) — l'état que voit TOUT LE MONDE, et celui où personne ne regardait.**
+Il s'affiche à chaque ouverture de page, posé **juste après un `loadConfig()` réussi**. Deux faux
+y ont vécu sans être vus, précisément parce qu'aucune image n'existait : l'en-tête y affirmait
+« Enregistrement impossible » alors que l'appareil venait de répondre
+([bug-196](../specs/features/done/bug-196-le-bandeau-hors-ligne-passe-sous-le-bouton-menu.md)), et
+les pastilles y annonçaient « Hors ligne » au même instant
+([bug-212](../specs/features/done/bug-212-les-pastilles-disent-hors-ligne-pendant-la-connexion.md)).
+⛔ **Les deux corrections ont dû être validées par lecture de code.**
+
+⭐ **Il est figé par CONSTRUCTION, pas par une minuterie.** Le faux socket reste en cours
+d'ouverture et n'émet **jamais** d'événement ; `/data` rend une promesse qui ne se résout
+**jamais** — ⛔ pas un échec, car un échec basculerait l'écran (« Connexion lente » au premier,
+« Hors ligne » au second). `/get-config`, lui, répond **normalement** : c'est lui qui prouve que
+l'appareil est joignable, et c'est tout le sens de cet état. ⇒ Plus aucun chemin du code livré ne
+peut réécrire l'état.
+
+⚠️ **Les mesures pH/ORP/température y sont absentes** (« -- ») : `/data` n'est pas arrivé. ⛔ Ce
+n'est pas un défaut de la capture — c'est l'écran **réel** de la première seconde.
+
+⚠️ **Déterminisme, mesuré le 2026-11-23** : deux exécutions donnent le même écran **à 8×8 px
+près** — la pastille d'état porte une animation `pulse` **infinie** (`app.css`), et sa phase
+diffère d'un lancement à l'autre. ⛔ Ce n'est pas propre à `-m` : `-n` présente **exactement** la
+même zone de différence, au même endroit. ⇒ Comparer deux captures **en ignorant la pastille**.
+
+⚠️ **Ce que la capture ne prouve pas, et réciproquement.** L'état `mid` n'est pas photographiable
+sur l'appareil réel (il dure moins d'une seconde) mais il est **exécutable** : les vecteurs de
+`tools/check_mid_stub_vectors.sh` le figent en intégration continue — sans appareil, sans
+navigateur, sans prendre la ressource exclusive de compilation. ⇒ **La capture est pour l'œil,
+les vecteurs sont la preuve.** Aucun des deux ne remplace l'autre.
 
 ⚠️ **`-k SELECTEUR` (v2.82.0)** : clique sur l'élément désigné **avant** la capture — indispensable pour
 photographier un écran situé **derrière un bouton** (sous-vue ouverte par JavaScript, panneau
