@@ -115,7 +115,57 @@ eq(live.state(cfg, { filtration_running: true }, false).text, "Arrêtée", "over
 eq(live.state(cfg, { filtration_running: true }, false).running, false, "override=false => running false");
 eq(live.state(cfg, { filtration_running: false }, true).text, "En marche", "override=true AVEC filtration_running=false => En marche");
 eq(live.state(cfg, { filtration_running: false }, true).running, true, "override=true => running true");
-eq(live.state(cfg, undefined, null).text, "Arrêtée", "data absente, config présente : Arrêtée");
+// bug-212 : aucune donnée jamais reçue + pas d'override => on ne sait pas encore.
+for (const absente of [undefined, null]) {
+  eq(live.state(cfg, absente, null).text, "Chargement…", "data absente + override nul : Chargement, JAMAIS Arrêtée");
+  eq(live.state(cfg, absente, null).pillClass, "", "data absente : pastille neutre");
+  eq(live.state(cfg, absente, null).running, false, "data absente : running false");
+  eq(live.state(cfg, absente, true).text, "En marche", "data absente + override true : l'override gagne");
+  eq(live.state(cfg, absente, false).text, "Arrêtée", "data absente + override false : l'override gagne aussi");
+}
+eq(live.state(cfg, {}, null).text, "Arrêtée", "data présente SANS filtration_running : Arrêtée (inchangé)");
+
+// ⭐ SENTINELLE D'APPELANT (bug-212), COMPORTEMENTALE. Le harnais extrait
+// `getFiltrationState` par ancre : il ne voit pas son appelant. Or `|| {}` dans
+// `updateFiltrationBadges()` ferait passer `{}` au lieu d'une absence, la branche
+// « Chargement… » ne serait plus jamais prise, et AUCUN vecteur ci-dessus ne
+// mourrait. ⛔ Un contrôle LEXICAL ne tient pas (`?? {}`, ternaire, variable
+// intermédiaire, `Object.assign({}, …)`… tous contournent) : on EXÉCUTE donc
+// l'appelant livré, avec un ESPION à la place de getFiltrationState, et on
+// regarde ce qu'il reçoit quand /data n'est jamais arrivé (latestSensorData = null).
+// ⚠️ Les commentaires et chaînes sont ignorés par l'extraction (js_extract).
+const badges = grab("function updateFiltrationBadges() {");
+const espionne = (donnee) => {
+  const recus = [];
+  new Function("recus", "donnee", `
+    "use strict";
+    const window = { _config: { filtration_mode: "auto" } };
+    let latestSensorData = donnee;
+    const $ = () => null;
+    const dashFiltrationTone = () => "off";
+    const setDashPill = () => {};
+    const renderFiltrationFace = () => {};
+    const renderColdWaterNotice = () => {};
+    const updateFiltrationModeButtons = () => {};
+    function getFiltrationState(config, data) {
+      recus.push(data);
+      return { text: "", pillClass: "", running: false };
+    }
+    ${badges}
+    updateFiltrationBadges();
+  `)(recus, donnee);
+  return recus;
+};
+{
+  const r = espionne(null);
+  eq(r.length, 1, "updateFiltrationBadges appelle getFiltrationState exactement une fois");
+  ok(r[0] === null || r[0] === undefined,
+    `l'appelant masque l'absence de données : reçu ${JSON.stringify(r[0])} — passer latestSensorData TEL QUEL`);
+  // Témoin : une donnée réelle traverse inchangée (même référence).
+  const reelle = { filtration_running: true };
+  const r2 = espionne(reelle);
+  ok(r2.length === 1 && r2[0] === reelle, "une donnée présente est transmise telle quelle");
+}
 
 // Interdiction de vocabulaire : aucun texte rendu ne promet de protection.
 const interdits = /hors gel|anti-?gel|protection|pause/i;

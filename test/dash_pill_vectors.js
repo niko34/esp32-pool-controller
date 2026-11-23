@@ -188,4 +188,108 @@ ok(live._doseSuspendOutranksMixing(8) === false, "8 ne prime pas");
   ok(live._doseSuspendDurationText(86400) === "Arrêt depuis plus de 24 h", "plafond 24 h");
 }
 
+// ---- bug-212 : la PORTE hors ligne de setDashPill ---------------------------
+// setDashPill() est l'écrivain UNIQUE des pastilles. Il doit lire
+// isAppDisconnected() (perte CONSTATÉE, classe `app--disconnected`) et ⛔ PAS
+// isAppOffline() : celle-ci couvre aussi « Connexion… » (`mid`), posé juste
+// APRÈS une config lue avec succès — annoncer « Hors ligne » y est faux.
+// On exécute le setDashPill LIVRÉ (extrait par ancre) contre un `document` feint
+// à trois jeux de classes. ⭐ Le vecteur central est la ligne `mid` : remettre
+// isAppOffline() dans setDashPill la fait mourir.
+// ℹ️ ui_shot.sh ne produit que `ok` et `bad` ; « Connexion… » n'est pas
+// photographiable (feature-213). Mais il est EXÉCUTABLE : ce vecteur le fige en
+// CI, ce qu'une capture ne ferait pas.
+{
+  const gateOff = grab("function isAppOffline() {", "{", "}");
+  const gateDis = grab("function isAppDisconnected() {", "{", "}");
+  const setPill = grab("function setDashPill(id, text, tone, keepTextOffline) {", "{", "}");
+  const ecrire = (classes, keep) => {
+    const el = { textContent: "initial", dataset: {} };
+    // Seul `.app.app--xxx` est simulé : présent ssi la classe demandée est dans le jeu.
+    const doc = { querySelector: (sel) => {
+      const m = sel.match(/^\.app\.(app--[a-z]+)$/);
+      if (!m) return el;
+      return classes.includes(m[1]) ? {} : null;
+    } };
+    new Function("document", "el", `
+      "use strict";
+      const $ = (sel) => document.querySelector(sel);
+      ${gateOff}
+      ${gateDis}
+      ${setPill}
+      setDashPill("x", "En marche", "ok", ${keep});
+    `)(doc, el);
+    return { text: el.textContent, tone: el.dataset.tone };
+  };
+  const etats = [
+    // [nom, classes, attendu sans keepText, attendu avec keepText]
+    ["ok", [], { text: "En marche", tone: "ok" }, { text: "En marche", tone: "ok" }],
+    ["mid (Connexion…)", ["app--offline"], { text: "En marche", tone: "ok" }, { text: "En marche", tone: "ok" }],
+    ["bad (perte constatée)", ["app--offline", "app--disconnected"],
+      { text: "Hors ligne", tone: "off" }, { text: "En marche", tone: "off" }],
+  ];
+  for (const [nom, classes, sans, avec] of etats) {
+    const a = ecrire(classes, false), b = ecrire(classes, true);
+    ok(a.text === sans.text && a.tone === sans.tone,
+      `état ${nom}, sans keepTextOffline : attendu ${JSON.stringify(sans)}, reçu ${JSON.stringify(a)}`);
+    ok(b.text === avec.text && b.tone === avec.tone,
+      `état ${nom}, avec keepTextOffline : attendu ${JSON.stringify(avec)}, reçu ${JSON.stringify(b)}`);
+  }
+  // Jamais « Hors ligne » tant que la perte n'est pas constatée.
+  ok(ecrire(["app--offline"], false).text !== "Hors ligne", "mid : JAMAIS « Hors ligne »");
+}
+
+// ---- bug-212 : la POSE des classes par setNetStatus --------------------------
+// Moitié manquante de l'invariant : ci-dessus on vérifie la LECTURE de
+// `app--disconnected` ; ici on exécute le setNetStatus() LIVRÉ (extrait par
+// ancre) avec un faux `.app` dont classList est un vrai ensemble, pour que
+// `state !== "ok"` à la place de `=== "bad"` (retour exact de bug-212) fasse
+// poser `app--disconnected` sur `mid` et MEURE. On part de chaque état
+// initial possible (aucune classe / les deux) : une classe jamais retirée meurt aussi.
+// ⚠️ `app--offline` DOIT rester posée sur `mid` : c'est le verrou des commandes
+// pendant « Connexion… » — le déverrouiller serait un défaut de sécurité d'usage.
+//
+// LIMITES CONNUES (volontaires — les couvrir redeviendrait lexical) :
+//  - un SECOND appelant de getFiltrationState ajouté ailleurs n'est pas vu
+//    (seul updateFiltrationBadges est exécuté) ;
+//  - un AUTRE écrivain de pastille, contournant setDashPill, n'est pas vu ;
+//  - setNetStatus est supposé le SEUL écrivain de `app--disconnected` : un autre
+//    écrivain ne serait pas détecté.
+{
+  const setNet = grab("function setNetStatus(state, text) {", "{", "}");
+  const poser = (etat, initiales) => {
+    const set = new Set(initiales);
+    const appEl = { classList: {
+      add: (...c) => c.forEach((x) => set.add(x)),
+      remove: (...c) => c.forEach((x) => set.delete(x)),
+      toggle: (c, force) => { const v = force === undefined ? !set.has(c) : !!force; v ? set.add(c) : set.delete(c); return v; },
+      contains: (c) => set.has(c),
+    } };
+    const neutre = { classList: { add() {}, remove() {} }, textContent: "" };
+    new Function("document", "neutre", "appEl", `
+      "use strict";
+      const $ = () => neutre;
+      const refreshDashPills = () => {};
+      ${setNet}
+      setNetStatus(${JSON.stringify(etat)}, "t");
+    `)({ querySelector: (sel) => (sel === ".app" ? appEl : null) }, neutre, appEl);
+    return { offline: set.has("app--offline"), disconnected: set.has("app--disconnected") };
+  };
+  const attendu = {
+    ok:  { offline: false, disconnected: false },
+    mid: { offline: true,  disconnected: false },
+    bad: { offline: true,  disconnected: true },
+  };
+  for (const initiales of [[], ["app--offline", "app--disconnected"], ["app--offline"]]) {
+    for (const etat of ["ok", "mid", "bad"]) {
+      const r = poser(etat, initiales);
+      const a = attendu[etat];
+      ok(r.offline === a.offline && r.disconnected === a.disconnected,
+        `setNetStatus("${etat}") depuis [${initiales}] : attendu ${JSON.stringify(a)}, reçu ${JSON.stringify(r)}`);
+    }
+  }
+  ok(poser("mid", []).disconnected === false, "mid ne pose JAMAIS app--disconnected");
+  ok(poser("mid", []).offline === true, "mid garde app--offline (verrou des commandes)");
+}
+
 console.log(`dash_pill_vectors : ${n} vérifications OK`);

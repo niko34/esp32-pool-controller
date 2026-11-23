@@ -2,6 +2,22 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [3.1.3] - 2026-11-22
+
+### Fonctionnalités
+- **Les pastilles du tableau de bord n'annoncent plus « Hors ligne » alors que l'appareil répond (bug-212).** À l'ouverture d'une page, et après un simple creux réseau, l'application affiche brièvement « Connexion… ». Pendant ce temps, les pastilles **Filtration**, **Éclairage** et **Température** affichaient « Hors ligne » — alors que cet état est posé **juste après une lecture réussie de la configuration** : l'appareil venait de répondre. Les cartes contredisaient la barre de titre, sur le même écran, au même instant. Les pastilles ne disent « Hors ligne » que sur une connexion **réellement perdue** (même règle que l'en-tête depuis 3.1.2).
+- **La carte Filtration affiche « Chargement… » tant qu'aucune donnée n'est arrivée.** Jusqu'ici « Hors ligne » masquait ce que la carte aurait dit ; le retirer sans autre précaution aurait fait afficher « Arrêtée » — une affirmation sur une pompe que personne n'a observée, et qui, en mode forcé, aurait contredit le titre de la carte. « Chargement… » dit seulement le vrai : on ne sait pas encore. Ce n'est pas un texte neuf (la même fonction le rend déjà quand la configuration manque, et la carte Température fait pareil). Pas de clignotement : la donnée n'est jamais remise à zéro une fois reçue, donc ce texte n'apparaît qu'à la **toute première** ouverture.
+- ⛔ **Rien d'autre ne change** : en perte réelle, « Hors ligne » s'affiche comme avant ; le verrouillage des commandes est inchangé ; aucun libellé, couleur, CSS ou HTML nouveau. La note du guide de pompe (perte réseau pendant une injection manuelle) garde sa lecture de l'état : elle rassure pendant qu'une pompe tourne, enjeu distinct.
+- ⚠️ **Envoi firmware ET interface** (`data/app.js` + `src/version.h`).
+- ⓘ **Reste ouvert, non traité ici** (relève de feature-195) : en perte réelle, le même fait est annoncé **trois fois** (en-tête, bandeau, pastilles) ; et les cartes pH/ORP ne se distinguent de l'état normal que par la **teinte d'une pastille** — angle mort pour le daltonisme.
+
+### Documentation
+- `docs/DESIGN_SYSTEM.md` §5.28 complété : les pastilles lisent `.app--disconnected`, jamais `.app--offline` ; règle « dernier état connu pendant Connexion… » ; vérification pour toute nouvelle surface lisant l'état de connexion.
+- `docs/features/page-dashboard.md` : langage des pastilles pendant la connexion. `docs/user/src/guide-utilisation.html` : phrase ajoutée (PDF non régénérés).
+- `specs/features/todo/feature-213-…` : bug-212 inscrit comme premier client (vérifié sans image).
+
+---
+
 ## [3.1.2] - 2026-11-22
 
 ### Fonctionnalités

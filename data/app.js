@@ -4052,13 +4052,20 @@
     return !!document.querySelector(".app.app--offline");
   }
 
+  // bug-212 : perte CONSTATÉE (`bad`) seule. ⚠️ Les pastilles ne testent PAS
+  // `isAppOffline()` : elle couvre aussi « Connexion… » (`mid`), posé juste
+  // APRÈS une config lue avec succès — annoncer « Hors ligne » y serait faux.
+  function isAppDisconnected() {
+    return !!document.querySelector(".app.app--disconnected");
+  }
+
   // ÉCRIVAIN UNIQUE des pastilles. Hors ligne : puce grise ; le texte devient
   // « Hors ligne » sauf pH/ORP (keepTextOffline) qui GARDENT « Mode … » — texte
   // gaté C5, la mesure « – » dit déjà que la carte n'est pas fraîche.
   function setDashPill(id, text, tone, keepTextOffline) {
     const el = $(`#${id}`);
     if (!el) return;
-    if (isAppOffline()) {
+    if (isAppDisconnected()) {
       tone = "off";
       if (!keepTextOffline) text = "Hors ligne";
     }
@@ -6066,7 +6073,7 @@
 
   function updateFiltrationBadges() {
     const config = window._config || {};
-    const state = getFiltrationState(config, latestSensorData || {});
+    const state = getFiltrationState(config, latestSensorData);
 
     // Revue coordinateur 2026-10-09 : le mode dit ce qui est DEMANDÉ, l'état
     // dit ce que la pompe FAIT — les deux divergent légitimement (ex. Auto
@@ -6142,6 +6149,11 @@
     const isRunning = filtrationRunningOverride !== null ? filtrationRunningOverride : (data && data.filtration_running);
 
     if (!config) return { text: 'Chargement…', pillClass: '', running: false };
+
+    // bug-212 : ni override ni /data jamais reçu ⇒ « Arrêtée » serait une
+    // AFFIRMATION sur une pompe que personne n'a observée. (Override d'abord :
+    // posé, l'état est connu.)
+    if (filtrationRunningOverride === null && !data) return { text: 'Chargement…', pillClass: '', running: false };
 
     // « Arrêtée » est un état NORMAL (Auto : chaque nuit) => pastille neutre,
     // jamais rouge. Le froid n'est PAS dit ici : voir coldWaterState() (bug-197).
