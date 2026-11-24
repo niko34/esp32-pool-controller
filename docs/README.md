@@ -156,6 +156,7 @@ docs/
 ├── MQTT.md              ← Topics MQTT + auto-discovery Home Assistant
 ├── BUILD.md             ← Build firmware + filesystem
 ├── UPDATE_GUIDE.md      ← Procédure OTA
+├── FABRICATION.md       ← Contraintes de fabrication des cartes (nettoyage, humidité, contrôle à réception)
 │
 ├── tests-automatises.md    ← ce qui se vérifie SANS matériel (et ⛔ ce que ça ne prouve pas)
 ├── test-on-target.md       ← check-list fonctionnelle sur l'appareil

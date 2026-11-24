@@ -63,7 +63,7 @@ module externe (`J11`), une seule barrière d'isolation partagée par les deux v
 |---|---|---|---|
 | D1 | **Une barrière d'isolation PAR VOIE** (pH et ORP séparés), sans condition | 2026-11-24 | utilisateur — *« ça ne coûtera pas tellement plus cher »* |
 | D2 | **Modules OEM, en I2C** — ⛔ pas d'UART | 2026-11-24 | étude ci-dessous |
-| D3 | **Un bus I2C par voie** (l'ESP32 en a deux) | 2026-11-24 | étude ci-dessous |
+| D3 | **Deux bus I2C en sortie de la carte de mesure, réunis en UN SEUL sur la carte principale.** La carte de mesure garde ses huit voies ; la carte principale relie `SDA_PH`↔`SDA_ORP` et `SCL_PH`↔`SCL_ORP`. ⇒ Un seul bus pour l'ESP32 (comme le v2, horloge comprise), et séparer les voies plus tard ne touche **que** la carte principale. ⚠️ Aucun effet attendu sur le bruit de mesure : le bus est du côté ESP32 de la barrière. ⚠️ Conséquence assumée : une voie qui bloque le bus fait perdre les deux mesures | 2026-11-24 | utilisateur, sur conseil |
 | D4 | **Mean Well RPS-30-12 conservée** tant que la partie B n'a pas mesuré mieux | 2026-11-23 | utilisateur |
 | D5 | **Isolation telle que préconisée par Atlas** : un **ADM3260** par voie, schéma publié | 2026-11-24 | utilisateur |
 | D6 | **Module ORP en version OEM** lui aussi | 2026-11-24 | utilisateur |
@@ -107,12 +107,16 @@ quitte jamais la carte de mesure** : quelques millimètres entre la prise de son
 - **Connecteur à détrompeur et à maintien, pas de 2,5 mm**, de la famille JST XH : répandu,
   câbles tout faits disponibles. ⚠️ Référence exacte à confirmer avec V1 (catalogue JLCPCB).
 - **Huit voies** : `+5V` · `+3V3` · `GND` · `GND` · `SDA_PH` · `SCL_PH` · `SDA_ORP` · `SCL_ORP`.
-  ⚠️ **Proposition, à confirmer sur la documentation de l'ADM3260** : son convertisseur
-  s'alimente mieux en 5 V alors que les données de l'ESP32 sont en 3,3 V — d'où deux
-  tensions. ⛔ Ne pas figer le brochage avant cette lecture.
+  ✅ **Confirmé sur la documentation de l'ADM3260** (2026-11-24) : convertisseur en 5 V,
+  données en 3,3 V, sur deux broches distinctes. ⚠️ Six voies suffiraient avec un seul bus,
+  mais **les huit sont conservées** (D3) : c'est la carte principale qui réunit les deux bus,
+  pas la carte de mesure.
 - **Les résistances de rappel du côté non isolé sont sur la carte de MESURE**, autour de
   l'ADM3260 comme dans le schéma d'Atlas. ⇒ La carte de mesure est complète à elle seule ;
   la carte principale n'en pose aucune sur ces deux bus.
+  ⚠️ **Bus réunis (D3) : les rappels des deux voies se retrouvent en parallèle.** Avec
+  4,7 kΩ par voie (schéma d'Atlas), cela fait 2,35 kΩ, soit 1,4 mA sous 3,3 V — sous la
+  limite I2C de 3 mA. ⚠️ À recalculer avec les rappels de l'horloge si elle en porte.
 
 ⚠️ **Risques propres à cette liaison** (examinés le 2026-11-24) :
 - **Les connecteurs** en local de piscine, humide et chloré : un point de panne de plus sur
@@ -185,6 +189,10 @@ l'électrode fausse donc la mesure. Trois voies :
   est un sujet distinct et réel. ⛔ Hors de ce que cette fiche sait démontrer — à instruire
   avec un laboratoire.
 
+⭐ **Les contraintes de fabrication et le contrôle à la réception vivent dans
+[`docs/FABRICATION.md`](../../../docs/FABRICATION.md)**, document de référence tenu en continu — ⛔ pas
+dans cette fiche, qui se fermera un jour.
+
 ## Étude du 2026-11-24 — UART ou I2C entre les modules Atlas et l'ESP32
 
 **Question posée** : passer en UART pour réduire le prix (mineur) et pour simplifier et
@@ -215,6 +223,8 @@ de toute façon une alimentation isolée par voie.
 Un bus par voie ⇒ les deux isolateurs ne sont **jamais en parallèle sur un même bus**, donc
 aucun risque qu'ils se renvoient mutuellement leur état bas. Aucune ligne n'est partagée
 entre les voies, exactement comme en UART.
+⚠️ **Dépassé le même jour** : la documentation de l'ADM3260 écarte ce risque, et D3 réunit
+finalement les deux bus sur la carte principale. Ce paragraphe reste comme trace de l'étude.
 
 ⭐ **Atlas publie son schéma d'isolation pour l'OEM**, autour d'un seul composant,
 l'**ADM3260** : il isole les données **et** fournit l'alimentation isolée (150 mW
@@ -249,6 +259,57 @@ mêmes valeurs. Seuls changent le module posé et le bus auquel il est relié.
 - ⚠️ *« Placing the OEM circuits onto their own board is strongly recommended »*, avec *« its
   own power regulator »*. ⇒ **Atlas recommande une carte de mesure séparée.** Voir V10.
 
+## L'isolateur ADM3260 — ce que dit sa documentation
+
+Lue le 2026-11-24, **révision C** (copie hébergée par un revendeur : le site du fabricant
+était inaccessible ; ⚠️ une révision G existe, à relire avant de figer le schéma).
+
+| Point | Valeur | Conséquence |
+|---|---|---|
+| Alimentation du convertisseur (`VIN`) | 3,0 à 5,5 V | broche **distincte** de celle des données |
+| Alimentation des données côté ESP32 (`VDDP`) | 3,0 à 5,5 V | en **3,3 V** ⇒ niveaux compatibles avec l'ESP32 |
+| Puissance isolée | **150 mW** depuis 5 V · **66 mW** depuis 3,3 V | le module OEM et le côté isolé de l'isolateur demandent ~25 mW : les deux suffisent, le 5 V laisse de la marge |
+| Sortie isolée | réglable de 3,15 à 5,25 V, **au plus 20 % au-dessus de `VIN`** | 3,9 V depuis 3,3 V est à la limite (3,96 V) ⇒ **alimenter `VIN` en 5 V** |
+| Capacité entre les deux côtés | ⭐ **2,2 pF** (composant entier) | voir ci-dessous |
+| Tenue d'isolation | 2 500 V efficaces, 1 minute | |
+| Fréquence du convertisseur | **125 MHz** | source de rayonnement, voir V16 |
+| Côté ESP32 (« côté 2 ») | niveaux I2C normaux, jusqu'à 400 pF | ⭐ *« multiple ADM3260 devices connected to a bus by their Side 2 pins communicate with each other »* |
+| Côté module (« côté 1 ») | niveau bas entre 0,6 et 0,9 V, **40 pF au plus** | pistes **courtes** entre l'isolateur et le module |
+| Boîtier | SSOP 20 broches | pose automatique sans difficulté |
+| Découplage | 0,1 µF + 10 µF sur `VIN` et sur la sortie, **à moins de 2 mm** | règle de placement ferme |
+
+**Trois enseignements :**
+
+1. ✅ **Le brochage à huit voies du câble est confirmé** : 5 V pour le convertisseur, 3,3 V
+   pour les données.
+2. ⚠️ **Correction de la raison de D3.** Le fabricant écrit que plusieurs ADM3260 peuvent
+   partager un bus du côté ESP32. ⇒ Le risque de blocage mutuel que D3 voulait écarter
+   **n'existe pas avec ce composant** : un seul bus fonctionnerait (adresses 0x65 et 0x66),
+   avec deux fils de moins. **D3 reste recommandée pour une autre raison** : avec un bus par
+   voie, une voie en panne ne bloque pas l'autre. ✅ **Arbitré le 2026-11-24** (D3) : deux
+   bus en sortie de la carte de mesure, réunis en un seul sur la carte principale.
+3. ⭐ **La capacité de barrière chute fortement.** Le convertisseur isolé du v2 (TMA-0505S)
+   annonce **60 pF typique, 100 pF au plus** ; l'ADM3260 annonce **2,2 pF**. Or la partie B
+   suppose que le bruit passe par deux capacités en série, celle de l'alimentation puis celle
+   de la barrière. ⇒ **Hypothèse à éprouver, ⛔ pas une promesse** : une barrière près de
+   trente fois plus faible devrait laisser passer moins de courant parasite. ⚠️ Le cuivre de
+   la carte ajoute sa propre capacité — c'est lui qui peut gâcher ce chiffre.
+
+### ⚠️ Un conflit à arbitrer : rayonnement contre capacité de barrière
+
+Le fabricant renvoie à sa note d'application AN-0971 pour limiter le rayonnement, et
+recommande un **boîtier relié à la masse**. ⚠️ **De mémoire, non relu** : cette note
+préconise notamment de faire **se recouvrir les plans de cuivre des deux côtés** de la
+barrière, pour former un condensateur qui referme les courants à haute fréquence.
+
+⛔ **C'est l'inverse de ce que demande la mesure** : ce recouvrement **augmente** la capacité
+de barrière, celle-là même qu'on cherche à réduire (enseignement 3).
+
+⇒ **V16 devient un arbitrage, pas une simple lecture** : moins de rayonnement, ou moins de
+couplage vers l'électrode. Le choix par défaut de cette fiche est **la mesure d'abord**
+(aucun recouvrement), le rayonnement se traitant par le découplage, la compacité et le
+boîtier — à réviser après lecture de la note et essai.
+
 ## Ce que « une barrière par voie » impose
 
 **Aujourd'hui** : `U1` et `U5` créent **un** domaine `+5V_ISO` / `GND_ISO` que les deux
@@ -263,15 +324,53 @@ voies**. Le chemin de mode commun venu du secteur traverse la capacité parasite
 l'alimentation **puis** celle de la barrière ; doubler les barrières ne supprime ni l'une ni
 l'autre. ⇒ La partie B garde tout son sens.
 
+## Possibilité : des cartes à quatre couches (2026-11-24)
+
+**Apport de l'utilisateur** : JLCPCB propose les cartes à quatre couches au même prix que les
+cartes à deux couches, ce qui faciliterait le routage. ⚠️ **Prix non vérifié ici** : à
+constater sur le devis réel, aux dimensions de **chaque** carte (une offre de ce type est en
+général bornée en taille) et **assemblage compris**. Voir V17.
+
+⛔ **Ce n'est pas encore une décision** : c'est une possibilité ouverte, à trancher carte par
+carte au moment du schéma.
+
+**Ce que cela apporterait**
+- **Un plan de masse continu** en couche interne : les retours de courant sont courts, le
+  découplage est meilleur, la carte rayonne moins. C'est le premier levier du sujet EMI.
+- **Le routage se simplifie** : le v2 a des plans découpés par les pistes ; avec deux couches
+  internes, les pistes n'ont plus à traverser les plans.
+- **Carte de mesure** : Atlas demande que le plan de sonde entoure le signal **dessus et
+  dessous**. Avec quatre couches, le « dessous » peut être à 0,2 mm au lieu de 1,6 mm : le
+  blindage de la piste d'électrode est plus serré.
+- **Carte principale** : place pour l'ESP32 intégré et son antenne, les MOSFET et le 12 V,
+  sans croiser les signaux lents.
+
+**Ce que cela impose — ⚠️ sur la carte de mesure surtout**
+- ⛔ **Aucune couche interne ne traverse la barrière d'isolation.** Chaque couche est coupée
+  au même endroit que les autres. Deux plans internes qui se recouvrent de part et d'autre
+  de la barrière forment un condensateur, d'autant plus fort que les couches sont proches :
+  c'est exactement la capacité qu'on cherche à réduire (2,2 pF annoncés par l'ADM3260).
+  ⇒ Quatre couches rendent ce défaut **plus facile à commettre** qu'en deux couches.
+- ⛔ **Aucun cuivre interne oublié sous la piste d'électrode** qui ne soit le plan de sonde.
+- ⛔ **Toujours aucun via sous les modules Atlas** : la consigne ne dépend pas du nombre de
+  couches.
+- ⚠️ **Les distances d'isolement** valent pour les quatre couches, pas seulement pour les
+  deux faces visibles.
+- ⚠️ L'arbitrage V16 (rayonnement contre capacité de barrière) se pose avec plus de force :
+  la note du fabricant s'appuie justement sur les couches internes.
+
+⇒ **Lecture proposée** : quatre couches sont un gain net pour la carte principale ; pour la
+carte de mesure, le gain existe mais dépend du respect strict de la coupure de barrière.
+
 ## Points à vérifier AVANT de dessiner
 
 | # | Point | Pourquoi il décide |
 |---|---|---|
-| V1 | **ADM3260 chez JLCPCB** : disponibilité, prix | ⛔ non vérifié ; c'est lui qui tient ou non l'objectif de prix |
-| V2 | **Capacité de barrière de l'ADM3260** contre celle du TMA-0505S | ⚠️ le composant est **choisi** (D5) : ce relevé ne le remet pas en cause, il dit à quoi s'attendre. C'est la grandeur en cause dans le bruit (partie B) |
-| V3 | **Modules Atlas en pièces consignées** chez JLCPCB | probablement hors catalogue ; conditionne le besoin 7 |
+| V1 | **ADM3260 chez JLCPCB** : disponibilité, prix | ✅ **relevé le 2026-11-24** : au catalogue (C208558), 8 à 16 $ l'unité. ⚠️ **Stock faible, une soixantaine de pièces** — deux par carte. Détail dans [`docs/FABRICATION.md`](../../../docs/FABRICATION.md) |
+| V2 | ~~Capacité de barrière de l'ADM3260 contre celle du TMA-0505S~~ | ✅ **relevé le 2026-11-24 : 2,2 pF contre 60 pF typique** — voir « L'isolateur ADM3260 » |
+| V3 | **Modules Atlas en pièces fournies** à JLCPCB | ✅ **relevé le 2026-11-24** : service existant, envoi à Hong Kong, douane à notre charge, ⛔ pièces non testées par l'atelier. ⏳ Reste à valider l'étuvage auprès d'Atlas |
 | V4 | **Broche `INT` du module** | Atlas demande de l'isoler si on s'en sert ; le module prévoit de s'en passer ⇒ **ne pas la câbler**, sauf besoin démontré |
-| V5 | **Affectation des broches** du second bus I2C, et bus de l'horloge | ⚠️ GPIO 16/17 pris par la PSRAM ; l'horloge ne doit pas partager le cuivre d'un domaine isolé |
+| V5 | **Bus I2C et horloge** | ✅ Sans objet tant que D3 réunit les deux bus : un seul bus sur GPIO 21/22, horloge comprise, comme le v2. ⚠️ Reste à vérifier la somme des rappels (voir « Proposition retenue ») et que l'horloge ne partage le cuivre d'aucun domaine isolé. ℹ️ Si les voies sont séparées un jour : GPIO 16/17 pris par la PSRAM, et l'ESP32 n'a que deux contrôleurs I2C |
 | V6 | **Pont USB-série et remise à zéro automatique** | l'ESP32 retenu n'a pas d'USB natif |
 | V7 | **MOSFET de puissance en CMS** (`Q1`–`Q7`, TO-220 aujourd'hui) | dissipation à redimensionner sans dissipateur vertical |
 | V8 | **Régulateurs** (`U3` Pololu, `U4` OKI) : modules enfichés à remplacer | dépend de la partie B |
@@ -280,15 +379,16 @@ l'autre. ⇒ La partie B garde tout son sens.
 | V11 | **La liaison principale ↔ mesure** : connecteur, brochage, tension, câble ou enfichage | c'est le contrat qui permet de refaire une carte sans l'autre |
 | V12 | ~~Les sondes de température : sur quelle carte ?~~ | ✅ **tranché le 2026-11-24 : carte principale** (utilisateur) |
 | V13 | ~~Le boîtier accueille-t-il trois cartes ?~~ | ✅ **oui, et il sera traité APRÈS les cartes** (utilisateur, 2026-11-24). ⚠️ Conséquence : formes et fixations des cartes ne sont contraintes par aucun boîtier existant |
-| V14 | **Nettoyage après soudure chez JLCPCB** : proposé ? garanti ? | exigé par Atlas ; sinon à faire soi-même sur chaque carte |
+| V14 | **Nettoyage après soudure chez JLCPCB** | ⚠️ **relevé le 2026-11-24** : flux « sans nettoyage », résidu jugé normal par l'atelier, aucune option de nettoyage trouvée. ⏳ À demander par écrit ; à défaut, nettoyage à la réception sur chaque carte |
 | V15 | **Enrobage en résine transparente** des modules | protection contre l'humidité ; ⚠️ irréversible, à faire après essai de la carte |
-| V16 | **Note d'application de l'ADM3260** sur le rayonnement | fixe le routage autour des deux isolateurs |
+| V16 | **Note d'application AN-0971** de l'ADM3260 | ⚠️ **arbitrage** rayonnement contre capacité de barrière — voir « Un conflit à arbitrer » |
+| V17 | **Quatre couches au prix de deux** chez JLCPCB | ⚠️ à constater sur devis réel, par carte, assemblage compris ; relever aussi l'empilement proposé (épaisseur entre couches) — voir « Possibilité : des cartes à quatre couches » |
 
 ## Conséquence logicielle — ⛔ hors de cette fiche
 
 Le module OEM se lit par **registres**, pas par les commandes texte que `src/atlas_ezo.cpp`
 (316 lignes) envoie aux EZO, et les adresses diffèrent (pH 0x65 contre 0x63, ORP 0x66 contre 0x62). ⇒ Pilote
-neuf, second bus I2C, et passage obligatoire par `pool-chemistry` (la garde
+neuf, **un seul bus I2C conservé** (D3), et passage obligatoire par `pool-chemistry` (la garde
 `kEzoBusFailMaxConsecutive` bloque le dosage sur panne de bus). **Fiche logicielle distincte
 à créer** quand le matériel est figé. ⚠️ Le firmware devra rester capable de tourner sur le
 v2 tant qu'il en existe en service.
@@ -494,7 +594,7 @@ fige après M3.
 ## Livrables — check-list
 
 **Vérifications avant schéma**
-- [ ] V1 à V16 — tableau « Points à vérifier AVANT de dessiner »
+- [ ] V1 à V17 — tableau « Points à vérifier AVANT de dessiner »
 - [ ] P0 — Trancher où vit le v3 dans le dépôt
 
 **Conception**
@@ -524,7 +624,7 @@ fige après M3.
 - [ ] C4 — Fiche logicielle du pilote OEM créée
 
 ## Critères d'acceptation
-- [ ] Les points V1 à V16 sont tranchés **par écrit**, avec leur source
+- [ ] Les points V1 à V17 sont tranchés **par écrit**, avec leur source
 - [ ] Les deux voies de mesure n'ont **aucun cuivre commun** côté isolé — vérifié sur la liste
       des connexions, pas à l'œil
 - [ ] La liaison principale ↔ mesure est décrite dans cette fiche : connecteur, brochage,
@@ -570,3 +670,5 @@ fige après M3.
 - Myrra — [gamme EI48×16,8 10 VA](https://myrra.com/wp-content/uploads/2024/03/44265-44276-EI48-x-16.8-230-V-10-VA-Datasheet.pdf)
 - Atlas Scientific — [documentation du pH OEM](https://files.atlas-scientific.com/oem_pH_datasheet.pdf) (V 4.7, lue le 2026-11-24) · [documentation de l'EZO-pH](https://files.atlas-scientific.com/pH_EZO_Datasheet.pdf)
 - Atlas Scientific — [documentation de l'ORP OEM](https://files.atlas-scientific.com/ORP_oem_datasheet.pdf) (lue le 2026-11-24)
+- Analog Devices — documentation de l'ADM3260, révision C ([copie](https://download.mikroe.com/documents/datasheets/adm3260arsz.pdf), lue le 2026-11-24)
+- Traco Power — [gamme TMA](https://tracopower.com/tma-datasheet) (capacité d'isolation 60 pF typique, 100 pF au plus)
