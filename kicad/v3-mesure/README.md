@@ -1,6 +1,7 @@
 # Carte de mesure du PCB v3 — composants et connexions
 
-> **État : schéma écrit (révision 0.5, vrais fils, toutes les empreintes attribuées), ⚠️ pas encore relu par le relecteur.** Aucune carte n'est dessinée. Ce document est la référence contre
+> **État : schéma (révision 0.7) et carte routée par script, relus par le relecteur**
+> **— toutes les empreintes attribuées, ⚠️ pas encore relu par le relecteur.** Aucune carte n'est dessinée. Ce document est la référence contre
 > laquelle le schéma, puis la carte, sont relus.
 > Fiche de conception : [`feature-215`](../../specs/features/todo/feature-215-conception-du-pcb-v3.md) ·
 > contraintes de fabrication : [`docs/FABRICATION.md`](../../docs/FABRICATION.md).
@@ -14,11 +15,12 @@
 | `v3-mesure.kicad_sch` | le schéma, une seule feuille A3 |
 | `v3-mesure.kicad_sym` + `sym-lib-table` | les quatre symboles propres à cette carte : ADM3260, module Atlas OEM, prise BNC, connecteur 8 voies |
 | `v3-mesure.pretty/` + `fp-lib-table` | les trois empreintes propres à cette carte : `Atlas_OEM`, `BNC_Dosin_801-0080_Coudee`, `Trou_M3_NPTH` |
-| `v3-mesure.kicad_pcb` | la carte — **squelette seulement** : contour, quatre couches, zones interdites, trous de fixation, repères |
+| `v3-mesure.kicad_pcb` | la carte, **placée et routée** |
+| `generer_carte.py` | le script qui écrit la carte ; il prend en entrée la liste des connexions exportée du schéma |
 | `v3-mesure.kicad_dru` | la règle d'isolement entre les trois domaines |
 | `generer_schema.py` | le script qui a écrit le schéma depuis le tableau des connexions |
 
-**Le schéma (révision 0.5) est tracé avec de vrais fils** — demande de l'utilisateur du
+**Le schéma (révision 0.7) est tracé avec de vrais fils** — demande de l'utilisateur du
 2026-11-24, la révision 0.1 reliait tout par étiquettes. Les alimentations et les masses
 passent par les symboles habituels (flèche, masse), comme dans le schéma du v2. Seuls les
 quatre signaux du bus rejoignent le connecteur J1 par étiquette, parce que J1 est commun aux
@@ -28,7 +30,7 @@ deux voies.
 - **Dans le KiCad de l'utilisateur** (révision 0.1, 2026-11-24) : contrôle électrique à
   **0 erreur, 0 avertissement**. ⇒ Les noms d'empreintes standard (0402, 0805, 0603,
   SSOP-20, JST XH) existent bien dans ses bibliothèques.
-- **En ligne de commande** (révision 0.5, KiCad 9.0.2) : 0 erreur ; la liste des connexions
+- **En ligne de commande** (révision 0.7, KiCad 9.0.2) : 0 erreur ; la liste des connexions
   que KiCad extrait du schéma est **identique** à celle du tableau de ce document — 21 nets,
   12 broches volontairement en l'air ; rendu regardé en image, sans chevauchement.
   Sur ce poste, le contrôle rend des avertissements d'un seul type : les bibliothèques
@@ -137,31 +139,68 @@ elle ne suffit pas, on élargit la carte — rien d'autre n'en dépend.
 3,6 mm par rapport à la carte actuelle (axe de la BNC à 9,8 mm au-dessus de la carte, pour
 des perçages à 19,8 mm du fond), ou remonter les perçages ; poser la carte tout en bas.
 
-## Le fichier de carte : un squelette à compléter (2026-11-24)
+## La carte : placée et routée par script (2026-11-24)
 
-`v3-mesure.kicad_pcb` contient **ce qui ne se discute pas**, et aucun composant électrique :
+**`v3-mesure.kicad_pcb` — 73 × 54 mm, quatre couches.** Elle est écrite en entier par
+`generer_carte.py` (placement, pistes, vias, plans de cuivre), sur demande de l'utilisateur :
+*« fais plusieurs passes jusqu'à ce que tu sois au bout de tes possibilités »*.
+⚠️ Ce script **réécrit la carte** : ne plus le lancer après une retouche à la main dans KiCad.
 
-- le contour de 70 × 50 mm et la déclaration des **quatre couches** ;
-- la **barrière** et la **séparation des voies**, déclarées comme zones interdites sur les
-  quatre couches (ni piste, ni via, ni plan de cuivre ; les plots y sont admis, puisque les
-  ADM3260 chevauchent la barrière) ;
-- quatre trous de fixation non métallisés, avec le cuivre écarté autour ;
-- des repères sur les couches de dessin : axe de chaque BNC, position de l'âme, emplacement
-  indicatif des modules. Ils n'ont aucun effet électrique.
+| Couche | Ce qu'elle porte |
+|---|---|
+| Dessus | tous les composants, les signaux, la piste de sonde |
+| Interne 1 | les masses : `GND` côté ESP32, `GNDISO` dans chaque île |
+| Interne 2 | les alimentations : `+3V3` côté ESP32, `VISO` dans chaque île |
+| Dessous | les masses de nouveau, et le `+5V` en piste |
 
-Le projet range les fils en trois classes — `PRIMAIRE`, `ISO_PH`, `ISO_ORP` — et
-`v3-mesure.kicad_dru` impose **5,4 mm** entre deux classes différentes. ⚠️ 5,4 et non 5,5 :
-la limite est l'écart entre les deux rangées de plots de l'ADM3260 (5,45 mm) ; les bandes
-interdites, elles, font bien 5,5 mm. ⚠️ Cette règle compare des cuivres **d'une même
-couche** : le recouvrement entre couches est empêché par les zones interdites.
+`GND_SONDE` est un polygone présent sur les **quatre** couches autour de chaque BNC et sous
+la partie analogique du module, comme Atlas le dessine (p. 33). La piste `PRB` fait
+**0,4 mm de large et 10,3 mm de long**, entourée de ce polygone.
 
-**Pour continuer dans KiCad** : ouvrir la carte, puis *Outils › Mettre à jour le PCB à
-partir du schéma*. Les composants arrivent en vrac ; les placer dans leur zone, puis router.
+**Ce qui diffère du plan de zones d'origine** (voir « Dimensions et zones ») :
+- 73 × 54 mm au lieu de 70 × 50 : il fallait de la place entre la BNC et le module ;
+- le module Atlas est **à droite** de sa BNC, pas au-dessus : ses broches numériques restent
+  accessibles par le haut, et la piste de sonde rejoint l'âme en passant entre deux pattes
+  du corps de la prise ;
+- barrière de Y = 16 à 21,5 mm ; séparation des voies de X = 35,25 à 40,75 mm ;
+- trous de fixation en (3,5 ; 3,5), (69,5 ; 3,5), (3,5 ; 25,5), (69,5 ; 25,5).
 
-**Vérifié** : KiCad charge la carte et son contrôle des règles rend 0 violation — sur une
-carte encore vide. **Non vérifié** : que les zones interdites et la règle d'isolement
-réagissent bien dès qu'il y a du cuivre ; l'empilement des couches (épaisseurs de JLCPCB)
-n'est pas renseigné.
+**Règle d'isolement : 5,0 mm** entre les classes `PRIMAIRE`, `ISO_PH`, `ISO_ORP`
+(`v3-mesure.kicad_dru`). La limite vient du composant : les deux rangées de plots de
+l'ADM3260 sont à 5,1 mm bord à bord. Les bandes interdites font 5,5 mm.
+
+### Ce qui est vérifié
+
+- **Contrôle des règles de KiCad : 0 violation, 0 liaison manquante.** Il reste 31
+  avertissements de bibliothèque, propres au poste de génération.
+- **Les protections réagissent — éprouvé par mutation** : sur une copie, quatre fautes
+  introduites exprès (piste dans la barrière, piste dans la séparation des voies, via sous
+  un module Atlas, cuivre du côté ESP32 posé dans une île) ont **toutes** été signalées.
+  Les règles ont aussi attrapé une vraie faute en cours de travail : un via de masse de la
+  voie ORP tombé dans la séparation des voies.
+- **Relecture par `electronics-reviewer` : aucune erreur.** Deux risques corrigés — plan de
+  sonde étendu sous le module jusqu'à X = 28,4 mm (il ne couvrait que 8 mm² au lieu de
+  ~44) ; freins thermiques rétablis sur les pattes des BNC, pour qu'elles se soudent bien.
+  Deux préférences appliquées — une masse contre chaque paire de données sur J1 ; trois
+  vias de couture de la masse isolée par île.
+- Relevé par le relecteur : condensateurs de 0,1 µF à **0,84 mm** de leur broche (limite
+  2 mm) ; cuivre d'alimentation le plus proche de `PRB` à 1,4 mm (plot 3, imposé par Atlas) ;
+  rien ne franchit la barrière sur aucune couche ; pistes 0,25 mm, écarts 0,15 mm, vias
+  0,6/0,3 mm, cuivre à 0,5 mm des bords : **dans les capacités standard de JLCPCB**.
+
+### Ce qui n'est PAS vérifié
+
+- ⚠️ La carte n'a pas été ouverte dans le KiCad de l'utilisateur, ni regardée par lui.
+- ⚠️ Aucune empreinte propre n'a été confrontée à une pièce réelle ; la longueur du
+  filetage de la BNC est mesurée sur un dessin.
+- ⚠️ L'empilement des couches (épaisseurs de JLCPCB) n'est pas renseigné dans la carte.
+- ⚠️ **Résistance d'isolement de la BNC** : son plan écrit « 5000 Ohms min », sans doute une
+  coquille pour des mégohms. À faire confirmer : même 5 000 MΩ fausseraient la pente
+  d'environ 2 % avec une électrode de 100 MΩ.
+- ⚠️ Le contrôle automatique ne juge pas la qualité de mesure : seul un essai sur carte
+  réelle le dira.
+- ℹ️ La carte garde du vide. La compacter a été examiné puis écarté : ~5 mm gagnés, sans
+  effet sur le prix ni sur la longueur de la piste de sonde.
 
 ## Ce que le boîtier actuel impose (fichiers FreeCAD reçus le 2026-11-24)
 
@@ -372,18 +411,19 @@ Le plan `GND_SONDE_PH` entoure la piste `PRB`, dessus et dessous.
 
 | Voie | Signal | Va vers |
 |---|---|---|
-| 1 | `+5V` | broche 9 (`VIN`) de U101 et U201 |
-| 2 | `+3V3` | broche 4 (`VDDP`) de U101 et U201, rappels R101, R102, R201, R202 |
+| 1 | `SDA_PH` | broche 3 de U101 |
+| 2 | `SCL_PH` | broche 2 de U101 |
 | 3 | `GND` | broches `GNDP` |
-| 4 | `GND` | broches `GNDP` |
-| 5 | `SDA_PH` | broche 3 de U101 |
-| 6 | `SCL_PH` | broche 2 de U101 |
+| 4 | `+5V` | broche 9 (`VIN`) de U101 et U201 |
+| 5 | `+3V3` | broche 4 (`VDDP`) de U101 et U201, rappels R101, R102, R201, R202 |
+| 6 | `GND` | broches `GNDP` |
 | 7 | `SDA_ORP` | broche 3 de U201 |
 | 8 | `SCL_ORP` | broche 2 de U201 |
 
-⚠️ **Ordre des voies non figé** : à arrêter au schéma, en plaçant les masses entre
-l'alimentation et les signaux. La carte principale réunit `SDA_PH`/`SDA_ORP` et
-`SCL_PH`/`SCL_ORP` en un seul bus (décision D3) ; cette carte les sort séparément.
+✅ **Ordre des voies arrêté au routage (2026-11-24)** : bus pH à gauche, alimentations au
+centre, bus ORP à droite, **une masse contre chaque paire de données**. Aucune piste ne se
+croise. La carte principale réunit `SDA_PH`/`SDA_ORP` et `SCL_PH`/`SCL_ORP` en un seul bus
+(décision D3) ; cette carte les sort séparément.
 
 ## Relecture du 2026-11-24 (`electronics-reviewer`)
 

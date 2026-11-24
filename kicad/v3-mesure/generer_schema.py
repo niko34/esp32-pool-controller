@@ -240,23 +240,25 @@ voie("ORP", 2, 111.76, "VOIE ORP", "Atlas ORP OEM")
 cadre(15.24, 195.58, 294.64, 248.92)
 texte("LIAISON VERS LA CARTE PRINCIPALE", 17.78, 201.93, 2.5, True)
 j = custom("Conn_8", "J1", "Vers carte principale", 43.18, 223.52, FP["J1"], "C157972")
-fil(j["1"], (78.74, j["1"][1])); plus("+5V", 68.58, j["1"][1]); jonction(68.58, j["1"][1]); drapeau(78.74, j["1"][1])
-fil(j["2"], (101.6, j["2"][1])); plus("+3V3", 91.44, j["2"][1]); jonction(91.44, j["2"][1]); drapeau(101.6, j["2"][1])
+# Ordre des voies arrêté au routage (2026-11-24) : bus pH à gauche, alimentations au centre, bus ORP à droite.
+for num, nom in (("1", "SDA_PH"), ("2", "SCL_PH"), ("7", "SDA_ORP"), ("8", "SCL_ORP")):
+    fil(j[num], (60.96, j[num][1])); etiq(nom, 60.96, j[num][1], "d"); net(nom, "J1." + num)
+# 1 SDA_PH, 2 SCL_PH, 3 GND, 4 +5V, 5 +3V3, 6 GND, 7 SDA_ORP, 8 SCL_ORP : une masse contre chaque paire de données
 xg = 114.3
 fil(j["3"], (124.46, j["3"][1])); drapeau(124.46, j["3"][1])
-fil(j["4"], (xg, j["4"][1])); fil((xg, j["3"][1]), (xg, j["4"][1] + 7.62)); jonction(xg, j["3"][1]); jonction(xg, j["4"][1]); masse("GND", xg, j["4"][1] + 7.62)
-for num, nom in (("5", "SDA_PH"), ("6", "SCL_PH"), ("7", "SDA_ORP"), ("8", "SCL_ORP")):
-    fil(j[num], (60.96, j[num][1])); etiq(nom, 60.96, j[num][1], "d"); net(nom, "J1." + num)
-net("+5V", "J1.1"); net("+3V3", "J1.2"); net("GND", "J1.3", "J1.4")
+fil(j["6"], (xg, j["6"][1])); fil((xg, j["3"][1]), (xg, j["6"][1] + 10.16)); jonction(xg, j["3"][1]); jonction(xg, j["6"][1]); masse("GND", xg, j["6"][1] + 10.16)
+fil(j["4"], (78.74, j["4"][1])); plus("+5V", 68.58, j["4"][1]); jonction(68.58, j["4"][1]); drapeau(78.74, j["4"][1])
+fil(j["5"], (101.6, j["5"][1])); plus("+3V3", 91.44, j["5"][1]); jonction(91.44, j["5"][1]); drapeau(101.6, j["5"][1])
+net("+5V", "J1.4"); net("+3V3", "J1.5"); net("GND", "J1.3", "J1.6")
 texte("Les fils sont traces a l'interieur de chaque voie.\nSeuls les quatre signaux du bus rejoignent J1 par etiquette (meme nom = meme fil).\n"
-      "L'ordre des voies de J1 n'est PAS fige.\nLa carte principale reunit SDA_PH/SDA_ORP et SCL_PH/SCL_ORP en un seul bus.\n\n"
+      "Ordre des voies de J1 arrete au routage.\nLa carte principale reunit SDA_PH/SDA_ORP et SCL_PH/SCL_ORP en un seul bus.\n\n"
       "Carte en 4 couches. Zone interdite au cuivre de 5,5 mm, sur les 4 couches,\nsous chaque ADM3260 et entre les domaines. Aucun via sous les modules Atlas.\n"
       "Nettoyage du flux OBLIGATOIRE apres soudure : docs/FABRICATION.md", 142.24, 241.3, 1.3)
 
 ecrire_fils()
 lib_symbols = "\n".join(list(REPRIS.values()) + list(CUSTOM.values()))
 sch = """(kicad_sch (version 20250114) (generator "eeschema") (generator_version "9.0") (uuid "%s") (paper "A3")
-(title_block (title "Carte de mesure v3 - pH et ORP, une barriere par voie") (date "2026-11-24") (rev "0.5")
+(title_block (title "Carte de mesure v3 - pH et ORP, une barriere par voie") (date "2026-11-24") (rev "0.7")
  (company "ESP32 Pool Controller") (comment 1 "Reference : kicad/v3-mesure/README.md"))
 (lib_symbols
 %s

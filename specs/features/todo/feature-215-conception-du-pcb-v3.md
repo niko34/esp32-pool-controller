@@ -276,7 +276,7 @@ Lue le 2026-11-24, **révision C** (copie hébergée par un revendeur : le site 
 | Côté ESP32 (« côté 2 ») | niveaux I2C normaux, jusqu'à 400 pF | ⭐ *« multiple ADM3260 devices connected to a bus by their Side 2 pins communicate with each other »* |
 | Côté module (« côté 1 ») | niveau bas entre 0,6 et 0,9 V, **40 pF au plus** | pistes **courtes** entre l'isolateur et le module |
 | Boîtier | SSOP 20 broches | pose automatique sans difficulté |
-| Découplage | 0,1 µF + 10 µF sur `VIN` et sur la sortie, **à moins de 2 mm** | règle de placement ferme |
+| Découplage | 0,1 µF + 10 µF sur `VIN` et sur la sortie ; **le 0,1 µF à moins de 2 mm** (la fiche n'impose cette distance qu'au petit condensateur — corrigé le 2026-11-24 sur relecture) | règle de placement ferme |
 
 **Trois enseignements :**
 
