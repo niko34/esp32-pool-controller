@@ -157,14 +157,14 @@ def voie(sfx, n, oy, titre, module):
     x9, y9 = p["9"]
     fil((x9, y9), (144.78, y9), (144.78, RV), (111.76, RV)); plus("+5V", 111.76, RV)
     for i, (x, val) in enumerate(((134.62, "100n"), (121.92, "10u"))):
-        a, b = vertical("C", C(1 + i), val, x, RV); jonction(*a); masse("GND", *b)
+        a, b = vertical("C", C(1 + i), val, x, RV); jonction(*a); masse("GND", *b); texte("br. 9", x + 2.54, RV + 8.255, 0.9)
         net("+5V", C(1+i) + ".1"); net("GND", C(1+i) + ".2")
     net("+5V", Uref + ".9")
     # VDDP : montée, rail, deux condensateurs, deux rappels, +3V3
     x4, y4 = p["4"]
     fil((x4, y4), (104.14, y4), (104.14, RV), (55.88, RV)); plus("+3V3", 104.14, RV); jonction(104.14, RV)
     for i, (x, val) in enumerate(((93.98, "100n"), (81.28, "10u"))):
-        a, b = vertical("C", C(3 + i), val, x, RV); jonction(*a); masse("GND", *b)
+        a, b = vertical("C", C(3 + i), val, x, RV); jonction(*a); masse("GND", *b); texte("br. 4", x + 2.54, RV + 8.255, 0.9)
         net("+3V3", C(3+i) + ".1"); net("GND", C(3+i) + ".2")
     net("+3V3", Uref + ".4", R(1) + ".1", R(2) + ".1")
     xs, ys = p["3"]; xc, yc = p["2"]
@@ -180,7 +180,7 @@ def voie(sfx, n, oy, titre, module):
         fil(p[num], (xg, p[num][1])); jonction(xg, p[num][1]); net("GND", Uref + "." + num)
     net("GND", Uref + ".8")
     nc(*p["6"]); NC.append(Uref + ".6")
-    texte("Decouplage a moins de 2 mm\ndes broches VIN (9) et VDDP (4)", 111.76, oy + 5.08, 1.1)
+    texte("Chaque condensateur contre SA broche (br.),\na moins de 2 mm", 111.76, oy + 5.08, 1.1)
     # ---- côté isolé ----
     x12, y12 = p["12"]; x17, y17 = p["17"]
     fil((x12, y12), (187.96, y12), (187.96, RV), (292.1, RV)); plus(V("VISO"), 187.96, RV)
@@ -188,21 +188,25 @@ def voie(sfx, n, oy, titre, module):
     net(V("VISO"), Uref + ".12", Uref + ".17")
     # diviseur de réglage : R106 (haut), R105 (bas, couchée)
     x13, y13 = p["13"]
-    a, b = vertical("R", R(6), "10k", 203.2, RV); jonction(*a)
-    fil(b, (203.2, y13)); fil((x13, y13), (203.2, y13)); jonction(203.2, y13)
+    xd = 248.92
+    a, b = vertical("R", R(6), "10k", xd, RV); jonction(*a)
+    fil(b, (xd, y13)); fil((x13, y13), (xd, y13)); jonction(xd, y13)
     etiq(V("VSEL"), 185.42, y13, "d")
-    g, d = horizontal_R(R(5), "4k7", 203.2, y13); fil(d, (215.9, y13)); masse(V("GNDISO"), 215.9, y13)
+    g, d = horizontal_R(R(5), "4k7", xd, y13); fil(d, (xd + 12.7, y13)); masse(V("GNDISO"), xd + 12.7, y13)
     net(V("VISO"), R(6) + ".1"); net(V("VSEL"), Uref + ".13", R(6) + ".2", R(5) + ".1"); net(V("GNDISO"), R(5) + ".2")
-    # quatre condensateurs sur le rail isolé
-    for i, (x, val) in enumerate(((223.52, "100n"), (238.76, "10u"), (254, "100n"), (269.24, "10u"))):
-        a, b = vertical("C", C(5 + i), val, x, RV); jonction(*a); masse(V("GNDISO"), *b)
+    # trois condensateurs sur le rail isolé. Les broches 12 (VISO) et 17 (VDDISO) sont reliées :
+    # le 10 µF de VISO sert aussi VDDISO, qui ne demande que 0,01 à 0,1 µF (fiche ADM3260).
+    # ⇒ pas de C108 : décision du 2026-11-24, le numéro reste libre.
+    for i, x, val, br in ((5, 205.74, "100n", "br. 12"), (6, 218.44, "10u", "br. 12"), (7, 231.14, "100n", "br. 17")):
+        i -= 5
+        a, b = vertical("C", C(5 + i), val, x, RV); jonction(*a); masse(V("GNDISO"), *b); texte(br, x + 2.54, RV + 8.255, 0.9)
         net(V("VISO"), C(5+i) + ".1"); net(V("GNDISO"), C(5+i) + ".2")
     # module Atlas et rappels du bus isolé
     mx, my = 320.04, uy + 5.08
     m = custom("Atlas_OEM", Mref, module, mx, my)
     x18, y18 = p["18"]; x19, y19 = p["19"]
     fil((x18, y18), m["1"]); fil((x19, y19), m["8"])
-    etiq(V("SDA_ISO"), 213.36, y18, "d"); etiq(V("SCL_ISO"), 246.38, y19, "d")
+    etiq(V("SDA_ISO"), 200.66, y18, "d"); etiq(V("SCL_ISO"), 228.6, y19, "d")
     a, b = vertical("R", R(3), "4k7", 281.94, RV); jonction(*a); fil(b, (281.94, y18)); jonction(281.94, y18)
     a, b = vertical("R", R(4), "4k7", 292.1, RV); fil(b, (292.1, y19)); jonction(292.1, y19)
     net(V("VISO"), R(3) + ".1", R(4) + ".1")
@@ -227,7 +231,7 @@ def voie(sfx, n, oy, titre, module):
     texte("PRB : LA piste sensible (~100 MOhm). 0,4 mm, la plus courte possible,\nentouree du plan GND_SONDE dessus et dessous. Aucun via sous le module.", 314.96, oy + 26.67, 1.1)
     texte("GND_SONDE et GNDISO : deux plans SEPARES,\naucun lien trace entre eux (Atlas, p. 33-34).\nCorps de la BNC = GND_SONDE :\nil ne touche aucun metal du boitier.", 345.44, oy + 78.74, 1.1)
     texte("INT et NC : en l'air", 307.34, oy + 71.12, 1.1)
-    texte("C%d05/C%d06 pres de VISO (12), C%d07/C%d08 pres de VDDISO (17).   R%d06 + R%d05 : VISO = 1,23 V x (10k + 4k7) / 4k7 = 3,85 V" % (n, n, n, n, n, n), 193.04, oy + 5.08, 1.1)
+    texte("Chaque condensateur contre SA broche (br.), a moins de 2 mm.   R%d06 + R%d05 : VISO = 1,23 V x (10k + 4k7) / 4k7 = 3,85 V" % (n, n), 193.04, oy + 5.08, 1.1)
 
 voie("PH", 1, 20.32, "VOIE pH", "Atlas pH OEM")
 voie("ORP", 2, 111.76, "VOIE ORP", "Atlas ORP OEM")
@@ -252,7 +256,7 @@ texte("Les fils sont traces a l'interieur de chaque voie.\nSeuls les quatre sign
 ecrire_fils()
 lib_symbols = "\n".join(list(REPRIS.values()) + list(CUSTOM.values()))
 sch = """(kicad_sch (version 20250114) (generator "eeschema") (generator_version "9.0") (uuid "%s") (paper "A3")
-(title_block (title "Carte de mesure v3 - pH et ORP, une barriere par voie") (date "2026-11-24") (rev "0.2")
+(title_block (title "Carte de mesure v3 - pH et ORP, une barriere par voie") (date "2026-11-24") (rev "0.3")
  (company "ESP32 Pool Controller") (comment 1 "Reference : kicad/v3-mesure/README.md"))
 (lib_symbols
 %s

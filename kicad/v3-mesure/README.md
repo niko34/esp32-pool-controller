@@ -1,6 +1,6 @@
 # Carte de mesure du PCB v3 — composants et connexions
 
-> **État : schéma écrit (révision 0.2, vrais fils), ⚠️ pas encore relu par le relecteur.** Aucune carte n'est dessinée. Ce document est la référence contre
+> **État : schéma écrit (révision 0.3, vrais fils), ⚠️ pas encore relu par le relecteur.** Aucune carte n'est dessinée. Ce document est la référence contre
 > laquelle le schéma, puis la carte, sont relus.
 > Fiche de conception : [`feature-215`](../../specs/features/todo/feature-215-conception-du-pcb-v3.md) ·
 > contraintes de fabrication : [`docs/FABRICATION.md`](../../docs/FABRICATION.md).
@@ -15,7 +15,7 @@
 | `v3-mesure.kicad_sym` + `sym-lib-table` | les quatre symboles propres à cette carte : ADM3260, module Atlas OEM, prise BNC, connecteur 8 voies |
 | `generer_schema.py` | le script qui a écrit le schéma depuis le tableau des connexions |
 
-**Le schéma (révision 0.2) est tracé avec de vrais fils** — demande de l'utilisateur du
+**Le schéma (révision 0.3) est tracé avec de vrais fils** — demande de l'utilisateur du
 2026-11-24, la révision 0.1 reliait tout par étiquettes. Les alimentations et les masses
 passent par les symboles habituels (flèche, masse), comme dans le schéma du v2. Seuls les
 quatre signaux du bus rejoignent le connecteur J1 par étiquette, parce que J1 est commun aux
@@ -25,14 +25,14 @@ deux voies.
 - **Dans le KiCad de l'utilisateur** (révision 0.1, 2026-11-24) : contrôle électrique à
   **0 erreur, 0 avertissement**. ⇒ Les noms d'empreintes standard (0402, 0805, 0603,
   SSOP-20, JST XH) existent bien dans ses bibliothèques.
-- **En ligne de commande** (révision 0.2, KiCad 9.0.2) : 0 erreur ; la liste des connexions
+- **En ligne de commande** (révision 0.3, KiCad 9.0.2) : 0 erreur ; la liste des connexions
   que KiCad extrait du schéma est **identique** à celle du tableau de ce document — 21 nets,
   12 broches volontairement en l'air ; rendu regardé en image, sans chevauchement.
   Sur ce poste, le contrôle rend des avertissements d'un seul type : les bibliothèques
   standard de KiCad n'y sont pas installées.
 
 **Ce qui n'est PAS vérifié**
-- ⚠️ La révision 0.2 n'a pas encore été ouverte dans le KiCad de l'utilisateur.
+- ✅ Révision 0.2 ouverte dans le KiCad de l'utilisateur le 2026-11-24 : contrôle électrique sans problème. ⚠️ La révision 0.3 (C108/C208 retirés) n'y a pas encore été ouverte.
 - ⛔ **Deux empreintes ne sont pas attribuées** : le module Atlas OEM (à créer d'après ses
   cotes) et la prise BNC (modèle à choisir).
 
@@ -102,8 +102,7 @@ Références de la voie pH en `1xx`, de la voie ORP en `2xx` : les deux voies so
 | C104, C204 | Réserve de `VDDP` | 10 µF | 0805 | C15850 (base) | idem |
 | C105, C205 | Découplage de `VISO` | 0,1 µF | 0402 | C1525 (base) | idem |
 | C106, C206 | Réserve de `VISO` | 10 µF | 0805 | C15850 (base) | idem |
-| C107, C207 | Découplage de `VDDISO` | 0,1 µF | 0402 | C1525 (base) | idem |
-| C108, C208 | Réserve de `VDDISO` | 10 µF | 0805 | C15850 (base) | idem |
+| C107, C207 | Découplage de `VDDISO` (broche 17) | 0,1 µF | 0402 | C1525 (base) | idem |
 | R101, R102, R201, R202 | Rappels du bus, côté ESP32 | 4,7 kΩ 1 % | 0603 | C23162 (base) | schéma Atlas |
 | R103, R104, R203, R204 | Rappels du bus, côté isolé | 4,7 kΩ 1 % | 0603 | C23162 (base) | schéma Atlas |
 | R105, R205 | Réglage de tension, bas (`RBOTTOM`) | **4,7 kΩ 1 %** | 0603 | C23162 (base) | figure d'Atlas (R6) |
@@ -111,7 +110,20 @@ Références de la voie pH en `1xx`, de la voie ORP en `2xx` : les deux voies so
 | J101, J201 | Connecteur de sonde | **BNC** femelle, pour carte | traversant | C3174924 (Molex 73100-0105, étendue) ou C521219 (coudée, étendue) — ⚠️ orientation à vérifier | utilisateur (2026-11-24) : les sondes en place sont en BNC |
 | J1 | Connecteur vers la carte principale | 8 voies, pas de 2,5 mm, JST XH (B8B-XH-A) | traversant | C157972 (étendue) | fiche feature-215 |
 
-Total par voie, hors module et connecteurs : 1 circuit, 8 condensateurs, 6 résistances.
+Total par voie, hors module et connecteurs : 1 circuit, **7 condensateurs**, 6 résistances.
+
+**Pas de C108 ni de C208** — décision du 2026-11-24, sur une remarque de l'utilisateur
+(« C105 et C107 sont identiques, C106 et C108 aussi »). Les broches 12 (`VISO`) et 17
+(`VDDISO`) sont reliées : les condensateurs y sont en parallèle sur le même fil. La fiche de
+l'ADM3260 (rév. C, p. 16) exige 0,1 µF **et** 10 µF sur `VISO`, mais **seulement 0,01 à
+0,1 µF** sur `VDDISO`. ⇒ Le second 10 µF doublait celui de `VISO`, à 3 mm de lui : retiré.
+C105 et C107 restent tous les deux, chacun contre **sa** broche. Les numéros C108 et C208
+restent libres.
+
+**C104 et C204 sont conservés** (10 µF sur `+3V3`), bien que la fiche ne les exige pas non
+plus : le `+3V3` est un fil **distinct** du `+5V`, il arrive par un câble, et sans eux il ne
+resterait aucune réserve sur cette alimentation à l'entrée de la carte. Utilité non
+démontrée, absence de risque non démontrée non plus : dans le doute, on garde.
 
 **Tension isolée : 3,85 V**, avec les valeurs **lues sur la figure d'Atlas** (pH OEM V4.7,
 p. 30) : 10 kΩ entre `VSEL` et `VISO`, 4,7 kΩ entre `VSEL` et `GNDISO`. Formule de la fiche
@@ -152,7 +164,7 @@ Noms des signaux : `+5V`, `+3V3`, `GND` viennent de la carte principale ;
 | 12 | VISO | `VISO_PH` + C105, C106 vers `GNDISO_PH` + R106 | sortie isolée 3,9 V |
 | 13 | VSEL | point milieu de R106 (vers `VISO_PH`) et R105 (vers `GNDISO_PH`) | réglage de tension |
 | 15 | NC | **rien** | ne rien connecter |
-| 17 | VDDISO | `VISO_PH` + C107, C108 vers `GNDISO_PH` | alimentation des données isolées |
+| 17 | VDDISO | `VISO_PH` + C107 vers `GNDISO_PH` | alimentation des données isolées |
 | 18 | SDA1 | `SDA_ISO_PH` + R103 vers `VISO_PH` | côté isolé |
 | 19 | SCL1 | `SCL_ISO_PH` + R104 vers `VISO_PH` | côté isolé |
 
@@ -210,8 +222,8 @@ le pH et pour l'ORP ; les quatre calculs ci-dessous refaits et confirmés.
   métallique. ⇒ **Règle, gratuite** : le corps des BNC ne touche aucun métal du boîtier, et
   les trous de fixation de la carte ne sont reliés à rien. À reporter dans l'étude du boîtier.
 - ℹ️ Préférence du relecteur, non retenue : retirer C104/C204 (la fiche ne demande que 0,01
-  à 0,1 µF sur `VDDP`). Gain non chiffrable ; on garde la disposition de la carte d'essai
-  du fabricant.
+  à 0,1 µF sur `VDDP`). Voir « C104 et C204 sont conservés » plus haut. En revanche son
+  raisonnement a été appliqué à C108/C208, où il est sans réserve.
 - ℹ️ **Envisagé et écarté par le relecteur** : protection contre les décharges sur la BNC
   (une fuite de 200 nA dans 100 MΩ fausserait la mesure de 20 V) ; garder le transistor de
   coupure ; condensateur entre les deux côtés de la barrière ; garde active autour de la
