@@ -13,7 +13,9 @@
 | `v3-mesure.kicad_pro` | projet KiCad 9 — c'est lui qu'on ouvre |
 | `v3-mesure.kicad_sch` | le schéma, une seule feuille A3 |
 | `v3-mesure.kicad_sym` + `sym-lib-table` | les quatre symboles propres à cette carte : ADM3260, module Atlas OEM, prise BNC, connecteur 8 voies |
-| `v3-mesure.pretty/` + `fp-lib-table` | les deux empreintes propres à cette carte : `Atlas_OEM` et `BNC_Dosin_801-0080_Coudee` |
+| `v3-mesure.pretty/` + `fp-lib-table` | les trois empreintes propres à cette carte : `Atlas_OEM`, `BNC_Dosin_801-0080_Coudee`, `Trou_M3_NPTH` |
+| `v3-mesure.kicad_pcb` | la carte — **squelette seulement** : contour, quatre couches, zones interdites, trous de fixation, repères |
+| `v3-mesure.kicad_dru` | la règle d'isolement entre les trois domaines |
 | `generer_schema.py` | le script qui a écrit le schéma depuis le tableau des connexions |
 
 **Le schéma (révision 0.5) est tracé avec de vrais fils** — demande de l'utilisateur du
@@ -134,6 +136,32 @@ elle ne suffit pas, on élargit la carte — rien d'autre n'en dépend.
 **Ce que cela demandera au boîtier**, le moment venu : abaisser l'appui de la carte de
 3,6 mm par rapport à la carte actuelle (axe de la BNC à 9,8 mm au-dessus de la carte, pour
 des perçages à 19,8 mm du fond), ou remonter les perçages ; poser la carte tout en bas.
+
+## Le fichier de carte : un squelette à compléter (2026-11-24)
+
+`v3-mesure.kicad_pcb` contient **ce qui ne se discute pas**, et aucun composant électrique :
+
+- le contour de 70 × 50 mm et la déclaration des **quatre couches** ;
+- la **barrière** et la **séparation des voies**, déclarées comme zones interdites sur les
+  quatre couches (ni piste, ni via, ni plan de cuivre ; les plots y sont admis, puisque les
+  ADM3260 chevauchent la barrière) ;
+- quatre trous de fixation non métallisés, avec le cuivre écarté autour ;
+- des repères sur les couches de dessin : axe de chaque BNC, position de l'âme, emplacement
+  indicatif des modules. Ils n'ont aucun effet électrique.
+
+Le projet range les fils en trois classes — `PRIMAIRE`, `ISO_PH`, `ISO_ORP` — et
+`v3-mesure.kicad_dru` impose **5,4 mm** entre deux classes différentes. ⚠️ 5,4 et non 5,5 :
+la limite est l'écart entre les deux rangées de plots de l'ADM3260 (5,45 mm) ; les bandes
+interdites, elles, font bien 5,5 mm. ⚠️ Cette règle compare des cuivres **d'une même
+couche** : le recouvrement entre couches est empêché par les zones interdites.
+
+**Pour continuer dans KiCad** : ouvrir la carte, puis *Outils › Mettre à jour le PCB à
+partir du schéma*. Les composants arrivent en vrac ; les placer dans leur zone, puis router.
+
+**Vérifié** : KiCad charge la carte et son contrôle des règles rend 0 violation — sur une
+carte encore vide. **Non vérifié** : que les zones interdites et la règle d'isolement
+réagissent bien dès qu'il y a du cuivre ; l'empilement des couches (épaisseurs de JLCPCB)
+n'est pas renseigné.
 
 ## Ce que le boîtier actuel impose (fichiers FreeCAD reçus le 2026-11-24)
 

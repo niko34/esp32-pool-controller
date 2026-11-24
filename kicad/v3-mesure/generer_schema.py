@@ -11,7 +11,7 @@ V2 = os.path.join(ICI, "..", "esp32-pool-controller", "esp32-pool-controller.kic
 if not os.path.exists(V2): V2 = "/root/esp32-pool-controller/kicad/esp32-pool-controller/esp32-pool-controller.kicad_sch"
 OUT = sys.argv[1]
 PRJ = "v3-mesure"
-ROOT = str(uuid.uuid4())
+ROOT = "15e90db4-b97c-4655-b3f3-5076f9e0263b"   # fixe : le projet et la carte y font référence
 def U(): return str(uuid.uuid4())
 FONT = "(effects (font (size 1.27 1.27)))"
 def r(v): return ("%.4f" % v).rstrip("0").rstrip(".")

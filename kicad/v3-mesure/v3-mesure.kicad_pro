@@ -5,12 +5,193 @@
   },
   "sheets": [
     [
-      "72d18d9e-9321-4b9a-8e22-aa85ef3193d5",
+      "15e90db4-b97c-4655-b3f3-5076f9e0263b",
       "Root"
     ]
   ],
   "schematic": {
     "legacy_lib_dir": "",
     "legacy_lib_list": []
+  },
+  "board": {
+    "design_settings": {
+      "rules": {
+        "min_copper_edge_clearance": 0.5,
+        "min_hole_clearance": 0.25,
+        "min_hole_to_hole": 0.25,
+        "min_through_hole_diameter": 0.3,
+        "min_via_diameter": 0.5,
+        "min_via_annular_width": 0.1,
+        "min_track_width": 0.15,
+        "min_clearance": 0.15
+      }
+    }
+  },
+  "net_settings": {
+    "meta": {
+      "version": 4
+    },
+    "classes": [
+      {
+        "name": "Default",
+        "clearance": 0.2,
+        "track_width": 0.25,
+        "via_diameter": 0.6,
+        "via_drill": 0.3,
+        "diff_pair_gap": 0.25,
+        "diff_pair_width": 0.2,
+        "diff_pair_via_gap": 0.25,
+        "microvia_diameter": 0.3,
+        "microvia_drill": 0.1,
+        "bus_width": 12,
+        "wire_width": 6,
+        "line_style": 0,
+        "priority": 2147483647,
+        "pcb_color": "rgba(0, 0, 0, 0.000)",
+        "schematic_color": "rgba(0, 0, 0, 0.000)"
+      },
+      {
+        "name": "PRIMAIRE",
+        "clearance": 0.2,
+        "track_width": 0.25,
+        "via_diameter": 0.6,
+        "via_drill": 0.3,
+        "diff_pair_gap": 0.25,
+        "diff_pair_width": 0.2,
+        "diff_pair_via_gap": 0.25,
+        "microvia_diameter": 0.3,
+        "microvia_drill": 0.1,
+        "bus_width": 12,
+        "wire_width": 6,
+        "line_style": 0,
+        "priority": 0,
+        "pcb_color": "rgba(0, 0, 0, 0.000)",
+        "schematic_color": "rgba(0, 0, 0, 0.000)"
+      },
+      {
+        "name": "ISO_PH",
+        "clearance": 0.2,
+        "track_width": 0.25,
+        "via_diameter": 0.6,
+        "via_drill": 0.3,
+        "diff_pair_gap": 0.25,
+        "diff_pair_width": 0.2,
+        "diff_pair_via_gap": 0.25,
+        "microvia_diameter": 0.3,
+        "microvia_drill": 0.1,
+        "bus_width": 12,
+        "wire_width": 6,
+        "line_style": 0,
+        "priority": 1,
+        "pcb_color": "rgba(0, 0, 0, 0.000)",
+        "schematic_color": "rgba(0, 0, 0, 0.000)"
+      },
+      {
+        "name": "ISO_ORP",
+        "clearance": 0.2,
+        "track_width": 0.25,
+        "via_diameter": 0.6,
+        "via_drill": 0.3,
+        "diff_pair_gap": 0.25,
+        "diff_pair_width": 0.2,
+        "diff_pair_via_gap": 0.25,
+        "microvia_diameter": 0.3,
+        "microvia_drill": 0.1,
+        "bus_width": 12,
+        "wire_width": 6,
+        "line_style": 0,
+        "priority": 2,
+        "pcb_color": "rgba(0, 0, 0, 0.000)",
+        "schematic_color": "rgba(0, 0, 0, 0.000)"
+      }
+    ],
+    "net_colors": null,
+    "netclass_assignments": null,
+    "netclass_patterns": [
+      {
+        "netclass": "PRIMAIRE",
+        "pattern": "+5V"
+      },
+      {
+        "netclass": "PRIMAIRE",
+        "pattern": "+3V3"
+      },
+      {
+        "netclass": "PRIMAIRE",
+        "pattern": "GND"
+      },
+      {
+        "netclass": "PRIMAIRE",
+        "pattern": "/SDA_PH"
+      },
+      {
+        "netclass": "PRIMAIRE",
+        "pattern": "/SCL_PH"
+      },
+      {
+        "netclass": "PRIMAIRE",
+        "pattern": "/SDA_ORP"
+      },
+      {
+        "netclass": "PRIMAIRE",
+        "pattern": "/SCL_ORP"
+      },
+      {
+        "netclass": "ISO_PH",
+        "pattern": "VISO_PH"
+      },
+      {
+        "netclass": "ISO_PH",
+        "pattern": "GNDISO_PH"
+      },
+      {
+        "netclass": "ISO_PH",
+        "pattern": "GND_SONDE_PH"
+      },
+      {
+        "netclass": "ISO_PH",
+        "pattern": "/SDA_ISO_PH"
+      },
+      {
+        "netclass": "ISO_PH",
+        "pattern": "/SCL_ISO_PH"
+      },
+      {
+        "netclass": "ISO_PH",
+        "pattern": "/VSEL_PH"
+      },
+      {
+        "netclass": "ISO_PH",
+        "pattern": "/PRB_PH"
+      },
+      {
+        "netclass": "ISO_ORP",
+        "pattern": "VISO_ORP"
+      },
+      {
+        "netclass": "ISO_ORP",
+        "pattern": "GNDISO_ORP"
+      },
+      {
+        "netclass": "ISO_ORP",
+        "pattern": "GND_SONDE_ORP"
+      },
+      {
+        "netclass": "ISO_ORP",
+        "pattern": "/SDA_ISO_ORP"
+      },
+      {
+        "netclass": "ISO_ORP",
+        "pattern": "/SCL_ISO_ORP"
+      },
+      {
+        "netclass": "ISO_ORP",
+        "pattern": "/VSEL_ORP"
+      },
+      {
+        "netclass": "ISO_ORP",
+        "pattern": "/PRB_ORP"
+      }
+    ]
   }
 }
