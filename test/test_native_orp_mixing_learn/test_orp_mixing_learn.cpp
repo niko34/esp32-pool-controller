@@ -358,6 +358,22 @@ void test_20_learning_cleanliness_excludes_calibration_and_stabilization(void) {
   TEST_ASSERT_TRUE_MESSAGE(stab, "proprete : !isStabilizationTimerActive(1) manquant");
 }
 
+// --- bug-216 : une séance de pH ouverte ne salit PLUS l'observation ; la pompe en marche, si
+void test_24_learning_cleanliness_ignores_open_ph_session_but_not_running_pump(void) {
+  char* txt = readWholeFile("src/pump_controller.cpp");
+  TEST_ASSERT_NOT_NULL_MESSAGE(txt, "src/pump_controller.cpp illisible : sentinelle aveugle, corriger le chemin");
+  char* call = tickCallText(txt, "const bool orpEnvClean =");
+  free(txt);
+  TEST_ASSERT_NOT_NULL_MESSAGE(call, "definition de orpEnvClean introuvable (hors commentaires)");
+  const bool phSession = strstr(call, "phDosingState.active") != NULL;
+  const bool pump = strstr(call, "pumpDuty[0] == 0") != NULL;
+  free(call);
+  TEST_ASSERT_FALSE_MESSAGE(phSession,
+      "bug-216 : phDosingState.active est revenu dans orpEnvClean ; une seance pH reste ouverte jusqu'a 3 h pour quelques minutes de pompe, l'apprentissage ORP ne retient alors plus aucune observation");
+  TEST_ASSERT_TRUE_MESSAGE(pump,
+      "proprete : pumpDuty[0] == 0 manquant ; la pompe pH en marche salit l'observation, seule la seance ouverte a ete retiree");
+}
+
 // --- C5 voie pH : le repli n'ajoute AUCUNE autorisation (pause < verrou horaire)
 void test_21_ph_fail_closed_pause_expires_before_hour_lock(void) {
   DosingWindowSourceInputs none; none.available = false;
@@ -419,5 +435,6 @@ int main(int, char**) {
   RUN_TEST(test_21_ph_fail_closed_pause_expires_before_hour_lock);
   RUN_TEST(test_22_cold_boot_learned_120_min_not_truncated);
   RUN_TEST(test_23_effective_delay_bounds);
+  RUN_TEST(test_24_learning_cleanliness_ignores_open_ph_session_but_not_running_pump);
   return UNITY_END();
 }

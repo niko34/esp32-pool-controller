@@ -53,7 +53,7 @@ Si la fenêtre suivait la durée apprise, toute observation future serait mécan
 - Visible : durée, origine et nombre d'observations servis sur `/data` et WS.
 
 ### Négatives / dette assumée
-- ⚠️ **L'apprentissage peut rester inerte** sur un bassin très demandeur : toute injection — **y compris d'acide** — salit l'observation et la fait jeter. Le rejet est chimiquement justifié (acidifier augmente la part active du chlore et fait monter la mesure sans ajout de chlore), mais ralentit la convergence. L'inertie reste **constatable** : le compte d'observations est affiché, les motifs de rejet sont journalisés.
+- ⚠️ **L'apprentissage peut rester inerte** sur un bassin très demandeur : toute injection — **y compris d'acide** — salit l'observation et la fait jeter. *(Amendé par bug-216, 2026-11-24 : seule la **marche** de la pompe pH salit désormais l'observation, plus la séance de pH ouverte — elle durait jusqu'à 3 h pour quelques minutes de pompe. Voir la fiche bug-216.)* Le rejet est chimiquement justifié (acidifier augmente la part active du chlore et fait monter la mesure sans ajout de chlore), mais ralentit la convergence. L'inertie reste **constatable** : le compte d'observations est affiché, les motifs de rejet sont journalisés.
 - ⚠️ **Au plafond, l'observation est jetée en silence** : la pause reste au plancher. L'asymétrie est **défavorable** : l'appareil est le moins patient là où le mélange est le plus lent. Renvoyé à une fiche de suivi, **non traité ici**.
 - Ce lot **ne supprime pas** les dépassements : celui du 18/11 vient de la taille de la dose, pas de la pause.
 

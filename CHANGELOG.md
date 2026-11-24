@@ -2,6 +2,14 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [3.3.1] - 2026-11-24
+
+### Firmware
+- **Régulation ORP (apprentissages du chlore, features 202 et 203)** : ils n'étaient presque jamais autorisés à observer, car ils s'interdisaient de le faire pendant toute séance de correction du pH (jusqu'à 3 h). Ils ne s'y interdisent plus que pendant la marche de la pompe pH. Il s'agissait d'une garde chimique volontaire dont la durée réelle de blocage n'avait pas été mesurée.
+- ⚠️ **Limite connue** : cela ne suffit pas encore à les faire aboutir quand le bassin est loin de sa consigne (l'appareil réinjecte avant d'avoir fini d'observer). Point ouvert, bug-216 ; effet non vérifié sur l'appareil.
+
+---
+
 ## [3.3.0] - 2026-11-23
 
 ### Fonctionnalités

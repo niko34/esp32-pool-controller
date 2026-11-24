@@ -4113,8 +4113,13 @@ void PumpControllerClass::updateDosingCore(unsigned long now) {
   tickManualPumpGuard(now, waterPresence);
 
   // feature-202 : pas d'observation de la montée ORP. Propre = eau présente,
-  // aucune injection pH/ORP (session ouverte ou pompe en marche, manuelle
-  // comprise) et eau de la conduite renouvelée (pas d'attente eau neuve).
+  // pompe pH à l'arrêt (manuelle comprise) et eau de la conduite renouvelée (pas
+  // d'attente eau neuve).
+  // bug-216 (2026-11-24) : une séance de pH OUVERTE ne salit plus l'observation ; seule
+  // la pompe en marche (`pumpDuty[0]`) le fait. Une séance reste ouverte jusqu'à 3 h
+  // pour quelques minutes de pompe : 8 observations sur 8 étaient rejetées en
+  // production. Une impulsion d'acide déplace l'ORP d'au plus ~0,1 mV, et dans le sens
+  // prudent (gate pool-chemistry P1 bis).
   //
   // ⛔ ÉTALONNAGE : gate pool-chemistry P2 du 2026-11-23 (condition BLOQUANTE).
   // Une session d'étalonnage ouverte, ou la stabilisation qui la suit, change
@@ -4127,7 +4132,7 @@ void PumpControllerClass::updateDosingCore(unsigned long now) {
   // feature-203 : la conjonction est SCINDÉE en deux moitiés nommées, sans changer sa
   // valeur pour 202 (qui reçoit `orpEnvClean && orpQuiet`) — une seule source du
   // prédicat, divergence impossible. L'épisode de rendement ne juge que `orpEnvClean`.
-  const bool orpEnvClean = waterPresence.waterPresent && !phDosingState.active &&
+  const bool orpEnvClean = waterPresence.waterPresent &&
                            pumpDuty[0] == 0 && measureValidity.isCirculationSettled() &&
                            !mqttCfg.calSessionOpen && !isStabilizationTimerActive(1);
   const bool orpQuiet = !orpDosingState.active && pumpDuty[1] == 0;
