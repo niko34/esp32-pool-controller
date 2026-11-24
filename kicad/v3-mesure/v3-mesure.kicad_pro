@@ -1,0 +1,16 @@
+{
+  "meta": {
+    "filename": "v3-mesure.kicad_pro",
+    "version": 3
+  },
+  "sheets": [
+    [
+      "72d18d9e-9321-4b9a-8e22-aa85ef3193d5",
+      "Root"
+    ]
+  ],
+  "schematic": {
+    "legacy_lib_dir": "",
+    "legacy_lib_list": []
+  }
+}
