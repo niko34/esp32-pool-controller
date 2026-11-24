@@ -203,7 +203,7 @@ def voie(sfx, n, oy, titre, module):
         net(V("VISO"), C(5+i) + ".1"); net(V("GNDISO"), C(5+i) + ".2")
     # module Atlas et rappels du bus isolé
     mx, my = 320.04, uy + 5.08
-    m = custom("Atlas_OEM", Mref, module, mx, my)
+    m = custom("Atlas_OEM", Mref, module, mx, my, PRJ + ":Atlas_OEM")
     x18, y18 = p["18"]; x19, y19 = p["19"]
     fil((x18, y18), m["1"]); fil((x19, y19), m["8"])
     etiq(V("SDA_ISO"), 200.66, y18, "d"); etiq(V("SCL_ISO"), 228.6, y19, "d")
@@ -222,7 +222,7 @@ def voie(sfx, n, oy, titre, module):
     for num in ("11", "14", "16", "20"): net(V("GNDISO"), Uref + "." + num)
     fil((xg2, yb2), (198.12, yb2)); jonction(xg2, yb2); drapeau(198.12, yb2)
     # prise BNC
-    j = custom("BNC", Jref, "BNC sonde %s" % sfx, 381, uy, lcsc="C3174924")
+    j = custom("BNC", Jref, "BNC coudee %s" % sfx, 381, uy, lcsc="C521219")
     fil(m["4"], j["1"]); fil(m["5"], j["2"])
     etiq(V("PRB"), 342.9, m["4"][1], "d")
     xj = 353.06; fil((xj, m["5"][1]), (xj, m["5"][1] + 10.16)); jonction(xj, m["5"][1]); masse(V("GND_SONDE"), xj, m["5"][1] + 10.16)
@@ -256,7 +256,7 @@ texte("Les fils sont traces a l'interieur de chaque voie.\nSeuls les quatre sign
 ecrire_fils()
 lib_symbols = "\n".join(list(REPRIS.values()) + list(CUSTOM.values()))
 sch = """(kicad_sch (version 20250114) (generator "eeschema") (generator_version "9.0") (uuid "%s") (paper "A3")
-(title_block (title "Carte de mesure v3 - pH et ORP, une barriere par voie") (date "2026-11-24") (rev "0.3")
+(title_block (title "Carte de mesure v3 - pH et ORP, une barriere par voie") (date "2026-11-24") (rev "0.4")
  (company "ESP32 Pool Controller") (comment 1 "Reference : kicad/v3-mesure/README.md"))
 (lib_symbols
 %s

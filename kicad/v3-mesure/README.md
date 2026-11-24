@@ -1,6 +1,6 @@
 # Carte de mesure du PCB v3 — composants et connexions
 
-> **État : schéma écrit (révision 0.3, vrais fils), ⚠️ pas encore relu par le relecteur.** Aucune carte n'est dessinée. Ce document est la référence contre
+> **État : schéma écrit (révision 0.4, vrais fils), ⚠️ pas encore relu par le relecteur.** Aucune carte n'est dessinée. Ce document est la référence contre
 > laquelle le schéma, puis la carte, sont relus.
 > Fiche de conception : [`feature-215`](../../specs/features/todo/feature-215-conception-du-pcb-v3.md) ·
 > contraintes de fabrication : [`docs/FABRICATION.md`](../../docs/FABRICATION.md).
@@ -13,9 +13,10 @@
 | `v3-mesure.kicad_pro` | projet KiCad 9 — c'est lui qu'on ouvre |
 | `v3-mesure.kicad_sch` | le schéma, une seule feuille A3 |
 | `v3-mesure.kicad_sym` + `sym-lib-table` | les quatre symboles propres à cette carte : ADM3260, module Atlas OEM, prise BNC, connecteur 8 voies |
+| `v3-mesure.pretty/` + `fp-lib-table` | l'empreinte propre à cette carte : `Atlas_OEM` |
 | `generer_schema.py` | le script qui a écrit le schéma depuis le tableau des connexions |
 
-**Le schéma (révision 0.3) est tracé avec de vrais fils** — demande de l'utilisateur du
+**Le schéma (révision 0.4) est tracé avec de vrais fils** — demande de l'utilisateur du
 2026-11-24, la révision 0.1 reliait tout par étiquettes. Les alimentations et les masses
 passent par les symboles habituels (flèche, masse), comme dans le schéma du v2. Seuls les
 quatre signaux du bus rejoignent le connecteur J1 par étiquette, parce que J1 est commun aux
@@ -25,16 +26,18 @@ deux voies.
 - **Dans le KiCad de l'utilisateur** (révision 0.1, 2026-11-24) : contrôle électrique à
   **0 erreur, 0 avertissement**. ⇒ Les noms d'empreintes standard (0402, 0805, 0603,
   SSOP-20, JST XH) existent bien dans ses bibliothèques.
-- **En ligne de commande** (révision 0.3, KiCad 9.0.2) : 0 erreur ; la liste des connexions
+- **En ligne de commande** (révision 0.4, KiCad 9.0.2) : 0 erreur ; la liste des connexions
   que KiCad extrait du schéma est **identique** à celle du tableau de ce document — 21 nets,
   12 broches volontairement en l'air ; rendu regardé en image, sans chevauchement.
   Sur ce poste, le contrôle rend des avertissements d'un seul type : les bibliothèques
   standard de KiCad n'y sont pas installées.
 
 **Ce qui n'est PAS vérifié**
-- ✅ Révision 0.2 ouverte dans le KiCad de l'utilisateur le 2026-11-24 : contrôle électrique sans problème. ⚠️ La révision 0.3 (C108/C208 retirés) n'y a pas encore été ouverte.
-- ⛔ **Deux empreintes ne sont pas attribuées** : le module Atlas OEM (à créer d'après ses
-  cotes) et la prise BNC (modèle à choisir).
+- ✅ Révision 0.2 ouverte dans le KiCad de l'utilisateur le 2026-11-24 : contrôle électrique sans problème. ⚠️ Les révisions 0.3 (C108/C208 retirés) et 0.4 (empreinte du module attribuée) n'y ont pas encore été ouvertes.
+- ⛔ **L'empreinte de la prise BNC n'est pas attribuée** : elle doit être dessinée d'après
+  la fiche de la prise retenue (voir « Disposition dans le boîtier »).
+- ⚠️ **L'empreinte `Atlas_OEM` n'a pas été confrontée à un module réel** : elle suit les
+  cotes publiées, pas une pièce mesurée.
 
 ⚠️ **`generer_schema.py` réécrit le schéma en entier.** Dès que le schéma est modifié à la
 main dans KiCad, ⛔ ne plus le relancer : il écraserait ces modifications.
@@ -42,6 +45,44 @@ main dans KiCad, ⛔ ne plus le relancer : il écraserait ces modifications.
 fil **s'arrête** à ce point. Un fil qui passe sur une broche sans s'y arrêter n'est pas
 relié, même avec un point de jonction dessiné. Le script coupe donc chaque fil à chaque
 point de connexion.
+
+## Disposition dans le boîtier (utilisateur, 2026-11-24)
+
+**La carte est montée à l'horizontale (« paysage ») et les prises BNC sortent par le bas.**
+⇒ Les deux BNC sont sur le **grand bord du bas**, et ce sont des prises **coudées**.
+
+Conséquences pour le placement, à tenir au routage :
+- chaque module Atlas est tourné pour que ses broches 4 (`PRB`) et 5 (`PRB_GND`) regardent
+  **vers le bas**, face à sa BNC : c'est ce qui garde la piste de sonde courte ;
+- le plan `GND_SONDE` de chaque voie occupe la zone entre le module et le bord du bas
+  (Atlas, p. 33 : le plan de sonde couvre le coin des broches 4 et 5) ;
+- le connecteur J1 et le côté ESP32 sont à l'opposé, vers le haut ou le centre ;
+- ⚠️ le corps des BNC traverse la paroi du bas : **paroi isolante, ou trou plus large que le
+  corps** — il ne doit toucher aucun métal relié à la terre (voir « Relecture »).
+
+**Prise pressentie** : `C521219` — dosinconn DOSIN-801-0080, BNC coudée 50 Ω pour carte,
+traversante, pièce étendue (lue sur la fiche JLCPCB le 2026-11-24). ⚠️ **Non vérifié** : si
+c'est bien une embase femelle, la matière de son corps, son stock, et surtout **ses cotes
+de perçage** — l'empreinte ne se dessine que d'après sa fiche technique.
+
+## L'empreinte du module Atlas (`v3-mesure:Atlas_OEM`)
+
+Dessinée d'après la documentation du pH OEM V4.7, cotes **lues sur les figures** :
+
+| Cote | Valeur | Page |
+|---|---|---|
+| Corps du module | 12 × 11 mm, hauteur 2,65 mm | 6 |
+| Pas entre plots | 2,3 mm | 6 et 38 |
+| Écart entre les deux rangées de plots, centre à centre | 12 mm (11,9 mm entre demi-trous du module) | 38 et 6 |
+| Taille d'un plot | 2,5 × 1,4 mm | 38 |
+| Numérotation, vue de dessus | 1 à 5 de haut en bas à gauche ; 10 à 6 de haut en bas à droite | 33 |
+
+- L'empreinte porte une **zone interdite aux vias** sous tout le corps du module, sur toutes
+  les couches : la consigne d'Atlas (p. 35) est ainsi contrôlée par KiCad, pas tenue à l'œil.
+- Vérifié : KiCad lit la bibliothèque et trace l'empreinte ; le rendu a été comparé à la
+  figure de la page 38. ⚠️ La zone interdite n'a pas encore été éprouvée par un contrôle de
+  règles sur une carte.
+- ℹ️ Le module ORP a le même brochage ; ses cotes n'ont pas été relues séparément.
 
 ## Ce que fait cette carte
 
@@ -107,7 +148,7 @@ Références de la voie pH en `1xx`, de la voie ORP en `2xx` : les deux voies so
 | R103, R104, R203, R204 | Rappels du bus, côté isolé | 4,7 kΩ 1 % | 0603 | C23162 (base) | schéma Atlas |
 | R105, R205 | Réglage de tension, bas (`RBOTTOM`) | **4,7 kΩ 1 %** | 0603 | C23162 (base) | figure d'Atlas (R6) |
 | R106, R206 | Réglage de tension, haut (`RTOP`) | **10 kΩ 1 %** | 0603 | C25804 (base) | figure d'Atlas (R7) |
-| J101, J201 | Connecteur de sonde | **BNC** femelle, pour carte | traversant | C3174924 (Molex 73100-0105, étendue) ou C521219 (coudée, étendue) — ⚠️ orientation à vérifier | utilisateur (2026-11-24) : les sondes en place sont en BNC |
+| J101, J201 | Connecteur de sonde | **BNC coudée**, pour carte | traversant | C521219 (dosinconn DOSIN-801-0080, étendue) — ⚠️ fiche technique à lire | utilisateur (2026-11-24) : les sondes en place sont en BNC |
 | J1 | Connecteur vers la carte principale | 8 voies, pas de 2,5 mm, JST XH (B8B-XH-A) | traversant | C157972 (étendue) | fiche feature-215 |
 
 Total par voie, hors module et connecteurs : 1 circuit, **7 condensateurs**, 6 résistances.
@@ -247,15 +288,15 @@ le pH et pour l'ORP ; les quatre calculs ci-dessous refaits et confirmés.
 | # | Point | Qui tranche |
 |---|---|---|
 | O1 | ✅ `RTOP` = 10 kΩ, `RBOTTOM` = 4,7 kΩ, lus sur la figure d'Atlas | fermé |
-| O2 | ✅ Connecteur de sonde : **BNC** (sondes en place). Reste à choisir le modèle : droit ou coudé, selon le boîtier | schéma |
+| O2 | ✅ Connecteur de sonde : **BNC coudée**, sur le bord du bas (utilisateur, 2026-11-24) | fermé |
 | O3 | ✅ Références proposées (voir liste). Reste : stocks réels au devis, orientation de la BNC | devis |
 | O4 | ✅ Révision **F (12/2024)** relue par le relecteur sur une copie tierce : broches, section de routage et 2,2 pF inchangés ; elle donne **5,5 mm** d'isolement dans le plan de la carte | fermé |
 | O5 | ✅ **Quatre couches** — décision de l'utilisateur du 2026-11-24, sur avis du relecteur. Condition : une zone interdite au cuivre sur **toutes** les couches, sous chaque ADM3260 et entre les domaines, contrôlée par KiCad. Gain attendu : bruit d'alimentation (460 → 64 mV d'après AN-0971) ; gain sur la piste de sonde faible et non chiffré. Risque écarté par la zone interdite : 1 cm² de plans internes qui se recouvrent ajouterait 3,7 à 18 pF, soit 2 à 8 fois l'isolateur | fermé |
 | O6 | Ordre des voies de J1 et référence exacte du connecteur | schéma |
-| O7 | Empreinte du module OEM : cotes à reprendre de la documentation (12 mm, pas 2,5 mm, plots 2,3 × 1,4 mm, à confirmer sur la figure) | schéma |
+| O7 | ✅ Empreinte du module OEM créée (`v3-mesure:Atlas_OEM`) : pas **2,3 mm**, plots **2,5 × 1,4 mm**, 12 mm entre rangées — la ligne d'origine avait interverti pas et longueur de plot | fermé |
 | O8 | ✅ **5,5 mm sur toutes les couches** entre le côté ESP32 et chaque voie, et entre les deux voies (isolation de fonctionnement, tout est en très basse tension) | fermé |
 | O9 | Courant sur le `+5V` à inscrire au contrat de liaison : 12 mA au plus par voie à vide, 104 mA à pleine charge (fiche ADM3260, tableau 2) | schéma |
-| O10 | Quelles pattes de l'empreinte BNC sont le corps | schéma |
+| O10 | Empreinte de la BNC coudée `C521219` : à dessiner d'après sa fiche technique ; dire quelles pattes sont le corps | à faire |
 
 ## Règles de routage à ne pas oublier (rappel, détail dans la fiche)
 
