@@ -222,7 +222,7 @@ def voie(sfx, n, oy, titre, module):
     for num in ("11", "14", "16", "20"): net(V("GNDISO"), Uref + "." + num)
     fil((xg2, yb2), (198.12, yb2)); jonction(xg2, yb2); drapeau(198.12, yb2)
     # prise BNC
-    j = custom("BNC", Jref, "BNC coudee %s" % sfx, 381, uy, lcsc="C521219")
+    j = custom("BNC", Jref, "BNC coudee %s" % sfx, 381, uy, PRJ + ":BNC_Dosin_801-0080_Coudee", "C521219")
     fil(m["4"], j["1"]); fil(m["5"], j["2"])
     etiq(V("PRB"), 342.9, m["4"][1], "d")
     xj = 353.06; fil((xj, m["5"][1]), (xj, m["5"][1] + 10.16)); jonction(xj, m["5"][1]); masse(V("GND_SONDE"), xj, m["5"][1] + 10.16)
@@ -256,7 +256,7 @@ texte("Les fils sont traces a l'interieur de chaque voie.\nSeuls les quatre sign
 ecrire_fils()
 lib_symbols = "\n".join(list(REPRIS.values()) + list(CUSTOM.values()))
 sch = """(kicad_sch (version 20250114) (generator "eeschema") (generator_version "9.0") (uuid "%s") (paper "A3")
-(title_block (title "Carte de mesure v3 - pH et ORP, une barriere par voie") (date "2026-11-24") (rev "0.4")
+(title_block (title "Carte de mesure v3 - pH et ORP, une barriere par voie") (date "2026-11-24") (rev "0.5")
  (company "ESP32 Pool Controller") (comment 1 "Reference : kicad/v3-mesure/README.md"))
 (lib_symbols
 %s

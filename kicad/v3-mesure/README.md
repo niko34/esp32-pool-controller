@@ -1,6 +1,6 @@
 # Carte de mesure du PCB v3 — composants et connexions
 
-> **État : schéma écrit (révision 0.4, vrais fils), ⚠️ pas encore relu par le relecteur.** Aucune carte n'est dessinée. Ce document est la référence contre
+> **État : schéma écrit (révision 0.5, vrais fils, toutes les empreintes attribuées), ⚠️ pas encore relu par le relecteur.** Aucune carte n'est dessinée. Ce document est la référence contre
 > laquelle le schéma, puis la carte, sont relus.
 > Fiche de conception : [`feature-215`](../../specs/features/todo/feature-215-conception-du-pcb-v3.md) ·
 > contraintes de fabrication : [`docs/FABRICATION.md`](../../docs/FABRICATION.md).
@@ -13,10 +13,10 @@
 | `v3-mesure.kicad_pro` | projet KiCad 9 — c'est lui qu'on ouvre |
 | `v3-mesure.kicad_sch` | le schéma, une seule feuille A3 |
 | `v3-mesure.kicad_sym` + `sym-lib-table` | les quatre symboles propres à cette carte : ADM3260, module Atlas OEM, prise BNC, connecteur 8 voies |
-| `v3-mesure.pretty/` + `fp-lib-table` | l'empreinte propre à cette carte : `Atlas_OEM` |
+| `v3-mesure.pretty/` + `fp-lib-table` | les deux empreintes propres à cette carte : `Atlas_OEM` et `BNC_Dosin_801-0080_Coudee` |
 | `generer_schema.py` | le script qui a écrit le schéma depuis le tableau des connexions |
 
-**Le schéma (révision 0.4) est tracé avec de vrais fils** — demande de l'utilisateur du
+**Le schéma (révision 0.5) est tracé avec de vrais fils** — demande de l'utilisateur du
 2026-11-24, la révision 0.1 reliait tout par étiquettes. Les alimentations et les masses
 passent par les symboles habituels (flèche, masse), comme dans le schéma du v2. Seuls les
 quatre signaux du bus rejoignent le connecteur J1 par étiquette, parce que J1 est commun aux
@@ -26,18 +26,17 @@ deux voies.
 - **Dans le KiCad de l'utilisateur** (révision 0.1, 2026-11-24) : contrôle électrique à
   **0 erreur, 0 avertissement**. ⇒ Les noms d'empreintes standard (0402, 0805, 0603,
   SSOP-20, JST XH) existent bien dans ses bibliothèques.
-- **En ligne de commande** (révision 0.4, KiCad 9.0.2) : 0 erreur ; la liste des connexions
+- **En ligne de commande** (révision 0.5, KiCad 9.0.2) : 0 erreur ; la liste des connexions
   que KiCad extrait du schéma est **identique** à celle du tableau de ce document — 21 nets,
   12 broches volontairement en l'air ; rendu regardé en image, sans chevauchement.
   Sur ce poste, le contrôle rend des avertissements d'un seul type : les bibliothèques
   standard de KiCad n'y sont pas installées.
 
 **Ce qui n'est PAS vérifié**
-- ✅ Révision 0.2 ouverte dans le KiCad de l'utilisateur le 2026-11-24 : contrôle électrique sans problème. ⚠️ Les révisions 0.3 (C108/C208 retirés) et 0.4 (empreinte du module attribuée) n'y ont pas encore été ouvertes.
-- ⛔ **L'empreinte de la prise BNC n'est pas attribuée** : elle doit être dessinée d'après
-  la fiche de la prise retenue (voir « Disposition dans le boîtier »).
-- ⚠️ **L'empreinte `Atlas_OEM` n'a pas été confrontée à un module réel** : elle suit les
-  cotes publiées, pas une pièce mesurée.
+- ✅ Révision 0.2 ouverte dans le KiCad de l'utilisateur le 2026-11-24 : contrôle électrique sans problème. ⚠️ Les révisions 0.3 (C108/C208 retirés) à 0.5 (empreintes du module et de la BNC attribuées) n'y ont pas encore été ouvertes.
+- ⚠️ **Aucune des deux empreintes propres n'a été confrontée à une pièce réelle** : elles
+  suivent les plans publiés. Avant de commander la carte, imprimer le routage à l'échelle 1
+  et y poser un module Atlas et une prise BNC.
 
 ⚠️ **`generer_schema.py` réécrit le schéma en entier.** Dès que le schéma est modifié à la
 main dans KiCad, ⛔ ne plus le relancer : il écraserait ces modifications.
@@ -60,10 +59,123 @@ Conséquences pour le placement, à tenir au routage :
 - ⚠️ le corps des BNC traverse la paroi du bas : **paroi isolante, ou trou plus large que le
   corps** — il ne doit toucher aucun métal relié à la terre (voir « Relecture »).
 
-**Prise pressentie** : `C521219` — dosinconn DOSIN-801-0080, BNC coudée 50 Ω pour carte,
-traversante, pièce étendue (lue sur la fiche JLCPCB le 2026-11-24). ⚠️ **Non vérifié** : si
-c'est bien une embase femelle, la matière de son corps, son stock, et surtout **ses cotes
-de perçage** — l'empreinte ne se dessine que d'après sa fiche technique.
+**Prise retenue** : `C521219` — dosinconn **DOSIN-801-0080**, « BNC jack for PCB », 50 Ω,
+coudée, traversante, pièce étendue chez JLCPCB (2 832 en stock chez le distributeur le
+2026-11-24). Plan du fabricant (révision A) lu le 2026-11-24 :
+
+| Ce que dit le plan | Valeur |
+|---|---|
+| Genre | embase femelle (« jack ») ✅ |
+| Corps | **laiton nickelé — donc métallique** ; isolant en téflon |
+| Fixation | nez **fileté M12 × 0,75**, avec écrou et joint : la prise se **serre sur la paroi** |
+| Pattes de corps | 4, Ø 1,2 mm, au pas de **8 mm** (le long de l'axe) × **10 mm** (en travers) |
+| Âme | Ø 1 mm, au centre des quatre pattes |
+| Hauteur de l'axe au-dessus de la carte | 9,8 mm |
+| Longueur totale | 29,5 mm |
+
+⚠️ **Conséquence directe pour le boîtier** : la prise est faite pour être serrée par son écrou
+sur la paroi, et son corps est en métal. ⇒ **La paroi du bas doit être isolante** (plastique).
+Sur une paroi métallique reliée à la terre, le serrage relierait `GND_SONDE` à la terre et
+les deux voies entre elles : l'isolation serait annulée. Le joint, lui, est une bonne chose
+en local humide.
+
+**Empreinte** : `v3-mesure:BNC_Dosin_801-0080_Coudee`, nez vers le bas. Âme = plot 1 ; les
+quatre pattes de corps = plot 2 (`GND_SONDE`). ✅ Les positions des cinq trous viennent des
+cotes écrites sur le plan. ⚠️ Le contour du corps et la position de la paroi (≈ 6,7 mm de
+l'âme) sont **mesurés sur le dessin**, pas cotés : à vérifier pièce en main. ⚠️ Perçages
+choisis par moi : 1,5 mm pour les pattes, 1,3 mm pour l'âme.
+
+## Dimensions et zones de la carte (proposition du 2026-11-24)
+
+**Règle donnée par l'utilisateur** : le boîtier actuel sert à l'idée générale de disposition ;
+les tailles des cartes se fixent librement ; **le boîtier sera adapté ensuite** aux cartes.
+
+**Carte de mesure : 70 × 50 mm, quatre couches, 1,6 mm.** Grand côté à l'horizontale, les
+deux BNC sur le bord du bas.
+
+```
+        0        17      35      53       70 mm
+      0 +----------------------------------+
+        | o   COTE ESP32 : J1 au centre  o |   bande de 12 mm :
+        |     C101-C104, R101-R102 (x2)    |   connecteur, découplage, rappels
+     12 +- - - -[U101]- - - - -[U201]- - - +
+        |       barrière : 5,5 mm sans     |   les deux ADM3260 à cheval dessus
+   17,5 +- - - - - - - -+   +- - - - - - - +
+        |  ILE pH        | | |  ILE ORP    |   5,5 mm sans cuivre entre les îles
+        |  C105-C107     | | |  C205-C207  |
+        |  R103-R106     | | |  R203-R206  |
+        |  [U102 Atlas]  | | |  [U202]     |
+        | o [J101 BNC]   | | |  [J201]   o |
+     50 +------|---------+---+----|--------+
+              16,85             53,15         axes des BNC : entraxe 36,3 mm
+```
+
+| Élément | Valeur | Pourquoi |
+|---|---|---|
+| Largeur | 70 mm | deux îles de 30,8 mm + 5,5 mm entre elles + 1,45 mm de marge de chaque côté |
+| Hauteur | 50 mm | bande ESP32 12 mm + barrière 5,5 mm + îles 32,5 mm |
+| Entraxe des BNC | **36,3 mm** | celui des deux perçages existants du boîtier : ils peuvent resservir |
+| Axe des BNC | à X = 16,85 et 53,15 mm | centre de chaque île |
+| Âme des BNC | à 6,0 mm du bord du bas | la paroi intérieure est à ≈ 6,7 mm de l'âme : 0,7 mm de jeu entre carte et paroi |
+| Barrière | bande sans cuivre de 5,5 mm, de Y = 12 à 17,5 mm | fiche ADM3260 rév. F ; les deux isolateurs la chevauchent |
+| Séparation des voies | bande sans cuivre de 5,5 mm, de X = 32,25 à 37,75 mm | les deux voies ne partagent rien |
+| Fixations | 4 trous Ø 3,2 mm **non métallisés**, à 3,5 mm des bords | reliés à rien (relecture) ; cuivre écarté de 2 mm autour |
+
+**Dans chaque île, de haut en bas** : la moitié isolée de l'ADM3260 et ses sept composants ;
+le module Atlas ; la prise BNC. Le module se place pour que son plot 4 (`PRB`) soit dans
+l'axe de l'âme de la BNC : la piste de sonde descend alors tout droit entre les deux pattes
+de corps, sur **moins de 10 mm**.
+
+⚠️ **Ce que cette proposition n'a pas prouvé** : c'est un plan de zones fait au calcul des
+encombrements, ⛔ pas un placement vérifié dans KiCad. La largeur d'île (30,8 mm) pour un
+module de 14,5 mm plots compris, une BNC de 14 mm et le plan de sonde reste à éprouver ; si
+elle ne suffit pas, on élargit la carte — rien d'autre n'en dépend.
+
+**Ce que cela demandera au boîtier**, le moment venu : abaisser l'appui de la carte de
+3,6 mm par rapport à la carte actuelle (axe de la BNC à 9,8 mm au-dessus de la carte, pour
+des perçages à 19,8 mm du fond), ou remonter les perçages ; poser la carte tout en bas.
+
+## Ce que le boîtier actuel impose (fichiers FreeCAD reçus le 2026-11-24)
+
+L'utilisateur a transmis cinq pièces du boîtier « V14 » (platine murale, capot de
+l'alimentation, coupon d'essai), datées du 2026-10-07. Les sources FreeCAD restent **hors du
+dépôt**. Relevé fait en lisant les cotes maîtresses et la géométrie des fichiers ; ⚠️ non
+ouvert dans FreeCAD, aucune vue 3D regardée.
+
+| Relevé | Valeur |
+|---|---|
+| Platine murale, hors tout | 210 × 175 mm, profondeur 88,2 mm |
+| Matière | **ASA** (plastique imprimé) ⇒ ✅ **paroi isolante** : la condition posée pour les BNC est remplie |
+| Paroi du bas | épaisseur **3,2 mm** |
+| Perçages de la paroi du bas | cinq, tous de **Ø 13 mm** : trois à X = 44 / 68 / 88 mm (à 49 mm du fond), deux à X = 123,1 / 159,4 mm (à 19,8 mm du fond) |
+| Entraxe des deux perçages de droite | **36,3 mm** |
+| Cloison du compartiment secteur | à X = 54,5 mm ; capot de l'alimentation RPS-30-12 : 60,8 × 86,2 × 34 mm |
+| Carte actuelle (v2) | 119,38 × 119,38 mm, bord gauche à X = 76,62 mm, sur entretoises de 8,8 mm, dos de carte à 12 mm du fond |
+| Joint | gorge de 2,8 × 1,4 mm : boîtier étanche |
+
+**Ce qui tombe bien**
+- La paroi est en plastique : les BNC à corps métallique peuvent y être serrées sans annuler
+  l'isolation.
+- Les perçages font Ø 13 mm et le nez de la BNC est fileté **M12** : il passe.
+- Paroi 3,2 mm + joint 0,8 mm + écrou 2,5 mm = 6,5 mm, pour un filetage d'environ 7,2 mm
+  (⚠️ longueur **mesurée sur le plan** de la prise, non cotée) : le serrage tient, de peu.
+
+**Ce qui ne tombe pas juste, et qu'il faudra adapter** — l'utilisateur a prévenu que
+l'intérieur serait repris pour les trois cartes :
+- **Hauteur des BNC.** Les deux perçages de droite sont à 19,8 mm du fond. L'axe de la BNC
+  retenue est à 9,8 mm au-dessus de la carte. ⇒ Pour les réutiliser, le dessus de la carte
+  de mesure doit être à 10,0 mm du fond, soit un dos de carte à 8,4 mm (carte de 1,6 mm),
+  contre 12 mm pour la carte actuelle. Sinon, on déplace les perçages.
+- **Position de la carte de mesure.** L'âme de chaque BNC se trouve à environ 6,7 mm de la
+  face intérieure de la paroi du bas : la carte de mesure se place tout en bas du boîtier.
+- **Entraxe.** 36,3 mm entre les deux BNC si l'on garde les perçages : c'est la distance
+  entre les deux voies. Avec 5,5 mm d'isolement entre voies, cela laisse ~30 mm de large
+  par voie au niveau des prises — ⚠️ **à vérifier au placement**, c'est serré pour un
+  module de 12 mm, sa prise de 14 mm et le plan de sonde.
+- **Place pour trois cartes.** À droite de la cloison secteur, il reste environ 145 mm de
+  large sur 160 mm de haut. Une carte de mesure en bas **plus** une carte principale de la
+  taille du v2 (119 mm) ne tiennent pas l'une au-dessus de l'autre. ⇒ La carte principale
+  du v3 doit être plus petite que celle du v2, ou la disposition change.
 
 ## L'empreinte du module Atlas (`v3-mesure:Atlas_OEM`)
 
@@ -148,7 +260,7 @@ Références de la voie pH en `1xx`, de la voie ORP en `2xx` : les deux voies so
 | R103, R104, R203, R204 | Rappels du bus, côté isolé | 4,7 kΩ 1 % | 0603 | C23162 (base) | schéma Atlas |
 | R105, R205 | Réglage de tension, bas (`RBOTTOM`) | **4,7 kΩ 1 %** | 0603 | C23162 (base) | figure d'Atlas (R6) |
 | R106, R206 | Réglage de tension, haut (`RTOP`) | **10 kΩ 1 %** | 0603 | C25804 (base) | figure d'Atlas (R7) |
-| J101, J201 | Connecteur de sonde | **BNC coudée**, pour carte | traversant | C521219 (dosinconn DOSIN-801-0080, étendue) — ⚠️ fiche technique à lire | utilisateur (2026-11-24) : les sondes en place sont en BNC |
+| J101, J201 | Connecteur de sonde | **BNC coudée**, pour carte | traversant | C521219 (dosinconn DOSIN-801-0080, étendue) | utilisateur (2026-11-24) : les sondes en place sont en BNC |
 | J1 | Connecteur vers la carte principale | 8 voies, pas de 2,5 mm, JST XH (B8B-XH-A) | traversant | C157972 (étendue) | fiche feature-215 |
 
 Total par voie, hors module et connecteurs : 1 circuit, **7 condensateurs**, 6 résistances.
@@ -296,7 +408,7 @@ le pH et pour l'ORP ; les quatre calculs ci-dessous refaits et confirmés.
 | O7 | ✅ Empreinte du module OEM créée (`v3-mesure:Atlas_OEM`) : pas **2,3 mm**, plots **2,5 × 1,4 mm**, 12 mm entre rangées — la ligne d'origine avait interverti pas et longueur de plot | fermé |
 | O8 | ✅ **5,5 mm sur toutes les couches** entre le côté ESP32 et chaque voie, et entre les deux voies (isolation de fonctionnement, tout est en très basse tension) | fermé |
 | O9 | Courant sur le `+5V` à inscrire au contrat de liaison : 12 mA au plus par voie à vide, 104 mA à pleine charge (fiche ADM3260, tableau 2) | schéma |
-| O10 | Empreinte de la BNC coudée `C521219` : à dessiner d'après sa fiche technique ; dire quelles pattes sont le corps | à faire |
+| O10 | ✅ Empreinte de la BNC coudée créée d'après le plan du fabricant : âme au centre, quatre pattes de corps | fermé |
 
 ## Règles de routage à ne pas oublier (rappel, détail dans la fiche)
 
