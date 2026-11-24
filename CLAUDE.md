@@ -183,6 +183,7 @@ Ces règles sont **non négociables** — même si l'utilisateur demande de les 
 | `debugger` | Analyse logs/crash dumps, reproduction de bugs | Dès qu'un bug est rapporté ou crash ESP32 |
 | `code-reviewer` | Revue critique sécurité/qualité/concurrence | Avant tout commit |
 | `doc-writer` | README, `docs/`, CHANGELOG, commentaires | Quand le comportement visible change |
+| `electronics-reviewer` | Relecture indépendante des cartes (PCB v3) : composants, connexions, schéma, routage, contre les documentations des fabricants et la fiche de conception. Avis argumentés et chiffrés, solution la plus simple d'abord. **Ne dessine pas, ne modifie rien.** | Avant de figer un schéma, avant de commander une carte, et sur tout choix de composant ou d'isolation |
 
 ### ⚠️ La règle d'ACCUMULATION (`ux-ui-designer`)
 
