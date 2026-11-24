@@ -4,7 +4,7 @@
 - **ID** : bug-216
 - **Slug** : l-apprentissage-orp-ne-retient-aucune-observation
 - **Type** : bug
-- **Statut** : doing — **volet 1 livré en v3.3.1 (retrait pur), ⚠️ non déployé** ; volets 2 et 3 en attente de R1/R2
+- **Statut** : doing — **volet 1 livré en v3.3.1 (retrait pur), déployé sur l'appareil le 2026-11-24 à 20 h 54** (firmware seul, signé ; `/get-system-info` rend 3.3.1 ; compteurs du jour conservés) ; volets 2 et 3 en attente de R1/R2
 - **Priorité** : haute — ⚠️ **constaté en production le 2026-11-24** : les deux apprentissages
   livrés en v3.2.0 et v3.3.0 sont restés à zéro observation, et l'ORP a dépassé sa cible de
   110 mV après une nuit de filtration.
@@ -303,7 +303,7 @@ changement validé en P1 bis, vérifié par l'agent principal dans `git diff`.
 **Pas d'ADR** : la décision est un retrait, tracé dans cette fiche ; note datée ajoutée à
 l'ADR-0145.
 
-**Reste ouvert** : déploiement (accord de l'utilisateur requis) ; critère « au moins une
+**Reste ouvert** : critère « au moins une
 observation close sur une journée type », vérifiable seulement sur l'appareil ; volets 2 et
 3 ; décision de fond — garder ou non cet apprentissage — sur les relevés (R1).
 
