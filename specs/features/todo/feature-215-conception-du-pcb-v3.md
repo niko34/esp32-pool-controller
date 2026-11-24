@@ -331,8 +331,12 @@ cartes à deux couches, ce qui faciliterait le routage. ⚠️ **Prix non vérif
 constater sur le devis réel, aux dimensions de **chaque** carte (une offre de ce type est en
 général bornée en taille) et **assemblage compris**. Voir V17.
 
-⛔ **Ce n'est pas encore une décision** : c'est une possibilité ouverte, à trancher carte par
-carte au moment du schéma.
+⛔ **Ce n'est pas encore une décision** : les **deux options restent ouvertes**, à trancher
+carte par carte au moment du schéma.
+
+⭐ **Le critère, posé par l'utilisateur le 2026-11-24 : ⛔ pas le prix.** Quatre couches si la
+carte en est **meilleure et plus simple à concevoir** ; deux couches s'il n'y a **aucun
+avantage de facilité ni de qualité**. ⇒ Le choix s'écrit avec sa raison, pour chaque carte.
 
 **Ce que cela apporterait**
 - **Un plan de masse continu** en couche interne : les retours de courant sont courts, le
@@ -382,7 +386,7 @@ carte de mesure, le gain existe mais dépend du respect strict de la coupure de 
 | V14 | **Nettoyage après soudure chez JLCPCB** | ⚠️ **relevé le 2026-11-24** : flux « sans nettoyage », résidu jugé normal par l'atelier, aucune option de nettoyage trouvée. ⏳ À demander par écrit ; à défaut, nettoyage à la réception sur chaque carte |
 | V15 | **Enrobage en résine transparente** des modules | protection contre l'humidité ; ⚠️ irréversible, à faire après essai de la carte |
 | V16 | **Note d'application AN-0971** de l'ADM3260 | ⚠️ **arbitrage** rayonnement contre capacité de barrière — voir « Un conflit à arbitrer » |
-| V17 | **Quatre couches au prix de deux** chez JLCPCB | ⚠️ à constater sur devis réel, par carte, assemblage compris ; relever aussi l'empilement proposé (épaisseur entre couches) — voir « Possibilité : des cartes à quatre couches » |
+| V17 | **Deux ou quatre couches**, carte par carte | ⚠️ critère = qualité et facilité de conception, ⛔ pas le prix (utilisateur, 2026-11-24). Relever l'empilement proposé par JLCPCB (épaisseur entre couches) ; le prix se constate sur devis mais ne décide pas — voir « Possibilité : des cartes à quatre couches » |
 
 ## Conséquence logicielle — ⛔ hors de cette fiche
 
@@ -595,7 +599,7 @@ fige après M3.
 
 **Vérifications avant schéma**
 - [ ] V1 à V17 — tableau « Points à vérifier AVANT de dessiner »
-- [ ] P0 — Trancher où vit le v3 dans le dépôt
+- [x] P0 — Où vit le v3 dans le dépôt : ✅ **un dossier neuf à côté du v2** (utilisateur, 2026-11-24). Le v2 (`kicad/esp32-pool-controller/`) reste intact et gelé. ⚠️ Nom du dossier à fixer à la création du premier projet
 
 **Conception**
 - [ ] P1 — Schéma : ESP32 intégré, USB, horloge + pile
