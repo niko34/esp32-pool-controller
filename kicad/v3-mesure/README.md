@@ -1,7 +1,6 @@
 # Carte de mesure du PCB v3 — composants et connexions
 
-> **État : premier schéma écrit (révision 0.1), ⚠️ pas encore ouvert dans KiCad par
-> l'utilisateur ni relu.** Aucune carte n'est dessinée. Ce document est la référence contre
+> **État : schéma écrit (révision 0.2, vrais fils), ⚠️ pas encore relu par le relecteur.** Aucune carte n'est dessinée. Ce document est la référence contre
 > laquelle le schéma, puis la carte, sont relus.
 > Fiche de conception : [`feature-215`](../../specs/features/todo/feature-215-conception-du-pcb-v3.md) ·
 > contraintes de fabrication : [`docs/FABRICATION.md`](../../docs/FABRICATION.md).
@@ -16,27 +15,33 @@
 | `v3-mesure.kicad_sym` + `sym-lib-table` | les quatre symboles propres à cette carte : ADM3260, module Atlas OEM, prise BNC, connecteur 8 voies |
 | `generer_schema.py` | le script qui a écrit le schéma depuis le tableau des connexions |
 
-**Le schéma relie par étiquettes** : deux broches qui portent le même nom sont reliées. Il y
-a très peu de fils tracés. C'est voulu : chaque broche se lit et se compare au tableau
-ci-dessous sans suivre un fil.
+**Le schéma (révision 0.2) est tracé avec de vrais fils** — demande de l'utilisateur du
+2026-11-24, la révision 0.1 reliait tout par étiquettes. Les alimentations et les masses
+passent par les symboles habituels (flèche, masse), comme dans le schéma du v2. Seuls les
+quatre signaux du bus rejoignent le connecteur J1 par étiquette, parce que J1 est commun aux
+deux voies.
 
-**Ce qui a été vérifié le 2026-11-24** (KiCad 9.0.2, en ligne de commande) :
-- le fichier se charge et le contrôle électrique rend **0 erreur** ;
-- la liste des connexions extraite du schéma correspond, net par net, au tableau de ce
-  document (21 nets, 12 broches volontairement en l'air) ;
-- le rendu a été regardé en image : pas de chevauchement.
+**Ce qui a été vérifié**
+- **Dans le KiCad de l'utilisateur** (révision 0.1, 2026-11-24) : contrôle électrique à
+  **0 erreur, 0 avertissement**. ⇒ Les noms d'empreintes standard (0402, 0805, 0603,
+  SSOP-20, JST XH) existent bien dans ses bibliothèques.
+- **En ligne de commande** (révision 0.2, KiCad 9.0.2) : 0 erreur ; la liste des connexions
+  que KiCad extrait du schéma est **identique** à celle du tableau de ce document — 21 nets,
+  12 broches volontairement en l'air ; rendu regardé en image, sans chevauchement.
+  Sur ce poste, le contrôle rend des avertissements d'un seul type : les bibliothèques
+  standard de KiCad n'y sont pas installées.
 
 **Ce qui n'est PAS vérifié**
-- ⚠️ Le contrôle rend **64 avertissements**, tous du même type : les bibliothèques standard
-  de KiCad (`Device`, `power`, empreintes) ne sont pas installées sur le poste qui a généré
-  le fichier. ⇒ **À relancer dans le KiCad de l'utilisateur**, où elles existent.
-- ⚠️ Les noms d'empreintes standard (0402, 0805, 0603, SSOP-20, JST XH) ont été écrits de
-  mémoire, sans bibliothèque pour les confronter.
+- ⚠️ La révision 0.2 n'a pas encore été ouverte dans le KiCad de l'utilisateur.
 - ⛔ **Deux empreintes ne sont pas attribuées** : le module Atlas OEM (à créer d'après ses
   cotes) et la prise BNC (modèle à choisir).
 
 ⚠️ **`generer_schema.py` réécrit le schéma en entier.** Dès que le schéma est modifié à la
 main dans KiCad, ⛔ ne plus le relancer : il écraserait ces modifications.
+ℹ️ Le script contient un piège appris à l'usage : KiCad ne relie un fil à un point que si le
+fil **s'arrête** à ce point. Un fil qui passe sur une broche sans s'y arrêter n'est pas
+relié, même avec un point de jonction dessiné. Le script coupe donc chaque fil à chaque
+point de connexion.
 
 ## Ce que fait cette carte
 
