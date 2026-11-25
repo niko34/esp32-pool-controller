@@ -99,7 +99,7 @@ quitte jamais la carte de mesure** : quelques millimètres entre la prise de son
 - le connecteur et son brochage ;
 - la tension fournie à la carte de mesure, et le courant maximal ;
 - la forme de la liaison ;
-- ⚠️ où vivent les résistances de rappel du côté non isolé — d'un seul côté, jamais des deux.
+- ⚠️ où vivent les résistances de rappel du côté non isolé. ~~D'un seul côté, jamais des deux~~ — **règle modifiée le 2026-11-25**, voir plus bas.
 
 #### Proposition retenue (2026-11-24 — l'utilisateur s'en remet au conseil)
 
@@ -118,7 +118,13 @@ quitte jamais la carte de mesure** : quelques millimètres entre la prise de son
   la carte principale n'en pose aucune sur ces deux bus.
   ⚠️ **Bus réunis (D3) : les rappels des deux voies se retrouvent en parallèle.** Avec
   4,7 kΩ par voie (schéma d'Atlas), cela fait 2,35 kΩ, soit 1,4 mA sous 3,3 V — sous la
-  limite I2C de 3 mA. ⚠️ À recalculer avec les rappels de l'horloge si elle en porte.
+  limite I2C de 3 mA.
+  ⭐ **Modifié le 2026-11-25 (utilisateur, sur avis du relecteur) : la carte principale porte
+  AUSSI deux rappels de 10 kΩ**, sur `SDA` et `SCL`. Raison : sans eux, l'horloge ne répond
+  plus dès que la carte de mesure est débranchée ou que son câble est en défaut. Total avec
+  les deux voies : 1,9 kΩ, soit 1,74 mA — sous la limite de 3 mA. Carte de mesure absente :
+  temps de montée d'environ 0,43 µs, sous la limite de 1 µs. ⇒ La carte de mesure reste
+  complète à elle seule, et la carte principale aussi.
 
 ⚠️ **Risques propres à cette liaison** (examinés le 2026-11-24) :
 - **Les connecteurs** en local de piscine, humide et chloré : un point de panne de plus sur

@@ -1,0 +1,4 @@
+(sym_lib_table
+  (version 7)
+  (lib (name "v3-principale")(type "KiCad")(uri "${KIPRJMOD}/v3-principale.kicad_sym")(options "")(descr "Symboles propres a la carte principale v3"))
+)

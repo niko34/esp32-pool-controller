@@ -1,0 +1,16 @@
+{
+  "meta": {
+    "filename": "v3-principale.kicad_pro",
+    "version": 3
+  },
+  "sheets": [
+    [
+      "3b8e2d14-9a6f-4c57-8e21-5d0c7a9b4f62",
+      "Root"
+    ]
+  ],
+  "schematic": {
+    "legacy_lib_dir": "",
+    "legacy_lib_list": []
+  }
+}
