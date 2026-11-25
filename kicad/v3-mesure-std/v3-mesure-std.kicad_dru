@@ -1,0 +1,16 @@
+(version 1)
+# Isolement entre les trois domaines de la carte de mesure.
+# La barriere elle-meme est tenue par les ZONES INTERDITES (3,0 mm, toutes couches) :
+# elles interdisent pistes, vias et plans, donc aussi le recouvrement entre couches.
+# Cette regle-ci ne fait que rattraper ce qui passerait a cote : 0,8 mm, parce que
+# les broches 2 et 3 du module d'alimentation (pas de 2,54 mm, pastilles de 1,6 mm)
+# sont a 0,94 mm l'une de l'autre et que rien ne peut les ecarter.
+(rule "Isolement ESP32 / voie pH"
+  (condition "A.NetClass == 'PRIMAIRE' && B.NetClass == 'ISO_PH'")
+  (constraint clearance (min 0.8mm)))
+(rule "Isolement ESP32 / voie ORP"
+  (condition "A.NetClass == 'PRIMAIRE' && B.NetClass == 'ISO_ORP'")
+  (constraint clearance (min 0.8mm)))
+(rule "Isolement voie pH / voie ORP"
+  (condition "A.NetClass == 'ISO_PH' && B.NetClass == 'ISO_ORP'")
+  (constraint clearance (min 3.0mm)))

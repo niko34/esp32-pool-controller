@@ -175,7 +175,7 @@ def voie(sfx, n, oy, titre):
 
     # ---- alimentation isolée : module 5 V -> 9 V, puis régulateur 5 V ----
     ya = oy + 17.78
-    p = custom("DCDC_SIP4", PS, "B0509S-1WR3", BX, oy + 20.32, "", "C5369463")
+    p = custom("DCDC_SIP4", PS, "B0509S-1WR3", BX, oy + 20.32, PRJ + ":DCDC_SIP4_B05xxS-1W", "C5369463")
     fil(p["2"], (81.28, ya)); plus("+5V", 81.28, ya)
     a, b = vertical("C", C(1), "4u7", 88.9, ya); jonction(*a); masse("GND", *b)
     fil(p["1"], (93.98, p["1"][1]), (93.98, oy + 27.94)); masse("GND", 93.98, oy + 27.94)
@@ -248,15 +248,14 @@ def voie(sfx, n, oy, titre):
     # rebouclages en suiveur
     fil(d["2"], (269.24, d["2"][1]), (269.24, yA)); jonction(269.24, yA)
     fil(d["6"], (269.24, d["6"][1]), (269.24, yB)); jonction(269.24, yB)
-    yv = yA if PH else yB           # sortie qui porte Vcm
-    fil(d["1" if PH else "7"], (248.92, yv)); etiq(V("VCM"), 251.46, yv, "d")
-    g, dr = horizontal_R(R(8), "100R", 241.3, yv); fil(g, (XR, yv)); jonction(XR, yv)
-    vcm_out, vcm_inm, vcm_inp = ("1", "2", "3") if PH else ("7", "6", "5")
-    net(V("VCM"), UD + "." + vcm_out, UD + "." + vcm_inm, R(8) + ".2")
+    # moitié A : Vcm, sur les deux voies
+    fil(d["1"], (248.92, yA)); etiq(V("VCM"), 256.54, yA, "d")
+    g, dr = horizontal_R(R(8), "100R", 241.3, yA); fil(g, (XR, yA)); jonction(XR, yA)
+    net(V("VCM"), UD + ".1", UD + ".2", R(8) + ".2")
     # pont de Vcm
     xp = 314.96 if PH else 337.82
-    yp = yA if PH else by + 71.12
-    x, y = d[vcm_inp]
+    yp = yA if PH else yA - 17.78
+    x, y = d["3"]
     if PH:
         fil((x, y), (xp + 20.32, yp)); etiq(V("VCM_REF"), xp + 20.32, yp, "d")
         fil(d["5"], (307.34, d["5"][1]), (307.34, yp)); jonction(307.34, yp)      # moitié B inutilisée : suiveur sur Vcm
@@ -269,7 +268,7 @@ def voie(sfx, n, oy, titre):
     a, b = vertical("R", R(7), "10k", xp, yp + 5.08); fil((xp, yp), a); masse(GI, *b)
     a, b = vertical("C", C(10), "100n", xp + 15.24, yp); masse(GI, *b)
     if PH: jonction(xp + 15.24, yp)
-    net(V("VCM_REF"), UD + "." + vcm_inp, R(6) + ".2", R(7) + ".1", C(10) + ".1"); net(VI, R(6) + ".1"); net(GI, R(7) + ".2", C(10) + ".2")
+    net(V("VCM_REF"), UD + ".3", R(6) + ".2", R(7) + ".1", C(10) + ".1"); net(VI, R(6) + ".1"); net(GI, R(7) + ".2", C(10) + ".2")
     texte("Vcm = %s" % ("1,25 V (30k / 10k)" if PH else "2,5 V (10k / 10k)"), xp + 27.94, yp + 10.16, 1.1)
 
     # ---- entrée de la sonde ----
@@ -286,18 +285,19 @@ def voie(sfx, n, oy, titre):
         net(V("GARDE"), UE + ".2", UE + ".7")
         nc(*e["3"]); NC.append(UE + ".3")
         xin, yin = e["1"]; jy = by
-        texte("ENTREE : LE point sensible (~100 MOhm et plus).\nPiste la plus courte possible, entouree de l'anneau GARDE\nsur les deux faces, vernis retire. Rien d'autre sur ce fil.", 304.8, by - 12.7, 1.1)
+        texte("ENTREE : LE point sensible (~100 MOhm et plus).\nPiste la plus courte possible, entouree de l'anneau GARDE\nsur les deux faces. Rien d'autre sur ce fil.", 304.8, by - 12.7, 1.1)
         texte("Meme empreinte pour l'ADA4530-1 (autre fabricant) :\nrien d'autre a changer.", 279.4, by + 22.86, 1.1)
     else:
-        fil((xm, ym), (251.46, ym), (251.46, yA), d["1"]); etiq(V("MESURE"), 231.14, ym, "d")
-        net(V("MESURE"), UA + ".4", UD + ".1", UD + ".2")
-        xin, yin = d["3"]; jy = yin + 2.54
-        texte("Anneau de cuivre relie a MESURE autour de la broche 3 et de R%d05" % n, 304.8, yin - 7.62, 1.1)
+        # moitié B : entrée de la sonde. Le fil MESURE croise le fil VCM sans s'y relier (pas de point).
+        fil((xm, ym), (254, ym), (254, yB), d["7"]); etiq(V("MESURE"), 231.14, ym, "d")
+        net(V("MESURE"), UA + ".4", UD + ".7", UD + ".6")
+        xin, yin = d["5"]; jy = yin + 2.54
+        texte("Anneau de cuivre relie a MESURE autour de la broche 5 et de R%d05" % n, 304.8, yin + 7.62, 1.1)
     g, dr = horizontal_R(R(5), "2M2", 320.04, yin); fil((xin, yin), g); etiq(V("ENTREE"), 304.8, yin, "d")
-    j = custom("BNC", J, "BNC coudee %s" % sfx, 381, jy, "", "C521219")
+    j = custom("BNC", J, "BNC coudee %s" % sfx, 381, jy, PRJ + ":BNC_Dosin_801-0080_Coudee", "C521219")
     fil(dr, j["1"]); etiq(V("AME"), 335.28, yin, "d")
     fil(j["2"], (363.22, j["2"][1]), (363.22, YB))
-    net(V("ENTREE"), UE + ".1" if PH else UD + ".3", R(5) + ".1"); net(V("AME"), R(5) + ".2", J + ".1")
+    net(V("ENTREE"), UE + ".1" if PH else UD + ".5", R(5) + ".1"); net(V("AME"), R(5) + ".2", J + ".1")
     net(V("REF"), UA + ".5", R(8) + ".1", J + ".2")
     texte("Corps de la BNC = REF (Vcm a travers 100 Ohm), PAS la masse :\nil ne touche aucun metal du boitier.\nAucun condensateur ni diode sur l'entree.", 142.24, by + 60.96, 1.1)
 
@@ -324,7 +324,7 @@ texte("Meme connecteur et meme ordre que la carte a modules Atlas.\nLa carte pri
 ecrire_fils()
 lib_symbols = "\n".join(list(REPRIS.values()) + list(CUSTOM.values()))
 sch = """(kicad_sch (version 20250114) (generator "eeschema") (generator_version "9.0") (uuid "%s") (paper "A2")
-(title_block (title "Carte de mesure v3 a composants courants - pH et ORP, une barriere par voie") (date "2026-11-25") (rev "0.1")
+(title_block (title "Carte de mesure v3 a composants courants - pH et ORP, une barriere par voie") (date "2026-11-25") (rev "0.2")
  (company "ESP32 Pool Controller") (comment 1 "Reference : kicad/v3-mesure-std/README.md"))
 (lib_symbols
 %s

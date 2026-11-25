@@ -10,9 +10,9 @@ La carte à modules Atlas reste dans [`../v3-mesure/`](../v3-mesure/README.md) c
 Ce qui n'est pas redit ici en vient et **reste valable** : disposition dans le boîtier, prises
 BNC coudées sur le bord du bas, connecteur J1 et son ordre, quatre couches, relevé du boîtier.
 
-✅ **État au 2026-11-25 : liste et tableau relus par `electronics-reviewer` — aucune erreur,
-corrections portées (voir « Relecture » en bas). **Schéma écrit (rév. 0.1), pas encore ouvert
-dans KiCad par l'utilisateur. Aucune carte.**
+✅ **État au 2026-11-25 : schéma (rév. 0.2) et carte placée et routée (rév. 0.1) écrits par
+script, relus par `electronics-reviewer` — aucune erreur. Pas encore ouverts dans KiCad par
+l'utilisateur.**
 
 ## Les fichiers de ce dossier
 
@@ -21,13 +21,67 @@ dans KiCad par l'utilisateur. Aucune carte.**
 | `generer_schema.py` | écrit le schéma depuis le tableau ci-dessous. ⚠️ Le relancer **réécrit** le schéma en entier |
 | `v3-mesure-std.kicad_sch` | le schéma, format A2 : les deux voies à gauche, le connecteur J1 à droite |
 | `v3-mesure-std.kicad_sym`, `sym-lib-table` | les symboles propres à la carte |
-| `v3-mesure-std.kicad_pro` | le projet KiCad |
+| `generer_carte.py` | écrit la carte depuis la netlist du schéma : placement, pistes, plans. ⚠️ Le relancer **réécrit** la carte en entier |
+| `v3-mesure-std.kicad_pcb` | la carte, 73 × 54 mm, quatre couches |
+| `v3-mesure-std.pretty/`, `fp-lib-table` | empreintes propres : module d'alimentation, prise BNC, trou de fixation |
+| `v3-mesure-std.kicad_pro`, `v3-mesure-std.kicad_dru` | le projet, ses classes de fils et ses règles d'isolement |
 
-**Vérifié sur le schéma (2026-11-25)** : la liste des connexions que KiCad en extrait est
-identique à celle du tableau (31 fils nommés, 7 broches en l'air) ; contrôle des règles
-électriques en ligne de commande : aucune erreur ni avertissement sur le schéma lui-même.
-**Non vérifié** : l'ouverture dans le KiCad de l'utilisateur ; les empreintes du module
-d'alimentation et de la prise BNC ne sont pas encore affectées (étape de la carte).
+Pour régénérer :
+`kicad-cli sch export netlist -o /tmp/n.net v3-mesure-std.kicad_sch` puis
+`python3 generer_carte.py /tmp/n.net`.
+
+## La carte (2026-11-25)
+
+Même contour que la carte à modules Atlas : 73 × 54 mm, prises BNC à l'entraxe de 36,3 mm
+sur le bord du bas, J1 en haut, quatre trous M3. Couches : composants et signaux dessus,
+masse au-dessous, alimentation, puis masse et quelques pistes sur la face du dessous.
+
+**La barrière d'isolation**
+- Zone interdite au cuivre de **3,0 mm** sur les quatre couches entre le côté ESP32 et chaque
+  voie : c'est la distance entre les deux rangées de pastilles de l'ISO1540.
+- Au droit du module d'alimentation elle se réduit à un col : ses broches 2 et 3 sont au pas
+  de 2,54 mm, soit **0,94 mm de cuivre à cuivre**, que rien ne peut élargir.
+- Entre la voie pH et la voie ORP : 3,0 mm.
+- ℹ️ La carte à modules Atlas avait 5 mm partout (imposés par l'ADM3260). Ici la barrière
+  est **fonctionnelle** : elle ne voit que quelques volts, la sécurité secteur vient de
+  l'alimentation (D4). 1 500 V est l'essai d'une minute du module. Relu et jugé cohérent.
+
+**L'entrée de la sonde**
+- pH : anneau de garde sur le dessus, relié aux broches 2 et 7 de U104, qui entoure l'âme de
+  la prise, R105 et la broche 1 ; garde en plein sur les trois autres couches, sous l'entrée.
+  Piste d'entrée de 2,1 mm, piste de l'âme de 6,1 mm.
+- ORP : même anneau, relié à `MESURE_ORP`, refermé sous le boîtier entre la broche 4 (masse)
+  et la broche 5 (entrée).
+- **Vernis conservé** sur l'anneau et l'entrée (point P6 fermé). La fiche de l'OPA928 demande
+  de le retirer, pour des mesures au femtoampère. Ici la garde est à 150 µV au plus de
+  l'entrée : même avec 1 GΩ de fuite de surface, l'erreur est de 0,0003 pH. Le retirer
+  laisserait du cuivre nu dans l'air chloré.
+- Le trait d'encre de la prise BNC qui passait sur l'âme et l'anneau est retiré de l'empreinte.
+- Le corps de la prise est relié par une zone de cuivre `REF` sur le dessus.
+
+**Deux pistes passent par la face du dessous** : SCL côté isolé, sur 3 mm, pour croiser
+SDA ; et, sur la voie ORP, la liaison de R208 au corps de la prise. Sans effet sur la mesure.
+
+### Ce qui est vérifié
+- Contrôle des règles (`kicad-cli pcb drc --severity-all --schematic-parity`) : 0 violation,
+  0 liaison manquante, 0 écart avec le schéma. Les seuls messages portent sur des
+  bibliothèques absentes de la machine de génération.
+- Les protections ont été éprouvées par des fautes volontaires : via dans la barrière,
+  condensateur non relié, piste qui franchit la barrière, court-circuit masse / entrée du pH
+  — toutes détectées. ℹ️ Un plan de cuivre débordant sur la séparation des voies n'est pas
+  signalé : la zone interdite le rogne d'elle-même.
+- Relecture du tracé : découplages à 1,2 à 2 mm de leur broche ; régulateur à +7 à +13 °C ;
+  module d'alimentation à 13,7 mm de l'entrée du pH ; pistes, écarts et vias dans les
+  capacités de l'atelier ; rien n'est posé sur la face du dessous.
+
+### Ce qui n'est PAS vérifié
+- L'ouverture de la carte dans le KiCad de l'utilisateur.
+- **L'empreinte du module d'alimentation face à la pièce réelle** : dessinée d'après le plan
+  d'implantation des fiches Evisun et Ylptec (corps de 11,7 × 6 mm d'un seul côté de la
+  rangée de broches, broche 1 à 2,03 mm du bout). Le relecteur n'a pas pu afficher le dessin.
+  Si le corps était de l'autre côté, il reposerait sur C101.
+- L'empreinte de la prise BNC face au plan du fabricant (déjà ouvert sur la carte Atlas).
+- L'empilement des couches de l'atelier.
 
 ## Ce que fait une voie
 
@@ -166,19 +220,14 @@ fiche de TI (p. 19) : côté 1 vers un nœud court et peu chargé, côté 2 vers
 
 | Broche | Nom | Voie pH (U105) | Voie ORP (U205) |
 |---|---|---|---|
-| 1 | OUT A | `VCM_PH` | `MESURE_ORP`, vers AIN0 de U203 |
-| 2 | IN− A | `VCM_PH` (suiveur) | `MESURE_ORP` (suiveur) |
-| 3 | IN+ A | `VCM_REF_PH` : milieu du pont R106 / R107, + C110 vers `GNDISO_PH` | `ENTREE_ORP` : R205, dont l'autre bout va à l'âme de J201 |
+| 1 | OUT A | `VCM_PH` | `VCM_ORP` |
+| 2 | IN− A | `VCM_PH` (suiveur) | `VCM_ORP` (suiveur) |
+| 3 | IN+ A | `VCM_REF_PH` : milieu du pont R106 / R107, + C110 vers `GNDISO_PH` | `VCM_REF_ORP` : idem avec R206 / R207, C210 |
 | 4 | V− | `GNDISO_PH` | `GNDISO_ORP` |
-| 5 | IN+ B | `VCM_REF_PH` (moitié inutilisée, montée en suiveur) | `VCM_REF_ORP` : milieu du pont R206 / R207, + C210 |
-| 6 | IN− B | relié à la broche 7 | `VCM_ORP` (suiveur) |
-| 7 | OUT B | relié à la broche 6, rien d'autre | `VCM_ORP` |
+| 5 | IN+ B | `VCM_REF_PH` (moitié inutilisée, montée en suiveur) | `ENTREE_ORP` : R205, dont l'autre bout va à l'âme de J201 |
+| 6 | IN− B | relié à la broche 7 | `MESURE_ORP` (suiveur) |
+| 7 | OUT B | relié à la broche 6, rien d'autre | `MESURE_ORP`, vers AIN0 de U203 |
 | 8 | V+ | `VISO_PH` + C109 vers `GNDISO_PH` | `VISO_ORP` + C209 vers `GNDISO_ORP` |
-
-ℹ️ Sur la voie ORP, les deux moitiés ont été **échangées au dessin du schéma** (entrée sur
-la moitié A, Vcm sur la moitié B) pour qu'aucun fil ne se croise. Les deux moitiés sont
-identiques ; la relecture avait porté sur la disposition inverse (fuite entre la broche
-d'entrée et la broche 4 : inchangée, la broche 3 en est voisine comme la broche 5).
 
 Le pont : R106 entre `VISO_PH` et `VCM_REF_PH`, R107 entre `VCM_REF_PH` et `GNDISO_PH`.
 R108 entre `VCM_PH` (broche 1) et `REF_PH`.
@@ -249,9 +298,7 @@ le corps de la prise (10 kΩ ferait passer le 50 Hz capté de 70 µV à 7 mV).
 - [x] P3 — Condensateur d'entrée du module : 4,7 µF (les deux fiches).
 - [x] P4 — AIN2 et AIN3 en l'air.
 - [x] P5 — Un seul Vcm de 1,25 V pour le pH.
-- [ ] P6 — Dessin de la garde autour de l'entrée du pH, selon la fiche de l'OPA928
-      (vernis retiré, anneau sur les deux faces, plan de garde dessous). Voie ORP : un
-      anneau relié à `MESURE_ORP` autour de la broche 3 de U205 et de R205.
+- [x] P6 — Garde autour de l'entrée : dessinée et relue, vernis conservé (voir « La carte »).
 - [ ] P7 — Isolement du corps de la prise BNC, et tenue aux décharges quand on la touche
       (le LMC6482 tient 1,5 kV ; les 100 Ω ne règlent pas ce point).
 - [ ] P8 — Référence au catalogue du condensateur au tantale (22 µF 16 V, boîtier B) : non

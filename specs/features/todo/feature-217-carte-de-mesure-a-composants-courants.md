@@ -255,7 +255,7 @@ jugée seule, sur la carte de référence.
 - [x] E1 — Relecture de cette étude par `electronics-reviewer` : Q1 à Q5 et Q7 tranchées, sources à l'appui ; Q6 (dessin de la garde) reste pour le schéma
 - [x] E2 — Choix des composants arrêté (2026-11-25, liste sans exception ; stock de l'atelier non lu)
 - [x] E3 — Tableau des connexions relu (aucune erreur), puis schéma écrit par script (rév. 0.1, 2026-11-25) : connexions identiques au tableau, contrôle électrique sans erreur. Reste : ouverture dans le KiCad de l'utilisateur
-- [ ] E4 — Carte, sur le modèle de `kicad/v3-mesure/`
+- [x] E4 — Carte placée et routée par script (rév. 0.1, 2026-11-25), relue : aucune erreur, 0 violation au contrôle des règles. Reste : ouverture dans le KiCad de l'utilisateur, empreinte du module d'alimentation face à la pièce réelle
 - [ ] L1 — Fiche logicielle : pilote, étalonnage, correction de température, écrans
 - [ ] M1 — Essai sur le bassin, comparé à l'appareil v2 en service
 
