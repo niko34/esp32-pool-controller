@@ -11,7 +11,23 @@ Ce qui n'est pas redit ici en vient et **reste valable** : disposition dans le b
 BNC coudées sur le bord du bas, connecteur J1 et son ordre, quatre couches, relevé du boîtier.
 
 ✅ **État au 2026-11-25 : liste et tableau relus par `electronics-reviewer` — aucune erreur,
-corrections portées (voir « Relecture » en bas). Aucun schéma, aucune carte pour l'instant.**
+corrections portées (voir « Relecture » en bas). **Schéma écrit (rév. 0.1), pas encore ouvert
+dans KiCad par l'utilisateur. Aucune carte.**
+
+## Les fichiers de ce dossier
+
+| Fichier | Rôle |
+|---|---|
+| `generer_schema.py` | écrit le schéma depuis le tableau ci-dessous. ⚠️ Le relancer **réécrit** le schéma en entier |
+| `v3-mesure-std.kicad_sch` | le schéma, format A2 : les deux voies à gauche, le connecteur J1 à droite |
+| `v3-mesure-std.kicad_sym`, `sym-lib-table` | les symboles propres à la carte |
+| `v3-mesure-std.kicad_pro` | le projet KiCad |
+
+**Vérifié sur le schéma (2026-11-25)** : la liste des connexions que KiCad en extrait est
+identique à celle du tableau (31 fils nommés, 7 broches en l'air) ; contrôle des règles
+électriques en ligne de commande : aucune erreur ni avertissement sur le schéma lui-même.
+**Non vérifié** : l'ouverture dans le KiCad de l'utilisateur ; les empreintes du module
+d'alimentation et de la prise BNC ne sont pas encore affectées (étape de la carte).
 
 ## Ce que fait une voie
 
@@ -42,13 +58,13 @@ l'atelier lui-même non lu.
 | U104 | Amplificateur d'entrée **pH** | OPA928DR | SOIC-8 | C32418779 | ADA4530-1ARZ (C77380), même brochage, rien d'autre à changer |
 | U105, U205 | Amplificateur double : Vcm, et entrée **ORP** sur U205 | LMC6482AIMX (**TI**) | SOIC-8 | C12620 | LMC6482IDT de ST (C2058286) |
 | R101, R102, R201, R202 | Rappels du bus, côté ESP32 | 4,7 kΩ 1 % | 0603 | C23162 | — |
-| R103, R104, R203, R204 | Rappels du bus, côté isolé | 3,3 kΩ 1 % | 0603 | à relever | — |
-| R105, R205 | Protection de l'entrée, en série avec l'âme | 2,2 MΩ 1 % | 0805 | à relever | — |
-| R106, R206 | Pont de Vcm, haut | pH : **30 kΩ** · ORP : **10 kΩ** | 0603 | à relever | — |
-| R108, R208 | Entre le suiveur de Vcm et le corps de la prise | 100 Ω 1 % | 0603 | à relever | — |
+| R103, R104, R203, R204 | Rappels du bus, côté isolé | 3,3 kΩ 1 % | 0603 | C22978 | — |
+| R105, R205 | Protection de l'entrée, en série avec l'âme | 2,2 MΩ 1 % | 0805 | C26113 | — |
+| R106, R206 | Pont de Vcm, haut | pH : **30 kΩ** (C22984) · ORP : **10 kΩ** (C25804) | 0603 | voir valeur | — |
+| R108, R208 | Entre le suiveur de Vcm et le corps de la prise | 100 Ω 1 % | 0603 | C22775 | — |
 | R107, R207 | Pont de Vcm, bas | 10 kΩ 1 % | 0603 | C25804 | — |
-| C101, C201 | Entrée du module | 4,7 µF 16 V | 0805 | à relever | — |
-| C103, C203 | Sortie du module et entrée du régulateur | 10 µF **25 V** | **1206** | à relever | — |
+| C101, C201 | Entrée du module | 4,7 µF 25 V | 0805 | C1779 | — |
+| C103, C203 | Sortie du module et entrée du régulateur | 10 µF **50 V** | **1206** | C13585 | — |
 | C104, C204 | Sortie du régulateur | 22 µF 16 V, **tantale** | boîtier B | à relever | — |
 | C105, C205 | Découplage de l'isolateur, côté ESP32 | 0,1 µF | 0402 | C1525 | — |
 | C106, C206 | Découplage de l'isolateur, côté isolé | 0,1 µF | 0402 | C1525 | — |
@@ -150,14 +166,19 @@ fiche de TI (p. 19) : côté 1 vers un nœud court et peu chargé, côté 2 vers
 
 | Broche | Nom | Voie pH (U105) | Voie ORP (U205) |
 |---|---|---|---|
-| 1 | OUT A | `VCM_PH` | `VCM_ORP` |
-| 2 | IN− A | `VCM_PH` (suiveur) | `VCM_ORP` (suiveur) |
-| 3 | IN+ A | `VCM_REF_PH` : milieu du pont R106 / R107, + C110 vers `GNDISO_PH` | idem avec R206 / R207, C210 |
+| 1 | OUT A | `VCM_PH` | `MESURE_ORP`, vers AIN0 de U203 |
+| 2 | IN− A | `VCM_PH` (suiveur) | `MESURE_ORP` (suiveur) |
+| 3 | IN+ A | `VCM_REF_PH` : milieu du pont R106 / R107, + C110 vers `GNDISO_PH` | `ENTREE_ORP` : R205, dont l'autre bout va à l'âme de J201 |
 | 4 | V− | `GNDISO_PH` | `GNDISO_ORP` |
-| 5 | IN+ B | `VCM_REF_PH` (moitié inutilisée, montée en suiveur) | `ENTREE_ORP` : R205, dont l'autre bout va à l'âme de J201 |
-| 6 | IN− B | relié à la broche 7 | `MESURE_ORP` (suiveur) |
-| 7 | OUT B | relié à la broche 6, rien d'autre | `MESURE_ORP`, vers AIN0 de U203 |
+| 5 | IN+ B | `VCM_REF_PH` (moitié inutilisée, montée en suiveur) | `VCM_REF_ORP` : milieu du pont R206 / R207, + C210 |
+| 6 | IN− B | relié à la broche 7 | `VCM_ORP` (suiveur) |
+| 7 | OUT B | relié à la broche 6, rien d'autre | `VCM_ORP` |
 | 8 | V+ | `VISO_PH` + C109 vers `GNDISO_PH` | `VISO_ORP` + C209 vers `GNDISO_ORP` |
+
+ℹ️ Sur la voie ORP, les deux moitiés ont été **échangées au dessin du schéma** (entrée sur
+la moitié A, Vcm sur la moitié B) pour qu'aucun fil ne se croise. Les deux moitiés sont
+identiques ; la relecture avait porté sur la disposition inverse (fuite entre la broche
+d'entrée et la broche 4 : inchangée, la broche 3 en est voisine comme la broche 5).
 
 Le pont : R106 entre `VISO_PH` et `VCM_REF_PH`, R107 entre `VCM_REF_PH` et `GNDISO_PH`.
 R108 entre `VCM_PH` (broche 1) et `REF_PH`.
@@ -230,10 +251,14 @@ le corps de la prise (10 kΩ ferait passer le 50 Hz capté de 70 µV à 7 mV).
 - [x] P5 — Un seul Vcm de 1,25 V pour le pH.
 - [ ] P6 — Dessin de la garde autour de l'entrée du pH, selon la fiche de l'OPA928
       (vernis retiré, anneau sur les deux faces, plan de garde dessous). Voie ORP : un
-      anneau relié à `MESURE_ORP` autour de la broche 5 de U205 et de R205.
+      anneau relié à `MESURE_ORP` autour de la broche 3 de U205 et de R205.
 - [ ] P7 — Isolement du corps de la prise BNC, et tenue aux décharges quand on la touche
       (le LMC6482 tient 1,5 kV ; les 100 Ω ne règlent pas ce point).
-- [ ] P8 — Références au catalogue des passifs marqués « à relever ».
+- [ ] P8 — Référence au catalogue du condensateur au tantale (22 µF 16 V, boîtier B) : non
+      trouvée. Les autres passifs sont relevés ; ⚠️ leur stock se lit à l'atelier, pas chez
+      le distributeur (une résistance courante y figure à 0).
+- [ ] P11 — Empreinte du convertisseur : prévoir la pastille centrale de son équivalent
+      (SGM58031), à décider au dessin de la carte.
 - [ ] P9 — **À mesurer sur la première carte** : tension réelle du module à faible charge,
       et bruit vers 250 kHz (le module découpe à 200–340 kHz, le convertisseur échantillonne
       à 250 kHz ; non chiffrable sur le papier).

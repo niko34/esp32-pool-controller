@@ -254,7 +254,7 @@ jugée seule, sur la carte de référence.
 ## Livrables — check-list
 - [x] E1 — Relecture de cette étude par `electronics-reviewer` : Q1 à Q5 et Q7 tranchées, sources à l'appui ; Q6 (dessin de la garde) reste pour le schéma
 - [x] E2 — Choix des composants arrêté (2026-11-25, liste sans exception ; stock de l'atelier non lu)
-- [ ] E3 — Tableau des connexions d'une voie, puis schéma
+- [x] E3 — Tableau des connexions relu (aucune erreur), puis schéma écrit par script (rév. 0.1, 2026-11-25) : connexions identiques au tableau, contrôle électrique sans erreur. Reste : ouverture dans le KiCad de l'utilisateur
 - [ ] E4 — Carte, sur le modèle de `kicad/v3-mesure/`
 - [ ] L1 — Fiche logicielle : pilote, étalonnage, correction de température, écrans
 - [ ] M1 — Essai sur le bassin, comparé à l'appareil v2 en service
