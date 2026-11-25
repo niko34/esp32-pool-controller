@@ -67,14 +67,51 @@ dépasse ce qui tient en une révision de schéma, dis-le et propose de réduire
 4. Les documentations des fabricants des composants concernés. Va les chercher (WebFetch) :
    ne te fie pas à ta mémoire pour un brochage, une tension ou une capacité.
 
+## Règle d'approvisionnement — posée par l'utilisateur le 2026-11-25
+
+Ses mots : *« Les modules Atlas sont trop chers et ils imposent d'envoyer des composants à
+JLCPCB. De plus, cela rendrait notre appareil dépendant d'un seul fabricant. Je préfère
+travailler avec des composants standards qui permettent de s'approvisionner chez plusieurs
+fabricants et fournisseurs. »*
+
+Tu contrôles **chaque composant** d'une liste, d'un schéma ou d'une carte sur trois points,
+et tu rends un tableau à une ligne par composant :
+
+1. **Posé par l'atelier depuis son catalogue.** Aucune pièce à acheter ailleurs et à
+   expédier à l'atelier.
+2. **Pas de dépendance à un seul fabricant.** Il existe au moins un équivalent d'un autre
+   fabricant qui se pose sur **la même empreinte**, sans retoucher la carte. Nomme-le, avec
+   sa référence au catalogue et ce qui diffère (une valeur, une tolérance).
+3. **Plusieurs fournisseurs.** La pièce se trouve chez plus d'un distributeur.
+
+⚠️ **La qualité des composants reste un critère majeur** (précision de l'utilisateur, même
+jour). La règle d'approvisionnement ne justifie jamais un composant moins bon : un
+équivalent n'en est un que si ses caractéristiques **garanties** (pas seulement typiques),
+lues dans la fiche technique de **la référence exacte du catalogue**, tiennent le besoin de
+la carte — chiffres à l'appui. Entre un composant de qualité à fabricant unique et un
+composant multi-source qui dégrade la mesure, tu ne tranches pas : tu présentes les deux,
+avec ce que chacun coûte en performance et en risque d'approvisionnement.
+
+Un composant qui manque un de ces points est une **exception** : classe-la RISQUE, dis ce
+qu'il en coûterait de la lever (autre composant, autre schéma, performance perdue — en
+chiffres) et quelle est la solution de repli si la pièce disparaît. ⛔ Ne la passe pas sous
+silence, et ⛔ ne la lève pas par un montage plus compliqué sans chiffrer ce qu'il ajoute :
+les règles 3 et 4 ci-dessus s'appliquent aussi ici. C'est l'utilisateur qui accepte ou
+refuse chaque exception.
+
+⚠️ Les passifs (résistances, condensateurs) et les connecteurs de série courante satisfont
+la règle d'office : ne les détaille pas, signale seulement une valeur ou un boîtier rare.
+
 ## Ce que le projet a de particulier
 
 - **La voie pH est à très haute impédance** (électrode ~100 MΩ : 1 nA de fuite ≈ 100 mV ≈
   plus d'1,5 unité de pH). C'est la contrainte dominante : propreté de la carte, garde
   autour du signal d'électrode, longueur de piste, humidité. Le bruit de mesure actuel est
   le premier motif du v3.
-- **Deux voies isolées séparément** (pH et ORP), modules Atlas Scientific en version OEM, un
-  isolateur ADM3260 par voie, selon le schéma publié par Atlas.
+- **Deux voies isolées séparément** (pH et ORP), un isolateur par voie. ⚠️ Les modules Atlas
+  Scientific sont **abandonnés pour le v3** (décision D8 de feature-215, 2026-11-25) : la
+  carte de mesure se fait en composants courants (feature-217). La carte à modules Atlas de
+  `kicad/v3-mesure/` reste dans le dépôt comme étude, elle n'est plus la cible.
 - **Trois cartes** : mesure, principale, alimentation. La liaison entre cartes est un
   contrat ; le signal d'électrode ne passe jamais dans un câble.
 - **Fabrication et assemblage chez JLCPCB.** Un composant absent de leur catalogue, ou en

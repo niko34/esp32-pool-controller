@@ -7,7 +7,7 @@
 - **Statut** : todo
 - **Priorité** : normale
 - **Version cible** : matériel — sans objet tant que l'étude n'a pas conclu
-- **Dernière mise à jour** : 2026-11-24
+- **Dernière mise à jour** : 2026-11-25
 - **Spec(s) liée(s)** : feature-215 (PCB v3, carte de mesure à modules Atlas), ADR-0001 et
   ADR-0003 (ancienne chaîne ADS1115, étalonnage côté ESP32)
 
@@ -135,6 +135,57 @@ qui limite.
   ces amplificateurs — **à mesurer sur la première carte** ; la fuite réelle d'un
   condensateur céramique.
 
+## Relecture du 2026-11-25 sous la règle D8 (`electronics-reviewer`) — aucune erreur, deux choix à trancher
+
+Stocks et prix à l'unité lus le 2026-11-25 chez le distributeur (pas à l'atelier lui-même).
+
+| Rôle | Référence (catalogue, stock, prix) | Équivalent d'un autre fabricant, même empreinte | Verdict |
+|---|---|---|---|
+| Entrée pH | LMP7721MAX TI (C2864387, 193, 6,69 $) | aucun — brochage propre à ce composant | **exception** |
+| Entrée pH, autre choix | OPA928DR TI (C32418779, 358, 24,59 $) **ou** ADA4530-1ARZ-R7 ADI (C77380, 699, 23,09 $) | les deux ont le même brochage ; 20 fA garantis jusqu'à 85 °C ; ⚠️ 4,5 V minimum | conforme |
+| Ampli B, voie ORP | LMC6482AIMX TI (C12620, 53 902, 0,58 $) | LMC6482IDT ST (C2058286, 614) — 50 pA max contre 4 pA | conforme (⛔ pas sur l'entrée pH) |
+| Convertisseur | ADS1115IDGSR TI (C37593, 73 163, 1,23 $) | SGM58031XMS10 (C700177, 707) — pastille centrale à la masse, gain 0,3 % contre 0,15 %, autres codes de cadence | conforme si l'empreinte prévoit la pastille |
+| Isolation I2C | ISO1540DR TI (C179739, 23 101, 0,88 $) | ADuM1250ARZ ADI (C13839, 4 747) ; CA-IS3020S (C528661, stock 0) | conforme |
+| Isolation + alimentation | ADM3260 ADI (C208558, **0**, 11,97 $) | aucun | **exception** |
+| Alimentation isolée, autre choix | module B0509S-1WR3 (Ylptec C5369463, Evisun C7500906) ou B0505S (Evisun C7465178, Hi-Link C5183119) | même boîtier chez au moins quatre marques ; pose traversante | conforme |
+| Régulateur après le module | AMS1117-5.0 (C6187, 33 590) | famille 1117, plusieurs marques | conforme |
+
+**Liste recommandée par le relecteur — plus aucune exception** : OPA928 / ADA4530-1 sur
+empreinte commune, LMC6482 TI, ADS1115 (pastille du SGM58031 prévue), ISO1540, module 9 V
+suivi d'un régulateur 5 V, **côté isolé en 5 V** au lieu de 3,85 V.
+
+✅ **Liste retenue par l'utilisateur le 2026-11-25** (« oui » à la liste sans exception).
+Liste des composants et tableau des connexions :
+[`kicad/v3-mesure-std/README.md`](../../../kicad/v3-mesure-std/README.md).
+
+**Ce que cela coûte, par rapport aux deux exceptions :**
+- Entrée pH : ≈ 18 $ de plus par appareil que le LMP7721 ; courant d'entrée garanti à chaud
+  45 fois plus faible, garde pilotée par le composant. Avec le LMP7721 : aucun repli sans
+  refaire la carte (⚠️ l'OPA928, présenté par TI comme remplaçant direct, n'a pas le même
+  brochage ni la même tension minimale).
+- Isolation, par voie, contre l'ADM3260 : deux composants actifs de plus dont un traversant,
+  ≈ 90 mm², ≈ 2,40 $ contre 12 $, tenue 1 500 V continu contre 2 500 V efficaces (barrière
+  fonctionnelle, la sécurité secteur vient de l'alimentation, D4), et **capacité à travers
+  la barrière ≈ 21 pF contre 2,2 pF** (v2 : 60 pF partagés par les deux voies).
+
+**Risques relevés :**
+- Le module d'alimentation isolée n'est pas régulé et la carte le charge à ≈ 5 % : sans
+  régulateur sa sortie dépasse 5,5 V, le maximum du convertisseur et de l'isolateur.
+  ⇒ régulateur indispensable. ⚠️ L'essai E09 de feature-215 avait dégradé la mesure avec un
+  régulateur derrière un module ; hypothèse du relecteur, **non vérifiée** : pas de marge
+  (5 V derrière 5 V), d'où le couple 9 V → 5 V.
+- Niveau bas de l'I2C côté mesure : 90 mV de marge sous 3,3 V, 0,6 V sous 5 V ⇒ côté isolé en 5 V.
+- LMC6482 de ST sur l'entrée ORP : négligeable si l'électrode fait 10 MΩ au plus, 20 mV si
+  100 MΩ — impédance de l'électrode ORP non relue.
+
+**Non vérifié** : stock de l'atelier, brochage de l'ADuM1250 broche par broche (fiche
+illisible), fréquence de découpage des modules, surcoût de la pose traversante.
+
+**Envisagé et écarté** : double empreinte sur l'entrée pH (cuivre en plus sur le point le
+plus sensible), pilote + transformateur (5 composants, transformateur à fabricant unique),
+UCC12050 et CA-IS3105W (indisponibles), résistance de charge à la place du régulateur,
+condensateur de 270 pF en travers de la barrière.
+
 ## Les questions de départ, et où elles en sont
 
 | # | Question | Pourquoi elle décide |
@@ -157,9 +208,35 @@ Ce que le module Atlas faisait revient dans l'ESP32 :
 - filtrage, et détection d'une mesure invalide ;
 - écrans d'étalonnage — ceux d'aujourd'hui pilotent le module Atlas.
 
-⚠️ Le firmware doit savoir tourner sur **les deux** cartes : celle à modules Atlas et celle-ci.
+⚠️ Le firmware doit continuer de tourner sur les appareils **v2 déjà installés**, qui portent
+des modules Atlas EZO.
+
+### Décision du 2026-11-25 — cette carte devient LA carte de mesure du v3
+
+L'utilisateur : *« Je vais partir sur cette 2eme carte. Les modules Atlas sont trop chers et
+ils imposent d'envoyer des composants à JLCPCB. De plus, cela rendrait notre appareil
+dépendant d'un seul fabricant. Je préfère travailler avec des composants standards qui
+permettent de s'approvisionner chez plusieurs fabricants et fournisseurs. »*
+
+⇒ Règle inscrite comme **décision D8 de feature-215** et dans l'agent `electronics-reviewer`,
+qui la contrôle composant par composant.
+
+⚠️ **Ce que la règle remet en cause dans la liste ci-dessous** (relevé le 2026-11-25, à
+trancher en E2 — ✅ tranché le même jour, voir la relecture sous la règle D8 plus bas) :
+
+| Composant | Fabricants | Constat |
+|---|---|---|
+| ADS1115 (convertisseur) | Texas Instruments, et des équivalents d'autres marques sur la même empreinte | conforme a priori — équivalents à nommer et à relire |
+| LMC6482 (second amplificateur, voie ORP) | Texas Instruments ; un homonyme ST existe, dix fois moins bon en fuite | conforme pour l'ORP, ⛔ pas interchangeable sur l'entrée pH |
+| **LMP7721** (entrée pH) | **Texas Instruments seul**, 224 pièces en stock le 2026-11-24 | **exception** : brochage propre à ce composant, pas d'équivalent à poser à sa place |
+| **ADM3260** (isolateur) | **Analog Devices seul**, stock 0 chez le distributeur le 2026-11-24 | **exception** : il venait du schéma d'Atlas (D5), qui ne s'impose plus |
 
 ## Démarche proposée — ne rien parier
+
+⚠️ **Remplacée le 2026-11-25** : l'utilisateur part directement sur cette carte (voir la
+décision plus haut). La comparaison avec une carte à modules Atlas fabriquée n'aura pas
+lieu ; la référence de comparaison devient l'appareil v2 en service. Le texte ci-dessous est
+gardé pour mémoire.
 
 La carte de mesure est séparée de la carte principale (décision D7 de feature-215), et son
 connecteur à huit fils est un contrat. ⇒ **Deux versions de la carte de mesure**, même
@@ -176,11 +253,11 @@ jugée seule, sur la carte de référence.
 
 ## Livrables — check-list
 - [x] E1 — Relecture de cette étude par `electronics-reviewer` : Q1 à Q5 et Q7 tranchées, sources à l'appui ; Q6 (dessin de la garde) reste pour le schéma
-- [ ] E2 — Choix des composants arrêté, avec leur disponibilité à l'atelier
+- [x] E2 — Choix des composants arrêté (2026-11-25, liste sans exception ; stock de l'atelier non lu)
 - [ ] E3 — Tableau des connexions d'une voie, puis schéma
 - [ ] E4 — Carte, sur le modèle de `kicad/v3-mesure/`
 - [ ] L1 — Fiche logicielle : pilote, étalonnage, correction de température, écrans
-- [ ] M1 — Essai comparé des deux cartes sur le bassin
+- [ ] M1 — Essai sur le bassin, comparé à l'appareil v2 en service
 
 ## Sécurité chimique
 - Dosage impliqué : **oui, indirectement** — la mesure du pH et de l'ORP commande le dosage.
@@ -198,9 +275,10 @@ jugée seule, sur la carte de référence.
 ## Critères d'acceptation
 - [ ] Sur le même bassin, la carte à composants courants ne mesure pas plus mal que la carte
       à modules Atlas — seuils à fixer avec la métrique de feature-215
-- [ ] Tous ses composants sont posés par l'atelier, sans pièce fournie hors l'ADM3260 si son
-      stock l'exige
-- [ ] Le firmware tourne sur les deux cartes
+- [ ] Tous ses composants sont posés par l'atelier, sans pièce fournie
+- [ ] Chaque composant respecte la règle D8 de feature-215, ou figure dans une liste
+      d'exceptions acceptée par l'utilisateur
+- [ ] Le firmware tourne sur cette carte et sur les appareils v2 à modules Atlas
 
 ## Notes pour agent
 - ⛔ Ne pas présenter cette carte comme acquise : c'est une étude. Atlas vend un savoir-faire

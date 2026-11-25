@@ -69,6 +69,8 @@ module externe (`J11`), une seule barrière d'isolation partagée par les deux v
 | D6 | **Module ORP en version OEM** lui aussi | 2026-11-24 | utilisateur |
 | D7 | **Carte de mesure SÉPARÉE** de la carte principale | 2026-11-24 | utilisateur — *« intéressant si on veut faire évoluer la carte principale sans toucher à la carte de mesure. C'est la même idée que pour l'alimentation »* |
 
+| D8 | **Composants courants, plusieurs fabricants et fournisseurs — ⛔ plus de module Atlas.** Tout composant est posé par l'atelier depuis son catalogue, a un équivalent d'un autre fabricant sur la même empreinte, et se trouve chez plus d'un distributeur. Toute exception est écrite, chiffrée, et acceptée par l'utilisateur. ⚠️ **La qualité des composants reste un critère majeur** : la règle ne justifie jamais un composant moins bon, et un équivalent se juge sur ses caractéristiques garanties. ⇒ **D2, D5 et D6 sont remplacées** pour ce qui concerne les modules Atlas ; la carte de mesure devient celle de **feature-217**. Le besoin 7 (« modules Atlas compris ») tombe | 2026-11-25 | utilisateur — *« Les modules Atlas sont trop chers et ils imposent d'envoyer des composants à JLCPCB. De plus, cela rendrait notre appareil dépendant d'un seul fabricant. Je préfère travailler avec des composants standards qui permettent de s'approvisionner chez plusieurs fabricants et fournisseurs. »* |
+
 ⚠️ **D4 et le besoin 6 se regardent** : la carte d'alimentation sur mesure n'est pas
 abandonnée, elle est **suspendue à l'essai M3**. Si un transformateur 50 Hz ne fait pas
 mieux que la RPS-30-12, la « carte d'alimentation » se réduit à porter cette dernière.
