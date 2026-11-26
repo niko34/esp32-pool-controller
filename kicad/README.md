@@ -19,7 +19,7 @@ d'une tâche logicielle.
 exécution du script l'écrase.
 
 Les fichiers de fabrication (gerbers, perçage, zips) ne sont **pas** versionnés :
-ils se régénèrent avec `./scripts/build-gerbers.sh` et deviennent les assets d'une
+ils se régénèrent avec `./scripts/build-gerbers.sh` (carte v2) ou `./scripts/build-jlcpcb.sh` (cartes v3, avec la liste des pièces et les positions) et deviennent les assets d'une
 release `pcb-vX` via `/release-pcb`.
 
 ---

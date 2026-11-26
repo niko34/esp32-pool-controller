@@ -67,7 +67,7 @@ Les **sources** KiCad sont versionnées dans [`kicad/`](kicad/) :
   s'en déduit avec `python3 tools/bom_export.py`)
 
 Les **fichiers de fabrication** (gerbers, perçage) ne sont pas versionnés : ils se
-régénèrent avec `./scripts/build-gerbers.sh` et sont publiés comme assets des
+régénèrent avec `./scripts/build-gerbers.sh` (carte v2) ou `./scripts/build-jlcpcb.sh` (cartes v3, avec la liste des pièces et les positions) et sont publiés comme assets des
 releases `pcb-vX`. Voir « Fichiers générés et releases » dans `CLAUDE.md`.
 
 ![PCB](screenshots/PCB_3D.png)

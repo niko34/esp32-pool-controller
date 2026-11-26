@@ -1,7 +1,7 @@
 ---
 description: Publie une release PCB (gerbers de fabrication) — ne touche ni au firmware ni aux PDF
-argument-hint: [pcb-vX] [résumé des changements matériels]
-allowed-tools: Bash(git status:*), Bash(git tag:*), Bash(git push:*), Bash(git log:*), Bash(gh auth status:*), Bash(gh release create:*), Bash(gh release view:*), Bash(./scripts/build-gerbers.sh:*), Bash(ls:*), Bash(unzip:*), Read
+argument-hint: [pcb-vX] [carte(s)] [résumé des changements matériels]
+allowed-tools: Bash(git status:*), Bash(git tag:*), Bash(git push:*), Bash(git log:*), Bash(gh auth status:*), Bash(gh release create:*), Bash(gh release view:*), Bash(./scripts/build-gerbers.sh:*), Bash(./scripts/build-jlcpcb.sh:*), Bash(ls:*), Bash(unzip:*), Read
 ---
 
 Publie une release **PCB** : génère les fichiers de fabrication et les attache à
@@ -43,11 +43,24 @@ depuis le `.kicad_pcb` et n'existent que comme assets de release.
 
 ### 2. Génération des fichiers de fabrication
 
-    ./scripts/build-gerbers.sh <version>
+**Il y a plusieurs cartes sous `kicad/`** (corrigé le 2026-11-26 : la commande
+s'arrêtait dès la deuxième carte). Si l'utilisateur n'a pas dit lesquelles
+publier, **demande-le** — ne choisis pas à sa place :
 
-Le script sonde `kicad-cli` (y compris dans `/Applications/KiCad/`, où
-l'installateur macOS ne l'ajoute pas au PATH) et échoue proprement s'il est
-absent. Il produit `kicad/gerbers-<version>.zip`.
+    ls kicad/*/*.kicad_pcb
+
+| Carte | Commande | Produit |
+|---|---|---|
+| v2 — `esp32-pool-controller` (2 couches, montée à la main) | `./scripts/build-gerbers.sh <version> esp32-pool-controller` | `kicad/gerbers-<version>-esp32-pool-controller.zip` |
+| v3 — `v3-principale`, `v3-mesure-std` (4 couches, posées par l'atelier) | `./scripts/build-jlcpcb.sh <carte>` | dans `kicad/<carte>/fabrication/` : `gerbers-<carte>.zip`, `bom-<carte>.csv`, `cpl-<carte>.csv` |
+
+Pour une carte du v3, les **trois** fichiers sont des assets de la release : sans
+la liste des pièces et les positions, l'atelier ne peut pas poser les composants.
+`build-jlcpcb.sh` refuse de produire le dossier si le contrôle des règles signale
+une erreur.
+
+⛔ `v3-mesure` (carte à modules Atlas) est abandonnée au profit de
+`v3-mesure-std` : ne la publie pas sans demande explicite.
 
 En cas d'échec, arrête et montre le message.
 
@@ -81,7 +94,10 @@ confirmation**. Un envoi en fabrication coûte de l'argent et des semaines : une
 couche manquante ou un fichier de perçage absent ne se rattrape pas.
 
 Vérifie en particulier la présence de : cuivre avant et arrière, masque avant et
-arrière, sérigraphie, contour (`Edge_Cuts`) et perçage (`.drl`).
+arrière, sérigraphie, contour (`Edge_Cuts`) et perçage (`.drl`). **Pour une carte
+à 4 couches, aussi les deux cuivres internes (`In1_Cu`, `In2_Cu`)**, et la liste
+des pièces : le script affiche les pièces « non posées » — une pièce sans
+référence au catalogue ne sera pas montée.
 
 ### 5. Tag et release
 
@@ -91,7 +107,7 @@ arrière, sérigraphie, contour (`Edge_Cuts`) et perçage (`.drl`).
     gh release create <version> \
       --title "<version> — <titre court>" \
       --notes-file <fichier de notes dans le scratchpad> \
-      kicad/gerbers-<version>.zip
+      <les fichiers produits à l'étape 2, pour chaque carte publiée>
 
 Écris les notes dans un fichier du scratchpad plutôt que de les passer en
 ligne de commande.

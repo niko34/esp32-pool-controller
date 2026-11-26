@@ -617,7 +617,7 @@ fige après M3.
 - [x] P3 — Schéma : puissance en CMS — carte principale (2026-11-26)
 - [ ] P4 — Schéma : alimentation — ⛔ **après M3**
 - [ ] P5 — Placement et routage, contrôles de règles sans erreur — ✅ carte principale faite et relue (2026-11-26 : 0 violation, 0 liaison manquante, 0 écart avec le schéma) ; ⏳ reste la carte d'alimentation
-- [ ] P6 — Dossier de fabrication JLCPCB : gerbers, nomenclature, positions — ✅ script `scripts/build-jlcpcb.sh` écrit et lancé sur la carte principale et la carte de mesure (2026-11-26). ⏳ Restent : la référence du condensateur au tantale de la carte de mesure, le contrôle des angles à l'écran de pose de JLCPCB, la carte d'alimentation. ⚠️ `scripts/build-gerbers.sh` (commande `/release-pcb`) s'arrête depuis qu'il y a plusieurs cartes sous `kicad/` : à reprendre avant une release PCB
+- [ ] P6 — Dossier de fabrication JLCPCB : gerbers, nomenclature, positions — ✅ script `scripts/build-jlcpcb.sh` écrit et lancé sur la carte principale et la carte de mesure (2026-11-26). ⏳ Restent : la référence du condensateur au tantale de la carte de mesure, le contrôle des angles à l'écran de pose de JLCPCB, la carte d'alimentation. `/release-pcb` réparée le 2026-11-26 : elle demande quelle carte publier (`build-gerbers.sh <version> <carte>` pour le v2, `build-jlcpcb.sh` pour le v3)
 - [ ] P7 — Carte d'alimentation séparée — ⛔ **après M3**
 
 **Mesures (partie B)**
