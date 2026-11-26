@@ -41,6 +41,7 @@ specs/
     done/               # Features terminées
     _template.md        # Template UNIQUE, obligatoire pour toute spec
 kicad/                  # Sources KiCad du PCB (versionnées ; générés ignorés)
+boitier/                # Générateur FreeCAD du boîtier (versionné ; sorties ignorées)
 scripts/                # Génération des livrables de release (PDF, gerbers)
 .claude/commands/       # Commandes slash versionnées (/release, /release-pcb)
 ```
@@ -165,7 +166,7 @@ Ces règles sont **non négociables** — même si l'utilisateur demande de les 
 2. **Watchdog** : jamais désactivé en production. `kWatchdogTimeoutSec = 30s`
 3. **Secrets** : ne jamais committer de tokens, mots de passe MQTT, SSID/password Wi-Fi
 4. **Build artefacts** : ne pas toucher à `.pio/`, `data-build/`, `node_modules/`
-5. **Fichiers matériel** : les sources KiCad de `kicad/` sont **gelées sauf demande explicite** — on ne modifie ni le schéma ni le routage au fil d'une tâche logicielle. Les sources FreeCAD du boîtier sont conservées hors du dépôt.
+5. **Fichiers matériel** : les sources KiCad de `kicad/` sont **gelées sauf demande explicite** — on ne modifie ni le schéma ni le routage au fil d'une tâche logicielle. Le boîtier est dans `boitier/` : un script FreeCAD le construit en entier, et ses sorties (FCStd, STEP, STL) ne sont pas versionnées — voir `boitier/README.md`.
 6. **OTA** : toujours vérifier la signature/CRC avant flash
 
 ## Les agents
