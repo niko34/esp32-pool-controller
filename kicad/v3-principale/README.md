@@ -74,6 +74,11 @@ du dépôt). Origine : coin bas-gauche du boîtier vu de face, cotes en mm.
 **Organisation retenue (« option N »)** — le dessin général du boîtier ne change pas, il
 gagne **20 mm en hauteur** (210 × 195) **et 10 mm en profondeur** (104 mm, 129,5 mm avec les
 pompes) :
+
+⚠️ **Profondeur portée à 114 mm le 2026-11-26** (139,5 mm avec les pompes), pour qu'un
+transformateur de 48 mm tienne sous la pompe de gauche (feature-218). Le boîtier adapté est
+`boitier/v15/` : ses cotes font foi.
+
 - alimentation à gauche, pompes à leur place actuelle ;
 - carte de mesure en bas à droite, prises des sondes sur les perçages existants ;
 - **carte principale rectangulaire de 119 × 100 mm** au-dessus : X 77 à 196, Y 62 à 162 ;

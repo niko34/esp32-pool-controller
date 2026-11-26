@@ -145,6 +145,41 @@ d'alimentation maison n'existe. L'essai M3 n'a jamais été fait.
 
 **Ordre conseillé par le relecteur** : V0, puis V2, V1, V7 et V6, V3, V4 et V5, V8, V9.
 
+### V3 — le format commun : ✅ FIXÉ le 2026-11-26
+
+Étude de `electronics-reviewer` (cotes lues sur les fiches des fabricants), demandée par
+l'utilisateur : « détermine la taille pour permettre de concevoir les alimentations avec les
+composants idéaux ».
+
+| | Valeur |
+|---|---|
+| Carte | **52 × 120 mm**, même axe que la RPS : X 18,2 à 70,2 · Y 39 à 159 (repère du boîtier) |
+| Fixations | les deux plots du bas de la RPS, (22 ; 43,1) et (66,4 ; 43,1), et deux plots neufs, (22 ; 155) et (66,4 ; 155). Les plots du haut de la RPS (Y 113) restent : la carte s'y appuie **sans vis** — prévoir au dos un rond de 9 mm sans cuivre à ces deux endroits |
+| Hauteur des composants | 50 mm sous un capot unique de 60,8 × 128 × 58 mm |
+| Profondeur du boîtier | **114 mm** (accord de l'utilisateur, 2026-11-26) : reçoit le transformateur de 22 VA (48 mm) comme celui de 16 VA (39 mm) |
+| Arrivée 230 V | en bas, vers X 44, face au passe-câble |
+| Sortie 12 V | en haut |
+
+**Composants qui ont dimensionné le format**
+- Carte B : transformateur **Hahn EI54** (16 VA : 47,7 × 75,8 × 39,3 mm, 0,40 kg ; 22 VA :
+  même empreinte, 47,9 mm de haut, 0,55 kg), garanti 70 °C, **non protégé** : fusible au
+  secondaire obligatoire. À visser (pattes M4), pas à tenir par ses soudures.
+- Carte A : module **Mean Well MFM-30-12** à souder (65,5 × 35 × 23 mm, fuite < 80 µA comme
+  la RPS). Un découpage dessiné de zéro est écarté.
+- Séparation primaire / secondaire : 23 mm sur la carte, pour 8 mm visés.
+
+**Écartés** : un format plus large (57 × 126 mm, transformateur EI60 de 28 VA), qui
+obligerait à élargir le boîtier pour un courant que la chaleur ne permettrait pas d'utiliser ;
+le **Myrra 44266** du point V7, limité à 50 °C ambiants par sa fiche.
+
+**Hypothèse de consommation** (rien n'est mesuré) : 0,3 A en usage courant, 0,6 à 0,9 A
+pendant un dosage, 1,2 à 1,7 A au pire pendant quelques minutes.
+
+⏳ **Non vérifié** : la capacité entre primaire et secondaire des Hahn (c'est pourtant le
+critère du bruit de mesure), leur prix et leur disponibilité (catalogue de 2013, un seul
+fabricant), la valeur du fusible secondaire, la chaleur dans le boîtier fermé (3 à 8 W
+estimés pour la carte B, contre 1,4 W pour la RPS — c'est la vraie limite de cette carte).
+
 ### V0 — le point de référence, AVANT toute carte 230 V (ajout de la relecture)
 
 Mesurer d'abord le v3 lui-même, sans rien dessiner : une fois sur la RPS-30-12, une fois sur
@@ -179,7 +214,7 @@ le format commun (V3) à ce moment-là, sans attendre V0.
 **Étude**
 - [ ] E0 — **Mesure V0** sur le v3 : Mean Well, puis batterie — ⛔ préalable à A1, A2, B1 et B2
 - [ ] E1 — Points V1 à V13 tranchés par écrit, relus par `electronics-reviewer`
-- [ ] E2 — Format commun des deux cartes écrit dans cette fiche (dimensions, trous, hauteur, connecteurs)
+- [x] E2 — Format commun des deux cartes écrit dans cette fiche (dimensions, trous, hauteur) — 2026-11-26, voir « V3 ». ⏳ Le connecteur vers la carte principale (V4) reste à fixer
 
 **Cartes**
 - [ ] A1 — Carte A (découpage) : composants, connexions, schéma, relus
@@ -188,8 +223,8 @@ le format commun (V3) à ce moment-là, sans attendre V0.
 - [ ] B2 — Carte B : placement, routage, contrôle des règles sans erreur, distances d'isolement vérifiées
 
 **Boîtier**
-- [ ] C1 — Supports du second format ajoutés au générateur, ceux de la RPS-30-12 conservés
-- [ ] C2 — Capot adapté ; jeu avec le moteur de la pompe de gauche vérifié pour les trois alimentations
+- [x] C1 — Supports du second format ajoutés au générateur, ceux de la RPS-30-12 conservés — `boitier/v15/`, 2026-11-26, contrôle `second_psu_format`
+- [x] C2 — Capot adapté ; jeu avec le moteur de la pompe de gauche vérifié pour les trois alimentations — un seul capot, 4,9 mm sous l'arrière de la pompe (cote de pompe nominale, jamais mesurée). ⚠️ Jamais imprimé
 
 **Mesures**
 - [ ] M1 — Protocole de comparaison écrit

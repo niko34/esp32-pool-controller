@@ -37,7 +37,11 @@ for directory in (FC_DIR, STL_DIR, STEP_DIR, REPORT_DIR):
 
 BOX_W = 210.0
 BOX_H = 195.0   # V15 : +20 (V14 : 175)
-BODY_D = 104.0  # V15 : +10 (V14 : 94), pour eloigner l'arriere des pompes des cartes
+# V15 : 114 (V14 : 94). +10 pour eloigner l'arriere des pompes des cartes, puis +10 pour
+# loger sous la pompe de gauche un transformateur de 48 mm (feature-218, 2026-11-26).
+# Les cotes qui suivent la facade sont DERIVEES de BODY_D : une cloison oubliee a 70 mm
+# a deja laisse 12,8 mm d'ouverture lors du premier agrandissement.
+BODY_D = 114.0
 WALL = 3.0
 REAR = 3.2
 TOP_CHAMFER = 10.0
@@ -48,7 +52,7 @@ BOTTOM_CHAMFER = 8.0
 # et le capot n'a plus a envelopper le chant de la platine.
 COVER_ASSEMBLY_Z = REAR
 COVER_D = BODY_D - COVER_ASSEMBLY_Z
-COVER_FRONT_START = 95.0
+COVER_FRONT_START = BODY_D - 9.0
 FRONT_CORE_T = COVER_D - COVER_FRONT_START
 SHELL_FRONT_INSET = 11.0
 SHELL_BOTTOM_INSET = 6.0
@@ -189,8 +193,14 @@ SIDE_GUIDE_Y = (163.5,)  # V15 : au-dessus de la carte principale (bord haut a Y
 SIDE_GUIDE_W = 5.0
 SIDE_GUIDE_LEFT_X = 13.0
 SIDE_GUIDE_RIGHT_X = 192.0
-SIDE_GUIDE_H = 20.1
-SIDE_GUIDE_D = 7.0
+SIDE_GUIDE_H = 17.0  # V15 : s'arrete a Y 180,5, avant l'arrondi du cadre de compression (Y 182)
+# V15 (2026-11-26, constat de l'utilisateur) : ces rails ne depassaient le cadre du joint
+# que de 1,2 mm et le capot portait une tablette DEVANT eux : ni guidage, ni retenue.
+# Ils montent maintenant a Z 16, 7 mm au-dessus du cadre, avec un chanfrein d'entree ;
+# leur face exterieure (X 13 et X 197) centre le capot par le bord interieur de sa bride
+# (X 12,7 et X 197,3), soit 0,3 mm de jeu de chaque cote. La tablette du capot est retiree.
+SIDE_GUIDE_D = 12.8
+SIDE_GUIDE_CHAMFER = 2.0
 SIDE_RETAINER_GAP = 0.5
 SIDE_RETAINER_LOCAL_Z = (
     REAR + SIDE_GUIDE_D - COVER_ASSEMBLY_Z + SIDE_RETAINER_GAP)
@@ -272,6 +282,17 @@ PSU_POST_OD = 7.5
 PSU_HOLE_D = 3.2
 PSU_HOLE_EDGE_X = 3.175
 PSU_HOLE_EDGE_Y = 3.175
+# V15 : SECOND FORMAT de carte d'alimentation (feature-218, etude du 2026-11-26) :
+# 52 x 120 mm, meme axe que la RPS. Fixations : les deux plots du bas de la RPS, et deux
+# plots neufs en haut. Les plots du haut de la RPS restent : la carte s'y appuie sans vis.
+ALT_PSU_W = 52.0
+ALT_PSU_H = 120.0
+ALT_PSU_X = PSU_X + PSU_W / 2.0 - ALT_PSU_W / 2.0
+ALT_PSU_Y = 39.0
+ALT_PSU_COMPONENT_H = 50.0   # transformateur de 48 mm, radiateur du regulateur
+ALT_PSU_TOP_POST_Y = 155.0
+ALT_PSU_NEW_POSTS = ((PSU_X + PSU_HOLE_EDGE_X, ALT_PSU_TOP_POST_Y),
+                     (PSU_X + PSU_W - PSU_HOLE_EDGE_X, ALT_PSU_TOP_POST_Y))
 
 # V15 : prise Dosin 801-0080 (nez filete M12 x 0,75, axe a 9,8 mm au-dessus de la carte).
 # Percage rond de 12,5 (le meplat du V14 etait celui de la prise Amphenol).
@@ -279,7 +300,10 @@ BNC_X = tuple(MEAS_X + x for x in MEAS_BNC_KICAD_X)
 BNC_AXIS_Z = REAR + PCB_STANDOFF_H + PCB_T + 9.8
 BNC_PIN_Y = MEAS_Y + MEAS_BNC_PIN_FROM_BOTTOM
 BNC_REFERENCE_Y_SHIFT = BNC_PIN_Y - 5.9  # epaulement de la prise
-BNC_CUTOUT_D = 12.5
+# Percage de 13,0 pour un nez M12 : 0,5 mm de jeu au rayon. La chaine qui place l'axe (fond,
+# plot imprime, epaisseur de carte, prise a +/-0,3 selon son plan, brasure) peut s'ecarter
+# d'environ 0,7 mm : 12,5 ne laissait que 0,25. La collerette de la prise fait 14.
+BNC_CUTOUT_D = 13.0
 BNC_FLAT_OFFSET = 7.0
 BNC_BODY_W = 14.0
 BNC_BODY_H = 12.5
@@ -290,7 +314,7 @@ BNC_FRONT_LENGTH = 18.6
 # sous-face fixe et se vissent dans des inserts thermofixes places dans le
 # capot. Les axes sont dans une zone libre entre PG7 et BNC.
 LOWER_LOCK_X = (18.0, 105.0, 192.0)
-LOWER_LOCK_GLOBAL_Z = 93.4
+LOWER_LOCK_GLOBAL_Z = BODY_D - 10.6
 LOWER_LOCK_LOCAL_Z = LOWER_LOCK_GLOBAL_Z - COVER_ASSEMBLY_Z
 LOWER_CLEAR_D = 4.5
 LOWER_HEAD_D = 8.5
@@ -317,7 +341,7 @@ SEAL_REAR_END_Y = 20.0
 SEAL_ELBOW_R = SEAL_REAR_END_Y - TECH_TOTAL_T
 SEAL_DECK_START_Z = SEAL_FACE_Z + SEAL_ELBOW_R
 SEAL_DECK_X = 11.3
-SEAL_DECK_FRONT_Z = 87.8
+SEAL_DECK_FRONT_Z = BODY_D - 16.2
 SEAL_DECK_FRONT_R = 4.0
 SEAL_LAND_W = 5.4
 # La contre-face plane fait 3,6 mm. Les supports fixes des coudes restent
@@ -339,7 +363,7 @@ WALL_ACCESS_MOUNT = (191.0, 7.7)  # V15 : +1, pour 2 mm entre la tete de vis et 
 WALL_LEFT_LOWER_MOUNT = (24.0, 7.7)
 WALL_LOWER_MOUNTS = (WALL_LEFT_LOWER_MOUNT, WALL_ACCESS_MOUNT)
 WALL_MOUNTS = (WALL_LEFT_LOWER_MOUNT, WALL_ACCESS_MOUNT,
-               (25.0, 170.0), (185.0, 170.0))
+               (25.0, 178.0), (185.0, 178.0))  # V15 : au-dessus du capot d'alimentation allonge
 WALL_MOUNT_D = 4.5
 WALL_MOUNT_HEAD_D = 9.0
 WALL_MOUNT_BOSS_D = 13.0
@@ -380,9 +404,9 @@ def build_wall_access_relief():
 GUARD_CLEARANCE = 5.0
 GUARD_OFFSET_X = 1.0  # Supprimer le chevauchement ancien de la paroi sur le cadre fixe.
 GUARD_T = 2.2
-GUARD_H = 34.0
+GUARD_H = 58.0  # V15 : couvre 50 mm de composants du second format (V14 : 34, pour la RPS)
 GUARD_W = PSU_W + 2.0 * GUARD_CLEARANCE
-GUARD_L = PSU_H + 2.0 * GUARD_CLEARANCE
+GUARD_L = (ALT_PSU_Y + ALT_PSU_H + 1.0 + GUARD_T) - (PSU_Y - GUARD_CLEARANCE)  # V15 : un seul capot pour les trois alimentations
 GUARD_TAB_W = 10.0
 GUARD_TAB_D = 8.0
 GUARD_MOUNT_X = (10.0, GUARD_W - 10.0)
@@ -392,7 +416,10 @@ GUARD_BOSS_OD = 9.0
 GUARD_BOSS_H = 3.0
 MAINS_BARRIER_X = 54.5
 MAINS_BARRIER_T = 2.2
-MAINS_BARRIER_H = 70.0  # Extremite Z73.2, 2.8 mm avant la contre-face mobile.
+# V15 : la cloison suit la profondeur du boitier (V14 : 70, extremite Z73,2). Oubliee lors du
+# premier agrandissement : elle laissait 12,8 mm d'ouverture devant le capot au lieu de 2,8.
+MAINS_BARRIER_CAP_GAP_MAX = 3.0
+MAINS_BARRIER_H = BODY_D - 24.0  # 2,8 mm avant la contre-face mobile.
 MAINS_BARRIER_START_Y = TECH_TOTAL_T
 # Les pattes sont ecartees : prolonger jusqu'a 0,5 mm du cache, sans contact rigide.
 GUARD_BARRIER_GAP = .5
@@ -467,8 +494,11 @@ def build_wiring_routes():
       'secteur':[(PG7_LAYOUT[0][0],0,PG7_LAYOUT[0][1]),
                  (px,15,PG7_LAYOUT[0][1]),(px,turn_y,pz),
                  (px,PSU_Y-GUARD_CABLE_D/2-.4,pz)],
-      'basse_tension':[(px,PSU_Y+PSU_H+GUARD_CABLE_D/2+.4,pz),
-                       (px,147.5,pz),(px,147.5,45),(84,147.5,45)],  # V15 : vers le bornier 12 V, en haut a gauche de la carte
+      # V15 : sort par le haut du capot allonge, monte, puis redescend sur le bornier 12 V
+      # (il contourne par le haut l'acces au tournevis des vis du capot d'alimentation)
+      'basse_tension':[(px,gy+GUARD_L-2.0,pz),(px,gy+GUARD_L+4.8,pz),(px,gy+GUARD_L+4.8,45),
+                       (56,gy+GUARD_L+4.8,45),(56,gy+GUARD_L+13.3,45),
+                       (84,gy+GUARD_L+13.3,45),(84,150,45)],  # passe entre les pattes du capot d'alimentation, puis a droite du crochet du capot
       'commande_filtration':[(fx,0,fz),(fx,20,fz),(82,20,fz),
                               (82,44,fz),(82,54,45),(82,131,45)],
       'commande_eclairage':[(lx,0,lz),(lx,33,lz),(94,33,lz),
@@ -954,10 +984,13 @@ def build_wall_backplate():
 
     # Deux rails lateraux continus de guidage, sans fonction de clipsage.
     for y in SIDE_GUIDE_Y:
-        left = Part.makeBox(SIDE_GUIDE_W, SIDE_GUIDE_H, SIDE_GUIDE_D,
-                            vec(SIDE_GUIDE_LEFT_X, y, REAR))
-        right = Part.makeBox(SIDE_GUIDE_W, SIDE_GUIDE_H, SIDE_GUIDE_D,
-                             vec(SIDE_GUIDE_RIGHT_X, y, REAR))
+        z0, z1, c = REAR, REAR + SIDE_GUIDE_D, SIDE_GUIDE_CHAMFER
+        xl, xr = SIDE_GUIDE_LEFT_X, SIDE_GUIDE_RIGHT_X
+        # profil XZ, chanfrein du cote exterieur (celui qui recoit la bride du capot)
+        left = polygon_prism_xz([(xl, z0), (xl + SIDE_GUIDE_W, z0), (xl + SIDE_GUIDE_W, z1),
+                                 (xl + c, z1), (xl, z1 - c)], y, SIDE_GUIDE_H)
+        right = polygon_prism_xz([(xr, z0), (xr + SIDE_GUIDE_W, z0), (xr + SIDE_GUIDE_W, z1 - c),
+                                  (xr + SIDE_GUIDE_W - c, z1), (xr, z1)], y, SIDE_GUIDE_H)
         plate = plate.fuse(left).fuse(right)
 
     # Entretoises PCB a droite.
@@ -970,6 +1003,11 @@ def build_wall_backplate():
         for y in (PSU_Y + PSU_HOLE_EDGE_Y, PSU_Y + PSU_H - PSU_HOLE_EDGE_Y):
             plate = plate.fuse(ring_post_z(
                 PSU_POST_OD, PSU_HOLE_D, PSU_STANDOFF_H, x, y, REAR))
+
+    # V15 : deux plots neufs pour le second format de carte d'alimentation.
+    for x, y in ALT_PSU_NEW_POSTS:
+        plate = plate.fuse(ring_post_z(
+            PSU_POST_OD, PSU_HOLE_D, PSU_STANDOFF_H, x, y, REAR))
 
     # Points de fixation du capot de securite de l'alimentation.
     guard_x0 = PSU_X - GUARD_CLEARANCE + GUARD_OFFSET_X
@@ -1226,36 +1264,8 @@ def build_cover_light_core(graphite_skin, turquoise_inlay):
     for x in TOP_HOOK_X:
         cover = cover.fuse(build_cover_top_catch(x))
 
-    # Deux contre-languettes laterales continues, situees devant les rails de la
-    # platine. Elles guident la descente et retiennent les flancs contre le
-    # joint sans recourir a des vis visibles ou a des clips flexibles.
-    for y in SIDE_GUIDE_Y:
-        left_toe = Part.makeBox(
-            SIDE_GUIDE_W, SIDE_GUIDE_H, SIDE_RETAINER_D,
-            vec(SIDE_GUIDE_LEFT_X, y, SIDE_RETAINER_LOCAL_Z))
-        right_toe = Part.makeBox(
-            SIDE_GUIDE_W, SIDE_GUIDE_H, SIDE_RETAINER_D,
-            vec(SIDE_GUIDE_RIGHT_X, y, SIDE_RETAINER_LOCAL_Z))
-        # Ponts places devant le plan de joint, relies au cadre de compression.
-        left_bridge = Part.makeBox(
-            SIDE_GUIDE_LEFT_X + SIDE_GUIDE_W - 1.5,
-            SIDE_GUIDE_H, COMPRESSION_RING_T,
-            vec(1.5, y, SIDE_RETAINER_LOCAL_Z))
-        right_bridge = Part.makeBox(
-            208.5 - SIDE_GUIDE_RIGHT_X,
-            SIDE_GUIDE_H, COMPRESSION_RING_T,
-            vec(SIDE_GUIDE_RIGHT_X, y, SIDE_RETAINER_LOCAL_Z))
-        left_web = Part.makeBox(
-            SIDE_GUIDE_W, SIDE_GUIDE_H, 0.9,
-            vec(SIDE_GUIDE_LEFT_X, y,
-                SIDE_RETAINER_LOCAL_Z + SIDE_RETAINER_D - 0.2))
-        right_web = Part.makeBox(
-            SIDE_GUIDE_W, SIDE_GUIDE_H, 0.9,
-            vec(SIDE_GUIDE_RIGHT_X, y,
-                SIDE_RETAINER_LOCAL_Z + SIDE_RETAINER_D - 0.2))
-        cover = (cover.fuse(left_toe).fuse(right_toe)
-                 .fuse(left_bridge).fuse(right_bridge)
-                 .fuse(left_web).fuse(right_web))
+    # V15 : les contre-languettes laterales du capot sont retirees (elles ne guidaient ni ne
+    # retenaient rien). Le guidage se fait par les rails de la platine, voir SIDE_GUIDE_D.
 
     # Bossages d'inserts des trois vis inferieures. Ils sont relies a la
     # façade par une nervure, au-dessus de la sous-face porte-connecteurs.
@@ -1673,6 +1683,36 @@ def pcb_interface_checks(parts,cap):
     return out
 
 
+def alt_psu_checks(parts):
+    """Second format d'alimentation : la carte et son enveloppe de composants tiennent-elles ?"""
+    plate=parts['backplate_monobloc']; guard=placed_psu_guard(parts['psu_guard'])
+    z=REAR+PSU_STANDOFF_H
+    board=Part.makeBox(ALT_PSU_W,ALT_PSU_H,1.6,vec(ALT_PSU_X,ALT_PSU_Y,z))
+    env=Part.makeBox(ALT_PSU_W,ALT_PSU_H,ALT_PSU_COMPONENT_H,vec(ALT_PSU_X,ALT_PSU_Y,z+1.6))
+    posts=[(x,y) for x in (PSU_X+PSU_HOLE_EDGE_X,PSU_X+PSU_W-PSU_HOLE_EDGE_X)
+           for y in (PSU_Y+PSU_HOLE_EDGE_Y,PSU_Y+PSU_H-PSU_HOLE_EDGE_Y)]+list(ALT_PSU_NEW_POSTS)
+    seats=[]
+    for x,y in posts:
+        top=Part.makeCylinder(PSU_POST_OD/2-.3,.2,vec(x,y,z-.2)).cut(Part.makeCylinder(PSU_HOLE_D/2+.1,.4,vec(x,y,z-.3)))
+        seats.append({'x_mm':x,'y_mm':y,'seat_missing_mm3':top.Volume-top.common(plate).Volume,
+                      'under_board':ALT_PSU_X<=x<=ALT_PSU_X+ALT_PSU_W and ALT_PSU_Y<=y<=ALT_PSU_Y+ALT_PSU_H})
+    pump_rear_z=BODY_D-PUMP_REAR_D
+    out={'board_mm':[ALT_PSU_W,ALT_PSU_H],'position_xy_mm':[ALT_PSU_X,ALT_PSU_Y],
+         'component_height_mm':ALT_PSU_COMPONENT_H,'seats':seats,
+         'board_plate_collision_mm3':board.common(plate).Volume,
+         'board_guard_collision_mm3':board.common(guard).Volume,
+         'components_guard_collision_mm3':env.common(guard).Volume,
+         'components_to_guard_mm':env.distToShape(guard)[0],
+         'guard_top_z_mm':REAR+GUARD_BOSS_H+GUARD_H,
+         'guard_to_pump_rear_mm':pump_rear_z-(REAR+GUARD_BOSS_H+GUARD_H),
+         'rps_fits_too_mm3':build_psu_reference_shape().common(guard).Volume}
+    out['pass']=(all(abs(r['seat_missing_mm3'])<=.01 and r['under_board'] for r in seats)
+        and out['board_plate_collision_mm3']<=.01 and out['board_guard_collision_mm3']<=.01
+        and out['components_guard_collision_mm3']<=.01 and out['components_to_guard_mm']>=1-1e-6
+        and out['guard_to_pump_rear_mm']>=3.0 and out['rps_fits_too_mm3']<=.01)
+    return out
+
+
 def build_psu_reference_shape():
     return Part.makeBox(
         PSU_W, PSU_H, PSU_Z,
@@ -2063,6 +2103,7 @@ def write_validation_report(part_reports, parts):
         "units":"mm",
         "parts":part_reports,
         "pump_interface":pump_interface_checks(parts),
+        "second_psu_format":alt_psu_checks(parts),
         "pcb_interface":pcb_interface_checks(parts,cap),
         "printable_solids":{"pass":all(s.isValid() and len(s.Solids)==1 for s in parts.values())},
         "outer_wall_closure":outer_wall_closure_check(parts["cover_monobloc"]),
@@ -2176,7 +2217,9 @@ def write_validation_report(part_reports, parts):
             'foot_missing_probes':barrier_missing,
             'groove_intersection_mm3':barrier.common(groove).Volume,
             'negative_misplaced_barrier_cable_collision_mm3':misplaced_barrier.common(cables).Volume,
+            'cap_clearance_max_mm':MAINS_BARRIER_CAP_GAP_MAX,
             'pass':barrier.isValid() and len(barrier.Solids)==1 and not barrier_missing
+                and 1.0-1e-6 <= barrier_cap_gap <= MAINS_BARRIER_CAP_GAP_MAX+1e-6
                 and not barrier_extension_missing and abs(barrier_missing_volume)<=.01
                 and barrier_cap_gap>=1-1e-6
                 and barrier.common(groove).Volume<=.01 and misplaced_barrier.common(cables).Volume>.1},
@@ -2240,6 +2283,15 @@ def build_pcb_fit_coupon():
         gauge=gauge.cut(Part.makeCylinder(PCB_HOLE_D/2,2.2,vec(kx,PCB_H-ky,-.1)))
     return safe_refine(gauge)
 
+def build_measure_board_coupon(backplate):
+    """Extrait reel du fond : les quatre plots de la carte de mesure et la paroi du bas avec
+    ses deux percages BNC. A imprimer AVANT le boitier, pour presenter la vraie carte avec ses
+    prises : c'est le seul essai qui verifie la hauteur des percages (plot + carte + prise)."""
+    x0=MEAS_X-5.0
+    shape=backplate.common(Part.makeBox(MEAS_W+10.0,MEAS_Y+MEAS_H+4.0,BNC_AXIS_Z+BNC_CUTOUT_D/2+6.0,vec(x0,0,0)))
+    shape.translate(vec(-x0,0,0))
+    return safe_refine(shape)
+
 def build_left_wall_access_coupon(backplate):
     # Extrait reel des trois PG7, cloison et fixation murale gauche.
     shape=backplate.common(Part.makeBox(100,40,75,vec(10,0,0)))
@@ -2272,6 +2324,7 @@ def main():
         "gasket_coupon": build_gasket_fit_coupon(),
         "wall_access_coupon": build_wall_access_coupon(backplate_monobloc),
         "left_wall_access_coupon":build_left_wall_access_coupon(backplate_monobloc),
+        "measure_board_coupon":build_measure_board_coupon(backplate_monobloc),
         "pcb_coupon":build_pcb_fit_coupon(),
     }
 
@@ -2442,6 +2495,15 @@ def main():
             ("MaterialCode", "Materiau final", 8.0),
         ]))
 
+    reports.append(save_part(
+        "PoolControllerV15MP1_MeasureBoardFitCoupon", "MeasureBoardFitCoupon",
+        "Coupon carte de mesure : quatre plots et les deux percages BNC",parts["measure_board_coupon"],
+        (.55,.55,.55),[
+            ("OriginalXOffset", "Decalage X de l'extrait",MEAS_X-5.0),
+            ("BncAxisZ", "Hauteur de l'axe BNC depuis le dos du fond",BNC_AXIS_Z),
+            ("BncHoleD", "Diametre des percages BNC",BNC_CUTOUT_D),
+            ("StandoffH", "Hauteur des plots",PCB_STANDOFF_H),
+        ]))
     reports.append(save_part(
         "PoolControllerV15MP1_LeftWallAccessFitCoupon", "LeftWallAccessFitCoupon",
         "Coupon fixation gauche, cloison et trois PG7",parts["left_wall_access_coupon"],
