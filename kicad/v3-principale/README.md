@@ -590,7 +590,9 @@ Le script refuse de produire quoi que ce soit si le contrôle des règles signal
 de positions posait les transistors et le régulateur 3,3 V à l'envers, quatre circuits d'un quart
 de tour, et décalait toutes les pièces traversantes et le module ESP32. Corrigé dans
 `scripts/jlcpcb_bom_cpl.py` (milieu des pastilles, table d'angles par boîtier), puis revu à
-l'écran : pose conforme. ⏳ Non lu directement : la polarité du support de pile (déduite du
+l'écran. ⚠️ « Pose conforme » avait été écrit trop vite : le régulateur 5 V (U6) restait
+posé 3,1 mm trop à droite, vu ensuite par l'utilisateur et confirmé sur l'empreinte de JLCPCB
+(C86206) — corrigé, ⏳ pas encore revu à l'écran. ⏳ Non lu directement : la polarité du support de pile (déduite du
 centrage de son corps ; une remarque a été jointe à la commande).
 ⚠️ **Étape humaine à la commande** : JLCPCB ne compte pas les angles comme KiCad pour certains
 boîtiers. Son écran de pose montre chaque pièce sur la carte : y vérifier le sens des diodes,

@@ -12,8 +12,11 @@ Usage : jlcpcb_bom_cpl.py <bom KiCad> <positions KiCad> <bom JLCPCB> <cpl JLCPCB
   1. la POSITION : JLCPCB centre sa pièce sur le milieu de ses pastilles, KiCad donne
      le point d'ancrage de l'empreinte — la broche 1 pour une pièce traversante. Quand
      l'ancrage est sur la broche 1, et pour le module ESP32 (vu décalé de 3,2 mm), on
-     écrit le milieu des pastilles, lu sur la carte. Les autres pièces gardent leur
-     ancrage : le régulateur 5 V et la prise USB-C étaient bien posés ainsi ;
+     écrit le milieu des pastilles, lu sur la carte. De même pour le régulateur 5 V
+     (TO-263) : l'empreinte de JLCPCB (C86206, lue le 2026-11-26) a son origine à
+     mi-chemin entre les pattes et la grande pastille, KiCad 3,1 mm plus près de la
+     grande pastille — la pièce était posée 3,1 mm trop à droite, vu par l'utilisateur.
+     Les autres pièces gardent leur ancrage : la prise USB-C était bien posée ainsi ;
   2. l'ANGLE : pour certains boîtiers, l'angle zéro de JLCPCB n'est pas celui de
      KiCad. La table ROTATIONS ajoute l'écart. ⚠️ Elle ne dispense pas de regarder
      l'écran de pose : une famille de boîtiers jamais vue n'y figure pas.
@@ -45,12 +48,13 @@ def ecart_angle(empreinte):
     return 0
 milieu = {}
 for fp in pcbnew.LoadBoard(carte).GetFootprints():
-    xs = [p.GetPosition().x / 1e6 for p in fp.Pads()]; ys = [p.GetPosition().y / 1e6 for p in fp.Pads()]
+    pastilles = [p for p in fp.Pads() if p.GetNumber()]    # sans numéro = découpe de pâte à braser
+    xs = [p.GetPosition().x / 1e6 for p in pastilles]; ys = [p.GetPosition().y / 1e6 for p in pastilles]
     if not xs: continue
     nom = str(fp.GetFPID().GetLibItemName()); a = fp.GetPosition()
     sur_broche_1 = any(p.GetNumber() == "1" and abs(p.GetPosition().x - a.x) < 10000
                        and abs(p.GetPosition().y - a.y) < 10000 for p in fp.Pads())
-    if sur_broche_1 or nom.startswith("ESP32-"):
+    if sur_broche_1 or nom.startswith(("ESP32-", "TO-263")):
         milieu[fp.GetReference()] = ((min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2, nom)
     else:
         milieu[fp.GetReference()] = (a.x / 1e6, a.y / 1e6, nom)
