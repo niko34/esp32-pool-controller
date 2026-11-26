@@ -583,7 +583,7 @@ détrompeur et corps de l'embase C221049 contre l'empreinte, type réel du déte
 
 Le script refuse de produire quoi que ce soit si le contrôle des règles signale une erreur.
 
-✅ Vérifié le 2026-11-26 : le dossier sort sans erreur, 88 pièces à poser en 45 lignes, aucune pièce sans référence. La pile CR2032 n'est pas posée par l'atelier (son support l'est).
+✅ Vérifié le 2026-11-26 : le dossier sort sans erreur, 88 pièces à poser en 37 lignes (une par référence : deux lignes de même référence sont refusées par le site), aucune pièce sans référence. La pile CR2032 n'est pas posée par l'atelier (son support l'est).
 ✅ Stock relevé au catalogue de JLCPCB le 2026-11-26 : toutes les références y sont, plus bas relevés : support de pile 2 052, DS3231SN 3 112, module ESP32 3 745. Environ la moitié des références sont des pièces « étendues » (frais de mise en place par référence).
 ⏳ Non vérifié : l'envoi réel des fichiers sur le site de JLCPCB.
 ⚠️ **Étape humaine à la commande** : JLCPCB ne compte pas les angles comme KiCad pour certains

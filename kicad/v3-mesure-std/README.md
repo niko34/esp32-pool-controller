@@ -361,7 +361,7 @@ le corps de la prise (10 kΩ ferait passer le 50 Hz capté de 70 µV à 7 mV).
 
 Le script refuse de produire quoi que ce soit si le contrôle des règles signale une erreur.
 
-✅ Vérifié le 2026-11-26 : le dossier sort sans erreur, 47 pièces à poser en 19 lignes. C104 et C204 (22 µF 16 V au tantale) : référence trouvée le 2026-11-26 et confirmée par l'utilisateur, C8020 (AVX TAJB226K016RNJ, 55 997 en stock chez JLCPCB), équivalent C122226 (Xiangyee). Le 10 V a été écarté : sur 5 V il serait à la limite de la règle des fabricants (moitié de la tension nominale).
+✅ Vérifié le 2026-11-26 : le dossier sort sans erreur, 47 pièces à poser en 18 lignes (une par référence). C104 et C204 (22 µF 16 V au tantale) : référence trouvée le 2026-11-26 et confirmée par l'utilisateur, C8020 (AVX TAJB226K016RNJ, 55 997 en stock chez JLCPCB), équivalent C122226 (Xiangyee). Le 10 V a été écarté : sur 5 V il serait à la limite de la règle des fabricants (moitié de la tension nominale).
 ✅ Stock relevé au catalogue de JLCPCB le 2026-11-26 : toutes les références y sont, plus bas relevés : **OPA928DR 265**, module d'alimentation B0509S 1 493, prise BNC 6 096. Environ la moitié des références sont des pièces « étendues » (frais de mise en place par référence).
 ⏳ Non vérifié : l'envoi réel des fichiers sur le site de JLCPCB.
 ⚠️ **Étape humaine à la commande** : JLCPCB ne compte pas les angles comme KiCad pour certains

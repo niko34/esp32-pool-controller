@@ -3,8 +3,10 @@
 
 Usage : jlcpcb_bom_cpl.py <bom KiCad> <positions KiCad> <bom JLCPCB> <cpl JLCPCB>
 
-- BOM JLCPCB : Comment, Designator, Footprint, LCSC Part # — une ligne par pièce
-  identique (même valeur, même empreinte, même référence LCSC).
+- BOM JLCPCB : Comment, Designator, Footprint, LCSC Part # — UNE ligne par référence
+  LCSC. ⚠️ Deux lignes portant la même référence (par exemple cinq borniers nommés
+  chacun d'après leur usage) sont refusées par le site : quantité 0, ligne décochée
+  (constaté à la commande du 2026-11-26). Les noms différents sont réunis par « / ».
 - CPL JLCPCB : Designator, Mid X, Mid Y, Layer, Rotation.
 - Une pièce sans référence LCSC, ou marquée « ne pas poser », n'est ni dans l'un
   ni dans l'autre : elle est listée à l'écran, pour qu'on sache qu'elle manque.
@@ -21,11 +23,13 @@ for l in csv.DictReader(open(bom_in, encoding="utf-8")):
     if ref.startswith("#"): continue
     if not lcsc or l.get("DNP", "").strip():
         absentes.append((ref, l["Value"], "ne pas poser" if lcsc else "sans référence LCSC")); continue
-    groupes.setdefault((l["Value"], l["Footprint"].split(":")[-1], lcsc), []).append(ref); poses.add(ref)
+    g = groupes.setdefault(lcsc, {"refs": [], "vals": [], "fp": l["Footprint"].split(":")[-1]})
+    g["refs"].append(ref); poses.add(ref)
+    if l["Value"] not in g["vals"]: g["vals"].append(l["Value"])
 with open(bom_out, "w", newline="", encoding="utf-8") as f:
     w = csv.writer(f); w.writerow(["Comment", "Designator", "Footprint", "LCSC Part #"])
-    for (val, fp, lcsc), refs in sorted(groupes.items(), key=lambda kv: cle(sorted(kv[1], key=cle)[0])):
-        w.writerow([val, ",".join(sorted(refs, key=cle)), fp, lcsc])
+    for lcsc, g in sorted(groupes.items(), key=lambda kv: cle(sorted(kv[1]["refs"], key=cle)[0])):
+        w.writerow([" / ".join(g["vals"]), ",".join(sorted(g["refs"], key=cle)), g["fp"], lcsc])
 
 vues = set()
 with open(cpl_out, "w", newline="", encoding="utf-8") as f:
