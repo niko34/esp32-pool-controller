@@ -69,7 +69,7 @@ module externe (`J11`), une seule barrière d'isolation partagée par les deux v
 | D6 | **Module ORP en version OEM** lui aussi | 2026-11-24 | utilisateur |
 | D7 | **Carte de mesure SÉPARÉE** de la carte principale | 2026-11-24 | utilisateur — *« intéressant si on veut faire évoluer la carte principale sans toucher à la carte de mesure. C'est la même idée que pour l'alimentation »* |
 
-| D8 | **Composants courants, plusieurs fabricants et fournisseurs — ⛔ plus de module Atlas.** Tout composant est posé par l'atelier depuis son catalogue, a un équivalent d'un autre fabricant sur la même empreinte, et se trouve chez plus d'un distributeur. Toute exception est écrite, chiffrée, et acceptée par l'utilisateur. ⚠️ **La qualité des composants reste un critère majeur** : la règle ne justifie jamais un composant moins bon, et un équivalent se juge sur ses caractéristiques garanties. ⇒ **D2, D5 et D6 sont remplacées** pour ce qui concerne les modules Atlas ; la carte de mesure devient celle de **feature-217**. Le besoin 7 (« modules Atlas compris ») tombe | 2026-11-25 | utilisateur — *« Les modules Atlas sont trop chers et ils imposent d'envoyer des composants à JLCPCB. De plus, cela rendrait notre appareil dépendant d'un seul fabricant. Je préfère travailler avec des composants standards qui permettent de s'approvisionner chez plusieurs fabricants et fournisseurs. »* |
+| D8 | **Composants courants, plusieurs fabricants et fournisseurs — ⛔ plus de module Atlas.** Tout composant est posé par l'atelier depuis son catalogue, a un équivalent d'un autre fabricant sur la même empreinte, et se trouve chez plus d'un distributeur. Toute exception est écrite, chiffrée, et acceptée par l'utilisateur. ⚠️ **La qualité des composants reste un critère majeur** : la règle ne justifie jamais un composant moins bon, et un équivalent se juge sur ses caractéristiques garanties. ⇒ **D2, D5 et D6 sont remplacées** pour ce qui concerne les modules Atlas ; la carte de mesure devient celle de **feature-217**. Le besoin 7 (« modules Atlas compris ») tombe | 2026-11-25 | utilisateur — *« Les modules Atlas sont trop chers et ils imposent d'envoyer des composants à JLCPCB. De plus, cela rendrait notre appareil dépendant d'un seul fabricant. Je préfère travailler avec des composants standards qui permettent de s'approvisionner chez plusieurs fabricants et fournisseurs. »* ⭐ **Précision de l'utilisateur du 2026-11-26 : « le critère qualité l'emporte sur le nombre de fournisseurs et le prix ».** Premier cas : l'horloge de la carte principale revient à la DS3231SN (un seul fabricant, 8 $), parce que la PCF8563 dérive d'une à deux minutes par mois sans réseau. |
 
 | D9 | **L'alimentation devient interchangeable** : le même boîtier reçoit la Mean Well, une carte à découpage et une carte à transformateur dessinées par nous, pour les comparer sur le v3 en prix et en bruit de mesure. ⇒ L'essai M3 sur la carte v2 n'est plus un préalable : la carte principale se dessine avec un régulateur 5 V, un pont à couper et un bornier 5 V externe. Détail : [feature-218](feature-218-cartes-d-alimentation-interchangeables.md) | 2026-11-26 | utilisateur — *« comme il est difficile de faire un test avec une alim qui n'est pas à découpage »* |
 
@@ -612,11 +612,11 @@ fige après M3.
 - [x] P0 — Où vit le v3 dans le dépôt : ✅ **un dossier neuf à côté du v2** (utilisateur, 2026-11-24). Le v2 (`kicad/esp32-pool-controller/`) reste intact et gelé. Premier dossier créé : `kicad/v3-mesure/` (carte de mesure — composants et connexions, avant schéma)
 
 **Conception**
-- [ ] P1 — Schéma : ESP32 intégré, USB, horloge + pile
+- [x] P1 — Schéma : ESP32 intégré, USB, horloge + pile — carte principale, schéma écrit par script et relu (2026-11-26, horloge DS3231SN). ⏳ Pas encore ouvert dans le KiCad de l'utilisateur
 - [ ] P2 — **Carte de mesure** : deux voies, une barrière et un bus I2C chacune — ⛔ après V11
-- [ ] P3 — Schéma : puissance en CMS
+- [x] P3 — Schéma : puissance en CMS — carte principale (2026-11-26)
 - [ ] P4 — Schéma : alimentation — ⛔ **après M3**
-- [ ] P5 — Placement et routage, contrôles de règles sans erreur
+- [ ] P5 — Placement et routage, contrôles de règles sans erreur — ✅ carte principale faite et relue (2026-11-26 : 0 violation, 0 liaison manquante, 0 écart avec le schéma) ; ⏳ reste la carte d'alimentation
 - [ ] P6 — Dossier de fabrication JLCPCB : gerbers, nomenclature, positions
 - [ ] P7 — Carte d'alimentation séparée — ⛔ **après M3**
 

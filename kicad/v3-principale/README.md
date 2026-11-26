@@ -8,8 +8,9 @@ régulateurs et la sonde de température.
 ⏳ **État au 2026-11-25 : liste des composants et tableau des connexions, version 0.2 —
 relus une fois par `electronics-reviewer`, quatre erreurs corrigées (voir « Relecture »).
 Schéma rév. 0.2 écrit par script, relu par `electronics-reviewer` : aucune erreur, deux remarques portées.
-⏳ Pas encore ouvert dans KiCad par l'utilisateur.
-Pas de carte.** Horloge choisie : PCF8563.
+**Carte rév. 0.1 placée et routée le 2026-11-26** — contrôle des règles : 0 violation, 0 liaison
+manquante, 0 écart avec le schéma. Relue par `electronics-reviewer` : aucune erreur, cinq
+retouches portées. ⏳ Rien n'est encore ouvert dans KiCad par l'utilisateur.** Horloge : **DS3231SN** depuis le 2026-11-26 (décision de l'utilisateur : la qualité l'emporte sur le nombre de fabricants et sur le prix) ; carte retouchée à la main, contrôle des règles identique.
 
 ## Les fichiers de ce dossier
 
@@ -78,9 +79,12 @@ pompes) :
 - **carte principale rectangulaire de 119 × 100 mm** au-dessus : X 77 à 196, Y 62 à 162 ;
 - le connecteur de liaison est sur le bord du bas de la carte principale, **face à celui de
   la carte de mesure** ;
-- **tout se branche par le dessus** : borniers débrochables en colonne sur le bord gauche
-  (arrivée 12 V, filtration, éclairage, auxiliaire), sonde d'eau et détecteur de débit en
-  bas à gauche, borniers des pompes en haut ;
+- **tout se branche par le dessus**, sur des borniers débrochables ;
+- **tous les câbles du boîtier sont sur le bord gauche, en une seule colonne** (utilisateur,
+  2026-11-26), de haut en bas : arrivée 12 V — en haut à gauche, pour la relier par le haut à
+  l'alimentation —, filtration, éclairage, auxiliaire, sonde d'eau, détecteur de débit ;
+- les deux pompes, dont les fils viennent du capot, sont sur le bord du haut ;
+- le 5 V d'essai est à l'intérieur de la carte : aucun câble du boîtier n'y arrive ;
 - ⛔ aucun connecteur haut sous le moteur de la pompe de droite : centre en (68 ; 71) sur la
   carte, Ø 25,5, 29 mm de libre au-dessus de la carte ;
 - antenne de l'ESP32 dans le coin haut-droit.
@@ -124,6 +128,93 @@ Le moteur de gauche empiétait aussi sur la zone réservée aux câbles devant l
 hauteur d'un bornier débrochable avec sa fiche (environ 20 mm), relever la référence des
 fiches à vis (une par câble, à fournir avec l'appareil).
 
+## La carte (2026-11-26)
+
+119 × 100 mm, quatre couches, quatre trous M3. ⚠️ **Le coin haut-droit est découpé** sous
+l'antenne du module ESP32 (x 97,5 à 119, y 0 à 6) : l'antenne dépasse dans le vide, comme le
+demande Espressif. `generer_carte.py` pose encore un contour rectangulaire ; c'est la
+retouche 6 qui le découpe. Couches : composants et signaux dessus, masse
+continue en couche 2, 3,3 V en couche 3, signaux et masse dessous. Des plans de masse
+entourent les pistes sur les deux faces extérieures.
+
+| Fichier | Rôle |
+|---|---|
+| `generer_carte.py` | pose les composants, les trous et les deux plans internes. ⚠️ Le relancer **réécrit** la carte et **efface le routage** |
+| `outils/1_liaisons_aux_plans.py` | relie chaque plot CMS de masse et de 3,3 V à son plan par une piste courte et un via ; 25 vias sous le régulateur 5 V pour sa chaleur |
+| `outils/2_importer_le_routage.py` | importe les pistes tracées par l'outil de routage, pose les plans de masse extérieurs |
+| `outils/3_…` et `outils/4_…` | retouches : bouts de piste sans suite laissés par l'outil |
+| `outils/6_retouches_relecture.py` | les cinq retouches de la relecture (voir plus bas) — à lancer **avant** les inscriptions |
+| `outils/7_condensateur_pres_du_module.py` | le condensateur de 100 nF du module rapproché de sa broche 3,3 V (retouche du 2026-11-26) |
+| `outils/8_horloge_ds3231.py` | l'horloge PCF8563 et son quartz remplacés par un DS3231SN, pistes refaites à la main (2026-11-26). ⚠️ `generer_carte.py` place encore l'ancienne horloge : la carte `.kicad_pcb` fait référence |
+| `outils/9_alarme_hors_de_la_puce.py` | l'alarme de l'horloge sortie de sous la puce, R21 déplacée (retouche de relecture, 2026-11-26) |
+| `outils/5_inscriptions.py` | nom de chaque prise, repère du +, consigne « couper JP1 d'abord » |
+| `v3-principale.kicad_pcb` | **la carte : c'est elle la référence**, le routage ne se régénère pas à l'identique |
+| `v3-principale.pretty/`, `fp-lib-table` | empreinte du module ESP32 (bibliothèque officielle d'Espressif), trou de fixation |
+
+**Comment elle a été tracée** : placement par script, puis routage automatique par
+Freerouting 2.0.1 (outil libre, lancé à la main par l'utilisateur sur l'export Specctra de
+la carte), puis retouches par les scripts ci-dessus. 816 segments de piste, 157 vias.
+
+**Largeurs** : 0,8 mm pour le 12 V et les cinq sorties, 0,5 mm pour le 5 V, le 3,3 V et la
+masse, 0,25 mm pour les signaux. Écart minimal 0,2 mm (0,25 mm autour du 12 V).
+
+**Vérifié le 2026-11-26** (`kicad-cli pcb drc --severity-all --schematic-parity`) :
+0 violation, 0 liaison manquante, 0 écart avec le schéma. Les seuls messages restants
+viennent des bibliothèques absentes de la machine.
+
+**Messages restants du contrôle** : deux avertissements, attendus — le dessin de l'antenne du
+module, sur la sérigraphie, est coupé par le nouveau bord de la carte.
+
+### Relecture de la carte, 2026-11-26 (`electronics-reviewer`)
+
+Verdict : aucune erreur ; cinq retouches locales, sans refaire le routage. Toutes portées.
+
+| # | Constat | Retouche |
+|---|---|---|
+| 1 | l'antenne du module reposait sur la carte, avec du cuivre à côté sur les quatre couches | coin de la carte découpé sous l'antenne |
+| 2 | le condensateur de la pompe pH (C3) rejoignait sa diode par 48 mm de piste | liaison directe de 8 mm par le dessous, deux vias de 0,8 mm |
+| 3 | inscriptions de 0,8 mm, sous le minimum lisible de l'atelier | 1,0 mm, trait de 0,15 mm |
+| 4 | la sortie éclairage passait entre les plots de la diode D7, avec un détour de 33 mm | détour retiré, liaison directe par le dessous |
+| 5 | quatre vias dans les carrés de la pastille de masse du module | retirés |
+
+En plus : le plot de masse du régulateur 5 V est relié au cuivre sans rayons, pour la chaleur.
+
+**Vérifié par le relecteur** : 12 V et sorties en 0,8 mm partout, soit 2 A admissibles pour
++10 °C ; 44 mV de chute à 1 A jusqu'à la pompe ; masse de la couche 2 d'un seul tenant (95 %
+de la surface) ; zone de l'antenne vide de cuivre ; USB correct ; aucun signal sensible à
+moins de 3 mm d'une piste de puissance ; pistes, écarts et vias au-dessus des minimums de
+l'atelier ; la piste à 0,30 mm du bord est acceptable (minimum 0,2 mm).
+
+**Régulateur 5 V** — estimation du relecteur (calcul, pas la courbe du fabricant) : 25 à
+35 °C/W, soit 71 à 84 °C dans la puce à 1,25 W et 85 à 103 °C à 1,8 W, boîtier à 40 °C, pour
+une limite de 125 °C.
+
+**Conseils non suivis, à reprendre si la carte est retouchée**
+- condensateur de réserve du module (C8, 22 µF) à 15 mm de sa broche 3,3 V : il agit en
+  dessous du mégahertz, où 15 mm de plans ne comptent pas (par calcul, non mesuré) ;
+- un second via de masse par transistor de sortie si une pompe dépasse 1 A.
+
+**Conseil suivi après coup (2026-11-26), à la demande de l'utilisateur** : le condensateur
+de découplage C9 (100 nF) était à 19 mm de la broche 3,3 V du module. Un condensateur de
+découplage filtre les appels de courant rapides, et chaque millimètre de trajet le rend
+moins efficace : le juger sur la chute de tension (« moins de 5 mV ») était le mauvais
+critère. Il est maintenant à 2,5 mm des broches 1 et 2, relié aux deux vias qui les
+desservent (`outils/7_condensateur_pres_du_module.py` : R12 retournée, piste EN décalée).
+Contrôle des règles relancé : même résultat qu'avant.
+
+**Autre conseil suivi après coup (2026-11-26)** : C1 (470 µF, 25 V) passe de la série 2 000 h
+(C106735) à une série 10 000 h à 105 °C, même empreinte de 8 mm au pas de 3,5 mm, 16 mm de
+haut au lieu de 12 : AISHI ERJ1EM471F16OT (C5213783), équivalent Rubycon 25YXS470MEFC8X16
+(C5114719, 5 000 h). Rien ne change sur la carte.
+
+**Non vérifié**
+- la courbe thermique du fabricant pour le régulateur, et sa température réelle ;
+- le courant réel des pompes ;
+- la règle d'Espressif sur les pistes passant sous le module ;
+- hauteur des borniers avec leur fiche ; empreinte du support de pile face à la pièce ;
+- repères de couleur à côté des prises de 3,81 mm (pompes, débit) ;
+- l'ouverture de la carte dans le KiCad de l'utilisateur.
+
 ## Liste des composants — version 0.2
 
 Stocks relevés le 2026-11-25 chez le distributeur de l'atelier. ⚠️ Le stock de l'atelier
@@ -142,7 +233,12 @@ lui-même se lit au moment du devis.
 | Boutons RESET et BOOT | 2 × TS-1187A | CMS 5,1 mm | C318884 | bouton 5,1 mm courant | ajoutés le 2026-11-25 à la demande de l'utilisateur : reprendre la main quand le passage automatique en programmation échoue |
 | Voyant | LED rouge 0603 | 0603 | C2286 | toute LED 0603 | remplace la LED de la carte de développement |
 
-### Horloge — ✅ **option B retenue : PCF8563** (utilisateur, 2026-11-25)
+### Horloge — ✅ **option A retenue : DS3231SN** (utilisateur, 2026-11-26)
+
+⚠️ L'option B (PCF8563) avait été retenue le 2026-11-25, puis abandonnée le lendemain : sans
+réseau, elle dérive d'une à deux minutes par mois, contre une minute par an pour la DS3231.
+L'utilisateur a tranché : **la qualité l'emporte sur le nombre de fabricants et sur le prix**
+(exception E3). Le firmware reste celui du v2 pour l'horloge. Le tableau est gardé pour mémoire.
 
 | | Option A — garder la DS3231 | Option B — PCF8563 |
 |---|---|---|
@@ -154,8 +250,8 @@ lui-même se lit au moment du devis.
 | Pièces en plus | aucune | un quartz 32,768 kHz (C271654), deux diodes pour la pile (BAT54C, C37704) |
 | Firmware | inchangé | ⚠️ à adapter : reconnaître la puce présente, pour rester compatible avec le v2 |
 
-Dans les deux cas : support de pile CR2032 CMS (C70377, relevé par le relecteur à l'atelier :
-52 896 pièces). La pile n'est pas posée par l'atelier.
+Dans les deux cas : support de pile CR2032 traversant MYOUNG BS-07-A1BJ001 (C2979167, 2 125 pièces
+relevées), choisi parce que son empreinte existe dans KiCad. La pile n'est pas posée par l'atelier.
 
 ℹ️ L'heure est remise à jour par le réseau dès que le Wi-Fi est là. La précision de la
 puce ne compte que pour un appareil qui reste des mois sans réseau.
@@ -242,7 +338,7 @@ loin du condensateur de 470 µF et de la sonde de température. ⏳ Consommation
 |---|---|---|---|---|
 | E1 | Module ESP32 | Espressif est le seul fabricant, et le firmware est écrit pour cette puce | rupture ⇒ plus de carte | 5 100 pièces à l'atelier, vendu par tous les grands distributeurs ; ⏳ durée de vie annoncée par Espressif à vérifier |
 | E2 | Pont USB CH340C | aucun pont USB n'a de second fabricant sur la même empreinte | rupture ⇒ plus de programmation par USB | 75 000 en stock ; le connecteur de débogage (TX, RX, EN, IO0, masse) permet de programmer sans lui ; les mises à jour passent par le Wi-Fi |
-| ~~E3~~ | ~~DS3231~~ — **sans objet, option B retenue** | Maxim seul | 8 $ et 3 400 pièces | l'option B la supprime ; repli DS3231M (C37663), même empreinte, même fabricant |
+| E3 | Horloge DS3231SN (C9866) — ✅ **acceptée par l'utilisateur le 2026-11-26** | Maxim (Analog Devices) seul | 8 $ et 3 100 pièces relevées | précision d'une minute par an sans réseau ; repli DS3231M (C37663), même empreinte, même fabricant, ± 5 ppm |
 | ~~E4~~ | ~~Régulateur 5 V TPS54331~~ — **sans objet** : remplacé par un 7805 à deux fabricants | | | |
 | E5 | Pile CR2032 | l'atelier ne la pose pas | une pile à insérer à la main sur chaque carte | aucune soudure, pile courante |
 
@@ -301,16 +397,37 @@ de réserve entre `+12V` et la masse.
 le sens normal (note TI SLVA139). ⛔ **Le v2 est monté à l'inverse** (source côté fusible) :
 branché à l'envers, il laisse passer −11 V vers toute la carte. Ne pas le recopier.
 
-### Horloge (PCF8563, SO-8)
+### Horloge (DS3231SN, boîtier large à 16 broches)
 
 | Broche | Signal |
 |---|---|
-| 1 OSCI, 2 OSCO | quartz 32,768 kHz, 12,5 pF ; condensateur d'accord de 22 pF entre OSCI et `VRTC` (calcul relu : 22 pF + piste, en série avec les 25 pF internes) |
-| 3 INT | `RTC_INT` vers IO36, 10 kΩ vers `+3V3` |
-| 4 VSS | masse |
-| 5 SDA, 6 SCL | bus I2C |
-| 7 CLKOUT | en l'air |
-| 8 VDD | `VRTC`, 100 nF ; alimenté par `+3V3` **ou** par la pile, à travers les deux diodes du BAT54C. 1 kΩ en série avec la pile : limite le courant si une diode claque (précaution des fabricants de piles) |
+| 1 32kHz | en l'air |
+| 2 VCC | `+3V3`, 100 nF (C13) à 2,6 mm |
+| 3 INT/SQW | `RTC_INT` vers IO36, 10 kΩ vers `+3V3` |
+| 4 RST | en l'air (rappel interne) |
+| 5 à 12 | masse (demandé par le fabricant) |
+| 13 GND | masse |
+| 14 VBAT | pile CR2032, directement : la puce bascule seule entre le 3,3 V et la pile |
+| 15 SDA, 16 SCL | bus I2C |
+
+Plus de quartz, de condensateur d'accord, de double diode ni de 1 kΩ : les repères Y1, C12, D8
+et R20 restent libres, pour que les autres ne changent pas. Le fabricant demande de ne pas
+faire passer de signal sous la puce sans plan de masse entre les deux (fiche p. 18) : seule la
+piste de la pile y passe, en tension continue. L'alarme sort par la gauche puis file sur le
+dessous, sous le plan de masse ; sa résistance de rappel R21 est près de (64,5 ; 51,3). Le bus
+I2C sort par la droite.
+
+**Relu par `electronics-reviewer` le 2026-11-26** : câblage conforme à la fiche (brochage,
+broches 5 à 12 à la masse, pile en direct — la puce est homologuée contre la charge de la
+pile, p. 9 —, 100 nF, tensions). Une retouche demandée et portée : l'alarme passait sous la
+puce sur le dessus (`outils/9_alarme_hors_de_la_puce.py`). Condensateur C9 près du module :
+correct. ⏳ Non vérifié : l'épaisseur réelle entre les plans internes ; La retouche de l'alarme a été
+relue une seconde fois par l'agent, sur la carte : correcte, plan de masse sans trou sous la
+piste (testé tous les 0,05 mm), écarts de 1,0 mm ou plus autour de la nouvelle piste, 2,0 mm
+ou plus autour de R21 ; contrôle des règles : 0 violation, 0 liaison manquante, 0 écart avec
+le schéma. Hors carte : `src/constants.h` prévoit deux entrées pour
+l'horloge, l'alarme sur IO36 (câblée ici) et le signal carré sur IO23 (non câblé sur le v3, la
+puce n'a qu'une sortie pour les deux) — inutilisées aujourd'hui, à noter dans la fiche logicielle.
 
 ### Pont USB (CH340C, alimenté en 3,3 V)
 
@@ -387,7 +504,7 @@ sera faite à part, sans elle. Elle remplace les cinq pastilles d'essai.
 
 | # | Point |
 |---|---|
-| Q1 | ~~Horloge~~ ✅ **PCF8563** (utilisateur, 2026-11-25). ⚠️ Conséquence logicielle : le firmware doit reconnaître la puce présente (DS3231 à l'adresse 0x68 sur le v2, PCF8563 à 0x51 sur le v3) — à inscrire dans la fiche logicielle du v3 |
+| Q1 | ~~Horloge~~ ✅ **DS3231SN** (utilisateur, 2026-11-26, après un premier choix PCF8563 la veille). Aucune conséquence logicielle : même puce et même adresse (0x68) que le v2 |
 | Q2 | **Résistances de rappel du bus I2C** : la règle actuelle les met toutes sur la carte de mesure. ⚠️ Carte de mesure débranchée, l'horloge ne répond donc plus. Proposition, **approuvée par le relecteur** : ajouter 10 kΩ sur la carte principale (total 1,9 kΩ, soit 1,7 mA, sous la limite de 3 mA). ✅ **Accepté par l'utilisateur le 2026-11-25**, règle corrigée dans feature-215 |
 | Q3 | Deux ou quatre couches (V17) — avis du relecteur : **quatre**, même empilement que la carte de mesure |
 | Q4 | Courant réel d'une pompe doseuse, et de la bobine du contacteur |
@@ -419,7 +536,7 @@ température, empreintes compatibles de la prise USB-C et du support de pile.
 ## Relecture du schéma, 2026-11-25 (`electronics-reviewer`)
 
 Verdict : aucune erreur de brochage ni de câblage, on peut dessiner la carte. Brochages
-contrôlés contre les fiches : AO4407A, AO3400A, SS8050, USBLC6, CH340C, PCF8563T, module
+contrôlés contre les fiches : AO4407A, AO3400A, SS8050, USBLC6, CH340C, PCF8563T (remplacé depuis par le DS3231SN, relu à part), module
 ESP32, prise USB-C. Remise à zéro automatique : même montage que la carte de développement.
 
 Deux remarques, portées dans le schéma :

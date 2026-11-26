@@ -1,0 +1,8 @@
+(footprint "Trou_M3_NPTH" (version 20241229) (generator "pcbnew") (generator_version "9.0") (layer "F.Cu")
+(descr "Trou de fixation M3 non metallise, diam. 3,2 mm, relie a rien")
+(property "Reference" "REF**" (at 0 -2.8 0) (layer "F.SilkS") (hide yes) (uuid "ad3b2a59-062f-4207-bb0c-a4d7b6f2890d") (effects (font (size 1 1) (thickness 0.15))))
+(property "Value" "Trou_M3_NPTH" (at 0 2.8 0) (layer "F.Fab") (uuid "d49d4c84-6fe8-48a5-ac5e-f117bc93a665") (effects (font (size 1 1) (thickness 0.15))))
+(attr board_only exclude_from_pos_files exclude_from_bom)
+(fp_circle (center 0 0) (end 2.9 0) (stroke (width 0.05) (type solid)) (fill no) (layer "F.CrtYd") (uuid "81c755fc-0585-413e-a541-524372c11f28"))
+(pad "" np_thru_hole circle (at 0 0) (size 3.2 3.2) (drill 3.2) (layers "*.Cu" "*.Mask") (uuid "fbc93b49-e205-483f-8d0d-ca8dda8fbd31"))
+(embedded_fonts no))

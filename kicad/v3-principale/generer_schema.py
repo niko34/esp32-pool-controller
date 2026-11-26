@@ -164,7 +164,7 @@ comp(charge("Transistor_FET", "IRF7404"), "Q", "AO4407A", X + g(28), Y + g(16),
 R("10k", X + g(36), Y + g(16), "GRILLE_INV", "GND")
 comp(charge("Device", "D_Zener"), "D", "BZT52C12", X + g(46), Y + g(16), {"1": "+12V", "2": "GRILLE_INV"}, FP["SOD123"], "C173429", refpos=(0, -3.81), valpos=(0, 3.81), just=None)
 comp(charge("Device", "D_Zener"), "D", "SMBJ13A", X + g(46), Y + g(27), {"1": "+12V", "2": "GND"}, FP["SMB"], "C404130", refpos=(0, -3.81), valpos=(0, 3.81), just=None)
-comp(charge("Device", "C_Polarized"), "C", "470u 25V", X + g(56), Y + g(16), {"1": "+12V", "2": "GND"}, "Capacitor_THT:CP_Radial_D8.0mm_P3.50mm", "C106735")
+comp(charge("Device", "C_Polarized"), "C", "470u 25V", X + g(56), Y + g(16), {"1": "+12V", "2": "GND"}, "Capacitor_THT:CP_Radial_D8.0mm_P3.50mm", "C5213783")
 C("100n", X + g(62), Y + g(16), "+12V", "GND")
 drapeau("+12V", X + g(68), Y + g(14)); drapeau("GND", X + g(68), Y + g(24))
 texte("Le DRAIN du transistor est cote fusible : sa diode interne laisse passer le\ncourant dans le sens normal (note TI SLVA139). Le v2 etait monte a l'inverse.\n"
@@ -238,18 +238,22 @@ texte("Le pont USB est alimente en 3,3 V : le 5 V de l'USB n'alimente rien.\nLes
 
 # 5. HORLOGE
 X, Y = g(154), g(10)
-cadre(X, Y, X + g(64), Y + g(44), "HORLOGE PCF8563 et pile")
-comp(charge("Timer_RTC", "PCF8563T"), "U", "PCF8563T", X + g(22), Y + g(20),
-     {"1": "OSCI", "2": "OSCO", "8": "VRTC", "4": "GND", "6": "SCL", "5": "SDA", "7": None, "3": "RTC_INT"}, FP["SO8"], "C7440", refpos=(2.54, -8.89), valpos=(2.54, 8.89))
-comp(charge("Device", "Crystal"), "Y", "32.768kHz 12.5pF", X + g(8), Y + g(14), {"1": "OSCI", "2": "OSCO"}, "Crystal:Crystal_SMD_3215-2Pin_3.2x1.5mm", "C271654", refpos=(0, -3.81), valpos=(0, 3.81), just=None)
-C("22p", X + g(8), Y + g(26), "VRTC", "OSCI")
-C("100n", X + g(34), Y + g(14), "VRTC", "GND")
-comp(charge("Diode", "BAT54C"), "D", "BAT54C", X + g(44), Y + g(14), {"1": "+3V3", "2": "VBAT_R", "3": "VRTC"}, FP["SOT23"], "C37704", refpos=(0, -5.08), valpos=(0, -3.175), just=None)
-comp(charge("Device", "Battery_Cell"), "BT", "CR2032", X + g(56), Y + g(16), {"1": "VBAT", "2": "GND"}, "Battery:BatteryHolder_Keystone_3002_1x2032", "C70377")
-R("1k", X + g(56), Y + g(30), "VBAT_R", "VBAT")
-R("10k", X + g(28), Y + g(32), "+3V3", "RTC_INT"); R("10k", X + g(36), Y + g(32), "+3V3", "SDA"); R("10k", X + g(44), Y + g(32), "+3V3", "SCL")
-drapeau("VRTC", X + g(20), Y + g(34))
-texte("L'horloge est alimentee par le 3,3 V ou par la pile, a travers les deux diodes.\n1 kOhm en serie avec la pile : limite le courant si une diode claque.\n10 kOhm sur SDA et SCL : l'horloge repond meme carte de mesure debranchee.", X + g(2), Y + g(42.5), 1.1)
+cadre(X, Y, X + g(64), Y + g(44), "HORLOGE DS3231 et pile")
+# DS3231SN : quartz interne compense en temperature (+/-2 ppm de 0 a 40 degres, une minute par an).
+# Choix de l'utilisateur du 2026-11-26 : la qualite l'emporte sur le nombre de fabricants (exception E3).
+# La puce bascule seule sur la pile : plus de quartz (Y1), de 22 pF (C12), de double diode (D8) ni de 1 k (R20).
+# Les numeros retires restent libres, pour que les autres reperes ne bougent pas sur la carte.
+comp(charge("Timer_RTC", "DS3231M"), "U", "DS3231SN", X + g(22), Y + g(20),
+     dict({"1": None, "2": "+3V3", "3": "RTC_INT", "4": None, "13": "GND", "14": "VBAT", "15": "SDA", "16": "SCL"}, **{str(n): "GND" for n in range(5, 13)}),
+     "Package_SO:SOIC-16W_7.5x10.3mm_P1.27mm", "C9866", refpos=(2.54, -11.43), valpos=(2.54, 11.43))
+NUM["Y"] = NUM.get("Y", 0) + 1; NUM["C"] += 1
+C("100n", X + g(40), Y + g(14), "+3V3", "GND")
+NUM["D"] += 1
+comp(charge("Device", "Battery_Cell"), "BT", "CR2032", X + g(56), Y + g(16), {"1": "VBAT", "2": "GND"}, "Battery:BatteryHolder_MYOUNG_BS-07-A1BJ001_CR2032", "C2979167")
+NUM["R"] += 1
+R("10k", X + g(28), Y + g(36), "+3V3", "RTC_INT"); R("10k", X + g(36), Y + g(36), "+3V3", "SDA"); R("10k", X + g(44), Y + g(36), "+3V3", "SCL")
+drapeau("VBAT", X + g(50), Y + g(30))
+texte("Pile reliee directement a VBAT : la puce bascule seule et empeche la charge de la pile (fiche p. 9).\n10 kOhm sur SDA et SCL : l'horloge repond meme carte de mesure debranchee.", X + g(2), Y + g(42.5), 1.1)
 
 # 6. TEMPÉRATURE, BOUTON, VOYANT
 X, Y = g(154), g(58)
