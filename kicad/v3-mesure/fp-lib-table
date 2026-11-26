@@ -1,4 +1,0 @@
-(fp_lib_table
-  (version 7)
-  (lib (name "v3-mesure")(type "KiCad")(uri "${KIPRJMOD}/v3-mesure.pretty")(options "")(descr "Empreintes propres a la carte de mesure v3"))
-)
