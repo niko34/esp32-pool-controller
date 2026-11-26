@@ -6,6 +6,7 @@ demande de l'utilisateur ; jusque-là ces sources étaient conservées à part.
 | Dossier | Contenu |
 |---|---|
 | [`v14/`](v14/README.md) | boîtier « V14 », pompes Dosita MP1, carte v2 de 119,38 mm — révision du 2026-10-07 |
+| [`v15/`](v15/README.md) | boîtier « V15 », le V14 agrandi pour les deux cartes du PCB v3 — 2026-11-26, jamais imprimé |
 
 ## Ce qui est versionné, et ce qui ne l'est pas
 
@@ -40,11 +41,11 @@ exactement le volume inscrit dans le rapport de l'archive d'origine.
 
 ## Ce boîtier et le PCB v3
 
-Le V14 est dessiné pour la carte v2. Le PCB v3 demande de l'adapter ; les cotes relevées et
-les changements décidés (20 mm de hauteur et 10 mm de profondeur en plus, carte principale
-de 119 × 100 mm, carte de mesure séparée) sont dans
-[`../kicad/v3-principale/README.md`](../kicad/v3-principale/README.md).
-⛔ Le boîtier n'est pas encore adapté : `v14/` est l'état d'avant le v3.
+Le V14 est dessiné pour la carte v2. **Le V15 (`v15/`) est son adaptation au PCB v3**, faite
+le 2026-11-26 : 20 mm de hauteur et 10 mm de profondeur en plus, carte principale de
+119 × 100 mm et carte de mesure séparée. Le dessin général et la position des pompes ne
+changent pas. Le contrôle intégré du script rend `pass: true` ; ⚠️ rien n'est imprimé.
+Voir [`v15/README.md`](v15/README.md).
 
 ⚠️ Les documents de `v14/` ont été écrits par un autre assistant pour un poste macOS : les
 chemins et la commande de lancement qu'ils citent sont ceux de ce poste. Leurs réserves
