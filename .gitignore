@@ -81,6 +81,8 @@ kicad/**/*.gbrjob
 kicad/**/*.drl
 kicad/**/gerbers/
 kicad/**/gerbers-*/
+# Dossier de fabrication JLCPCB d'une carte v3 (scripts/build-jlcpcb.sh)
+kicad/**/fabrication/
 kicad/**/*.zip
 kicad/*.zip
 # BOM CSV : généré depuis BOM.xlsx par tools/bom_export.py (la source .xlsx,

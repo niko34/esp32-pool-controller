@@ -133,7 +133,7 @@ FP = {"R": "Resistor_SMD:R_0603_1608Metric", "R08": "Resistor_SMD:R_0805_2012Met
       "SO8": "Package_SO:SOIC-8_3.9x4.9mm_P1.27mm", "ADS": "Package_SO:VSSOP-10_3x3mm_P0.5mm",
       "REG": "Package_TO_SOT_SMD:SOT-223-3_TabPin2", "J1": "Connector_JST:JST_XH_B8B-XH-A_1x08_P2.50mm_Vertical"}
 # valeur -> (empreinte, référence au catalogue). Références relues le 2026-11-25 ; "" = à relever.
-PASSIF = {"100n": ("C01", "C1525"), "4u7": ("C08", "C1779"), "10u 50V": ("C12", "C13585"), "22u tantale": ("CT", ""),
+PASSIF = {"100n": ("C01", "C1525"), "4u7": ("C08", "C1779"), "10u 50V": ("C12", "C13585"), "22u tantale": ("CT", "C8020"),
           "4k7": ("R", "C23162"), "3k3": ("R", "C22978"), "10k": ("R", "C25804"), "30k": ("R", "C22984"),
           "100R": ("R", "C22775"), "2M2": ("R08", "C26113")}
 def custom(nom, ref, val, x, y, fp="", lcsc=""):

@@ -119,7 +119,7 @@ l'atelier lui-même non lu.
 | R107, R207 | Pont de Vcm, bas | 10 kΩ 1 % | 0603 | C25804 | — |
 | C101, C201 | Entrée du module | 4,7 µF 25 V | 0805 | C1779 | — |
 | C103, C203 | Sortie du module et entrée du régulateur | 10 µF **50 V** | **1206** | C13585 | — |
-| C104, C204 | Sortie du régulateur | 22 µF 16 V, **tantale** | boîtier B | à relever | — |
+| C104, C204 | Sortie du régulateur | 22 µF 16 V, **tantale** | boîtier B | C8020 (AVX TAJB226K016RNJ) | CA45-B016K226T (Xiangyee, C122226) |
 | C105, C205 | Découplage de l'isolateur, côté ESP32 | 0,1 µF | 0402 | C1525 | — |
 | C106, C206 | Découplage de l'isolateur, côté isolé | 0,1 µF | 0402 | C1525 | — |
 | C107, C207 | Découplage du convertisseur | 0,1 µF | 0402 | C1525 | — |
@@ -301,7 +301,7 @@ le corps de la prise (10 kΩ ferait passer le 50 Hz capté de 70 µV à 7 mV).
 - [x] P6 — Garde autour de l'entrée : dessinée et relue, vernis conservé (voir « La carte »).
 - [ ] P7 — Isolement du corps de la prise BNC, et tenue aux décharges quand on la touche
       (le LMC6482 tient 1,5 kV ; les 100 Ω ne règlent pas ce point).
-- [ ] P8 — Référence au catalogue du condensateur au tantale (22 µF 16 V, boîtier B) : non
+- [x] P8 — Référence au catalogue du condensateur au tantale (22 µF 16 V, boîtier B) : ✅ C8020, le 2026-11-26. Avant : non
       trouvée. Les autres passifs sont relevés ; ⚠️ leur stock se lit à l'atelier, pas chez
       le distributeur (une résistance courante y figure à 0).
 - [ ] P11 — Empreinte du convertisseur : prévoir la pastille centrale de son équivalent
@@ -310,3 +310,22 @@ le corps de la prise (10 kΩ ferait passer le 50 Hz capté de 70 µV à 7 mV).
       et bruit vers 250 kHz (le module découpe à 200–340 kHz, le convertisseur échantillonne
       à 250 kHz ; non chiffrable sur le papier).
 - [ ] P10 — Le second fabricant du module n'a que 184 pièces en stock.
+
+## Dossier de fabrication JLCPCB (2026-11-26)
+
+`./scripts/build-jlcpcb.sh v3-mesure-std` écrit `fabrication/` (ignoré par git, régénérable) :
+
+| Fichier | Contenu |
+|---|---|
+| `gerbers-v3-mesure-std.zip` | gravure : 4 couches de cuivre, vernis, pâte, sérigraphie, contour, perçages |
+| `bom-v3-mesure-std.csv` | liste des pièces au format JLCPCB (valeur, repères, empreinte, référence LCSC) |
+| `cpl-v3-mesure-std.csv` | position et angle de chaque pièce à poser |
+
+Le script refuse de produire quoi que ce soit si le contrôle des règles signale une erreur.
+
+✅ Vérifié le 2026-11-26 : le dossier sort sans erreur, 47 pièces à poser en 19 lignes. C104 et C204 (22 µF 16 V au tantale) : référence trouvée le 2026-11-26 et confirmée par l'utilisateur, C8020 (AVX TAJB226K016RNJ, 55 997 en stock chez JLCPCB), équivalent C122226 (Xiangyee). Le 10 V a été écarté : sur 5 V il serait à la limite de la règle des fabricants (moitié de la tension nominale).
+✅ Stock relevé au catalogue de JLCPCB le 2026-11-26 : toutes les références y sont, plus bas relevés : **OPA928DR 265**, module d'alimentation B0509S 1 493, prise BNC 6 096. Environ la moitié des références sont des pièces « étendues » (frais de mise en place par référence).
+⏳ Non vérifié : l'envoi réel des fichiers sur le site de JLCPCB.
+⚠️ **Étape humaine à la commande** : JLCPCB ne compte pas les angles comme KiCad pour certains
+boîtiers. Son écran de pose montre chaque pièce sur la carte : y vérifier le sens des diodes,
+des transistors, des circuits intégrés et du condensateur polarisé avant de valider.
