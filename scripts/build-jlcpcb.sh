@@ -10,9 +10,10 @@
 #         ex. ./scripts/build-jlcpcb.sh v3-principale
 #             ./scripts/build-jlcpcb.sh v3-mesure-std
 #
-# ⚠️ Ce script ne corrige PAS l'orientation des pièces : JLCPCB ne compte pas
-#    les angles comme KiCad pour certains boîtiers. La vérification se fait à
-#    l'écran de pose de JLCPCB, au moment de la commande (étape humaine).
+# ⚠️ Le script corrige la position et l'angle des boîtiers connus (voir
+#    scripts/jlcpcb_bom_cpl.py), mais JLCPCB ne compte pas les angles comme
+#    KiCad : la vérification à l'écran de pose de JLCPCB, au moment de la
+#    commande, reste une étape humaine obligatoire.
 # ============================================================================
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"; cd "$ROOT"
@@ -41,7 +42,7 @@ rm -f "$G"/*.gbrjob
 kicad-cli sch export bom --output "$OUT/bom-brut.csv" \
   --fields 'Reference,Value,Footprint,LCSC,${DNP}' --labels 'Reference,Value,Footprint,LCSC,DNP' "$SCH" >/dev/null
 kicad-cli pcb export pos --output "$OUT/pos-brut.csv" --format csv --units mm --side both "$PCB" >/dev/null
-python3 scripts/jlcpcb_bom_cpl.py "$OUT/bom-brut.csv" "$OUT/pos-brut.csv" "$OUT/bom-$CARTE.csv" "$OUT/cpl-$CARTE.csv"
+python3 scripts/jlcpcb_bom_cpl.py "$OUT/bom-brut.csv" "$OUT/pos-brut.csv" "$OUT/bom-$CARTE.csv" "$OUT/cpl-$CARTE.csv" "$PCB" 2>/dev/null
 rm -f "$OUT/bom-brut.csv" "$OUT/pos-brut.csv" "$OUT/drc.rpt"
 echo ""
 echo "✅ $OUT/"

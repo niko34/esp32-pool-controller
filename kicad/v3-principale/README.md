@@ -586,6 +586,12 @@ Le script refuse de produire quoi que ce soit si le contrôle des règles signal
 ✅ Vérifié le 2026-11-26 : le dossier sort sans erreur, 88 pièces à poser en 37 lignes (une par référence : deux lignes de même référence sont refusées par le site), aucune pièce sans référence. La pile CR2032 n'est pas posée par l'atelier (son support l'est).
 ✅ Stock relevé au catalogue de JLCPCB le 2026-11-26 : toutes les références y sont, plus bas relevés : support de pile 2 052, DS3231SN 3 112, module ESP32 3 745. Environ la moitié des références sont des pièces « étendues » (frais de mise en place par référence).
 ⏳ Non vérifié : l'envoi réel des fichiers sur le site de JLCPCB.
+✅ **Écran de pose de JLCPCB vu le 2026-11-26** (commande de l'utilisateur) : le premier fichier
+de positions posait les transistors et le régulateur 3,3 V à l'envers, quatre circuits d'un quart
+de tour, et décalait toutes les pièces traversantes et le module ESP32. Corrigé dans
+`scripts/jlcpcb_bom_cpl.py` (milieu des pastilles, table d'angles par boîtier), puis revu à
+l'écran : pose conforme. ⏳ Non lu directement : la polarité du support de pile (déduite du
+centrage de son corps ; une remarque a été jointe à la commande).
 ⚠️ **Étape humaine à la commande** : JLCPCB ne compte pas les angles comme KiCad pour certains
 boîtiers. Son écran de pose montre chaque pièce sur la carte : y vérifier le sens des diodes,
 des transistors, des circuits intégrés et du condensateur polarisé avant de valider.
