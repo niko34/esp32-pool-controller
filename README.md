@@ -74,7 +74,7 @@ releases `pcb-vX`. Voir « Fichiers générés et releases » dans `CLAUDE.md`.
 
 ### Boîtier
 
-Les sources FreeCAD et les STL d'impression 3D sont conservés **hors du dépôt**.
+Le boîtier imprimé en 3D est décrit par un script qui le construit en entier : voir [`boitier/`](boitier/README.md). Les fichiers FreeCAD, STEP et STL qu'il produit ne sont pas versionnés ; ils se régénèrent.
 
 ## 🧭 Reprendre le projet
 
@@ -200,7 +200,7 @@ sont horodatés et associés à un tag. Voir « Fichiers générés et releases 
 `builds/` contient l'archive **locale** des ELF de tous les builds (2,6 Go) et
 n'est pas versionné.
 
-Les **sources FreeCAD** du boîtier et les exports STL sont conservés hors dépôt.
+Le **générateur du boîtier** est dans [`boitier/`](boitier/README.md) ; ses sorties (FreeCAD, STEP, STL) ne sont pas versionnées.
 
 ## 🚀 Installation
 

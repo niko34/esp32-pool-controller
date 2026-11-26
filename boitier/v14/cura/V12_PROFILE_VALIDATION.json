@@ -1,0 +1,15 @@
+{
+  "date": "2026-10-07",
+  "profile": "PoolController_V12_Capot_SUNLU_PLAPlus_Genius_0.4_Supports.curaprofile",
+  "sha256": "a8c3c5ba95a78a5a12b2e99e523a04df6310a1300f098b48415fe0f91735337c",
+  "static_validation_pass": true,
+  "settings_checked": 67,
+  "cura_version": "5.9.0",
+  "cura_setting_version": 24,
+  "reference_definition": "/Applications/UltiMaker Cura.app/Contents/Resources/share/cura/resources/definitions/fdmprinter.def.json",
+  "historical_profile_unchanged": true,
+  "gui_import_tested": false,
+  "slicing_tested": false,
+  "physical_print_tested": false,
+  "scope": "Artillery Genius, nozzle 0.4 mm, SUNLU PLA+, current V12 capot prototype only"
+}

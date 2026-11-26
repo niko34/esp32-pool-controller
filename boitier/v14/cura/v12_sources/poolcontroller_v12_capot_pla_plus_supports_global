@@ -1,0 +1,20 @@
+[general]
+version = 4
+name = PoolController V12 - Capot - SUNLU PLA+ - Genius 0.4 - Supports
+definition = artillery_base
+
+[metadata]
+type = quality_changes
+quality_type = standard
+setting_version = 24
+
+[values]
+adhesion_type = brim
+layer_height = 0.2
+layer_height_0 = 0.24
+material_bed_temperature = 55
+material_bed_temperature_layer_0 = 60
+retraction_combing = noskin
+support_enable = True
+support_structure = normal
+support_type = everywhere

@@ -1,0 +1,22 @@
+# Vérifications V14
+- Vis droite basse X190/Y7,7 : têteØ7,5 avec margePCB≥2 (nominal2,05), tournevisØ6 (nominal2,80). Contrôler les volumes d'insertion sur les fichiers relus.
+- BNC : saillie indicative réduite de1,5 ; vérifier engagement réel des écrous et raccordement auPCB.
+- PCB réel 119,38, pas 104,14 ; entraxes 104,14, pas 88,9.
+- Quatre supports et passages à X84,24/188,38 et Y21,12/125,26.
+- Gabarit PCB et références stockées relus, géométrie indépendante vérifiée.
+- Anciennes entretoises disparues hors l'axe neuf droit bas presque identique.
+- Réserve verticale 3 mm sous PCB, hors assises ; témoin négatif obligatoire.
+- Capot/composants, cache/PCB, PG7, BNC, fixations et faisceaux sans collision.
+- Nouveau passage de câbles devant PCB testé dans les 117 poses du capot.
+- Cache RPS démontable sur 21 poses, composants et routes en place.
+- Accès quatre vis murales avec tête complète et outil, PCB monté, capot déposé.
+- Joint : présence de fond/contre-face, branches droites, coudes exacts.
+- Trois M4 : tête conique, vis entière, fraisure, outil, distances à gorge.
+- Parois : sondes de matière et témoin de trou, pas seulement collision.
+- FCStd/STEP un solide valide, STL fermé/connecté et sans auto-intersection.
+- Exiger pass=true : validation_report.json, exports_reloaded.json, pcb_reloaded.json.
+- Comparaison des trois volumes de platine MP1/AliExpress identiques.
+- Taille STL plus bordure nominale 4 mm sous 220 × 220, hauteur sous 250.
+- Profil Cura avec supports inchangé et empreinte validée statiquement.
+- Limites explicitement conservées : fiches PCB verticales supposées non confirmées,
+  cosses/fils réels, retenue M3 PCB, composants sous PCB et sécurité électrique non qualifiés.

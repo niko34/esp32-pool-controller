@@ -1,0 +1,41 @@
+"""Vues techniques des geometries exportees V12, sans modifier un document utilisateur."""
+from pathlib import Path
+import FreeCAD as App, FreeCADGui as Gui
+
+root = Path(__file__).resolve().parent
+(root / "reports").mkdir(exist_ok=True)
+def read_shape(name):
+    d = App.openDocument(str(root / "freecad" / (name + ".FCStd")))
+    shape = next(o.Shape.copy() for o in d.Objects if hasattr(o, "Shape") and not o.Shape.isNull())
+    App.closeDocument(d.Name)
+    return shape
+def add(doc, name, shape, colour):
+    o = doc.addObject("PartDesign::Feature", name)
+    o.Shape = shape
+    o.ViewObject.ShapeColor = colour
+    o.ViewObject.LineColor = (0.15, 0.17, 0.19)
+    o.ViewObject.DisplayMode = "Flat Lines"
+    return o
+assembly = App.openDocument(str(root / "freecad" / "PoolControllerV14MP1_Assembly.FCStd"))
+gland = assembly.GasketReference.Shape.copy()
+App.closeDocument(assembly.Name)
+plate = App.newDocument("PoolControllerV14MP1_PlatePreview")
+add(plate,"Platine",read_shape("PoolControllerV14MP1_WallBackplateLightCore"),(0.83,0.84,0.86))
+add(plate,"Peau",read_shape("PoolControllerV14MP1_WallBackplateTechnicalSkin"),(0.1,0.12,0.14))
+add(plate,"TrajetJoint",gland,(0.02,0.58,0.8))
+plate.recompute()
+view = Gui.activeDocument().activeView()
+view.setCameraOrientation(App.Rotation(App.Vector(1,0,0),-35).Q)
+view.fitAll()
+Gui.updateGui()
+view.saveImage(str(root / "reports" / "platine_joint_v14.png"),1400,1000,"White")
+cap = App.newDocument("PoolControllerV14MP1_CapPreview")
+shape = read_shape("PoolControllerV14MP1_CoverLightCore")
+shape.translate(App.Vector(0,0,3.2))
+add(cap,"Capot",shape,(0.83,0.84,0.86))
+cap.recompute()
+view = Gui.activeDocument().activeView()
+view.setCameraOrientation(App.Rotation(App.Vector(0,0,1),App.Vector(0,1,-2)).Q)
+view.fitAll()
+Gui.updateGui()
+view.saveImage(str(root / "reports" / "capot_appui_v14.png"),1400,1000,"White")

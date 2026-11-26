@@ -7,7 +7,7 @@ régulateurs et la sonde de température.
 
 ⏳ **État au 2026-11-25 : liste des composants et tableau des connexions, version 0.2 —
 relus une fois par `electronics-reviewer`, quatre erreurs corrigées (voir « Relecture »).
-Schéma rév. 0.1 écrit par script, relu par `electronics-reviewer` : aucune erreur, deux remarques portées.
+Schéma rév. 0.2 écrit par script, relu par `electronics-reviewer` : aucune erreur, deux remarques portées.
 ⏳ Pas encore ouvert dans KiCad par l'utilisateur.
 Pas de carte.** Horloge choisie : PCF8563.
 
@@ -24,7 +24,7 @@ Pas de carte.** Horloge choisie : PCF8563.
 broches sont reliées quand elles portent la même étiquette. Il n'y a pas de long fil à suivre.
 
 **Vérifié le 2026-11-25** : la liste des connexions que KiCad extrait du schéma est identique
-à celle voulue — 48 fils, 29 broches en l'air (boutons RESET et BOOT compris).
+à celle voulue — 62 fils, 20 broches en l'air (schéma rév. 0.2).
 
 **Le contrôle électrique de KiCad rend un message attendu** : « deux sorties d'alimentation
 reliées », entre la broche V3 du pont USB et la sortie du régulateur 3,3 V. C'est le câblage
@@ -32,7 +32,6 @@ que demande le fabricant du pont quand il est alimenté en 3,3 V. Les autres mes
 viennent des bibliothèques absentes de la machine qui a généré le schéma.
 
 **Ce que le schéma ne contient pas encore**
-- ⛔ le régulateur 12 V → 5 V : il attend l'essai M3. Le fil `+5V` n'a donc aucune source ;
 - les empreintes du module ESP32 (absente de KiCad, à dessiner d'après la fiche d'Espressif)
   et du support de pile (celle posée est provisoire) ;
 - les trous de fixation, qui viendront avec la carte.
@@ -55,6 +54,75 @@ d'un autre fabricant sur la même empreinte, la qualité restant un critère maj
 
 ⭐ **Les broches de l'ESP32 ne changent pas** (ADR-0012) : le même firmware pilote les
 mêmes sorties sur le v2 et le v3.
+
+## Disposition dans le boîtier — décidée le 2026-11-25 (utilisateur)
+
+Relevé sur le fichier d'assemblage FreeCAD du boîtier V14 (reçu le 2026-11-25, conservé hors
+du dépôt). Origine : coin bas-gauche du boîtier vu de face, cotes en mm.
+
+| Élément | Position relevée |
+|---|---|
+| Boîtier | 210 × 175, profondeur 94 (119,5 avec les pompes) |
+| Alimentation RPS-30-12 | X 18,8 à 69,6 · Y 39,9 à 116,1 ; son capot va jusqu'à X = 75,6 et monte à 40 mm du fond |
+| Carte v2 | X 76,6 à 196 · Y 13,5 à 132,9, dos à 12 mm du fond |
+| Pompes doseuses (sur le capot avant) | moteurs Ø 25,5 centrés en (65 ; 91) et (145 ; 91), profonds de 44,9 mm : leur arrière est à 43 mm du fond, soit 10,5 mm au-dessus des composants |
+| Entrées de câbles (paroi du bas) | trois, à X = 44 / 68 / 88, à **49 mm du fond** : les câbles arrivent au-dessus du capot de l'alimentation |
+| Prises des sondes (paroi du bas) | X = 123,1 et 159,4, à 19,8 mm du fond |
+| Plots de fixation murale | (25 ; 150) et (185 ; 150) : ils bornent la carte en haut |
+
+**Organisation retenue (« option N »)** — le dessin général du boîtier ne change pas, il
+gagne **20 mm en hauteur** (210 × 195) **et 10 mm en profondeur** (104 mm, 129,5 mm avec les
+pompes) :
+- alimentation à gauche, pompes à leur place actuelle ;
+- carte de mesure en bas à droite, prises des sondes sur les perçages existants ;
+- **carte principale rectangulaire de 119 × 100 mm** au-dessus : X 77 à 196, Y 62 à 162 ;
+- le connecteur de liaison est sur le bord du bas de la carte principale, **face à celui de
+  la carte de mesure** ;
+- **tout se branche par le dessus** : borniers débrochables en colonne sur le bord gauche
+  (arrivée 12 V, filtration, éclairage, auxiliaire), sonde d'eau et détecteur de débit en
+  bas à gauche, borniers des pompes en haut ;
+- ⛔ aucun connecteur haut sous le moteur de la pompe de droite : centre en (68 ; 71) sur la
+  carte, Ø 25,5, 29 mm de libre au-dessus de la carte ;
+- antenne de l'ESP32 dans le coin haut-droit.
+
+**Connecteurs — décidé le 2026-11-25 (utilisateur) : uniquement des borniers débrochables**
+pour tout ce qui reçoit des fils. On visse les fils sur une fiche, puis on l'enfiche par le
+dessus : aucune place n'est nécessaire sur le côté.
+
+| Connexion | Bornier |
+|---|---|
+| Arrivée 12 V, filtration, éclairage, auxiliaire, 5 V d'essai | 5,08 mm, 2 broches |
+| Sonde de température de l'eau | 5,08 mm, 3 broches |
+| Pompe pH, pompe chlore, détecteur de débit | 3,81 mm, 2 broches |
+
+Restent d'un autre type : la liaison vers la carte de mesure (JST XH 8 voies, câble tout
+fait), la prise USB-C et l'embase de débogage.
+
+**Repérage par la couleur** (utilisateur, 2026-11-25) : les prises de même format sont
+distinguées par une pastille ou un cerclage de couleur, sur la carte et sur la fiche.
+L'idée de borniers à broches vides pour empêcher les erreurs a été écartée : fonctionnelle,
+mais pas élégante.
+⚠️ Risque assumé, à couvrir par les couleurs : le pas de 3,81 mm sépare les pompes des
+sorties de filtration et d'éclairage, mais rien n'empêche mécaniquement d'inverser les deux
+pompes, ni d'enficher le détecteur de débit sur une sortie de pompe (court-circuit du 12 V
+à travers le transistor dès que la pompe est commandée). ⏳ À faire à la carte : sérigraphie
+de couleur ou repère net à côté de chaque prise.
+
+**Pourquoi 10 mm de profondeur en plus** (utilisateur, 2026-11-25) — jeux mesurés sur le
+fichier d'assemblage, moteur de 44,9 mm de profondeur (cote « nominale », ⏳ à mesurer sur
+une pompe réelle, cosses comprises) :
+
+| Entre | Aujourd'hui | Avec 10 mm de plus |
+|---|---|---|
+| moteur de la pompe de gauche et capot de l'alimentation | 3,1 mm | 13,1 mm |
+| moteur de la pompe de gauche et l'alimentation | 10,1 mm | 20,1 mm |
+| moteur de la pompe de droite et la carte principale | 29,7 mm | 39,7 mm |
+
+Le moteur de gauche empiétait aussi sur la zone réservée aux câbles devant la carte.
+
+⏳ À faire avec le boîtier : déplacer les deux plots de fixation du haut, vérifier la
+hauteur d'un bornier débrochable avec sa fiche (environ 20 mm), relever la référence des
+fiches à vis (une par câble, à fournir avec l'appareil).
 
 ## Liste des composants — version 0.2
 
@@ -101,7 +169,8 @@ puce ne compte que pour un appareil qui reste des mois sans réseau.
 | Résistance de grille | 100 Ω | 0603 | C22775 | — |
 | Rappel à la masse | 10 kΩ | 0603 | C25804 | — |
 | Condensateur local | 10 µF, 50 V | 1206 | C13585 | — |
-| Bornier | à vis, pas de 5,0 mm, 2 voies | traversant | C474881 | DG301, KF301 de plusieurs fabricants |
+| Filtration, éclairage, auxiliaire | **bornier débrochable** 5,08 mm, embase verticale 2 voies | traversant | C505788 | standard « 2EDG » de nombreux fabricants |
+| Pompe pH, pompe chlore | **bornier débrochable 3,81 mm**, embase verticale 2 voies | traversant | C8396 | standard « 15EDG » de nombreux fabricants |
 
 Un condensateur de 10 µF est posé entre `+12V` et la masse au pied de chaque sortie, comme
 sur le v2 : sans lui, une pompe à 20 kHz fait onduler le 12 V de 0,6 V.
@@ -114,30 +183,57 @@ la marge du transistor et de la diode.
 
 | Rôle | Composant | Boîtier | Réf. atelier | Équivalent même empreinte |
 |---|---|---|---|---|
-| Bornier d'arrivée | à vis, pas de 5,0 mm, 2 voies | traversant | C474881 | plusieurs |
+| Arrivée 12 V | bornier débrochable 5,08 mm, embase verticale 2 voies | traversant | C505788 | standard « 2EDG » |
 | Fusible réarmable | 2 A, 24 V | 1812 | C434887 | LUTE 1812L200/24GR (C18198341), BHFUSE BSMD1812-200-24V (C883157). ⚠️ Calibre à revoir avec Q4 |
 | Anti-inversion | AO4407A, canal P, 30 V | SO-8 | C16072 (AOS) | C2841482 (UMW), SI4435 |
 | Protection de grille | Zener 12 V BZT52C12 | SOD-123 | C173429 | plusieurs |
 | Écrêteur | SMBJ13A : au repos jusqu'à 13 V, limite à 21,5 V | SMB | C404130 (MDD) | C135042 (Diodes Inc.) |
 | Réserve d'énergie | condensateur 220 à 470 µF, 25 V | ⏳ à choisir | ⏳ | — |
 
-### Régulateurs — ⚠️ PROVISOIRE, ⛔ ne se fige qu'après l'essai M3
+### Alimentations 5 V et 3,3 V — décidé le 2026-11-25
+
+L'utilisateur a décidé de finir la carte sans attendre l'essai d'alimentation M3 : la carte
+fabrique son 5 V à partir du 12 V, **et** peut recevoir un 5 V extérieur pour un essai futur.
 
 | Rôle | Composant | Boîtier | Réf. atelier | Équivalent même empreinte |
 |---|---|---|---|---|
-| 12 V → 5 V | TPS54331DR (TI), à découpage | SOIC-8 | C9865 | ⛔ aucun — exception E4. ⚠️ 3 A, trop pour le câble vers la carte de mesure : viser 1 à 1,5 A au moment de figer |
+| 12 V → 5 V | L7805ABD2T-TR (ST), régulateur **linéaire** | D²PAK (TO-263) | C86206 | MC7805BD2TR4G (onsemi), C15833, même brochage |
+| Condensateurs du 7805 | 1 µF 50 V en entrée ; 10 µF + 100 nF en sortie | 0805, 0805, 0402 | C28323, C15850, C1525 | — |
+| Pont 5 V | pont de soudure **fermé d'origine**, à couper | sur la carte | aucune pièce | — |
+| Bornier « 5 V externe » | bornier débrochable 5,08 mm, embase verticale 2 voies | traversant | C505788 | standard « 2EDG » |
+| Protection du 5 V externe | AO3401A, canal P, + 10 kΩ | SOT-23 | C15127 | nombreux |
 | 5 V → 3,3 V | AMS1117-3.3 | SOT-223 | C6186 | LD1117 (UMW) |
 
-Hypothèse retenue pour avancer : l'alimentation 12 V actuelle est conservée (D4). Si M3
-conduit à une alimentation linéaire séparée pour la logique, ce bloc et l'entrée 12 V
-changent ; le reste de la carte ne bouge pas.
+**Pourquoi un régulateur linéaire** (avis du relecteur, chiffré) : trois composants, deux
+grands fabricants sur la même empreinte — l'exception E4 disparaît — et aucun découpage sur
+la carte. Aucun convertisseur à découpage de 1 à 1,5 A n'a deux fabricants réellement
+compatibles. ⚠️ Ce que ça coûte : **1,2 W de chaleur** au courant moyen estimé (0,17 A),
+soit environ 90 °C dans la puce pour 40 °C dans le boîtier ; limite 125 °C, atteinte vers
+0,3 A de moyenne. ⇒ Il lui faut **25 × 25 mm de cuivre** et des vias vers le plan de masse,
+loin du condensateur de 470 µF et de la sonde de température. ⏳ Consommation réelle du 5 V
+à mesurer sur la première carte.
+
+**Le pont et le bornier 5 V externe**
+- Pont fermé (état d'origine) : fonctionnement normal, tout part du 12 V.
+- Pont **coupé**, 5 V sur le bornier : l'ESP32 et la mesure tournent sur l'alimentation
+  extérieure. Pour un essai de bruit, **débrancher aussi le 12 V** : la carte n'a qu'une
+  masse, et laisser l'alimentation 12 V branchée referait les essais E03 et E07, sans gain.
+- Pont fermé **et** 5 V externe, 12 V présent : rien ne casse, la source la plus haute fournit.
+- Pont fermé **et** 5 V externe, 12 V absent : le 5 V remonte vers le rail 12 V à travers le
+  régulateur. État mal défini ⇒ toujours couper le pont d'abord.
+- Le transistor AO3401A protège d'un 5 V externe branché à l'envers. ⛔ Rien ne protège
+  d'une tension trop haute sur ce bornier : les modules de la carte de mesure ne tiennent
+  que 5,5 V.
+- ℹ️ Le pont est un pont de soudure et non un cavalier enfichable : l'atelier n'a rien à
+  poser, et aucun contact ne peut s'oxyder en local humide. On le coupe au cutter, on le
+  referme d'un point de soudure.
 
 ### Température et liaison
 
 | Rôle | Composant | Boîtier | Réf. atelier | Équivalent même empreinte |
 |---|---|---|---|---|
 | Sonde sur la carte | DS18B20+ (Maxim) | TO-92 traversant | C9753 | DS18B20 UMW (C376006) |
-| Prise de la sonde d'eau | bornier à vis 3 voies, pas de 5,0 mm | traversant | C474882 | DG301, KF301 de plusieurs fabricants. Comme le v2 : une sonde du commerce arrive en fils nus |
+| Prise de la sonde d'eau | bornier débrochable 5,08 mm, embase verticale 3 voies | traversant | C505789 | standard « 2EDG ». Une sonde du commerce arrive en fils nus : ils se vissent sur la fiche |
 | Prise vers la carte de mesure | JST XH 8 voies | traversant | C157972 | compatibles XH |
 
 ## Les exceptions à la règle D8 — à accepter par l'utilisateur
@@ -145,9 +241,9 @@ changent ; le reste de la carte ne bouge pas.
 | # | Composant | Pourquoi il n'a pas d'équivalent | Ce que ça risque | Ce qui limite le risque |
 |---|---|---|---|---|
 | E1 | Module ESP32 | Espressif est le seul fabricant, et le firmware est écrit pour cette puce | rupture ⇒ plus de carte | 5 100 pièces à l'atelier, vendu par tous les grands distributeurs ; ⏳ durée de vie annoncée par Espressif à vérifier |
-| E2 | Pont USB CH340C | aucun pont USB n'a de second fabricant sur la même empreinte | rupture ⇒ plus de programmation par USB | 75 000 en stock ; quatre pastilles d'essai (TX, RX, EN, IO0) permettent de programmer sans lui ; les mises à jour passent par le Wi-Fi |
+| E2 | Pont USB CH340C | aucun pont USB n'a de second fabricant sur la même empreinte | rupture ⇒ plus de programmation par USB | 75 000 en stock ; le connecteur de débogage (TX, RX, EN, IO0, masse) permet de programmer sans lui ; les mises à jour passent par le Wi-Fi |
 | ~~E3~~ | ~~DS3231~~ — **sans objet, option B retenue** | Maxim seul | 8 $ et 3 400 pièces | l'option B la supprime ; repli DS3231M (C37663), même empreinte, même fabricant |
-| E4 | Régulateur 5 V TPS54331 — **provisoire** | TI seul | rupture ⇒ carte à redessiner sur ce bloc | bloc refait de toute façon après M3 |
+| ~~E4~~ | ~~Régulateur 5 V TPS54331~~ — **sans objet** : remplacé par un 7805 à deux fabricants | | | |
 | E5 | Pile CR2032 | l'atelier ne la pose pas | une pile à insérer à la main sur chaque carte | aucune soudure, pile courante |
 
 ## Tableau des connexions — version 0.2
@@ -157,16 +253,16 @@ changent ; le reste de la carte ne bouge pas.
 | Broche ESP32 | Signal | Va vers |
 |---|---|---|
 | 3V3 | `+3V3` | sortie du régulateur 3,3 V ; 22 µF + 100 nF au plus près (schéma d'application du module) |
-| EN | `EN` | 10 kΩ vers `+3V3`, 1 µF vers la masse, transistor de remise à zéro, bouton RESET vers la masse, pastille d'essai |
-| GND et pastille centrale | masse | plan de masse ; une pastille d'essai de masse à côté des quatre autres |
-| IO0 | `IO0` | 10 kΩ vers `+3V3`, transistor de remise à zéro, bouton BOOT vers la masse, pastille d'essai |
-| TXD0 (IO1) | `TX` | 499 Ω en série (recommandation d'Espressif), puis entrée RXD du pont USB, pastille d'essai |
-| RXD0 (IO3) | `RX` | sortie TXD du pont USB, pastille d'essai |
+| EN | `EN` | 10 kΩ vers `+3V3`, 1 µF vers la masse, transistor de remise à zéro, bouton RESET vers la masse |
+| GND et pastille centrale | masse | plan de masse |
+| IO0 | `IO0` | 10 kΩ vers `+3V3`, transistor de remise à zéro, bouton BOOT vers la masse |
+| TXD0 (IO1) | `TX` | 470 Ω en série (Espressif recommande 499 Ω ; valeur courante retenue), puis entrée RXD du pont USB |
+| RXD0 (IO3) | `RX` | sortie TXD du pont USB à travers 470 Ω : un adaptateur série branché sur le connecteur de débogage garde la main |
 | IO2 | `LED` | 1 kΩ puis LED vers la masse |
 | IO5 | `TEMP` | sonde de la carte, prise de la sonde d'eau, 4,7 kΩ vers `+3V3` |
 | IO21 | `SDA` | horloge ; voies 1 et 7 de la prise de mesure |
 | IO22 | `SCL` | horloge ; voies 2 et 8 de la prise de mesure |
-| IO23 | — | en l'air. ℹ️ Sur le v2 elle recevait le signal carré de l'horloge, jamais utilisé par le firmware |
+| IO23 | `IO23` | connecteur de débogage (broche libre). ℹ️ Sur le v2 elle recevait le signal carré de l'horloge, jamais utilisé par le firmware |
 | IO25 | `POMPE_PH` | 100 Ω puis grille du transistor de la pompe pH |
 | IO26 | `FILTRATION` | idem, sortie filtration |
 | IO27 | `ECLAIRAGE` | idem, sortie éclairage |
@@ -174,7 +270,9 @@ changent ; le reste de la carte ne bouge pas.
 | IO33 | `POMPE_ORP` | idem, pompe chlore |
 | IO35 | `BOUTON` | **10 kΩ vers la masse, bouton vers `+3V3`** — ⚠️ appuyé = niveau haut, c'est ce que lit le firmware (`src/main.cpp:622`). ⛔ ADR-0012 dit l'inverse, à tort |
 | IO36 | `RTC_INT` | broche INT de l'horloge, 10 kΩ vers `+3V3` (réservée : le firmware ne la lit pas) |
-| IO12 | — | ⛔ en l'air : cette broche fixe la tension de la mémoire au démarrage |
+| IO12 | `IO12` | connecteur de débogage seulement. ⛔ Rien ne doit la tirer vers le haut au démarrage : elle fixe la tension de la mémoire |
+| IO13, IO14, IO15 | `IO13`, `IO14`, `IO15` | connecteur de débogage (sonde pas à pas, avec IO12) |
+| IO4, IO18, IO19 | idem | connecteur de débogage (broches libres) |
 | IO16, IO17 | — | ⛔ en l'air : prises par la PSRAM |
 | autres | — | en l'air |
 
@@ -234,6 +332,44 @@ de l'USBLC6-2SC6 au 5 V de la prise. ⚠️ **Le 5 V de l'USB n'alimente
 rien** : la carte se programme alimentation 12 V branchée. C'est le plus simple, et aucun
 courant ne peut remonter de l'USB vers le 12 V.
 
+### Entrée du détecteur de débit — demandée par l'utilisateur le 2026-11-25
+
+Pour un détecteur à palette du type de ceux des électrolyseurs (AstralPool et autres) : un
+contact qui se ferme quand l'eau circule, deux fils.
+
+| Élément | Valeur | Réf. atelier |
+|---|---|---|
+| Prise | bornier débrochable 3,81 mm, 2 voies : 1 = contact, 2 = masse | C8396 |
+| Rappel | **1 kΩ** entre le contact et `+3V3` (3,3 mA dans le contact ; une fuite d'eau entre les deux fils ne passe pour un débit que sous 330 Ω) | C21190 |
+| Protection et filtrage | 1 kΩ en série vers IO34, 100 nF entre IO34 et la masse | C21190, C1525 |
+
+- Contact fermé = niveau **bas** sur IO34 = débit présent.
+- Fil coupé ou détecteur absent = niveau haut = pas de débit : le doute va au refus.
+- Détecteur visé par l'utilisateur : AstralPool ZX116000092 (détecteur à palette de pompe à
+  chaleur), **deux fils**, livré avec un cordon à fils nus qui se visse sur la fiche.
+- ⏳ **Non vérifié** : le sens du contact (fermé ou ouvert quand l'eau circule). À mesurer au
+  multimètre à réception ; le firmware devra accepter les deux.
+- ⛔ **Aucun firmware ne lit cette entrée.** Aujourd'hui l'appareil ne constate jamais
+  l'eau, il la déduit (ADR-0026, ADR-0144). S'en servir pour autoriser une injection est une
+  fiche logicielle à part, avec passage obligatoire par `pool-chemistry`.
+
+### Connecteur de débogage — demandé par l'utilisateur le 2026-11-25
+
+Embase 2 × 8 avec détrompeur, pas de 2,54 mm, traversante (C221049, Nextron ; même empreinte
+chez plusieurs fabricants). **Soudée en usine sur cette version** ; la version commercialisée
+sera faite à part, sans elle. Elle remplace les cinq pastilles d'essai.
+
+| Broche | Signal | Broche | Signal |
+|---|---|---|---|
+| 1 | `+3V3` | 2 | masse |
+| 3 | `EN` | 4 | `IO0` |
+| 5 | `TX` | 6 | `RX` |
+| 7 | `SDA` | 8 | `SCL` |
+| 9 | `IO13` (TCK) | 10 | `IO14` (TMS) |
+| 11 | `IO12` (TDI) | 12 | `IO15` (TDO) |
+| 13 | `IO4` | 14 | `IO18` |
+| 15 | `IO19` | 16 | `IO23` |
+
 ### Prise vers la carte de mesure — câble droit, même ordre que le J1 de la carte de mesure
 
 | Voie | Signal sur la carte principale |
@@ -257,7 +393,7 @@ courant ne peut remonter de l'USB vers le 12 V.
 | Q4 | Courant réel d'une pompe doseuse, et de la bobine du contacteur |
 | Q5 | ~~Référence de l'écrêteur et du support de pile~~ ✅ trouvées. Reste le condensateur de réserve du 12 V |
 | Q6 | ~~Durée de vie du module~~ ✅ relevé par le relecteur : variante N8R8 active (fiche v2.4) ; Espressif s'engage sur la puce jusqu'en 2031 au moins, ⚠️ pas sur le module |
-| Q7 | Bloc régulateurs : attend M3 |
+| Q7 | ~~Bloc régulateurs~~ ✅ dessiné (7805 linéaire, pont, bornier 5 V externe). L'essai M3 reste possible sur la carte v3 elle-même |
 | Q8 | ~~Alimenter par l'USB~~ ✅ **non** (relecteur) : 500 mA ne suffisent pas, et le courant remonterait dans le régulateur |
 | Q10 | ⚠️ **Contacteurs 230 V** : vérifier sur leur fiche que l'isolation entre bobine et contacts est renforcée. Sinon le 12 V, l'USB et les sondes ne sont plus en très basse tension de sécurité. À faire avant de vendre |
 | Q9 | Forme de la carte et position des prises : le boîtier vient après (V13) |
@@ -275,7 +411,7 @@ dans cette version 0.2.
 | 4 | remise à zéro automatique sans le croisement des émetteurs | croisement écrit |
 
 Ajouts tirés de ses remarques : condensateurs sur le 12 V, écrêteur SMBJ13A, 22 µF sur le
-3,3 V, 499 Ω sur la ligne d'émission, pastille de masse, exceptions E4 et E5, point Q10.
+3,3 V, résistance sur la ligne d'émission, pastille de masse, exceptions E4 et E5, point Q10.
 
 Non vérifié par le relecteur : fiche du contacteur, déclassement du fusible avec la
 température, empreintes compatibles de la prise USB-C et du support de pile.
@@ -292,4 +428,23 @@ Deux remarques, portées dans le schéma :
 
 Non vérifié par le relecteur : fiche du DS18B20 (site inaccessible), figure de NXP sur le
 condensateur d'accord, empreintes du module ESP32 et du support de pile.
-ℹ️ Les boutons RESET et BOOT ont été ajoutés pendant cette relecture : ils ne sont pas relus.
+
+## Relecture des ajouts de la rév. 0.2, 2026-11-25 (`electronics-reviewer`)
+
+Verdict : aucune erreur dans les ajouts (régulateur 7805, pont, bornier 5 V externe et sa
+protection, boutons RESET et BOOT, embase de débogage, 470 Ω, entrée du détecteur de débit).
+
+Porté sur ses remarques : rappel du détecteur de débit passé de 10 kΩ à 1 kΩ ; le pont JP1
+n'est plus compté dans la nomenclature.
+
+À faire au moment de la carte :
+- écrire « couper JP1 d'abord » en sérigraphie à côté du bornier 5 V externe : la protection
+  contre l'inversion ne joue que pont coupé ;
+- ⚠️ une sonde de débogage branchée **à la mise sous tension** peut tirer IO12 vers le haut
+  et empêcher le démarrage : la brancher après.
+
+Non suivi : le relecteur conseille un bornier à vis pour le détecteur de débit (fils nus,
+pince à sertir). L'utilisateur a choisi la prise JST ; elle sera adaptée au détecteur réel.
+
+Non vérifié par le relecteur : fiche ST du 7805 (brochage pris sur l'équivalent onsemi),
+détrompeur et corps de l'embase C221049 contre l'empreinte, type réel du détecteur de débit.

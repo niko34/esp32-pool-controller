@@ -1,0 +1,6 @@
+# Fichiers GÉNÉRÉS par generate_freecad.py : on versionne le générateur, pas ses sorties.
+freecad/
+step/
+stl/
+reports/
+__pycache__/
