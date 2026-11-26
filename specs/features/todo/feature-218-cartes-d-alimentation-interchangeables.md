@@ -155,6 +155,16 @@ déjà décrit dans `kicad/v3-principale/README.md`).
 - Sinon, l'écart entre les deux chiffres est ce que les cartes A et B ont à gagner.
 ⇒ Sans ce point, la comparaison des trois alimentations n'a pas de repère.
 
+✅ **Ordre accepté par l'utilisateur (2026-11-26)** :
+1. fabriquer la carte principale et la carte de mesure du v3 ;
+2. faire la mesure V0 (Mean Well, puis batterie) ;
+3. **décider alors** de dessiner ou non les cartes d'alimentation A et B.
+
+⇒ ⛔ Aucune carte d'alimentation ne se dessine avant V0.
+⇒ ✅ Les **supports du second format** dans le boîtier se prévoient dès l'adaptation du
+boîtier au v3 : ils ne coûtent presque rien, même s'ils restent vides. Il faut donc figer
+le format commun (V3) à ce moment-là, sans attendre V0.
+
 ## Fichiers potentiellement concernés
 
 - `kicad/v3-alim-decoupage/` [nouveau] — carte A
@@ -167,7 +177,8 @@ déjà décrit dans `kicad/v3-principale/README.md`).
 ## Livrables — check-list
 
 **Étude**
-- [ ] E1 — Points V1 à V9 tranchés par écrit, relus par `electronics-reviewer`
+- [ ] E0 — **Mesure V0** sur le v3 : Mean Well, puis batterie — ⛔ préalable à A1, A2, B1 et B2
+- [ ] E1 — Points V1 à V13 tranchés par écrit, relus par `electronics-reviewer`
 - [ ] E2 — Format commun des deux cartes écrit dans cette fiche (dimensions, trous, hauteur, connecteurs)
 
 **Cartes**
