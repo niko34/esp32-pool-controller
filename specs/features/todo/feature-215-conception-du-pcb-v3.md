@@ -395,8 +395,8 @@ carte de mesure, le gain existe mais dépend du respect strict de la coupure de 
 | V13 | ~~Le boîtier accueille-t-il trois cartes ?~~ | ✅ **oui, et il sera traité APRÈS les cartes** (utilisateur, 2026-11-24). ⚠️ Conséquence : formes et fixations des cartes ne sont contraintes par aucun boîtier existant |
 | V14 | **Nettoyage après soudure chez JLCPCB** | ⚠️ **relevé le 2026-11-24** : flux « sans nettoyage », résidu jugé normal par l'atelier, aucune option de nettoyage trouvée. ⏳ À demander par écrit ; à défaut, nettoyage à la réception sur chaque carte |
 | V15 | **Enrobage en résine transparente** des modules | protection contre l'humidité ; ⚠️ irréversible, à faire après essai de la carte |
-| V16 | **Note d'application AN-0971** de l'ADM3260 | ✅ **lue le 2026-11-24** (révision B). Le recouvrement de plans préconisé fait 140 à 300 pF : ⛔ écarté. Le fabricant prévoit ce cas : là où la fuite doit rester faible, le rayonnement se traite par un **boîtier métallique relié à la masse**. Reste applicable sans toucher à la barrière : quatre couches, plans rapprochés, charge faible. Détail : [`kicad/v3-mesure/README.md`](../../../kicad/v3-mesure/README.md) |
-| V17 | **Deux ou quatre couches**, carte par carte | critère = qualité et facilité de conception, ⛔ pas le prix. ✅ **Carte de mesure : quatre couches** (utilisateur, 2026-11-24, sur avis du relecteur — voir [`kicad/v3-mesure/README.md`](../../../kicad/v3-mesure/README.md)). ⏳ Carte principale et carte d'alimentation : à trancher à leur tour |
+| V16 | **Note d'application AN-0971** de l'ADM3260 | ✅ **lue le 2026-11-24** (révision B). Le recouvrement de plans préconisé fait 140 à 300 pF : ⛔ écarté. Le fabricant prévoit ce cas : là où la fuite doit rester faible, le rayonnement se traite par un **boîtier métallique relié à la masse**. Reste applicable sans toucher à la barrière : quatre couches, plans rapprochés, charge faible. Détail : [`kicad/v3-mesure-std/README.md`](../../../kicad/v3-mesure-std/README.md) (« Repris de l'étude à modules Atlas ») |
+| V17 | **Deux ou quatre couches**, carte par carte | critère = qualité et facilité de conception, ⛔ pas le prix. ✅ **Carte de mesure : quatre couches** (utilisateur, 2026-11-24, sur avis du relecteur — voir [`kicad/v3-mesure-std/README.md`](../../../kicad/v3-mesure-std/README.md) (« Repris de l'étude à modules Atlas »)). ⏳ Carte principale et carte d'alimentation : à trancher à leur tour |
 
 ## Conséquence logicielle — ⛔ hors de cette fiche
 
@@ -609,7 +609,7 @@ fige après M3.
 
 **Vérifications avant schéma**
 - [ ] V1 à V17 — tableau « Points à vérifier AVANT de dessiner »
-- [x] P0 — Où vit le v3 dans le dépôt : ✅ **un dossier neuf à côté du v2** (utilisateur, 2026-11-24). Le v2 (`kicad/esp32-pool-controller/`) reste intact et gelé. Premier dossier créé : `kicad/v3-mesure/` (carte de mesure — composants et connexions, avant schéma)
+- [x] P0 — Où vit le v3 dans le dépôt : ✅ **un dossier neuf à côté du v2** (utilisateur, 2026-11-24). Le v2 (`kicad/esp32-pool-controller/`) reste intact et gelé. Premier dossier créé : `kicad/v3-mesure/` (carte de mesure — composants et connexions, avant schéma). ⚠️ Ce dossier (étude à modules Atlas) a été retiré le 2026-11-26 ; la carte retenue est dans `kicad/v3-mesure-std/`
 
 **Conception**
 - [x] P1 — Schéma : ESP32 intégré, USB, horloge + pile — carte principale, schéma écrit par script et relu (2026-11-26, horloge DS3231SN). ⏳ Pas encore ouvert dans le KiCad de l'utilisateur

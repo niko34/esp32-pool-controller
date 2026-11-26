@@ -6,9 +6,9 @@ sans module Atlas, tous les composants posés par l'atelier, chacun avec un équ
 autre fabricant. L'étude et les relectures sont dans
 [feature-217](../../specs/features/todo/feature-217-carte-de-mesure-a-composants-courants.md).
 
-La carte à modules Atlas reste dans [`../v3-mesure/`](../v3-mesure/README.md) comme étude.
-Ce qui n'est pas redit ici en vient et **reste valable** : disposition dans le boîtier, prises
-BNC coudées sur le bord du bas, connecteur J1 et son ordre, quatre couches, relevé du boîtier.
+La première étude, à modules Atlas (`kicad/v3-mesure/`), a été **retirée du dépôt le
+2026-11-26** : elle reste dans l'historique git (dernier état : commit `5eb6b3d`). Ce qui en
+restait valable est recopié plus bas, dans « Repris de l'étude à modules Atlas ».
 
 ✅ **État au 2026-11-25 : schéma (rév. 0.2) et carte placée et routée (rév. 0.1) écrits par
 script, relus par `electronics-reviewer` — aucune erreur. Pas encore ouverts dans KiCad par
@@ -82,6 +82,44 @@ SDA ; et, sur la voie ORP, la liaison de R208 au corps de la prise. Sans effet s
   Si le corps était de l'autre côté, il reposerait sur C101.
 - L'empreinte de la prise BNC face au plan du fabricant (déjà ouvert sur la carte Atlas).
 - L'empilement des couches de l'atelier.
+
+## Repris de l'étude à modules Atlas (2026-11-24)
+
+**Disposition.** La carte est montée à l'horizontale et les deux prises BNC, **coudées**,
+sortent par le grand bord du bas. Entraxe de **36,3 mm** : celui des deux perçages que le
+boîtier avait déjà. Le connecteur J1 et le côté ESP32 sont à l'opposé, en haut.
+
+**La prise** : `C521219`, dosinconn DOSIN-801-0080, embase BNC femelle coudée, traversante.
+Plan du fabricant (révision A) lu le 2026-11-24 :
+
+| Ce que dit le plan | Valeur |
+|---|---|
+| Corps | **laiton nickelé, donc métallique** ; isolant en téflon |
+| Fixation | nez fileté **M12 × 0,75**, avec écrou et joint : la prise se serre sur la paroi |
+| Pattes de corps | 4, Ø 1,2 mm, au pas de 8 mm (le long de l'axe) × 10 mm (en travers) |
+| Âme | Ø 1 mm, au centre des quatre pattes |
+| Hauteur de l'axe au-dessus de la carte | 9,8 mm |
+| Longueur totale | 29,5 mm |
+
+⚠️ **La paroi du bas doit être isolante.** Le corps de la prise est en métal et se serre sur
+la paroi : sur une paroi métallique reliée à la terre, la référence des sondes serait reliée
+à la terre et les deux voies entre elles, l'isolation serait annulée. ✅ Le boîtier est en
+ASA, paroi de 3,2 mm, perçages de Ø 13 mm.
+
+⚠️ **Mesuré sur le dessin, pas coté — à vérifier pièce en main** : le contour du corps, la
+distance de l'âme à la paroi (≈ 6,7 mm) et la longueur du filetage (≈ 7,2 mm, pour
+3,2 mm de paroi + 0,8 mm de joint + 2,5 mm d'écrou : le serrage tient, de peu). Perçages de
+l'empreinte choisis ici : 1,5 mm pour les pattes, 1,3 mm pour l'âme.
+
+**Pourquoi quatre couches** (utilisateur, 2026-11-24, sur avis du relecteur) : le critère est
+la qualité de la mesure, pas le prix. La note d'application AN-0971 d'Analog Devices mesure le
+bruit sur l'alimentation derrière un convertisseur isolé : 460 mV sans plan, 104 mV puis
+64 mV avec des plans rapprochés (ordres de grandeur, relevés sur une autre famille de
+composants). La même note conseille un condensateur entre les deux côtés de la barrière
+(140 à 300 pF) : ⛔ écarté, c'est le chemin du bruit que cette carte doit fermer.
+
+**Nettoyage du flux obligatoire après soudure** : voir
+[`docs/FABRICATION.md`](../../docs/FABRICATION.md).
 
 ## Ce que fait une voie
 

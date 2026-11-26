@@ -59,8 +59,8 @@ la liste des pièces et les positions, l'atelier ne peut pas poser les composant
 `build-jlcpcb.sh` refuse de produire le dossier si le contrôle des règles signale
 une erreur.
 
-⛔ `v3-mesure` (carte à modules Atlas) est abandonnée au profit de
-`v3-mesure-std` : ne la publie pas sans demande explicite.
+ℹ️ La carte de mesure est `v3-mesure-std`. L'étude à modules Atlas (`v3-mesure`) a été
+retirée du dépôt le 2026-11-26.
 
 En cas d'échec, arrête et montre le message.
 

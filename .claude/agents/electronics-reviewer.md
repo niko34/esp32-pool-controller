@@ -110,8 +110,9 @@ la règle d'office : ne les détaille pas, signale seulement une valeur ou un bo
   le premier motif du v3.
 - **Deux voies isolées séparément** (pH et ORP), un isolateur par voie. ⚠️ Les modules Atlas
   Scientific sont **abandonnés pour le v3** (décision D8 de feature-215, 2026-11-25) : la
-  carte de mesure se fait en composants courants (feature-217). La carte à modules Atlas de
-  `kicad/v3-mesure/` reste dans le dépôt comme étude, elle n'est plus la cible.
+  carte de mesure se fait en composants courants (feature-217). L'étude à modules Atlas
+  (`kicad/v3-mesure/`) a été retirée du dépôt le 2026-11-26 ; la carte est dans
+  `kicad/v3-mesure-std/`.
 - **Trois cartes** : mesure, principale, alimentation. La liaison entre cartes est un
   contrat ; le signal d'électrode ne passe jamais dans un câble.
 - **Fabrication et assemblage chez JLCPCB.** Un composant absent de leur catalogue, ou en
