@@ -46,6 +46,8 @@ def squelette():
     for ref, x, y in TROUS:
         interdit("Fixation %s : cuivre ecarte de 2 mm" % ref, x-3.6, y-3.6, x+3.6, y+3.6)
     texte("COTE ESP32", 9, 2.5, h=1.0); texte("ILE pH", 26.0, 52.5, h=1.2); texte("ILE ORP", DX+26.0, 52.5, h=1.2)
+    # nom de chaque prise, IMPRIMÉ sur la carte (les deux textes « ILE » ci-dessus sont des commentaires, non imprimés)
+    texte("pH", 19.0, 53.2, "F.SilkS", 1.4); texte("ORP", DX+19.0, 53.2, "F.SilkS", 1.4)
     texte("paroi du boitier a ~0,7 mm sous ce bord", 20, H+3.0, "Dwgs.User", 0.8)
     couches = '''(0 "F.Cu" signal) (4 "In1.Cu" signal) (6 "In2.Cu" signal) (2 "B.Cu" signal)
  (9 "F.Adhes" user "F.Adhesive") (11 "B.Adhes" user "B.Adhesive") (13 "F.Paste" user) (15 "B.Paste" user)
@@ -215,14 +217,20 @@ def voie(n, sfx, dx):
     anneau = [(12.27, 37.975), (12.27, 39.0), (12.7, 39.45), (12.7, 44.5), (13.4, 45.2), (13.4, 49.4), (12.4, 50.4),
               (9.6, 50.4), (8.6, 49.4), (8.6, 45.2), (9.6, 44.2)]
     if PH:
+        # LMP7721 : 1 IN+, 2 et 7 libres (reliées à la garde), 3 V-, 4 sortie, 5 libre, 6 V+, 8 IN-.
+        # Rangée du bas (y = 37,975) : broches 1 à 4, de x = 11,0 à 14,81. Rangée du haut : 8 à 5.
         Pp(UE, 12.905, 35.5, 11.0, 37.975, txt=(4.6, 3.2))
         T("ENTREE", [(11.0, 40.088), (11.0, 37.975)], 0.3)
-        T("GARDE", anneau + [(9.6, 31.7), (12.27, 31.7), (12.27, 33.025)], 0.3); garde = "GARDE"; ytop = 31.3
-        T("MESURE", [(11.0, 33.025), (11.0, 34.5), (13.54, 34.5), (13.54, 33.025)])           # rebouclage sous le boîtier
-        T("MESURE", [(13.54, 33.025), (13.54, 29.4), (18.5, 29.4), (19.5, 30.4), (19.5, 31.4), (20.0, 31.9), (22.0, 31.9), (ab(4), 31.4), (ab(4), 30.2)])
-        Pp(c(8), 14.81, 30.75, 14.81, 31.23)
-        T("VISO", [(14.81, 31.23), (14.81, 33.025)]); B("VISO", (14.81, 31.23), (16.0, 31.5)); B("GNDISO", (14.81, 30.27), (16.0, 30.27))
-        B("GNDISO", (14.81, 37.975), (14.81, 40.0))
+        # la garde est la sortie de l'amplificateur (suiveur) : anneau autour de la prise et de l'entrée,
+        # refermé sous le boîtier entre les broches 2 et 7, et relié à IN- (broche 8)
+        T("MESURE", anneau + [(9.6, 31.7), (12.27, 31.7), (12.27, 33.025)], 0.3); garde = "MESURE"; ytop = 31.3
+        T("MESURE", [(12.27, 33.025), (12.27, 37.975)], 0.3)
+        T("MESURE", [(11.0, 33.025), (11.0, 31.7)])
+        T("MESURE", [(14.81, 37.975), (14.81, 39.45), (12.7, 39.45)])                          # sortie -> garde
+        T("MESURE", [(14.81, 37.975), (17.0, 37.975), (19.5, 35.475), (19.5, 32.4), (20.0, 31.9), (22.0, 31.9), (ab(4), 31.4), (ab(4), 30.2)])
+        Pp(c(8), 13.54, 30.75, 13.54, 31.23)
+        T("VISO", [(13.54, 31.23), (13.54, 33.025)]); B("VISO", (13.54, 31.23), (16.0, 31.5)); B("GNDISO", (13.54, 30.27), (16.0, 30.27))
+        T("GNDISO", [(13.54, 37.975), (13.54, 35.5), (16.2, 35.5)]); Vv("GNDISO", 16.2, 35.5)   # V- : sort sous le boîtier, via hors du plan de garde
         # amplificateur double : Vcm
         Pp(UD, 22.0, 44.0, 19.525, 42.095, txt=(0.0, 3.4))
         Pp(r(8), 17.0, 40.4, 16.175, 40.4)
@@ -255,7 +263,9 @@ def voie(n, sfx, dx):
     zg = L(R4(8.2, ytop, 13.8, 50.8))                                   # garde sous l'entrée, sur les trois autres couches
     for layer in (pcbnew.In1_Cu, pcbnew.In2_Cu, pcbnew.B_Cu):
         plan(N(garde), layer, zg, prio=5, jeu=0.5, plein=True)
-    plan(N("REF"), pcbnew.F_Cu, R4(ILE[sfx][0], 42.9, X(24.5), H - 0.5), prio=3, jeu=0.3)   # relie les quatre pattes de la prise
+    # relie les quatre pattes de la prise, en plein : à 8 mm d'écart, les deux pattes du haut n'ont
+    # plus la place pour deux rayons (l'anneau de garde d'un côté, le bord du plan de l'autre)
+    plan(N("REF"), pcbnew.F_Cu, R4(ILE[sfx][0], 42.9, X(24.5), H - 0.5), prio=3, jeu=0.3, plein=True)
     ile = R4(ILE[sfx][0], BAR[1] + 0.25, ILE[sfx][1], H - 0.5)
     plan(N("GNDISO"), pcbnew.In1_Cu, ile); plan(N("GNDISO"), pcbnew.B_Cu, ile); plan(N("VISO"), pcbnew.In2_Cu, ile)
     for a, b in ((28.5, 25.0), (30.0, 36.0), (32.0, 50.5), (3.0, 46.0)):          # couture des plans de masse isolée

@@ -62,9 +62,9 @@ DEF = {
  "ADS1115": ("U", "Convertisseur 16 bits I2C, entrees differentielles", 20.32, 12.7, -17.78,
    [("8","VDD","power_in",7.62),("9","SDA","bidirectional",2.54),("10","SCL","input",0),("1","ADDR","input",-5.08),("3","GND","power_in",-10.16)],
    [("4","AIN0","input",5.08),("5","AIN1","input",0),("6","AIN2","input",-5.08),("7","AIN3","input",-7.62),("2","ALERT","open_collector",-10.16)]),
- "AMPLI_ENTREE": ("U", "Amplificateur a tres faible courant d'entree avec sortie de garde (OPA928 ou ADA4530-1), SOIC-8", 20.32, 10.16, -12.7,
-   [("5","V+","power_in",7.62),("6","OUT","output",2.54),("8","IN-","input",-2.54),("4","V-","power_in",-10.16)],
-   [("1","IN+","input",2.54),("2","GRD","passive",-2.54),("7","GRD","passive",-5.08),("3","NE_PAS_RELIER","no_connect",-10.16)]),
+ "AMPLI_ENTREE": ("U", "Amplificateur a tres faible courant d'entree LMP7721, SOIC-8 a brochage special (broches 2 et 7 libres, a relier a la garde)", 20.32, 10.16, -12.7,
+   [("6","V+","power_in",7.62),("4","OUT","output",2.54),("8","IN-","input",-2.54),("3","V-","power_in",-10.16)],
+   [("1","IN+","input",2.54),("2","GARDE","passive",-2.54),("7","GARDE","passive",-5.08),("5","NE_PAS_RELIER","no_connect",-10.16)]),
  "AMPLI_DOUBLE": ("U", "Amplificateur double CMOS (LMC6482), SOIC-8", 20.32, 12.7, -12.7,
    [("8","V+","power_in",10.16),("1","OUT_A","output",5.08),("2","IN-_A","input",2.54),("7","OUT_B","output",-2.54),("6","IN-_B","input",-5.08),("4","V-","power_in",-10.16)],
    [("3","IN+_A","input",5.08),("5","IN+_B","input",-2.54)]),
@@ -273,20 +273,20 @@ def voie(sfx, n, oy, titre):
 
     # ---- entrée de la sonde ----
     if PH:
-        e = custom("AMPLI_ENTREE", UE, "OPA928DR", 289.56, by, FP["SO8"], "C32418779")
-        x, y = e["5"]; fil((x, y), (271.78, y), (271.78, RV), (261.62, RV)); plus(VI, 271.78, RV); jonction(271.78, RV)
+        e = custom("AMPLI_ENTREE", UE, "LMP7721MAX", 289.56, by, FP["SO8"], "C2864387")
+        x, y = e["6"]; fil((x, y), (271.78, y), (271.78, RV), (261.62, RV)); plus(VI, 271.78, RV); jonction(271.78, RV)
         a, b = vertical("C", C(8), "100n", 261.62, RV); masse(GI, *b)
-        x, y = e["4"]; fil((x, y), (271.78, y), (271.78, y + 5.08)); masse(GI, 271.78, y + 5.08)
-        net(VI, UE + ".5", C(8) + ".1"); net(GI, UE + ".4", C(8) + ".2")
-        fil((xm, ym), e["6"]); etiq(V("MESURE"), 231.14, ym, "d")
+        x, y = e["3"]; fil((x, y), (271.78, y), (271.78, y + 5.08)); masse(GI, 271.78, y + 5.08)
+        net(VI, UE + ".6", C(8) + ".1"); net(GI, UE + ".3", C(8) + ".2")
+        fil((xm, ym), e["4"]); etiq(V("MESURE"), 231.14, ym, "d")
         fil(e["8"], (269.24, e["8"][1]), (269.24, ym)); jonction(269.24, ym)
-        net(V("MESURE"), UA + ".4", UE + ".6", UE + ".8")
-        fil(e["2"], (309.88, e["2"][1]), (309.88, e["7"][1]), e["7"]); etiq(V("GARDE"), 309.88, e["2"][1], "d")
-        net(V("GARDE"), UE + ".2", UE + ".7")
-        nc(*e["3"]); NC.append(UE + ".3")
+        # la garde : le LMP7721 n'a pas de sortie de garde, c'est sa sortie (montage suiveur) qui la tient
+        fil(e["2"], (309.88, e["2"][1]), (309.88, e["7"][1]), e["7"]); etiq(V("MESURE"), 309.88, e["2"][1], "d")
+        net(V("MESURE"), UA + ".4", UE + ".4", UE + ".8", UE + ".2", UE + ".7")
+        nc(*e["5"]); NC.append(UE + ".5")
         xin, yin = e["1"]; jy = by
-        texte("ENTREE : LE point sensible (~100 MOhm et plus).\nPiste la plus courte possible, entouree de l'anneau GARDE\nsur les deux faces. Rien d'autre sur ce fil.", 304.8, by - 12.7, 1.1)
-        texte("Meme empreinte pour l'ADA4530-1 (autre fabricant) :\nrien d'autre a changer.", 279.4, by + 22.86, 1.1)
+        texte("ENTREE : LE point sensible (~100 MOhm et plus).\nPiste la plus courte possible, entouree de l'anneau de garde\n(fil MESURE) sur les deux faces. Rien d'autre sur ce fil.", 304.8, by - 12.7, 1.1)
+        texte("LMP7721 : brochage special, pas d'equivalent broche a broche.\nBroches 2 et 7 libres dans le boitier, reliees a la garde.", 279.4, by + 22.86, 1.1)
     else:
         # moitié B : entrée de la sonde. Le fil MESURE croise le fil VCM sans s'y relier (pas de point).
         fil((xm, ym), (254, ym), (254, yB), d["7"]); etiq(V("MESURE"), 231.14, ym, "d")

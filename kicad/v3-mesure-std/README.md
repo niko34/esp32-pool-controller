@@ -52,8 +52,8 @@ masse au-dessous, alimentation, puis masse et quelques pistes sur la face du des
   Piste d'entrée de 2,1 mm, piste de l'âme de 6,1 mm.
 - ORP : même anneau, relié à `MESURE_ORP`, refermé sous le boîtier entre la broche 4 (masse)
   et la broche 5 (entrée).
-- **Vernis conservé** sur l'anneau et l'entrée (point P6 fermé). La fiche de l'OPA928 demande
-  de le retirer, pour des mesures au femtoampère. Ici la garde est à 150 µV au plus de
+- **Vernis conservé** sur l'anneau et l'entrée (point P6 fermé). Le retirer sert aux mesures
+  au femtoampère. Ici la garde est la sortie du suiveur, à 150 µV au plus de
   l'entrée : même avec 1 GΩ de fuite de surface, l'erreur est de 0,0003 pH. Le retirer
   laisserait du cuivre nu dans l'air chloré.
 - Le trait d'encre de la prise BNC qui passait sur l'âme et l'anneau est retiré de l'empreinte.
@@ -96,7 +96,13 @@ Plan du fabricant (révision A) lu le 2026-11-24 :
 |---|---|
 | Corps | **laiton nickelé, donc métallique** ; isolant en téflon |
 | Fixation | nez fileté **M12 × 0,75**, avec écrou et joint : la prise se serre sur la paroi |
-| Pattes de corps | 4, Ø 1,2 mm, au pas de 8 mm (le long de l'axe) × 10 mm (en travers) |
+| Pattes de corps | 4, Ø 1,2 mm, au pas de **8 mm × 8 mm** ; le « 10 » du plan est la largeur du corps carré, pas l'écart des pattes |
+
+⛔ **Défaut ouvert le 2026-11-26 : l'empreinte de la carte a ces pattes à 10 mm en travers**
+(lecture fausse du plan le 2026-11-24 : « 8 × 10 »). Relu ce jour sur le plan, à l'échelle
+de la cote de 29,5 mm : 7,8 mm dans les deux sens ; l'empreinte de JLCPCB pour `C521219` dit
+8 × 8 aussi. Avec des trous de 1,5 mm pour des pattes de 1,2 mm, 1 mm d'erreur par patte ne
+passe pas : **la carte est à corriger avant toute commande.**
 | Âme | Ø 1 mm, au centre des quatre pattes |
 | Hauteur de l'axe au-dessus de la carte | 9,8 mm |
 | Longueur totale | 29,5 mm |
@@ -105,6 +111,10 @@ Plan du fabricant (révision A) lu le 2026-11-24 :
 la paroi : sur une paroi métallique reliée à la terre, la référence des sondes serait reliée
 à la terre et les deux voies entre elles, l'isolation serait annulée. ✅ Le boîtier est en
 ASA, paroi de 3,2 mm, perçages de Ø 13 mm.
+
+✅ **Défaut des pattes fermé le 2026-11-26** : empreinte corrigée à 8 × 8 mm, carte régénérée ;
+le contrôle patte par patte contre l'empreinte de JLCPCB donne 0,00 mm d'écart. Les quatre
+pattes sont maintenant reliées **en plein** à leur plan (plus la place pour deux rayons).
 
 ⚠️ **Mesuré sur le dessin, pas coté — à vérifier pièce en main** : le contour du corps, la
 distance de l'âme à la paroi (≈ 6,7 mm) et la longueur du filetage (≈ 7,2 mm, pour
@@ -147,7 +157,7 @@ l'atelier lui-même non lu.
 | U101, U201 | Isolation des signaux I2C | ISO1540DR | SOIC-8 | C179739 | ADuM1250ARZ (C13839) |
 | U102, U202 | Régulateur 5 V du côté isolé | AMS1117-5.0 | SOT-223 | C6187 | LD1117-5.0 UMW (C347230), même brochage, entrée ≤ 12 V conseillée |
 | U103, U203 | Convertisseur | ADS1115IDGSR | VSSOP-10 | C37593 | SGM58031XMS10 (C700177), pastille centrale à la masse |
-| U104 | Amplificateur d'entrée **pH** | OPA928DR | SOIC-8 | C32418779 | ADA4530-1ARZ (C77380), même brochage, rien d'autre à changer |
+| U104 | Amplificateur d'entrée **pH** | LMP7721MAX (TI) | SOIC-8, **brochage spécial** | C2864387 | aucun broche à broche. Avant le 2026-11-26 : OPA928DR (C32418779, 24 $) — voir « Changement d'amplificateur » |
 | U105, U205 | Amplificateur double : Vcm, et entrée **ORP** sur U205 | LMC6482AIMX (**TI**) | SOIC-8 | C12620 | LMC6482IDT de ST (C2058286) |
 | R101, R102, R201, R202 | Rappels du bus, côté ESP32 | 4,7 kΩ 1 % | 0603 | C23162 | — |
 | R103, R104, R203, R204 | Rappels du bus, côté isolé | 3,3 kΩ 1 % | 0603 | C22978 | — |
@@ -168,9 +178,11 @@ l'atelier lui-même non lu.
 | J1 | Connecteur vers la carte principale | JST XH 8 voies (B8B-XH-A) | traversant | C157972 | — (inchangé) |
 
 **Tensions**
-- Alimentation isolée : **5 V** (au lieu de 3,85 V), demandée par l'amplificateur d'entrée
-  (4,5 V minimum) et par la marge des niveaux du bus côté isolé.
-- Vcm du pH : **1,25 V** (pont 30 kΩ / 10 kΩ), **pour les deux amplificateurs possibles**.
+- Alimentation isolée : **5 V**, choisie pour l'OPA928 d'origine (4,5 V minimum) et la marge
+  des niveaux du bus côté isolé ; le LMP7721 l'accepte (5,5 V au plus). ⚠️ Marge de 0,5 V :
+  ne pas remplacer le régulateur par un modèle à sortie plus haute.
+- Vcm du pH : **1,25 V** (pont 30 kΩ / 10 kΩ). LMP7721 : dans sa plage (−0,3 à 4 V). Les deux
+  lignes suivantes datent de l'OPA928 et de son remplaçant d'alors.
   L'entrée balaie 0,7 à 1,8 V, dérive du zéro de 128 mV comprise. OPA928 : dans sa plage
   garantie (0,1 à 2,0 V). ADA4530-1 : sur 0 à 3 V sa fiche garantit décalage ≤ 300 µV,
   réjection 73 dB, écart de garde ≤ 150 µV ; pire cas 0,12 mV, soit **0,002 pH**.
@@ -182,8 +194,7 @@ l'atelier lui-même non lu.
 ## Tableau des connexions
 
 Signaux : `+5V`, `+3V3`, `GND` viennent de la carte principale. Du côté isolé de la voie pH :
-`VBRUT_PH` (sortie du module), `VISO_PH` (5 V régulé), `GNDISO_PH`, `VCM_PH` (sortie du suiveur), `REF_PH` (corps de la prise, après les 100 Ω),
-`GARDE_PH`.
+`VBRUT_PH` (sortie du module), `VISO_PH` (5 V régulé), `GNDISO_PH`, `VCM_PH` (sortie du suiveur), `REF_PH` (corps de la prise, après les 100 Ω).
 Pour l'ORP, remplacer `_PH` par `_ORP` et `1xx` par `2xx`, sauf mention.
 
 ### Module d'alimentation isolée (PS101)
@@ -242,17 +253,48 @@ fiche de TI (p. 19) : côté 1 vers un nœud court et peu chargé, côté 2 vers
 | 9 | SDA | `SDA_ISO_PH` | |
 | 10 | SCL | `SCL_ISO_PH` | |
 
-### Amplificateur d'entrée du pH (U104, OPA928 — voie pH seulement)
+### Amplificateur d'entrée du pH (U104, LMP7721 — voie pH seulement)
 
 | Broche | Nom | Relié à | Remarque |
 |---|---|---|---|
 | 1 | IN+ | `ENTREE_PH` : R105, dont l'autre bout va à l'âme de J101 | ⚠️ **le point sensible** : piste la plus courte possible, entourée de l'anneau de garde |
-| 2, 7 | GRD | `GARDE_PH` : l'anneau de garde | le composant pilote lui-même la garde |
-| 3 | — | **rien** | à laisser en l'air sur les deux amplificateurs possibles |
-| 4 | V− | `GNDISO_PH` | |
-| 5 | V+ | `VISO_PH` + C108 vers `GNDISO_PH` | |
-| 6 | OUT | `MESURE_PH` | vers AIN0 de U103 |
+| 2, 7 | libres dans le boîtier | `MESURE_PH` : l'anneau de garde | la fiche recommande de les relier à la garde ; la garde est tenue par la sortie |
+| 3 | V− | `GNDISO_PH` | sort sous le boîtier, via hors du plan de garde |
+| 4 | OUT | `MESURE_PH` | vers AIN0 de U103, et vers l'anneau de garde |
+| 5 | — | **rien** | libre dans le boîtier |
+| 6 | V+ | `VISO_PH` + C108 vers `GNDISO_PH` | |
 | 8 | IN− | `MESURE_PH` | montage suiveur |
+
+#### Changement d'amplificateur (2026-11-26, décision de l'utilisateur)
+
+L'OPA928 coûtait 24,36 $ pièce (121 $ pour cinq cartes). Remplacé par le **LMP7721** (6,63 $).
+Lu ce jour dans sa fiche (TI SNOSAW6E) :
+
+| Point | Valeur de la fiche | Ce qu'il faut ici |
+|---|---|---|
+| Courant d'entrée | ±3 fA typique, ±20 fA au plus à 25 °C, ±900 fA de −40 à 85 °C | sonde de 500 MΩ : 0,0002 pH à 25 °C, 0,008 pH au pire à 85 °C |
+| Alimentation | 1,8 à 5,5 V (6,0 V à ne pas dépasser) | 5 V isolé |
+| Plage d'entrée à 5 V | −0,3 à 4 V | l'entrée balaie 0,7 à 1,8 V |
+| Décalage | ±150 µV au plus | absorbé par l'étalonnage |
+| Écart entre les deux entrées | ±0,3 V à ne pas dépasser | suiveur : moins de 1 mV ; R105 limite le courant |
+| Brochage | 1 IN+, 2 libre, 3 V−, 4 sortie, 5 libre, 6 V+, 7 libre, 8 IN− | carte redessinée autour de U104 |
+
+Ce que l'OPA928 avait en plus : une sortie de garde propre au composant. Ici la garde est la
+sortie du suiveur, comme sur la voie ORP. ⇒ Le net `GARDE_PH` n'existe plus.
+⛔ L'ADA4530-1 n'est **plus** un remplaçant direct : il a le brochage de l'OPA928.
+✅ Relu par `electronics-reviewer` le 2026-11-26 : brochage et limites conformes, bon pour commande.
+- ⚠️ **À regarder sur la première carte : la stabilité.** La sortie tient la garde (anneau et
+  trois plans), estimée à 15–30 pF ; la fiche (fig. 19) donne alors environ 35° de marge de
+  phase, et 4° vers 200 pF. Si une oscillation ou un bruit anormal apparaît : séparer la
+  garde de `MESURE_PH` et l'y relier par 100 à 470 Ω (recommandation de TI, p. 20-21).
+- La garde suit l'entrée à 150 µV près à 25 °C, 450 µV sur toute la plage de température.
+- ⚠️ **Un seul fabricant** (TI), aucune pièce ne se pose sur la même empreinte — écart assumé
+  à la règle des deux fabricants. Repli : la carte de l'OPA928, dans l'historique git.
+- Les pattes de corps des prises sont maintenant à 0,53 mm de l'anneau de garde (1,4 mm
+  avant) : à garder en tête pour le point P7 (décharges sur la prise).
+⏳ Non fait : mesure du bruit sur carte réelle.
+L'utilisateur fera d'abord ses essais sur l'alimentation (par exemple sur batterie 5 V) ;
+si la mesure y est bonne, l'OPA928 n'aura pas lieu de revenir.
 
 ### Amplificateur double (U105 pour le pH, U205 pour l'ORP — LMC6482)
 
@@ -362,8 +404,18 @@ le corps de la prise (10 kΩ ferait passer le 50 Hz capté de 70 µV à 7 mV).
 Le script refuse de produire quoi que ce soit si le contrôle des règles signale une erreur.
 
 ✅ Vérifié le 2026-11-26 : le dossier sort sans erreur, 47 pièces à poser en 18 lignes (une par référence). C104 et C204 (22 µF 16 V au tantale) : référence trouvée le 2026-11-26 et confirmée par l'utilisateur, C8020 (AVX TAJB226K016RNJ, 55 997 en stock chez JLCPCB), équivalent C122226 (Xiangyee). Le 10 V a été écarté : sur 5 V il serait à la limite de la règle des fabricants (moitié de la tension nominale).
-✅ Stock relevé au catalogue de JLCPCB le 2026-11-26 : toutes les références y sont, plus bas relevés : **OPA928DR 265**, module d'alimentation B0509S 1 493, prise BNC 6 096. Environ la moitié des références sont des pièces « étendues » (frais de mise en place par référence).
+✅ Stock relevé au catalogue de JLCPCB le 2026-11-26 : toutes les références y sont, plus bas relevés : **LMP7721MAX 1 668** (relevé après le changement d'amplificateur), module d'alimentation B0509S 1 493, prise BNC 6 096. Environ la moitié des références sont des pièces « étendues » (frais de mise en place par référence).
 ⏳ Non vérifié : l'envoi réel des fichiers sur le site de JLCPCB.
 ⚠️ **Étape humaine à la commande** : JLCPCB ne compte pas les angles comme KiCad pour certains
 boîtiers. Son écran de pose montre chaque pièce sur la carte : y vérifier le sens des diodes,
 des transistors, des circuits intégrés et du condensateur polarisé avant de valider.
+
+## Audit extérieur du 2026-11-27 (demandé par l'utilisateur)
+
+Verdict : rien de bloquant. Déjà connus : charge minimale des modules isolés (≈ 10 mA tirés
+pour 11 à 12 demandés ; résistance de charge écartée à la relecture du 2026-11-25, à
+trancher par les essais d'alimentation), stabilité du LMP7721 sur sa garde, tenue des prises
+aux décharges.
+Nouveau : « pH » et « ORP » n'étaient écrits que sur la couche de commentaires, donc non
+imprimés. ✅ Ajoutés le jour même en sérigraphie, à droite de chaque prise (`generer_carte.py`).
+Rien d'autre n'a changé sur la carte (comparaison pièce par pièce et piste par piste).

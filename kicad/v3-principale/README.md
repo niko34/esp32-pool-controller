@@ -152,7 +152,8 @@ entourent les pistes sur les deux faces extérieures.
 | `outils/7_condensateur_pres_du_module.py` | le condensateur de 100 nF du module rapproché de sa broche 3,3 V (retouche du 2026-11-26) |
 | `outils/8_horloge_ds3231.py` | l'horloge PCF8563 et son quartz remplacés par un DS3231SN, pistes refaites à la main (2026-11-26). ⚠️ `generer_carte.py` place encore l'ancienne horloge : la carte `.kicad_pcb` fait référence |
 | `outils/9_alarme_hors_de_la_puce.py` | l'alarme de l'horloge sortie de sous la puce, R21 déplacée (retouche de relecture, 2026-11-26) |
-| `outils/5_inscriptions.py` | nom de chaque prise, repère du +, consigne « couper JP1 d'abord » |
+| `outils/5_inscriptions.py` | nom de chaque prise, repère du +, consigne « retirer JP1 d'abord » |
+| `outils/10_cavalier_jp1.py` | JP1 : le pont de cuivre devient une barrette de deux broches à capuchon |
 | `v3-principale.kicad_pcb` | **la carte : c'est elle la référence**, le routage ne se régénère pas à l'identique |
 | `v3-principale.pretty/`, `fp-lib-table` | empreinte du module ESP32 (bibliothèque officielle d'Espressif), trou de fixation |
 
@@ -300,10 +301,11 @@ fabrique son 5 V à partir du 12 V, **et** peut recevoir un 5 V extérieur pour 
 |---|---|---|---|---|
 | 12 V → 5 V | L7805ABD2T-TR (ST), régulateur **linéaire** | D²PAK (TO-263) | C86206 | MC7805BD2TR4G (onsemi), C15833, même brochage |
 | Condensateurs du 7805 | 1 µF 50 V en entrée ; 10 µF + 100 nF en sortie | 0805, 0805, 0402 | C28323, C15850, C1525 | — |
-| Pont 5 V | pont de soudure **fermé d'origine**, à couper | sur la carte | aucune pièce | — |
+| Cavalier 5 V (JP1) | barrette 2 broches au pas de 2,54 mm, fermée par un **capuchon amovible** (non fourni par JLCPCB) | `C124375` | Ckmtw B-2100S02P-A110 | pièce générique, nombreux fabricants |
 | Bornier « 5 V externe » | bornier débrochable 5,08 mm, embase verticale 2 voies | traversant | C505788 | standard « 2EDG » |
 | Protection du 5 V externe | AO3401A, canal P, + 10 kΩ | SOT-23 | C15127 | nombreux |
 | 5 V → 3,3 V | AMS1117-3.3 | SOT-223 | C6186 | LD1117 (UMW) |
+| Condensateur de sortie du 3,3 V (C20) | 22 µF 16 V, **tantale** — pièce polarisée, le + au 3,3 V | boîtier B | C8020 (AVX TAJB226K016RNJ) | CA45-B016K226T (Xiangyee, C122226) |
 
 **Pourquoi un régulateur linéaire** (avis du relecteur, chiffré) : trois composants, deux
 grands fabricants sur la même empreinte — l'exception E4 disparaît — et aucun découpage sur
@@ -314,20 +316,23 @@ soit environ 90 °C dans la puce pour 40 °C dans le boîtier ; limite 125 °C, 
 loin du condensateur de 470 µF et de la sonde de température. ⏳ Consommation réelle du 5 V
 à mesurer sur la première carte.
 
-**Le pont et le bornier 5 V externe**
-- Pont fermé (état d'origine) : fonctionnement normal, tout part du 12 V.
-- Pont **coupé**, 5 V sur le bornier : l'ESP32 et la mesure tournent sur l'alimentation
+**Le cavalier JP1 et le bornier 5 V externe** (cavalier depuis le 2026-11-26 ; avant, un pont de cuivre)
+- ⛔ La carte arrive **ouverte** : sans capuchon sur JP1, ni 5 V ni 3,3 V.
+- Capuchon en place : fonctionnement normal, tout part du 12 V.
+- Capuchon **retiré**, 5 V sur le bornier : l'ESP32 et la mesure tournent sur l'alimentation
   extérieure. Pour un essai de bruit, **débrancher aussi le 12 V** : la carte n'a qu'une
   masse, et laisser l'alimentation 12 V branchée referait les essais E03 et E07, sans gain.
-- Pont fermé **et** 5 V externe, 12 V présent : rien ne casse, la source la plus haute fournit.
-- Pont fermé **et** 5 V externe, 12 V absent : le 5 V remonte vers le rail 12 V à travers le
-  régulateur. État mal défini ⇒ toujours couper le pont d'abord.
+- Capuchon en place **et** 5 V externe, 12 V présent : rien ne casse, la source la plus haute fournit.
+- Capuchon en place **et** 5 V externe, 12 V absent : le 5 V remonte vers le rail 12 V à travers le
+  régulateur. État mal défini ⇒ toujours retirer le capuchon d'abord.
 - Le transistor AO3401A protège d'un 5 V externe branché à l'envers. ⛔ Rien ne protège
   d'une tension trop haute sur ce bornier : les modules de la carte de mesure ne tiennent
   que 5,5 V.
-- ℹ️ Le pont est un pont de soudure et non un cavalier enfichable : l'atelier n'a rien à
-  poser, et aucun contact ne peut s'oxyder en local humide. On le coupe au cutter, on le
-  referme d'un point de soudure.
+- ⚠️ Le cavalier est un **contact** : barrette dorée (C124375, 3 A), donc **capuchon doré**
+  lui aussi — un capuchon étamé sur des broches dorées se corrode en local humide et chloré
+  (relecture du 2026-11-26). Courant du rail : moins de 1 A en pointe.
+- ⚠️ Pour un appareil livré à un client : si le capuchon tombe, la carte s'éteint en entier.
+  Le pont de cuivre d'origine n'avait pas ce défaut ; à retrancher sur la version vendue.
 
 ### Température et liaison
 
@@ -583,7 +588,7 @@ détrompeur et corps de l'embase C221049 contre l'empreinte, type réel du déte
 
 Le script refuse de produire quoi que ce soit si le contrôle des règles signale une erreur.
 
-✅ Vérifié le 2026-11-26 : le dossier sort sans erreur, 88 pièces à poser en 37 lignes (une par référence : deux lignes de même référence sont refusées par le site), aucune pièce sans référence. La pile CR2032 n'est pas posée par l'atelier (son support l'est).
+✅ Vérifié le 2026-11-26 : le dossier sort sans erreur, 89 pièces à poser en 39 lignes depuis le 2026-11-27 (38 avant le passage de C20 au tantale) (une par référence : deux lignes de même référence sont refusées par le site), aucune pièce sans référence. La pile CR2032 n'est pas posée par l'atelier (son support l'est).
 ✅ Stock relevé au catalogue de JLCPCB le 2026-11-26 : toutes les références y sont, plus bas relevés : support de pile 2 052, DS3231SN 3 112, module ESP32 3 745. Environ la moitié des références sont des pièces « étendues » (frais de mise en place par référence).
 ⏳ Non vérifié : l'envoi réel des fichiers sur le site de JLCPCB.
 ✅ **Écran de pose de JLCPCB vu le 2026-11-26** (commande de l'utilisateur) : le premier fichier
@@ -592,8 +597,39 @@ de tour, et décalait toutes les pièces traversantes et le module ESP32. Corrig
 `scripts/jlcpcb_bom_cpl.py` (milieu des pastilles, table d'angles par boîtier), puis revu à
 l'écran. ⚠️ « Pose conforme » avait été écrit trop vite : le régulateur 5 V (U6) restait
 posé 3,1 mm trop à droite, vu ensuite par l'utilisateur et confirmé sur l'empreinte de JLCPCB
-(C86206) — corrigé, ⏳ pas encore revu à l'écran. ⏳ Non lu directement : la polarité du support de pile (déduite du
+(C86206) — corrigé, puis revu à l'écran le même jour : pattes sur leurs deux pastilles, corps dans son cadre. ⏳ Non lu directement : la polarité du support de pile (déduite du
 centrage de son corps ; une remarque a été jointe à la commande).
+⚠️ Même jour, en comparant l'empreinte de JLCPCB de chaque pièce à celle de KiCad
+(`scripts/verifier_pose_jlcpcb.py`) : la prise USB-C était posée 1,5 mm trop vers le bord,
+J9 était tourné d'un demi-tour (broche 1 sur la pastille 8), et le corps des borniers était
+excentré du côté opposé au dessin. Corrigé dans le fichier de pose, puis revu à l'écran :
+corps dans leurs cadres, prise USB-C au bord de la carte ; J12 vérifié par l'utilisateur en
+inclinant la vue 3D. ⏳ Non lu : de quel côté seront les vis des fiches des borniers.
+J'avais écrit « prise USB-C bien posée » d'après une capture : c'était faux.
+⚠️ **JP1 est un vrai cavalier depuis le 2026-11-26** (demande de l'utilisateur : la carte sert à
+comparer des alimentations, donc à changer de mode plusieurs fois). Avant, c'était un pont de
+cuivre à couper ; les mentions « pont » plus haut dans cette fiche datent de là.
+⛔ **La carte arrive ouverte : sans capuchon sur JP1, ni 5 V ni 3,3 V.** Le capuchon (cavalier
+2,54 mm) est à acheter à part. Toujours le retirer avant de brancher le 5 V externe.
+Contrôle des règles : 0 erreur, 0 liaison manquante, schéma et carte d'accord. ✅ Vu à
+l'écran de pose le même jour : deux broches côte à côte dans leur cadre, sous « JP1 ».
+L'inscription du bornier J8 est devenue « SONDE TEMPERATURE » (demande de l'utilisateur).
 ⚠️ **Étape humaine à la commande** : JLCPCB ne compte pas les angles comme KiCad pour certains
 boîtiers. Son écran de pose montre chaque pièce sur la carte : y vérifier le sens des diodes,
 des transistors, des circuits intégrés et du condensateur polarisé avant de valider.
+
+## Audit extérieur du 2026-11-27 (demandé par l'utilisateur) et retouche de C20
+
+Verdict de l'audit : rien de bloquant. Points déjà connus : retour du 5 V sur J12 quand JP1
+est fermé (consigne imprimée), échauffement du 7805 (1,75 W à 250 mA, à mesurer boîtier fermé).
+Deux points nouveaux :
+- **C20 était en céramique** en sortie de l'AMS1117, alors que sa fiche ne garantit la
+  stabilité qu'avec 22 µF au tantale — règle déjà appliquée sur la carte de mesure.
+  ✅ Corrigé le jour même (`outils/11_c20_tantale.py`) : même condensateur que C104 / C204,
+  même place, même sens, le + (pastille 1) au 3,3 V, côté bas de la carte. Contrôle des
+  règles : 0 erreur, 0 liaison manquante, schéma et carte d'accord. Le symbole du schéma
+  reste un condensateur non polarisé (broche 1 = +3V3 = pastille 1 = le +).
+  ⏳ Non vu à l'écran de pose : y vérifier que le « + » de C20 est du côté de la barre imprimée.
+- **Fiches interchangeables** : les cinq borniers 5,08 mm à 2 points sont identiques (12 V,
+  filtration, éclairage, auxiliaire, 5 V externe), de même les trois 3,81 mm (deux pompes,
+  détecteur de débit). Carte d'essai : étiqueter les fiches. ⏳ Version vendue : détrompeurs.

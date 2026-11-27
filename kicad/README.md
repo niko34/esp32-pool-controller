@@ -74,3 +74,5 @@ qui alterne entre deux niveaux.
 - [ADR-0012 — mapping GPIO du PCB v2](../docs/adr/0012-mapping-gpio-pcb-v2.md)
 - [ADR-0097 — Le filtre lisse, le dosage juge](../docs/adr/0097-le-filtre-lisse-le-dosage-juge.md) — ce que le logiciel fait du bruit, faute de pouvoir le supprimer
 - [feature-097 — Seuil de stabilité sur données terrain](../specs/features/done/feature-097-seuil-de-stabilite-sur-donnees-terrain.md) — la campagne qui **caractérise** le bruit (⛔ sans l'expliquer)
+
+Pour passer la commande : [étapes et options JLCPCB](COMMANDE-JLCPCB.md).

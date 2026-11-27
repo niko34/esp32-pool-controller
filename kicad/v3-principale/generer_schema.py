@@ -137,7 +137,7 @@ def cadre(x1, y1, x2, y2, titre):
 FP = {"R": "Resistor_SMD:R_0603_1608Metric", "C04": "Capacitor_SMD:C_0402_1005Metric", "C06": "Capacitor_SMD:C_0603_1608Metric",
       "C08": "Capacitor_SMD:C_0805_2012Metric", "C12": "Capacitor_SMD:C_1206_3216Metric",
       "SOT23": "Package_TO_SOT_SMD:SOT-23", "SO8": "Package_SO:SOIC-8_3.9x4.9mm_P1.27mm", "SMA": "Diode_SMD:D_SMA", "SMB": "Diode_SMD:D_SMB",
-      "SOD123": "Diode_SMD:D_SOD-123", "BORNIER": "Connector_Phoenix_MSTB:PhoenixContact_MSTBVA_2,5_2-G-5,08_1x02_P5.08mm_Vertical",
+      "CT": "Capacitor_Tantalum_SMD:CP_EIA-3528-21_Kemet-B", "SOD123": "Diode_SMD:D_SOD-123", "BORNIER": "Connector_Phoenix_MSTB:PhoenixContact_MSTBVA_2,5_2-G-5,08_1x02_P5.08mm_Vertical",
       "BORNIER3": "Connector_Phoenix_MSTB:PhoenixContact_MSTBVA_2,5_3-G-5,08_1x03_P5.08mm_Vertical",
       "PETIT2": "Connector_Phoenix_MC:PhoenixContact_MCV_1,5_2-G-3.81_1x02_P3.81mm_Vertical",
       "PETIT3": "Connector_Phoenix_MC:PhoenixContact_MCV_1,5_3-G-3.81_1x03_P3.81mm_Vertical",
@@ -147,7 +147,7 @@ FP = {"R": "Resistor_SMD:R_0603_1608Metric", "C04": "Capacitor_SMD:C_0402_1005Me
 LCSC_BORNIER, LCSC_BORNIER3 = "C505788", "C505789"
 LCSC_PETIT = {2: "C8396", 3: "C8389", 4: ""}
 PASSIF = {"100R": ("R", "C22775"), "470R": ("R", "C23179"), "1k": ("R", "C21190"), "4k7": ("R", "C23162"), "5k1": ("R", "C23186"), "10k": ("R", "C25804"),
-          "100n": ("C04", "C1525"), "1u": ("C06", "C15849"), "22p": ("C06", "C1653"), "10u": ("C08", "C15850"), "1u 50V": ("C08", "C28323"), "22u": ("C08", "C45783"), "10u 50V": ("C12", "C13585")}
+          "100n": ("C04", "C1525"), "1u": ("C06", "C15849"), "22p": ("C06", "C1653"), "10u": ("C08", "C15850"), "1u 50V": ("C08", "C28323"), "22u": ("C08", "C45783"), "22u tantale": ("CT", "C8020"), "10u 50V": ("C12", "C13585")}
 def R(val, x, y, haut, bas):
     fp, lcsc = PASSIF[val]; return comp(charge("Device", "R"), "R", val, x, y, {"1": haut, "2": bas}, FP[fp], lcsc)
 def C(val, x, y, haut, bas):
@@ -299,14 +299,14 @@ X, Y = g(154), g(150)
 cadre(X, Y, X + g(72), Y + g(60), "ALIMENTATIONS 5 V et 3,3 V")
 comp(charge("Regulator_Linear", "L7805"), "U", "L7805ABD2T", X + g(14), Y + g(18), {"1": "+12V", "2": "GND", "3": "5V_REG"}, "Package_TO_SOT_SMD:TO-263-2", "C86206", refpos=(-3.81, -6.35), valpos=(-3.81, -4.445))
 C("1u 50V", X + g(4), Y + g(22), "+12V", "GND"); C("10u", X + g(24), Y + g(22), "5V_REG", "GND"); C("100n", X + g(30), Y + g(22), "5V_REG", "GND")
-comp(charge("Jumper", "SolderJumper_2_Bridged"), "JP", "Pont 5 V", X + g(40), Y + g(18), {"1": "5V_REG", "2": "+5V"}, "Jumper:SolderJumper-2_P1.3mm_Bridged_RoundedPad1.0x1.5mm", refpos=(0, -5.08), valpos=(0, 3.81), just=None, bom=False)
+comp(charge("Jumper", "SolderJumper_2_Bridged"), "JP", "Cavalier 5 V", X + g(40), Y + g(18), {"1": "5V_REG", "2": "+5V"}, "Connector_PinHeader_2.54mm:PinHeader_1x02_P2.54mm_Vertical", "C124375", refpos=(0, -5.08), valpos=(0, 3.81), just=None)
 comp(charge("Regulator_Linear", "AMS1117-3.3"), "U", "AMS1117-3.3", X + g(56), Y + g(18), {"3": "+5V", "1": "GND", "2": "+3V3"}, "Package_TO_SOT_SMD:SOT-223-3_TabPin2", "C6186", refpos=(-3.81, -6.35), valpos=(-3.81, -4.445))
-C("10u", X + g(48), Y + g(26), "+5V", "GND"); C("22u", X + g(66), Y + g(22), "+3V3", "GND")
+C("10u", X + g(48), Y + g(26), "+5V", "GND"); C("22u tantale", X + g(66), Y + g(22), "+3V3", "GND")    # tantale : seule condition de stabilite de la fiche AMS1117 ; pastille 1 = le +
 comp(charge("Connector", "Screw_Terminal_01x02"), "J", "5 V externe", X + g(10), Y + g(44), {"1": "5V_EXT", "2": "GND"}, FP["BORNIER"], LCSC_BORNIER, refpos=(0, -5.08), valpos=(0, 6.35))
 comp(charge("Transistor_FET", "AO3401A"), "Q", "AO3401A", X + g(26), Y + g(44), {"1": "G_5VEXT", "3": "5V_EXT", "2": "+5V"}, FP["SOT23"], "C15127", refpos=(5.08, -1.27), valpos=(5.08, 1.27))
 R("10k", X + g(38), Y + g(44), "G_5VEXT", "GND")
 drapeau("+5V", X + g(48), Y + g(42))
-texte("Pont 5 V : ferme d'origine (fonctionnement normal sur le 12 V).\nPour alimenter la logique et la mesure par le bornier 5 V externe :\nCOUPER le pont d'abord, et debrancher le 12 V pour un essai de bruit.\n"
+texte("Cavalier JP1 : capuchon en place = fonctionnement normal sur le 12 V.\nPour alimenter la logique et la mesure par le bornier 5 V externe :\nRETIRER le capuchon d'abord, et debrancher le 12 V pour un essai de bruit.\n"
       "Le transistor protege d'un 5 V externe branche a l'envers.\nRegulateur 5 V lineaire : 1,2 W de chaleur, a evacuer par le cuivre de la carte.", X + g(2), Y + g(59), 1.1)
 
 lib_symbols = "\n".join(SYMS.values())

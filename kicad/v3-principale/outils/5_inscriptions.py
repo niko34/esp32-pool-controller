@@ -5,11 +5,11 @@ def txt(s, x, y, h=1.0, ang=0):
     t = pcbnew.PCB_TEXT(b); t.SetText(s); t.SetLayer(pcbnew.F_SilkS); t.SetPosition(pcbnew.VECTOR2I(mm(OX+x), mm(OY+y)))
     t.SetTextSize(pcbnew.VECTOR2I(mm(h), mm(h))); t.SetTextThickness(mm(h*0.15)); t.SetTextAngleDegrees(ang); b.Add(t)
 # colonne de gauche : nom écrit de bas en haut, entre la prise et ses composants
-for nom, y in (("12V", 14.5), ("FILTRATION", 28), ("ECLAIRAGE", 41.5), ("AUXILIAIRE", 55), ("SONDE EAU", 71), ("DEBIT", 86)): txt(nom, 13.85, y, 1.0, 90)
+for nom, y in (("12V", 14.5), ("FILTRATION", 28), ("ECLAIRAGE", 41.5), ("AUXILIAIRE", 55), ("SONDE TEMPERATURE", 71), ("DEBIT", 86)): txt(nom, 13.85, y, 1.0, 90)
 for y in (12, 25.5, 39, 52.5): txt("+", 1.6, y, 1.0)        # broche 1 = le + (12 V)
 txt("POMPE pH", 67.9, 12.6, 1.0); txt("POMPE Cl", 80.4, 12.6, 1.0)
 txt("+", 64.4, 2.0, 1.0); txt("+", 76.4, 2.0, 1.0)
-txt("5V EXT", 46.5, 79.6, 1.0); txt("couper JP1 d'abord", 48.5, 92.2, 1.0); txt("JP1", 58, 37.4, 1.0)
+txt("5V EXT", 46.5, 79.6, 1.0); txt("retirer JP1 d'abord", 48.5, 92.2, 1.0); txt("JP1", 58, 37.4, 1.0)
 txt("MESURE", 71.6, 90.2, 1.0)
 b.FindFootprintByReference("J9").Reference().SetVisible(False); txt("RESET", 106.3, 60.6, 1.0); txt("BOOT", 106.6, 75.6, 1.0); txt("USINE", 106.3, 84.4, 1.0)
 txt("Pool Controller - carte principale v3 rev 0.1", 34, 98.6, 1.0)
