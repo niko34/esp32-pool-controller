@@ -42,7 +42,8 @@ exactement le volume inscrit dans le rapport de l'archive d'origine.
 ## Ce boîtier et le PCB v3
 
 Le V14 est dessiné pour la carte v2. **Le V15 (`v15/`) est son adaptation au PCB v3**, faite
-le 2026-11-26 : 20 mm de hauteur et 20 mm de profondeur en plus (210 × 195 × 114), carte principale de
+le 2026-11-26 : 20 mm de hauteur et 29 mm de profondeur en plus (210 × 195 × 123), pompes AliExpress
+de l'utilisateur à la place de la Dosita MP1 (2026-11-28), carte principale de
 119 × 100 mm et carte de mesure séparée. Le dessin général et la position des pompes ne
 changent pas. Le contrôle intégré du script rend `pass: true` ; ⚠️ rien n'est imprimé.
 Voir [`v15/README.md`](v15/README.md).

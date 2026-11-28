@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""PoolController V15 Dosita MP1 - PCB v3 : carte principale 119 x 100 et carte de mesure 73 x 54.
+"""PoolController V15 pompes AliExpress 12V-S10B - PCB v3 : carte principale 119 x 100 et carte de mesure 73 x 54.
 
 Derive du V14 le 2026-11-26 : +20 mm de hauteur, +10 mm de profondeur, deux cartes
 au lieu d'une. Le dessin general et la position des pompes ne changent pas.
@@ -8,7 +8,7 @@ Toutes les dimensions sont en millimetres. Le script est autonome et doit etre
 execute avec FreeCADCmd. Les volumes de couleur sont exportes avec la meme
 origine afin de former des objets multi-materiaux dans le trancheur.
 
-Les composants achetes (PCB, RPS-30-12, Dosita MP1, BNC et PG7) sont uniquement des
+Les composants achetes (PCB, RPS-30-12, pompes AliExpress 12V-S10B, BNC et PG7) sont uniquement des
 references de controle dans l'assemblage et ne sont jamais exportes en STL.
 """
 
@@ -37,11 +37,12 @@ for directory in (FC_DIR, STL_DIR, STEP_DIR, REPORT_DIR):
 
 BOX_W = 210.0
 BOX_H = 195.0   # V15 : +20 (V14 : 175)
-# V15 : 114 (V14 : 94). +10 pour eloigner l'arriere des pompes des cartes, puis +10 pour
+# V15 : 123 (V14 : 94). +9 le 2026-11-27 : 10 mm libres entre les cosses de la pompe de
+# gauche et le capot de l'alimentation (voir PUMP_FREE_SPACE_MIN). Avant : 114, soit +10 pour eloigner l'arriere des pompes des cartes, puis +10 pour
 # loger sous la pompe de gauche un transformateur de 48 mm (feature-218, 2026-11-26).
 # Les cotes qui suivent la facade sont DERIVEES de BODY_D : une cloison oubliee a 70 mm
 # a deja laisse 12,8 mm d'ouverture lors du premier agrandissement.
-BODY_D = 114.0
+BODY_D = 123.0
 WALL = 3.0
 REAR = 3.2
 TOP_CHAMFER = 10.0
@@ -139,17 +140,30 @@ ACCENT_JOIN_OVERLAP = 0.05
 ACCENT_VISIBLE_Z = COVER_D - ACCENT_VISIBLE_T
 ACCENT_ANCHOR_Z = COVER_D - ACCENT_TOTAL_DEPTH
 
-# Interface Dosita MP1 nominale conservee depuis le modele MP1 precedent.
-# Montage et dimensions a confirmer sur les pompes reelles, non mesures utilisateur.
-PUMP_MOTOR_D = 25.5
-PUMP_MOTOR_CUTOUT_D = 27.5
-PUMP_MOUNT_DX = 38.0
-PUMP_MOUNT_DY = 26.0
-PUMP_SCREW_NOMINAL_D = 4.0  # Reservation M4 seulement ; vis reelle MP1 a confirmer.
-PUMP_SCREW_CLEAR_D = 4.5
-PUMP_MOTOR_REAR_D = 44.9
-PUMP_REAR_D = 44.9
+# Pompes de l'utilisateur (AliExpress 12V-S10B, nomenclature de la carte v2), decision du
+# 2026-11-27. Cotes MESUREES par l'utilisateur (v14/REFERENCES.md) : moteur 28,9 ; 38,4
+# derriere la bride, 43,6 avec les bornes ; deux vis M3 a 48,2 d'entraxe, a la hauteur du
+# moteur. La variante Dosita MP1 est abandonnee : ses cotes n'avaient jamais ete mesurees,
+# et sa version 12 V est plus longue que le plan du fabricant (voir README).
+PUMP_MOTOR_D = 28.9
+PUMP_MOTOR_CUTOUT_D = 29.5
+PUMP_MOUNT_DX = 48.2
+PUMP_MOUNT_DY = 0.0
+PUMP_SCREW_NOMINAL_D = 3.0
+PUMP_SCREW_CLEAR_D = 3.4
+PUMP_SCREW_WASHER_D = 7.0
+PUMP_MOTOR_REAR_D = 38.4
+PUMP_REAR_D = 43.6
 PUMP_TERMINAL_DEPTH = PUMP_REAR_D - PUMP_MOTOR_REAR_D
+# Cosse femelle branchee sur chaque borne : ce qu'elle depasse AU-DELA de la borne.
+# HYPOTHESE, non mesuree : cosse a drapeau (fil sortant de cote), 5 mm. Une cosse droite
+# demanderait environ 24 mm (cosse + courbure du fil) : changer cette valeur et BODY_D.
+PUMP_CONNECTOR_D = 5.0
+# Consigne de l'utilisateur (2026-11-27) : 10 mm libres derriere la pompe, cosses branchees.
+PUMP_FREE_SPACE_MIN = 10.0
+PUMP_BUSY_D = PUMP_REAR_D + PUMP_CONNECTOR_D   # profondeur occupee derriere le plan de pose
+# Trous de l'ancienne variante MP1 : doivent etre absents du capot (controle).
+OLD_MP1_HOLES = ((-19.0, 26.0), (19.0, 26.0))
 # Enveloppe axiale de reservation, pas dessin des bornes. Leur encombrement
 # radial reel et les cosses/fils branches restent a mesurer sur le prototype.
 PUMP_TERMINAL_ENVELOPE_D = PUMP_MOTOR_D
@@ -1087,6 +1101,12 @@ def build_cover_graphite_skin():
             cy - (PUMP_PAD_H + PUMP_PAD_CLEARANCE) / 2.0,
             RIBBON_Z - 0.3)
         skin = skin.cut(opening)
+        # Les deux vis M3 sont a 24,1 mm de l'axe : leur trou mord sur le bord de l'ilot,
+        # donc aussi sur le ruban. On le perce ici, sinon le ruban le rebouche.
+        for dx in (-PUMP_MOUNT_DX / 2.0, PUMP_MOUNT_DX / 2.0):
+            skin = skin.cut(Part.makeCylinder(
+                PUMP_SCREW_CLEAR_D / 2.0, RIBBON_SKIN_T + 0.6,
+                vec(cx + dx, cy + PUMP_MOUNT_DY, RIBBON_Z - 0.3)))
     return skin.removeSplitter()
 
 
@@ -1404,26 +1424,27 @@ def build_pump_terminal_envelope(cx, cy, mount_z):
 
 
 def build_pump_fastener_envelope(cx, cy, mount_z):
-    """Reservation M4 provisoire : la visserie de la MP1 reste a mesurer."""
+    """Vis M3 introduites depuis l'interieur : rondelle 7 x 0,5, tete 5,5 x 3, tige 3."""
     shapes = []
     inner_z = COVER_ASSEMBLY_Z + COVER_FRONT_START
     for dx in (-PUMP_MOUNT_DX/2, PUMP_MOUNT_DX/2):
         x, y = cx+dx, cy+PUMP_MOUNT_DY
-        shapes.append(Part.makeCylinder(4.5, 1.0, vec(x,y,inner_z-1.0)))
-        shapes.append(Part.makeCylinder(4.0, 3.2, vec(x,y,inner_z-4.2)))
-        shapes.append(Part.makeCylinder(2.0, mount_z+4-inner_z+4.2,
-            vec(x,y,inner_z-4.2)))
+        shapes.append(Part.makeCylinder(PUMP_SCREW_WASHER_D/2, 0.5, vec(x,y,inner_z-0.5)))
+        shapes.append(Part.makeCylinder(2.75, 3.0, vec(x,y,inner_z-3.5)))
+        shapes.append(Part.makeCylinder(PUMP_SCREW_NOMINAL_D/2, mount_z+4-inner_z+3.5,
+            vec(x,y,inner_z-3.5)))
     return Part.makeCompound(shapes)
 
 
 def build_pump_reference(cx, cy, mount_z):
-    """Reference Dosita MP1 conservee depuis V12 ; raccords orientés vers le bas."""
-    rear=Part.makeBox(47.6,58.0,8.0,vec(cx-23.8,cy-29,mount_z-8))
+    """Pompe AliExpress de l'utilisateur. Derriere le plan de pose : moteur, bornes, puis la
+    reserve des cosses branchees (tout le diametre du moteur : leur place exacte n'est pas
+    mesuree). Devant : tete approximative, seulement visuelle ; raccords vers le bas."""
     motor = Part.makeCylinder(
-        PUMP_MOTOR_D / 2.0, PUMP_MOTOR_REAR_D,
+        PUMP_MOTOR_D / 2.0, PUMP_BUSY_D,
         vec(cx, cy, mount_z), vec(0, 0, -1))
     front=Part.makeBox(PUMP_TOTAL_W,62.0,PUMP_FRONT_D,vec(cx-PUMP_TOTAL_W/2,cy-22,mount_z))
-    shapes=[rear,motor,front]
+    shapes=[motor,front]
     for dx in (-15.0,15.0):
         shapes.append(Part.makeCylinder(6,24,vec(cx+dx,cy-22,mount_z+PUMP_FRONT_D/2),vec(0,-1,0)))
         shapes.append(Part.makeCylinder(3.2,82,vec(cx+dx,cy-46,mount_z+PUMP_FRONT_D/2),vec(0,-1,0)))
@@ -1435,7 +1456,7 @@ def build_gasket_reference():
     return build_spatial_groove()
 
 def build_assembly(parts):
-    doc = App.newDocument("PoolControllerV15MP1_Assembly")
+    doc = App.newDocument("PoolControllerV15_Assembly")
     parameter_object(doc, [
         ("Width", "Largeur hors tout", BOX_W),
         ("Height", "Hauteur hors tout", BOX_H),
@@ -1443,11 +1464,11 @@ def build_assembly(parts):
         ("OverallPumpDepth", "Profondeur avec pompes",
          BODY_D + PUMP_FRONT_D),
         ("PumpRearClearance", "Jeu moteur / PCB", pump_rear_clearance()),
-        ("PumpMotorRearDepth", "Profondeur moteur MP1 nominale", PUMP_MOTOR_REAR_D),
-        ("PumpRearDepthWithTerminals", "Profondeur arriere MP1 nominale", PUMP_REAR_D),
-        ("PumpMotorDiameter", "Diametre moteur MP1 nominal", PUMP_MOTOR_D),
-        ("PumpMountSpacing", "Entraxe horizontal MP1 nominal", PUMP_MOUNT_DX),
-        ("PumpScrewClearance", "Passage M4 provisoire a qualifier", PUMP_SCREW_CLEAR_D),
+        ("PumpMotorRearDepth", "Profondeur moteur mesuree", PUMP_MOTOR_REAR_D),
+        ("PumpRearDepthWithTerminals", "Profondeur arriere mesuree", PUMP_REAR_D),
+        ("PumpMotorDiameter", "Diametre moteur mesure", PUMP_MOTOR_D),
+        ("PumpMountSpacing", "Entraxe horizontal mesure", PUMP_MOUNT_DX),
+        ("PumpScrewClearance", "Passage M3", PUMP_SCREW_CLEAR_D),
         ("SideGuideLength", "Longueur de chaque guide lateral",
          SIDE_GUIDE_H),
         ("CompressionLipWidth", "Largeur levre de compression",
@@ -1548,11 +1569,11 @@ def build_assembly(parts):
 
     for index, (cx, cy) in enumerate(PUMP_CENTRES, 1):
         add_feature(doc, f"PUMP_{index}",
-                    f"REFERENCE - Pompe Dosita MP1 {index}",
+                    f"REFERENCE - Pompe pompes AliExpress 12V-S10B {index}",
                     build_pump_reference(cx, cy, BODY_D),
                     (0.10, 0.35, 0.85), 12)
         add_feature(doc, f"PumpM4Fasteners_{index}",
-                    "REFERENCE - Enveloppes M4 provisoires, visserie MP1 a confirmer",
+                    "REFERENCE - Vis M3 des pompes",
                     build_pump_fastener_envelope(cx,cy,BODY_D),(.55,.55,.55),20)
 
     for index, x in enumerate(BNC_X, 1):
@@ -1576,15 +1597,15 @@ def build_assembly(parts):
                 (.15,.15,.15), 35)
 
     doc.recompute()
-    path = FC_DIR / "PoolControllerV15MP1_Assembly.FCStd"
+    path = FC_DIR / "PoolControllerV15_Assembly.FCStd"
     doc.saveAs(str(path))
     backup = Path(str(path) + "1")
     if backup.exists():
         backup.unlink()
     App.closeDocument(doc.Name)
-    for auto_backup in FC_DIR.glob("PoolControllerV15MP1_Assembly*.FCBak"):
+    for auto_backup in FC_DIR.glob("PoolControllerV15_Assembly*.FCBak"):
         auto_backup.unlink()
-    print(f"PoolControllerV15MP1_Assembly: {path}")
+    print(f"PoolControllerV15_Assembly: {path}")
 
 
 # ---------------------------------------------------------------------------
@@ -1696,7 +1717,7 @@ def alt_psu_checks(parts):
         top=Part.makeCylinder(PSU_POST_OD/2-.3,.2,vec(x,y,z-.2)).cut(Part.makeCylinder(PSU_HOLE_D/2+.1,.4,vec(x,y,z-.3)))
         seats.append({'x_mm':x,'y_mm':y,'seat_missing_mm3':top.Volume-top.common(plate).Volume,
                       'under_board':ALT_PSU_X<=x<=ALT_PSU_X+ALT_PSU_W and ALT_PSU_Y<=y<=ALT_PSU_Y+ALT_PSU_H})
-    pump_rear_z=BODY_D-PUMP_REAR_D
+    pump_rear_z=BODY_D-PUMP_BUSY_D      # cosses branchees comprises
     out={'board_mm':[ALT_PSU_W,ALT_PSU_H],'position_xy_mm':[ALT_PSU_X,ALT_PSU_Y],
          'component_height_mm':ALT_PSU_COMPONENT_H,'seats':seats,
          'board_plate_collision_mm3':board.common(plate).Volume,
@@ -1709,7 +1730,7 @@ def alt_psu_checks(parts):
     out['pass']=(all(abs(r['seat_missing_mm3'])<=.01 and r['under_board'] for r in seats)
         and out['board_plate_collision_mm3']<=.01 and out['board_guard_collision_mm3']<=.01
         and out['components_guard_collision_mm3']<=.01 and out['components_to_guard_mm']>=1-1e-6
-        and out['guard_to_pump_rear_mm']>=3.0 and out['rps_fits_too_mm3']<=.01)
+        and out['guard_to_pump_rear_mm']>=PUMP_FREE_SPACE_MIN-1e-6 and out['rps_fits_too_mm3']<=.01)
     return out
 
 
@@ -1728,7 +1749,7 @@ def placed_psu_guard(guard_shape):
     return guard
 
 def pump_rear_clearance():
-    pump_rear_z = BODY_D - PUMP_REAR_D
+    pump_rear_z = BODY_D - PUMP_BUSY_D      # cosses branchees comprises
     pcb_front_z = REAR + PCB_STANDOFF_H + PCB_T + PCB_COMPONENT_ENVELOPE
     return pump_rear_z - pcb_front_z
 
@@ -1859,14 +1880,14 @@ def pump_interface_checks(parts):
             bore = Part.makeCylinder(PUMP_SCREW_CLEAR_D/2-.05,FRONT_CORE_T+.2,
                 vec(cx+dx,cy+PUMP_MOUNT_DY,inner_z-.1))
             screw_blockages.append(bore.common(cap).Volume)
-            ring = Part.makeCylinder(4.5,.2,vec(cx+dx,cy+PUMP_MOUNT_DY,inner_z+.05)).cut(
+            ring = Part.makeCylinder(PUMP_SCREW_WASHER_D/2,.2,vec(cx+dx,cy+PUMP_MOUNT_DY,inner_z+.05)).cut(
                 Part.makeCylinder(PUMP_SCREW_CLEAR_D/2+.05,.2,vec(cx+dx,cy+PUMP_MOUNT_DY,inner_z+.05)))
             bearing_missing.append(ring.Volume-ring.common(cap).Volume)
-        for dx in (-24.1,24.1):
-            restored.append(cap.isInside(vec(cx+dx,cy,inner_z+1),1e-5,False))
+        for dx,dy in OLD_MP1_HOLES:
+            restored.append(cap.isInside(vec(cx+dx,cy+dy,inner_z+1),1e-5,False))
         rows.append({'centre_xy_mm':[cx,cy], 'motor_blockage_mm3':motor.common(cap).Volume,
             'pump_bore_blockages_mm3':screw_blockages,'washer_bearing_missing_mm3':bearing_missing,
-            'aliexpress_holes_absent':restored,
+            'old_mp1_holes_absent':restored,
             'pass':motor.common(cap).Volume<=.01 and max(screw_blockages)<=.01
                 and max(bearing_missing)<=.01 and all(restored)})
     # Coupon controle separe : meme empreinte, ancien decalage vertical absent.
@@ -1879,9 +1900,9 @@ def pump_interface_checks(parts):
         'motor_rear_depth_mm':PUMP_MOTOR_REAR_D,'rear_depth_with_terminals_mm':PUMP_REAR_D,
         'terminal_extra_depth_mm':PUMP_TERMINAL_DEPTH,'terminal_envelope_d_mm':PUMP_TERMINAL_ENVELOPE_D,
         'mount_spacing_mm':PUMP_MOUNT_DX,'mount_vertical_offset_mm':PUMP_MOUNT_DY,
-        'screw_thread':'M4 provisional envelope, actual pump screws unmeasured','screw_clearance_d_mm':PUMP_SCREW_CLEAR_D,
+        'screw_thread':'M3, mesure utilisateur','connector_reserve_mm':PUMP_CONNECTOR_D,'busy_depth_mm':PUMP_BUSY_D,'free_space_min_mm':PUMP_FREE_SPACE_MIN,'screw_clearance_d_mm':PUMP_SCREW_CLEAR_D,
         'pad_width_mm':PUMP_PAD_W,'checks':rows,'coupon_blockages_mm3':coupon_blockages,
-        'scope':'profondeurs mesurees, reservation bornes coaxiale; radial bornes/cosses/fils et bride visuelle a qualifier',
+        'scope':'moteur, bornes et entraxe mesures par l utilisateur ; reserve des cosses = hypothese (cosse a drapeau) ; place radiale des bornes et tete non mesurees',
         'pass':all(r['pass'] for r in rows) and max(coupon_blockages)<=.01}
 
 
@@ -2099,7 +2120,7 @@ def write_validation_report(part_reports, parts):
                parts["cover_core"].common(parts["turquoise_inlay"]).Volume,
                parts["backplate_core"].common(parts["technical_skin"]).Volume]
     report = {
-        "revision":"V15 Dosita MP1 - PCB v3 (principale 119x100 + mesure 73x54); corps %gx%gx%g" % (BOX_W,BOX_H,BODY_D),
+        "revision":"V15 pompes AliExpress 12V-S10B - PCB v3 (principale 119x100 + mesure 73x54); corps %gx%gx%g" % (BOX_W,BOX_H,BODY_D),
         "units":"mm",
         "parts":part_reports,
         "pump_interface":pump_interface_checks(parts),
@@ -2245,7 +2266,7 @@ def write_validation_report(part_reports, parts):
             "pump_to_pcb_components_mm":pump_rear_clearance(),
             "pcb_to_psu_lateral_gap_mm":PCB_X-(PSU_X+PSU_W),
             "pass":cap.distToShape(components)[0]>=1 and cap.distToShape(guard)[0]>=1
-                and pump_rear_clearance()>=1
+                and pump_rear_clearance()>=PUMP_FREE_SPACE_MIN
                 and PCB_SERVICE_BAY_W>=PCB_LEFT_CONNECTOR_CLEARANCE_MIN
                 and build_pcb_service_bay().common(components).Volume<=.01
                 and build_pcb_service_bay().common(guard).Volume<=.01},
@@ -2330,7 +2351,7 @@ def main():
 
     reports = []
     reports.append(save_part(
-        "PoolControllerV15MP1_WallBackplateLightCore", "WallBackplateLightCore",
+        "PoolControllerV15_WallBackplateLightCore", "WallBackplateLightCore",
         "Platine murale - noyau ASA clair", parts["backplate_core"],
         (0.82, 0.80, 0.74), [
             ("Width", "Largeur", BOX_W),
@@ -2358,7 +2379,7 @@ def main():
             ("MaterialCode", "ASA standard clair", 1.0),
         ]))
     reports.append(save_part(
-        "PoolControllerV15MP1_WallBackplateTechnicalSkin",
+        "PoolControllerV15_WallBackplateTechnicalSkin",
         "WallBackplateTechnicalSkin",
         "Platine murale - peau technique noire", parts["technical_skin"],
         (0.07, 0.08, 0.09), [
@@ -2368,7 +2389,7 @@ def main():
             ("MaterialCode", "ASA noir standard", 2.0),
         ]))
     reports.append(save_part(
-        "PoolControllerV15MP1_CoverLightCore", "CoverLightCore",
+        "PoolControllerV15_CoverLightCore", "CoverLightCore",
         "Capot cloche - noyau ASA clair", parts["cover_core"],
         (0.91, 0.89, 0.83), [
             ("Width", "Largeur", BOX_W),
@@ -2394,7 +2415,7 @@ def main():
             ("MaterialCode", "ASA standard clair", 1.0),
         ]))
     reports.append(save_part(
-        "PoolControllerV15MP1_CoverGraphiteSkin", "CoverGraphiteSkin",
+        "PoolControllerV15_CoverGraphiteSkin", "CoverGraphiteSkin",
         "Capot - ruban graphite ASA-CF", parts["graphite_skin"],
         (0.09, 0.10, 0.11), [
             ("Width", "Largeur", RIBBON_W),
@@ -2404,7 +2425,7 @@ def main():
             ("MaterialCode", "ASA-CF graphite", 3.0),
         ]))
     reports.append(save_part(
-        "PoolControllerV15MP1_CoverTurquoiseInlay", "CoverTurquoiseInlay",
+        "PoolControllerV15_CoverTurquoiseInlay", "CoverTurquoiseInlay",
         "Capot - signature turquoise", parts["turquoise_inlay"],
         (0.04, 0.62, 0.66), [
             ("Width", "Longueur", ACCENT_W),
@@ -2416,7 +2437,7 @@ def main():
             ("MaterialCode", "ABS turquoise", 4.0),
         ]))
     reports.append(save_part(
-        "PoolControllerV15MP1_CoverMonoblocReference", "CoverMonoblocReference",
+        "PoolControllerV15_CoverMonoblocReference", "CoverMonoblocReference",
         "REFERENCE - capot monobloc uni", parts["cover_monobloc"],
         (0.80, 0.80, 0.80), [
             ("Width", "Largeur", BOX_W),
@@ -2425,7 +2446,7 @@ def main():
             ("MaterialCode", "Reference geometrique", 9.0),
         ], export_mesh=False))
     reports.append(save_part(
-        "PoolControllerV15MP1_WallBackplateMonoblocReference",
+        "PoolControllerV15_WallBackplateMonoblocReference",
         "WallBackplateMonoblocReference",
         "REFERENCE - platine monobloc unie", parts["backplate_monobloc"],
         (0.80, 0.80, 0.80), [
@@ -2435,7 +2456,7 @@ def main():
             ("MaterialCode", "Reference geometrique", 9.0),
         ], export_mesh=False))
     reports.append(save_part(
-        "PoolControllerV15MP1_PSUGuard", "PSUGuard",
+        "PoolControllerV15_PSUGuard", "PSUGuard",
         "Capot de securite RPS-30-12", parts["psu_guard"],
         (0.90, 0.52, 0.13), [
             ("Width", "Largeur", GUARD_W),
@@ -2446,17 +2467,17 @@ def main():
             ("MaterialCode", "ASA standard", 1.0),
         ]))
     reports.append(save_part(
-        "PoolControllerV15MP1_MP1FitCoupon", "MP1FitCoupon",
-        "Coupon interface pompe Dosita MP1", parts["pump_coupon"],
+        "PoolControllerV15_PumpFitCoupon", "PumpFitCoupon",
+        "Coupon interface pompe pompes AliExpress 12V-S10B", parts["pump_coupon"],
         (0.55, 0.55, 0.55), [
             ("Thickness", "Epaisseur", FRONT_CORE_T),
             ("MotorCutout", "Passage moteur", PUMP_MOTOR_CUTOUT_D),
             ("MountSpacing", "Entraxe", PUMP_MOUNT_DX),
-            ("HoleDiameter", "Passage M4 provisoire a qualifier", PUMP_SCREW_CLEAR_D),
+            ("HoleDiameter", "Passage M3", PUMP_SCREW_CLEAR_D),
             ("MaterialCode", "PLA de controle ou ASA", 8.0),
         ]))
     reports.append(save_part(
-        "PoolControllerV15MP1_ConnectorFitCoupon", "ConnectorFitCoupon",
+        "PoolControllerV15_ConnectorFitCoupon", "ConnectorFitCoupon",
         "Coupon PG7 et BNC en D", parts["connector_coupon"],
         (0.55, 0.55, 0.55), [
             ("Thickness", "Epaisseur", TECH_TOTAL_T),
@@ -2466,7 +2487,7 @@ def main():
             ("MaterialCode", "PLA de controle ou ASA", 8.0),
         ]))
     reports.append(save_part(
-        "PoolControllerV15MP1_M4InsertFitCoupon", "M4InsertFitCoupon",
+        "PoolControllerV15_M4InsertFitCoupon", "M4InsertFitCoupon",
         "Coupon inserts M4 5.4 / 5.6 / 5.8", parts["m4_coupon"],
         (0.55, 0.55, 0.55), [
             ("Thickness", "Epaisseur", 8.0),
@@ -2475,7 +2496,7 @@ def main():
             ("MaterialCode", "Materiau final", 8.0),
         ]))
     reports.append(save_part(
-        "PoolControllerV15MP1_GasketFitCoupon", "GasketFitCoupon",
+        "PoolControllerV15_GasketFitCoupon", "GasketFitCoupon",
         "Coupon gorge cordon EPDM", parts["gasket_coupon"],
         (0.55, 0.55, 0.55), [
             ("Cord", "Diametre cordon", GASKET_CORD_D),
@@ -2484,7 +2505,7 @@ def main():
             ("MaterialCode", "Materiau final", 8.0),
         ]))
     reports.append(save_part(
-        "PoolControllerV15MP1_WallAccessFitCoupon", "WallAccessFitCoupon",
+        "PoolControllerV15_WallAccessFitCoupon", "WallAccessFitCoupon",
         "Coupon fixation murale sous PCB", parts["wall_access_coupon"],
         (0.55,0.55,0.55), [
             ("HeadMaxDiameter", "Diametre maxi tete", WALL_ACCESS_HEAD_MAX_D),
@@ -2496,7 +2517,7 @@ def main():
         ]))
 
     reports.append(save_part(
-        "PoolControllerV15MP1_MeasureBoardFitCoupon", "MeasureBoardFitCoupon",
+        "PoolControllerV15_MeasureBoardFitCoupon", "MeasureBoardFitCoupon",
         "Coupon carte de mesure : quatre plots et les deux percages BNC",parts["measure_board_coupon"],
         (.55,.55,.55),[
             ("OriginalXOffset", "Decalage X de l'extrait",MEAS_X-5.0),
@@ -2505,7 +2526,7 @@ def main():
             ("StandoffH", "Hauteur des plots",PCB_STANDOFF_H),
         ]))
     reports.append(save_part(
-        "PoolControllerV15MP1_LeftWallAccessFitCoupon", "LeftWallAccessFitCoupon",
+        "PoolControllerV15_LeftWallAccessFitCoupon", "LeftWallAccessFitCoupon",
         "Coupon fixation gauche, cloison et trois PG7",parts["left_wall_access_coupon"],
         (.55,.55,.55),[
             ("OriginalXOffset", "Decalage X de l'extrait",10.0),
@@ -2516,7 +2537,7 @@ def main():
             ("MaterialCode", "Materiau final",8.0),
         ]))
     reports.append(save_part(
-        "PoolControllerV15MP1_PCBFitCoupon", "PCBFitCoupon",
+        "PoolControllerV15_PCBFitCoupon", "PCBFitCoupon",
         "Gabarit PCB 119.38 / entraxe 104.14", parts['pcb_coupon'], (.15,.55,.25), [
             ("PCBWidth", "Largeur PCB", PCB_W),
             ("PCBHeight", "Hauteur PCB", PCB_H),
