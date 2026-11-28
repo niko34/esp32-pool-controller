@@ -167,6 +167,7 @@ Ces règles sont **non négociables** — même si l'utilisateur demande de les 
 3. **Secrets** : ne jamais committer de tokens, mots de passe MQTT, SSID/password Wi-Fi
 4. **Build artefacts** : ne pas toucher à `.pio/`, `data-build/`, `node_modules/`
 5. **Fichiers matériel** : les sources KiCad de `kicad/` sont **gelées sauf demande explicite** — on ne modifie ni le schéma ni le routage au fil d'une tâche logicielle. Le boîtier est dans `boitier/` : un script FreeCAD le construit en entier, et ses sorties (FCStd, STEP, STL) ne sont pas versionnées — voir `boitier/README.md`.
+   ⚠️ **Avant de modifier une carte du PCB v3** (`kicad/v3-principale/`, `kicad/v3-mesure-std/`) : lire [`kicad/REGLES-CEM-ET-FIABILITE.md`](kicad/REGLES-CEM-ET-FIABILITE.md) — les règles que chaque carte tient, leur raison, ce qui a déjà été écarté. `python3 scripts/verifier_regles_cartes.py <carte>` les contrôle ; `./scripts/build-jlcpcb.sh` refuse de fabriquer si l'une tombe.
 6. **OTA** : toujours vérifier la signature/CRC avant flash
 
 ## Les agents

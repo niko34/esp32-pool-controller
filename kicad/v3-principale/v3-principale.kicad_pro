@@ -339,6 +339,14 @@
       {
         "netclass": "ALIM",
         "pattern": "GND"
+      },
+      {
+        "netclass": "PUISSANCE",
+        "pattern": "/V_POMPES"
+      },
+      {
+        "netclass": "ALIM",
+        "pattern": "/V_SONDE"
       }
     ]
   },

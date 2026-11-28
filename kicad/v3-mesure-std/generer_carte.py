@@ -57,7 +57,7 @@ def squelette():
     return '''(kicad_pcb (version 20241229) (generator "pcbnew") (generator_version "9.0")
 (general (thickness 1.6) (legacy_teardrops no))
 (paper "A4")
-(title_block (title "Carte de mesure v3 a composants courants - pH et ORP") (date "2026-11-25") (rev "0.1") (company "ESP32 Pool Controller") (comment 1 "Ecrite par generer_carte.py - voir kicad/v3-mesure-std/README.md"))
+(title_block (title "Carte de mesure v3 a composants courants - pH et ORP") (date "2026-11-28") (rev "0.3") (company "ESP32 Pool Controller") (comment 1 "Ecrite par generer_carte.py - voir kicad/v3-mesure-std/README.md"))
 (layers %s)
 (setup (pad_to_mask_clearance 0) (allow_soldermask_bridges_in_footprints no))
 (net 0 "")
@@ -141,6 +141,13 @@ def plan(nom, layer, pts, prio=0, jeu=0.3, plein=False):
     z.SetIslandRemovalMode(pcbnew.ISLAND_REMOVAL_MODE_ALWAYS)
     board.Add(z)
 def R4(x1, y1, x2, y2): return [(x1, y1), (x2, y1), (x2, y2), (x1, y2)]
+def sans_vernis(layer, pts, w):
+    """Trait sur la couche de vernis : l'atelier ne dépose PAS de vernis à cet endroit, le cuivre y reste apparent (doré)."""
+    for p1, p2 in zip(pts, pts[1:]):
+        g = pcbnew.PCB_SHAPE(board); g.SetShape(pcbnew.SHAPE_T_SEGMENT); g.SetStart(V(*p1)); g.SetEnd(V(*p2)); g.SetLayer(layer); g.SetWidth(mm(w)); board.Add(g)
+def couronne(layer, x, y, rayon, w):
+    """Cercle au trait épais sur la couche de vernis : une couronne sans vernis."""
+    g = pcbnew.PCB_SHAPE(board); g.SetShape(pcbnew.SHAPE_T_CIRCLE); g.SetCenter(V(x, y)); g.SetEnd(V(x + rayon, y)); g.SetLayer(layer); g.SetWidth(mm(w)); board.Add(g)
 
 NOMS = set(PIN.values())
 def voie(n, sfx, dx):
@@ -211,26 +218,63 @@ def voie(n, sfx, dx):
     if PH: T("GNDISO", [(ab(1), 30.2), (ab(1), 29.1), (21.6, 28.6), (ab(3), 28.6)])
     else:  T("VISO", [(ab(1), 30.2), (ab(1), 31.6), (20.2, 32.2)]); Vv("VISO", 20.2, 32.2)
     # ============ entrée de la sonde : prise, résistance de protection, amplificateur
+    # Retouches du 2026-11-28 (étude CEM : kicad/REGLES-CEM-ET-FIABILITE.md) :
+    #  - l'amplificateur et la résistance d'entrée sont remontés de 1,5 mm (DA) : la pastille « âme » de la
+    #    résistance était à 0,58 mm du corps métallique de la prise, qui est à la référence ;
+    #  - la garde est un réseau à part (GARDE), tenu par la sortie à travers 1 kΩ (R11) ;
+    #  - un filtre (R9, R10, C11) précède le convertisseur ; C12 relie le corps de la prise à la masse de la voie ;
+    #  - le vernis est retiré sur l'anneau de garde, là où rien n'est posé dessus (voir « vernis » plus bas).
+    DA = -1.5
+    ya = lambda y: y + DA
+    YB_A, YH_A = ya(37.975), ya(33.025)       # rangées de pastilles de l'amplificateur : celle du bas, celle du haut
     poser(J, X(11.0), 48.0, angle=0, txt=(8.8, 3.0))
-    Pp(r(5), 11.0, 41.0, 11.0, 40.088)
-    T("AME", [(11.0, 48.0), (11.0, 41.912)], 0.3)
-    anneau = [(12.27, 37.975), (12.27, 39.0), (12.7, 39.45), (12.7, 44.5), (13.4, 45.2), (13.4, 49.4), (12.4, 50.4),
-              (9.6, 50.4), (8.6, 49.4), (8.6, 45.2), (9.6, 44.2)]
+    Pp(r(5), 11.0, ya(41.0), 11.0, ya(40.088))
+    T("AME", [(11.0, 48.0), (11.0, ya(41.912))], 0.3)
+    T("ENTREE", [(11.0, ya(40.088)), (11.0, YB_A)], 0.3)
+    # tour de la prise par l'anneau de garde (sous le corps de la prise : il reste SOUS VERNIS, le corps est en métal)
+    tour = [(12.7, 44.5), (13.4, 45.2), (13.4, 49.4), (12.4, 50.4), (9.6, 50.4), (8.6, 49.4), (8.6, 45.2), (9.6, 44.2)]
+    # deux doigts de garde entre la résistance d'entrée et le corps de la prise, de part et d'autre de la piste de l'âme
+    YD = 42.0
+    T("GARDE", [(12.7, YD), (11.55, YD)], 0.3); T("GARDE", [(9.6, YD), (10.45, YD)], 0.3)
+    # filtre devant le convertisseur (fiche ADS1115, § 9.1.5) : C11 au ras des broches 4 et 5, puis R9 et R10
+    XFP, XFN, YF1, YF2, YCF = 21.9, 23.6, 33.775, 35.425, 32.1
+    Pp(c(11), 22.75, YCF, 23.525, YCF)        # C11 : 1 = FILTN (à droite), 2 = FILTP (à gauche)
+    Pp(r(9), XFP, 34.6, XFP, YF1)             # R9  : 1 = FILTP (en haut), 2 = MESURE (en bas)
+    Pp(r(10), XFN, 34.6, XFN, YF1)            # R10 : 1 = FILTN (en haut), 2 = REF (en bas)
+    T("FILTP", [(ab(4), 30.2), (ab(4), 31.2), (21.975, 31.725), (21.975, YCF), (XFP, YF1)])
+    T("FILTN", [(ab(5), 30.2), (ab(5), 31.2), (23.525, 31.725), (23.525, YCF), (XFN, YF1)])
+    # R11 : entre la sortie de l'amplificateur et l'anneau de garde
+    Pp(r(11), 13.75, 38.55, 14.575, 38.55)    # R11 : 1 = MESURE (à droite), 2 = GARDE (à gauche, sur l'anneau)
+    # point de test de la garde : pastille nue, pour la sonde de l'oscilloscope (derrière 1 kΩ, elle ne charge pas l'amplificateur)
+    Pp("TP%d01" % n, 14.2, 41.0, 14.2, 41.0)
+    T("GARDE", [(12.7, 41.0), (14.2, 41.0)])
+    # C12 : du corps de la prise (plan REF) à la masse de la voie
+    Pp(c(12), 19.3, 50.0, 18.82, 50.0)        # C12 : 1 = REF, 2 = masse
+    B("GNDISO", (19.78, 50.0), (20.75, 50.0))
     if PH:
         # LMP7721 : 1 IN+, 2 et 7 libres (reliées à la garde), 3 V-, 4 sortie, 5 libre, 6 V+, 8 IN-.
-        # Rangée du bas (y = 37,975) : broches 1 à 4, de x = 11,0 à 14,81. Rangée du haut : 8 à 5.
-        Pp(UE, 12.905, 35.5, 11.0, 37.975, txt=(4.6, 3.2))
-        T("ENTREE", [(11.0, 40.088), (11.0, 37.975)], 0.3)
-        # la garde est la sortie de l'amplificateur (suiveur) : anneau autour de la prise et de l'entrée,
-        # refermé sous le boîtier entre les broches 2 et 7, et relié à IN- (broche 8)
-        T("MESURE", anneau + [(9.6, 31.7), (12.27, 31.7), (12.27, 33.025)], 0.3); garde = "MESURE"; ytop = 31.3
-        T("MESURE", [(12.27, 33.025), (12.27, 37.975)], 0.3)
-        T("MESURE", [(11.0, 33.025), (11.0, 31.7)])
-        T("MESURE", [(14.81, 37.975), (14.81, 39.45), (12.7, 39.45)])                          # sortie -> garde
-        T("MESURE", [(14.81, 37.975), (17.0, 37.975), (19.5, 35.475), (19.5, 32.4), (20.0, 31.9), (22.0, 31.9), (ab(4), 31.4), (ab(4), 30.2)])
-        Pp(c(8), 13.54, 30.75, 13.54, 31.23)
-        T("VISO", [(13.54, 31.23), (13.54, 33.025)]); B("VISO", (13.54, 31.23), (16.0, 31.5)); B("GNDISO", (13.54, 30.27), (16.0, 30.27))
-        T("GNDISO", [(13.54, 37.975), (13.54, 35.5), (16.2, 35.5)]); Vv("GNDISO", 16.2, 35.5)   # V- : sort sous le boîtier, via hors du plan de garde
+        # Rangée du bas : broches 1 à 4, de x = 11,0 à 14,81. Rangée du haut : 8 à 5.
+        Pp(UE, 12.905, ya(35.5), 11.0, YB_A, txt=(4.6, 3.2))
+        # anneau de garde : part de la broche 2, fait le tour de la prise, remonte à gauche et se referme SOUS le
+        # boîtier, entre la broche 8 (IN-, reliée à la sortie) et la broche 1 (entrée), sur la liaison des broches 7 et 2
+        T("GARDE", [(12.27, YB_A), (12.27, YB_A + 1.025), (12.7, YB_A + 1.475)] + tour + [(9.6, ya(35.5)), (12.27, ya(35.5))], 0.3)
+        T("GARDE", [(12.27, YH_A), (12.27, YB_A)], 0.3)
+        T("GARDE", [(12.7, 38.55), (12.925, 38.55)], 0.3)                                         # anneau -> R11
+        # sortie (broche 4) : vers R11, vers R9 (filtre du convertisseur), et vers IN- (broche 8) par le haut.
+        # ⛔ IN- est reliée à la sortie SANS passer par R11 : derrière R11, la capacité de la garde déstabiliserait l'amplificateur.
+        T("MESURE", [(14.81, YB_A), (14.81, 37.95), (14.575, 38.55)])
+        T("MESURE", [(14.81, YB_A), (17.0, YB_A), (18.2, YF2), (XFP, YF2)])
+        YI = 26.4
+        T("MESURE", [(11.0, YH_A), (11.0, YI), (19.0, YI), (19.0, YF2 - 0.8), (18.2, YF2)])
+        # alimentation filtrée de l'amplificateur (fiche LMP7721, § 9) : VISO -> R12 (100 Ω) -> VAMP, avec C8 (100 nF) et C13 (10 µF)
+        Pp(c(8), 13.54, ya(30.75), 13.54, ya(31.23))                                              # C8  : 1 = VAMP (en bas), 2 = masse
+        Pp(c(13), 16.2, 29.2, 15.25, 29.2)                                                        # C13 : 1 = VAMP (à gauche), 2 = masse
+        Pp(r(12), 15.2, 27.35, 16.025, 27.35)                                                     # R12 : 1 = VISO (à droite), 2 = VAMP
+        T("VAMP", [(13.54, YH_A), (13.54, ya(31.23)), (15.25, ya(31.23))], 0.4)
+        T("VAMP", [(14.375, 27.35), (14.375, 28.2), (15.0, 28.9)], 0.4)
+        B("VISO", (16.025, 27.35), (17.1, 27.35), 0.4)
+        B("GNDISO", (13.54, ya(30.27)), (12.45, 28.3)); B("GNDISO", (17.15, 29.2), (18.15, 29.2), 0.4)
+        T("GNDISO", [(13.54, YB_A), (13.54, ya(35.5)), (16.2, ya(35.5))]); Vv("GNDISO", 16.2, ya(35.5))   # V- : sort sous le boîtier, via hors du plan de garde
         # amplificateur double : Vcm
         Pp(UD, 22.0, 44.0, 19.525, 42.095, txt=(0.0, 3.4))
         Pp(r(8), 17.0, 40.4, 16.175, 40.4)
@@ -242,24 +286,35 @@ def voie(n, sfx, dx):
         Pp(c(10), 26.6, 46.385, 26.6, 45.905); Pp(r(7), 28.2, 46.73, 28.2, 45.905); Pp(r(6), 29.9, 45.08, 29.9, 44.255)
         T("VCM_REF", [(19.525, 44.635), (21.6, 44.635), (22.87, 45.905), (24.475, 45.905), (29.9, 45.905)])
         B("GNDISO", (26.6, 46.865), (26.6, 47.9)); B("GNDISO", (28.2, 47.555), (28.2, 48.6)); B("VISO", (29.9, 44.255), (29.9, 43.2))
-        T("REF", [(ab(5), 30.2), (ab(5), 31.4), (23.6, 32.0), (23.6, 39.0), (16.175, 39.0), (16.175, 40.4), (16.0, 43.0), (16.0, 44.0)])
+        T("REF", [(XFN, YF2), (23.6, 39.0), (16.175, 39.0), (16.175, 40.4), (16.0, 43.0), (16.0, 44.0)])
+        ytop = ya(31.3)
+        vernis_g = [(10.05, ya(35.5)), (9.6, ya(35.5)), (9.6, YD), (10.45, YD)]
+        vernis_d = [(12.27, YB_A + 0.975), (12.27, YB_A + 1.025), (12.7, YB_A + 1.475), (12.7, YD), (11.55, YD)]
     else:
-        Pp(UD, 12.905, 35.5, 14.81, 33.025, txt=(4.6, 3.2))
-        T("ENTREE", [(11.0, 40.088), (11.0, 37.975)], 0.3)
-        T("MESURE", anneau + [(9.6, 35.6), (12.27, 35.6)], 0.3); garde = "MESURE"; ytop = 35.2
-        T("MESURE", [(13.54, 37.6), (12.27, 37.6), (12.27, 35.6), (19.0, 35.6), (22.0, 32.6), (ab(4), 32.1), (ab(4), 30.2)])
-        Pp(c(9), 14.81, 40.2, 14.81, 39.72)
-        T("VISO", [(14.81, 37.975), (14.81, 39.72)]); B("VISO", (14.81, 39.72), (16.0, 39.72)); B("GNDISO", (14.81, 40.68), (16.0, 40.9))
-        B("GNDISO", (11.0, 33.025), (11.0, 31.0))
-        Pp(r(8), 17.0, 31.4, 17.825, 31.4)
-        T("VCM", [(13.54, 32.4), (14.81, 32.4), (14.81, 31.4), (16.175, 31.4)])
-        Pp(c(10), 13.4, 29.12, 13.4, 29.6); Pp(r(7), 15.0, 28.775, 15.0, 29.6); Pp(r(6), 16.6, 28.775, 16.6, 27.95)
-        T("VCM_REF", [(12.27, 33.025), (12.27, 29.6), (16.6, 29.6)])
-        B("GNDISO", (13.4, 28.64), (13.4, 27.6)); B("GNDISO", (15.0, 27.95), (15.0, 26.9)); B("VISO", (16.6, 27.95), (16.6, 26.9))
-        T("REF", [(ab(5), 30.2), (ab(5), 31.4), (23.6, 32.0), (23.6, 43.6)])
-        B("REF", (17.825, 31.4), (18.9, 31.4)); T("REF", [(18.9, 31.4), (18.9, 41.1), (16.0, 44.0)], 0.25, pcbnew.B_Cu)
+        # LMC6482 : rangée du haut, broches 1 (x = 14,81) à 4 (x = 11,0) ; rangée du bas, broches 5 (x = 11,0) à 8 (x = 14,81).
+        Pp(UD, 12.905, ya(35.5), 14.81, YH_A, txt=(4.6, 0.0))
+        # anneau de garde : part du plot de R11, fait le tour de la prise, remonte à gauche et passe SOUS le boîtier entre
+        # la broche 4 (masse) et la broche 5 (entrée). À droite de la broche 5, c'est la broche 6 (sortie, même tension) qui garde.
+        T("GARDE", [(12.925, 38.55), (12.7, 38.55)] + tour + [(9.6, ya(35.6)), (11.9, ya(35.6))], 0.3)
+        T("MESURE", [(12.27, YB_A + 0.4), (13.54, YB_A + 0.4)])                                   # broches 6 et 7 : le suiveur
+        T("MESURE", [(13.54, YB_A + 0.4), (13.54, 37.5), (14.2, 38.1), (14.575, 38.55)])          # -> R11
+        T("MESURE", [(14.575, 38.55), (15.3, 39.3), (19.9, 39.3), (XFP, 37.3), (XFP, YF2)])       # -> R9 (filtre du convertisseur)
+        Pp(c(9), 16.7, YB_A, 16.22, YB_A)                                                         # C9 : 1 = VISO, 2 = masse
+        T("VISO", [(14.81, YB_A), (16.22, YB_A)]); B("VISO", (16.22, YB_A), (16.22, 37.6)); B("GNDISO", (17.18, YB_A), (18.1, YB_A))
+        B("GNDISO", (11.0, YH_A), (11.0, ya(31.0)))
+        Pp(r(8), 17.0, ya(31.4), 17.825, ya(31.4))
+        T("VCM", [(13.54, ya(32.4)), (14.81, ya(32.4)), (14.81, ya(31.4)), (16.175, ya(31.4))])
+        Pp(c(10), 13.4, ya(29.12), 13.4, ya(29.6)); Pp(r(7), 15.0, ya(28.775), 15.0, ya(29.6)); Pp(r(6), 16.6, ya(28.775), 16.6, ya(27.95))
+        T("VCM_REF", [(12.27, YH_A), (12.27, ya(29.6)), (16.6, ya(29.6))])
+        B("GNDISO", (13.4, ya(28.64)), (13.4, ya(27.6))); B("GNDISO", (15.0, ya(27.95)), (15.0, ya(26.9))); B("VISO", (16.6, ya(27.95)), (16.6, ya(26.9)))
+        T("REF", [(XFN, YF2), (23.6, 43.6)])
+        B("REF", (17.825, ya(31.4)), (18.9, ya(31.4))); T("REF", [(18.9, ya(31.4)), (18.9, 41.1), (16.0, 44.0)], 0.25, pcbnew.B_Cu)
+        ytop = ya(35.2)
+        vernis_g = [(10.05, ya(35.6)), (9.6, ya(35.6)), (9.6, YD), (10.45, YD)]
+        vernis_d = [(12.7, 38.55), (12.7, YD), (11.55, YD)]
     # ============ plans de cuivre
-    Vv(garde, 9.6, 42.6)
+    garde = "GARDE"
+    Vv(garde, 9.6, 40.0)                                                # relie l'anneau aux plans de garde (loin du corps de la prise)
     zg = L(R4(8.2, ytop, 13.8, 50.8))                                   # garde sous l'entrée, sur les trois autres couches
     for layer in (pcbnew.In1_Cu, pcbnew.In2_Cu, pcbnew.B_Cu):
         plan(N(garde), layer, zg, prio=5, jeu=0.5, plein=True)
@@ -270,6 +325,14 @@ def voie(n, sfx, dx):
     plan(N("GNDISO"), pcbnew.In1_Cu, ile); plan(N("GNDISO"), pcbnew.B_Cu, ile); plan(N("VISO"), pcbnew.In2_Cu, ile)
     for a, b in ((28.5, 25.0), (30.0, 36.0), (32.0, 50.5), (3.0, 46.0)):          # couture des plans de masse isolée
         Vv("GNDISO", a, b)
+    # ============ vernis retiré sur la garde (fiche LMP7721, § 10.1 : « Solder mask should not cover the input and the guard area »)
+    # Un courant de fuite passe à la SURFACE du vernis : une garde vernie ne l'arrête pas. Le cuivre de garde est donc
+    # laissé nu (il sera doré, finition ENIG) aux deux endroits où rien ne se pose dessus :
+    #  - dessus : l'anneau, de la sortie du boîtier de l'amplificateur jusqu'aux deux doigts ;
+    #  - dessous : une couronne autour de la soudure de l'âme de la prise.
+    # ⛔ JAMAIS sous la prise, côté dessus : son corps métallique (à la référence) repose sur la carte, le vernis l'isole de l'anneau.
+    sans_vernis(pcbnew.F_Mask, L(vernis_g), 0.4); sans_vernis(pcbnew.F_Mask, L(vernis_d), 0.4)
+    couronne(pcbnew.B_Mask, X(11.0), 48.0, 2.2, 0.7)
     return px, yh, ysda, yscl
 
 px, yh, ys1, yc1 = voie(1, "PH", 0.0)

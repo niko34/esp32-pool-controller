@@ -437,6 +437,30 @@
       {
         "netclass": "ISO_ORP",
         "pattern": "/AME_ORP"
+      },
+      {
+        "netclass": "ISO_PH",
+        "pattern": "/FILTP_PH"
+      },
+      {
+        "netclass": "ISO_PH",
+        "pattern": "/FILTN_PH"
+      },
+      {
+        "netclass": "ISO_PH",
+        "pattern": "/VAMP_PH"
+      },
+      {
+        "netclass": "ISO_ORP",
+        "pattern": "/FILTP_ORP"
+      },
+      {
+        "netclass": "ISO_ORP",
+        "pattern": "/FILTN_ORP"
+      },
+      {
+        "netclass": "ISO_ORP",
+        "pattern": "/GARDE_ORP"
       }
     ]
   },

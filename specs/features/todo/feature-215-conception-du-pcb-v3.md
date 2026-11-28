@@ -160,6 +160,10 @@ l'électrode fausse donc la mesure. Trois voies :
 
 ### Règles de conception — ⛔ aucune n'est facultative
 
+ℹ️ Ces règles datent de l'étude à modules Atlas. Celles des deux cartes réellement dessinées
+(carte principale, carte de mesure à composants courants) sont dans
+[`kicad/REGLES-CEM-ET-FIABILITE.md`](../../../kicad/REGLES-CEM-ET-FIABILITE.md), et contrôlées par script.
+
 **Tirées de la documentation Atlas (pH OEM, p. 33 à 37)** :
 - **Deux plans de masse par module** : la broche 5 (`PRB GND`) au plan de sonde, la broche 6
   (`GND`) au plan numérique.
@@ -657,6 +661,14 @@ fige après M3.
 
 - ⛔ **Aucune modification de code n'est attendue de cette fiche.** Elle produit une carte,
   des mesures et des décisions matérielles.
+- ⭐ **Avant de toucher à une carte du v3 : lire
+  [`kicad/REGLES-CEM-ET-FIABILITE.md`](../../../kicad/REGLES-CEM-ET-FIABILITE.md)** (étude du
+  2026-11-28). Il donne les règles que chaque carte tient, leur raison chiffrée, ce qui a été
+  étudié puis écarté, et les essais à faire sur le prototype. `scripts/verifier_regles_cartes.py`
+  les contrôle ; `scripts/build-jlcpcb.sh` refuse de fabriquer si l'une tombe.
+- ⚠️ **La rév. 0.3 de la carte principale a une conséquence logicielle** : les pompes ne reçoivent
+  le 12 V que si le firmware arme une coupure commune. C'est
+  [feature-219](feature-219-securite-des-pompes-coupure-commune-et-relecture.md), hors de cette fiche.
 - ⚠️ **Sécurité** : toute manipulation touchant le 230 V, la terre ou l'eau se fait avec les
   protections adaptées. ⛔ Ne jamais relier expérimentalement l'eau à la terre ou à la masse
   sans analyse préalable.

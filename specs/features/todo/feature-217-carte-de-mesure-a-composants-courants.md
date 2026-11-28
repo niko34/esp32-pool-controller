@@ -283,6 +283,13 @@ jugée seule, sur la carte de référence.
 ## Notes pour agent
 - ⛔ Ne pas présenter cette carte comme acquise : c'est une étude. Atlas vend un savoir-faire
   (fuites, garde, étalonnage) que cette carte doit refaire.
+- ⭐ **Rév. 0.3 du 2026-11-28** (étude des parasites et de la fiabilité) : filtre devant le
+  convertisseur, corps de la prise protégé des décharges, garde derrière 1 kΩ et sans vernis,
+  alimentation de l'amplificateur pH filtrée. Les règles à tenir (M1 à M10) et leurs raisons sont
+  dans [`kicad/REGLES-CEM-ET-FIABILITE.md`](../../../kicad/REGLES-CEM-ET-FIABILITE.md) ; le détail
+  est en fin de [`kicad/v3-mesure-std/README.md`](../../../kicad/v3-mesure-std/README.md).
+  ⚠️ Pour le logiciel : la mesure se fait désormais à travers 940 Ω ; l'erreur de gain (0,02 à
+  0,13 % selon le calibre du convertisseur) est constante et absorbée par l'étalonnage.
 - ⚠️ **Leçon de cette fiche** : la première référence relevée pour le LMC6482 était un homonyme
   d'un autre fabricant, dix fois moins bon. ⇒ Toujours lire la fiche technique **de la
   référence exacte du catalogue**, pas celle du nom du composant.

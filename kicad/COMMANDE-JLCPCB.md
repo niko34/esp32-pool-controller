@@ -10,6 +10,11 @@ sur le site (Safari). ✅ = vu à l'écran pendant cette commande. ⏳ = pas enc
 ./scripts/build-jlcpcb.sh v3-principale     # ou v3-mesure-std
 ```
 
+⚠️ **Depuis le 2026-11-28, ce script contrôle aussi les règles de
+[`REGLES-CEM-ET-FIABILITE.md`](REGLES-CEM-ET-FIABILITE.md)** et s'arrête si l'une tombe : une
+carte qui a perdu une protection ne sort pas. Les lignes ⚠️ qu'il affiche se lisent ; chacune
+figure dans ce document comme tolérée, avec sa raison.
+
 Les fichiers sortent dans `kicad/<carte>/fabrication/` (jamais commités) :
 
 | Fichier | Où le déposer |
@@ -79,7 +84,8 @@ peuvent dater d'avant une correction.
 
 ## 4. Liste des pièces ✅
 
-Chaque ligne doit être cochée, avec la bonne quantité : 39 lignes (principale), 18 (mesure).
+Chaque ligne doit être cochée, avec la bonne quantité : **43 lignes (principale), 22 (mesure)**
+depuis la rév. 0.3 du 2026-11-28 (39 et 18 avant).
 
 - ⚠️ Une ligne à quantité 0, décochée, avec un point d'exclamation = fichier périmé. Relancer
   le script de l'étape 1.
@@ -103,6 +109,9 @@ Le site montre chaque pièce posée sur la carte. M'envoyer une capture avant de
   ligne est cochée dans la liste des pièces (référence C8396, 3 par carte) ;
 - JP1 : deux broches côte à côte, à l'horizontale, dans leur cadre (✅ vu le 2026-11-26) ;
 - sens des diodes D1 à D7 et D9, du condensateur C1, des transistors, de U2, U3, U4, U7 ;
+- ⏳ **rév. 0.3, pas encore vus à l'écran** : Q11 (boîtier à 8 pattes à gauche du bornier de la
+  pompe pH, tourné d'un quart de tour par rapport à Q1 : son point de repère en bas à gauche),
+  Q10 (à sa gauche) et U8 (contre le bornier de la sonde de température) ;
 - borniers, J9, J11, J7 et module ESP32 centrés sur leurs trous ou pastilles (✅ revu le
   2026-11-26 après correction du sens des borniers et de J9) ;
 - ⚠️ la vue de dessus est en perspective : le dessus d'une pièce haute (borniers de 12 mm,
@@ -116,6 +125,10 @@ Le site montre chaque pièce posée sur la carte. M'envoyer une capture avant de
 - les mots « pH » et « ORP » imprimés à droite de chaque prise (ajoutés le 2026-11-27) ;
 - les deux prises BNC : elles doivent pointer hors de la carte, par le bord du bas ;
 - J1, le convertisseur et les deux modules d'alimentation isolée (PS101, PS201).
+- ⏳ **rév. 0.3** : autour de chaque entrée de sonde, un trait de cuivre **sans vernis** (doré)
+  entre l'âme de la prise et son corps, et une couronne sous la carte autour de l'âme. C'est
+  voulu (anneau de garde) : si l'atelier demande s'il faut le recouvrir, répondre non ;
+- ⏳ **rév. 0.3** : les deux pastilles rondes TP101 et TP201 restent vides (points de mesure).
 
 **Support de pile (BT1)** : la patte 1 de l'empreinte de JLCPCB tombe sur la pastille 1 de
 la carte (à gauche, « + » de la pile) ; que leur patte 1 soit le « + » est l'usage, pas une

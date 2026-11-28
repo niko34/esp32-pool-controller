@@ -136,7 +136,7 @@ def cadre(x1, y1, x2, y2, titre):
 # ---------- empreintes et références au catalogue (relevées le 2026-11-25) ----------
 FP = {"R": "Resistor_SMD:R_0603_1608Metric", "C04": "Capacitor_SMD:C_0402_1005Metric", "C06": "Capacitor_SMD:C_0603_1608Metric",
       "C08": "Capacitor_SMD:C_0805_2012Metric", "C12": "Capacitor_SMD:C_1206_3216Metric",
-      "SOT23": "Package_TO_SOT_SMD:SOT-23", "SO8": "Package_SO:SOIC-8_3.9x4.9mm_P1.27mm", "SMA": "Diode_SMD:D_SMA", "SMB": "Diode_SMD:D_SMB",
+      "SOT23": "Package_TO_SOT_SMD:SOT-23", "R08": "Resistor_SMD:R_0805_2012Metric", "SO8": "Package_SO:SOIC-8_3.9x4.9mm_P1.27mm", "SMA": "Diode_SMD:D_SMA", "SMB": "Diode_SMD:D_SMB",
       "CT": "Capacitor_Tantalum_SMD:CP_EIA-3528-21_Kemet-B", "SOD123": "Diode_SMD:D_SOD-123", "BORNIER": "Connector_Phoenix_MSTB:PhoenixContact_MSTBVA_2,5_2-G-5,08_1x02_P5.08mm_Vertical",
       "BORNIER3": "Connector_Phoenix_MSTB:PhoenixContact_MSTBVA_2,5_3-G-5,08_1x03_P5.08mm_Vertical",
       "PETIT2": "Connector_Phoenix_MC:PhoenixContact_MCV_1,5_2-G-3.81_1x02_P3.81mm_Vertical",
@@ -146,8 +146,8 @@ FP = {"R": "Resistor_SMD:R_0603_1608Metric", "C04": "Capacitor_SMD:C_0402_1005Me
 # Les prises de meme format sont reperees par une couleur (pastille ou cerclage) : choix de l'utilisateur.
 LCSC_BORNIER, LCSC_BORNIER3 = "C505788", "C505789"
 LCSC_PETIT = {2: "C8396", 3: "C8389", 4: ""}
-PASSIF = {"100R": ("R", "C22775"), "470R": ("R", "C23179"), "1k": ("R", "C21190"), "4k7": ("R", "C23162"), "5k1": ("R", "C23186"), "10k": ("R", "C25804"),
-          "100n": ("C04", "C1525"), "1u": ("C06", "C15849"), "22p": ("C06", "C1653"), "10u": ("C08", "C15850"), "1u 50V": ("C08", "C28323"), "22u": ("C08", "C45783"), "22u tantale": ("CT", "C8020"), "10u 50V": ("C12", "C13585")}
+PASSIF = {"100R": ("R", "C22775"), "470R": ("R", "C23179"), "1k": ("R", "C21190"), "4k7": ("R", "C23162"), "33k": ("R", "C4216"), "100k": ("R", "C25803"), "100R 0805": ("R08", "C17408"), "5k1": ("R", "C23186"), "10k": ("R", "C25804"),
+          "100n": ("C04", "C1525"), "100n 50V": ("C04", "C307331"), "1u": ("C06", "C15849"), "22p": ("C06", "C1653"), "10u": ("C08", "C15850"), "1u 50V": ("C08", "C28323"), "22u": ("C08", "C45783"), "22u tantale": ("CT", "C8020"), "10u 50V": ("C12", "C13585")}
 def R(val, x, y, haut, bas):
     fp, lcsc = PASSIF[val]; return comp(charge("Device", "R"), "R", val, x, y, {"1": haut, "2": bas}, FP[fp], lcsc)
 def C(val, x, y, haut, bas):
@@ -165,7 +165,7 @@ R("10k", X + g(36), Y + g(16), "GRILLE_INV", "GND")
 comp(charge("Device", "D_Zener"), "D", "BZT52C12", X + g(46), Y + g(16), {"1": "+12V", "2": "GRILLE_INV"}, FP["SOD123"], "C173429", refpos=(0, -3.81), valpos=(0, 3.81), just=None)
 comp(charge("Device", "D_Zener"), "D", "SMBJ13A", X + g(46), Y + g(27), {"1": "+12V", "2": "GND"}, FP["SMB"], "C404130", refpos=(0, -3.81), valpos=(0, 3.81), just=None)
 comp(charge("Device", "C_Polarized"), "C", "470u 25V", X + g(56), Y + g(16), {"1": "+12V", "2": "GND"}, "Capacitor_THT:CP_Radial_D8.0mm_P3.50mm", "C5213783")
-C("100n", X + g(62), Y + g(16), "+12V", "GND")
+C("100n 50V", X + g(62), Y + g(16), "+12V", "GND")     # 50 V : l'ecreteur laisse monter le 12 V a 21,5 V
 drapeau("+12V", X + g(68), Y + g(14)); drapeau("GND", X + g(68), Y + g(24))
 texte("Le DRAIN du transistor est cote fusible : sa diode interne laisse passer le\ncourant dans le sens normal (note TI SLVA139). Le v2 etait monte a l'inverse.\n"
       "Ecreteur : au repos jusqu'a 13 V, limite a 21,5 V.", X + g(2), Y + g(33), 1.1)
@@ -179,13 +179,14 @@ for i, (sig, nom) in enumerate((("POMPE_PH", "Pompe pH"), ("POMPE_ORP", "Pompe c
     R("100R", X + g(6), y, sig, gr)
     R("10k", X + g(13), y, gr, "GND")
     comp(charge("Transistor_FET", "AO3400A"), "Q", "AO3400A", X + g(27), y, {"1": gr, "3": so, "2": "GND"}, FP["SOT23"], "C20917", refpos=(5.08, -1.27), valpos=(5.08, 1.27))
-    comp(charge("Device", "D_Schottky"), "D", "SS34", X + g(39), y, {"1": "+12V", "2": so}, FP["SMA"], "C8678", refpos=(0, -3.81), valpos=(0, 3.81), just=None)
+    plus_charge = "V_POMPES" if sig.startswith("POMPE") else "+12V"      # pompes : rail commute par la coupure commune (section 9)
+    comp(charge("Device", "D_Schottky"), "D", "SS34", X + g(39), y, {"1": plus_charge, "2": so}, FP["SMA"], "C8678", refpos=(0, -3.81), valpos=(0, 3.81), just=None)
     C("10u 50V", X + g(52), y, "+12V", "GND")
     if sig.startswith("POMPE"):   # pompes : 3,81 mm, 2 broches ; reperees par une couleur (choix de l'utilisateur)
-        comp(charge("Connector", "Screw_Terminal_01x02"), "J", nom, X + g(68), y, {"1": "+12V", "2": so}, FP["PETIT2"], LCSC_PETIT[2], refpos=(0, -5.08), valpos=(-10.16, 6.35))
+        comp(charge("Connector", "Screw_Terminal_01x02"), "J", nom, X + g(68), y, {"1": "V_POMPES", "2": so}, FP["PETIT2"], LCSC_PETIT[2], refpos=(0, -5.08), valpos=(-10.16, 6.35))
     else:
         comp(charge("Connector", "Screw_Terminal_01x02"), "J", nom, X + g(68), y, {"1": "+12V", "2": so}, FP["BORNIER"], LCSC_BORNIER, refpos=(0, -5.08), valpos=(-10.16, 6.35))
-texte("Borne 1 = + de la charge, borne 2 = - commute. Diode de roue libre et 10 uF au pied de chaque sortie.\nBorniers debrochables : 5,08 mm pour filtration, eclairage, auxiliaire ; 3,81 mm pour les pompes.", X + g(2), Y + g(97), 1.1)
+texte("Borne 1 = + de la charge, borne 2 = - commute. Diode de roue libre et 10 uF au pied de chaque sortie.\nPOMPES : leur + vient de V_POMPES, coupe par l'interrupteur commun (cadre SECURITE DES POMPES). La diode de roue libre reste aux bornes de la pompe.\nBorniers debrochables : 5,08 mm pour filtration, eclairage, auxiliaire ; 3,81 mm pour les pompes.", X + g(2), Y + g(97), 1.1)
 
 # 3. CŒUR : ESP32
 X, Y = g(86), g(10)
@@ -202,7 +203,7 @@ esp = sym_custom("ESP32-WROVER-E", "U", "Module ESP32-WROVER-E-N8R8", 30.48, H, 
                  [(n, nm, t, H - 2.54 * (i + 1)) for i, (n, nm, t) in enumerate(G)], [(n, nm, t, H - 2.54 * (i + 1)) for i, (n, nm, t) in enumerate(D)])
 N = {"2": "+3V3", "3": "EN", "4": "RTC_INT", "5": None, "6": "DEBIT", "7": "BOUTON", "8": "AUX", "9": "POMPE_ORP", "10": "POMPE_PH", "11": "FILTRATION", "12": "ECLAIRAGE",
      "13": "IO14", "14": "IO12", "16": "IO13", "1": "GND", "15": "GND", "38": "GND", "39": "GND",
-     "37": "IO23", "36": "SCL", "35": "TX_ESP", "34": "RX", "33": "SDA", "31": "IO19", "30": "IO18", "29": "TEMP", "26": "IO4", "25": "IO0", "24": "LED", "23": "IO15"}
+     "37": "LU_POMPE_ORP", "36": "SCL", "35": "TX_ESP", "34": "RX", "33": "SDA", "31": None, "30": "LU_POMPE_PH", "29": "TEMP", "26": "ARME_POMPES", "25": "IO0", "24": "LED", "23": "IO15"}
 N.update({str(n): None for n in (17, 18, 19, 20, 21, 22, 27, 28, 32)})
 comp(esp, "U", "ESP32-WROVER-E-N8R8", X + g(22), Y + g(28), N, PRJ + ":ESP32-WROVER-E", "C2973667", refpos=(-15.24, -H - 1.27), valpos=(-15.24, H + 1.27))
 C("22u", X + g(46), Y + g(16), "+3V3", "GND"); C("100n", X + g(52), Y + g(16), "+3V3", "GND")
@@ -260,7 +261,7 @@ X, Y = g(154), g(58)
 cadre(X, Y, X + g(64), Y + g(40), "TEMPERATURE, BOUTON, VOYANT")
 comp(charge("Sensor_Temperature", "DS18B20"), "U", "DS18B20", X + g(8), Y + g(18), {"3": "+3V3", "1": "GND", "2": "TEMP"}, "Package_TO_SOT_THT:TO-92_Inline", "C9753", refpos=(-7.62, -6.35), valpos=(2.54, 6.35))
 R("4k7", X + g(18), Y + g(18), "+3V3", "TEMP"); C("100n", X + g(24), Y + g(18), "+3V3", "GND")
-comp(charge("Connector", "Screw_Terminal_01x03"), "J", "Sonde d'eau", X + g(34), Y + g(18), {"1": "GND", "2": "+3V3", "3": "TEMP"}, FP["BORNIER3"], LCSC_BORNIER3, refpos=(0, -5.08), valpos=(0, 7.62))
+comp(charge("Connector", "Screw_Terminal_01x03"), "J", "Sonde d'eau", X + g(34), Y + g(18), {"1": "GND", "2": "V_SONDE", "3": "TEMP_EXT"}, FP["BORNIER3"], LCSC_BORNIER3, refpos=(0, -5.08), valpos=(0, 7.62))
 comp(charge("Switch", "SW_Push"), "SW", "Reinitialisation", X + g(46), Y + g(14), {"1": "+3V3", "2": "BOUTON"}, "Button_Switch_SMD:SW_Push_1P1T_XKB_TS-1187A", "C318884", refpos=(0, -5.08), valpos=(0, 3.81), just=None)
 R("10k", X + g(46), Y + g(28), "BOUTON", "GND")
 R("1k", X + g(56), Y + g(14), "LED", "A_LED")
@@ -289,10 +290,10 @@ texte("Detecteur a palette (type electrolyseur) : un contact qui se ferme quand 
 # 7 bis. CONNECTEUR DE DÉBOGAGE
 X, Y = g(86), g(150)
 cadre(X, Y, X + g(64), Y + g(44), "CONNECTEUR DE DEBOGAGE (embase 2 x 8 avec detrompeur)")
-DBG = ["+3V3", "GND", "EN", "IO0", "TX", "RX", "SDA", "SCL", "IO13", "IO14", "IO12", "IO15", "IO4", "IO18", "IO19", "IO23"]
+DBG = ["+3V3", "GND", "EN", "IO0", "TX", "RX", "SDA", "SCL", "IO13", "IO14", "IO12", "IO15", "ARME_POMPES", "LU_POMPE_PH", None, "LU_POMPE_ORP"]
 comp(charge("Connector_Generic", "Conn_02x08_Odd_Even"), "J", "Debogage", X + g(30), Y + g(22), {str(i + 1): s for i, s in enumerate(DBG)},
      "Connector_IDC:IDC-Header_2x08_P2.54mm_Vertical", "C221049", refpos=(0, -12.7), valpos=(0, 15.24), lg=5.08)
-texte("9 a 12 : sonde de debogage pas a pas (IO13 TCK, IO14 TMS, IO12 TDI, IO15 TDO).\n13 a 16 : broches libres.\nSoudee en usine sur cette version ; a retirer de la version commercialisee.", X + g(2), Y + g(42), 1.1)
+texte("9 a 12 : sonde de debogage pas a pas (IO13 TCK, IO14 TMS, IO12 TDI, IO15 TDO).\n13 : armement des pompes (IO4). 14 et 16 : relecture des pompes pH et chlore (IO18, IO23). 15 : non reliee.\n⛔ Ne rien brancher sur 13, 14, 16 quand l'appareil dose.\nSoudee en usine sur cette version ; a retirer de la version commercialisee.", X + g(2), Y + g(42), 1.1)
 
 # 8. ALIMENTATIONS 5 V ET 3,3 V
 X, Y = g(154), g(150)
@@ -309,9 +310,43 @@ drapeau("+5V", X + g(48), Y + g(42))
 texte("Cavalier JP1 : capuchon en place = fonctionnement normal sur le 12 V.\nPour alimenter la logique et la mesure par le bornier 5 V externe :\nRETIRER le capuchon d'abord, et debrancher le 12 V pour un essai de bruit.\n"
       "Le transistor protege d'un 5 V externe branche a l'envers.\nRegulateur 5 V lineaire : 1,2 W de chaleur, a evacuer par le cuivre de la carte.", X + g(2), Y + g(59), 1.1)
 
+# 9. SÉCURITÉ DES POMPES ET PROTECTION DE LA SONDE — étude du 2026-11-28 (kicad/REGLES-CEM-ET-FIABILITE.md)
+# ⚠️ Placée EN DERNIER exprès : comp() numérote dans l'ordre des appels. Tout ajout se fait ICI, à la suite.
+X, Y = g(230), g(10)
+cadre(X, Y, X + g(92), Y + g(100), "SECURITE DES POMPES : coupure commune du 12 V et relecture")
+# --- interrupteur du haut, commun aux deux pompes : V_POMPES n'est alimente que si ARME_POMPES (IO4) est a 1.
+#     IO4 en l'air ou a 0 (reset, demarrage, plantage) = rail coupe = aucune pompe ne peut tourner.
+R("100R", X + g(8), Y + g(18), "ARME_POMPES", "G_ARME")                          # R30
+R("10k", X + g(16), Y + g(18), "G_ARME", "GND")                                  # R31 : rappel a la masse
+comp(charge("Transistor_FET", "AO3400A"), "Q", "AO3400A", X + g(28), Y + g(18), {"1": "G_ARME", "3": "D_ARME", "2": "GND"}, FP["SOT23"], "C20917", refpos=(5.08, -1.27), valpos=(5.08, 1.27))   # Q10
+R("4k7", X + g(42), Y + g(18), "G_HAUT", "D_ARME")                               # R32 : avec R33, grille a -8 V
+R("10k", X + g(50), Y + g(14), "+12V", "G_HAUT")                                 # R33 : grille-source, bloque le transistor au repos
+comp(charge("Transistor_FET", "IRF7404"), "Q", "AO4407A", X + g(64), Y + g(18),
+     {"4": "G_HAUT", "5": "V_POMPES", "6": "V_POMPES", "7": "V_POMPES", "8": "V_POMPES", "1": "+12V", "2": "+12V", "3": "+12V"}, FP["SO8"], "C16072", refpos=(5.08, -1.27), valpos=(5.08, 1.27))   # Q11
+R("10k", X + g(76), Y + g(18), "V_POMPES", "GND")                                # R34 : decharge le rail en 1 ms quand il est coupe
+C("100n 50V", X + g(84), Y + g(18), "V_POMPES", "GND")                           # C21 : au pied de la diode de la pompe pH (C23, plus bas : celle de la pompe chlore)
+# --- relecture de chaque sortie de pompe : le 12 V du drain ramene a 3 V
+R("100k", X + g(8), Y + g(48), "S_POMPE_PH", "LU_POMPE_PH"); R("33k", X + g(16), Y + g(48), "LU_POMPE_PH", "GND")       # R35, R36
+R("100k", X + g(30), Y + g(48), "S_POMPE_ORP", "LU_POMPE_ORP"); R("33k", X + g(38), Y + g(48), "LU_POMPE_ORP", "GND")   # R37, R38
+texte("DEUX interrupteurs en serie par pompe : celui du haut (commun) et celui du bas (un par pompe).\n"
+      "Si l'un tombe en panne passant, l'autre coupe, et la relecture le montre :\n"
+      " - rail coupe, pompes non commandees : les deux relectures doivent lire 0 (sinon : interrupteur du haut en panne) ;\n"
+      " - rail arme, pompes non commandees : elles doivent lire 1 (sinon : transistor de pompe en panne, ou pompe debranchee).\n"
+      "Exigences pour le firmware : kicad/v3-principale/README.md, « Securite des pompes ».", X + g(2), Y + g(34), 1.1)
+# --- bornier de la sonde de temperature : le cable sort du boitier. Ni le 3,3 V de l'ESP32 ni sa broche n'y vont en direct.
+R("100R 0805", X + g(8), Y + g(74), "+3V3", "V_SONDE")                           # R39 : un court-circuit du cable ne tire que 33 mA
+C("100n", X + g(16), Y + g(74), "V_SONDE", "GND")                                # C22
+R("100R", X + g(28), Y + g(74), "TEMP_EXT", "TEMP")                              # R40
+comp(charge("Power_Protection", "USBLC6-2SC6"), "U", "USBLC6-2SC6", X + g(46), Y + g(76), {"1": "V_SONDE", "6": "V_SONDE", "3": "TEMP_EXT", "4": "TEMP_EXT", "5": "+3V3", "2": "GND"},
+     "Package_TO_SOT_SMD:SOT-23-6", "C7519", refpos=(-7.62, -8.89), valpos=(-7.62, 8.89))                                # U8 : la meme protection que sur l'USB
+texte("Sonde de temperature : 100 Ohm en serie sur son alimentation et sur son fil de donnees,\net une protection contre les decharges au ras du bornier.", X + g(2), Y + g(92), 1.1)
+# --- relecture independante du 2026-11-28 : la pompe chlore n'avait plus de condensateur au pied de sa diode
+#     (C21 est a 36 mm de D4). Ajoute EN DERNIER pour ne decaler aucun numero.
+C("100n 50V", X + g(84), Y + g(58), "V_POMPES", "GND")                           # C23 : au pied de la diode de la pompe chlore
+
 lib_symbols = "\n".join(SYMS.values())
 sch = """(kicad_sch (version 20250114) (generator "eeschema") (generator_version "9.0") (uuid "%s") (paper "A1")
-(title_block (title "Carte principale v3 - ESP32, USB, horloge, sorties 12 V") (date "2026-11-25") (rev "0.2")
+(title_block (title "Carte principale v3 - ESP32, USB, horloge, sorties 12 V") (date "2026-11-28") (rev "0.3")
  (company "ESP32 Pool Controller") (comment 1 "Reference : kicad/v3-principale/README.md") (comment 2 "5 V : regulateur lineaire, ou bornier externe pont coupe"))
 (lib_symbols
 %s

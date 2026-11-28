@@ -70,6 +70,8 @@ DEF = {
    [("3","IN+_A","input",5.08),("5","IN+_B","input",-2.54)]),
  "BNC": ("J", "Prise BNC femelle pour carte : ame et corps", 10.16, 7.62, -7.62,
    [("1","AME","passive",2.54),("2","CORPS","passive",-2.54)], []),
+ "POINT_TEST": ("TP", "Point de test : pastille nue sur la carte, aucune piece a poser", 5.08, 2.54, -2.54,
+   [], [("1","1","passive",0)]),
  "Conn_8": ("J", "Connecteur 8 voies vers la carte principale (JST XH)", 10.16, 12.7, -10.16,
    [], [(str(i+1), "V%d" % (i+1), "passive", 10.16 - 2.54*i) for i in range(8)]),
 }
@@ -84,8 +86,8 @@ def net(nom, *broches): ATTENDU.setdefault(nom, set()).update(broches)
 def prop(nom, val, x, y, cache=False, just="left", ang=0):
     eff = "(effects (font (size 1.27 1.27))%s%s)" % (" (justify %s)" % just if just else "", " (hide yes)" if cache else "")
     return '(property "%s" "%s" (at %s %s %d) %s)' % (nom, val, r(x), r(y), ang, eff)
-def place(lib_id, ref, val, x, y, pins, fp="", lcsc="", refpos=(2.54, -1.27), valpos=(2.54, 1.27), rot=0, montre_ref=True, justv="left"):
-    L = ['(symbol (lib_id "%s") (at %s %s %d) (unit 1) (exclude_from_sim no) (in_bom yes) (on_board yes) (dnp no) (uuid "%s")' % (lib_id, r(x), r(y), rot, U()),
+def place(lib_id, ref, val, x, y, pins, fp="", lcsc="", refpos=(2.54, -1.27), valpos=(2.54, 1.27), rot=0, montre_ref=True, justv="left", nomenclature=True):
+    L = ['(symbol (lib_id "%s") (at %s %s %d) (unit 1) (exclude_from_sim no) (in_bom %s) (on_board yes) (dnp no) (uuid "%s")' % (lib_id, r(x), r(y), rot, "yes" if nomenclature else "no", U()),
          prop("Reference", ref, x+refpos[0], y+refpos[1], cache=not montre_ref, just=(None if rot else "left"), ang=rot),
          prop("Value", val, x+valpos[0], y+valpos[1], just=(None if rot else justv), ang=rot),
          prop("Footprint", fp, x, y, cache=True), prop("Datasheet", "", x, y, cache=True)]
@@ -128,17 +130,19 @@ def masse(nom, x, y):     # symbole de masse, broche en (x, y), dessiné vers le
 def drapeau(x, y):
     P(x, y); place("power:PWR_FLAG", "#FLG%02d" % CPT["flg"], "PWR_FLAG", x, y, ["1"], refpos=(0, -1.905), valpos=(0, -3.81), montre_ref=False, justv=None); CPT["flg"] += 1
 FP = {"R": "Resistor_SMD:R_0603_1608Metric", "R08": "Resistor_SMD:R_0805_2012Metric",
-      "C01": "Capacitor_SMD:C_0402_1005Metric", "C08": "Capacitor_SMD:C_0805_2012Metric", "C12": "Capacitor_SMD:C_1206_3216Metric",
+      "C01": "Capacitor_SMD:C_0402_1005Metric", "C06": "Capacitor_SMD:C_0603_1608Metric", "C08": "Capacitor_SMD:C_0805_2012Metric", "C12": "Capacitor_SMD:C_1206_3216Metric",
       "CT": "Capacitor_Tantalum_SMD:CP_EIA-3528-21_Kemet-B",
       "SO8": "Package_SO:SOIC-8_3.9x4.9mm_P1.27mm", "ADS": "Package_SO:VSSOP-10_3x3mm_P0.5mm",
-      "REG": "Package_TO_SOT_SMD:SOT-223-3_TabPin2", "J1": "Connector_JST:JST_XH_B8B-XH-A_1x08_P2.50mm_Vertical"}
+      "REG": "Package_TO_SOT_SMD:SOT-223-3_TabPin2", "TP": "TestPoint:TestPoint_Pad_D1.0mm", "J1": "Connector_JST:JST_XH_B8B-XH-A_1x08_P2.50mm_Vertical"}
 # valeur -> (empreinte, référence au catalogue). Références relues le 2026-11-25 ; "" = à relever.
 PASSIF = {"100n": ("C01", "C1525"), "4u7": ("C08", "C1779"), "10u 50V": ("C12", "C13585"), "22u tantale": ("CT", "C8020"),
           "4k7": ("R", "C23162"), "3k3": ("R", "C22978"), "10k": ("R", "C25804"), "30k": ("R", "C22984"),
-          "100R": ("R", "C22775"), "2M2": ("R08", "C26113")}
-def custom(nom, ref, val, x, y, fp="", lcsc=""):
+          "100R": ("R", "C22775"), "2M2": ("R08", "C26113"),
+          # ajouts du 2026-11-28 (étude CEM, kicad/REGLES-CEM-ET-FIABILITE.md) : références déjà posées sur la carte principale
+          "470R": ("R", "C23179"), "1k": ("R", "C21190"), "1u": ("C06", "C15849"), "10u": ("C08", "C15850")}
+def custom(nom, ref, val, x, y, fp="", lcsc="", nomenclature=True):
     place(PRJ + ":" + nom, ref, val, x, y, CPINS[nom].keys(), fp, lcsc,
-          refpos=(-DEF[nom][2]/2, -DEF[nom][3]-1.27), valpos=(-DEF[nom][2]/2, -DEF[nom][4]+1.27))
+          refpos=(-DEF[nom][2]/2, -DEF[nom][3]-1.27), valpos=(-DEF[nom][2]/2, -DEF[nom][4]+1.27), nomenclature=nomenclature)
     d = {num: (x + px, y - py) for num, (px, py) in CPINS[nom].items()}
     for q in d.values(): P(*q)
     return d
@@ -148,12 +152,13 @@ def vertical(kind, ref, val, x, ytop):
     place("Device:" + kind, ref, val, x, ytop + 3.81, ["1", "2"], FP[fp], lcsc)
     P(x, ytop); P(x, ytop + 7.62)
     return (x, ytop), (x, ytop + 7.62)
-def horizontal_R(ref, val, xg, y):
-    """Résistance couchée entre (xg, y) et (xg+7.62, y) : broche 1 à gauche... voir rot=90."""
+def horizontal(kind, ref, val, xg, y):
+    """Résistance ou condensateur couché entre (xg, y) et (xg+7.62, y) : broche 1 à gauche (rot=90)."""
     fp, lcsc = PASSIF[val]
-    place("Device:R", ref, val, xg + 3.81, y, ["1", "2"], FP[fp], lcsc, rot=90, refpos=(0, -2.54), valpos=(0, 2.54))
+    place("Device:" + kind, ref, val, xg + 3.81, y, ["1", "2"], FP[fp], lcsc, rot=90, refpos=(0, -2.54), valpos=(0, 2.54))
     P(xg, y); P(xg + 7.62, y)
     return (xg, y), (xg + 7.62, y)
+def horizontal_R(ref, val, xg, y): return horizontal("R", ref, val, xg, y)
 
 
 def voie(sfx, n, oy, titre):
@@ -235,7 +240,24 @@ def voie(sfx, n, oy, titre):
     xm, ym = c["4"]; xr, yr = c["5"]
     YB = by + 93.98                  # retour de REF, en bas de la voie
     XR = 236.22
-    fil((xr, yr), (XR, yr), (XR, YB), (363.22, YB)); etiq(V("REF"), 243.84, YB, "d")
+    # filtre devant le convertisseur (fiche ADS1115, § 9.1.5 et 9.2.2.6) : R9 et R10, 470 ohms, C11, 1 µF entre les deux entrées.
+    # Le module d'alimentation découpe vers 250 kHz, la fréquence où le convertisseur échantillonne : sans filtre,
+    # ce résidu se replie dans la mesure. R10 sépare aussi l'entrée du convertisseur du corps de la prise (décharges).
+    fil((xr, yr), (XR, yr), (XR, yr + 5.08)); etiq(V("FILTN"), 231.14, yr, "d")
+    a, b = vertical("R", R(10), "470R", XR, yr + 5.08)
+    fil(b, (XR, YB), (363.22, YB)); etiq(V("REF"), 243.84, YB, "d")
+    a, b = vertical("C", C(11), "1u", 233.68, ym - 7.62); jonction(*b)
+    fil(a, (233.68, ym - 10.16)); etiq(V("FILTN"), 233.68, ym - 10.16, "d")
+    net(V("FILTN"), UA + ".5", R(10) + ".1", C(11) + ".1"); net(V("FILTP"), UA + ".4", R(9) + ".1", C(11) + ".2")
+    net(V("REF"), R(10) + ".2")
+    texte("Filtre d'entree : 2 x 470 Ohm + 1 uF (coupure 170 Hz).\nNe pas depasser 1 kOhm par resistance (fiche du convertisseur).", 200.66, by - 22.86, 1.1)
+    # corps de la prise vers la masse de la voie : 100 nF. Avec les 100 ohms de R8, c'est un filtre (16 kHz) ; il absorbe
+    # aussi la charge d'une décharge sur le corps de la prise (8 kV -> 12 V). Sans effet sur la mesure : REF est tenu par R8.
+    YC12 = YB - 12.7
+    jonction(363.22, YC12); fil((363.22, YC12), (368.3, YC12))
+    a, b = horizontal("C", C(12), "100n", 368.3, YC12)
+    fil(b, (381, YC12), (381, YC12 + 2.54)); masse(GI, 381, YC12 + 2.54)
+    net(V("REF"), C(12) + ".1"); net(GI, C(12) + ".2")
 
     # ---- amplificateur double : Vcm (et entrée de l'ORP) ----
     d = custom("AMPLI_DOUBLE", UD, "LMC6482AIMX", 289.56, by + 53.34, FP["SO8"], "C12620")
@@ -274,32 +296,48 @@ def voie(sfx, n, oy, titre):
     # ---- entrée de la sonde ----
     if PH:
         e = custom("AMPLI_ENTREE", UE, "LMP7721MAX", 289.56, by, FP["SO8"], "C2864387")
-        x, y = e["6"]; fil((x, y), (271.78, y), (271.78, RV), (261.62, RV)); plus(VI, 271.78, RV); jonction(271.78, RV)
+        # alimentation de l'amplificateur filtrée (fiche LMP7721, § 9) : R12, 100 ohms, puis C8 (100 nF) et C13 (10 µF)
+        x, y = e["6"]; fil((x, y), (271.78, y), (271.78, RV), (251.46, RV)); jonction(271.78, RV); jonction(261.62, RV)
+        etiq(V("VAMP"), 264.16, RV, "d"); drapeau(256.54, RV)
+        a, b = vertical("R", R(12), "100R", 271.78, RV - 7.62); plus(VI, *a)
         a, b = vertical("C", C(8), "100n", 261.62, RV); masse(GI, *b)
+        a, b = vertical("C", C(13), "10u", 251.46, RV); masse(GI, *b)
         x, y = e["3"]; fil((x, y), (271.78, y), (271.78, y + 5.08)); masse(GI, 271.78, y + 5.08)
-        net(VI, UE + ".6", C(8) + ".1"); net(GI, UE + ".3", C(8) + ".2")
-        fil((xm, ym), e["4"]); etiq(V("MESURE"), 231.14, ym, "d")
+        net(VI, R(12) + ".1"); net(V("VAMP"), UE + ".6", R(12) + ".2", C(8) + ".1", C(13) + ".1"); net(GI, UE + ".3", C(8) + ".2", C(13) + ".2")
+        g, dr = horizontal_R(R(9), "470R", 238.76, ym)
+        fil((xm, ym), g); etiq(V("FILTP"), 231.14, ym, "d")
+        fil(dr, e["4"]); etiq(V("MESURE"), 251.46, ym, "d")
         fil(e["8"], (269.24, e["8"][1]), (269.24, ym)); jonction(269.24, ym)
-        # la garde : le LMP7721 n'a pas de sortie de garde, c'est sa sortie (montage suiveur) qui la tient
-        fil(e["2"], (309.88, e["2"][1]), (309.88, e["7"][1]), e["7"]); etiq(V("MESURE"), 309.88, e["2"][1], "d")
-        net(V("MESURE"), UA + ".4", UE + ".4", UE + ".8", UE + ".2", UE + ".7")
+        # la garde : tenue par la sortie de l'amplificateur (suiveur), mais A TRAVERS R11 (1 kOhm). Si la garde touche
+        # le corps de la prise (vernis abîmé sous la prise), la mesure reste juste : seule la garde est perdue.
+        # ⛔ IN- (broche 8) reste reliée DIRECTEMENT à la sortie : la mettre derrière R11 déstabiliserait l'amplificateur.
+        fil(e["2"], (309.88, e["2"][1]), (309.88, e["7"][1]), e["7"]); etiq(V("GARDE"), 309.88, e["2"][1], "d")
+        jonction(248.92, ym); a, b = vertical("R", R(11), "1k", 248.92, ym)
+        fil(b, (248.92, ym + 20.32), (246.38, ym + 20.32)); etiq(V("GARDE"), 248.92, ym + 10.16, "g")
+        tp = custom("POINT_TEST", "TP%d01" % n, "Garde", 241.3, ym + 20.32, FP["TP"], nomenclature=False)       # pastille nue : on y pose la sonde de l'oscilloscope
+        net(V("MESURE"), R(9) + ".2", UE + ".4", UE + ".8", R(11) + ".1"); net(V("GARDE"), UE + ".2", UE + ".7", R(11) + ".2", "TP%d01.1" % n)
         nc(*e["5"]); NC.append(UE + ".5")
         xin, yin = e["1"]; jy = by
-        texte("ENTREE : LE point sensible (~100 MOhm et plus).\nPiste la plus courte possible, entouree de l'anneau de garde\n(fil MESURE) sur les deux faces. Rien d'autre sur ce fil.", 304.8, by - 12.7, 1.1)
+        texte("ENTREE : LE point sensible (~100 MOhm et plus).\nPiste la plus courte possible, entouree de l'anneau de garde\n(fil GARDE) sur les deux faces. Rien d'autre sur ce fil.", 304.8, by - 12.7, 1.1)
         texte("LMP7721 : brochage special, pas d'equivalent broche a broche.\nBroches 2 et 7 libres dans le boitier, reliees a la garde.", 279.4, by + 22.86, 1.1)
     else:
         # moitié B : entrée de la sonde. Le fil MESURE croise le fil VCM sans s'y relier (pas de point).
-        fil((xm, ym), (254, ym), (254, yB), d["7"]); etiq(V("MESURE"), 231.14, ym, "d")
-        net(V("MESURE"), UA + ".4", UD + ".7", UD + ".6")
+        g, dr = horizontal_R(R(9), "470R", 238.76, ym)
+        fil((xm, ym), g); etiq(V("FILTP"), 231.14, ym, "d")
+        fil(dr, (254, ym), (254, yB), d["7"]); etiq(V("MESURE"), 251.46, ym, "d")
+        jonction(248.92, ym); a, b = vertical("R", R(11), "1k", 248.92, ym)
+        fil(b, (248.92, ym + 20.32), (246.38, ym + 20.32)); etiq(V("GARDE"), 248.92, ym + 10.16, "g")
+        tp = custom("POINT_TEST", "TP%d01" % n, "Garde", 241.3, ym + 20.32, FP["TP"], nomenclature=False)       # pastille nue : on y pose la sonde de l'oscilloscope
+        net(V("MESURE"), R(9) + ".2", UD + ".7", UD + ".6", R(11) + ".1"); net(V("GARDE"), R(11) + ".2", "TP%d01.1" % n)
         xin, yin = d["5"]; jy = yin + 2.54
-        texte("Anneau de cuivre relie a MESURE autour de la broche 5 et de R%d05" % n, 304.8, yin + 7.62, 1.1)
+        texte("Anneau de cuivre GARDE (sortie a travers R%d11, 1 kOhm) autour de la broche 5 et de R%d05" % (n, n), 304.8, yin + 7.62, 1.1)
     g, dr = horizontal_R(R(5), "2M2", 320.04, yin); fil((xin, yin), g); etiq(V("ENTREE"), 304.8, yin, "d")
     j = custom("BNC", J, "BNC coudee %s" % sfx, 381, jy, PRJ + ":BNC_Dosin_801-0080_Coudee", "C521219")
     fil(dr, j["1"]); etiq(V("AME"), 335.28, yin, "d")
     fil(j["2"], (363.22, j["2"][1]), (363.22, YB))
     net(V("ENTREE"), UE + ".1" if PH else UD + ".5", R(5) + ".1"); net(V("AME"), R(5) + ".2", J + ".1")
-    net(V("REF"), UA + ".5", R(8) + ".1", J + ".2")
-    texte("Corps de la BNC = REF (Vcm a travers 100 Ohm), PAS la masse :\nil ne touche aucun metal du boitier.\nAucun condensateur ni diode sur l'entree.", 142.24, by + 60.96, 1.1)
+    net(V("REF"), R(8) + ".1", J + ".2")
+    texte("Corps de la BNC = REF (Vcm a travers 100 Ohm), PAS la masse :\nil ne touche aucun metal du boitier.\nAucun condensateur ni diode sur l'AME (l'entree).\nLe corps, lui, a 100 nF vers la masse de la voie (C%d12).\n⛔ Jamais de condensateur entre deux masses isolees." % n, 142.24, by + 60.96, 1.1)
 
 voie("PH", 1, 20.32, "VOIE pH")
 voie("ORP", 2, 198.12, "VOIE ORP")
@@ -324,7 +362,7 @@ texte("Meme connecteur et meme ordre que la carte a modules Atlas.\nLa carte pri
 ecrire_fils()
 lib_symbols = "\n".join(list(REPRIS.values()) + list(CUSTOM.values()))
 sch = """(kicad_sch (version 20250114) (generator "eeschema") (generator_version "9.0") (uuid "%s") (paper "A2")
-(title_block (title "Carte de mesure v3 a composants courants - pH et ORP, une barriere par voie") (date "2026-11-25") (rev "0.2")
+(title_block (title "Carte de mesure v3 a composants courants - pH et ORP, une barriere par voie") (date "2026-11-28") (rev "0.3")
  (company "ESP32 Pool Controller") (comment 1 "Reference : kicad/v3-mesure-std/README.md"))
 (lib_symbols
 %s

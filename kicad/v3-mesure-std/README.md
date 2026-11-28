@@ -14,6 +14,15 @@ restait valable est recopié plus bas, dans « Repris de l'étude à modules Atl
 script, relus par `electronics-reviewer` — aucune erreur. Pas encore ouverts dans KiCad par
 l'utilisateur.**
 
+🆕 **Rév. 0.3 du 2026-11-28 — étude des parasites et de la fiabilité** (demande de l'utilisateur).
+Quatre changements sur l'entrée de chaque voie, détaillés en fin de fiche : un **filtre devant le
+convertisseur**, le **corps de la prise protégé des décharges**, la **garde pilotée à travers une
+résistance et découverte de son vernis**, et l'**alimentation de l'amplificateur pH filtrée**.
+Les règles à tenir désormais, avec leurs raisons, sont dans
+[`../REGLES-CEM-ET-FIABILITE.md`](../REGLES-CEM-ET-FIABILITE.md) ;
+`python3 scripts/verifier_regles_cartes.py v3-mesure-std` les contrôle.
+Schéma et carte sont tous deux en rév. 0.3, régénérés par leurs scripts.
+
 ## Les fichiers de ce dossier
 
 | Fichier | Rôle |
@@ -52,10 +61,17 @@ masse au-dessous, alimentation, puis masse et quelques pistes sur la face du des
   Piste d'entrée de 2,1 mm, piste de l'âme de 6,1 mm.
 - ORP : même anneau, relié à `MESURE_ORP`, refermé sous le boîtier entre la broche 4 (masse)
   et la broche 5 (entrée).
-- **Vernis conservé** sur l'anneau et l'entrée (point P6 fermé). Le retirer sert aux mesures
-  au femtoampère. Ici la garde est la sortie du suiveur, à 150 µV au plus de
-  l'entrée : même avec 1 GΩ de fuite de surface, l'erreur est de 0,0003 pH. Le retirer
-  laisserait du cuivre nu dans l'air chloré.
+- ~~**Vernis conservé** sur l'anneau et l'entrée (point P6 fermé).~~ ⚠️ **Revu le 2026-11-28
+  (rév. 0.3) : le vernis est retiré sur la garde**, là où rien n'est posé dessus. Le calcul
+  d'origine (0,0003 pH pour 1 GΩ de fuite) supposait que la fuite allait vers la garde. Or une
+  fuite **en surface du vernis** passe par-dessus un anneau enterré sans le rencontrer, et va de
+  l'âme au corps de la prise : avec 1 GΩ et une sonde de 250 MΩ, c'est 20 % d'erreur de pente.
+  Le fabricant de l'amplificateur le demande (fiche du LMP7721, § 10.1 : pas de vernis sur
+  l'entrée ni sur la garde). Le cuivre découvert est doré par l'atelier, il n'est pas nu.
+  ⛔ Aucune ouverture sous la prise, côté dessus : son corps métallique y est posé.
+- **Rév. 0.3** : l'amplificateur et la résistance d'entrée sont remontés de 1,5 mm. La pastille
+  « âme » de R105 était à 0,58 mm du corps de la prise ; elle en est à 2,1 mm (1,78 mm de son
+  encombrement dessiné). Deux doigts de garde descendent de l'anneau entre l'âme et le corps.
 - Le trait d'encre de la prise BNC qui passait sur l'âme et l'anneau est retiré de l'empreinte.
 - Le corps de la prise est relié par une zone de cuivre `REF` sur le dessus.
 
@@ -73,6 +89,14 @@ SDA ; et, sur la voie ORP, la liaison de R208 au corps de la prise. Sans effet s
 - Relecture du tracé : découplages à 1,2 à 2 mm de leur broche ; régulateur à +7 à +13 °C ;
   module d'alimentation à 13,7 mm de l'entrée du pH ; pistes, écarts et vias dans les
   capacités de l'atelier ; rien n'est posé sur la face du dessous.
+
+- **Rév. 0.3, 2026-11-28** : même contrôle, 0 erreur, 0 liaison manquante, 0 écart avec le
+  schéma. Cinq avertissements **attendus** « piste sans suite » : les deux doigts de garde de
+  chaque voie et la traverse de la voie ORP. `scripts/verifier_regles_cartes.py v3-mesure-std` :
+  toutes les règles tenues ; l'isolement y est **remesuré sur le cuivre**, sans passer par les
+  règles de KiCad : 0,94 et 0,95 mm aux broches des modules d'alimentation, 3,5 mm entre les voies.
+  ⚠️ Six réseaux nouveaux n'étaient dans aucune famille : la règle d'isolement de KiCad ne les
+  voyait pas. Ajoutés ; c'est maintenant contrôlé (règle M1).
 
 ### Ce qui n'est PAS vérifié
 - L'ouverture de la carte dans le KiCad de l'utilisateur.
@@ -134,10 +158,11 @@ composants). La même note conseille un condensateur entre les deux côtés de l
 ## Ce que fait une voie
 
 ```
- âme de la BNC ──[2,2 MΩ]──► ampli d'entrée (suiveur) ──► convertisseur, entrée +
-                                └─ sa sortie de garde ──► anneau de garde autour de l'entrée
- corps de la BNC ◄─[100 Ω]─ ampli Vcm (suiveur) ◄── pont de deux résistances sur l'alimentation isolée
-        └──────────────────────────────────────────────────► convertisseur, entrée −
+ âme de la BNC ──[2,2 MΩ]──► ampli d'entrée (suiveur) ──[470 Ω]──┬──► convertisseur, entrée +
+                                └─[1 kΩ]──► anneau de garde            [1 µF]        (rév. 0.3)
+ corps de la BNC ◄─[100 Ω]─ ampli Vcm (suiveur)                         │
+        ├──[100 nF]── masse de la voie                                  │
+        └──────────────────────────────────────────────[470 Ω]──────────┴──► convertisseur, entrée −
  convertisseur ──I2C──► isolateur de signaux ──► J1 ──► ESP32
  +5 V de J1 ──► module d'alimentation isolée 9 V ──► régulateur 5 V ──► alimentation isolée
 ```
@@ -174,6 +199,13 @@ l'atelier lui-même non lu.
 | C108 | Découplage de l'amplificateur d'entrée pH | 0,1 µF | 0402 | C1525 | — |
 | C109, C209 | Découplage de l'amplificateur double | 0,1 µF | 0402 | C1525 | — |
 | C110, C210 | Filtre du pont de Vcm | 0,1 µF | 0402 | C1525 | — |
+| R109, R110, R209, R210 | **Rév. 0.3** — filtre devant le convertisseur, une sur chaque entrée | 470 Ω 1 % | 0603 | C23179 | — |
+| C111, C211 | **Rév. 0.3** — filtre devant le convertisseur, entre ses deux entrées | 1 µF 50 V | 0603 | C15849 | — |
+| C112, C212 | **Rév. 0.3** — du corps de la prise à la masse de la voie (décharges) | 0,1 µF | 0402 | C1525 | — |
+| R111, R211 | **Rév. 0.3** — entre la sortie de l'amplificateur et la garde | 1 kΩ 1 % | 0603 | C21190 | — |
+| R112 | **Rév. 0.3** — filtre d'alimentation de l'amplificateur pH | 100 Ω 1 % | 0603 | C22775 | — |
+| C113 | **Rév. 0.3** — filtre d'alimentation de l'amplificateur pH | 10 µF 25 V | 0805 | C15850 | — |
+| TP101, TP201 | **Rév. 0.3** — point de mesure de la garde | pastille de 1 mm, rien à poser | — | — | — |
 | J101, J201 | Connecteur de sonde | BNC coudée DOSIN-801-0080 | traversant | C521219 | — (inchangé) |
 | J1 | Connecteur vers la carte principale | JST XH 8 voies (B8B-XH-A) | traversant | C157972 | — (inchangé) |
 
@@ -246,8 +278,9 @@ fiche de TI (p. 19) : côté 1 vers un nœud court et peu chargé, côté 2 vers
 | 1 | ADDR | pH : `GNDISO_PH` · ORP : `VISO_ORP` | adresse 0x48 · 0x49 |
 | 2 | ALERT/RDY | **rien** | non utilisée |
 | 3 | GND | `GNDISO_PH` | |
-| 4 | AIN0 | `MESURE_PH` (sortie de l'amplificateur d'entrée) | entrée + |
-| 5 | AIN1 | `REF_PH` | entrée − : prise **au corps de la prise**, après R108 |
+| 4 | AIN0 | `FILTP_PH` : `MESURE_PH` à travers R109 (470 Ω) | entrée +. **Rév. 0.3** : plus en direct sur l'amplificateur |
+| 5 | AIN1 | `FILTN_PH` : `REF_PH` à travers R110 (470 Ω) | entrée −. **Rév. 0.3** : plus en direct sur le corps de la prise |
+| — | — | C111 (1 µF) entre `FILTP_PH` et `FILTN_PH` | filtre : coupure à 169 Hz. ⛔ Garder chaque résistance sous 1 kΩ (fiche, § 9.2.2.6) |
 | 6, 7 | AIN2, AIN3 | **rien** | admis par la fiche (note 1) |
 | 8 | VDD | `VISO_PH` + C107 vers `GNDISO_PH` | |
 | 9 | SDA | `SDA_ISO_PH` | |
@@ -258,12 +291,12 @@ fiche de TI (p. 19) : côté 1 vers un nœud court et peu chargé, côté 2 vers
 | Broche | Nom | Relié à | Remarque |
 |---|---|---|---|
 | 1 | IN+ | `ENTREE_PH` : R105, dont l'autre bout va à l'âme de J101 | ⚠️ **le point sensible** : piste la plus courte possible, entourée de l'anneau de garde |
-| 2, 7 | libres dans le boîtier | `MESURE_PH` : l'anneau de garde | la fiche recommande de les relier à la garde ; la garde est tenue par la sortie |
+| 2, 7 | libres dans le boîtier | `GARDE_PH` : l'anneau de garde | la fiche recommande de les relier à la garde. **Rév. 0.3** : la garde est tenue par la sortie **à travers R111 (1 kΩ)** ; point de test TP101 |
 | 3 | V− | `GNDISO_PH` | sort sous le boîtier, via hors du plan de garde |
-| 4 | OUT | `MESURE_PH` | vers AIN0 de U103, et vers l'anneau de garde |
+| 4 | OUT | `MESURE_PH` | vers le filtre (R109) et vers la garde (R111) |
 | 5 | — | **rien** | libre dans le boîtier |
-| 6 | V+ | `VISO_PH` + C108 vers `GNDISO_PH` | |
-| 8 | IN− | `MESURE_PH` | montage suiveur |
+| 6 | V+ | `VAMP_PH` : `VISO_PH` à travers R112 (100 Ω), + C113 (10 µF) et C108 (100 nF) vers `GNDISO_PH` | **rév. 0.3** : alimentation filtrée (fiche, § 9). ⚠️ La fiche demande 100 µF ; 10 µF posés, écart voulu : 56 dB d'atténuation dès 100 kHz, et pas de ronflement à 50 Hz sur ce rail |
+| 8 | IN− | `MESURE_PH` | montage suiveur, pris directement sur la sortie |
 
 #### Changement d'amplificateur (2026-11-26, décision de l'utilisateur)
 
@@ -281,8 +314,10 @@ Lu ce jour dans sa fiche (TI SNOSAW6E) :
 
 Ce que l'OPA928 avait en plus : une sortie de garde propre au composant. Ici la garde est la
 sortie du suiveur, comme sur la voie ORP. ⇒ Le net `GARDE_PH` n'existe plus.
+(Rév. 0.3 : `GARDE_PH` et `GARDE_ORP` existent de nouveau — c'est la garde, derrière sa résistance de 1 kΩ.)
 ⛔ L'ADA4530-1 n'est **plus** un remplaçant direct : il a le brochage de l'OPA928.
 ✅ Relu par `electronics-reviewer` le 2026-11-26 : brochage et limites conformes, bon pour commande.
+- ✅ **Rév. 0.3 : traité d'avance** — la garde est derrière 1 kΩ (R111). Reste à le constater sur la carte.
 - ⚠️ **À regarder sur la première carte : la stabilité.** La sortie tient la garde (anneau et
   trois plans), estimée à 15–30 pF ; la fiche (fig. 19) donne alors environ 35° de marge de
   phase, et 4° vers 200 pF. Si une oscillation ou un bruit anormal apparaît : séparer la
@@ -317,7 +352,7 @@ R108 entre `VCM_PH` (broche 1) et `REF_PH`.
 | Borne | Relié à |
 |---|---|
 | âme | R105 (R205) — rien d'autre |
-| corps (4 pattes) | `REF_PH` (`REF_ORP`) |
+| corps (4 pattes) | `REF_PH` (`REF_ORP`) ; **rév. 0.3** : C112 (C212), 100 nF, de là à la masse de la voie |
 
 ⛔ Le corps de la BNC n'est **pas** à la masse : il est tenu à Vcm, à travers 100 Ω
 (schéma pH publié par TI, fiche OPA928, fig. 7-7). Le boîtier est en
@@ -378,9 +413,13 @@ le corps de la prise (10 kΩ ferait passer le 50 Hz capté de 70 µV à 7 mV).
 - [x] P3 — Condensateur d'entrée du module : 4,7 µF (les deux fiches).
 - [x] P4 — AIN2 et AIN3 en l'air.
 - [x] P5 — Un seul Vcm de 1,25 V pour le pH.
-- [x] P6 — Garde autour de l'entrée : dessinée et relue, vernis conservé (voir « La carte »).
-- [ ] P7 — Isolement du corps de la prise BNC, et tenue aux décharges quand on la touche
-      (le LMC6482 tient 1,5 kV ; les 100 Ω ne règlent pas ce point).
+- [x] P6 — Garde autour de l'entrée : dessinée et relue. ⚠️ **Rév. 0.3 : vernis retiré sur la
+      garde** (voir « La carte »).
+- [x] P7 — Tenue aux décharges quand on touche le corps de la prise : **rév. 0.3**, 100 nF vers la
+      masse de la voie (12 V au plus entre le corps et cette masse pour 8 kV), puis 470 Ω avant le
+      convertisseur. ⚠️ La voie étant isolée, c'est elle tout entière qui monte par rapport au
+      reste pendant la décharge : ce que tient la barrière ne se saura que par l'essai.
+      ⏳ Reste l'essai sur la première carte.
 - [x] P8 — Référence au catalogue du condensateur au tantale (22 µF 16 V, boîtier B) : ✅ C8020, le 2026-11-26. Avant : non
       trouvée. Les autres passifs sont relevés ; ⚠️ leur stock se lit à l'atelier, pas chez
       le distributeur (une résistance courante y figure à 0).
@@ -388,7 +427,8 @@ le corps de la prise (10 kΩ ferait passer le 50 Hz capté de 70 µV à 7 mV).
       (SGM58031), à décider au dessin de la carte.
 - [ ] P9 — **À mesurer sur la première carte** : tension réelle du module à faible charge,
       et bruit vers 250 kHz (le module découpe à 200–340 kHz, le convertisseur échantillonne
-      à 250 kHz ; non chiffrable sur le papier).
+      à 250 kHz ; non chiffrable sur le papier). **Rév. 0.3 : le filtre que demande la fiche du
+      convertisseur est posé** (470 Ω + 470 Ω + 1 µF, −63 dB à 250 kHz). La mesure reste à faire.
 - [ ] P10 — Le second fabricant du module n'a que 184 pièces en stock.
 
 ## Dossier de fabrication JLCPCB (2026-11-26)
@@ -405,6 +445,12 @@ Le script refuse de produire quoi que ce soit si le contrôle des règles signal
 
 ✅ Vérifié le 2026-11-26 : le dossier sort sans erreur, 47 pièces à poser en 18 lignes (une par référence). C104 et C204 (22 µF 16 V au tantale) : référence trouvée le 2026-11-26 et confirmée par l'utilisateur, C8020 (AVX TAJB226K016RNJ, 55 997 en stock chez JLCPCB), équivalent C122226 (Xiangyee). Le 10 V a été écarté : sur 5 V il serait à la limite de la règle des fabricants (moitié de la tension nominale).
 ✅ Stock relevé au catalogue de JLCPCB le 2026-11-26 : toutes les références y sont, plus bas relevés : **LMP7721MAX 1 668** (relevé après le changement d'amplificateur), module d'alimentation B0509S 1 493, prise BNC 6 096. Environ la moitié des références sont des pièces « étendues » (frais de mise en place par référence).
+**Rév. 0.3, 2026-11-28** : ✅ le dossier sort, 59 pièces à poser en **22 lignes** (4 de plus :
+470 Ω, 1 kΩ, 1 µF, 10 µF). Les deux points de test de la garde ne sont ni dans la liste ni posés.
+✅ `scripts/verifier_pose_jlcpcb.py` : toutes les pièces nouvelles tombent sur leurs pastilles.
+⏳ Non vu à l'écran de pose de l'atelier depuis la rév. 0.3.
+⚠️ **Au devis : vérifier que l'atelier ne remet pas de vernis sur les anneaux de garde** (ils sont
+dessinés ouverts dans les fichiers de gravure, couches de vernis) et garder l'option de nettoyage.
 ⏳ Non vérifié : l'envoi réel des fichiers sur le site de JLCPCB.
 ⚠️ **Étape humaine à la commande** : JLCPCB ne compte pas les angles comme KiCad pour certains
 boîtiers. Son écran de pose montre chaque pièce sur la carte : y vérifier le sens des diodes,
@@ -419,3 +465,34 @@ aux décharges.
 Nouveau : « pH » et « ORP » n'étaient écrits que sur la couche de commentaires, donc non
 imprimés. ✅ Ajoutés le jour même en sérigraphie, à droite de chaque prise (`generer_carte.py`).
 Rien d'autre n'a changé sur la carte (comparaison pièce par pièce et piste par piste).
+
+## Étude des parasites et de la fiabilité, 2026-11-28 — rév. 0.3
+
+Demandée par l'utilisateur ; quatre des sept points retenus concernent cette carte. Les règles qui
+en sortent sont dans [`../REGLES-CEM-ET-FIABILITE.md`](../REGLES-CEM-ET-FIABILITE.md) (M1 à M10).
+
+| Sujet | Avant | Après (par voie) |
+|---|---|---|
+| Entre amplificateur et convertisseur | rien : le convertisseur échantillonne à 250 kHz, là où découpe son alimentation isolée | 470 Ω sur chaque entrée (R109, R110 · R209, R210) et 1 µF entre les deux (C111 · C211) |
+| Corps de la prise | en direct sur le convertisseur, qui tient 2 kV ; une décharge au toucher se teste à 8 kV | 100 nF vers la masse de la voie (C112 · C212), puis la résistance du filtre |
+| Garde | pilotée en direct par l'amplificateur (38° de marge de stabilité sur le pH), et sous vernis | pilotée à travers 1 kΩ (R111 · R211), point de test (TP101 · TP201), vernis retiré là où rien n'est posé |
+| Amplificateur pH | alimenté en direct | 100 Ω, 10 µF et 100 nF (R112, C113, C108) |
+| Résistance d'entrée | sa pastille « âme » à 0,58 mm du corps de la prise | 2,1 mm |
+
+⚠️ **Valeur corrigée en cours de route** : 1 nF avait d'abord été annoncé pour le corps de la
+prise. Une décharge de 8 kV y laisserait 1 200 V ; c'est 100 nF qui est posé.
+
+**Effet sur la mesure**, calculé d'après la fiche du convertisseur : les 940 Ω en série changent
+le gain de 0,02 à 0,13 % selon le calibre — une erreur constante, que l'étalonnage absorbe.
+
+**Relecture indépendante, 2026-11-28 (`electronics-reviewer`)** — rien à corriger sur cette
+carte. Relus sans écart : brochages face aux pastilles ; ouvertures de vernis lues sur la carte
+(seul du cuivre de garde est découvert, 0,2 mm de vernis au moins vers la piste de l'âme, rien à
+moins de 0,5 mm du contour d'une prise) ; chaque amplificateur prend son bouclage avant sa
+résistance de sortie. Trois phrases rectifiées : la limite de 1 kΩ vaut pour chaque résistance du
+filtre (fiche de l'ADS1115, § 9.2.2.6) ; les 10 µF de l'amplificateur pH sont un écart voulu à sa
+fiche, qui en demande 100 ; les 12 V valent entre le corps de la prise et la masse de la voie.
+⏳ Non chiffré par lui : les marges de stabilité (courbes illisibles) — à constater sur la carte.
+
+**Non vérifié** : rien n'a été mesuré, la carte n'existe pas encore. Les essais à faire sur la
+première carte sont dans le document de règles.

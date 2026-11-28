@@ -12,6 +12,14 @@ Schéma rév. 0.2 écrit par script, relu par `electronics-reviewer` : aucune er
 manquante, 0 écart avec le schéma. Relue par `electronics-reviewer` : aucune erreur, cinq
 retouches portées. ⏳ Rien n'est encore ouvert dans KiCad par l'utilisateur.** Horloge : **DS3231SN** depuis le 2026-11-26 (décision de l'utilisateur : la qualité l'emporte sur le nombre de fabricants et sur le prix) ; carte retouchée à la main, contrôle des règles identique.
 
+🆕 **Rév. 0.3 du 2026-11-28 — étude des parasites et de la fiabilité** (demande de l'utilisateur).
+Trois changements, détaillés plus bas : une **coupure commune du 12 V des pompes avec relecture de
+leurs sorties**, la **protection du bornier de la sonde de température**, et le cuivre mal relié
+(piste au bord retirée, plans de masse cousus). Les règles à tenir désormais, avec leurs raisons,
+sont dans [`../REGLES-CEM-ET-FIABILITE.md`](../REGLES-CEM-ET-FIABILITE.md) ;
+`python3 scripts/verifier_regles_cartes.py v3-principale` les contrôle.
+⚠️ **Deux broches de l'ESP32 changent de rôle par rapport au v2** : voir le tableau des connexions.
+
 ## Les fichiers de ce dossier
 
 | Fichier | Rôle |
@@ -26,6 +34,10 @@ broches sont reliées quand elles portent la même étiquette. Il n'y a pas de l
 
 **Vérifié le 2026-11-25** : la liste des connexions que KiCad extrait du schéma est identique
 à celle voulue — 62 fils, 20 broches en l'air (schéma rév. 0.2).
+**Rév. 0.3, vérifié le 2026-11-28** : 63 fils, 23 broches en l'air, 106 pièces ; le schéma du
+projet est exactement celui que produit `generer_schema.py` (contrôle C2 du vérificateur).
+⚠️ Toute pièce nouvelle s'ajoute dans la **dernière section** du script : il numérote les pièces
+dans l'ordre où elles sont écrites.
 
 **Le contrôle électrique de KiCad rend un message attendu** : « deux sorties d'alimentation
 reliées », entre la broche V3 du pont USB et la sortie du régulateur 3,3 V. C'est le câblage
@@ -55,6 +67,9 @@ d'un autre fabricant sur la même empreinte, la qualité restant un critère maj
 
 ⭐ **Les broches de l'ESP32 ne changent pas** (ADR-0012) : le même firmware pilote les
 mêmes sorties sur le v2 et le v3.
+⚠️ **Sauf pour doser, depuis la rév. 0.3** : les pompes ne reçoivent le 12 V que si le logiciel
+met IO4 à 1 (voir « Sécurité des pompes »). Le firmware du v2, qui ne connaît pas cette broche,
+pilote tout le reste mais ne fait tourner aucune pompe sur cette carte.
 
 ## Disposition dans le boîtier — décidée le 2026-11-25 (utilisateur)
 
@@ -154,12 +169,17 @@ entourent les pistes sur les deux faces extérieures.
 | `outils/9_alarme_hors_de_la_puce.py` | l'alarme de l'horloge sortie de sous la puce, R21 déplacée (retouche de relecture, 2026-11-26) |
 | `outils/5_inscriptions.py` | nom de chaque prise, repère du +, consigne « retirer JP1 d'abord » |
 | `outils/10_cavalier_jp1.py` | JP1 : le pont de cuivre devient une barrette de deux broches à capuchon |
+| `outils/11_c20_tantale.py` | C20 passe au tantale (audit du 2026-11-27) |
+| `outils/12_securite_pompes_et_sonde.py` | **rév. 0.3** : coupure commune des pompes, relectures, protection de la sonde, piste du bord retirée. Ne se lance qu'une fois |
+| `outils/13_couture_des_plans.py` | **rév. 0.3** : relie le cuivre de masse des deux faces au plan interne (41 passages). Peut se relancer : il ne pose que ce qui manque |
+| `outils/routeur.py` | petit outil de recherche de chemin, utilisé par les deux précédents pour ajouter une liaison sans toucher au reste |
 | `v3-principale.kicad_pcb` | **la carte : c'est elle la référence**, le routage ne se régénère pas à l'identique |
 | `v3-principale.pretty/`, `fp-lib-table` | empreinte du module ESP32 (bibliothèque officielle d'Espressif), trou de fixation |
 
 **Comment elle a été tracée** : placement par script, puis routage automatique par
 Freerouting 2.0.1 (outil libre, lancé à la main par l'utilisateur sur l'export Specctra de
 la carte), puis retouches par les scripts ci-dessus. 816 segments de piste, 157 vias.
+Rév. 0.3 : 862 segments, 209 vias dont 128 de masse.
 
 **Largeurs** : 0,8 mm pour le 12 V et les cinq sorties, 0,5 mm pour le 5 V, le 3,3 V et la
 masse, 0,25 mm pour les signaux. Écart minimal 0,2 mm (0,25 mm autour du 12 V).
@@ -328,6 +348,9 @@ loin du condensateur de 470 µF et de la sonde de température. ⏳ Consommation
 - Le transistor AO3401A protège d'un 5 V externe branché à l'envers. ⛔ Rien ne protège
   d'une tension trop haute sur ce bornier : les modules de la carte de mesure ne tiennent
   que 5,5 V.
+  ℹ️ **Décision de l'utilisateur, 2026-11-28** : ce bornier n'existe que pour le prototype,
+  il est seul à s'en servir, et il sera supprimé pour la série. ⇒ Aucune protection n'y est
+  ajoutée ; ne pas la reproposer.
 - ⚠️ Le cavalier est un **contact** : barrette dorée (C124375, 3 A), donc **capuchon doré**
   lui aussi — un capuchon étamé sur des broches dorées se corrode en local humide et chloré
   (relecture du 2026-11-26). Courant du rail : moins de 1 A en pointe.
@@ -342,6 +365,28 @@ loin du condensateur de 470 µF et de la sonde de température. ⏳ Consommation
 | Prise de la sonde d'eau | bornier débrochable 5,08 mm, embase verticale 3 voies | traversant | C505789 | standard « 2EDG ». Une sonde du commerce arrive en fils nus : ils se vissent sur la fiche |
 | Prise vers la carte de mesure | JST XH 8 voies | traversant | C157972 | compatibles XH |
 
+### Sécurité des pompes et protection de la sonde — rév. 0.3 (2026-11-28)
+
+Références relues au catalogue du distributeur de l'atelier le 2026-11-28. ⚠️ Le stock de
+l'atelier lui-même se lit au moment du devis.
+
+| Repère | Rôle | Composant | Boîtier | Réf. atelier | Déjà sur la carte ? |
+|---|---|---|---|---|---|
+| Q11 | coupure commune du 12 V des pompes | AO4407A (AOS), canal P, 30 V, 12 A | SO-8 | C16072 | oui (Q1) |
+| Q10 | commande de Q11 | AO3400A | SOT-23 | C20917 | oui |
+| R30 | série sur la commande | 100 Ω | 0603 | C22775 | oui |
+| R31, R33, R34 | rappel de la commande ; grille de Q11 ; décharge du rail | 10 kΩ | 0603 | C25804 | oui |
+| R32 | grille de Q11 | 4,7 kΩ | 0603 | C23162 | oui |
+| R35, R37 | relecture, côté pompe | 100 kΩ | 0603 | C25803 | **nouvelle ligne** |
+| R36, R38 | relecture, côté masse | 33 kΩ | 0603 | C4216 | **nouvelle ligne** |
+| C21, C23, C2 | 100 nF au pied de la diode de chaque pompe ; sur le 12 V | 100 nF, **50 V**, X7R | 0402 | C307331 | **nouvelle ligne** (C2 était un 100 nF 16 V) |
+| R39 | série sur l'alimentation de la sonde | 100 Ω, 1/8 W | **0805** | C17408 | **nouvelle ligne** |
+| R40 | série sur le fil de données de la sonde | 100 Ω | 0603 | C22775 | oui |
+| C22 | sur l'alimentation de la sonde | 100 nF | 0402 | C1525 | oui |
+| U8 | protection contre les décharges, bornier de la sonde | USBLC6-2SC6 (ST) | SOT-23-6 | C7519 | oui (U2, sur l'USB) |
+
+17 pièces de plus, **4 lignes de plus** dans la liste de l'atelier (43 au lieu de 39).
+
 ## Les exceptions à la règle D8 — à accepter par l'utilisateur
 
 | # | Composant | Pourquoi il n'a pas d'équivalent | Ce que ça risque | Ce qui limite le risque |
@@ -352,9 +397,14 @@ loin du condensateur de 470 µF et de la sonde de température. ⏳ Consommation
 | ~~E4~~ | ~~Régulateur 5 V TPS54331~~ — **sans objet** : remplacé par un 7805 à deux fabricants | | | |
 | E5 | Pile CR2032 | l'atelier ne la pose pas | une pile à insérer à la main sur chaque carte | aucune soudure, pile courante |
 
-## Tableau des connexions — version 0.2
+## Tableau des connexions — version 0.3
 
-### ESP32 (U1) — broches identiques au v2
+### ESP32 (U1) — broches du v2, plus trois pour la sécurité des pompes
+
+⚠️ **Rév. 0.3** : IO4, IO18 et IO23 étaient des broches libres ; elles servent maintenant à la
+sécurité des pompes. Le firmware actuel ne les utilise pas (`kRtcSqwPin = 23` y est déclarée
+« pour plus tard », sans aucun emploi) : il tourne donc sur cette carte **sans armer les pompes**,
+c'est-à-dire sans pouvoir doser, tant que les exigences de « Sécurité des pompes » ne sont pas écrites.
 
 | Broche ESP32 | Signal | Va vers |
 |---|---|---|
@@ -365,10 +415,10 @@ loin du condensateur de 470 µF et de la sonde de température. ⏳ Consommation
 | TXD0 (IO1) | `TX` | 470 Ω en série (Espressif recommande 499 Ω ; valeur courante retenue), puis entrée RXD du pont USB |
 | RXD0 (IO3) | `RX` | sortie TXD du pont USB à travers 470 Ω : un adaptateur série branché sur le connecteur de débogage garde la main |
 | IO2 | `LED` | 1 kΩ puis LED vers la masse |
-| IO5 | `TEMP` | sonde de la carte, prise de la sonde d'eau, 4,7 kΩ vers `+3V3` |
+| IO5 | `TEMP` | sonde de la carte, 4,7 kΩ vers `+3V3` ; la prise de la sonde d'eau à travers 100 Ω et sa protection (rév. 0.3) |
 | IO21 | `SDA` | horloge ; voies 1 et 7 de la prise de mesure |
 | IO22 | `SCL` | horloge ; voies 2 et 8 de la prise de mesure |
-| IO23 | `IO23` | connecteur de débogage (broche libre). ℹ️ Sur le v2 elle recevait le signal carré de l'horloge, jamais utilisé par le firmware |
+| IO23 | `LU_POMPE_ORP` | **rév. 0.3** — relecture de la sortie de la pompe chlore (100 kΩ / 33 kΩ) ; connecteur de débogage. ℹ️ Sur le v2 elle recevait le signal carré de l'horloge, jamais utilisé par le firmware |
 | IO25 | `POMPE_PH` | 100 Ω puis grille du transistor de la pompe pH |
 | IO26 | `FILTRATION` | idem, sortie filtration |
 | IO27 | `ECLAIRAGE` | idem, sortie éclairage |
@@ -378,11 +428,14 @@ loin du condensateur de 470 µF et de la sonde de température. ⏳ Consommation
 | IO36 | `RTC_INT` | broche INT de l'horloge, 10 kΩ vers `+3V3` (réservée : le firmware ne la lit pas) |
 | IO12 | `IO12` | connecteur de débogage seulement. ⛔ Rien ne doit la tirer vers le haut au démarrage : elle fixe la tension de la mémoire |
 | IO13, IO14, IO15 | `IO13`, `IO14`, `IO15` | connecteur de débogage (sonde pas à pas, avec IO12) |
-| IO4, IO18, IO19 | idem | connecteur de débogage (broches libres) |
+| IO4 | `ARME_POMPES` | **rév. 0.3** — à 1, ferme la coupure commune du 12 V des pompes. Rappelée à la masse par 10 kΩ ; connecteur de débogage |
+| IO18 | `LU_POMPE_PH` | **rév. 0.3** — relecture de la sortie de la pompe pH (100 kΩ / 33 kΩ) ; connecteur de débogage |
+| IO19 | — | **rév. 0.3** — en l'air. Sa liaison au connecteur de débogage longeait le bord de la carte : retirée |
+| IO34 | `DEBIT` | entrée du détecteur de débit (voir plus bas) |
 | IO16, IO17 | — | ⛔ en l'air : prises par la PSRAM |
 | autres | — | en l'air |
 
-### Une sortie de puissance (les cinq sont identiques)
+### Une sortie de puissance (filtration, éclairage, auxiliaire — les pompes : voir « Sécurité des pompes »)
 
 ```
 +12V ──┬─────────────► borne 1 du bornier (+ de la charge)
@@ -494,8 +547,12 @@ sera faite à part, sans elle. Elle remplace les cinq pastilles d'essai.
 | 7 | `SDA` | 8 | `SCL` |
 | 9 | `IO13` (TCK) | 10 | `IO14` (TMS) |
 | 11 | `IO12` (TDI) | 12 | `IO15` (TDO) |
-| 13 | `IO4` | 14 | `IO18` |
-| 15 | `IO19` | 16 | `IO23` |
+| 13 | `ARME_POMPES` (IO4) | 14 | `LU_POMPE_PH` (IO18) |
+| 15 | non reliée (rév. 0.3) | 16 | `LU_POMPE_ORP` (IO23) |
+
+⛔ **Rév. 0.3 : ne rien brancher sur 13, 14 et 16 quand l'appareil dose** — ce qui s'y branche agit
+directement sur l'armement des pompes et sur leurs relectures. Ce sont en revanche les bons points
+de mesure pour les essais de sécurité.
 
 ### Prise vers la carte de mesure — câble droit, même ordre que le J1 de la carte de mesure
 
@@ -509,6 +566,119 @@ sera faite à part, sans elle. Elle remplace les cinq pastilles d'essai.
 | 6 | masse |
 | 7 | `SDA` (réuni à la voie 1 — décision D3) |
 | 8 | `SCL` (réuni à la voie 2) |
+
+## Sécurité des pompes — rév. 0.3 (2026-11-28)
+
+**Le défaut d'origine.** Chaque pompe n'avait qu'un interrupteur, côté masse. Un transistor qui
+lâche reste en général **passant** : la pompe dosait alors sans arrêt, et le logiciel ne pouvait
+ni le voir ni l'arrêter.
+
+**Ce qui change** : un deuxième interrupteur, commun aux deux pompes, côté 12 V ; et la sortie de
+chaque pompe est relue par l'ESP32.
+
+```
++12V ──┬── 10 µF (C3, C4) ── masse                    réserve d'énergie : EN AMONT, exprès
+       │ source
+     Q11  AO4407A         grille ◄── 4,7 kΩ (R32) ◄── drain de Q10 (AO3400A)
+       │ drain              └── 10 kΩ (R33) ── +12V          grille de Q10 ◄── 100 Ω (R30) ◄── ARME_POMPES (IO4)
+       │                                                        └── 10 kΩ (R31) ── masse
+V_POMPES ──┬── 10 kΩ (R34) ── masse      100 nF au pied de chaque diode (C21, C23) ── masse
+           ├────────────────────► borne 1 du bornier de chaque pompe (+ du moteur)
+          ─┴─ cathode
+          SS34
+          ─┬─ anode
+           ├────────────────────► borne 2 du bornier (− du moteur)
+           ├── 100 kΩ ──┬───────► LU_POMPE_PH (IO18) ou LU_POMPE_ORP (IO23)
+           │ drain      └── 33 kΩ ── masse
+       AO3400A (Q2, Q3)   grille ◄── 100 Ω ◄── POMPE_PH (IO25) ou POMPE_ORP (IO33)
+           │ source          └── 10 kΩ ── masse
+          masse
+```
+
+**Au repos, tout est coupé** : IO4 à 0, en l'air (démarrage, remise à zéro) ou module absent, la
+grille de Q10 est à la masse par R31, Q10 est ouvert, la grille de Q11 est au 12 V par R33, Q11
+est ouvert.
+
+**Ce que doivent lire les deux relectures**
+
+| Rail des pompes | Pompes commandées | Lecture attendue | Si ce n'est pas le cas |
+|---|---|---|---|
+| coupé (IO4 à 0) | aucune | **0 et 0** | un 1 : l'interrupteur commun est resté passant |
+| armé (IO4 à 1) | aucune | **1 et 1** | un 0 : le transistor de cette pompe est passant — ou cette pompe est débranchée |
+| armé | une pompe tourne | l'autre reste à **1** | un 0 : son transistor vient de lâcher |
+
+⚠️ **Conséquence voulue** : l'interrupteur est commun. Si le transistor d'une pompe est passant,
+armer le rail la ferait tourner ; le logiciel doit donc refuser d'armer, et **les deux pompes sont
+bloquées** jusqu'à réparation.
+⚠️ **Une pompe débranchée ne se reconnaît pas de façon sûre.** À froid elle se lit comme un
+transistor passant (0, rail armé) ; à chaud, la fuite de sa diode de roue libre peut faire lire 1,
+comme si elle était là (fiche de la SS34 : jusqu'à 0,5 mA à 25 °C, bien plus à chaud ; 75 µA
+suffisent). Cela ne masque aucune panne : un transistor passant force toujours 0. ⇒ Ne pas faire
+de cette lecture un diagnostic « pompe absente » (relecture du 2026-11-28).
+⚠️ Ces relectures disent l'état des **sorties**. Elles ne disent pas qu'un produit a été injecté,
+ni que l'eau circule (ADR-0026, ADR-0144).
+
+**Chiffres**
+- Grille de Q11 : −8,2 V par rapport à sa source (12 V × 10 / 14,7). Limite ±25 V ; −14,6 V si le
+  12 V monte aux 21,5 V de l'écrêteur.
+- Relecture : 2,98 V pour 12 V. L'ESP32 garantit un niveau haut à partir de 0,75 fois son
+  alimentation (2,48 à 2,51 V) : la lecture est donc garantie tant que le 12 V reste au-dessus de
+  **10,2 V**. À 21,5 V, la broche est bridée par sa protection interne, qui reçoit environ 0,07 mA
+  (0,18 mA dans la résistance de 100 kΩ, dont 0,11 partent dans celle de 33 kΩ).
+- Rail coupé : il se vide par R34 en 1 ms environ. Lire après 10 ms.
+- Rail armé : lire après 1 ms.
+- Coupure pendant qu'une pompe tourne : le courant du moteur se referme par sa diode, qui est sur
+  le rail commuté.
+
+### Ce que le logiciel doit faire
+
+⛔ **Rien de ceci n'est écrit au 2026-11-28.** Tant que ce ne l'est pas, le firmware n'arme
+jamais le rail, donc ne dose pas sur cette carte. Tout code qui touche au dosage passe d'abord par
+l'agent `pool-chemistry` (son avis du 2026-11-28 sur ce montage : accord sous conditions, toutes
+tenues côté carte).
+
+| N° | Exigence |
+|---|---|
+| E1 | Au démarrage, IO4 est mise en sortie à 0 **avant tout le reste**, puis le logiciel vérifie « rail coupé : 0 et 0 ». Sinon : défaut « interrupteur commun », dosage bloqué |
+| E2 | Avant chaque armement : commandes des deux pompes à 0, armer, attendre 1 ms au moins, lire. Chaque pompe présente doit lire 1. Sinon : désarmer aussitôt, dosage bloqué |
+| E3 | Le rail n'est armé que le temps d'une injection. Hors injection : rail coupé |
+| E4 | Pendant qu'une pompe tourne, l'autre est relue toutes les 100 ms environ : elle doit rester à 1 |
+| E5 | Après chaque arrêt d'une pompe, sa relecture doit revenir à 1. Sinon son transistor est resté passant : désarmer, bloquer |
+| E6 | À chaque désarmement, puis de temps en temps au repos : attendre 10 ms et vérifier « 0 et 0 » |
+| E7 | Un blocage survit au redémarrage et ne se lève que par une action authentifiée |
+| E8 | Ne jamais relire une pompe **pendant qu'elle est pilotée** : son signal est haché à 20 kHz, la lecture n'a pas de sens |
+| E9 | Un seul endroit du code arme et désarme, greffé sur `applyPumpDuty()` |
+| E10 | Chaque défaut : journal de niveau `critical`, MQTT et WebSocket. La décision est dans un module pur, éprouvé par mutation |
+
+Et quatre interdits : `gpio_hold_en` et `rtc_gpio_*` sur IO4 (ils garderaient l'armement à travers
+un redémarrage) ; armer pendant une mise à jour (désarmer avant `Update.begin()`) ; surveiller ou
+commander une pompe déclarée absente ; **activer un rappel interne sur IO18 ou IO23** — elles se
+lisent en entrée simple. ⚠️ `src/constants.h` déclare encore `kRtcSqwPin = 23` avec la mention
+« INPUT_PULLUP attendu » : avec ce rappel, la relecture de la pompe chlore resterait vers 1,2 V,
+ni 0 ni 1. Cette constante est à retirer (elle n'a aucun emploi) : c'est le premier livrable de
+[feature-219](../../specs/features/todo/feature-219-securite-des-pompes-coupure-commune-et-relecture.md).
+
+Les essais à faire sur la première carte sont dans
+[`../REGLES-CEM-ET-FIABILITE.md`](../REGLES-CEM-ET-FIABILITE.md#à-mesurer-sur-le-prototype).
+
+## Protection de la sonde de température — rév. 0.3 (2026-11-28)
+
+Le câble de la sonde d'eau sort du boîtier. Avant, sa borne d'alimentation était le 3,3 V de
+l'ESP32 et sa borne de données la broche IO5, en direct.
+
+```
++3V3 ── 100 Ω (R39, 0805) ──┬── V_SONDE ──► borne 2 de J8
+                            ├── 100 nF (C22) ── masse
+                            └── U8, voie 1
+IO5 = TEMP ── 100 Ω (R40) ──┬── TEMP_EXT ──► borne 3 de J8
+   │                        └── U8, voie 2            U8 = USBLC6-2SC6, la même protection que sur l'USB
+   └── 4,7 kΩ (R24) ── +3V3                           borne 1 de J8 : masse
+```
+
+- Câble en court-circuit : 33 mA au plus, 109 mW dans R39 (d'où son boîtier 0805). Le 3,3 V de
+  l'ESP32 ne bouge pas.
+- La sonde reste alimentée à 3,15 V au moins quand elle convertit (1,5 mA) ; elle en demande 3,0.
+- La sonde soudée sur la carte (U5) reste en direct sur `TEMP` : elle ne sort pas du boîtier.
 
 ## Points ouverts
 
@@ -618,6 +788,13 @@ L'inscription du bornier J8 est devenue « SONDE TEMPERATURE » (demande de l'ut
 boîtiers. Son écran de pose montre chaque pièce sur la carte : y vérifier le sens des diodes,
 des transistors, des circuits intégrés et du condensateur polarisé avant de valider.
 
+**Rév. 0.3, 2026-11-28.** `./scripts/build-jlcpcb.sh v3-principale` lance désormais aussi
+`scripts/verifier_regles_cartes.py` et s'arrête si une règle tombe. ✅ Le dossier sort : 106 pièces
+à poser en 43 lignes. ✅ `scripts/verifier_pose_jlcpcb.py` : les 17 pièces nouvelles tombent sur
+leurs pastilles (écart de 0,12 mm au plus) ; l'exception connue de U6 (0,82 mm) est inchangée.
+⏳ Non vu à l'écran de pose de l'atelier : le sens de Q11 (tourné d'un quart de tour par rapport
+à Q1), de Q10 et de U8.
+
 ## Audit extérieur du 2026-11-27 (demandé par l'utilisateur) et retouche de C20
 
 Verdict de l'audit : rien de bloquant. Points déjà connus : retour du 5 V sur J12 quand JP1
@@ -633,3 +810,48 @@ Deux points nouveaux :
 - **Fiches interchangeables** : les cinq borniers 5,08 mm à 2 points sont identiques (12 V,
   filtration, éclairage, auxiliaire, 5 V externe), de même les trois 3,81 mm (deux pompes,
   détecteur de débit). Carte d'essai : étiqueter les fiches. ⏳ Version vendue : détrompeurs.
+
+## Étude des parasites et de la fiabilité, 2026-11-28 — rév. 0.3
+
+Demandée par l'utilisateur ; sept points retenus sur les deux cartes, dont trois ici. Les règles
+qui en sortent sont dans [`../REGLES-CEM-ET-FIABILITE.md`](../REGLES-CEM-ET-FIABILITE.md).
+
+| Sujet | Avant | Après |
+|---|---|---|
+| Pompes | un seul interrupteur par pompe ; une panne « passant » dosait sans arrêt, sans être vue | coupure commune + relecture — voir « Sécurité des pompes » |
+| Sonde de température | 3,3 V et broche de l'ESP32 en direct sur un câble extérieur | 100 Ω sur chaque fil, 100 nF, protection contre les décharges |
+| Piste au bord | `IO19` : 50 mm à 0,3 mm du bord, hors du plan de masse | retirée ; IO19 et la broche 15 du connecteur de débogage ne sont plus reliées |
+| Cuivre de masse des faces | une plage de 5 cm² tenue par une seule broche ; du cuivre jusqu'à 49 mm de toute liaison au plan | 41 passages ajoutés ; plus aucun point à plus de 13,7 mm d'une liaison. Une languette de 0,6 mm entre SDA et SCL, impossible à relier, n'est plus remplie de cuivre |
+
+**Les trois liaisons de sécurité** (`ARME_POMPES`, `LU_POMPE_PH`, `LU_POMPE_ORP`) quittent le
+module par un passage posé juste à sa droite, puis vont vers les pompes **par le dessous**, côte à
+côte, sous les deux plans internes — donc à l'abri des pistes de puissance. La relecture de la
+pompe chlore descend d'abord 7 mm le long du bord droit, à 1,3 mm du bord.
+
+**Vérifié le 2026-11-28**
+- `kicad-cli pcb drc --severity-all --schematic-parity` : 0 erreur, 0 liaison manquante, 0 écart
+  avec le schéma. Mêmes avertissements qu'avant (dessin de l'antenne coupé par le bord).
+- `scripts/verifier_regles_cartes.py v3-principale` : toutes les règles tenues. Deux
+  avertissements lus et admis : `IO0` à 0,75 mm du bord (elle y était), une plage de masse de
+  87 mm² tenue par une seule liaison (elle est compacte).
+- `scripts/essai_verificateur_regles.py` : les 11 pannes posées exprès sur une copie de cette
+  carte sont vues.
+
+**Relecture indépendante, 2026-11-28 (`electronics-reviewer`)** — verdict : rien n'empêche de
+commander. Relus contre les fiches sans écart : brochages de Q11, Q10 et des diodes face aux
+pastilles de la carte ; tensions de grille (−8,2 V, −14,6 V à 21,5 V, pour ±25 V admis) ; rappel
+interne d'IO4 vers la masse pendant et après la remise à zéro ; coupure pendant qu'une pompe
+tourne ; alimentation de la sonde (3,08 V au pire pour 3,0 demandés).
+- ✅ **Corrigé** : la pompe chlore n'avait plus de condensateur au pied de sa diode — le plus
+  proche, C21, était à 36 mm. **C23** (100 nF 50 V, la référence de C21) est ajouté contre D4, et
+  toute la retouche a été rejouée depuis la carte d'avant : même résultat, mêmes contrôles.
+- ✅ Phrases rectifiées plus haut : pompe débranchée, seuil de 10,2 V, courant dans la broche.
+- ✅ Le brochage de la protection U8, que le relecteur n'avait pas pu lire, a été relu ensuite
+  sur la fiche du fabricant jointe à la référence C7519 (ST, document 11265 rév. 5) : conforme.
+- ⏳ Non relu par lui : la fiche de la SS34 de la référence exacte (il a pris celle d'onsemi).
+
+**Non vérifié**
+- Rien n'a été mesuré : la carte n'existe pas encore. Les essais à faire sur la première carte
+  sont listés dans le document de règles.
+- Le logiciel de la sécurité des pompes n'est pas écrit.
+- La carte n'a pas été ouverte dans KiCad par l'utilisateur depuis la rév. 0.3.

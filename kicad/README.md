@@ -6,6 +6,12 @@ Sources KiCad du PCB du contrôleur de piscine.
 [`CLAUDE.md`](../CLAUDE.md)) : on ne modifie ni le schéma ni le routage au fil
 d'une tâche logicielle.
 
+⭐ **Avant de modifier une carte du v3** (`v3-principale/`, `v3-mesure-std/`) : lire
+[`REGLES-CEM-ET-FIABILITE.md`](REGLES-CEM-ET-FIABILITE.md). Il dit quelles protections chaque
+carte porte, pourquoi, et ce qui a déjà été étudié puis écarté. Après la modification :
+`python3 scripts/verifier_regles_cartes.py <carte>` — `./scripts/build-jlcpcb.sh` le lance d'office
+et refuse de produire les fichiers de fabrication si une règle tombe.
+
 ## Fichiers
 
 | Fichier | Rôle |
